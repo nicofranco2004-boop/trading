@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/nicolaspussetto/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/bcfbadf3-5949-46c4-95ea-f77e7e18d7ad/6a7d8d68-f39a-4be8-86c7-653fd22de85c/skills/xlsx/**)",
+      "Bash(extract-text \"/Users/nicolaspussetto/Downloads/Trading_v7-2.xlsx\")",
+      "Bash(python3 -c ' *)",
+      "Bash(pip3 install *)",
+      "Bash(chmod +x /Users/nicolaspussetto/Documents/trading/start.sh)",
+      "Bash(npm install *)",
+      "Bash(python3 seed.py)",
+      "Bash(python3 -c \"import main\")",
+      "Bash(python3 -m uvicorn main:app --port 8000)",
+      "Bash(curl -s http://localhost:8000/api/config)",
+      "Bash(curl -s http://localhost:8000/api/positions)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'{len\\(d\\)} posiciones cargadas'\\)\")",
+      "Bash(curl -s http://localhost:8000/api/monthly)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'{len\\(d\\)} entradas mensuales'\\)\")",
+      "Bash(curl -s http://localhost:8000/api/operations)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'{len\\(d\\)} operaciones'\\)\")",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:5173)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python3)"
+    ]
+  }
+}
