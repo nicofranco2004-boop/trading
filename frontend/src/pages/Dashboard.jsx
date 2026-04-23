@@ -121,12 +121,21 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Portfolio Total" value={`$${usd(totalValue)}`} sub="USD estimado" />
-        <StatCard label="P&L No Realizado" value={`$${usd(totalPnl)}`} sub={pct(totalPct)} positive={totalPnl >= 0} />
-        <StatCard label="Binance" value={`$${usd(binanceValue)}`} sub={`Inv: $${usd(binanceInvested)}`} positive={binanceValue >= binanceInvested} />
-        <StatCard label="Cocos" value={`$${usd(cocosValueUsd)}`} sub={`Inv: $${usd(cocosInvestedUsd)}`} positive={cocosValueUsd >= cocosInvestedUsd} />
+      {/* Stats — top row: 3 cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+        <StatCard label="Portfolio Total" value={`$${usd(totalValue)}`} sub="Valor actual estimado" />
+        <StatCard label="Capital Invertido" value={`$${usd(totalInvested)}`} sub="Sin contar P&L no realizado" />
+        {/* On mobile, span 2 cols and center the card */}
+        <div className="col-span-2 md:col-span-1 flex justify-center">
+          <div className="w-1/2 md:w-full">
+            <StatCard label="P&L No Realizado" value={`$${usd(totalPnl)}`} sub={pct(totalPct)} positive={totalPnl >= 0} />
+          </div>
+        </div>
+      </div>
+      {/* Bottom row: Binance + Cocos */}
+      <div className="grid grid-cols-2 gap-4 mb-8">
+        <StatCard label="Binance" value={`$${usd(binanceValue)}`} sub={`Inv: $${usd(binanceInvested)} · P&L: $${usd(binanceValue - binanceInvested)}`} positive={binanceValue >= binanceInvested} />
+        <StatCard label="Cocos" value={`$${usd(cocosValueUsd)}`} sub={`Inv: $${usd(cocosInvestedUsd)} · P&L: $${usd(cocosValueUsd - cocosInvestedUsd)}`} positive={cocosValueUsd >= cocosInvestedUsd} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">

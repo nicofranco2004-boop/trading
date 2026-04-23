@@ -5,7 +5,6 @@ from typing import Optional
 import sqlite3
 import os
 import yfinance as yf
-import requests
 
 # En Railway: montá un volumen en /data y seteá DB_PATH=/data/trading.db
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "trading.db"))
@@ -107,7 +106,8 @@ def update_config(data: ConfigUpdate):
 
 # ─── Prices ──────────────────────────────────────────────────────────────────
 
-CRYPTO_IDS = {"BTC": "bitcoin", "ETH": "ethereum", "AAVE": "aave", "SOL": "solana", "BNB": "binancecoin"}
+# Crypto mapped to yfinance Yahoo Finance tickers (more reliable than CoinGecko free tier)
+CRYPTO_YF = {"BTC": "BTC-USD", "ETH": "ETH-USD", "AAVE": "AAVE-USD", "SOL": "SOL-USD", "BNB": "BNB-USD"}
 
 
 @app.get("/api/prices")
@@ -115,45 +115,44 @@ def get_prices(symbols: str):
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     result = {}
 
-    crypto_syms = [s for s in sym_list if s in CRYPTO_IDS]
-    stock_syms = [s for s in sym_list if s not in CRYPTO_IDS]
+    crypto_syms = [s for s in sym_list if s in CRYPTO_YF]
+    stock_syms = [s for s in sym_list if s not in CRYPTO_YF]
 
-    if stock_syms:
+    # All tickers go through yfinance: stocks/ETFs as-is, crypto as BTC-USD etc.
+    yf_tickers = stock_syms + [CRYPTO_YF[s] for s in crypto_syms]
+
+    if yf_tickers:
         try:
             data = yf.download(
-                " ".join(stock_syms),
+                " ".join(yf_tickers),
                 period="2d",
                 progress=False,
                 auto_adjust=True,
             )
-            close = data["Close"] if len(stock_syms) > 1 else data["Close"]
+            close = data["Close"]
             last = close.iloc[-1]
-            if len(stock_syms) == 1:
-                result[stock_syms[0]] = float(last)
-            else:
-                for sym in stock_syms:
-                    try:
-                        result[sym] = float(last[sym])
-                    except Exception:
-                        result[sym] = None
-        except Exception:
-            for sym in stock_syms:
-                result[sym] = None
 
-    if crypto_syms:
-        try:
-            ids = ",".join(CRYPTO_IDS[s] for s in crypto_syms)
-            resp = requests.get(
-                f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd",
-                timeout=8,
-            )
-            if resp.ok:
-                data = resp.json()
-                for sym in crypto_syms:
-                    cg_id = CRYPTO_IDS[sym]
-                    result[sym] = data.get(cg_id, {}).get("usd")
-        except Exception:
-            pass
+            if len(yf_tickers) == 1:
+                ticker = yf_tickers[0]
+                price = float(last) if not hasattr(last, '__len__') else float(last.iloc[0])
+                # Map back: crypto YF ticker → original symbol
+                reverse = {v: k for k, v in CRYPTO_YF.items()}
+                key = reverse.get(ticker, ticker)
+                result[key] = price
+            else:
+                for ticker in yf_tickers:
+                    try:
+                        price = float(last[ticker])
+                        reverse = {v: k for k, v in CRYPTO_YF.items()}
+                        key = reverse.get(ticker, ticker)
+                        result[key] = price
+                    except Exception:
+                        reverse = {v: k for k, v in CRYPTO_YF.items()}
+                        key = reverse.get(ticker, ticker)
+                        result[key] = None
+        except Exception as e:
+            for s in sym_list:
+                result[s] = None
 
     return result
 

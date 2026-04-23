@@ -84,8 +84,10 @@ export default function Positions() {
     loadAll()
   }
 
-  const binance = positions.filter(p => p.broker === 'binance')
-  const cocos = positions.filter(p => p.broker === 'cocos')
+  // Cash rows anchored at the bottom of each broker section
+  const sortCash = (arr) => [...arr.filter(p => !p.is_cash), ...arr.filter(p => p.is_cash)]
+  const binance = sortCash(positions.filter(p => p.broker === 'binance'))
+  const cocos = sortCash(positions.filter(p => p.broker === 'cocos'))
 
   function calcBinance(p) {
     if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null }
@@ -112,18 +114,31 @@ export default function Positions() {
 
   const binanceTotals = binance.reduce((acc, p) => {
     const c = calcBinance(p)
-    return { value: acc.value + (c.value || p.invested || 0), invested: acc.invested + (p.invested || 0) }
-  }, { value: 0, invested: 0 })
+    const val = c.value != null ? c.value : (p.invested || 0)
+    const inv = p.invested || 0
+    return {
+      value: acc.value + val,
+      invested: acc.invested + inv,
+      pnl: acc.pnl + (c.pnl != null ? c.pnl : 0),
+    }
+  }, { value: 0, invested: 0, pnl: 0 })
 
   const cocosTotals = cocos.reduce((acc, p) => {
     if (p.is_cash) {
-      const v = (p.invested || 0) / tcBlue
-      return { valueUsd: acc.valueUsd + v, invUsd: acc.invUsd + v }
+      const usdVal = (p.invested || 0) / tcBlue
+      return { ...acc, invArs: acc.invArs + (p.invested || 0), invUsd: acc.invUsd + usdVal, valueArs: acc.valueArs + (p.invested || 0), valueUsd: acc.valueUsd + usdVal }
     }
     const c = calcCocos(p)
     const inv = (p.invested || 0) / (p.tc_compra || tcBlue)
-    return { valueUsd: acc.valueUsd + (c.valueUsd != null ? c.valueUsd : inv), invUsd: acc.invUsd + inv }
-  }, { valueUsd: 0, invUsd: 0 })
+    return {
+      invArs: acc.invArs + (p.invested || 0),
+      invUsd: acc.invUsd + inv,
+      valueArs: acc.valueArs + (c.valueArs != null ? c.valueArs : (p.invested || 0)),
+      valueUsd: acc.valueUsd + (c.valueUsd != null ? c.valueUsd : inv),
+      pnlArs: acc.pnlArs + (c.pnlArs != null ? c.pnlArs : 0),
+      pnlUsd: acc.pnlUsd + (c.pnlUsd != null ? c.pnlUsd : 0),
+    }
+  }, { invArs: 0, invUsd: 0, valueArs: 0, valueUsd: 0, pnlArs: 0, pnlUsd: 0 })
 
   const thClass = 'px-3 py-2 text-left text-xs text-slate-500 font-medium whitespace-nowrap'
   const tdClass = 'px-3 py-2 text-sm whitespace-nowrap'
@@ -179,8 +194,8 @@ export default function Positions() {
                   <tr key={p.id} className="border-b border-slate-700/20 hover:bg-slate-700/20">
                     <td className={`${tdClass} font-semibold text-slate-200`}>
                       {p.asset}
-                      {p.is_cash && <span className="ml-1 text-xs text-slate-500">(Cash)</span>}
-                      {p.price_override && <span className="ml-1 text-xs text-amber-400">●</span>}
+                      {!!p.is_cash && <span className="ml-1 text-xs text-slate-500">(Cash)</span>}
+                      {!!p.price_override && <span className="ml-1 text-xs text-amber-400">●</span>}
                     </td>
                     <td className={`${tdClass} text-slate-300`}>{p.buy_price ? `$${usd(p.buy_price)}` : '—'}</td>
                     <td className={`${tdClass} text-slate-300`}>{p.quantity ?? '—'}</td>
@@ -199,6 +214,19 @@ export default function Positions() {
                 )
               })}
             </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-slate-600 bg-slate-700/30">
+                <td colSpan={3} className="px-3 py-2.5 text-xs font-bold text-slate-300 uppercase tracking-wider">TOTAL</td>
+                <td className="px-3 py-2.5 text-xs font-bold text-slate-200">${usd(binanceTotals.invested)}</td>
+                <td className="px-3 py-2.5 text-xs text-slate-500">—</td>
+                <td className="px-3 py-2.5 text-xs font-bold text-slate-100">${usd(binanceTotals.value)}</td>
+                <td className={`px-3 py-2.5 text-xs font-bold ${colorClass(binanceTotals.pnl)}`}>${usd(binanceTotals.pnl)}</td>
+                <td className={`px-3 py-2.5 text-xs font-bold ${colorClass(binanceTotals.pnl)}`}>
+                  {binanceTotals.invested > 0 ? pct(binanceTotals.pnl / binanceTotals.invested) : '—'}
+                </td>
+                <td />
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
@@ -248,8 +276,8 @@ export default function Positions() {
                   <tr key={p.id} className="border-b border-slate-700/20 hover:bg-slate-700/20">
                     <td className={`${tdClass} font-semibold text-slate-200`}>
                       {p.asset}
-                      {p.is_cash && <span className="ml-1 text-xs text-slate-500">(Cash)</span>}
-                      {p.price_override && <span className="ml-1 text-xs text-amber-400" title="Precio manual">●</span>}
+                      {!!p.is_cash && <span className="ml-1 text-xs text-slate-500">(Cash)</span>}
+                      {!!p.price_override && <span className="ml-1 text-xs text-amber-400" title="Precio manual">●</span>}
                     </td>
                     <td className={`${tdClass} text-slate-300`}>{p.buy_price ? ars(p.buy_price) : '—'}</td>
                     <td className={`${tdClass} text-slate-300`}>{p.quantity ?? '—'}</td>
@@ -272,6 +300,22 @@ export default function Positions() {
                 )
               })}
             </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-slate-600 bg-slate-700/30">
+                <td colSpan={3} className="px-3 py-2.5 text-xs font-bold text-slate-300 uppercase tracking-wider">TOTAL</td>
+                <td className="px-3 py-2.5 text-xs font-bold text-slate-200">{ars(cocosTotals.invArs)}</td>
+                <td className="px-3 py-2.5 text-xs text-slate-500">—</td>
+                <td className="px-3 py-2.5 text-xs font-bold text-slate-200">${usd(cocosTotals.invUsd)}</td>
+                <td colSpan={2} className="px-3 py-2.5 text-xs text-slate-500">—</td>
+                <td className="px-3 py-2.5 text-xs font-bold text-slate-100">{ars(cocosTotals.valueArs)}</td>
+                <td className={`px-3 py-2.5 text-xs font-bold ${colorClass(cocosTotals.pnlArs)}`}>{ars(cocosTotals.pnlArs)}</td>
+                <td className={`px-3 py-2.5 text-xs font-bold ${colorClass(cocosTotals.pnlUsd)}`}>${usd(cocosTotals.pnlUsd)}</td>
+                <td className={`px-3 py-2.5 text-xs font-bold ${colorClass(cocosTotals.pnlUsd)}`}>
+                  {cocosTotals.invUsd > 0 ? pct(cocosTotals.pnlUsd / cocosTotals.invUsd) : '—'}
+                </td>
+                <td />
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
