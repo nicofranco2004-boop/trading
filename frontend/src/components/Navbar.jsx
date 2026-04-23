@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, Briefcase, BarChart3, List, Settings } from 'lucide-react'
+import RendiLogo from './RendiLogo'
 
 const links = [
   { to: '/',           label: 'Dashboard',   icon: LayoutDashboard },
@@ -12,7 +13,10 @@ const links = [
 export default function Navbar() {
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-slate-900 border-b border-slate-700/60 px-6 h-14 flex items-center gap-1">
-      <span className="text-blue-400 font-bold text-lg mr-8 tracking-tight">📈 Trading</span>
+      <NavLink to="/" className="flex items-center gap-2 mr-8">
+        <RendiLogo size={28} />
+        <span className="font-bold text-lg tracking-tight text-white">rendi</span>
+      </NavLink>
       {links.map(({ to, label, icon: Icon }) => (
         <NavLink
           key={to}

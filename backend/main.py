@@ -7,12 +7,13 @@ import os
 import yfinance as yf
 import requests
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "trading.db")
+# En Railway: montá un volumen en /data y seteá DB_PATH=/data/trading.db
+DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "trading.db"))
 
-app = FastAPI(title="Trading Tracker")
+app = FastAPI(title="Rendi")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
