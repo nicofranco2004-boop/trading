@@ -3,22 +3,29 @@ import { Plus, Pencil, Trash2 } from 'lucide-react'
 import Modal from '../components/Modal'
 import { usd, pct, colorClass } from '../utils/format'
 import StatCard from '../components/StatCard'
+import { api } from '../utils/api'
 
-const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: 'Binance', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: 0, pnl_pct: '' }
+const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: 0, pnl_pct: '' }
 
 export default function Operations() {
   const [ops, setOps] = useState([])
+  const [brokers, setBrokers] = useState([])
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY)
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    api.get('/brokers').then(b => { setBrokers(b); })
+  }, [])
 
   async function load() {
-    const data = await fetch('/api/operations').then(r => r.json())
-    setOps(data)
+    setOps(await api.get('/operations'))
   }
 
-  function openAdd() { setForm(EMPTY); setModal('add') }
+  function openAdd() {
+    setForm({ ...EMPTY, broker: brokers[0]?.name ?? '' })
+    setModal('add')
+  }
   function openEdit(op) {
     setForm({ ...op, entry_price: op.entry_price ?? '', exit_price: op.exit_price ?? '', quantity: op.quantity ?? '', pnl_pct: op.pnl_pct ?? '' })
     setModal('edit')
@@ -34,9 +41,9 @@ export default function Operations() {
       pnl_pct: form.pnl_pct !== '' ? +form.pnl_pct : null,
     }
     if (modal === 'edit') {
-      await fetch(`/api/operations/${form.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      await api.put(`/operations/${form.id}`, body)
     } else {
-      await fetch('/api/operations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      await api.post('/operations', body)
     }
     setModal(null)
     load()
@@ -44,7 +51,7 @@ export default function Operations() {
 
   async function del(id) {
     if (!confirm('¿Eliminar operación?')) return
-    await fetch(`/api/operations/${id}`, { method: 'DELETE' })
+    await api.delete(`/operations/${id}`)
     load()
   }
 
@@ -139,8 +146,15 @@ export default function Operations() {
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Broker</label>
-                <input value={form.broker} onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-md px-3 py-2 text-sm text-slate-200" />
+                {brokers.length > 0 ? (
+                  <select value={form.broker} onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
+                    className="w-full bg-slate-700 border border-slate-600 rounded-md px-3 py-2 text-sm text-slate-200">
+                    {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+                  </select>
+                ) : (
+                  <input value={form.broker} onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
+                    className="w-full bg-slate-700 border border-slate-600 rounded-md px-3 py-2 text-sm text-slate-200" />
+                )}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">

@@ -23,7 +23,18 @@
       "Bash(python3)",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(curl -s \"http://localhost:8000/api/prices?symbols=BTC\")",
+      "Bash(pkill -f \"uvicorn main:app\")",
+      "Bash(curl -s \"http://localhost:8000/api/prices?symbols=BTC,MSFT.BA\")",
+      "Bash(pip install *)",
+      "Bash(python3 -c \"import main; print\\('OK'\\)\")",
+      "Bash(uvicorn main:app --port 8001)",
+      "Bash(curl -s -X POST http://localhost:8001/api/auth/register -H \"Content-Type: application/json\" -d '{\"email\":\"test@test.com\",\"password\":\"123456\",\"name\":\"Nico\"}')",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -m uvicorn main:app --port 8001)",
+      "Bash(curl -s -X POST http://localhost:8001/api/auth/register -H 'Content-Type: application/json' -d '{\"email\":\"test@test.com\",\"password\":\"123456\",\"name\":\"Nico\"}')",
+      "Bash(pkill -f \"uvicorn main:app --port 8001\")"
     ]
   }
 }

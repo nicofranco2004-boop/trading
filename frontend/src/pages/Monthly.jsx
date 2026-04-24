@@ -1,24 +1,25 @@
 import { useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import Modal from '../components/Modal'
-import { usd, ars, pct, colorClass, MONTHS } from '../utils/format'
+import { usd, pct, colorClass, MONTHS } from '../utils/format'
+import { api } from '../utils/api'
 
-const EMPTY = { year: 2026, month: 1, broker: 'global', deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, capital_inicio: 0, capital_final: 0 }
-
-const BROKER_LABEL = { global: 'Global (USD)', binance: 'Binance (USD)', cocos: 'Cocos (USD aprox.)' }
-const BROKER_COLOR = { global: 'text-slate-300', binance: 'text-blue-400', cocos: 'text-violet-400' }
+const EMPTY = { year: new Date().getFullYear(), month: new Date().getMonth() + 1, broker: 'global', deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, capital_inicio: 0, capital_final: 0 }
 
 export default function Monthly() {
   const [entries, setEntries] = useState([])
+  const [brokers, setBrokers] = useState([])
   const [tab, setTab] = useState('global')
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY)
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    api.get('/brokers').then(b => setBrokers(b))
+  }, [])
 
   async function load() {
-    const data = await fetch('/api/monthly').then(r => r.json())
-    setEntries(data)
+    setEntries(await api.get('/monthly'))
   }
 
   function openAdd() { setForm({ ...EMPTY, broker: tab }); setModal('add') }
@@ -26,13 +27,9 @@ export default function Monthly() {
 
   async function save() {
     if (modal === 'edit') {
-      await fetch(`/api/monthly/${form.id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form)
-      })
+      await api.put(`/monthly/${form.id}`, form)
     } else {
-      await fetch('/api/monthly', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form)
-      })
+      await api.post('/monthly', form)
     }
     setModal(null)
     load()
@@ -40,11 +37,15 @@ export default function Monthly() {
 
   async function del(id) {
     if (!confirm('¿Eliminar entrada?')) return
-    await fetch(`/api/monthly/${id}`, { method: 'DELETE' })
+    await api.delete(`/monthly/${id}`)
     load()
   }
 
-  const tabData = entries.filter(e => e.broker === tab).sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month)
+  const tabs = ['global', ...brokers.map(b => b.name)]
+
+  const tabData = entries.filter(e => e.broker === tab).sort((a, b) =>
+    a.year !== b.year ? a.year - b.year : a.month - b.month
+  )
 
   const totals = tabData.reduce((acc, m) => ({
     deposits: acc.deposits + m.deposits,
@@ -65,16 +66,16 @@ export default function Monthly() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-5 bg-slate-800/50 p-1 rounded-lg w-fit">
-        {['global', 'binance', 'cocos'].map(b => (
+      <div className="flex gap-1 mb-5 bg-slate-800/50 p-1 rounded-lg w-fit flex-wrap">
+        {tabs.map(b => (
           <button
             key={b}
             onClick={() => setTab(b)}
-            className={`px-4 py-1.5 text-sm rounded-md font-medium transition-colors ${
+            className={`px-4 py-1.5 text-sm rounded-md font-medium transition-colors capitalize ${
               tab === b ? 'bg-slate-700 text-slate-100' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            {BROKER_LABEL[b]}
+            {b === 'global' ? 'Global (USD)' : b}
           </button>
         ))}
       </div>
@@ -167,8 +168,7 @@ export default function Monthly() {
                 <select value={form.broker} onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
                   className="w-full bg-slate-700 border border-slate-600 rounded-md px-3 py-2 text-sm text-slate-200">
                   <option value="global">Global</option>
-                  <option value="binance">Binance</option>
-                  <option value="cocos">Cocos</option>
+                  {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
                 </select>
               </div>
             </div>
