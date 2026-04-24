@@ -389,35 +389,99 @@ def update_config(data: ConfigUpdate, uid: int = Depends(get_current_user)):
 
 # ─── Prices ──────────────────────────────────────────────────────────────────
 
-CRYPTO_YF = {"BTC": "BTC-USD", "ETH": "ETH-USD", "AAVE": "AAVE-USD", "SOL": "SOL-USD", "BNB": "BNB-USD"}
+import math
+
+# All symbols that should be fetched as SYMBOL-USD on Yahoo Finance
+CRYPTO_SYMBOLS = {
+    # Large-cap
+    'BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'AVAX', 'DOGE', 'TRX', 'DOT',
+    'MATIC', 'POL', 'LINK', 'LTC', 'BCH', 'NEAR', 'UNI', 'ATOM', 'XLM', 'ETC',
+    # Mid-cap / DeFi
+    'APT', 'ARB', 'OP', 'AAVE', 'MKR', 'SNX', 'CRV', 'COMP', 'SUSHI', 'YFI',
+    '1INCH', 'BAL', 'DYDX', 'GMX', 'BLUR', 'GRT', 'LRC', 'ZRX', 'BAT', 'REN',
+    # Layer-1 / Alt
+    'ALGO', 'VET', 'EGLD', 'FTM', 'FLOW', 'HBAR', 'THETA', 'XTZ', 'EOS', 'WAVES',
+    'ZIL', 'NEO', 'QTUM', 'ICX', 'ONT', 'IOTA', 'ZEC', 'DASH', 'XMR', 'KAVA',
+    # NFT / Gaming / Metaverse
+    'SAND', 'MANA', 'AXS', 'ENJ', 'IMX', 'FLOW', 'CHZ', 'GALA', 'GODS', 'ILV',
+    # Meme
+    'SHIB', 'PEPE', 'FLOKI', 'BONK', 'WIF', 'DEGEN',
+    # New / trending
+    'SUI', 'SEI', 'TIA', 'INJ', 'JTO', 'PYTH', 'STRK', 'WLD', 'MANTA', 'ALT',
+    'ORDI', 'RUNE', 'FIL', 'STX', 'CORE', 'CFX', 'BLUR', 'ID', 'ARKM', 'CYBER',
+    'RDNT', 'GMX', 'APE', 'LDO', 'RPL', 'FXS', 'CVX', 'FRAX', 'PENDLE', 'SSV',
+    # Stablecoins adjacent / wrapped (usually need price for tracking)
+    'WBTC', 'STETH',
+}
+
+CRYPTO_YF = {sym: f"{sym}-USD" for sym in CRYPTO_SYMBOLS}
+
+
+def _fetch_one(yf_ticker: str):
+    try:
+        hist = yf.Ticker(yf_ticker).history(period="5d")
+        if hist.empty:
+            return None
+        val = float(hist["Close"].dropna().iloc[-1])
+        return val if not math.isnan(val) and val > 0 else None
+    except Exception:
+        return None
 
 
 @app.get("/api/prices")
 def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    result = {}
-    crypto_syms = [s for s in sym_list if s in CRYPTO_YF]
-    stock_syms = [s for s in sym_list if s not in CRYPTO_YF]
-    yf_tickers = stock_syms + [CRYPTO_YF[s] for s in crypto_syms]
-    if yf_tickers:
-        try:
-            data = yf.download(" ".join(yf_tickers), period="2d", progress=False, auto_adjust=True)
-            close = data["Close"]
-            last = close.iloc[-1]
-            reverse = {v: k for k, v in CRYPTO_YF.items()}
-            if len(yf_tickers) == 1:
-                ticker = yf_tickers[0]
-                price = float(last) if not hasattr(last, '__len__') else float(last.iloc[0])
-                result[reverse.get(ticker, ticker)] = price
-            else:
-                for ticker in yf_tickers:
-                    try:
-                        result[reverse.get(ticker, ticker)] = float(last[ticker])
-                    except Exception:
-                        result[reverse.get(ticker, ticker)] = None
-        except Exception:
-            for s in sym_list:
-                result[s] = None
+    if not sym_list:
+        return {}
+
+    # Build mapping: original symbol → yfinance ticker
+    sym_to_yf = {}
+    for sym in sym_list:
+        sym_to_yf[sym] = CRYPTO_YF[sym] if sym in CRYPTO_YF else sym
+
+    yf_tickers = list(set(sym_to_yf.values()))
+    result = {sym: None for sym in sym_list}
+
+    # --- Batch download (fast path) ---
+    try:
+        tickers_str = " ".join(yf_tickers)
+        data = yf.download(tickers_str, period="5d", progress=False, auto_adjust=True)
+
+        if not data.empty:
+            close = data.get("Close") if hasattr(data, 'get') else (data["Close"] if "Close" in data.columns else None)
+
+            if close is not None and not (hasattr(close, 'empty') and close.empty):
+                # Drop rows that are all NaN, get last valid row
+                if hasattr(close, 'dropna'):
+                    last = close.dropna(how='all').iloc[-1] if len(close.dropna(how='all')) > 0 else None
+                else:
+                    last = None
+
+                if last is not None:
+                    for sym, yf_t in sym_to_yf.items():
+                        try:
+                            if hasattr(last, '__getitem__'):
+                                val = float(last[yf_t]) if yf_t in last.index else float(last)
+                            else:
+                                val = float(last)
+                            if not math.isnan(val) and val > 0:
+                                result[sym] = val
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
+    # --- Individual fallback for anything that failed ---
+    for sym in [s for s in sym_list if result[s] is None]:
+        yf_t = sym_to_yf[sym]
+        price = _fetch_one(yf_t)
+
+        # If not found and not a .BA stock, try as crypto (SYMBOL-USD)
+        if price is None and not sym.endswith('.BA') and sym not in CRYPTO_YF:
+            price = _fetch_one(f"{sym}-USD")
+
+        result[sym] = price
+
     return result
 
 
