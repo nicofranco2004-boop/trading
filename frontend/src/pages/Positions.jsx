@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
-import { Plus, Pencil, Trash2, RefreshCw } from 'lucide-react'
+import { useEffect, useState, useRef } from 'react'
+import { Plus, Pencil, Trash2 } from 'lucide-react'
 import Modal from '../components/Modal'
 import { usd, ars, pct, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { ARS_TICKERS, USDT_TICKERS } from '../utils/tickers'
+
+const REFRESH_MS = 90_000
 
 const EMPTY_POS = {
   broker: '', asset: '', is_cash: false,
@@ -25,9 +27,17 @@ export default function Positions() {
   const [brokers, setBrokers] = useState([])
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY_POS)
-  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState(null)
+  const latestRef = useRef({})
 
-  useEffect(() => { loadAll() }, [])
+  useEffect(() => {
+    loadAll()
+    const id = setInterval(() => {
+      const { pos, cfg, bkrs } = latestRef.current
+      if (pos) fetchPrices(pos, cfg, bkrs)
+    }, REFRESH_MS)
+    return () => clearInterval(id)
+  }, [])
 
   async function loadAll() {
     const [pos, cfg, bkrs] = await Promise.all([
@@ -38,11 +48,11 @@ export default function Positions() {
     setPositions(pos)
     setConfig(cfg)
     setBrokers(bkrs)
+    latestRef.current = { pos, cfg, bkrs }
     await fetchPrices(pos, cfg, bkrs)
   }
 
   async function fetchPrices(pos, cfg, bkrs) {
-    setRefreshing(true)
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
     const usdtBrokers = new Set(bkrs.filter(b => b.currency === 'USDT').map(b => b.name))
 
@@ -53,12 +63,12 @@ export default function Positions() {
       pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset)
     )]
     const all = [...arsSyms, ...usdtSyms].join(',')
-    if (!all) { setRefreshing(false); return }
+    if (!all) return
     try {
       const data = await api.get(`/prices?symbols=${all}`)
       setPrices(data)
+      setLastUpdated(new Date())
     } catch {}
-    setRefreshing(false)
   }
 
   const tcBlue = config.tc_blue || 1415
@@ -151,10 +161,11 @@ export default function Positions() {
     <div className="pt-20 px-6 pb-10 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-bold text-slate-100">Posiciones Activas</h1>
-        <button onClick={() => fetchPrices(positions, config, brokers)} className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200">
-          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-          Actualizar precios
-        </button>
+        {lastUpdated && (
+          <span className="text-xs text-slate-600">
+            Precios: {lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        )}
       </div>
 
       {brokers.map((broker, bi) => {

@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from 'recharts'
 import StatCard from '../components/StatCard'
 import { usd, pct, colorClass, MONTHS } from '../utils/format'
-import { RefreshCw } from 'lucide-react'
 import { api } from '../utils/api'
 
 const PIE_COLORS = ['#3b82f6', '#8b5cf6', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4']
+const REFRESH_MS = 90_000
 
 export default function Dashboard() {
   const [positions, setPositions] = useState([])
@@ -14,9 +14,17 @@ export default function Dashboard() {
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
   const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState(null)
+  const latestRef = useRef({})
 
-  useEffect(() => { loadAll() }, [])
+  useEffect(() => {
+    loadAll()
+    const id = setInterval(() => {
+      const { pos, cfg, bkrs } = latestRef.current
+      if (pos) loadPrices(pos, cfg, bkrs)
+    }, REFRESH_MS)
+    return () => clearInterval(id)
+  }, [])
 
   async function loadAll() {
     const [pos, mon, cfg, bkrs] = await Promise.all([
@@ -29,12 +37,12 @@ export default function Dashboard() {
     setMonthly(mon)
     setConfig(cfg)
     setBrokers(bkrs)
+    latestRef.current = { pos, cfg, bkrs }
     await loadPrices(pos, cfg, bkrs)
     setLoading(false)
   }
 
   async function loadPrices(pos, cfg, bkrs) {
-    setRefreshing(true)
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
     const usdtBrokers = new Set(bkrs.filter(b => b.currency === 'USDT').map(b => b.name))
 
@@ -45,12 +53,12 @@ export default function Dashboard() {
       pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset)
     )]
     const all = [...arsSyms, ...usdtSyms].join(',')
-    if (!all) { setRefreshing(false); return }
+    if (!all) return
     try {
       const data = await api.get(`/prices?symbols=${all}`)
       setPrices(data)
+      setLastUpdated(new Date())
     } catch {}
-    setRefreshing(false)
   }
 
   const tcBlue = config.tc_blue || 1415
@@ -120,13 +128,11 @@ export default function Dashboard() {
     <div className="pt-20 px-6 pb-10 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-bold text-slate-100">Dashboard</h1>
-        <button
-          onClick={() => loadPrices(positions, config, brokers)}
-          className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200 transition-colors"
-        >
-          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-          Actualizar precios
-        </button>
+        {lastUpdated && (
+          <span className="text-xs text-slate-600">
+            Precios: {lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        )}
       </div>
 
       {/* Top stat cards */}
