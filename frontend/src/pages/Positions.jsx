@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, RefreshCw } from 'lucide-react'
 import Modal from '../components/Modal'
 import { usd, ars, pct, colorClass } from '../utils/format'
 import { api } from '../utils/api'
+import { ARS_TICKERS, USDT_TICKERS } from '../utils/tickers'
 
 const EMPTY_POS = {
   broker: '', asset: '', is_cash: false,
@@ -381,8 +382,19 @@ export default function Positions() {
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Activo</label>
-                <input value={form.asset} onChange={e => setForm(f => ({ ...f, asset: e.target.value.toUpperCase() }))}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-md px-3 py-2 text-sm text-slate-200" placeholder="BTC, MSFT..." />
+                <input
+                  list="asset-suggestions"
+                  value={form.asset}
+                  onChange={e => setForm(f => ({ ...f, asset: e.target.value.toUpperCase() }))}
+                  className="w-full bg-slate-700 border border-slate-600 rounded-md px-3 py-2 text-sm text-slate-200"
+                  placeholder={selectedBrokerCurrency === 'ARS' ? 'MSFT, GGAL, YPF...' : 'BTC, ETH, AAPL...'}
+                  autoComplete="off"
+                />
+                <datalist id="asset-suggestions">
+                  {(selectedBrokerCurrency === 'ARS' ? ARS_TICKERS : USDT_TICKERS).map(t => (
+                    <option key={t} value={t} />
+                  ))}
+                </datalist>
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
