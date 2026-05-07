@@ -1,31 +1,39 @@
-export default function RendiLogo({ size = 28 }) {
+// Rendi logo — chevron mark in green neon (#37FF68 default).
+// Inline SVG with transparent background so it adapts to light/dark themes.
+// Backward-compatible API: <RendiLogo size={28} /> still works.
+//
+// Variants:
+//   - "icon" (default): just the chevron mark, transparent bg
+//   - "horizontal": full lockup with RENDI wordmark + tagline (uses public asset)
+export default function RendiLogo({ size = 28, color = '#37FF68', variant = 'icon', className = '' }) {
+  if (variant === 'horizontal') {
+    return (
+      <img
+        src="/brand/rendi-logo-horizontal.svg"
+        alt="Rendi - Entendé tu inversión"
+        style={{ height: size, width: 'auto' }}
+        className={className}
+      />
+    )
+  }
+
+  // Inline icon: chevron arrows mark, scaled to `size`. No background → adapts to theme.
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="rendiBg" x1="0" y1="32" x2="32" y2="0" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#2563eb" />
-          <stop offset="100%" stopColor="#10b981" />
-        </linearGradient>
-      </defs>
-      <rect width="32" height="32" rx="8" fill="url(#rendiBg)" />
-      {/* Rising chart line */}
-      <polyline
-        points="5,23 11,17 17,20 27,8"
-        stroke="white"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-      {/* Arrow tip at top-right */}
-      <polyline
-        points="22,7 27,8 26,13"
-        stroke="white"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 512 512"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-label="Rendi"
+    >
+      <g>
+        <path d="M132 333V271L260 143C278 125 309 138 309 164C309 172 306 180 300 186L154 333H132Z" fill={color} />
+        <path d="M214 333V284L358 140C376 122 407 135 407 161C407 169 404 177 398 183L248 333H214Z" fill={color} />
+        <path d="M301 333V294L374 221C391 204 420 216 420 241C420 249 417 256 412 261L340 333H301Z" fill={color} />
+        <circle cx="405" cy="328" r="31" fill={color} />
+      </g>
     </svg>
   )
 }

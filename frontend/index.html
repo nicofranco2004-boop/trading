@@ -1,12 +1,63 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es-AR">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>rendi</title>
+
+    <!-- Primary SEO -->
+    <title>Rendi — Entendé tu inversión | Tracker de portafolio personal</title>
+    <meta name="description" content="Rendi transforma datos financieros complejos en insights claros. Seguí tu portafolio, rendimiento real vs inflación y dólar, y operaciones cerradas en un solo lugar." />
+    <meta name="keywords" content="tracker inversiones, portafolio, rendimiento real, inflacion, dolar blue, MEP, acciones, cedear, crypto, trading argentina" />
+    <meta name="author" content="Rendi" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta name="theme-color" content="#0B0F0E" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="canonical" href="https://rendi.app/" />
+
+    <!-- Favicon / PWA -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Rendi" />
+    <meta property="og:title" content="Rendi — Entendé tu inversión" />
+    <meta property="og:description" content="Tracker de portafolio personal con rendimiento real vs inflación y dólar. Datos reales, decisiones mejores." />
+    <meta property="og:url" content="https://rendi.app/" />
+    <meta property="og:image" content="https://rendi.app/favicon.svg" />
+    <meta property="og:locale" content="es_AR" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Rendi — Entendé tu inversión" />
+    <meta name="twitter:description" content="Tracker de portafolio personal con rendimiento real vs inflación y dólar." />
+    <meta name="twitter:image" content="https://rendi.app/favicon.svg" />
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Rendi",
+      "description": "Tracker de portafolio personal con rendimiento real ajustado a inflación y dólar.",
+      "applicationCategory": "FinanceApplication",
+      "operatingSystem": "Web",
+      "inLanguage": "es-AR",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+    }
+    </script>
+
+    <script>if(localStorage.getItem('rendi_theme')!=='light')document.documentElement.classList.add('dark')</script>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>Rendi necesita JavaScript habilitado para funcionar.</noscript>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

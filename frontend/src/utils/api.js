@@ -14,10 +14,20 @@ async function req(method, path, body) {
   })
 
   if (res.status === 401) {
+    const hadToken = !!token
     localStorage.removeItem('rendi_token')
     localStorage.removeItem('rendi_user')
-    window.location.href = '/login'
+    // Si había un token y expiró/fue invalidado, forzar recarga al login
+    if (hadToken) {
+      window.location.href = '/'
+    }
     throw new Error('Unauthorized')
+  }
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try { const j = await res.json(); detail = j.detail || detail } catch {}
+    throw new Error(detail)
   }
 
   return res.json()

@@ -1,8 +1,9 @@
 fastapi==0.115.0
 uvicorn==0.30.6
-yfinance==0.2.43
+yfinance>=1.2.0
 requests==2.32.3
 pydantic==2.9.2
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-jose[cryptography]==3.3.0
+anthropic>=0.97.0

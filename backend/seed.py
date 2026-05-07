@@ -1,4 +1,14 @@
-"""Run once to import data from Excel into the SQLite database."""
+"""DEPRECATED — este script se escribió pre-multi-tenancy y NO incluye user_id en los INSERTs.
+Si lo corrés sobre la DB actual, los datos quedan con user_id=0 y solo el admin (al registrarse)
+los hereda. NO uses este script salvo para bootstrappear una DB vacía pre-deploy de multi-user.
+
+Para importar datos de un usuario nuevo, agregar las filas vía la API o un script con uid explícito.
+"""
+import sys
+print("seed.py está deprecated. Abortando para evitar corromper la DB.", file=sys.stderr)
+print("Si realmente querés correrlo, comentá este bloque y entendé que los datos caerán en user_id=0.", file=sys.stderr)
+sys.exit(1)
+
 import sqlite3
 import os
 

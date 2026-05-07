@@ -1,4 +1,12 @@
 backend/trading.db
+backend/trading.db-shm
+backend/trading.db-wal
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+backend/.env
+.env
+.env.local
 backend/__pycache__/
 *.pyc
 node_modules/

@@ -1,70 +1,246 @@
-// CEDEARs más líquidos en Argentina (sin .BA — el sistema lo agrega solo para brokers ARS)
-export const CEDEARS = [
-  // Big Tech USA
-  'AAPL','MSFT','GOOGL','GOOG','AMZN','META','NVDA','TSLA','NFLX','ADBE',
-  'AMD','INTC','QCOM','AVGO','CRM','ORCL','IBM','CSCO','TXN','MU',
-  'LRCX','KLAC','AMAT','ASML','TSM','MRVL','SNPS','CDNS','ANSS','MPWR',
-  // Fintech / Pagos
-  'V','MA','PYPL','SQ','COIN','HOOD','SOFI','AFRM','UPST','LC',
-  'JPM','BAC','GS','MS','C','WFC','BLK','SCHW','AXP','COF',
-  // Consumo / Retail
-  'MCD','SBUX','NKE','KO','PEP','WMT','COST','TGT','HD','LOW',
-  'AMZN','ETSY','CHWY','CVNA','CARVANA','GME','AMC',
-  // Salud / Pharma
-  'JNJ','PFE','MRK','ABBV','LLY','MRNA','BNTX','GILD','AMGN','REGN','VRTX',
-  // Energía
-  'XOM','CVX','OXY','SLB','HAL','BKR',
-  // Media / Entertainment
-  'DIS','WBD','PARA','NFLX','SPOT','PINS','SNAP','RBLX','U',
-  // EV / Autos
-  'TSLA','LCID','RIVN','NIO','LI','XPEV','F','GM',
-  // Software / Cloud / Cyber
-  'CRM','NOW','SNOW','PLTR','DDOG','NET','CRWD','PANW','ZS','OKTA',
-  'DOCU','ZM','TWLO','MDB','GTLB','ASAN','HCP','BILL','PATH','DOMO',
-  // Latam
-  'MELI','PBR','VALE','ITUB','ABEV','BBD','NU','GRAB',
-  // ETFs populares en Argentina
-  'SPY','QQQ','IWM','GLD','SLV','IAU','TLT','EWZ','ARGT','EEM','VWO',
-  // Otros populares
-  'UBER','ABNB','SHOP','BABA','JD','PDD','BIDU','TWTR','HOOD',
+// Base de datos de tickers con nombre estilo TradingView.
+// Formato: { s: 'AAPL', n: 'Apple Inc.' }
+
+// === CRIPTOMONEDAS (top ~120 por market cap) ===
+export const CRYPTO = [
+  { s: 'BTC', n: 'Bitcoin' }, { s: 'ETH', n: 'Ethereum' }, { s: 'USDT', n: 'Tether' },
+  { s: 'BNB', n: 'BNB' }, { s: 'SOL', n: 'Solana' }, { s: 'XRP', n: 'XRP' },
+  { s: 'USDC', n: 'USD Coin' }, { s: 'ADA', n: 'Cardano' }, { s: 'AVAX', n: 'Avalanche' },
+  { s: 'DOGE', n: 'Dogecoin' }, { s: 'TRX', n: 'TRON' }, { s: 'DOT', n: 'Polkadot' },
+  { s: 'MATIC', n: 'Polygon' }, { s: 'LINK', n: 'Chainlink' }, { s: 'TON', n: 'Toncoin' },
+  { s: 'LTC', n: 'Litecoin' }, { s: 'BCH', n: 'Bitcoin Cash' }, { s: 'NEAR', n: 'NEAR Protocol' },
+  { s: 'UNI', n: 'Uniswap' }, { s: 'ATOM', n: 'Cosmos' }, { s: 'XLM', n: 'Stellar' },
+  { s: 'ETC', n: 'Ethereum Classic' }, { s: 'APT', n: 'Aptos' }, { s: 'ARB', n: 'Arbitrum' },
+  { s: 'OP', n: 'Optimism' }, { s: 'AAVE', n: 'Aave' }, { s: 'MKR', n: 'Maker' },
+  { s: 'CRV', n: 'Curve DAO' }, { s: 'COMP', n: 'Compound' }, { s: 'SUSHI', n: 'SushiSwap' },
+  { s: 'GRT', n: 'The Graph' }, { s: 'FIL', n: 'Filecoin' }, { s: 'THETA', n: 'Theta Network' },
+  { s: 'XTZ', n: 'Tezos' }, { s: 'ALGO', n: 'Algorand' }, { s: 'VET', n: 'VeChain' },
+  { s: 'EGLD', n: 'MultiversX' }, { s: 'FTM', n: 'Fantom' }, { s: 'HBAR', n: 'Hedera' },
+  { s: 'IMX', n: 'Immutable' }, { s: 'SAND', n: 'The Sandbox' }, { s: 'MANA', n: 'Decentraland' },
+  { s: 'AXS', n: 'Axie Infinity' }, { s: 'SHIB', n: 'Shiba Inu' }, { s: 'PEPE', n: 'Pepe' },
+  { s: 'BONK', n: 'Bonk' }, { s: 'WIF', n: 'dogwifhat' }, { s: 'FLOKI', n: 'Floki' },
+  { s: 'DEGEN', n: 'Degen' }, { s: 'SUI', n: 'Sui' }, { s: 'SEI', n: 'Sei' },
+  { s: 'TIA', n: 'Celestia' }, { s: 'INJ', n: 'Injective' }, { s: 'JTO', n: 'Jito' },
+  { s: 'PYTH', n: 'Pyth Network' }, { s: 'STRK', n: 'Starknet' }, { s: 'WLD', n: 'Worldcoin' },
+  { s: 'ORDI', n: 'ORDI' }, { s: 'RUNE', n: 'THORChain' }, { s: 'ZEC', n: 'Zcash' },
+  { s: 'DASH', n: 'Dash' }, { s: 'XMR', n: 'Monero' }, { s: 'SNX', n: 'Synthetix' },
+  { s: 'YFI', n: 'yearn.finance' }, { s: '1INCH', n: '1inch' }, { s: 'DYDX', n: 'dYdX' },
+  { s: 'GMX', n: 'GMX' }, { s: 'LDO', n: 'Lido DAO' }, { s: 'RPL', n: 'Rocket Pool' },
+  { s: 'JUP', n: 'Jupiter' }, { s: 'ENA', n: 'Ethena' }, { s: 'PENDLE', n: 'Pendle' },
+  { s: 'BLUR', n: 'Blur' }, { s: 'GMT', n: 'STEPN' }, { s: 'APE', n: 'ApeCoin' },
+  { s: 'ENS', n: 'Ethereum Name Service' }, { s: 'CHZ', n: 'Chiliz' }, { s: 'ICP', n: 'Internet Computer' },
+  { s: 'KAS', n: 'Kaspa' }, { s: 'STX', n: 'Stacks' }, { s: 'ROSE', n: 'Oasis Network' },
+  { s: 'KAVA', n: 'Kava' }, { s: 'ZIL', n: 'Zilliqa' }, { s: 'IOTA', n: 'IOTA' },
+  { s: 'NEO', n: 'Neo' }, { s: 'WAVES', n: 'Waves' }, { s: 'BAT', n: 'Basic Attention Token' },
+  { s: 'BAL', n: 'Balancer' }, { s: 'ZRX', n: '0x' }, { s: 'ANKR', n: 'Ankr' },
+  { s: 'CELO', n: 'Celo' }, { s: 'ONE', n: 'Harmony' }, { s: 'QNT', n: 'Quant' },
+  { s: 'GALA', n: 'Gala' }, { s: 'FLOW', n: 'Flow' }, { s: 'MINA', n: 'Mina' },
+  { s: 'CFX', n: 'Conflux' }, { s: 'KSM', n: 'Kusama' }, { s: 'ENJ', n: 'Enjin Coin' },
+  { s: 'FET', n: 'Fetch.ai' }, { s: 'AGIX', n: 'SingularityNET' }, { s: 'OCEAN', n: 'Ocean Protocol' },
+  { s: 'RNDR', n: 'Render' }, { s: 'AR', n: 'Arweave' }, { s: 'JASMY', n: 'JasmyCoin' },
+  { s: 'BOME', n: 'BOOK OF MEME' }, { s: 'POPCAT', n: 'Popcat' }, { s: 'MEW', n: 'cat in a dogs world' },
 ]
 
-// Acciones argentinas — Panel Líder (25 más líquidas)
-export const ARG_PANEL_LIDER = [
-  'GGAL','BMA','YPF','PAMP','TECO2','TXAR','ALUA','BYMA','CEPU','CRES',
-  'TGNO4','TGSU2','SUPV','EDN','LOMA','VALO','MIRG','BPAT','IRSA','IRCP',
-  'COME','BOLT','DGCU2','METR','GARO',
+// === ACCIONES US (S&P 500 más relevantes + populares) ===
+export const STOCKS_US = [
+  // Mega caps
+  { s: 'AAPL', n: 'Apple' }, { s: 'MSFT', n: 'Microsoft' }, { s: 'GOOGL', n: 'Alphabet (A)' },
+  { s: 'GOOG', n: 'Alphabet (C)' }, { s: 'AMZN', n: 'Amazon' }, { s: 'META', n: 'Meta Platforms' },
+  { s: 'NVDA', n: 'NVIDIA' }, { s: 'TSLA', n: 'Tesla' }, { s: 'BRK.B', n: 'Berkshire Hathaway' },
+  { s: 'AVGO', n: 'Broadcom' }, { s: 'LLY', n: 'Eli Lilly' }, { s: 'JPM', n: 'JPMorgan Chase' },
+  { s: 'V', n: 'Visa' }, { s: 'XOM', n: 'Exxon Mobil' }, { s: 'WMT', n: 'Walmart' },
+  { s: 'UNH', n: 'UnitedHealth' }, { s: 'MA', n: 'Mastercard' }, { s: 'PG', n: 'Procter & Gamble' },
+  { s: 'HD', n: 'Home Depot' }, { s: 'JNJ', n: 'Johnson & Johnson' }, { s: 'COST', n: 'Costco' },
+  { s: 'ORCL', n: 'Oracle' }, { s: 'NFLX', n: 'Netflix' }, { s: 'BAC', n: 'Bank of America' },
+  { s: 'ABBV', n: 'AbbVie' }, { s: 'KO', n: 'Coca-Cola' }, { s: 'CVX', n: 'Chevron' },
+  { s: 'MRK', n: 'Merck' }, { s: 'ADBE', n: 'Adobe' }, { s: 'PEP', n: 'PepsiCo' },
+  { s: 'CRM', n: 'Salesforce' }, { s: 'TMO', n: 'Thermo Fisher' }, { s: 'CSCO', n: 'Cisco' },
+  { s: 'ACN', n: 'Accenture' }, { s: 'AMD', n: 'AMD' }, { s: 'LIN', n: 'Linde' },
+  { s: 'MCD', n: "McDonald's" }, { s: 'ABT', n: 'Abbott Labs' }, { s: 'WFC', n: 'Wells Fargo' },
+  { s: 'DIS', n: 'Walt Disney' }, { s: 'IBM', n: 'IBM' }, { s: 'INTC', n: 'Intel' },
+  { s: 'QCOM', n: 'Qualcomm' }, { s: 'TXN', n: 'Texas Instruments' }, { s: 'GE', n: 'General Electric' },
+  { s: 'CAT', n: 'Caterpillar' }, { s: 'AXP', n: 'American Express' }, { s: 'PFE', n: 'Pfizer' },
+  { s: 'GS', n: 'Goldman Sachs' }, { s: 'MS', n: 'Morgan Stanley' }, { s: 'NOW', n: 'ServiceNow' },
+  { s: 'BLK', n: 'BlackRock' }, { s: 'AMGN', n: 'Amgen' }, { s: 'NKE', n: 'Nike' },
+  { s: 'BKNG', n: 'Booking Holdings' }, { s: 'SPGI', n: 'S&P Global' }, { s: 'UBER', n: 'Uber' },
+  { s: 'BX', n: 'Blackstone' }, { s: 'C', n: 'Citigroup' }, { s: 'GILD', n: 'Gilead Sciences' },
+  { s: 'BSX', n: 'Boston Scientific' }, { s: 'PYPL', n: 'PayPal' }, { s: 'MU', n: 'Micron' },
+  { s: 'INTU', n: 'Intuit' }, { s: 'AMAT', n: 'Applied Materials' }, { s: 'LRCX', n: 'Lam Research' },
+  { s: 'KLAC', n: 'KLA Corp' }, { s: 'PANW', n: 'Palo Alto Networks' }, { s: 'CRWD', n: 'CrowdStrike' },
+  { s: 'SNOW', n: 'Snowflake' }, { s: 'PLTR', n: 'Palantir' }, { s: 'COIN', n: 'Coinbase' },
+  { s: 'SHOP', n: 'Shopify' }, { s: 'SQ', n: 'Block' }, { s: 'HOOD', n: 'Robinhood' },
+  { s: 'SOFI', n: 'SoFi Technologies' }, { s: 'ABNB', n: 'Airbnb' }, { s: 'MELI', n: 'MercadoLibre' },
+  { s: 'BABA', n: 'Alibaba' }, { s: 'JD', n: 'JD.com' }, { s: 'PDD', n: 'PDD Holdings' },
+  { s: 'NIO', n: 'NIO' }, { s: 'LI', n: 'Li Auto' }, { s: 'XPEV', n: 'XPeng' },
+  { s: 'RIVN', n: 'Rivian' }, { s: 'LCID', n: 'Lucid Group' }, { s: 'F', n: 'Ford' },
+  { s: 'GM', n: 'General Motors' }, { s: 'BA', n: 'Boeing' }, { s: 'LMT', n: 'Lockheed Martin' },
+  { s: 'RTX', n: 'RTX Corporation' }, { s: 'NOC', n: 'Northrop Grumman' }, { s: 'GD', n: 'General Dynamics' },
+  { s: 'SBUX', n: 'Starbucks' }, { s: 'CMG', n: 'Chipotle' }, { s: 'MDLZ', n: 'Mondelez' },
+  { s: 'ETSY', n: 'Etsy' }, { s: 'TGT', n: 'Target' }, { s: 'LOW', n: "Lowe's" },
+  { s: 'DASH', n: 'DoorDash' }, { s: 'LYFT', n: 'Lyft' }, { s: 'ROKU', n: 'Roku' },
+  { s: 'SNAP', n: 'Snap' }, { s: 'PINS', n: 'Pinterest' }, { s: 'SPOT', n: 'Spotify' },
+  { s: 'EA', n: 'Electronic Arts' }, { s: 'TTWO', n: 'Take-Two Interactive' }, { s: 'RBLX', n: 'Roblox' },
+  { s: 'U', n: 'Unity Software' }, { s: 'DDOG', n: 'Datadog' }, { s: 'NET', n: 'Cloudflare' },
+  { s: 'ZS', n: 'Zscaler' }, { s: 'OKTA', n: 'Okta' }, { s: 'MDB', n: 'MongoDB' },
+  { s: 'TWLO', n: 'Twilio' }, { s: 'DOCU', n: 'DocuSign' }, { s: 'ZM', n: 'Zoom' },
+  { s: 'ASML', n: 'ASML Holding' }, { s: 'TSM', n: 'TSMC' }, { s: 'MRVL', n: 'Marvell Tech' },
+  { s: 'ADSK', n: 'Autodesk' }, { s: 'WDAY', n: 'Workday' }, { s: 'TEAM', n: 'Atlassian' },
+  { s: 'PBR', n: 'Petrobras' }, { s: 'VALE', n: 'Vale' }, { s: 'ITUB', n: 'Itaú Unibanco' },
+  { s: 'NU', n: 'Nu Holdings' }, { s: 'ABEV', n: 'Ambev' }, { s: 'BBD', n: 'Banco Bradesco' },
+  { s: 'AFRM', n: 'Affirm' }, { s: 'UPST', n: 'Upstart' }, { s: 'CVNA', n: 'Carvana' },
+  { s: 'GME', n: 'GameStop' }, { s: 'AMC', n: 'AMC Entertainment' }, { s: 'BB', n: 'BlackBerry' },
+  { s: 'MRNA', n: 'Moderna' }, { s: 'BNTX', n: 'BioNTech' }, { s: 'NVAX', n: 'Novavax' },
+  { s: 'OXY', n: 'Occidental Petroleum' }, { s: 'SLB', n: 'Schlumberger' }, { s: 'COP', n: 'ConocoPhillips' },
+  { s: 'EOG', n: 'EOG Resources' }, { s: 'PSX', n: 'Phillips 66' }, { s: 'MPC', n: 'Marathon Petroleum' },
+  { s: 'WBD', n: 'Warner Bros. Discovery' }, { s: 'PARA', n: 'Paramount Global' }, { s: 'T', n: 'AT&T' },
+  { s: 'VZ', n: 'Verizon' }, { s: 'TMUS', n: 'T-Mobile US' }, { s: 'CMCSA', n: 'Comcast' },
 ]
 
-// Acciones argentinas — Panel General (más líquidas)
-export const ARG_PANEL_GENERAL = [
-  'SEMI','LONG','AGRO','POLL','RICH','GCLA','BHIP','MORI','CAPU','CELU',
-  'CTIO','DYCA','FERR','FIPL','GBAN','HAVA','INVJ','LEDE','MOLA','OEST',
-  'PATA','PCAR','ROSE','REGE','SAMI','TGLT','AUSO','BRIO','CAPX','INAG',
-  'HARG','GFGC','NIQO','TECO2','TRAN','YPFD','HAVA','EURN','CADO','SLAN',
+// === ETFs POPULARES ===
+export const ETFS = [
+  { s: 'SPY', n: 'SPDR S&P 500' }, { s: 'VOO', n: 'Vanguard S&P 500' }, { s: 'IVV', n: 'iShares S&P 500' },
+  { s: 'QQQ', n: 'Invesco QQQ (Nasdaq 100)' }, { s: 'QQQM', n: 'Invesco Nasdaq 100' },
+  { s: 'DIA', n: 'SPDR Dow Jones' }, { s: 'IWM', n: 'iShares Russell 2000' },
+  { s: 'VTI', n: 'Vanguard Total Stock Market' }, { s: 'VEA', n: 'Vanguard Developed Markets' },
+  { s: 'VWO', n: 'Vanguard Emerging Markets' }, { s: 'EEM', n: 'iShares Emerging Markets' },
+  { s: 'EFA', n: 'iShares MSCI EAFE' }, { s: 'EWZ', n: 'iShares Brasil' },
+  { s: 'ARGT', n: 'Global X Argentina' }, { s: 'MCHI', n: 'iShares China' },
+  { s: 'INDA', n: 'iShares India' }, { s: 'EWJ', n: 'iShares Japón' },
+  // Sectores
+  { s: 'XLK', n: 'Tecnología (SPDR)' }, { s: 'XLF', n: 'Financiero (SPDR)' },
+  { s: 'XLE', n: 'Energía (SPDR)' }, { s: 'XLV', n: 'Salud (SPDR)' },
+  { s: 'XLI', n: 'Industrial (SPDR)' }, { s: 'XLY', n: 'Consumo Discrecional' },
+  { s: 'XLP', n: 'Consumo Defensivo' }, { s: 'XLU', n: 'Utilities' },
+  { s: 'XLRE', n: 'Real Estate' }, { s: 'XLB', n: 'Materiales' }, { s: 'XLC', n: 'Comunicaciones' },
+  { s: 'SOXX', n: 'iShares Semiconductors' }, { s: 'SMH', n: 'VanEck Semiconductors' },
+  { s: 'ARKK', n: 'ARK Innovation' }, { s: 'ARKG', n: 'ARK Genomic' },
+  // Commodities / Renta fija
+  { s: 'GLD', n: 'SPDR Gold' }, { s: 'IAU', n: 'iShares Gold' },
+  { s: 'SLV', n: 'iShares Silver' }, { s: 'USO', n: 'United States Oil' },
+  { s: 'UNG', n: 'United States Natural Gas' }, { s: 'DBC', n: 'Invesco Commodity' },
+  { s: 'TLT', n: 'iShares 20+Y Treasury' }, { s: 'IEF', n: 'iShares 7-10Y Treasury' },
+  { s: 'SHY', n: 'iShares 1-3Y Treasury' }, { s: 'HYG', n: 'iShares High Yield' },
+  { s: 'LQD', n: 'iShares Investment Grade' }, { s: 'AGG', n: 'iShares Aggregate Bond' },
+  // Cripto ETFs
+  { s: 'IBIT', n: 'iShares Bitcoin Trust' }, { s: 'FBTC', n: 'Fidelity Bitcoin' },
+  { s: 'GBTC', n: 'Grayscale Bitcoin' }, { s: 'ETHE', n: 'Grayscale Ethereum' },
+  // Apalancados / Inversos
+  { s: 'TQQQ', n: 'ProShares 3x Nasdaq' }, { s: 'SQQQ', n: 'ProShares -3x Nasdaq' },
+  { s: 'UPRO', n: 'ProShares 3x S&P 500' }, { s: 'SOXL', n: 'Direxion 3x Semis' },
+  { s: 'TMF', n: 'Direxion 3x Treasury' },
 ]
 
-// Cryptos (para brokers USDT)
-export const CRYPTO_LIST = [
-  'BTC','ETH','BNB','SOL','XRP','ADA','AVAX','DOGE','TRX','DOT',
-  'MATIC','LINK','LTC','BCH','NEAR','UNI','ATOM','XLM','ETC','APT',
-  'ARB','OP','AAVE','MKR','CRV','COMP','SUSHI','GRT','FIL','THETA',
-  'XTZ','ALGO','VET','EGLD','FTM','HBAR','IMX','SAND','MANA','AXS',
-  'SHIB','PEPE','BONK','WIF','FLOKI','DEGEN',
-  'SUI','SEI','TIA','INJ','JTO','PYTH','STRK','WLD','ORDI','RUNE',
-  'ZEC','DASH','XMR','SNX','YFI','1INCH','DYDX','GMX','LDO','RPL',
+// === ÍNDICES ===
+export const INDICES = [
+  { s: 'SPX', n: 'S&P 500' }, { s: 'NDX', n: 'Nasdaq 100' },
+  { s: 'DJI', n: 'Dow Jones Industrial' }, { s: 'RUT', n: 'Russell 2000' },
+  { s: 'VIX', n: 'CBOE Volatility Index' }, { s: 'NYA', n: 'NYSE Composite' },
+  { s: 'COMP', n: 'Nasdaq Composite' },
+  // Internacionales
+  { s: 'DAX', n: 'DAX (Alemania)' }, { s: 'FTSE', n: 'FTSE 100 (Reino Unido)' },
+  { s: 'CAC', n: 'CAC 40 (Francia)' }, { s: 'IBEX', n: 'IBEX 35 (España)' },
+  { s: 'STOXX50', n: 'Euro Stoxx 50' }, { s: 'N225', n: 'Nikkei 225 (Japón)' },
+  { s: 'HSI', n: 'Hang Seng (Hong Kong)' }, { s: 'SSEC', n: 'Shanghai Composite' },
+  { s: 'KOSPI', n: 'KOSPI (Corea)' }, { s: 'BSESN', n: 'BSE Sensex (India)' },
+  { s: 'BVSP', n: 'Bovespa (Brasil)' }, { s: 'MERVAL', n: 'S&P MERVAL (Argentina)' },
+  { s: 'MXX', n: 'IPC México' },
+  // Futuros
+  { s: 'ES1!', n: 'E-mini S&P 500 Futuros' }, { s: 'NQ1!', n: 'E-mini Nasdaq Futuros' },
+  { s: 'YM1!', n: 'E-mini Dow Futuros' }, { s: 'RTY1!', n: 'E-mini Russell Futuros' },
+  // Forex / commodities como indicador
+  { s: 'DXY', n: 'Dollar Index' }, { s: 'GOLD', n: 'Oro (spot)' },
+  { s: 'SILVER', n: 'Plata (spot)' }, { s: 'WTI', n: 'Petróleo WTI' },
+  { s: 'BRENT', n: 'Petróleo Brent' }, { s: 'NATGAS', n: 'Gas Natural' },
 ]
 
-// US Stocks populares (para brokers USDT — directo sin .BA)
-export const US_STOCKS = [
-  'AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA','NFLX','ADBE','AMD',
-  'INTC','QCOM','AVGO','CRM','ORCL','IBM','CSCO','TXN','MU','ASML',
-  'V','MA','PYPL','SQ','COIN','JPM','BAC','GS','MS','C',
-  'MCD','KO','PEP','WMT','NKE','DIS','XOM','CVX','JNJ','PFE','LLY',
-  'MELI','PBR','VALE','ITUB','SHOP','SNOW','PLTR','DDOG','NET','CRWD',
-  'PANW','ZS','UBER','ABNB','RIVN','LCID','NIO','BABA','SOFI','HOOD',
-  'SPY','QQQ','GLD','SLV','TLT','IWM',
+// === CEDEARs (acciones extranjeras en Argentina) ===
+export const CEDEARS_LIST = [
+  { s: 'AAPL', n: 'Apple' }, { s: 'MSFT', n: 'Microsoft' }, { s: 'GOOGL', n: 'Alphabet' },
+  { s: 'AMZN', n: 'Amazon' }, { s: 'META', n: 'Meta Platforms' }, { s: 'NVDA', n: 'NVIDIA' },
+  { s: 'TSLA', n: 'Tesla' }, { s: 'NFLX', n: 'Netflix' }, { s: 'ADBE', n: 'Adobe' },
+  { s: 'AMD', n: 'AMD' }, { s: 'INTC', n: 'Intel' }, { s: 'QCOM', n: 'Qualcomm' },
+  { s: 'AVGO', n: 'Broadcom' }, { s: 'ORCL', n: 'Oracle' }, { s: 'IBM', n: 'IBM' },
+  { s: 'CSCO', n: 'Cisco' }, { s: 'CRM', n: 'Salesforce' }, { s: 'PYPL', n: 'PayPal' },
+  { s: 'V', n: 'Visa' }, { s: 'MA', n: 'Mastercard' }, { s: 'JPM', n: 'JPMorgan' },
+  { s: 'BAC', n: 'Bank of America' }, { s: 'GS', n: 'Goldman Sachs' }, { s: 'MS', n: 'Morgan Stanley' },
+  { s: 'C', n: 'Citigroup' }, { s: 'WFC', n: 'Wells Fargo' }, { s: 'BLK', n: 'BlackRock' },
+  { s: 'AXP', n: 'American Express' }, { s: 'KO', n: 'Coca-Cola' }, { s: 'PEP', n: 'PepsiCo' },
+  { s: 'MCD', n: "McDonald's" }, { s: 'SBUX', n: 'Starbucks' }, { s: 'NKE', n: 'Nike' },
+  { s: 'WMT', n: 'Walmart' }, { s: 'COST', n: 'Costco' }, { s: 'HD', n: 'Home Depot' },
+  { s: 'TGT', n: 'Target' }, { s: 'DIS', n: 'Walt Disney' }, { s: 'JNJ', n: 'Johnson & Johnson' },
+  { s: 'PFE', n: 'Pfizer' }, { s: 'MRK', n: 'Merck' }, { s: 'ABBV', n: 'AbbVie' },
+  { s: 'LLY', n: 'Eli Lilly' }, { s: 'BMY', n: 'Bristol-Myers' }, { s: 'GILD', n: 'Gilead' },
+  { s: 'AMGN', n: 'Amgen' }, { s: 'MRNA', n: 'Moderna' }, { s: 'XOM', n: 'Exxon Mobil' },
+  { s: 'CVX', n: 'Chevron' }, { s: 'COP', n: 'ConocoPhillips' }, { s: 'BA', n: 'Boeing' },
+  { s: 'CAT', n: 'Caterpillar' }, { s: 'GE', n: 'General Electric' }, { s: 'F', n: 'Ford' },
+  { s: 'GM', n: 'General Motors' }, { s: 'UBER', n: 'Uber' }, { s: 'ABNB', n: 'Airbnb' },
+  { s: 'SHOP', n: 'Shopify' }, { s: 'SQ', n: 'Block' }, { s: 'COIN', n: 'Coinbase' },
+  { s: 'PLTR', n: 'Palantir' }, { s: 'SNOW', n: 'Snowflake' }, { s: 'PANW', n: 'Palo Alto' },
+  { s: 'CRWD', n: 'CrowdStrike' }, { s: 'NET', n: 'Cloudflare' }, { s: 'DDOG', n: 'Datadog' },
+  { s: 'DOCU', n: 'DocuSign' }, { s: 'ZM', n: 'Zoom' }, { s: 'TWLO', n: 'Twilio' },
+  { s: 'SPOT', n: 'Spotify' }, { s: 'ROKU', n: 'Roku' }, { s: 'SNAP', n: 'Snap' },
+  { s: 'PINS', n: 'Pinterest' }, { s: 'EA', n: 'Electronic Arts' }, { s: 'TTWO', n: 'Take-Two' },
+  { s: 'GME', n: 'GameStop' }, { s: 'AMC', n: 'AMC' }, { s: 'BB', n: 'BlackBerry' },
+  { s: 'TSM', n: 'TSMC' }, { s: 'BABA', n: 'Alibaba' }, { s: 'JD', n: 'JD.com' },
+  { s: 'PDD', n: 'PDD Holdings' }, { s: 'NIO', n: 'NIO' }, { s: 'BIDU', n: 'Baidu' },
+  { s: 'MELI', n: 'MercadoLibre' }, { s: 'PBR', n: 'Petrobras' }, { s: 'VALE', n: 'Vale' },
+  { s: 'ITUB', n: 'Itaú Unibanco' }, { s: 'BBD', n: 'Banco Bradesco' }, { s: 'NU', n: 'Nu Holdings' },
+  { s: 'ABEV', n: 'Ambev' }, { s: 'AZN', n: 'AstraZeneca' }, { s: 'NOVN', n: 'Novartis' },
+  { s: 'BRK.B', n: 'Berkshire Hathaway' }, { s: 'BRKB', n: 'Berkshire Hathaway' },
+  // ETFs disponibles como CEDEAR
+  { s: 'SPY', n: 'SPDR S&P 500 (CEDEAR)' }, { s: 'QQQ', n: 'Nasdaq 100 (CEDEAR)' },
+  { s: 'EEM', n: 'Emerging Markets (CEDEAR)' }, { s: 'EWZ', n: 'Brasil (CEDEAR)' },
+  { s: 'ARKK', n: 'ARK Innovation (CEDEAR)' }, { s: 'XLE', n: 'Energía (CEDEAR)' },
+  { s: 'XLF', n: 'Financiero (CEDEAR)' }, { s: 'GLD', n: 'Oro (CEDEAR)' },
 ]
 
-export const ARS_TICKERS = [...new Set([...CEDEARS, ...ARG_PANEL_LIDER, ...ARG_PANEL_GENERAL])].sort()
-export const USDT_TICKERS = [...new Set([...CRYPTO_LIST, ...US_STOCKS])].sort()
+// === ACCIONES ARGENTINAS — Panel Líder ===
+export const ARG_LIDER = [
+  { s: 'GGAL', n: 'Grupo Financiero Galicia' }, { s: 'BMA', n: 'Banco Macro' },
+  { s: 'YPFD', n: 'YPF' }, { s: 'PAMP', n: 'Pampa Energía' },
+  { s: 'TECO2', n: 'Telecom Argentina' }, { s: 'TXAR', n: 'Ternium Argentina' },
+  { s: 'ALUA', n: 'Aluar' }, { s: 'BYMA', n: 'Bolsas y Mercados Argentinos' },
+  { s: 'CEPU', n: 'Central Puerto' }, { s: 'CRES', n: 'Cresud' },
+  { s: 'TGNO4', n: 'Transportadora Gas del Norte' }, { s: 'TGSU2', n: 'Transportadora Gas del Sur' },
+  { s: 'SUPV', n: 'Grupo Supervielle' }, { s: 'EDN', n: 'Edenor' },
+  { s: 'LOMA', n: 'Loma Negra' }, { s: 'VALO', n: 'Grupo Financiero Valores' },
+  { s: 'MIRG', n: 'Mirgor' }, { s: 'BPAT', n: 'Banco Patagonia' },
+  { s: 'IRSA', n: 'IRSA Inversiones' }, { s: 'COME', n: 'Sociedad Comercial del Plata' },
+  { s: 'TRAN', n: 'Transener' }, { s: 'METR', n: 'MetroGas' },
+  { s: 'BBAR', n: 'BBVA Argentina' }, { s: 'CVH', n: 'Cablevisión Holding' },
+  { s: 'HARG', n: 'Holcim Argentina' },
+]
+
+// === ACCIONES ARGENTINAS — Panel General ===
+export const ARG_GENERAL = [
+  { s: 'AGRO', n: 'Agrometal' }, { s: 'AUSO', n: 'Autopistas del Sol' },
+  { s: 'BHIP', n: 'Banco Hipotecario' }, { s: 'BOLT', n: 'Boldt' },
+  { s: 'CADO', n: 'Carlos Casado' }, { s: 'CAPU', n: 'Capex' },
+  { s: 'CAPX', n: 'Capex' }, { s: 'CARC', n: 'Caputo' },
+  { s: 'CECO2', n: 'Central Costanera' }, { s: 'CELU', n: 'Celulosa Argentina' },
+  { s: 'CGPA2', n: 'Camuzzi Gas Pampeana' }, { s: 'CTIO', n: 'Consultatio' },
+  { s: 'DGCU2', n: 'Distribuidora Gas Cuyana' }, { s: 'DOME', n: 'Domec' },
+  { s: 'DYCA', n: 'Dycasa' }, { s: 'FERR', n: 'Ferrum' },
+  { s: 'FIPL', n: 'Fiplasto' }, { s: 'GBAN', n: 'Gas Natural BAN' },
+  { s: 'GCLA', n: 'Grupo Clarín' }, { s: 'GRIM', n: 'Grimoldi' },
+  { s: 'HAVA', n: 'Havanna' }, { s: 'INAG', n: 'Insumos Agroquímicos' },
+  { s: 'INVJ', n: 'Inversora Juramento' }, { s: 'IRCP', n: 'IRSA Propiedades' },
+  { s: 'LEDE', n: 'Ledesma' }, { s: 'LONG', n: 'Longvie' },
+  { s: 'MOLA', n: 'Molinos Agro' }, { s: 'MORI', n: 'Morixe' },
+  { s: 'OEST', n: 'Oeste Grupo Concesionario' }, { s: 'PATA', n: 'Importadora Patagonia' },
+  { s: 'PCAR', n: 'Petrolera Pampa' }, { s: 'POLL', n: 'Polledo' },
+  { s: 'RICH', n: 'Laboratorios Richmond' }, { s: 'ROSE', n: 'Instituto Rosenbusch' },
+  { s: 'SAMI', n: 'San Miguel' }, { s: 'SEMI', n: 'Molinos Juan Semino' },
+  { s: 'TGLT', n: 'TGLT' },
+]
+
+// Para autocomplete simple (compat retro)
+const sym = arr => arr.map(x => x.s)
+export const ARS_TICKERS = [...new Set([...sym(CEDEARS_LIST), ...sym(ARG_LIDER), ...sym(ARG_GENERAL)])].sort()
+export const USDT_TICKERS = [...new Set([...sym(CRYPTO), ...sym(STOCKS_US), ...sym(ETFS)])].sort()
+
+// Helper para encontrar nombre de un ticker
+export function tickerName(s) {
+  const all = [...CRYPTO, ...STOCKS_US, ...ETFS, ...INDICES, ...CEDEARS_LIST, ...ARG_LIDER, ...ARG_GENERAL]
+  return all.find(x => x.s === s)?.n || null
+}

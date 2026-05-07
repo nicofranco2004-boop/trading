@@ -1,28 +1,33 @@
 import { useEffect, useState } from 'react'
-import { Save, Plus, Trash2, Pencil } from 'lucide-react'
+import { Plus, Trash2, Pencil, RefreshCw, Lock } from 'lucide-react'
 import { api } from '../utils/api'
+import { useAuth } from '../contexts/AuthContext'
+import PageHeader from '../components/PageHeader'
+
+const DOLAR_REFRESH_MS = 600_000 // 10 min
 
 export default function Config() {
-  const [cfg, setCfg] = useState({ tc_mep: '', tc_blue: '' })
-  const [saved, setSaved] = useState(false)
+  const { user } = useAuth()
   const [brokers, setBrokers] = useState([])
+  const [dolar, setDolar] = useState(null)
   const [newBroker, setNewBroker] = useState({ name: '', currency: 'USDT' })
   const [editingBroker, setEditingBroker] = useState(null)
+  const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
+  const [pwState, setPwState] = useState({ loading: false, error: '', success: '' })
 
   useEffect(() => {
-    api.get('/config').then(d => setCfg({ tc_mep: d.tc_mep, tc_blue: d.tc_blue }))
+    loadDolar()
     loadBrokers()
+    const id = setInterval(loadDolar, DOLAR_REFRESH_MS)
+    return () => clearInterval(id)
   }, [])
+
+  async function loadDolar() {
+    try { setDolar(await api.get('/dolar')) } catch {}
+  }
 
   async function loadBrokers() {
     setBrokers(await api.get('/brokers'))
-  }
-
-  async function saveCfg(e) {
-    e.preventDefault()
-    await api.put('/config', { tc_mep: +cfg.tc_mep, tc_blue: +cfg.tc_blue })
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
   }
 
   async function addBroker(e) {
@@ -41,57 +46,79 @@ export default function Config() {
   }
 
   async function deleteBroker(id) {
-    if (!confirm('¿Eliminar broker? Las posiciones asociadas quedarán sin broker.')) return
+    if (!confirm('¿Eliminar este broker? Las posiciones asociadas quedarán huérfanas y deberás reasignarlas manualmente.')) return
     await api.delete(`/brokers/${id}`)
     loadBrokers()
   }
 
-  const inputClass = 'w-full bg-slate-700 border border-slate-600 rounded-md px-3 py-2 text-slate-200 text-sm'
-  const selectClass = 'bg-slate-700 border border-slate-600 rounded-md px-3 py-2 text-slate-200 text-sm'
+  async function changePassword(e) {
+    e.preventDefault()
+    setPwState({ loading: true, error: '', success: '' })
+    if (pwForm.next.length < 10) {
+      setPwState({ loading: false, error: 'La nueva contraseña debe tener al menos 10 caracteres.', success: '' })
+      return
+    }
+    if (pwForm.next !== pwForm.confirm) {
+      setPwState({ loading: false, error: 'Las contraseñas no coinciden.', success: '' })
+      return
+    }
+    try {
+      const res = await api.post('/auth/change-password', {
+        current_password: pwForm.current,
+        new_password: pwForm.next,
+      })
+      // Backend devuelve token nuevo (con pca actualizado) — guardarlo para no perder sesión
+      if (res.token) localStorage.setItem('rendi_token', res.token)
+      setPwForm({ current: '', next: '', confirm: '' })
+      setPwState({ loading: false, error: '', success: 'Contraseña actualizada correctamente.' })
+    } catch (err) {
+      setPwState({ loading: false, error: err.message, success: '' })
+    }
+  }
+
+  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-slate-900 dark:text-slate-200 text-sm'
+  const selectClass = 'bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-slate-900 dark:text-slate-200 text-sm'
+
+  const fetchedAt = dolar?.fetched_at ? new Date(dolar.fetched_at) : null
 
   return (
-    <div className="pt-20 px-6 pb-10 max-w-lg mx-auto space-y-6">
-      <h1 className="text-xl font-bold text-slate-100">Configuración</h1>
+    <div className="page-shell max-w-2xl space-y-6">
+      <PageHeader title="Configuración" subtitle="Gestioná tus brokers, tipos de cambio y datos de cuenta." />
 
-      {/* Tipos de cambio */}
-      <div className="bg-slate-800/60 border border-slate-700/50 rounded-xl p-6">
-        <h2 className="font-semibold text-slate-200 mb-4">Tipos de cambio</h2>
-        <form onSubmit={saveCfg} className="space-y-4">
-          <div>
-            <label className="block text-sm text-slate-300 mb-1 font-medium">TC MEP (ARS/USD)</label>
-            <input
-              type="number" step="any"
-              value={cfg.tc_mep}
-              onChange={e => setCfg(c => ({ ...c, tc_mep: e.target.value }))}
-              className={inputClass}
-            />
-            <p className="text-xs text-slate-500 mt-1">Referencia de tipo de cambio</p>
-          </div>
-          <div>
-            <label className="block text-sm text-slate-300 mb-1 font-medium">TC Blue (ARS/USD)</label>
-            <input
-              type="number" step="any"
-              value={cfg.tc_blue}
-              onChange={e => setCfg(c => ({ ...c, tc_blue: e.target.value }))}
-              className={inputClass}
-            />
-            <p className="text-xs text-slate-500 mt-1">Usado para convertir P&L ARS → USD en brokers ARS</p>
-          </div>
+      {/* Tipos de cambio (auto) */}
+      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-slate-800 dark:text-slate-200">Tipos de cambio</h2>
           <button
-            type="submit"
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-sm font-medium transition-colors"
+            type="button"
+            onClick={loadDolar}
+            className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700/40"
+            title="Actualizar cotización"
           >
-            <Save size={14} />
-            {saved ? '✓ Guardado' : 'Guardar'}
+            <RefreshCw size={12} /> Actualizar
           </button>
-        </form>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-slate-50 dark:bg-slate-700/40 rounded-lg px-4 py-3">
+            <div className="text-xs text-slate-500 dark:text-slate-400">TC Blue (ARS/USD)</div>
+            <div className="text-2xl font-bold text-slate-900 dark:text-slate-100">{dolar?.blue?.venta ?? '—'}</div>
+            <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">Compra {dolar?.blue?.compra ?? '—'}</div>
+          </div>
+          <div className="bg-slate-50 dark:bg-slate-700/40 rounded-lg px-4 py-3">
+            <div className="text-xs text-slate-500 dark:text-slate-400">TC MEP (ARS/USD)</div>
+            <div className="text-2xl font-bold text-slate-900 dark:text-slate-100">{dolar?.mep?.venta ?? '—'}</div>
+            <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">Compra {dolar?.mep?.compra ?? '—'}</div>
+          </div>
+        </div>
+        <p className="text-xs text-slate-400 dark:text-slate-500 mt-3">
+          Fuente: dolarapi.com · Actualización automática cada 10 minutos{fetchedAt ? ` · Última actualización ${fetchedAt.toLocaleTimeString()}` : ''}
+        </p>
       </div>
 
       {/* Brokers */}
-      <div className="bg-slate-800/60 border border-slate-700/50 rounded-xl p-6">
-        <h2 className="font-semibold text-slate-200 mb-4">Mis Brokers</h2>
+      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
+        <h2 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Brokers</h2>
 
-        {/* Existing brokers */}
         {brokers.length > 0 && (
           <div className="space-y-2 mb-4">
             {brokers.map(b => (
@@ -101,7 +128,7 @@ export default function Config() {
                     <input
                       value={editingBroker.name}
                       onChange={e => setEditingBroker(eb => ({ ...eb, name: e.target.value }))}
-                      className="flex-1 bg-slate-700 border border-slate-600 rounded-md px-3 py-1.5 text-sm text-slate-200"
+                      className="flex-1 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm text-slate-900 dark:text-slate-200"
                     />
                     <select
                       value={editingBroker.currency}
@@ -115,20 +142,20 @@ export default function Config() {
                     <button type="button" onClick={() => setEditingBroker(null)} className="text-xs text-slate-400 px-2 py-1.5">✕</button>
                   </form>
                 ) : (
-                  <div className="flex items-center justify-between bg-slate-700/40 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-700/40 rounded-lg px-3 py-2">
                     <div>
-                      <span className="text-slate-200 text-sm font-medium">{b.name}</span>
+                      <span className="text-slate-800 dark:text-slate-200 text-sm font-medium">{b.name}</span>
                       <span className={`ml-2 text-xs px-1.5 py-0.5 rounded font-medium ${
                         b.currency === 'ARS'
-                          ? 'bg-violet-500/20 text-violet-400'
-                          : 'bg-blue-500/20 text-blue-400'
+                          ? 'bg-violet-500/20 text-violet-600 dark:text-violet-400'
+                          : 'bg-blue-500/20 text-blue-600 dark:text-blue-400'
                       }`}>{b.currency}</span>
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={() => setEditingBroker({ ...b })} className="text-slate-400 hover:text-slate-200">
+                      <button onClick={() => setEditingBroker({ ...b })} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">
                         <Pencil size={13} />
                       </button>
-                      <button onClick={() => deleteBroker(b.id)} className="text-slate-400 hover:text-red-400">
+                      <button onClick={() => deleteBroker(b.id)} className="text-slate-400 hover:text-red-500">
                         <Trash2 size={13} />
                       </button>
                     </div>
@@ -139,19 +166,18 @@ export default function Config() {
           </div>
         )}
 
-        {/* Add new broker */}
         <form onSubmit={addBroker} className="flex gap-2 items-end">
           <div className="flex-1">
-            <label className="block text-xs text-slate-400 mb-1">Nombre del broker</label>
+            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nombre del broker</label>
             <input
               value={newBroker.name}
               onChange={e => setNewBroker(b => ({ ...b, name: e.target.value }))}
-              placeholder="ej: Binance, Cocos..."
+              placeholder="Ej.: Binance, Cocos, IOL..."
               className={inputClass}
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-400 mb-1">Moneda</label>
+            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Moneda</label>
             <select
               value={newBroker.currency}
               onChange={e => setNewBroker(b => ({ ...b, currency: e.target.value }))}
@@ -163,15 +189,58 @@ export default function Config() {
           </div>
           <button
             type="submit"
-            className="flex items-center gap-1 px-3 py-2 bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 rounded-md text-sm font-medium transition-colors"
+            className="flex items-center gap-1 px-3 py-2 bg-blue-600/20 text-blue-600 dark:text-blue-400 hover:bg-blue-600/30 rounded-md text-sm font-medium transition-colors"
           >
             <Plus size={14} /> Agregar
           </button>
         </form>
-        <p className="text-xs text-slate-500 mt-3">
-          <span className="text-blue-400 font-medium">USDT</span> = precios en USD (Binance, crypto) ·
-          <span className="text-violet-400 font-medium ml-1">ARS</span> = precios en pesos, convertidos via TC Blue (Cocos, IOL, etc.)
+        <p className="text-xs text-slate-400 dark:text-slate-500 mt-3">
+          <span className="text-blue-600 dark:text-blue-400 font-medium">USDT</span> · precios en USD (Binance, exchanges crypto) ·
+          <span className="text-violet-600 dark:text-violet-400 font-medium ml-1">ARS</span> · precios en pesos, convertidos a USD según el blue (Cocos, IOL y similares).
         </p>
+      </div>
+
+      {/* Cuenta */}
+      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Lock size={16} className="text-slate-400" />
+          <h2 className="font-semibold text-slate-800 dark:text-slate-200">Cuenta</h2>
+        </div>
+        {user && (
+          <div className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+            Sesión: <span className="text-slate-700 dark:text-slate-200 font-medium">{user.email || user.name}</span>
+            {user.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green font-semibold uppercase tracking-wide">admin</span>}
+          </div>
+        )}
+        <form onSubmit={changePassword} className="space-y-3">
+          <div>
+            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Contraseña actual</label>
+            <input type="password" autoComplete="current-password" value={pwForm.current}
+              onChange={e => setPwForm(f => ({ ...f, current: e.target.value }))}
+              className={inputClass} required />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nueva contraseña</label>
+              <input type="password" autoComplete="new-password" value={pwForm.next}
+                onChange={e => setPwForm(f => ({ ...f, next: e.target.value }))}
+                className={inputClass} minLength={10} required />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Confirmar</label>
+              <input type="password" autoComplete="new-password" value={pwForm.confirm}
+                onChange={e => setPwForm(f => ({ ...f, confirm: e.target.value }))}
+                className={inputClass} minLength={10} required />
+            </div>
+          </div>
+          {pwState.error && <p className="text-red-500 text-xs">{pwState.error}</p>}
+          {pwState.success && <p className="text-emerald-600 dark:text-emerald-400 text-xs">{pwState.success}</p>}
+          <p className="text-xs text-slate-400 dark:text-slate-500">Mínimo 10 caracteres. Al actualizarla, se cierran las sesiones activas en otros dispositivos.</p>
+          <button type="submit" disabled={pwState.loading}
+            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-md">
+            {pwState.loading ? 'Guardando...' : 'Cambiar contraseña'}
+          </button>
+        </form>
       </div>
     </div>
   )

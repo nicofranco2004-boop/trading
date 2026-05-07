@@ -3,11 +3,104 @@
 @tailwind utilities;
 
 body {
-  background-color: #0f172a;
-  color: #f1f5f9;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Manrope', system-ui, sans-serif;
+  font-feature-settings: 'ss01', 'cv11';
+}
+
+/* ── Page shell ──────────────────────────────────────────────────────────────
+   One consistent max-width + padding for every page.
+   Use: <div className="page-shell"> ... </div>
+   This replaces the mixed `max-w-5xl / 6xl / 7xl` that pages had before. */
+@layer components {
+  .page-shell {
+    @apply pt-20 px-3 sm:px-6 pb-12 max-w-6xl mx-auto;
+  }
+  .page-shell-wide {
+    @apply pt-20 px-3 sm:px-6 pb-12 max-w-7xl mx-auto;
+  }
+  /* Tabular numerics for numbers in tables / cards so digits align */
+  .tabular { font-variant-numeric: tabular-nums; }
+
+  /* Section title — used by every <Section> across pages so spacing/typography is consistent */
+  .section-title {
+    @apply text-sm font-semibold uppercase tracking-[0.12em] text-slate-600 dark:text-slate-300;
+  }
+  .section-subtitle {
+    @apply text-xs text-slate-500 dark:text-slate-400 mt-1;
+  }
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #1e293b; }
-::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+::-webkit-scrollbar-track { background: #0B0F0E; }
+::-webkit-scrollbar-thumb { background: #1E2624; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #37FF68; }
+
+/* Pretty date input — calendar indicator styling for dark mode */
+.date-input-pretty::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+.date-input-pretty::-webkit-datetime-edit {
+  color: inherit;
+}
+.dark .date-input-pretty::-webkit-datetime-edit-text,
+.dark .date-input-pretty::-webkit-datetime-edit-month-field,
+.dark .date-input-pretty::-webkit-datetime-edit-day-field,
+.dark .date-input-pretty::-webkit-datetime-edit-year-field {
+  color: #e2e8f0;
+}
+.date-input-pretty::-webkit-datetime-edit-text,
+.date-input-pretty::-webkit-datetime-edit-month-field,
+.date-input-pretty::-webkit-datetime-edit-day-field,
+.date-input-pretty::-webkit-datetime-edit-year-field {
+  color: #0f172a;
+}
+
+/* Range slider con paleta Rendi */
+.rendi-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to right, #37FF68 0%, #37FF68 var(--val, 0%), rgba(148, 163, 184, 0.25) var(--val, 0%), rgba(148, 163, 184, 0.25) 100%);
+  outline: none;
+  cursor: pointer;
+}
+.dark .rendi-range {
+  background: linear-gradient(to right, #37FF68 0%, #37FF68 var(--val, 0%), rgba(71, 85, 105, 0.5) var(--val, 0%), rgba(71, 85, 105, 0.5) 100%);
+}
+.rendi-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #37FF68;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 1px rgba(55, 255, 104, 0.5), 0 2px 6px rgba(55, 255, 104, 0.4);
+  cursor: grab;
+  transition: transform 0.1s ease;
+}
+.dark .rendi-range::-webkit-slider-thumb {
+  border-color: #1e293b;
+}
+.rendi-range::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.15);
+}
+.rendi-range::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #37FF68;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 1px rgba(55, 255, 104, 0.5), 0 2px 6px rgba(55, 255, 104, 0.4);
+  cursor: grab;
+}
+.dark .rendi-range::-moz-range-thumb {
+  border-color: #1e293b;
+}

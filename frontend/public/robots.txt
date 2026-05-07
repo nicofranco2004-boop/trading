@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /$
+Allow: /login
+Allow: /register
+Disallow: /posiciones
+Disallow: /mensual
+Disallow: /operaciones
+Disallow: /config
+Disallow: /api/
+
+Sitemap: https://rendi.app/sitemap.xml

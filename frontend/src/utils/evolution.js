@@ -1,0 +1,136 @@
+import { lookupHistoricalDolar } from './fx'
+
+/**
+ * buildPortfolioValueSeries
+ * ─────────────────────────
+ * Returns [{ date, label, valueUsd, netDeposited }, ...] from snapshots,
+ * optionally filtered by `days`. Used by the Dashboard portfolio evolution
+ * chart with the 1D / 1W / 1M / 6M / 1Y / MAX selector.
+ *
+ * If a `liveValue` is provided AND the latest snapshot is older than today
+ * (or absent for today), we append a synthetic "today" point so the chart
+ * always shows the current portfolio value as the rightmost data point.
+ *
+ * @param {Array}  snapshots  [{ date, total_value, total_invested, net_deposited }]
+ * @param {number} days       window in days (null = all)
+ * @param {number} liveValue  optional live portfolio value (USD) to append as today's point
+ * @param {number} liveNet    optional live net_deposited (USD) for today's point
+ *
+ * @returns {Array<{ date, label, valueUsd, netDeposited }>}
+ */
+export function buildPortfolioValueSeries(snapshots, days = null, liveValue = null, liveNet = null) {
+  const sorted = [...(snapshots || [])].sort((a, b) => a.date < b.date ? -1 : 1)
+  const points = sorted.map(s => ({
+    date: s.date,
+    label: s.date.slice(5), // MM-DD
+    valueUsd: +(s.total_value || 0),
+    netDeposited: +(s.net_deposited || s.total_invested || 0),
+  }))
+
+  // Append "today" if live value supplied and last snapshot isn't already today
+  const today = new Date().toISOString().slice(0, 10)
+  if (liveValue != null && (points.length === 0 || points[points.length - 1].date !== today)) {
+    points.push({
+      date: today,
+      label: today.slice(5),
+      valueUsd: +liveValue,
+      netDeposited: liveNet != null ? +liveNet : (points[points.length - 1]?.netDeposited ?? +liveValue),
+    })
+  }
+
+  if (days != null && days > 0 && points.length > 0) {
+    const cutoff = Date.now() - days * 86400000
+    const filtered = points.filter(p => new Date(p.date).getTime() >= cutoff)
+    // Always keep at least 2 points so the chart can draw a line
+    if (filtered.length >= 2) return filtered
+    if (filtered.length === 1 && points.length >= 2) {
+      // Prepend the last point before the cutoff for context
+      const idx = points.findIndex(p => p.date === filtered[0].date)
+      if (idx > 0) return [points[idx - 1], filtered[0]]
+    }
+    return points.slice(-Math.max(2, filtered.length))
+  }
+
+  return points
+}
+
+
+/**
+ * buildEvolutionFromSnapshots
+ * ───────────────────────────
+ * Phase 7 — daily-granularity portfolio evolution from snapshots.
+ *
+ * Each snapshot point produces:
+ *   total %     = (value − baseline) / baseline × 100
+ *   realized %  = (cumulative realized at snapshot's month) / baseline × 100
+ *
+ * `baseline` is the snapshot's `net_deposited` (Phase 6+) or, for legacy
+ * snapshots predating Phase 6 (`net_deposited === 0`), falls back to
+ * `total_invested` (cost basis) so the chart doesn't go to infinity.
+ *
+ * Cumulative `pnl_realized` is sourced from `monthly_entries` (the "global"
+ * broker, sorted ascending), step-matched onto each snapshot by its YYYY-MM.
+ *
+ * ARS series: value & baseline are converted using the historical blue rate
+ * for the snapshot's (year, month) via `lookupHistoricalDolar`.
+ *
+ * @param {Array}  snapshots     [{ date, total_value, total_invested, net_deposited }, ...]
+ * @param {Array}  globalMonthly monthly_entries for broker='global', SORTED ASC by year/month
+ * @param {Object} bench         bench.dolar_blue map (or null)
+ * @param {number} tcBlue        live blue rate (used as fallback in lookupHistoricalDolar)
+ *
+ * @returns {{ seriesUsd: Array, seriesArs: Array } | null}
+ *   null if there are <2 snapshots (caller should fall back to monthly logic).
+ */
+export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcBlue) {
+  if (!snapshots || snapshots.length < 2) return null
+
+  // Pre-compute cumulative pnl_realized by YYYY-MM
+  const cumRealizedByMonth = new Map()
+  let cum = 0
+  for (const m of globalMonthly || []) {
+    cum += (m.pnl_realized || 0)
+    const key = `${m.year}-${String(m.month).padStart(2, '0')}`
+    cumRealizedByMonth.set(key, cum)
+  }
+  const sortedKeys = [...cumRealizedByMonth.keys()].sort()
+  const realizedAt = (dateStr) => {
+    const k = dateStr.slice(0, 7)
+    if (cumRealizedByMonth.has(k)) return cumRealizedByMonth.get(k)
+    let found = null
+    for (const kk of sortedKeys) { if (kk <= k) found = kk; else break }
+    return found ? cumRealizedByMonth.get(found) : 0
+  }
+
+  const sorted = [...snapshots].sort((a, b) => a.date < b.date ? -1 : 1)
+  const seriesUsd = []
+  const seriesArs = []
+
+  for (const s of sorted) {
+    const baselineUsd = (s.net_deposited && s.net_deposited > 0) ? s.net_deposited : s.total_invested
+    const totalPctUsd = baselineUsd > 0 ? ((s.total_value - baselineUsd) / baselineUsd) * 100 : 0
+    const realPctUsd  = baselineUsd > 0 ? (realizedAt(s.date) / baselineUsd) * 100 : 0
+    seriesUsd.push({
+      key: s.date,
+      label: s.date.slice(5),       // MM-DD
+      total: +totalPctUsd.toFixed(2),
+      realized: +realPctUsd.toFixed(2),
+    })
+
+    const y = +s.date.slice(0, 4)
+    const mo = +s.date.slice(5, 7)
+    const fx = lookupHistoricalDolar(bench, y, mo, tcBlue)
+    const valueArs    = s.total_value * fx
+    const baselineArs = baselineUsd * fx
+    const totalPctArs = baselineArs > 0 ? ((valueArs - baselineArs) / baselineArs) * 100 : 0
+    const realPctArs  = baselineArs > 0 ? ((realizedAt(s.date) * fx) / baselineArs) * 100 : 0
+    seriesArs.push({
+      key: s.date,
+      label: s.date.slice(5),
+      total: +totalPctArs.toFixed(2),
+      realized: +realPctArs.toFixed(2),
+    })
+  }
+
+  return { seriesUsd, seriesArs }
+}

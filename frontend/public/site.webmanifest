@@ -1,0 +1,13 @@
+{
+  "name": "Rendi — Entendé tu inversión",
+  "short_name": "Rendi",
+  "description": "Herramienta de análisis financiero personal: seguí tus inversiones, rendimiento real ajustado a inflación y dólar, y operaciones en un solo lugar.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0B0F0E",
+  "theme_color": "#0B0F0E",
+  "lang": "es-AR",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
