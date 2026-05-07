@@ -2,11 +2,18 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "frontend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "cwd": "/Users/nicolaspussetto/Documents/trading/frontend",
-      "port": 5173
+      "name": "backend-csv",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--port", "8001", "--loop", "asyncio", "--http", "h11"],
+      "cwd": "backend",
+      "port": 8001
+    },
+    {
+      "name": "frontend-csv",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--port", "5174", "--strictPort"],
+      "cwd": "frontend",
+      "port": 5174
     }
   ]
 }

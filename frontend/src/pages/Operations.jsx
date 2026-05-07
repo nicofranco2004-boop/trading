@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, Upload } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
+import ImportWizard from '../components/import/ImportWizard'
 import { usd, pct, fmtUsd, pctSigned, colorClass } from '../utils/format'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
@@ -16,6 +17,7 @@ export default function Operations() {
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
   const [modal, setModal] = useState(null)
+  const [showImport, setShowImport] = useState(false)
   const [form, setForm] = useState(EMPTY)
   // ── Filtros ────────────────────────────────────────────────────────────────
   const [filterAsset, setFilterAsset] = useState('')
@@ -104,9 +106,17 @@ export default function Operations() {
         title="Operaciones cerradas"
         subtitle="Historial de operaciones realizadas con P&L realizado."
         action={
-          <button onClick={openAdd} className="flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-medium transition-colors">
-            <Plus size={14} /> Nueva operación
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition-colors"
+            >
+              <Upload size={14} /> Importar CSV
+            </button>
+            <button onClick={openAdd} className="flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-medium transition-colors">
+              <Plus size={14} /> Nueva operación
+            </button>
+          </div>
         }
       />
 
@@ -291,6 +301,13 @@ export default function Operations() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {showImport && (
+        <ImportWizard
+          onClose={() => setShowImport(false)}
+          onConfirmed={() => { load() }}
+        />
       )}
     </div>
   )

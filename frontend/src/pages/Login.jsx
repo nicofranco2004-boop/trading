@@ -27,7 +27,12 @@ export default function Login() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      const data = await res.json()
+      let data
+      try {
+        data = await res.json()
+      } catch {
+        throw new Error('No pudimos contactar el servidor. Verificá que el backend esté corriendo en el puerto 8001.')
+      }
       if (!res.ok) throw new Error(data.detail || 'Ocurrió un error')
       // Registro pendiente: el admin debe aprobar
       if (data.pending) {

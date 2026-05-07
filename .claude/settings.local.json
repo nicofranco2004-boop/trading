@@ -112,7 +112,10 @@
       "Bash(lsof -nP -iTCP -sTCP:LISTEN)",
       "Bash(tee /tmp/vite.log)",
       "Bash(curl -s http://localhost:5173/ -o /dev/null -w \"HTTP %{http_code}\\\\n\")",
-      "Bash(curl -s http://localhost:5173/api/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"email\":\"x\",\"password\":\"y\"}')"
+      "Bash(curl -s http://localhost:5173/api/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"email\":\"x\",\"password\":\"y\"}')",
+      "Bash(python -c \"import main; print\\('OK', [r.path for r in main.app.routes if '/imports' in str\\(getattr\\(r, 'path', ''\\)\\)]\\)\")",
+      "Bash(python3 -c \"import main; print\\('OK'\\); print\\([r.path for r in main.app.routes if '/imports' in str\\(getattr\\(r, 'path', ''\\)\\)]\\)\")",
+      "Bash(python3 -m unittest tests.test_importer -v)"
     ]
   }
 }
