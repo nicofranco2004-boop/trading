@@ -1,10 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, Upload } from 'lucide-react'
+import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import ImportWizard from '../components/import/ImportWizard'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -36,7 +35,6 @@ export default function Positions() {
   const [dolar, setDolar] = useState(null)
   const [brokers, setBrokers] = useState([])
   const [modal, setModal] = useState(null)
-  const [showImport, setShowImport] = useState(false)
   const [form, setForm] = useState(EMPTY_POS)
   const [sellForm, setSellForm] = useState({ broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '', tc_venta: '', date: '', commissions: '' })
   const [cashFlowForm, setCashFlowForm] = useState({ broker: '', currency: 'USDT', direction: 'deposit', amount: '', available: 0 })
@@ -352,14 +350,6 @@ export default function Positions() {
         title="Posiciones activas"
         subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado."
         meta={meta}
-        action={
-          <button
-            onClick={() => setShowImport(true)}
-            className="flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition-colors"
-          >
-            <Upload size={14} /> Importar CSV
-          </button>
-        }
       />
 
       {sortBrokersForDisplay(brokers).map(({ broker, indent, parentName }, bi) => {
@@ -698,12 +688,6 @@ export default function Positions() {
         />
       )}
 
-      {showImport && (
-        <ImportWizard
-          onClose={() => setShowImport(false)}
-          onConfirmed={() => { loadAll() }}
-        />
-      )}
     </div>
   )
 }

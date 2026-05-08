@@ -4,6 +4,8 @@ from typing import List, Optional
 from .base import Parser
 from .generic import RendiGenericParser
 from .binance import BinanceParser
+from .binance_futures import BinanceFuturesTradeHistoryParser
+from .binance_transaction import BinanceTransactionHistoryParser
 from .cocos import CocosParser
 from .balanz import BalanzParser
 
@@ -11,6 +13,8 @@ from .balanz import BalanzParser
 _PARSERS: List[Parser] = [
     RendiGenericParser(),
     BinanceParser(),
+    BinanceFuturesTradeHistoryParser(),
+    BinanceTransactionHistoryParser(),
     CocosParser(),
     BalanzParser(),
 ]

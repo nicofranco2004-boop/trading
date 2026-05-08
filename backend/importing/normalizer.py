@@ -13,7 +13,7 @@ import re
 from typing import List, Optional, Tuple
 from .schema import (
     RawRow, NormalizedTx, RowError,
-    OPERATION_TYPES, OP_TYPE_ALIASES,
+    OPERATION_TYPES, OP_TYPE_ALIASES, UNSUPPORTED_OP_HINTS,
     OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND, OP_INTEREST,
     OP_TRANSFER, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE,
     AT_STOCK, AT_CEDEAR, AT_ETF, AT_CRYPTO, AT_FIAT, AT_BOND, AT_OTHER,
@@ -54,7 +54,8 @@ def _validate_ymd(y: str, mo: str, d: str) -> Optional[str]:
         return None
 
 
-_NUM_RE = re.compile(r"^-?[\d\.,]+$")
+# Acepta formatos típicos: 1234, 1234.56, 1.234,56, -1234.56, 1.5e-05, 2.3E+10
+_NUM_RE = re.compile(r"^-?[\d\.,]+(?:[eE][+-]?\d+)?$")
 
 
 def parse_number(s: str) -> Optional[float]:
@@ -88,13 +89,49 @@ def parse_number(s: str) -> Optional[float]:
         return None
 
 
+# Fallback por keyword cuando ni el tipo exacto ni el alias matchean.
+# Cubre frases libres que el usuario o un broker pueden traer en castellano,
+# ej.: "TRANSFERENCIA INGRESO BANCARIO", "RETIRO DE FONDOS A CUENTA", etc.
+# Lista priorizada: el primer match gana (los más específicos primero).
+_OP_KEYWORD_FALLBACKS = [
+    # Ventas (tienen prioridad sobre las palabras genéricas como "DINERO")
+    (("VENTA", "VENDID", "SOLD", "SELL", "RESCATE", "REDEMPTION", "REDEEM",
+      "LIQUIDACION", "LIQUIDATION"), OP_SELL),
+    # Compras (incluye reinversión de dividendos, suscripciones FCI)
+    (("COMPRA", "COMPRAD", "BOUGHT", "BUY", "REINVEST", "DRIP",
+      "SUSCRIPCION", "SUSCRIPCIÓN"), OP_BUY),
+    # Conversiones (antes que ingreso/egreso porque pueden contener esas palabras)
+    (("ARS_USD", "ARS→USD", "ARSUSD", "MEP_COMPRA", "DOLAR_MEP"), OP_FX_ARS_TO_USD),
+    (("USD_ARS", "USD→ARS", "USDARS", "MEP_VENTA"), OP_FX_USD_TO_ARS),
+    # Dividendos / cupones / amortizaciones de bonos
+    (("DIVIDEN", "COUPON", "RENTA", "AMORTIZA"), OP_DIVIDEND),
+    (("INTERES", "INTERÉS", "INTEREST", "STAKING", "REWARD", "EARN"), OP_INTEREST),
+    # Cash flows (las más genéricas, al final)
+    (("INGRESO", "DEPOSIT", "APORTE", "ACREDIT", "RECIB", "FUNDING", "TOPUP",
+      "TOP_UP", "MONEYLINK_DEP"), OP_DEPOSIT),
+    (("EGRESO", "RETIRO", "WITHDRAW", "EXTRACC", "ENVIAD", "MONEYLINK_W"), OP_WITHDRAW),
+    # Comisiones / fees / impuestos
+    (("COMISION", "COMISIÓN", "COMMISSION", "FEE", "CHARGE", "ARANCEL",
+      "IMPUEST", "RETENC", "TAX", "MARGIN_INT", "BORROW_F"), OP_FEE),
+    # Transferencias genéricas — quedan como TRANSFER y se re-clasifican
+    # por signo del monto en normalize_rows().
+    (("WIRE", "ACAT", "JOURNAL", "JNL", "TRANSF", "XFER"), OP_TRANSFER),
+]
+
+
 def _coerce_op_type(s: str) -> Optional[str]:
     if not s:
         return None
     key = s.strip().upper().replace(" ", "_")
     if key in OPERATION_TYPES:
         return key
-    return OP_TYPE_ALIASES.get(key)
+    if key in OP_TYPE_ALIASES:
+        return OP_TYPE_ALIASES[key]
+    # Fallback por keyword: si contiene una raíz reconocida, asignar.
+    for needles, op_type in _OP_KEYWORD_FALLBACKS:
+        if any(n in key for n in needles):
+            return op_type
+    return None
 
 
 # Heurísticas de asset_type. Conservadoras: si no estamos seguros, OTHER.
@@ -147,9 +184,45 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
         op_raw = d.get("tipo", "")
         op_type = _coerce_op_type(op_raw)
         if not op_type:
-            errors.append(RowError(ridx, "tipo", "UNKNOWN_OP_TYPE",
-                                   f"Tipo de operación desconocido: '{op_raw}'."))
+            # Detectar si es una operación reconocida-pero-no-soportada
+            # (stock split, spin-off, merger, caución, etc.) y dar un mensaje
+            # accionable en vez de UNKNOWN_OP_TYPE genérico.
+            key = (op_raw or "").strip().upper().replace(" ", "_").replace("-", "_")
+            unsupported_msg = UNSUPPORTED_OP_HINTS.get(key)
+            # Match parcial — busca si el key contiene alguna palabra clave
+            if not unsupported_msg:
+                for hint_key, hint_msg in UNSUPPORTED_OP_HINTS.items():
+                    if hint_key in key or key in hint_key:
+                        unsupported_msg = hint_msg
+                        break
+            if unsupported_msg:
+                errors.append(RowError(ridx, "tipo", "OP_NOT_SUPPORTED", unsupported_msg))
+            else:
+                errors.append(RowError(ridx, "tipo", "UNKNOWN_OP_TYPE",
+                                       f"Tipo de operación desconocido: '{op_raw}'. "
+                                       f"Si tu broker usa otro nombre, mapealo a "
+                                       f"COMPRA/VENTA/DEPOSITO/RETIRO/DIVIDENDO/etc en el wizard."))
             continue
+
+        # Re-clasificación de TRANSFER ambiguo (Wire Transfer, ACAT, Journal)
+        # según el signo del monto: positivo → DEPOSIT, negativo → WITHDRAW.
+        # Si el monto es cero o no se puede determinar, queda como TRANSFER y
+        # el validator lo rechaza con TRANSFER_NOT_SUPPORTED.
+        if op_type == OP_TRANSFER:
+            raw_monto = d.get("monto", "") or d.get("monto_usd", "")
+            try:
+                monto_val = parse_number(str(raw_monto)) if raw_monto != "" else None
+            except Exception:
+                monto_val = None
+            if monto_val is not None:
+                if monto_val > 0:
+                    op_type = OP_DEPOSIT
+                elif monto_val < 0:
+                    op_type = OP_WITHDRAW
+                    # Para WITHDRAW el motor espera monto positivo (el signo
+                    # negativo solo nos sirvió para la clasificación). Vamos a
+                    # tomar el valor absoluto al parsearlo abajo.
+                    d = {**d, "monto": str(abs(monto_val))}
 
         broker = (d.get("broker") or "").strip()
         if not broker:
@@ -211,6 +284,31 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
         if op_type not in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS):
             if tx.gross_amount is None and usd_amount is not None:
                 tx.gross_amount = usd_amount
+            # Para cash flows (DEPOSIT/WITHDRAW/DIVIDEND/INTEREST/FEE), si no
+            # hay monto pero hay quantity * unit_price, calcularlo. Cubre CSVs
+            # donde el broker pone "Quantity=cantidad de cash" + "Price=1".
+            if (tx.gross_amount is None
+                    and op_type in (OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND,
+                                     OP_INTEREST, OP_FEE)):
+                if tx.quantity is not None and tx.unit_price is not None:
+                    tx.gross_amount = tx.quantity * tx.unit_price
+                elif tx.quantity is not None and tx.unit_price is None:
+                    # Schwab/Fidelity típicamente ponen el monto en "Amount"
+                    # sin precio — interpretamos quantity como el monto.
+                    tx.gross_amount = tx.quantity
+                    tx.quantity = None  # No es una compra, es cash directo
+            # Para WITHDRAW, FEE: aceptar monto negativo como positivo
+            # (algunos brokers exportan retiros como -100 en la columna monto).
+            if (tx.gross_amount is not None and tx.gross_amount < 0
+                    and op_type in (OP_WITHDRAW, OP_FEE)):
+                tx.gross_amount = abs(tx.gross_amount)
+            # Para DEPOSIT/DIVIDEND/INTEREST: si llegó negativo, lo convertimos
+            # en WITHDRAW/FEE (el broker mezcla in y out en la misma columna).
+            elif (tx.gross_amount is not None and tx.gross_amount < 0
+                  and op_type in (OP_DEPOSIT, OP_DIVIDEND, OP_INTEREST)):
+                tx.gross_amount = abs(tx.gross_amount)
+                tx.operation_type = OP_WITHDRAW if op_type == OP_DEPOSIT else OP_FEE
+                op_type = tx.operation_type
 
         # Auto-completar el triángulo (cantidad × precio = monto) para BUY/SELL
         # cuando el usuario aportó solo dos de los tres valores. Es matemática

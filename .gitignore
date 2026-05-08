@@ -4,6 +4,10 @@ backend/trading.db-wal
 backend/*.db
 backend/*.db-shm
 backend/*.db-wal
+# Cualquier archivo SQLite local — el root también queda fuera del repo
+*.db
+*.db-shm
+*.db-wal
 backend/.env
 .env
 .env.local

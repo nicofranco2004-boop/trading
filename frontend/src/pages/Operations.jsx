@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, Upload } from 'lucide-react'
+import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import ImportWizard from '../components/import/ImportWizard'
 import { usd, pct, fmtUsd, pctSigned, colorClass } from '../utils/format'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
@@ -13,11 +12,24 @@ import { api } from '../utils/api'
 
 const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: 0, pnl_pct: '', commissions: '' }
 
+// El persister de imports guarda algunos op_type con strings verbosos
+// (ej.: "CONVERSION IMPORT ARS→USDT"). Mapeamos a labels limpios para la UI.
+function prettyOpType(raw) {
+  if (!raw) return '—'
+  const s = String(raw).trim()
+  if (s.startsWith('CONVERSION IMPORT ARS→USDT') || s.startsWith('CONVERSION IMPORT ARS→USD')) {
+    return 'Conversión ARS→USD'
+  }
+  if (s.startsWith('CONVERSION IMPORT USDT→ARS') || s.startsWith('CONVERSION IMPORT USD→ARS')) {
+    return 'Conversión USD→ARS'
+  }
+  return s
+}
+
 export default function Operations() {
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
   const [modal, setModal] = useState(null)
-  const [showImport, setShowImport] = useState(false)
   const [form, setForm] = useState(EMPTY)
   // ── Filtros ────────────────────────────────────────────────────────────────
   const [filterAsset, setFilterAsset] = useState('')
@@ -106,17 +118,9 @@ export default function Operations() {
         title="Operaciones cerradas"
         subtitle="Historial de operaciones realizadas con P&L realizado."
         action={
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowImport(true)}
-              className="flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition-colors"
-            >
-              <Upload size={14} /> Importar CSV
-            </button>
-            <button onClick={openAdd} className="flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-medium transition-colors">
-              <Plus size={14} /> Nueva operación
-            </button>
-          </div>
+          <button onClick={openAdd} className="flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-medium transition-colors">
+            <Plus size={14} /> Nueva operación
+          </button>
         }
       />
 
@@ -208,7 +212,7 @@ export default function Operations() {
                   <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{op.date}</td>
                   <td className={`${tdClass} text-slate-600 dark:text-slate-300`}>{op.broker}</td>
                   <td className={`${tdClass} font-semibold text-slate-800 dark:text-slate-200`}>{op.asset}</td>
-                  <td className={`${tdClass} text-slate-500 dark:text-slate-400 text-xs`}>{op.op_type || '—'}</td>
+                  <td className={`${tdClass} text-slate-500 dark:text-slate-400 text-xs`}>{prettyOpType(op.op_type)}</td>
                   <td className={`${tdClass} text-slate-500 dark:text-slate-400 tabular`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
                   <td className={`${tdClass} text-slate-500 dark:text-slate-400 tabular`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
                   <td className={`${tdClass} text-slate-500 dark:text-slate-400 tabular`}>{op.quantity ?? '—'}</td>
@@ -303,12 +307,6 @@ export default function Operations() {
         </Modal>
       )}
 
-      {showImport && (
-        <ImportWizard
-          onClose={() => setShowImport(false)}
-          onConfirmed={() => { load() }}
-        />
-      )}
     </div>
   )
 }

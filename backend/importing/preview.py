@@ -8,7 +8,7 @@ from typing import Dict, List, Any
 from .schema import (
     NormalizedTx, RowError,
     OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND, OP_INTEREST,
-    OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TRANSFER,
+    OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TRANSFER, OP_FUTURES_PNL,
 )
 
 
@@ -24,6 +24,7 @@ def _op_label(op: str) -> str:
         OP_FX_USD_TO_ARS: "Conversión USD → ARS",
         OP_FEE: "Comisión",
         OP_TRANSFER: "Transferencia",
+        OP_FUTURES_PNL: "PnL de futuros",
     }.get(op, op)
 
 
@@ -67,9 +68,12 @@ def build_preview(
     # Estimación de impacto (no es definitiva — ese es el job del persister)
     impact = {
         "positions_to_create": by_op_type.get(OP_BUY, 0),
-        "operations_to_create": by_op_type.get(OP_SELL, 0) + by_op_type.get(OP_FX_USD_TO_ARS, 0),
+        "operations_to_create": (by_op_type.get(OP_SELL, 0)
+                                  + by_op_type.get(OP_FX_USD_TO_ARS, 0)
+                                  + by_op_type.get(OP_FUTURES_PNL, 0)
+                                  + by_op_type.get(OP_DIVIDEND, 0)
+                                  + by_op_type.get(OP_INTEREST, 0)),
         "cash_movements": (by_op_type.get(OP_DEPOSIT, 0) + by_op_type.get(OP_WITHDRAW, 0)
-                           + by_op_type.get(OP_DIVIDEND, 0) + by_op_type.get(OP_INTEREST, 0)
                            + by_op_type.get(OP_FEE, 0)),
         "fx_conversions": by_op_type.get(OP_FX_ARS_TO_USD, 0) + by_op_type.get(OP_FX_USD_TO_ARS, 0),
     }

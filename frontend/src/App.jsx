@@ -11,6 +11,7 @@ import Config from './pages/Config'
 import Insights from './pages/Insights'
 import Admin from './pages/Admin'
 import Goals from './pages/Goals'
+import Imports from './pages/Imports'
 
 function Layout() {
   const { user } = useAuth()
@@ -34,6 +35,7 @@ function Layout() {
         <Route path="/operaciones" element={<Operations />} />
         <Route path="/config" element={<Config />} />
         <Route path="/objetivos" element={<Goals />} />
+        <Route path="/imports" element={<Imports />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -36,7 +36,7 @@ function nextMonthOf(entry) {
   return { year: y, month: m }
 }
 
-export default function MonthlySummary() {
+export default function MonthlySummary({ refreshKey = 0 } = {}) {
   const [entries, setEntries] = useState([])
   const [brokers, setBrokers] = useState([])
   const [tab, setTab] = useState('global')
@@ -47,7 +47,11 @@ export default function MonthlySummary() {
   const [saving, setSaving] = useState(false)
   const [tcBlue, setTcBlue] = useState(1415)
   const [bench, setBench] = useState(null)
-  const [showAll, setShowAll] = useState(false)
+  // Por default mostramos TODO el historial. Razón: tras un import grande,
+  // la ventana de "últimos 6" puede caer entera en un período sin actividad
+  // (la historia importada queda en meses anteriores). El usuario puede
+  // colapsar a "solo recientes" desde el toggle si prefiere.
+  const [showAll, setShowAll] = useState(true)
   const [viewMode, setViewMode] = useState('simple') // 'simple' | 'advanced'
   // Live portfolio total (mismo cálculo que Dashboard) — para reconciliar
   // contra capital_final del mes en curso y dejar claro el delta.
@@ -55,7 +59,9 @@ export default function MonthlySummary() {
 
   useEffect(() => {
     init()
-  }, [])
+    // Re-fetch cuando el caller cambia refreshKey (ej.: Dashboard tras un import).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey])
 
   async function load() {
     setEntries(await api.get('/monthly'))

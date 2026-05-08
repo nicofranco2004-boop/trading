@@ -41,6 +41,9 @@ class RendiGenericParser(Parser):
     format_id = "rendi_generic"
     display_name = "Template Rendi (genérico)"
     is_supported = True
+    platform = "generic"
+    platform_label = "Genérico (cualquier broker)"
+    export_label = "Template Rendi"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_normalize_header(h) for h in headers}

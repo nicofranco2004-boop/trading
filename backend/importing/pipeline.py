@@ -18,6 +18,8 @@ from .normalizer import normalize_rows
 from .validator import validate
 from .preview import build_preview
 from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
+from .cash_sim import simulate as simulate_cash
+from . import seed as _seed
 
 
 PREVIEW_TTL_HOURS = 1
@@ -27,6 +29,23 @@ MAX_ROWS = 10_000
 
 def _file_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _row_fingerprint(tx: NormalizedTx) -> str:
+    """Hash que identifica unívocamente una transacción a efectos de dedup.
+    Misma fecha + broker + tipo + activo + cantidad + precio → misma fila lógica.
+    No incluye fees ni notes (que pueden diferir entre imports del mismo evento)."""
+    parts = [
+        tx.date or "",
+        (tx.broker or "").strip().lower(),
+        tx.operation_type or "",
+        (tx.asset_symbol or "").strip().upper(),
+        f"{tx.quantity:.8f}" if tx.quantity is not None else "",
+        f"{tx.unit_price:.8f}" if tx.unit_price is not None else "",
+        f"{tx.gross_amount:.4f}" if tx.gross_amount is not None else "",
+    ]
+    h = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+    return h[:16]  # 16 chars son suficientes para colision-free a nivel usuario
 
 
 def _new_id() -> str:
@@ -148,8 +167,66 @@ def run_preview(
     # Normalizar
     normalized, norm_errors = normalize_rows(parse_result.raw_rows)
 
-    # Validar (necesita estado del usuario)
+    # Normalizar nombres de broker: case-insensitive + trim. Evita que
+    # "Cocos capital" y "Cocos Capital" (o "  cocos capital  ") se traten
+    # como brokers distintos.
     user_brokers = fetch_user_brokers(conn, uid)
+    canonical_by_norm = {name.strip().lower(): name for name in user_brokers}
+    # Re-asignar tx.broker al nombre canónico existente si hay match
+    for tx in normalized:
+        if not tx.broker:
+            continue
+        key = tx.broker.strip().lower()
+        if key in canonical_by_norm:
+            tx.broker = canonical_by_norm[key]
+
+    # Auto-crear brokers que aparecen en el CSV pero no existen para este
+    # usuario. Inferimos la moneda por mayoría de filas: USD/USDT → USDT,
+    # ARS (o empate) → ARS. Si dos filas tienen el mismo broker con casing
+    # distinto (ej.: "Bull Market" + "bull market"), las agrupamos bajo el
+    # primer casing visto.
+    new_brokers_created: List[Dict[str, Any]] = []
+    pending: Dict[str, Dict[str, Any]] = {}  # norm_key → {first_name, rows}
+    for tx in normalized:
+        if not tx.broker:
+            continue
+        key = tx.broker.strip().lower()
+        if key in canonical_by_norm:
+            continue  # ya existe
+        if key not in pending:
+            pending[key] = {"first_name": tx.broker.strip(), "rows": []}
+        pending[key]["rows"].append(tx)
+
+    for key, info in pending.items():
+        rows_for_broker = info["rows"]
+        broker_name = info["first_name"]
+        usd_count = sum(1 for t in rows_for_broker
+                        if (t.currency or "").upper() in ("USD", "USDT"))
+        ars_count = sum(1 for t in rows_for_broker
+                        if (t.currency or "").upper() == "ARS")
+        inferred = "USDT" if usd_count > ars_count else "ARS"
+        cur = conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+            (uid, broker_name, inferred),
+        )
+        new_brokers_created.append({
+            "name": broker_name,
+            "currency": inferred,
+            "rows": len(rows_for_broker),
+        })
+        user_brokers[broker_name] = {
+            "id": cur.lastrowid,
+            "name": broker_name,
+            "currency": inferred,
+            "parent_broker_id": None,
+        }
+        canonical_by_norm[key] = broker_name
+        # Re-asignar las txs de este grupo al nombre canónico (por si la fila
+        # vino con otro casing del mismo nombre)
+        for t in rows_for_broker:
+            t.broker = broker_name
+
+    # Validar (necesita estado del usuario, ya con los brokers nuevos)
     existing_pos = fetch_existing_positions(conn, uid)
     valid_txs, val_errors = validate(
         normalized,
@@ -178,6 +255,29 @@ def run_preview(
         else:
             main_broker = "?"
 
+    # En modo "varios brokers" (broker_hint=None y >1 broker distinto en las txs),
+    # encendemos route_by_currency automáticamente si hay algún broker ARS con
+    # filas USD. El usuario no necesita un toggle — la moneda por fila es
+    # inequívoca en este modo.
+    is_multi_broker = (broker_hint is None) and (
+        len({t.broker for t in valid_txs}) > 1
+    )
+    if is_multi_broker and not route_by_currency:
+        # Buscar si algún broker ARS tiene filas USD
+        broker_currencies = dict(
+            (r["name"], r["currency"])
+            for r in conn.execute("SELECT name, currency FROM brokers WHERE user_id=?", (uid,))
+        )
+        for tx in valid_txs:
+            if (broker_currencies.get(tx.broker) == "ARS"
+                    and (tx.currency or "").upper() in ("USD", "USDT")):
+                route_by_currency = True
+                break
+            if tx.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS") \
+                    and broker_currencies.get(tx.broker) == "ARS":
+                route_by_currency = True
+                break
+
     conn.execute(
         """INSERT INTO import_batches
            (id, user_id, broker, parser_format, file_name, file_hash,
@@ -200,16 +300,33 @@ def run_preview(
         )
         raw_id_by_index[raw.row_index] = cur.lastrowid
 
+    # Fingerprints existentes en batches confirmados — para detectar dupes
+    existing_fingerprints = set(
+        r[0] for r in conn.execute(
+            """SELECT DISTINCT n.fingerprint
+                 FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed' AND n.fingerprint IS NOT NULL""",
+            (uid,),
+        ).fetchall()
+    )
+    duplicate_row_indices: List[int] = []
+
     for tx in valid_txs:
+        fp = _row_fingerprint(tx)
+        if fp in existing_fingerprints:
+            duplicate_row_indices.append(tx.row_index)
         conn.execute(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
-                quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
+                fingerprint)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
-             tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes),
+             tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
+             fp),
         )
 
     preview_payload = build_preview(
@@ -222,15 +339,110 @@ def run_preview(
     )
     preview_payload["session_id"] = batch_id
     preview_payload["route_by_currency"] = route_by_currency
+    preview_payload["is_multi_broker"] = is_multi_broker
+    preview_payload["new_brokers_created"] = new_brokers_created
+    preview_payload["duplicate_row_indices"] = duplicate_row_indices
 
-    # Si el ruteo está activo, contamos cuántas filas USD/USDT se irán al sub-broker
-    # para mostrarlo en el preview (cuántas a ARS, cuántas a USD).
-    if route_by_currency:
-        usd_rows = sum(1 for t in valid_txs if (t.currency or "").upper() in ("USD", "USDT"))
-        ars_rows = len(valid_txs) - usd_rows
+    # Cash simulation pre-confirm: detecta filas que pondrían el cash en
+    # negativo y reporta como warnings (no errores — el persister permite
+    # overdraft, esto es informativo).
+    if valid_txs:
+        starting_cash: Dict[Tuple[str, str], float] = {}
+        for r in conn.execute(
+            """SELECT p.broker, br.currency, p.invested
+                 FROM positions p
+                 JOIN brokers br ON br.name = p.broker AND br.user_id = p.user_id
+                WHERE p.user_id=? AND p.is_cash=1""",
+            (uid,),
+        ).fetchall():
+            starting_cash[(r["broker"], r["currency"])] = float(r["invested"] or 0)
+
+        sim = simulate_cash(
+            valid_txs,
+            user_brokers=user_brokers,
+            starting_cash=starting_cash,
+            route_by_currency=route_by_currency,
+        )
+        preview_payload["cash_warnings"] = [
+            {
+                "row_index": w.row_index,
+                "broker": w.broker,
+                "currency": w.currency,
+                "new_balance": round(w.new_balance, 2),
+                "op_type": w.op_type,
+                "message": w.message,
+            }
+            for w in sim.warnings
+        ]
+        preview_payload["projected_cash"] = [
+            {
+                "broker": broker,
+                "currency": currency,
+                "balance": round(balance, 2),
+            }
+            for (broker, currency), balance in sorted(sim.final_balances.items())
+        ]
+
+    # Seed suggestions: si el CSV referencia activos sin posición previa
+    # (errores INSUFFICIENT_STOCK) o tiene overdrafts sobre cash que no fue
+    # depositado antes en el archivo, ofrecemos al usuario cargar un "estado
+    # inicial". El seed se aplica al confirmar y resuelve esos casos.
+    err_insufficient_indices = {e.row_index for e in val_errors
+                                  if e.code == "INSUFFICIENT_STOCK"}
+    cash_warnings_obj = sim.warnings if valid_txs else []
+    seed_suggestions = _seed.build_suggestions(
+        valid_txs=valid_txs,
+        val_errors=val_errors,
+        cash_warnings=cash_warnings_obj,
+        user_brokers=user_brokers,
+        existing_positions=existing_pos,
+        all_normalized=normalized,
+    )
+    if seed_suggestions:
+        # Enriquecer con broker+asset+qty desde las normalized originales
+        # (las INSUFFICIENT_STOCK están filtradas de valid_txs)
+        seed_suggestions = _seed.enrich_with_sell_assets(
+            seed_suggestions,
+            all_normalized=normalized,
+            err_row_indices=err_insufficient_indices,
+        )
+        preview_payload["seed_suggestions"] = seed_suggestions
+
+    # Routing summary: por cada broker ARS con filas USD, cuántas van al padre
+    # y cuántas al sibling. Sirve para que el frontend muestre chips claros.
+    if route_by_currency and valid_txs:
+        broker_currencies = dict(
+            (r["name"], r["currency"])
+            for r in conn.execute("SELECT name, currency FROM brokers WHERE user_id=?", (uid,))
+        )
+        per_broker: Dict[str, Dict[str, int]] = {}
+        for tx in valid_txs:
+            entry = per_broker.setdefault(tx.broker, {"ars": 0, "usd": 0})
+            cur = (tx.currency or "").upper()
+            if cur in ("USD", "USDT"):
+                entry["usd"] += 1
+            else:
+                entry["ars"] += 1
+        routing_breakdown = []
+        for broker_name in sorted(per_broker.keys()):
+            stats = per_broker[broker_name]
+            broker_currency = broker_currencies.get(broker_name)
+            entry = {
+                "broker": broker_name,
+                "broker_currency": broker_currency,
+                "ars_rows": stats["ars"],
+                "usd_rows": stats["usd"],
+                "creates_sibling": (broker_currency == "ARS" and stats["usd"] > 0),
+                "sibling_name": f"{broker_name} · USD" if broker_currency == "ARS" else None,
+            }
+            routing_breakdown.append(entry)
+        preview_payload["routing_breakdown"] = routing_breakdown
+        # Compat: campos planos para el modo single-broker que ya consume el frontend
+        total_usd = sum(b["usd_rows"] for b in routing_breakdown)
+        total_ars = sum(b["ars_rows"] for b in routing_breakdown)
         preview_payload["routing_summary"] = {
-            "ars_rows_to_parent": ars_rows,
-            "usd_rows_to_sibling": usd_rows,
+            "ars_rows_to_parent": total_ars,
+            "usd_rows_to_sibling": total_usd,
         }
     return preview_payload
 
@@ -282,6 +494,97 @@ def load_session_for_confirm(conn, *, uid: int, session_id: str
     return txs, raw_id_by_index
 
 
+def load_session_with_seed_revalidate(
+    conn, *, uid: int, session_id: str, seed_state: Optional[Dict[str, Any]],
+) -> Tuple[List[NormalizedTx], Dict[int, int]]:
+    """Variante de load_session_for_confirm que re-normaliza y re-valida
+    TODAS las filas crudas (incluso las que fallaron la primera validación).
+
+    Sirve para cuando el usuario aporta un seed_state: re-corremos el validator
+    con las posiciones del seed sumadas, así los SELLs que antes fallaron por
+    INSUFFICIENT_STOCK ahora pasan. También re-insertamos las nuevas
+    NormalizedTx en la DB para que queden auditables y revertibles.
+
+    Si seed_state es None, comportamiento idéntico a load_session_for_confirm.
+    """
+    if not seed_state:
+        return load_session_for_confirm(conn, uid=uid, session_id=session_id)
+
+    batch = conn.execute(
+        "SELECT * FROM import_batches WHERE id=? AND user_id=?", (session_id, uid),
+    ).fetchone()
+    if not batch:
+        raise ValueError("Sesión de import no encontrada o expirada.")
+    if batch["status"] != "preview":
+        raise ValueError(f"Esta sesión ya está en estado '{batch['status']}'.")
+
+    raw_rows_db = conn.execute(
+        """SELECT id, row_index, raw_json FROM import_raw_rows
+            WHERE batch_id=? ORDER BY row_index ASC""",
+        (session_id,),
+    ).fetchall()
+
+    raw_rows: List[RawRow] = []
+    raw_id_by_index: Dict[int, int] = {}
+    for r in raw_rows_db:
+        try:
+            data = json.loads(r["raw_json"]) if r["raw_json"] else {}
+        except json.JSONDecodeError:
+            data = {}
+        raw_rows.append(RawRow(row_index=r["row_index"], data=data))
+        raw_id_by_index[r["row_index"]] = r["id"]
+
+    # Re-normalizar
+    normalized, _ = normalize_rows(raw_rows)
+
+    # Aplicar el mismo broker-canonicalization que run_preview.
+    user_brokers = fetch_user_brokers(conn, uid)
+    canonical_by_norm = {name.strip().lower(): name for name in user_brokers}
+    for tx in normalized:
+        if not tx.broker:
+            continue
+        key = tx.broker.strip().lower()
+        if key in canonical_by_norm:
+            tx.broker = canonical_by_norm[key]
+
+    # Existing positions + seed posiciones sintéticas → con esto los SELLs
+    # antes inválidos pasan validación.
+    existing_pos = fetch_existing_positions(conn, uid)
+    seed_pos = _seed.seed_state_to_existing_positions(seed_state)
+    existing_with_seed: Dict[Tuple[str, str], float] = dict(existing_pos)
+    for k, v in seed_pos.items():
+        existing_with_seed[k] = existing_with_seed.get(k, 0.0) + v
+
+    route_currency = bool(batch["route_by_currency"] or 0)
+    valid_txs, _ = validate(
+        normalized,
+        user_brokers=user_brokers,
+        existing_positions=existing_with_seed,
+        route_by_currency=route_currency,
+    )
+
+    # Reemplazar el contenido de import_normalized_tx con la nueva validación.
+    # Las filas previamente válidas + las promovidas por el seed quedan ahí;
+    # las que siguen inválidas se descartan (no van a persister).
+    conn.execute("DELETE FROM import_normalized_tx WHERE batch_id=?", (session_id,))
+    for tx in valid_txs:
+        fp = _row_fingerprint(tx)
+        conn.execute(
+            """INSERT INTO import_normalized_tx
+               (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
+                quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
+                fingerprint)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (session_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
+             tx.asset_symbol, tx.asset_name, tx.asset_type,
+             tx.quantity, tx.unit_price, tx.gross_amount,
+             tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
+             fp),
+        )
+
+    return valid_txs, raw_id_by_index
+
+
 def list_batches(conn, *, uid: int) -> List[Dict[str, Any]]:
     rows = conn.execute(
         """SELECT id, broker, parser_format, file_name, file_hash,
@@ -295,8 +598,109 @@ def list_batches(conn, *, uid: int) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[bytes]:
+    """Reconstruye un CSV en formato Rendi-canónico desde las raw_rows de un
+    batch. Sirve para "Editar y rehacer": revertir un import y re-procesar
+    los mismos datos sin pedirle al usuario el archivo otra vez.
+
+    Las raw_rows se almacenaron como `data` (dict) que es la salida del parser
+    correspondiente — siempre en el formato canónico de Rendi (fecha/tipo/
+    broker/activo/...). Por eso el reuso pasa por el parser genérico.
+    """
+    batch = conn.execute(
+        "SELECT id FROM import_batches WHERE id=? AND user_id=?", (batch_id, uid),
+    ).fetchone()
+    if not batch:
+        return None
+
+    rows = conn.execute(
+        """SELECT raw_json FROM import_raw_rows
+            WHERE batch_id=? ORDER BY row_index ASC""",
+        (batch_id,),
+    ).fetchall()
+    if not rows:
+        return None
+
+    parsed: List[Dict[str, Any]] = []
+    for r in rows:
+        try:
+            d = json.loads(r["raw_json"]) if r["raw_json"] else {}
+        except json.JSONDecodeError:
+            continue
+        # Excluir filas sintéticas del seed — las nuevas se generan en el redo
+        if d.get("_synthetic_seed"):
+            continue
+        parsed.append(d)
+
+    if not parsed:
+        return None
+
+    # Headers canónicos del template Rendi (mismo orden que el template).
+    headers = ["fecha", "tipo", "broker", "activo", "cantidad", "precio",
+                "monto", "monto_usd", "tc", "comisiones", "moneda", "notas"]
+    # Si alguna fila trae una clave no estándar, la agregamos al final.
+    extra_keys = set()
+    for d in parsed:
+        for k in d.keys():
+            if k not in headers and not k.startswith("_"):
+                extra_keys.add(k)
+    headers = headers + sorted(extra_keys)
+
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=headers, extrasaction="ignore")
+    writer.writeheader()
+    for d in parsed:
+        row = {h: d.get(h, "") if d.get(h) is not None else "" for h in headers}
+        writer.writerow(row)
+    return buf.getvalue().encode("utf-8")
+
+
 def parser_options() -> List[Dict[str, Any]]:
+    """Lista plana — back-compat para clientes viejos."""
     return [
         {"id": p.format_id, "label": p.display_name, "supported": p.is_supported}
         for p in list_parsers()
     ]
+
+
+def parser_options_grouped() -> List[Dict[str, Any]]:
+    """Devuelve los parsers agrupados por plataforma para el dropdown a 2 niveles.
+    Filtra plataformas que no tienen ningún parser soportado (ej.: Cocos
+    Capital, que no ofrece export oficial — los usuarios usan el genérico).
+    Estructura:
+      [
+        {
+          "platform": "binance",
+          "platform_label": "Binance",
+          "exports": [
+            {"id": "binance", "label": "Spot → Trade History", "supported": true},
+            {"id": "binance_futures_trade_history", "label": "Futures → Trade History", "supported": true},
+            ...
+          ]
+        },
+        ...
+      ]
+    """
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for p in list_parsers():
+        if p.platform not in grouped:
+            grouped[p.platform] = {
+                "platform": p.platform,
+                "platform_label": p.platform_label,
+                "exports": [],
+            }
+        grouped[p.platform]["exports"].append({
+            "id": p.format_id,
+            "label": p.export_label or p.display_name,
+            "supported": p.is_supported,
+        })
+    # Filtrar plataformas sin ningún export soportado — sino el dropdown
+    # muestra "Cocos Capital (sin export oficial)" como una opción que solo
+    # confunde al usuario.
+    grouped = {k: v for k, v in grouped.items()
+                if any(e["supported"] for e in v["exports"])}
+    # Orden: generic primero, después binance, después el resto
+    order = {"generic": 0, "binance": 1, "balanz": 2, "cocos": 3}
+    return sorted(grouped.values(), key=lambda g: order.get(g["platform"], 99))

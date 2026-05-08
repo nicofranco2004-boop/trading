@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 from .schema import (
     NormalizedTx, RowError,
     OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND, OP_INTEREST,
-    OP_TRANSFER, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE,
+    OP_TRANSFER, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_FUTURES_PNL,
 )
 
 
@@ -54,40 +54,50 @@ def validate(
         # Broker debe existir
         if tx.broker not in user_brokers:
             row_errs.append(RowError(ridx, "broker", "UNKNOWN_BROKER",
-                                     f"El broker '{tx.broker}' no existe. Creálo primero en Configuración."))
+                                     f"El broker '{tx.broker}' no existe. Creálo en Configuración → Brokers, o "
+                                     f"corregí el nombre en el wizard (modo 'Mezcla de brokers' lo crea automáticamente)."))
 
         broker_currency = (user_brokers.get(tx.broker) or {}).get("currency")
 
         op = tx.operation_type
         if op == OP_BUY:
             if not tx.asset_symbol:
-                row_errs.append(RowError(ridx, "activo", "MISSING_ASSET", "La compra necesita un activo."))
+                row_errs.append(RowError(ridx, "activo", "MISSING_ASSET",
+                                         "La compra necesita un activo (ticker en columna 'activo')."))
             if not _gt_zero(tx.quantity):
-                row_errs.append(RowError(ridx, "cantidad", "MISSING_QUANTITY", "La compra necesita una cantidad mayor a 0."))
+                row_errs.append(RowError(ridx, "cantidad", "MISSING_QUANTITY",
+                                         "La compra necesita una cantidad mayor a 0. Si tu CSV solo tiene 'monto' "
+                                         "sin desglosar cantidad y precio, completá precio para que lo calculemos."))
             if not _gt_zero(tx.unit_price) and not _gt_zero(tx.gross_amount):
                 row_errs.append(RowError(ridx, "precio", "MISSING_PRICE",
-                                         "La compra necesita 'precio' o 'monto' para calcular el costo."))
+                                         "La compra necesita 'precio' o 'monto' para calcular el costo. "
+                                         "Mapeá una de las dos columnas en el wizard."))
 
         elif op == OP_SELL:
             if not tx.asset_symbol:
-                row_errs.append(RowError(ridx, "activo", "MISSING_ASSET", "La venta necesita un activo."))
+                row_errs.append(RowError(ridx, "activo", "MISSING_ASSET",
+                                         "La venta necesita un activo (ticker en columna 'activo')."))
             if not _gt_zero(tx.quantity):
                 row_errs.append(RowError(ridx, "cantidad", "MISSING_QUANTITY", "La venta necesita una cantidad mayor a 0."))
             # El normalizer ya intentó autocompletar precio si vino monto + cantidad.
             # Si igual falta, exigir uno u otro.
             if not _gt_zero(tx.unit_price) and not _gt_zero(tx.gross_amount):
                 row_errs.append(RowError(ridx, "precio", "MISSING_PRICE",
-                                         "La venta necesita 'precio' o 'monto' para calcular el resultado."))
+                                         "La venta necesita 'precio' o 'monto' para calcular el resultado. "
+                                         "Mapeá una de las dos columnas en el wizard."))
 
         elif op in (OP_DEPOSIT, OP_WITHDRAW):
             if not _gt_zero(tx.gross_amount):
+                op_label = "El depósito" if op == OP_DEPOSIT else "El retiro"
                 row_errs.append(RowError(ridx, "monto", "MISSING_AMOUNT",
-                                         f"{'El depósito' if op == OP_DEPOSIT else 'El retiro'} necesita 'monto' mayor a 0."))
+                                         f"{op_label} necesita 'monto' mayor a 0. Verificá que la columna de "
+                                         f"cash (Amount/Net Amount/Importe) esté mapeada al campo 'monto' en el wizard."))
 
         elif op in (OP_DIVIDEND, OP_INTEREST):
             if not _gt_zero(tx.gross_amount):
                 row_errs.append(RowError(ridx, "monto", "MISSING_AMOUNT",
-                                         "El dividendo / interés necesita 'monto' mayor a 0."))
+                                         "El dividendo / interés necesita 'monto' mayor a 0. "
+                                         "Mapeá la columna de monto en el wizard."))
 
         elif op in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS):
             # Tras el normalizer: gross_amount=ARS, quantity=USD, unit_price=TC
@@ -106,12 +116,20 @@ def validate(
 
         elif op == OP_TRANSFER:
             row_errs.append(RowError(ridx, "tipo", "TRANSFER_NOT_SUPPORTED",
-                                     "Las transferencias entre brokers todavía no se importan automáticamente. Cargala manualmente."))
+                                     "Transferencia ambigua (Wire Transfer / ACAT / Journal sin signo de monto claro). "
+                                     "Si era un ingreso o egreso, agregale signo al monto en el CSV (positivo = depósito, "
+                                     "negativo = retiro), o cambiá el tipo a DEPOSITO/RETIRO antes de importar."))
 
         elif op == OP_FEE:
             if not _gt_zero(tx.gross_amount):
                 row_errs.append(RowError(ridx, "monto", "MISSING_AMOUNT",
                                          "Una comisión aislada necesita 'monto' mayor a 0."))
+
+        elif op == OP_FUTURES_PNL:
+            # PnL puede ser positivo o negativo. Solo exigimos que no sea 0.
+            if tx.gross_amount is None or abs(tx.gross_amount) < 1e-9:
+                row_errs.append(RowError(ridx, "monto", "MISSING_AMOUNT",
+                                         "El PnL de futuros necesita un 'monto' (positivo o negativo)."))
 
         # Validación cruzada para SELL: hay stock suficiente?
         if op == OP_SELL and not row_errs:
@@ -121,7 +139,8 @@ def validate(
                 row_errs.append(RowError(
                     ridx, "cantidad", "INSUFFICIENT_STOCK",
                     f"No hay suficiente stock de {tx.asset_symbol} en {tx.broker} para esta venta. "
-                    f"Disponible al {tx.date}: {available:g}, querés vender: {tx.quantity:g}.",
+                    f"Disponible al {tx.date}: {available:g}, querés vender: {tx.quantity:g}. "
+                    f"Si tu CSV no incluye las compras previas, cargá el estado inicial al ver la vista previa.",
                 ))
 
         if row_errs:

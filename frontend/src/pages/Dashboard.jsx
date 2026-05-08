@@ -8,7 +8,6 @@ import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import InsightLine from '../components/InsightLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
-import ImportWizard from '../components/import/ImportWizard'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -28,7 +27,10 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [range, setRange] = useState('1M')
-  const [showImport, setShowImport] = useState(false)
+  // Bump al confirmar import en Config → MonthlySummary recarga sus datos.
+  // Hoy el Dashboard no abre el wizard directamente, pero al volver a esta
+  // página queremos que MonthlySummary refresque por si hubo cambios.
+  const [importedTick, setImportedTick] = useState(0)
   const latestRef = useRef({})
 
   useEffect(() => {
@@ -247,14 +249,6 @@ export default function Dashboard() {
         title="Dashboard"
         subtitle="Rendimiento, riesgo y evolución de tu portfolio en tiempo real."
         meta={meta}
-        action={positions.filter(p => !p.is_cash).length > 0 ? (
-          <button
-            onClick={() => setShowImport(true)}
-            className="flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition-colors"
-          >
-            <Upload size={14} /> Importar CSV
-          </button>
-        ) : null}
       />
 
       {positions.filter(p => !p.is_cash).length === 0 && !loading && (
@@ -265,18 +259,18 @@ export default function Dashboard() {
                 Empezá importando tu historial
               </h2>
               <p className="text-sm text-slate-600 dark:text-slate-300">
-                ¿Ya tenés un CSV con tus operaciones? Subilo y reconstruimos tu portfolio en segundos. Vas a poder revisar fila por fila antes de guardar.
+                Andá a <strong>Configuración</strong> y subí un CSV con tus operaciones. Reconstruimos tu portfolio en segundos — vas a poder revisar fila por fila antes de guardar.
               </p>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
-              <button
-                onClick={() => setShowImport(true)}
+              <a
+                href="/config"
                 className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-4 py-2 rounded-md font-semibold transition"
               >
-                <Upload size={14} /> Importar CSV
-              </button>
+                <Upload size={14} /> Ir a Configuración
+              </a>
               <a
-                href="/positions"
+                href="/posiciones"
                 className="inline-flex items-center justify-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 px-3 py-2 rounded-md transition"
               >
                 Cargar manualmente <ArrowRight size={12} />
@@ -486,29 +480,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <MonthlySummary />
-
-      {positions.filter(p => !p.is_cash).length > 0 && (
-        <div className="mt-6 flex items-center justify-between gap-3 px-4 py-3 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-sm">
-          <div className="text-slate-600 dark:text-slate-300">
-            <span className="font-medium text-slate-800 dark:text-slate-200">¿Querés sumar otro broker?</span>{' '}
-            Subí un CSV con su historial y lo combinamos con lo que ya tenés.
-          </div>
-          <button
-            onClick={() => setShowImport(true)}
-            className="flex-shrink-0 inline-flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-1.5 rounded-md font-medium transition"
-          >
-            <Upload size={13} /> Importar CSV
-          </button>
-        </div>
-      )}
-
-      {showImport && (
-        <ImportWizard
-          onClose={() => setShowImport(false)}
-          onConfirmed={() => { loadAll() }}
-        />
-      )}
+      <MonthlySummary refreshKey={importedTick} />
     </div>
   )
 }
