@@ -31,7 +31,7 @@ export default function Login() {
       try {
         data = await res.json()
       } catch {
-        throw new Error('No pudimos contactar el servidor. Verificá que el backend esté corriendo en el puerto 8001.')
+        throw new Error('No pudimos contactar el servidor. Verificá que el backend esté corriendo en el puerto 8000.')
       }
       if (!res.ok) throw new Error(data.detail || 'Ocurrió un error')
       // Registro pendiente: el admin debe aprobar
