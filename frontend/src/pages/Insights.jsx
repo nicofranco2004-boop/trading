@@ -535,21 +535,35 @@ export default function Insights() {
     }
   }
 
+  // ── Filtro de operaciones para métricas de trader ──
+  // Win rate / profit factor / hold time / best-worst trade reflejan decisiones
+  // de trading: solo Venta y Futuros cuentan. Dividendos/Intereses son retorno
+  // pasivo (contarlos como "wins" infla el win rate artificialmente). Las
+  // Conversiones FX son cambios de moneda, no trades.
+  const isTradeOp = (op) => {
+    const t = (op.op_type || '').trim()
+    if (!t) return false
+    if (t === 'Dividendo' || t === 'Interés' || t === 'Compra') return false
+    if (t.startsWith('CONVERSION') || t.startsWith('Conversión')) return false
+    return true
+  }
+  const tradeOps = operations.filter(isTradeOp)
+
   // Mejor operación cerrada individual (la card nueva).
-  const bestWorstOp = computeBestWorstClosedOp(operations)
+  const bestWorstOp = computeBestWorstClosedOp(tradeOps)
 
   // ── Insight 5: Win rate + profit factor ──
   // Win rate solo no es suficiente: 5 ganadoras chicas + 2 perdedoras grandes
   // pueden dar 71% WR y aún así perder plata. Profit factor (gross win / gross
   // loss) captura esa asimetría.
   let winRate = null
-  if (operations.length > 0) {
-    const wins = operations.filter(o => (o.pnl_usd || 0) > 0).length
-    const losses = operations.filter(o => (o.pnl_usd || 0) < 0).length
+  if (tradeOps.length > 0) {
+    const wins = tradeOps.filter(o => (o.pnl_usd || 0) > 0).length
+    const losses = tradeOps.filter(o => (o.pnl_usd || 0) < 0).length
     const total = wins + losses
     if (total > 0) {
-      const avgWin = wins > 0 ? operations.filter(o => o.pnl_usd > 0).reduce((s, o) => s + o.pnl_usd, 0) / wins : 0
-      const avgLoss = losses > 0 ? operations.filter(o => o.pnl_usd < 0).reduce((s, o) => s + o.pnl_usd, 0) / losses : 0
+      const avgWin = wins > 0 ? tradeOps.filter(o => o.pnl_usd > 0).reduce((s, o) => s + o.pnl_usd, 0) / wins : 0
+      const avgLoss = losses > 0 ? tradeOps.filter(o => o.pnl_usd < 0).reduce((s, o) => s + o.pnl_usd, 0) / losses : 0
       winRate = {
         pct: (wins / total) * 100,
         wins, losses, total,
@@ -558,13 +572,13 @@ export default function Insights() {
       }
     }
   }
-  const profitFactor = computeProfitFactor(operations)
+  const profitFactor = computeProfitFactor(tradeOps)
 
   // ── Insight: Hold time promedio (días entre entry_date y date de cada operación) ──
   let holdTime = null
-  if (operations.length > 0) {
+  if (tradeOps.length > 0) {
     const days = []
-    for (const op of operations) {
+    for (const op of tradeOps) {
       if (!op.entry_date || !op.date) continue
       const entry = new Date(op.entry_date)
       const exit = new Date(op.date)

@@ -1,0 +1,6 @@
+fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-01-15,COMPRA,IBKR,AAPL,10,180,,,,2,USD,
+fecha-mala,COMPRA,IBKR,GOOG,5,140,,,,1,USD,Fecha inválida
+2024-02-20,XYZ_OP,IBKR,MSFT,3,300,,,,0,USD,Tipo inválido
+2024-03-01,VENTA,IBKR,TSLA,100,250,,,,0,USD,Sin stock
+2024-04-01,COMPRA,BrokerInexistente,NVDA,2,500,,,,0,USD,Broker no existe

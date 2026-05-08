@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator, Field
 from typing import Optional
@@ -106,7 +106,9 @@ def get_db():
 
 def _table_cols(conn, table: str) -> set:
     # Table name is always hardcoded in callers — never user-supplied
-    allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals'}
+    allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
+               'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
+               'import_mappings'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -204,6 +206,7 @@ def init_db():
             DROP TABLE positions_old;
         """)
     # Migración: columna entry_date para fecha de compra
+    cols = _table_cols(conn, 'positions')
     if cols and 'entry_date' not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN entry_date TEXT")
     # Migración: columna commissions (fees al comprar — afecta el cost basis real)
@@ -295,6 +298,7 @@ def init_db():
                        quantity, pnl_usd, pnl_pct FROM operations_old;
             DROP TABLE operations_old;
         """)
+    cols = _table_cols(conn, 'operations')
     if cols and 'entry_date' not in cols:
         conn.execute("ALTER TABLE operations ADD COLUMN entry_date TEXT")
     # Migración: columna commissions (fees al vender — reducen el net cash recibido)
@@ -354,6 +358,109 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id);
+    """)
+
+    # ─── CSV Importer ────────────────────────────────────────────────────────
+    # import_batches: cada upload (en estado 'preview' es la sesión; al confirm
+    # pasa a 'confirmed'; al revert pasa a 'reverted').
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS import_batches (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            broker TEXT NOT NULL,
+            parser_format TEXT NOT NULL,
+            file_name TEXT,
+            file_hash TEXT NOT NULL,
+            total_rows INTEGER NOT NULL DEFAULT 0,
+            valid_rows INTEGER NOT NULL DEFAULT 0,
+            invalid_rows INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            confirmed_at TEXT,
+            reverted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_batches_user
+            ON import_batches(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_import_batches_hash
+            ON import_batches(user_id, file_hash, status);
+
+        CREATE TABLE IF NOT EXISTS import_raw_rows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+            row_index INTEGER NOT NULL,
+            raw_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            errors_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_raw_rows_batch ON import_raw_rows(batch_id);
+
+        CREATE TABLE IF NOT EXISTS import_normalized_tx (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+            raw_row_id INTEGER NOT NULL REFERENCES import_raw_rows(id) ON DELETE CASCADE,
+            date TEXT NOT NULL,
+            broker TEXT NOT NULL DEFAULT '',
+            operation_type TEXT NOT NULL,
+            asset_symbol TEXT,
+            asset_name TEXT,
+            asset_type TEXT,
+            quantity REAL,
+            unit_price REAL,
+            gross_amount REAL,
+            fees REAL DEFAULT 0,
+            taxes REAL DEFAULT 0,
+            currency TEXT,
+            settlement_currency TEXT,
+            notes TEXT,
+            created_position_id INTEGER,
+            created_operation_id INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_norm_batch
+            ON import_normalized_tx(batch_id);
+
+        -- Mapping auxiliar: una fila puede crear múltiples positions/operations
+        -- (ej.: SELL FIFO genera N rows en operations). Acá guardamos todos los
+        -- IDs para poder revertir.
+        CREATE TABLE IF NOT EXISTS import_op_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+            raw_row_id INTEGER REFERENCES import_raw_rows(id) ON DELETE CASCADE,
+            position_id INTEGER,
+            operation_id INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_op_links_batch ON import_op_links(batch_id);
+    """)
+
+    # Migración: columna broker en import_normalized_tx (agregada después de la
+    # versión inicial de las tablas).
+    norm_cols = _table_cols(conn, 'import_normalized_tx')
+    if norm_cols and 'broker' not in norm_cols:
+        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN broker TEXT NOT NULL DEFAULT ''")
+    # Migración: fingerprint para detectar duplicados a nivel fila entre imports
+    norm_cols = _table_cols(conn, 'import_normalized_tx')
+    if norm_cols and 'fingerprint' not in norm_cols:
+        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN fingerprint TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_fingerprint ON import_normalized_tx(fingerprint)")
+
+    # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
+    # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.
+    batch_cols = _table_cols(conn, 'import_batches')
+    if batch_cols and 'route_by_currency' not in batch_cols:
+        conn.execute("ALTER TABLE import_batches ADD COLUMN route_by_currency INTEGER NOT NULL DEFAULT 0")
+
+    # Mapping templates guardados por usuario. Sirve para reusar el mapeo
+    # de columnas entre imports recurrentes (ej.: usuario que importa export
+    # de IBKR mensualmente, mapea una vez y reusa).
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS import_mappings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            mapping_json TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_mappings_user ON import_mappings(user_id);
     """)
 
     conn.commit()
@@ -1145,9 +1252,12 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
 
     Convención:
     - Si el broker tiene una posición cash (is_cash=1), se actualiza su `invested`.
-    - Si NO hay cash position, no-op. Es opt-in: el usuario decide trackear cash
-      creando un depósito vía /api/cash/flow. Así no aparecen cash positions
-      "fantasma" para quien no quiere trackear.
+    - Si NO hay cash position pero hay un movimiento (delta != 0), la creamos
+      automáticamente con el delta como balance inicial. Antes era opt-in (no-op
+      si no había cash), pero eso causaba que imports con BUYs sin DEPOSITs
+      previos quedaran con cash $0 en la pantalla — confuso. Ahora los BUYs
+      generan un balance negativo visible (señal de que falta cargar el cash
+      inicial / hacer un import del estado inicial).
     - Se permiten balances negativos — señal visible de overdraft / margen.
     """
     if delta == 0:
@@ -1157,7 +1267,20 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
         (uid, broker),
     ).fetchone()
     if not cash:
-        return  # opt-in: solo si ya hay cash trackeado
+        # Inferir el asset name según la moneda del broker. Si no hay broker
+        # row (caso raro), default a USDT.
+        broker_row = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+            (uid, broker),
+        ).fetchone()
+        currency = broker_row["currency"] if broker_row else "USDT"
+        asset_name = "ARS" if currency == "ARS" else "USDT"
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
+               VALUES (?,?,?,1,?)""",
+            (uid, broker, asset_name, delta),
+        )
+        return
     new_invested = (cash['invested'] or 0) + delta
     conn.execute(
         "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
@@ -2600,3 +2723,348 @@ Cuando el usuario pregunta algo específico ("¿qué % es Tesla?", "¿cuánto pe
 
     except Exception as ex:
         raise HTTPException(500, f"Error en el chat: {ex}")
+
+
+# ─── CSV Importer ────────────────────────────────────────────────────────────
+# Pipeline: parse → normalize → validate → preview → (confirm) persist → batch.
+# La persistencia reusa los helpers de bajo nivel ya existentes
+# (_adjust_broker_cash, _adjust_cash, _update_monthly_pnl_realized,
+# _update_monthly_flow, _repair_monthly_chain, _ensure_usd_sibling) para no
+# duplicar la contabilidad. Ver `backend/importing/persister.py`.
+
+from importing import pipeline as _import_pipeline
+from importing import persister as _import_persister
+from importing.parsers.registry import get_parser as _get_parser
+
+# Namespace simple con los helpers que el persister consume.
+class _ImportHelpers:
+    pass
+_import_helpers = _ImportHelpers()
+_import_helpers._adjust_broker_cash = _adjust_broker_cash
+_import_helpers._adjust_cash = _adjust_cash
+_import_helpers._update_monthly_pnl_realized = _update_monthly_pnl_realized
+_import_helpers._update_monthly_flow = _update_monthly_flow
+_import_helpers._repair_monthly_chain = _repair_monthly_chain
+_import_helpers._ensure_usd_sibling = _ensure_usd_sibling
+
+
+@app.get("/api/imports/template")
+def import_template(format: str = "rendi_generic", uid: int = Depends(get_current_user)):
+    """Devuelve el CSV de ejemplo del formato pedido."""
+    parser = _get_parser(format)
+    if parser is None:
+        raise HTTPException(404, f"Formato '{format}' desconocido.")
+    csv_text = parser.template_csv()
+    if not csv_text:
+        raise HTTPException(404, f"El formato '{format}' no tiene template descargable.")
+    return PlainTextResponse(
+        csv_text,
+        headers={"Content-Disposition": f'attachment; filename="rendi_template_{format}.csv"'},
+        media_type="text/csv",
+    )
+
+
+@app.get("/api/imports/parsers")
+def import_parsers(uid: int = Depends(get_current_user)):
+    """Lista los parsers disponibles + cuáles están soportados (para el dropdown)."""
+    return _import_pipeline.parser_options()
+
+
+@app.get("/api/imports/parsers/grouped")
+def import_parsers_grouped(uid: int = Depends(get_current_user)):
+    """Lista los parsers agrupados por plataforma (dropdown a 2 niveles)."""
+    return _import_pipeline.parser_options_grouped()
+
+
+@app.post("/api/imports/inspect")
+async def import_inspect(
+    file: UploadFile = File(...),
+    uid: int = Depends(get_current_user),
+):
+    """Lee headers y primeras filas del CSV. Devuelve también un mapping
+    sugerido (auto-detect) y la lista de campos internos de Rendi para
+    armar el wizard de mapeo de columnas."""
+    contents = await file.read()
+    payload = _import_pipeline.inspect(contents)
+    if payload.get("error"):
+        raise HTTPException(400, payload["error"])
+    return payload
+
+
+@app.post("/api/imports/preview")
+async def import_preview(
+    file: UploadFile = File(...),
+    broker: Optional[str] = Form(None),
+    format: Optional[str] = Form(None),
+    mapping: Optional[str] = Form(None),  # JSON string: {"columns": {...}, "defaults": {...}}
+    route_by_currency: Optional[str] = Form(None),  # "1"/"true" → activa ruteo per-row USD→sub
+    uid: int = Depends(get_current_user),
+):
+    """Sube el CSV y genera el preview. Persiste un batch en estado 'preview'.
+    Devuelve session_id (= batch_id) para usar en /confirm."""
+    contents = await file.read()
+    parsed_mapping = None
+    if mapping:
+        try:
+            parsed_mapping = json.loads(mapping)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "El mapping enviado no es un JSON válido.")
+    flag_route = (route_by_currency or "").strip().lower() in ("1", "true", "yes", "on")
+    conn = get_db()
+    try:
+        with conn:
+            payload = _import_pipeline.run_preview(
+                conn,
+                uid=uid,
+                file_bytes=contents,
+                file_name=file.filename,
+                broker_hint=broker,
+                parser_format=format,
+                mapping=parsed_mapping,
+                route_by_currency=flag_route,
+            )
+        if payload.get("error"):
+            # No es 500 — es un error esperado (archivo inválido, formato no soportado).
+            raise HTTPException(400, payload["error"])
+        return payload
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"Error al previsualizar el CSV: {ex}")
+    finally:
+        conn.close()
+
+
+class ImportConfirmIn(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=64)
+    skip_row_indices: Optional[list] = None  # filas a omitir en este confirm
+    # Estado inicial opcional: cash + posiciones que el usuario tenía antes
+    # del primer movimiento del CSV. Si está presente, generamos DEPOSITs +
+    # BUYs sintéticos al `seed_date` y re-validamos las filas que antes habían
+    # fallado por INSUFFICIENT_STOCK (ahora pasan porque hay stock seed).
+    seed_state: Optional[dict] = None
+
+
+@app.post("/api/imports/confirm")
+def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
+    """Confirma el import: aplica los side-effects y marca el batch como 'confirmed'.
+    `skip_row_indices` permite omitir filas específicas que el usuario marcó en
+    el preview como problemáticas, sin re-subir el archivo.
+    `seed_state` permite cargar un estado inicial sintético cuando el CSV es
+    parcial (faltan aportes y posiciones previas)."""
+    conn = get_db()
+    try:
+        with conn:
+            try:
+                txs, raw_id_by_index = _import_pipeline.load_session_with_seed_revalidate(
+                    conn, uid=uid, session_id=data.session_id, seed_state=data.seed_state,
+                )
+            except ValueError as ex:
+                raise HTTPException(400, str(ex))
+
+            # Filtrar filas que el usuario decidió omitir
+            skip_set = set(data.skip_row_indices or [])
+            if skip_set:
+                txs = [t for t in txs if t.row_index not in skip_set]
+
+            try:
+                summary = _import_persister.persist_batch(
+                    conn,
+                    uid=uid,
+                    batch_id=data.session_id,
+                    txs=txs,
+                    raw_row_ids_by_index=raw_id_by_index,
+                    helpers=_import_helpers,
+                    seed_state=data.seed_state,
+                )
+            except _import_persister.PersistError as ex:
+                raise HTTPException(400, f"Error en fila {ex.row_index}: {ex.message}")
+
+        return {"ok": True, "batch_id": data.session_id,
+                "skipped_by_user": len(skip_set), **summary}
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"Error al confirmar el import: {ex}")
+    finally:
+        conn.close()
+
+
+@app.get("/api/imports")
+def import_list(uid: int = Depends(get_current_user)):
+    """Lista los batches confirmados / revertidos del usuario."""
+    conn = get_db()
+    try:
+        return _import_pipeline.list_batches(conn, uid=uid)
+    finally:
+        conn.close()
+
+
+@app.get("/api/imports/{batch_id}")
+def import_detail(batch_id: str, uid: int = Depends(get_current_user)):
+    """Detalle de un batch — incluye filas válidas y errores para auditoría."""
+    conn = get_db()
+    try:
+        batch = conn.execute(
+            "SELECT * FROM import_batches WHERE id=? AND user_id=?", (batch_id, uid),
+        ).fetchone()
+        if not batch:
+            raise HTTPException(404, "Batch no encontrado.")
+        rows = conn.execute(
+            """SELECT id, row_index, raw_json, status, errors_json
+                 FROM import_raw_rows WHERE batch_id=? ORDER BY row_index ASC""",
+            (batch_id,),
+        ).fetchall()
+        return {
+            "batch": dict(batch),
+            "rows": [dict(r) for r in rows],
+        }
+    finally:
+        conn.close()
+
+
+class ImportMappingIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    mapping: dict
+
+
+@app.get("/api/imports/mappings")
+def import_mappings_list(uid: int = Depends(get_current_user)):
+    """Lista los mapping templates guardados del usuario."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT id, name, mapping_json, created_at
+                 FROM import_mappings WHERE user_id=? ORDER BY name ASC""",
+            (uid,),
+        ).fetchall()
+        return [
+            {"id": r["id"], "name": r["name"], "mapping": json.loads(r["mapping_json"]),
+             "created_at": r["created_at"]}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+@app.post("/api/imports/mappings")
+def import_mappings_save(data: ImportMappingIn, uid: int = Depends(get_current_user)):
+    """Guarda (o sobrescribe si ya existe el nombre) un mapping template."""
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO import_mappings (user_id, name, mapping_json)
+                   VALUES (?,?,?)
+                   ON CONFLICT(user_id, name) DO UPDATE SET
+                     mapping_json = excluded.mapping_json""",
+                (uid, data.name.strip(), json.dumps(data.mapping, ensure_ascii=False)),
+            )
+            row = conn.execute(
+                "SELECT id, name, mapping_json, created_at FROM import_mappings WHERE user_id=? AND name=?",
+                (uid, data.name.strip()),
+            ).fetchone()
+        return {"id": row["id"], "name": row["name"],
+                "mapping": json.loads(row["mapping_json"]), "created_at": row["created_at"]}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/imports/mappings/{mid}")
+def import_mappings_delete(mid: int, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute("DELETE FROM import_mappings WHERE id=? AND user_id=?", (mid, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/imports/{batch_id}/revert")
+def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_current_user)):
+    """Reversa todos los side-effects de un batch confirmado.
+    En modo safe (default): falla si el batch incluye SELL/FX/FUTURES_PNL.
+    En modo nuclear (`?nuclear=1`): hace best-effort de SELL/FX/FUTURES_PNL,
+    aceptando drift en tc_compra. Usado por el flujo "Editar y rehacer".
+    Sigue fallando si alguna posición creada ya fue vendida después."""
+    conn = get_db()
+    try:
+        with conn:
+            try:
+                result = _import_persister.revert_batch(
+                    conn, uid=uid, batch_id=batch_id, helpers=_import_helpers,
+                    nuclear=bool(nuclear),
+                )
+            except _import_persister.PersistError as ex:
+                raise HTTPException(400, ex.message)
+        return result
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"Error al revertir el import: {ex}")
+    finally:
+        conn.close()
+
+
+@app.post("/api/imports/{batch_id}/redo")
+def import_redo(batch_id: str, uid: int = Depends(get_current_user)):
+    """Editar y rehacer: revierte un batch confirmado (en modo nuclear) y
+    re-corre el preview con los mismos datos. Devuelve el preview payload
+    nuevo para que el frontend abra el wizard ya en la etapa de preview.
+
+    Útil cuando el usuario "subió mal" y quiere ajustar antes de confirmar
+    de nuevo (cambiar mapping, agregar seed, omitir filas, etc.)."""
+    conn = get_db()
+    try:
+        # 1) Snapshot del batch original (para preservar parser + settings)
+        batch_row = conn.execute(
+            "SELECT * FROM import_batches WHERE id=? AND user_id=?", (batch_id, uid),
+        ).fetchone()
+        if not batch_row:
+            raise HTTPException(404, "Batch no encontrado.")
+        if batch_row["status"] != "confirmed":
+            raise HTTPException(400, f"El batch no está en estado 'confirmed' (actual: {batch_row['status']}).")
+
+        # 2) Reconstruir CSV desde raw_rows ANTES de revertir (al revertir
+        #    no borramos raw_rows, pero queda más limpio leerlos antes).
+        csv_bytes = _import_pipeline.reconstruct_csv_from_batch(conn, uid=uid, batch_id=batch_id)
+        if not csv_bytes:
+            raise HTTPException(400, "No pudimos reconstruir los datos del batch para reusarlos.")
+
+        # 3) Revertir el batch con modo nuclear
+        with conn:
+            try:
+                _import_persister.revert_batch(
+                    conn, uid=uid, batch_id=batch_id, helpers=_import_helpers,
+                    nuclear=True,
+                )
+            except _import_persister.PersistError as ex:
+                raise HTTPException(400, f"No se pudo revertir el batch para reusarlo: {ex.message}")
+
+        # 4) Re-correr el preview con el CSV reconstruido — usando rendi_generic
+        #    porque el formato canónico es lo que escribimos al reconstruir.
+        with conn:
+            payload = _import_pipeline.run_preview(
+                conn,
+                uid=uid,
+                file_bytes=csv_bytes,
+                file_name=batch_row["file_name"] or "rehacer.csv",
+                broker_hint=batch_row["broker"],
+                parser_format="rendi_generic",
+                mapping=None,
+                route_by_currency=bool(batch_row["route_by_currency"] or 0),
+            )
+        if payload.get("error"):
+            raise HTTPException(400, payload["error"])
+        return {
+            "preview": payload,
+            "original_batch_id": batch_id,
+            "original_parser_format": batch_row["parser_format"],
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"Error al rehacer el import: {ex}")
+    finally:
+        conn.close()

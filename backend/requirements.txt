@@ -1,4 +1,5 @@
 fastapi==0.115.0
+python-multipart==0.0.12
 uvicorn==0.30.6
 yfinance>=1.2.0
 requests==2.32.3

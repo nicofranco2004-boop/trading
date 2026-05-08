@@ -1,0 +1,5 @@
+Trade Date,Action,Symbol,Quantity,Price,Amount,Commission,Currency,Description
+2024-01-15,BUY,AAPL,10,180.50,,1.20,USD,Apple Inc - market order
+2024-03-20,Bought,MSFT,5,400.00,,1.00,USD,
+2024-05-10,Sold,AAPL,4,220.00,,1.50,USD,Partial exit
+2024-02-01,Deposit,,,,5000,,USD,Wire transfer in

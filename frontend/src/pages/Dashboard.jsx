@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Activity, CircleDollarSign } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Activity, CircleDollarSign, Upload, ArrowRight } from 'lucide-react'
 import StatCard from '../components/StatCard'
 import MonthlySummary from '../components/MonthlySummary'
 import PageHeader from '../components/PageHeader'
@@ -27,6 +27,10 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [range, setRange] = useState('1M')
+  // Bump al confirmar import en Config → MonthlySummary recarga sus datos.
+  // Hoy el Dashboard no abre el wizard directamente, pero al volver a esta
+  // página queremos que MonthlySummary refresque por si hubo cambios.
+  const [importedTick, setImportedTick] = useState(0)
   const latestRef = useRef({})
 
   useEffect(() => {
@@ -241,7 +245,40 @@ export default function Dashboard() {
 
   return (
     <div className="page-shell">
-      <PageHeader title="Dashboard" subtitle="Rendimiento, riesgo y evolución de tu portfolio en tiempo real." meta={meta} />
+      <PageHeader
+        title="Dashboard"
+        subtitle="Rendimiento, riesgo y evolución de tu portfolio en tiempo real."
+        meta={meta}
+      />
+
+      {positions.filter(p => !p.is_cash).length === 0 && !loading && (
+        <Card className="mb-6 border-rendi-green/30 bg-gradient-to-br from-rendi-green/5 to-transparent">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+            <div className="flex-1">
+              <h2 className="font-semibold text-slate-900 dark:text-slate-100 mb-1">
+                Empezá importando tu historial
+              </h2>
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                Andá a <strong>Configuración</strong> y subí un CSV con tus operaciones. Reconstruimos tu portfolio en segundos — vas a poder revisar fila por fila antes de guardar.
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <a
+                href="/config"
+                className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-4 py-2 rounded-md font-semibold transition"
+              >
+                <Upload size={14} /> Ir a Configuración
+              </a>
+              <a
+                href="/posiciones"
+                className="inline-flex items-center justify-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 px-3 py-2 rounded-md transition"
+              >
+                Cargar manualmente <ArrowRight size={12} />
+              </a>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* ── Hero: Valor actual + InsightLine ─────────────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
@@ -443,7 +480,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <MonthlySummary />
+      <MonthlySummary refreshKey={importedTick} />
     </div>
   )
 }

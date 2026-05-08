@@ -1,0 +1,5 @@
+fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-01-15,COMPRA,IBKR,AAPL,10,180,,,,2,USD,Compra inicial
+2024-03-20,COMPRA,IBKR,AAPL,5,200,,,,1,USD,
+2024-05-10,VENTA,IBKR,AAPL,8,220,,,,1.5,USD,Venta parcial
+2024-02-01,DEPOSITO,IBKR,,,,5000,,,,USD,Aporte enero

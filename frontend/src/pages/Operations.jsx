@@ -12,6 +12,20 @@ import { api } from '../utils/api'
 
 const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: 0, pnl_pct: '', commissions: '' }
 
+// El persister de imports guarda algunos op_type con strings verbosos
+// (ej.: "CONVERSION IMPORT ARS→USDT"). Mapeamos a labels limpios para la UI.
+function prettyOpType(raw) {
+  if (!raw) return '—'
+  const s = String(raw).trim()
+  if (s.startsWith('CONVERSION IMPORT ARS→USDT') || s.startsWith('CONVERSION IMPORT ARS→USD')) {
+    return 'Conversión ARS→USD'
+  }
+  if (s.startsWith('CONVERSION IMPORT USDT→ARS') || s.startsWith('CONVERSION IMPORT USD→ARS')) {
+    return 'Conversión USD→ARS'
+  }
+  return s
+}
+
 export default function Operations() {
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -198,7 +212,7 @@ export default function Operations() {
                   <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{op.date}</td>
                   <td className={`${tdClass} text-slate-600 dark:text-slate-300`}>{op.broker}</td>
                   <td className={`${tdClass} font-semibold text-slate-800 dark:text-slate-200`}>{op.asset}</td>
-                  <td className={`${tdClass} text-slate-500 dark:text-slate-400 text-xs`}>{op.op_type || '—'}</td>
+                  <td className={`${tdClass} text-slate-500 dark:text-slate-400 text-xs`}>{prettyOpType(op.op_type)}</td>
                   <td className={`${tdClass} text-slate-500 dark:text-slate-400 tabular`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
                   <td className={`${tdClass} text-slate-500 dark:text-slate-400 tabular`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
                   <td className={`${tdClass} text-slate-500 dark:text-slate-400 tabular`}>{op.quantity ?? '—'}</td>
@@ -292,6 +306,7 @@ export default function Operations() {
           </div>
         </Modal>
       )}
+
     </div>
   )
 }

@@ -346,7 +346,11 @@ export default function Positions() {
 
   return (
     <div className="page-shell-wide">
-      <PageHeader title="Posiciones activas" subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado." meta={meta} />
+      <PageHeader
+        title="Posiciones activas"
+        subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado."
+        meta={meta}
+      />
 
       {sortBrokersForDisplay(brokers).map(({ broker, indent, parentName }, bi) => {
         const color = BROKER_COLORS[bi % BROKER_COLORS.length]
@@ -683,6 +687,7 @@ export default function Positions() {
           onConfirm={confirmConvert}
         />
       )}
+
     </div>
   )
 }

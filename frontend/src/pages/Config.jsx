@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, Pencil, RefreshCw, Lock } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Plus, Trash2, Pencil, RefreshCw, Lock, Upload, History } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import PageHeader from '../components/PageHeader'
+import ImportWizard from '../components/import/ImportWizard'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -14,6 +16,7 @@ export default function Config() {
   const [editingBroker, setEditingBroker] = useState(null)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
   const [pwState, setPwState] = useState({ loading: false, error: '', success: '' })
+  const [showImport, setShowImport] = useState(false)
 
   useEffect(() => {
     loadDolar()
@@ -200,6 +203,29 @@ export default function Config() {
         </p>
       </div>
 
+      {/* Importar datos */}
+      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
+        <h2 className="font-semibold text-slate-800 dark:text-slate-200 mb-1">Importar datos</h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+          Subí un CSV con tu historial de operaciones para reconstruir el portfolio sin cargar todo a mano. Soporta exports de cualquier broker — vas a poder mapear las columnas y previsualizar antes de confirmar.
+        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setShowImport(true)}
+            className="inline-flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-semibold transition"
+          >
+            <Upload size={14} /> Importar CSV
+          </button>
+          <Link
+            to="/imports"
+            className="inline-flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 transition"
+          >
+            <History size={14} /> Ver historial de importaciones
+          </Link>
+        </div>
+      </div>
+
       {/* Cuenta */}
       <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
         <div className="flex items-center gap-2 mb-4">
@@ -242,6 +268,13 @@ export default function Config() {
           </button>
         </form>
       </div>
+
+      {showImport && (
+        <ImportWizard
+          onClose={() => setShowImport(false)}
+          onConfirmed={() => { /* sin refresh — Config no muestra portfolio */ }}
+        />
+      )}
     </div>
   )
 }
