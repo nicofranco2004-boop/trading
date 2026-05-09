@@ -96,7 +96,7 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'warn',
     generate: ({ brokerConcentration }) => {
       if (!brokerConcentration || brokerConcentration.top.sharePct < 70) return null
-      return `**${brokerConcentration.top.sharePct.toFixed(0)}%** de tu capital está en **${brokerConcentration.top.name}**. Considerá diversificar custodia para reducir riesgo de contraparte.`
+      return `**${brokerConcentration.top.sharePct.toFixed(0)}%** de tu capital está custodiado en **${brokerConcentration.top.name}**. Si ese broker tuviera un problema operativo o regulatorio, todo tu capital quedaría expuesto. Diversificar entre brokers reduce ese riesgo.`
     },
   },
   {
@@ -182,7 +182,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ vsSp500, currency }) => {
       if (currency !== 'USD' || !vsSp500 || vsSp500.pct == null) return null
       if (vsSp500.pct < 5) return null
-      return `Tu portfolio supera al **S&P 500** por **+${vsSp500.pct.toFixed(1)}%**. Estás generando alpha sobre el índice de referencia.`
+      return `Tu portfolio rinde **+${vsSp500.pct.toFixed(1)}%** por encima del **S&P 500**, el índice de referencia del mercado de acciones de EEUU.`
     },
   },
   {
@@ -308,7 +308,7 @@ export const DIAGNOSTIC_GENERATORS = [
         }, 0)
       const sharePct = (cashUsd / totalPortfolio) * 100
       if (sharePct < 30) return null
-      return `**${sharePct.toFixed(0)}%** del portfolio está en cash. Aporta liquidez para oportunidades, pero también genera drag de rendimiento si el mercado sube.`
+      return `**${sharePct.toFixed(0)}%** del portfolio está en cash. Aporta liquidez para aprovechar correcciones del mercado, pero también limita el rendimiento si el mercado tiene una tendencia alcista sostenida.`
     },
   },
   {
@@ -346,7 +346,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ openExtremes }) => {
       if (!openExtremes || !openExtremes.best || openExtremes.best.pnl_usd <= 0) return null
       if (openExtremes.best.pnl_pct == null || openExtremes.best.pnl_pct < 30) return null
-      return `**${openExtremes.best.asset}** acumula **${fmtPct(openExtremes.best.pnl_pct)}** de ganancia no realizada. Definí un plan de toma de utilidades para no exponer la ganancia a una reversión.`
+      return `**${openExtremes.best.asset}** acumula **${fmtPct(openExtremes.best.pnl_pct)}** de ganancia no realizada. Una corrección del mercado podría reducir o eliminar esta ganancia hasta que la posición se cierre — las ganancias no realizadas se materializan solo al vender.`
     },
   },
 
@@ -355,10 +355,12 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'high_ars_exposure',
     category: 'Moneda',
     severity: 'warn',
-    generate: ({ pieData, totalPortfolio, brokers }) => {
-      if (!pieData || !brokers || !totalPortfolio) return null
+    // NOTA: usa `brokerPieData` (por broker), no `pieData` (que está por activo).
+    // Filtra por nombre de broker → solo tiene sentido sobre el agregado por broker.
+    generate: ({ brokerPieData, totalPortfolio, brokers }) => {
+      if (!brokerPieData || !brokers || !totalPortfolio) return null
       const arsBrokerSet = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
-      const arsValue = pieData.filter(p => arsBrokerSet.has(p.name)).reduce((s, p) => s + p.value, 0)
+      const arsValue = brokerPieData.filter(p => arsBrokerSet.has(p.name)).reduce((s, p) => s + p.value, 0)
       const sharePct = (arsValue / totalPortfolio) * 100
       if (sharePct < 60) return null
       return `**${sharePct.toFixed(0)}%** de la cartera está custodiada en brokers ARS. Tu rendimiento medido en USD depende de la evolución del dólar blue.`
