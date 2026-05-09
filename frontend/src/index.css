@@ -72,13 +72,16 @@ body {
     @apply text-xs text-ink-2 mt-1;
   }
 
-  /* Hero number — Instrument Serif italic. Solo para 1 métrica por pantalla
-     (Valor actual del Dashboard, "Tu portfolio hoy" en Posiciones). */
+  /* Hero number — Manrope tabular grande. Solo para 1 métrica por pantalla
+     (Valor actual del Dashboard, "Tu portfolio hoy" en Posiciones).
+     Probamos Instrument Serif italic — quedaba editorial/revista.
+     Manrope sans-serif tabular es la convención fintech moderna
+     (Linear, Wealthfront, Stripe, Robinhood). */
   .hero-number {
-    @apply font-display italic text-ink-0;
-    font-size: clamp(48px, 7vw, 84px);
-    line-height: 0.95;
-    letter-spacing: -0.03em;
+    @apply font-sans text-ink-0 font-medium;
+    font-size: clamp(44px, 6.5vw, 72px);
+    line-height: 1;
+    letter-spacing: -0.035em;
     font-variant-numeric: tabular-nums;
   }
 
