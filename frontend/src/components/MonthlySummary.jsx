@@ -328,25 +328,26 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
   const thClass = 'px-4 py-2 text-left text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider'
   const tdClass = 'px-4 py-2 text-sm'
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/30 focus:border-rendi-green/60'
+  const inputClass = 'w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-sm px-3 py-2 text-sm text-slate-900 dark:text-ink-1 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   return (
     <div>
-      {/* Banner de nuevo mes (calendario) */}
+      {/* Banner de nuevo mes (calendario) — usa amber porque es una alerta accionable
+          (acción pendiente del usuario), no un éxito. */}
       {calendarAhead && (
-        <div className="mb-5 flex items-center justify-between gap-4 px-4 py-3 bg-rendi-green/10 border border-rendi-green/30 rounded-xl">
+        <div className="mb-5 flex items-center justify-between gap-4 px-4 py-3 bg-rendi-warn/10 border border-rendi-warn/30 rounded">
           <div className="flex items-center gap-3">
-            <CalendarClock size={18} className="text-rendi-green-dark dark:text-rendi-green flex-shrink-0" />
-            <p className="text-sm text-slate-700 dark:text-slate-300">
+            <CalendarClock size={18} strokeWidth={1.5} className="text-rendi-warn flex-shrink-0" />
+            <p className="text-sm text-slate-700 dark:text-ink-1">
               Estamos en <span className="font-semibold">{MONTHS[todayMonth - 1]} {todayYear}</span> —
               el último mes registrado es <span className="font-semibold">{MONTHS[lastEntry.month - 1]} {lastEntry.year}</span>.
             </p>
           </div>
           <button
             onClick={() => openNext(lastEntry)}
-            className="flex-shrink-0 flex items-center gap-1.5 text-sm font-medium bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-1.5 rounded-lg transition"
+            className="flex-shrink-0 flex items-center gap-1.5 text-sm font-medium bg-rendi-pos text-bg-0 hover:opacity-90 px-3 py-1.5 rounded-sm transition"
           >
-            Abrir {MONTHS[nextMonthOf(lastEntry).month - 1]} <ChevronRight size={14} />
+            Abrir {MONTHS[nextMonthOf(lastEntry).month - 1]} <ChevronRight size={14} strokeWidth={1.5} />
           </button>
         </div>
       )}
@@ -393,9 +394,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           </div>
           <button
             onClick={openAdd}
-            className="flex items-center gap-1.5 text-sm bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green hover:bg-rendi-green/25 px-3 py-1.5 rounded-md font-medium transition-colors"
+            className="flex items-center gap-1.5 text-sm bg-bg-2 text-ink-1 hover:bg-bg-3 hover:text-ink-0 border border-line px-3 py-1.5 rounded-sm font-medium transition-colors"
           >
-            <Plus size={14} /> Agregar mes
+            <Plus size={14} strokeWidth={1.5} /> Agregar mes
           </button>
         </div>
       </div>
@@ -425,9 +426,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             </span>
             <button
               onClick={() => setShowAll(true)}
-              className="inline-flex items-center gap-1 text-xs font-medium text-rendi-green-dark dark:text-rendi-green hover:underline"
+              className="inline-flex items-center gap-1 text-xs font-medium text-rendi-accent hover:underline"
             >
-              <Eye size={12} /> Ver todos
+              <Eye size={12} strokeWidth={1.5} /> Ver todos
             </button>
           </div>
         )}
@@ -477,8 +478,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                       title="Sin registros mensuales"
                       description="Cargá tu primer mes para comenzar a registrar flujos, depósitos y P&L."
                       action={
-                        <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-medium transition">
-                          <Plus size={14} /> Agregar primer mes
+                        <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos text-bg-0 hover:opacity-90 px-3 py-2 rounded-sm font-semibold transition">
+                          <Plus size={14} strokeWidth={1.5} /> Agregar primer mes
                         </button>
                       }
                     />
@@ -494,18 +495,18 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 return (
                   <tr
                     key={m.id}
-                    className={`border-b border-slate-100 dark:border-slate-700/20 hover:bg-slate-50 dark:hover:bg-slate-700/20 ${
-                      isCurrent ? 'bg-rendi-green/[0.03] dark:bg-rendi-green/[0.05]' : ''
+                    className={`border-b border-slate-100 dark:border-line/40 hover:bg-slate-50 dark:hover:bg-bg-2 ${
+                      isCurrent ? 'bg-slate-50 dark:bg-bg-2/50' : ''
                     }`}
                   >
-                    <td className={`${tdClass} font-medium text-slate-800 dark:text-slate-200`}>
+                    <td className={`${tdClass} font-medium text-slate-800 dark:text-ink-1`}>
                       <div className="flex items-center gap-2">
                         {isCurrent ? (
-                          <span className="inline-flex items-center text-[10px] font-semibold bg-rendi-green/20 text-rendi-green-dark dark:text-rendi-green px-1.5 py-0.5 rounded-full">
-                            EN CURSO
+                          <span className="inline-flex items-center text-[9px] font-mono font-semibold uppercase tracking-[0.18em] bg-bg-3 text-ink-1 px-1.5 py-0.5 rounded-sm border border-line">
+                            En curso
                           </span>
                         ) : (
-                          <Lock size={10} className="text-slate-300 dark:text-slate-600 flex-shrink-0" />
+                          <Lock size={10} strokeWidth={1.5} className="text-slate-300 dark:text-ink-3 flex-shrink-0" />
                         )}
                         {MONTHS[m.month - 1]} {m.year}
                       </div>
@@ -517,11 +518,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                         <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoney(net, m.year, m.month)}</td>
                         <td className={tdClass}>
                           {isCurrent ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green border border-rendi-green/30">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold uppercase tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-3 text-ink-1 border border-line">
                               En curso
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700/40 text-slate-500 dark:text-slate-400 border border-slate-300/50 dark:border-slate-600/50">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold uppercase tracking-[0.15em] px-2 py-0.5 rounded-sm bg-slate-200 dark:bg-bg-2 text-slate-500 dark:text-ink-3 border border-slate-300/50 dark:border-line">
                               <Lock size={9} /> Cerrado
                             </span>
                           )}
@@ -551,7 +552,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                         {isCurrent && (
                           <button
                             onClick={() => openNext(m)}
-                            className="flex items-center gap-1 text-[11px] font-medium text-rendi-green-dark dark:text-rendi-green hover:underline ml-1"
+                            className="flex items-center gap-1 text-[11px] font-medium text-rendi-accent hover:underline ml-1"
                             title="Cerrar este mes y abrir el siguiente"
                           >
                             Cerrar mes <ChevronRight size={12} />
@@ -611,11 +612,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           <div className="space-y-4">
 
             {modal === 'next' && (
-              <div className="flex items-start gap-2 bg-rendi-green/10 border border-rendi-green/20 rounded-lg px-3 py-2.5 text-sm text-slate-700 dark:text-slate-300">
-                <ChevronRight size={15} className="text-rendi-green mt-0.5 flex-shrink-0" />
+              <div className="flex items-start gap-2 bg-bg-2 border border-line rounded px-3 py-2.5 text-sm text-slate-700 dark:text-ink-1">
+                <ChevronRight size={15} strokeWidth={1.5} className="text-ink-2 mt-0.5 flex-shrink-0" />
                 <span>
                   Capital inicial heredado del cierre de {MONTHS[form.month - 2 < 0 ? 11 : form.month - 2]} ·
-                  <span className="font-semibold text-rendi-green-dark dark:text-rendi-green"> ${usd(form.capital_inicio)}</span>.
+                  <span className="font-semibold text-ink-0"> ${usd(form.capital_inicio)}</span>.
                   Cargá los movimientos del mes — el capital final se recalcula automáticamente.
                 </span>
               </div>
@@ -681,7 +682,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                       setAutoCalc(e.target.checked)
                       if (e.target.checked) setForm(f => ({ ...f, capital_final: calcFinal(f) }))
                     }}
-                    className="rounded accent-rendi-green"
+                    className="rounded-sm accent-rendi-pos"
                   />
                   Cálculo automático
                 </label>
@@ -707,7 +708,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
               <button
                 onClick={save}
                 disabled={saving}
-                className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark disabled:opacity-50 text-rendi-bg rounded-md font-medium transition"
+                className="px-4 py-2 text-sm bg-rendi-pos hover:opacity-90 disabled:opacity-50 text-bg-0 rounded-sm font-semibold transition"
               >
                 {saving ? 'Guardando...' : modal === 'next' ? `Abrir ${MONTHS[form.month - 1]}` : 'Guardar'}
               </button>
@@ -761,15 +762,15 @@ function ConciliationBanner({ live, entries }) {
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-rendi-green/5 border border-rendi-green/20 rounded-lg p-3">
-          <div className="flex items-center gap-1.5 text-[10px] uppercase font-semibold tracking-wider text-rendi-green-dark dark:text-rendi-green">
-            <span className="w-1.5 h-1.5 rounded-full bg-rendi-green animate-pulse" />
+        <div className="bg-bg-2 border border-line rounded p-3">
+          <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase font-semibold tracking-[0.18em] text-ink-2">
+            <span className="live-dot" aria-hidden />
             Valor actual (live)
           </div>
-          <p className="text-lg font-bold text-slate-900 dark:text-white mt-1 tabular">
+          <p className="text-lg font-medium text-slate-900 dark:text-ink-0 mt-1 num">
             ${usd(live)}
           </p>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">
+          <p className="text-[10px] text-slate-500 dark:text-ink-3 mt-0.5 leading-tight">
             Coincide con el Dashboard. Calculado con precios actuales de mercado.
           </p>
         </div>

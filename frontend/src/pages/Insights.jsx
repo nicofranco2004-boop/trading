@@ -1491,7 +1491,7 @@ export default function Insights() {
         <Section title="Diagnóstico" subtitle="Observaciones automáticas basadas en tus datos. Las prioridades se actualizan diariamente según el estado actual del portfolio.">
           <Card>
             <div className="flex items-start gap-3">
-              <div className="p-2 rounded-lg bg-rendi-green/10 text-rendi-green-dark dark:text-rendi-green flex-shrink-0">
+              <div className="p-2 rounded-lg bg-bg-3 border border-line text-rendi-accent flex-shrink-0">
                 <Stethoscope size={18} />
               </div>
               <ul className="space-y-2.5 text-sm leading-snug flex-1">
@@ -1877,10 +1877,10 @@ function CollapsibleCoach({ snapshot }) {
   return (
     <button
       onClick={() => setOpen(true)}
-      className="w-full text-left bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 rounded-xl shadow-sm dark:shadow-none px-5 py-4 hover:border-rendi-green/40 hover:bg-rendi-green/[0.02] dark:hover:bg-rendi-green/[0.04] transition group"
+      className="w-full text-left bg-white dark:bg-bg-1 border border-slate-200/80 dark:border-line rounded-xl shadow-sm dark:shadow-none px-5 py-4 hover:border-rendi-accent/40 hover:bg-rendi-accent/[0.02] dark:hover:bg-rendi-accent/[0.04] transition group"
     >
       <div className="flex items-center gap-3">
-        <div className="p-2 rounded-lg bg-rendi-green/10 text-rendi-green-dark dark:text-rendi-green flex-shrink-0">
+        <div className="p-2 rounded-lg bg-bg-3 border border-line text-rendi-accent flex-shrink-0">
           <Sparkles size={18} />
         </div>
         <div className="flex-1 min-w-0">
@@ -1951,7 +1951,7 @@ function AlertBanner({ level, category, title, text }) {
 function InsightCard({ icon, title, children, accent, tooltip }) {
   return (
     <div className={`bg-white dark:bg-slate-800/60 border rounded-xl p-5 shadow-sm dark:shadow-none ${
-      accent ? 'border-rendi-green/40 dark:border-rendi-green/30' : 'border-slate-200/80 dark:border-slate-700/50'
+      accent ? 'border-rendi-accent/40 dark:border-rendi-accent/30' : 'border-slate-200/80 dark:border-line'
     }`}>
       <div className="flex items-center gap-2 mb-3 text-slate-500 dark:text-slate-400">
         {icon}

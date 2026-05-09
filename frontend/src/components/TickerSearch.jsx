@@ -146,7 +146,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
           placeholder={placeholder || 'Buscar por ticker o nombre (ej.: AAPL, Bitcoin, S&P 500)'}
           autoComplete="off"
           spellCheck="false"
-          className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md pl-8 pr-8 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60 transition"
+          className="w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md pl-8 pr-8 py-2 text-sm text-slate-900 dark:text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
         />
         {query && (
           <button
@@ -175,7 +175,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
                   onClick={() => { setActiveCat(cat.id); setHighlightIdx(0) }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition ${
                     active
-                      ? 'bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green ring-1 ring-rendi-green/30'
+                      ? 'bg-rendi-accent/15 text-rendi-accent ring-1 ring-rendi-accent/30'
                       : isSuggested
                       ? 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
                       : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
@@ -211,8 +211,8 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
                   onClick={() => pick(item.s)}
                   className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between gap-3 transition border-l-2 ${
                     highlightIdx === i
-                      ? 'bg-rendi-green/10 border-rendi-green'
-                      : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-700/60'
+                      ? 'bg-rendi-accent/10 border-rendi-accent'
+                      : 'border-transparent hover:bg-slate-100 dark:hover:bg-bg-2'
                   }`}
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">

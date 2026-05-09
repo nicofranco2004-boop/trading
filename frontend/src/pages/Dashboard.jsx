@@ -252,28 +252,29 @@ export default function Dashboard() {
       />
 
       {positions.filter(p => !p.is_cash).length === 0 && !loading && (
-        <Card className="mb-6 border-rendi-green/30 bg-gradient-to-br from-rendi-green/5 to-transparent">
+        <Card className="mb-6">
           <div className="flex flex-col sm:flex-row sm:items-center gap-4">
             <div className="flex-1">
-              <h2 className="font-semibold text-slate-900 dark:text-slate-100 mb-1">
+              <h2 className="font-semibold text-slate-900 dark:text-ink-0 mb-1">
                 Empezá importando tu historial
               </h2>
-              <p className="text-sm text-slate-600 dark:text-slate-300">
+              <p className="text-sm text-slate-600 dark:text-ink-1">
                 Andá a <strong>Configuración</strong> y subí un CSV con tus operaciones. Reconstruimos tu portfolio en segundos — vas a poder revisar fila por fila antes de guardar.
               </p>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
+              {/* CTA principal — usa rendi-pos como verde de marca/CTA */}
               <a
                 href="/config"
-                className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-4 py-2 rounded-md font-semibold transition"
+                className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-pos text-bg-0 hover:opacity-90 px-4 py-2 rounded-sm font-semibold transition"
               >
-                <Upload size={14} /> Ir a Configuración
+                <Upload size={14} strokeWidth={1.5} /> Ir a Configuración
               </a>
               <a
                 href="/posiciones"
-                className="inline-flex items-center justify-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 px-3 py-2 rounded-md transition"
+                className="inline-flex items-center justify-center gap-1.5 text-sm text-slate-600 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0 px-3 py-2 transition"
               >
-                Cargar manualmente <ArrowRight size={12} />
+                Cargar manualmente <ArrowRight size={12} strokeWidth={1.5} />
               </a>
             </div>
           </div>
@@ -414,66 +415,79 @@ export default function Dashboard() {
             description="Vamos a registrar el valor de tu portfolio cada vez que entres al Dashboard. Con dos días registrados ya podemos mostrar la evolución."
           />
         ) : (
-          <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={evoSeries} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id="grad-value" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#37FF68" stopOpacity={0.45} />
-                  <stop offset="100%" stopColor="#37FF68" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="#334155" strokeOpacity={0.25} vertical={false} />
-              <XAxis
-                dataKey="label"
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
-                minTickGap={28}
-              />
-              <YAxis
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
-                tickFormatter={v => usdCompact(v)}
-                domain={[chartMin > 0 ? chartMin * 0.97 : 0, chartMax * 1.02]}
-                width={56}
-              />
-              <Tooltip
-                contentStyle={{ background: '#0F1614', border: '1px solid #1E2624', borderRadius: 10, padding: '10px 12px' }}
-                labelStyle={{ color: '#cbd5e1', fontSize: 11, marginBottom: 6 }}
-                formatter={(v, name) => [fmtUsd(v), name === 'valueUsd' ? 'Valor' : 'Aportado']}
-                labelFormatter={l => `Fecha · ${l}`}
-              />
-              <Area
-                type="monotone"
-                dataKey="netDeposited"
-                stroke="#64748b"
-                strokeWidth={1.5}
-                strokeDasharray="4 4"
-                fill="none"
-                dot={false}
-                activeDot={false}
-              />
-              <Area
-                type="monotone"
-                dataKey="valueUsd"
-                stroke="#37FF68"
-                strokeWidth={2.4}
-                fill="url(#grad-value)"
-                dot={false}
-                activeDot={{ r: 4, fill: '#37FF68', stroke: '#0B0F0E', strokeWidth: 2 }}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          (() => {
+            // Color condicional: verde solo si el portfolio gana, rojo si pierde.
+            // Audit visual: verde es semántico, no decorativo.
+            const isProfit = totalReturnUsd >= 0
+            const lineColor = isProfit ? '#6FE3A3' : '#F17A7A'
+            const fillId = isProfit ? 'grad-value-pos' : 'grad-value-neg'
+            return (
+              <ResponsiveContainer width="100%" height={300}>
+                <AreaChart data={evoSeries} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={lineColor} stopOpacity={0.18} />
+                      <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="#222636" strokeOpacity={0.6} strokeDasharray="2 4" vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    axisLine={false}
+                    tickLine={false}
+                    minTickGap={28}
+                  />
+                  <YAxis
+                    tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={v => usdCompact(v)}
+                    domain={[chartMin > 0 ? chartMin * 0.97 : 0, chartMax * 1.02]}
+                    width={56}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: '#101218', border: '1px solid #2C3142', borderRadius: 10, padding: '10px 12px' }}
+                    labelStyle={{ color: '#CFD0C8', fontSize: 11, marginBottom: 6 }}
+                    formatter={(v, name) => [fmtUsd(v), name === 'valueUsd' ? 'Valor' : 'Aportado']}
+                    labelFormatter={l => `Fecha · ${l}`}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="netDeposited"
+                    stroke="#5A5C5B"
+                    strokeWidth={1.5}
+                    strokeDasharray="4 4"
+                    fill="none"
+                    dot={false}
+                    activeDot={false}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="valueUsd"
+                    stroke={lineColor}
+                    strokeWidth={1.75}
+                    fill={`url(#${fillId})`}
+                    dot={false}
+                    activeDot={{ r: 4, fill: lineColor, stroke: '#0A0B0E', strokeWidth: 2 }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )
+          })()
         )}
 
         {evoSeries.length >= 2 && (
-          <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 mt-3 pt-3 border-t border-slate-200/60 dark:border-slate-700/30">
+          <div className="flex items-center gap-4 text-xs text-ink-2 mt-3 pt-3 border-t border-line font-mono">
             <span className="inline-flex items-center gap-1.5">
-              <span className="inline-block w-3 h-0.5 bg-rendi-green rounded-full" /> Valor del portfolio
+              <span
+                className="inline-block w-3 h-0.5 rounded-full"
+                style={{ background: totalReturnUsd >= 0 ? '#6FE3A3' : '#F17A7A' }}
+              />
+              Valor del portfolio
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="inline-block w-3 h-px border-t border-dashed border-slate-400" /> Capital aportado
+              <span className="inline-block w-3 h-px border-t border-dashed border-ink-3" /> Capital aportado
             </span>
           </div>
         )}
