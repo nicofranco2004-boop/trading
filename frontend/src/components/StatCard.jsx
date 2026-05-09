@@ -4,8 +4,13 @@
 //
 // `positive` colors the main value (use for P&L)
 // `pnlPositive` colors only the "P&L: $..." segment of `sub`
+// `tooltip` (ReactNode) → si se pasa, renderiza un ⓘ al lado del label que
+//   despliega el contenido al hacer hover. Usar para aclarar definiciones
+//   financieras (CAGR, P&L realizado vs no realizado, etc.).
 
-export default function StatCard({ label, value, sub, hint, positive, pnlPositive, tone = 'secondary', icon }) {
+import InfoTooltip from './InfoTooltip'
+
+export default function StatCard({ label, value, sub, hint, positive, pnlPositive, tone = 'secondary', icon, tooltip }) {
   const isPrimary = tone === 'primary'
 
   const valueColor =
@@ -48,8 +53,11 @@ export default function StatCard({ label, value, sub, hint, positive, pnlPositiv
   return (
     <div className={containerCls}>
       <div className="flex items-center gap-2 justify-between">
-        <p className={labelCls}>{label}</p>
-        {icon && <span className="text-slate-400 dark:text-slate-500">{icon}</span>}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <p className={labelCls}>{label}</p>
+          {tooltip && <InfoTooltip>{tooltip}</InfoTooltip>}
+        </div>
+        {icon && <span className="text-slate-400 dark:text-slate-500 flex-shrink-0">{icon}</span>}
       </div>
       <p className={valueCls}>{value}</p>
       {sub && <p className={subCls}>{subNode}</p>}

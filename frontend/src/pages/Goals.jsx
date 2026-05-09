@@ -5,6 +5,7 @@ import Modal from '../components/Modal'
 import DateInput from '../components/DateInput'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
+import InfoTooltip from '../components/InfoTooltip'
 import { usd, fmtUsd } from '../utils/format'
 import { api } from '../utils/api'
 
@@ -138,9 +139,24 @@ export default function Goals() {
 
       {/* CAGR card */}
       <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center gap-1.5 mb-2">
           <TrendingUp size={16} className="text-slate-400" />
           <h2 className="font-semibold text-slate-800 dark:text-slate-200">Rendimiento histórico (CAGR)</h2>
+          <InfoTooltip>
+            <p className="font-semibold text-slate-800 dark:text-slate-100">¿Qué es el CAGR?</p>
+            <p>
+              <span className="font-medium">Compound Annual Growth Rate</span> · expresa tu rendimiento como una <span className="font-medium">tasa anual constante</span>.
+            </p>
+            <p className="text-slate-500 dark:text-slate-400">
+              Permite comparar tu performance contra otras inversiones en la misma unidad (% por año): plazos fijos, S&P 500, inflación INDEC, FCIs.
+            </p>
+            <p className="text-slate-500 dark:text-slate-400">
+              Es distinto al <span className="font-medium">retorno total acumulado</span> que ves en el Dashboard, que muestra la ganancia desde el inicio sin anualizar.
+            </p>
+            <p className="text-slate-500 dark:text-slate-400">
+              Calculado con <span className="font-medium">TWR (Time-Weighted Return)</span>: neutraliza el efecto de tus aportes y retiros — refleja únicamente la performance del mercado sobre tu capital.
+            </p>
+          </InfoTooltip>
         </div>
         {cagr?.cagr != null ? (
           <p className="text-sm text-slate-600 dark:text-slate-300">

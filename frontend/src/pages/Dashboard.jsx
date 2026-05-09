@@ -287,6 +287,13 @@ export default function Dashboard() {
             tone="primary"
             label="Valor actual"
             value={fmtUsd(portfolioTotal)}
+            tooltip={
+              <>
+                <p className="font-semibold text-slate-800 dark:text-slate-100">Valor de mercado de tu portfolio</p>
+                <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
+                <p className="text-slate-500 dark:text-slate-400">Para brokers ARS, la conversión a USD se hace al blue actual.</p>
+              </>
+            }
             sub={
               <span className="inline-flex items-center gap-3 flex-wrap">
                 <span className="text-slate-500 dark:text-slate-400">
@@ -311,6 +318,13 @@ export default function Dashboard() {
             value={fmtUsd(netDeposited)}
             sub="Depósitos netos de retiros · no se cuenta como rendimiento"
             icon={<PiggyBank size={14} />}
+            tooltip={
+              <>
+                <p className="font-semibold text-slate-800 dark:text-slate-100">Plata que vos pusiste</p>
+                <p>Capital inicial + depósitos − retiros. Es la plata que aportaste de tu propio bolsillo, sin contar lo que el mercado generó.</p>
+                <p className="text-slate-500 dark:text-slate-400">Es la base sobre la que se mide tu rendimiento real.</p>
+              </>
+            }
           />
           <StatCard
             label="Resultado total"
@@ -318,6 +332,13 @@ export default function Dashboard() {
             sub={`${pctSigned(totalReturnPct)} desde el inicio`}
             positive={totalReturnUsd >= 0}
             icon={<Activity size={14} />}
+            tooltip={
+              <>
+                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia acumulada (no anualizada)</p>
+                <p>Valor actual − Capital aportado. Muestra cuánto generaste en total desde el inicio, sin importar el período.</p>
+                <p className="text-slate-500 dark:text-slate-400">¿Querés ver tu rendimiento anualizado para comparar contra plazos fijos o S&P 500? Mirá el <span className="font-medium">CAGR</span> en Objetivos.</p>
+              </>
+            }
           />
         </div>
       </div>
@@ -339,6 +360,13 @@ export default function Dashboard() {
           sub="Resultado acumulado de operaciones cerradas"
           positive={realizedPnl >= 0}
           icon={<CircleDollarSign size={14} />}
+          tooltip={
+            <>
+              <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia ya cobrada</p>
+              <p>Es la ganancia o pérdida que <span className="font-medium">ya cristalizaste</span> al vender posiciones. Es plata que ya tenés en tu cuenta.</p>
+              <p className="text-slate-500 dark:text-slate-400">Incluye también dividendos y conversiones FX realizadas.</p>
+            </>
+          }
         />
         <StatCard
           label="P&L no realizado"
@@ -346,6 +374,13 @@ export default function Dashboard() {
           sub={`${pctSigned(totalPct)} sobre costo · posiciones abiertas`}
           positive={totalPnl >= 0}
           icon={<Wallet size={14} />}
+          tooltip={
+            <>
+              <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia en papel</p>
+              <p>Es la ganancia o pérdida actual de tus <span className="font-medium">posiciones abiertas</span> según los precios de mercado de hoy.</p>
+              <p className="text-slate-500 dark:text-slate-400">Va a cambiar todos los días con el mercado y solo se transforma en realizado cuando cierres la posición.</p>
+            </>
+          }
         />
       </div>
 

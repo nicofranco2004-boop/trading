@@ -99,11 +99,39 @@ export default function Insights() {
   if (loading) return <div className="page-shell text-center text-slate-400">Cargando...</div>
 
   // ── Distribution ──
+  // pieData    → por broker (gráfico de torta "Por broker", concentración por broker).
+  // assetPieData → por activo (gráfico "Por activo", diagnóstico de concentración por
+  //                instrumento). Agrega posiciones del mismo asset entre brokers/lotes.
+  //                Excluye cash. Esto es lo que un usuario espera ver al preguntarse
+  //                "¿qué tan expuesto estoy a un único activo?".
   const tcBlue = dolar?.blue?.venta || 1415
   const pieData = brokers
     .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcBlue).value.toFixed(2) }))
     .filter(x => x.value > 0)
   const totalPortfolio = pieData.reduce((s, x) => s + x.value, 0)
+
+  const assetPieData = (() => {
+    if (!positions.length || totalPortfolio <= 0) return []
+    const valuesByAsset = {}
+    for (const p of positions) {
+      if (p.is_cash) continue
+      const broker = brokers.find(b => b.name === p.broker)
+      let val = 0
+      if (broker?.currency === 'ARS') {
+        const priceArs = p.price_override ?? prices[p.asset + '.BA']
+        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
+      } else {
+        const price = p.price_override ?? prices[p.asset]
+        val = price != null ? price * (p.quantity || 0) : (p.invested || 0)
+      }
+      const k = (p.asset || '').toUpperCase()
+      valuesByAsset[k] = (valuesByAsset[k] || 0) + val
+    }
+    return Object.entries(valuesByAsset)
+      .map(([asset, v]) => ({ name: asset, value: +v.toFixed(2) }))
+      .filter(x => x.value > 0)
+      .sort((a, b) => b.value - a.value)
+  })()
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
   const totalCostBasis = brokers.reduce((s, b) => {
@@ -597,29 +625,16 @@ export default function Insights() {
   }
 
   // ── Insight 6: Concentración (top 3 activos sobre portfolio total) ──
+  // Reutiliza assetPieData (ya agregado por activo, excluyendo cash).
   let concentration = null
-  if (positions.length > 0 && totalPortfolio > 0) {
-    // Valuación USD por posición (no cash)
-    const valuesByAsset = {}
-    for (const p of positions) {
-      if (p.is_cash) continue
-      const broker = brokers.find(b => b.name === p.broker)
-      let val = 0
-      if (broker?.currency === 'ARS') {
-        const priceArs = p.price_override ?? prices[p.asset + '.BA']
-        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
-      } else {
-        const price = p.price_override ?? prices[p.asset]
-        val = price != null ? price * (p.quantity || 0) : (p.invested || 0)
-      }
-      const k = (p.asset || '').toUpperCase()
-      valuesByAsset[k] = (valuesByAsset[k] || 0) + val
-    }
-    const arr = Object.entries(valuesByAsset).map(([asset, v]) => ({ asset, value: v })).sort((a, b) => b.value - a.value)
-    const top3 = arr.slice(0, 3)
+  if (assetPieData.length > 0 && totalPortfolio > 0) {
+    const top3 = assetPieData.slice(0, 3).map(x => ({ asset: x.name, value: x.value }))
     const top3Sum = top3.reduce((s, x) => s + x.value, 0)
-    const sharePct = (top3Sum / totalPortfolio) * 100
-    concentration = { top3, sharePct, totalAssets: arr.length }
+    concentration = {
+      top3,
+      sharePct: (top3Sum / totalPortfolio) * 100,
+      totalAssets: assetPieData.length,
+    }
   }
 
   // ── Weekly Total Return variation from snapshots ──
@@ -800,7 +815,11 @@ export default function Insights() {
   // muestran los más relevantes (severidad alta primero) con una rotación
   // estable dentro del día para dar variedad sin perder lo importante.
   const diagnosis = selectDiagnostics({
-    pieData,
+    // Diagnósticos de concentración por activo (concentration_extreme/high/few_assets)
+    // necesitan datos por instrumento, no por broker. brokerPieData se usa solo para
+    // diagnósticos que filtran por moneda del broker (high_ars_exposure).
+    pieData: assetPieData,
+    brokerPieData: pieData,
     totalPortfolio,
     concentration,
     brokerConcentration,
@@ -841,8 +860,8 @@ export default function Insights() {
       alerts.push({
         level: 'warning',
         category: 'Concentración',
-        title: `${top.asset} es el ${top.pct_of_portfolio.toFixed(0)}% de tu portfolio`,
-        text: 'Concentración alta en un solo activo. Si cae fuerte, te golpea todo.',
+        title: `${top.asset} representa el ${top.pct_of_portfolio.toFixed(0)}% del portfolio`,
+        text: 'Concentración elevada en un único activo. Una caída significativa de ese instrumento impactaría de forma desproporcionada en el resultado total.',
       })
     }
   }
@@ -852,8 +871,8 @@ export default function Insights() {
     alerts.push({
       level: 'warning',
       category: 'Drawdown',
-      title: `Estás ${Math.abs(drawdown.current).toFixed(1)}% por debajo de tu máximo histórico`,
-      text: 'Drawdown activo. Buen momento para revisar si la tesis original sigue vigente.',
+      title: `El portfolio está ${Math.abs(drawdown.current).toFixed(1)}% por debajo de su máximo histórico`,
+      text: 'Tu portfolio atraviesa un drawdown. Es momento de revisar si los fundamentos de tu estrategia siguen siendo válidos.',
     })
   }
 
@@ -864,8 +883,8 @@ export default function Insights() {
     alerts.push({
       level: 'danger',
       category: 'Riesgo',
-      title: `${worst.asset} está ${worst.pnl_pct.toFixed(0)}% en rojo`,
-      text: `Pérdida no realizada de ${fmtUsd(Math.abs(worst.pnl_usd))}. ¿Sigue vigente la tesis de entrada?`,
+      title: `${worst.asset} registra una pérdida del ${Math.abs(worst.pnl_pct).toFixed(0)}%`,
+      text: `Pérdida no realizada de ${fmtUsd(Math.abs(worst.pnl_usd))}. Conviene revisar si las razones que originaron la inversión siguen vigentes.`,
     })
   }
 
@@ -875,7 +894,7 @@ export default function Insights() {
       level: 'warning',
       category: 'Comportamiento',
       title: `Win rate del ${winRate.pct.toFixed(0)}% en ${winRate.total} operaciones`,
-      text: 'Más pérdidas que ganancias. Revisá los criterios de entrada.',
+      text: 'Más operaciones perdedoras que ganadoras. Conviene revisar los criterios de entrada del sistema de trading.',
     })
   }
 
@@ -887,8 +906,8 @@ export default function Insights() {
       alerts.push({
         level: 'danger',
         category: 'Comportamiento',
-        title: 'Expectancy negativa',
-        text: `Perdés ${fmtUsd(Math.abs(expectancy))} en promedio por operación. El sistema pierde plata aunque a veces ganes.`,
+        title: 'Expectativa matemática negativa',
+        text: `El sistema pierde ${fmtUsd(Math.abs(expectancy))} en promedio por operación. La estrategia tiene un resultado neto negativo, aunque algunas operaciones individuales sean exitosas.`,
       })
     }
   }
@@ -905,8 +924,8 @@ export default function Insights() {
     alerts.push({
       level: 'info',
       category: 'Oportunidad de revisión',
-      title: `${s.asset} lleva ${days} días en pérdida (${s.pnl_pct.toFixed(0)}%)`,
-      text: '¿Seguís adentro por convicción o porque no querés asumir la pérdida?',
+      title: `${s.asset} acumula ${days} días con un rendimiento de ${s.pnl_pct.toFixed(0)}%`,
+      text: 'Conviene evaluar si los fundamentos de la inversión siguen siendo válidos o si hay mejores alternativas para reasignar el capital.',
     })
   }
 
@@ -1019,6 +1038,12 @@ export default function Insights() {
               tone="primary"
               label="Valor actual"
               value={amt(totalPortfolio)}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Valor de mercado de tu portfolio</p>
+                  <p>Suma del cash + posiciones abiertas a precios actuales. Para brokers ARS, la conversión a USD usa el blue actual.</p>
+                </>
+              }
               sub={
                 <span className="inline-flex items-center gap-3 flex-wrap">
                   <span className="text-slate-500 dark:text-slate-400">
@@ -1041,6 +1066,12 @@ export default function Insights() {
             value={amt(capitalContributed)}
             sub="Capital inicial + depósitos netos de retiros"
             icon={<PiggyBank size={14} />}
+            tooltip={
+              <>
+                <p className="font-semibold text-slate-800 dark:text-slate-100">Plata que vos pusiste</p>
+                <p>Capital inicial + depósitos − retiros. Es la plata que aportaste de tu propio bolsillo, sin contar lo que el mercado generó.</p>
+              </>
+            }
           />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1050,6 +1081,13 @@ export default function Insights() {
             sub={`${pctSigned(totalResultPct / 100)} desde el inicio`}
             positive={totalResult >= 0}
             icon={<Activity size={14} />}
+            tooltip={
+              <>
+                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia acumulada (no anualizada)</p>
+                <p>Valor actual − Capital aportado. Cuánto generaste en total desde el inicio, sin importar el período transcurrido.</p>
+                <p className="text-slate-500 dark:text-slate-400">Para comparar contra plazos fijos o S&P 500 en la misma unidad, mirá el <span className="font-medium">CAGR</span> (Objetivos).</p>
+              </>
+            }
           />
           <StatCard
             label="P&L realizado"
@@ -1057,6 +1095,12 @@ export default function Insights() {
             sub="Resultado acumulado de operaciones cerradas"
             positive={realizedPnl >= 0}
             icon={<CircleDollarSign size={14} />}
+            tooltip={
+              <>
+                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia ya cobrada</p>
+                <p>La que <span className="font-medium">ya cristalizaste</span> al cerrar posiciones. Incluye dividendos y conversiones FX realizadas.</p>
+              </>
+            }
           />
           <StatCard
             label="P&L no realizado"
@@ -1064,6 +1108,12 @@ export default function Insights() {
             sub={totalCostBasis > 0 ? `${pctSigned(unrealizedPnl / totalCostBasis)} sobre costo · posiciones abiertas` : 'Posiciones abiertas'}
             positive={unrealizedPnl >= 0}
             icon={<Wallet size={14} />}
+            tooltip={
+              <>
+                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia en papel</p>
+                <p>P&L actual de tus <span className="font-medium">posiciones abiertas</span> según precios de mercado de hoy. Cambia día a día y se transforma en realizado al cerrar la posición.</p>
+              </>
+            }
           />
         </div>
 
@@ -1521,11 +1571,11 @@ export default function Insights() {
 
         <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5">
           <h2 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Por activo</h2>
-          {pieData.length === 0 ? (
+          {assetPieData.length === 0 ? (
             <p className="text-slate-400 dark:text-slate-500 text-sm text-center py-8">—</p>
           ) : (
             <div className="space-y-3">
-              {[...pieData].sort((a, b) => b.value - a.value).map((d, i) => {
+              {assetPieData.map((d, i) => {
                 const p = (d.value / totalPortfolio) * 100
                 return (
                   <div key={d.name}>
@@ -1539,10 +1589,10 @@ export default function Insights() {
                   </div>
                 )
               })}
-              {pieData.length > 0 && [...pieData].sort((a, b) => b.value - a.value)[0].value / totalPortfolio > 0.6 && (
+              {assetPieData[0] && assetPieData[0].value / totalPortfolio > 0.6 && (
                 <p className="text-xs text-amber-600 dark:text-amber-400 pt-2 flex items-start gap-1">
                   <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
-                  Concentración elevada en {[...pieData].sort((a, b) => b.value - a.value)[0].name} ({(([...pieData].sort((a, b) => b.value - a.value)[0].value / totalPortfolio) * 100).toFixed(0)}%).
+                  Concentración elevada en {assetPieData[0].name} ({((assetPieData[0].value / totalPortfolio) * 100).toFixed(0)}%).
                 </p>
               )}
             </div>
