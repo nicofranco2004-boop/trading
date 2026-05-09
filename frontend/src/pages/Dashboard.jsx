@@ -281,67 +281,38 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* ── Hero: Valor actual + InsightLine ─────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
-        <div className="md:col-span-2">
-          <StatCard
-            tone="primary"
-            label="Valor actual"
-            value={fmtUsd(portfolioTotal)}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Valor de mercado de tu portfolio</p>
-                <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
-                <p className="text-slate-500 dark:text-slate-400">Para brokers ARS, la conversión a USD se hace al blue actual.</p>
-              </>
-            }
-            sub={
-              <span className="inline-flex items-center gap-3 flex-wrap">
-                <span className="text-slate-500 dark:text-slate-400">
-                  {totalReturnUsd >= 0 ? 'Ganancia total' : 'Pérdida total'}
-                </span>
-                <span className={`inline-flex items-center gap-1 font-semibold ${totalReturnUsd >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
-                  {totalReturnUsd >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                  USD {usd(Math.abs(totalReturnUsd))}
-                </span>
-                <span className={`tabular ${totalReturnUsd >= 0 ? 'text-emerald-500/80 dark:text-emerald-400/80' : 'text-red-500/80 dark:text-red-400/80'}`}>
-                  ({pctSigned(totalReturnPct)})
-                </span>
+      {/* ══════════════════════════════════════════════════════════════════════
+          HERO — la cifra única de la pantalla. Instrument Serif italic 64-84px.
+          Solo 1 hero por página (audit rule).
+          ══════════════════════════════════════════════════════════════════════ */}
+      <div className="mb-6 sm:mb-8">
+        <StatCard
+          tone="hero"
+          label="Valor actual"
+          value={fmtUsd(portfolioTotal)}
+          tooltip={
+            <>
+              <p className="font-semibold text-slate-800 dark:text-slate-100">Valor de mercado de tu portfolio</p>
+              <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
+              <p className="text-slate-500 dark:text-slate-400">Para brokers ARS, la conversión a USD se hace al blue actual.</p>
+            </>
+          }
+          sub={
+            <span className="inline-flex items-center gap-3 flex-wrap">
+              <span className="text-ink-2">
+                {totalReturnUsd >= 0 ? 'Ganancia total' : 'Pérdida total'}
               </span>
-            }
-            hint={`≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre los ${fmtUsd(netDeposited)} de capital aportado`}
-          />
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-1 gap-4">
-          <StatCard
-            label="Capital aportado"
-            value={fmtUsd(netDeposited)}
-            sub="Depósitos netos de retiros · no se cuenta como rendimiento"
-            icon={<PiggyBank size={14} />}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Plata que vos pusiste</p>
-                <p>Capital inicial + depósitos − retiros. Es la plata que aportaste de tu propio bolsillo, sin contar lo que el mercado generó.</p>
-                <p className="text-slate-500 dark:text-slate-400">Es la base sobre la que se mide tu rendimiento real.</p>
-              </>
-            }
-          />
-          <StatCard
-            label="Resultado total"
-            value={fmtUsd(totalReturnUsd)}
-            sub={`${pctSigned(totalReturnPct)} desde el inicio`}
-            positive={totalReturnUsd >= 0}
-            icon={<Activity size={14} />}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia acumulada (no anualizada)</p>
-                <p>Valor actual − Capital aportado. Muestra cuánto generaste en total desde el inicio, sin importar el período.</p>
-                <p className="text-slate-500 dark:text-slate-400">¿Querés ver tu rendimiento anualizado para comparar contra plazos fijos o S&P 500? Mirá el <span className="font-medium">CAGR</span> en Objetivos.</p>
-              </>
-            }
-          />
-        </div>
+              <span className={`inline-flex items-center gap-1 font-semibold ${totalReturnUsd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                {totalReturnUsd >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
+                USD {usd(Math.abs(totalReturnUsd))}
+              </span>
+              <span className={`tabular ${totalReturnUsd >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
+                ({pctSigned(totalReturnPct)})
+              </span>
+            </span>
+          }
+          hint={`≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre los ${fmtUsd(netDeposited)} de capital aportado`}
+        />
       </div>
 
       {/* InsightLine — diagnóstico breve dinámico */}
@@ -353,55 +324,100 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── P&L breakdown: realizado vs no realizado ─────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
-        <StatCard
-          label="P&L realizado"
-          value={fmtUsd(realizedPnl)}
-          sub="Resultado acumulado de operaciones cerradas"
-          positive={realizedPnl >= 0}
-          icon={<CircleDollarSign size={14} />}
-          tooltip={
-            <>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia ya cobrada</p>
-              <p>Es la ganancia o pérdida que <span className="font-medium">ya cristalizaste</span> al vender posiciones. Es plata que ya tenés en tu cuenta.</p>
-              <p className="text-slate-500 dark:text-slate-400">Incluye también dividendos y conversiones FX realizadas.</p>
-            </>
-          }
-        />
-        <StatCard
-          label="P&L no realizado"
-          value={fmtUsd(totalPnl)}
-          sub={`${pctSigned(totalPct)} sobre costo · posiciones abiertas`}
-          positive={totalPnl >= 0}
-          icon={<Wallet size={14} />}
-          tooltip={
-            <>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia en papel</p>
-              <p>Es la ganancia o pérdida actual de tus <span className="font-medium">posiciones abiertas</span> según los precios de mercado de hoy.</p>
-              <p className="text-slate-500 dark:text-slate-400">Va a cambiar todos los días con el mercado y solo se transforma en realizado cuando cierres la posición.</p>
-            </>
-          }
-        />
+      {/* ══════════════════════════════════════════════════════════════════════
+          KPI STRIP — 4 celdas sin caja con divisor vertical 1px.
+          Densidad alta sin claustrofobia (audit rule kpi-cell).
+          ══════════════════════════════════════════════════════════════════════ */}
+      <div className="bg-bg-1 border border-line rounded mb-8 overflow-hidden">
+        <div className="flex flex-col md:flex-row md:divide-x divide-y md:divide-y-0 divide-line">
+          <div className="flex-1 py-3 sm:py-4">
+            <StatCard
+              tone="cell"
+              label="Capital aportado"
+              value={fmtUsd(netDeposited)}
+              sub="Depósitos netos · no es rendimiento"
+              icon={<PiggyBank size={13} strokeWidth={1.5} />}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Plata que vos pusiste</p>
+                  <p>Capital inicial + depósitos − retiros. Es la plata que aportaste de tu propio bolsillo, sin contar lo que el mercado generó.</p>
+                  <p className="text-slate-500 dark:text-slate-400">Es la base sobre la que se mide tu rendimiento real.</p>
+                </>
+              }
+            />
+          </div>
+          <div className="flex-1 py-3 sm:py-4">
+            <StatCard
+              tone="cell"
+              label="Resultado total"
+              value={fmtUsd(totalReturnUsd)}
+              sub={`${pctSigned(totalReturnPct)} desde el inicio`}
+              positive={totalReturnUsd >= 0}
+              icon={<Activity size={13} strokeWidth={1.5} />}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia acumulada (no anualizada)</p>
+                  <p>Valor actual − Capital aportado. Muestra cuánto generaste en total desde el inicio, sin importar el período.</p>
+                  <p className="text-slate-500 dark:text-slate-400">¿Querés ver tu rendimiento anualizado? Mirá el <span className="font-medium">CAGR</span> en Objetivos.</p>
+                </>
+              }
+            />
+          </div>
+          <div className="flex-1 py-3 sm:py-4">
+            <StatCard
+              tone="cell"
+              label="P&L realizado"
+              value={fmtUsd(realizedPnl)}
+              sub="Operaciones cerradas"
+              positive={realizedPnl >= 0}
+              icon={<CircleDollarSign size={13} strokeWidth={1.5} />}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia ya cobrada</p>
+                  <p>Lo que <span className="font-medium">ya cristalizaste</span> al vender posiciones. Plata que ya tenés en tu cuenta.</p>
+                  <p className="text-slate-500 dark:text-slate-400">Incluye dividendos y conversiones FX realizadas.</p>
+                </>
+              }
+            />
+          </div>
+          <div className="flex-1 py-3 sm:py-4">
+            <StatCard
+              tone="cell"
+              label="P&L no realizado"
+              value={fmtUsd(totalPnl)}
+              sub={`${pctSigned(totalPct)} sobre costo`}
+              positive={totalPnl >= 0}
+              icon={<Wallet size={13} strokeWidth={1.5} />}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia en papel</p>
+                  <p>P&L actual de tus <span className="font-medium">posiciones abiertas</span> según precios de hoy.</p>
+                  <p className="text-slate-500 dark:text-slate-400">Cambia con el mercado. Solo se realiza cuando cerrás la posición.</p>
+                </>
+              }
+            />
+          </div>
+        </div>
       </div>
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
-      <Card className="mb-6">
-        <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+      <Card className="mb-8">
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-5">
           <div>
-            <h2 className="font-semibold text-slate-800 dark:text-slate-200">Evolución del portfolio</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Rendimiento ajustado por flujos de capital — los aportes y retiros se neutralizan para reflejar performance pura.
+            <p className="eyebrow mb-1">Evolución</p>
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-ink-0 leading-tight">Performance del portfolio</h2>
+            <p className="text-xs text-ink-2 mt-1 max-w-md">
+              Rendimiento ajustado por flujos de capital — aportes y retiros se neutralizan para reflejar performance pura.
             </p>
             {periodChange && (
-              <p className="text-sm mt-2 tabular">
-                <span className={`font-semibold ${periodChange.delta >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
-                  {periodChange.delta >= 0 ? '+' : '-'}USD {usd(Math.abs(periodChange.delta))}
+              <p className="text-sm mt-3 tabular">
+                <span className={`font-semibold ${periodChange.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                  {periodChange.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(periodChange.delta))}
                 </span>
-                <span className={`ml-2 ${periodChange.delta >= 0 ? 'text-emerald-500/80 dark:text-emerald-400/80' : 'text-red-500/80 dark:text-red-400/80'}`}>
+                <span className={`ml-2 ${periodChange.delta >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                   {pctSigned(periodChange.pct)}
                 </span>
-                <span className="ml-2 text-slate-500 dark:text-slate-400">en {rangeLabel(range)}</span>
+                <span className="ml-2 text-ink-2">en {rangeLabel(range)}</span>
               </p>
             )}
           </div>
@@ -496,8 +512,11 @@ export default function Dashboard() {
       {/* ── Per-broker grid ──────────────────────────────────────────────────── */}
       {brokers.length > 0 && (
         <div className="mb-8">
-          <h3 className="text-xs uppercase tracking-wider font-medium text-slate-500 dark:text-slate-400 mb-3">Detalle por broker</h3>
-          <div className={`grid gap-4 ${brokers.length === 1 ? 'grid-cols-1 max-w-sm' : brokers.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 md:grid-cols-3'}`}>
+          <div className="mb-4">
+            <p className="eyebrow mb-1">Brokers</p>
+            <h3 className="text-base font-semibold text-slate-800 dark:text-ink-0 leading-tight">Detalle por cuenta</h3>
+          </div>
+          <div className={`grid gap-3 ${brokers.length === 1 ? 'grid-cols-1 max-w-sm' : brokers.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 md:grid-cols-3'}`}>
             {brokerTotals.map(b => {
               const isARS = b.currency === 'ARS'
               if (isARS) {
@@ -508,7 +527,7 @@ export default function Dashboard() {
                     key={b.id}
                     label={`${b.name} · ARS`}
                     value={fmtArs(b.valueArs)}
-                    sub={`Inv ${fmtArs(b.invArs)} · P&L: ${pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlArs))} (${pctSigned(pnlPctArs)})`}
+                    sub={`Inv ${fmtArs(b.invArs)} · P&L: ${pnlArs >= 0 ? '+' : '−'}ARS ${ars(Math.abs(pnlArs))} (${pctSigned(pnlPctArs)})`}
                     pnlPositive={pnlArs >= 0}
                   />
                 )
@@ -520,7 +539,7 @@ export default function Dashboard() {
                   key={b.id}
                   label={`${b.name} · USD`}
                   value={fmtUsd(b.value)}
-                  sub={`Inv ${fmtUsd(b.invested)} · P&L: ${pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(pnlUsd))} (${pctSigned(pnlPctUsd)})`}
+                  sub={`Inv ${fmtUsd(b.invested)} · P&L: ${pnlUsd >= 0 ? '+' : '−'}USD ${usd(Math.abs(pnlUsd))} (${pctSigned(pnlPctUsd)})`}
                   pnlPositive={pnlUsd >= 0}
                 />
               )

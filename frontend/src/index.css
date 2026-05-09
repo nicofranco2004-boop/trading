@@ -99,10 +99,11 @@ body {
     letter-spacing: -0.02em;
   }
 
-  /* KPI cell sin caja — patrón de divisores 1px verticales en lugar de cards
-     individuales. Densidad alta sin claustrofobia. */
+  /* KPI cell sin caja — el contenedor padre aplica los divisores 1px (con
+     divide-x / divide-y), la celda solo aporta el padding interno.
+     Esto evita conflictos con grids 2x2 donde first-child no acierta. */
   .kpi-cell {
-    @apply px-4 sm:px-6 border-l border-line first:border-l-0 first:pl-0;
+    @apply px-4 sm:px-5 py-1;
   }
 }
 
