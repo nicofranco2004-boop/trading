@@ -31,13 +31,14 @@ export default function Navbar() {
 
   return (
     <>
-      <nav className="fixed top-0 left-0 right-0 z-50 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700/60 shadow-sm dark:shadow-none px-3 md:px-6 h-14 flex items-center">
-        <NavLink to="/" className="flex items-center gap-2 flex-shrink-0">
-          <RendiLogo size={28} />
-          <span className="font-bold text-lg tracking-tight text-slate-900 dark:text-white">rendi</span>
+      <nav className="fixed top-0 left-0 right-0 z-50 bg-white dark:bg-bg-0 border-b border-slate-200 dark:border-line px-3 md:px-6 h-12 flex items-center">
+        <NavLink to="/" className="flex items-center gap-2 flex-shrink-0 group">
+          <RendiLogo size={24} />
+          <span className="font-semibold text-base tracking-tight text-slate-900 dark:text-ink-0">rendi</span>
         </NavLink>
 
-        {/* Desktop nav */}
+        {/* Desktop nav — active state es underline 2px en rendi-pos, no pill verde.
+            Inspirado en Linear/Vercel: monocromático, jerarquía por peso, no por fondo. */}
         <div className="hidden lg:flex flex-1 items-center justify-center gap-1">
           {allLinks.map(({ to, label, icon: Icon }) => (
             <NavLink
@@ -45,15 +46,25 @@ export default function Navbar() {
               to={to}
               end={to === '/'}
               className={({ isActive }) =>
-                `flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                `relative flex items-center gap-2 px-3 py-1.5 text-sm font-medium transition-colors ${
                   isActive
-                    ? 'bg-rendi-green/10 dark:bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'text-slate-900 dark:text-ink-0'
+                    : 'text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0'
                 }`
               }
             >
-              <Icon size={15} />
-              {label}
+              {({ isActive }) => (
+                <>
+                  <Icon size={15} strokeWidth={1.5} />
+                  {label}
+                  {isActive && (
+                    <span
+                      aria-hidden
+                      className="absolute -bottom-[13px] left-2 right-2 h-[2px] bg-rendi-pos"
+                    />
+                  )}
+                </>
+              )}
             </NavLink>
           ))}
         </div>
@@ -63,21 +74,21 @@ export default function Navbar() {
         {/* Acciones derecha desktop */}
         <div className="hidden lg:flex flex-shrink-0 items-center gap-2">
           {user && (
-            <span className="text-xs text-slate-400 dark:text-slate-500 hidden xl:block">{user.name}</span>
+            <span className="text-xs text-slate-400 dark:text-ink-3 hidden xl:block font-mono">{user.name}</span>
           )}
           <button
             onClick={toggle}
-            className="p-1.5 rounded-md text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-sm text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0 transition-colors"
             title={dark ? 'Modo claro' : 'Modo oscuro'}
           >
-            {dark ? <Sun size={15} /> : <Moon size={15} />}
+            {dark ? <Sun size={15} strokeWidth={1.5} /> : <Moon size={15} strokeWidth={1.5} />}
           </button>
           <button
             onClick={logout}
-            className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition-colors px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800"
+            className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0 transition-colors px-2 py-1.5"
             title="Cerrar sesión"
           >
-            <LogOut size={14} />
+            <LogOut size={14} strokeWidth={1.5} />
             <span>Salir</span>
           </button>
         </div>
@@ -86,17 +97,17 @@ export default function Navbar() {
         <div className="lg:hidden flex items-center gap-1">
           <button
             onClick={toggle}
-            className="p-2 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            className="p-2 rounded-sm text-slate-500 dark:text-ink-2 hover:bg-slate-100 dark:hover:bg-bg-2 transition"
             title={dark ? 'Modo claro' : 'Modo oscuro'}
           >
-            {dark ? <Sun size={16} /> : <Moon size={16} />}
+            {dark ? <Sun size={16} strokeWidth={1.5} /> : <Moon size={16} strokeWidth={1.5} />}
           </button>
           <button
             onClick={() => setOpen(o => !o)}
-            className="p-2 rounded-md text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            className="p-2 rounded-sm text-slate-700 dark:text-ink-1 hover:bg-slate-100 dark:hover:bg-bg-2 transition"
             aria-label="Menú"
           >
-            {open ? <X size={20} /> : <Menu size={20} />}
+            {open ? <X size={20} strokeWidth={1.5} /> : <Menu size={20} strokeWidth={1.5} />}
           </button>
         </div>
       </nav>
@@ -108,7 +119,7 @@ export default function Navbar() {
             className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
             onClick={() => setOpen(false)}
           />
-          <div className="fixed top-14 left-0 right-0 z-40 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700/60 shadow-lg lg:hidden max-h-[calc(100vh-3.5rem)] overflow-y-auto">
+          <div className="fixed top-12 left-0 right-0 z-40 bg-white dark:bg-bg-0 border-b border-slate-200 dark:border-line lg:hidden max-h-[calc(100vh-3rem)] overflow-y-auto">
             <div className="p-3 space-y-1">
               {allLinks.map(({ to, label, icon: Icon }) => (
                 <NavLink
@@ -116,28 +127,28 @@ export default function Navbar() {
                   to={to}
                   end={to === '/'}
                   className={({ isActive }) =>
-                    `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    `flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm font-medium transition-colors ${
                       isActive
-                        ? 'bg-rendi-green/10 dark:bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green'
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        ? 'text-slate-900 dark:text-ink-0 bg-slate-100 dark:bg-bg-2'
+                        : 'text-slate-700 dark:text-ink-1 hover:bg-slate-100 dark:hover:bg-bg-2'
                     }`
                   }
                 >
-                  <Icon size={18} />
+                  <Icon size={18} strokeWidth={1.5} />
                   {label}
                 </NavLink>
               ))}
-              <div className="border-t border-slate-200 dark:border-slate-700/60 my-2" />
+              <div className="border-t border-slate-200 dark:border-line my-2" />
               {user && (
-                <div className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">
-                  Conectado como <span className="text-slate-700 dark:text-slate-300 font-medium">{user.name}</span>
+                <div className="px-3 py-2 text-xs text-slate-400 dark:text-ink-3 font-mono">
+                  Conectado como <span className="text-slate-700 dark:text-ink-1 font-medium font-sans">{user.name}</span>
                 </div>
               )}
               <button
                 onClick={logout}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 dark:text-red-400 hover:bg-red-500/10 transition"
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm font-medium text-rendi-neg hover:bg-rendi-neg/10 transition"
               >
-                <LogOut size={18} />
+                <LogOut size={18} strokeWidth={1.5} />
                 Cerrar sesión
               </button>
             </div>
