@@ -1143,77 +1143,14 @@ export default function Insights() {
             <p className="eyebrow mb-3">
               Diagnóstico · {balanced.length} {balanced.length === 1 ? 'observación' : 'observaciones'} priorizadas
             </p>
-            <div className="border border-slate-200 dark:border-line rounded overflow-hidden">
-              <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-line">
-                {balanced.map(d => {
-                  const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
-                  const cta = ctaForCategory(d.category)
-                  // Parse del text: primera oración = título, resto = contexto
-                  const parts = d.text.split(/\.\s+/)
-                  const title = parts[0] + (parts.length > 1 ? '.' : '')
-                  const context = parts.slice(1).join('. ').trim()
-                  return (
-                    <div key={d.id} className="bg-white dark:bg-bg-1 p-5 flex flex-col">
-                      <div className="flex items-center gap-2 mb-3">
-                        <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
-                          {sev.label}
-                        </span>
-                      </div>
-                      <p className="text-sm font-medium leading-snug text-slate-900 dark:text-ink-0 mb-2">
-                        <DiagnosticText text={title} />
-                      </p>
-                      {context && (
-                        <p className="text-xs text-slate-600 dark:text-ink-2 leading-relaxed flex-1">
-                          <DiagnosticText text={context} />
-                        </p>
-                      )}
-                      {cta && (
-                        cta.href.startsWith('#') ? (
-                          // Anchor en la misma página — usamos <a> para que el
-                          // browser scrollee al elemento; react-router-dom no
-                          // hace este scroll automáticamente con <Link>.
-                          <a
-                            href={cta.href}
-                            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
-                          >
-                            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-                          </a>
-                        ) : (
-                          <Link
-                            to={cta.href}
-                            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
-                          >
-                            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-                          </Link>
-                        )
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+            <DiagnosisGrid items={balanced} />
             {restItems.length > 0 && (
               <details className="mt-3 group">
-                <summary className="cursor-pointer text-xs text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 select-none">
+                <summary className="cursor-pointer text-xs text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 select-none mb-3">
                   <ChevronDown size={12} strokeWidth={1.75} className="group-open:rotate-180 transition-transform" />
                   Ver {restItems.length} {restItems.length === 1 ? 'observación' : 'observaciones'} más
                 </summary>
-                <ul className="mt-3 space-y-2 text-sm leading-snug pl-1">
-                  {restItems.map((d, i) => {
-                    const dotColor = d.severity === 'urgent' ? 'bg-rendi-neg'
-                      : d.severity === 'warn' ? 'bg-rendi-warn'
-                      : d.severity === 'positive' ? 'bg-rendi-pos'
-                      : 'bg-ink-3'
-                    return (
-                      <li key={d.id || i} className="flex items-start gap-2.5">
-                        <span className={`flex-shrink-0 mt-1.5 inline-block w-1.5 h-1.5 rounded-full ${dotColor}`} />
-                        <span className="text-slate-700 dark:text-ink-1">
-                          <DiagnosticText text={d.text} />
-                        </span>
-                      </li>
-                    )
-                  })}
-                </ul>
+                <DiagnosisGrid items={restItems} />
               </details>
             )}
           </section>
@@ -1985,6 +1922,65 @@ function DiagnosticText({ text }) {
           : <span key={i}>{part}</span>
       ))}
     </>
+  )
+}
+
+// Grid de tarjetas accionables (audit pattern). Container con bg-line +
+// gap-px crea los divisores 1px sin pelear con first-child en wraps.
+// Funciona con cualquier número de items: 1, 3, 4, 6...
+function DiagnosisGrid({ items }) {
+  if (!items || items.length === 0) return null
+  return (
+    <div className="bg-slate-200 dark:bg-line border border-slate-200 dark:border-line rounded overflow-hidden">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-px">
+        {items.map(d => <DiagnosisCard key={d.id} d={d} />)}
+      </div>
+    </div>
+  )
+}
+
+function DiagnosisCard({ d }) {
+  const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
+  const cta = ctaForCategory(d.category)
+  // Parse del text: primera oración = título, resto = contexto.
+  const parts = d.text.split(/\.\s+/)
+  const title = parts[0] + (parts.length > 1 ? '.' : '')
+  const context = parts.slice(1).join('. ').trim()
+  return (
+    <div className="bg-white dark:bg-bg-1 p-5 flex flex-col">
+      <div className="flex items-center gap-2 mb-3">
+        <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
+          {sev.label}
+        </span>
+      </div>
+      <p className="text-sm font-medium leading-snug text-slate-900 dark:text-ink-0 mb-2">
+        <DiagnosticText text={title} />
+      </p>
+      {context && (
+        <p className="text-xs text-slate-600 dark:text-ink-2 leading-relaxed flex-1">
+          <DiagnosticText text={context} />
+        </p>
+      )}
+      {cta && (
+        cta.href.startsWith('#') ? (
+          // Anchor en la misma página — usamos <a> para que el browser
+          // scrollee al elemento; react-router-dom no scrollea con <Link>.
+          <a
+            href={cta.href}
+            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+          >
+            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+          </a>
+        ) : (
+          <Link
+            to={cta.href}
+            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+          >
+            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+          </Link>
+        )
+      )}
+    </div>
   )
 }
 
