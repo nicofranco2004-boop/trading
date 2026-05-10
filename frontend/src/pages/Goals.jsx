@@ -6,6 +6,7 @@ import DateInput from '../components/DateInput'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
+import { useToast } from '../components/Toast'
 import { usd, fmtUsd } from '../utils/format'
 import { api } from '../utils/api'
 
@@ -29,6 +30,7 @@ export default function Goals() {
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(null) // 'add' | 'edit' | null
   const [form, setForm] = useState({ id: null, target_usd: '', target_date: addYears(1), expected_return_pct: 10, label: '' })
+  const toast = useToast()
 
   useEffect(() => { loadAll() }, [])
 
@@ -110,7 +112,7 @@ export default function Goals() {
       setModal(null)
       loadAll()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 

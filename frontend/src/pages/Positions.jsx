@@ -5,6 +5,7 @@ import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import StatCard from '../components/StatCard'
+import { useToast } from '../components/Toast'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -36,6 +37,7 @@ export default function Positions() {
   const [dolar, setDolar] = useState(null)
   const [brokers, setBrokers] = useState([])
   const [snapshots, setSnapshots] = useState([])
+  const toast = useToast()
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY_POS)
   const [sellForm, setSellForm] = useState({ broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '', tc_venta: '', date: '', commissions: '' })
@@ -190,8 +192,8 @@ export default function Positions() {
       commissions: sellForm.commissions !== '' ? +sellForm.commissions : 0,
       ...(sellForm.currency === 'ARS' && sellForm.tc_venta ? { tc_venta: +sellForm.tc_venta } : {}),
     }
-    if (!body.quantity || body.quantity <= 0) return alert('La cantidad ingresada no es válida.')
-    if (body.exit_price == null || body.exit_price < 0) return alert('El precio ingresado no es válido.')
+    if (!body.quantity || body.quantity <= 0) return toast.push('La cantidad ingresada no es válida.', { type: 'warn' })
+    if (body.exit_price == null || body.exit_price < 0) return toast.push('El precio ingresado no es válido.', { type: 'warn' })
     try {
       const res = await api.post('/positions/sell', body)
       setModal(null)
@@ -201,7 +203,7 @@ export default function Positions() {
         // FIFO cerró múltiples lotes
       }
     } catch (e) {
-      alert('No se pudo registrar la venta: ' + e.message)
+      toast.push('No se pudo registrar la venta: ' + e.message, { type: 'error' })
     }
   }
 
@@ -239,14 +241,14 @@ export default function Positions() {
     const arsAmount = +convertForm.ars_amount
     const usdAmount = +convertForm.usd_amount
     const tc = +convertForm.tc
-    if (!arsAmount || arsAmount <= 0) return alert('Ingresá un monto ARS válido.')
-    if (!usdAmount || usdAmount <= 0) return alert('Ingresá un monto USD válido.')
-    if (!tc || tc <= 0) return alert('Ingresá un tipo de cambio válido.')
+    if (!arsAmount || arsAmount <= 0) return toast.push('Ingresá un monto ARS válido.', { type: 'warn' })
+    if (!usdAmount || usdAmount <= 0) return toast.push('Ingresá un monto USD válido.', { type: 'warn' })
+    if (!tc || tc <= 0) return toast.push('Ingresá un tipo de cambio válido.', { type: 'warn' })
     // Validar saldo según dirección
     const debit = convertForm.direction === 'ars_to_usd' ? arsAmount : usdAmount
     if (debit > convertForm.available + 0.001) {
       const curr = convertForm.direction === 'ars_to_usd' ? 'ARS' : 'USD'
-      return alert(`Saldo insuficiente. Disponible: ${convertForm.available.toFixed(2)} ${curr}.`)
+      return toast.push(`Saldo insuficiente. Disponible: ${convertForm.available.toFixed(2)} ${curr}.`, { type: 'warn' })
     }
     try {
       await api.post('/conversions', {
@@ -261,7 +263,7 @@ export default function Positions() {
       setModal(null)
       loadAll()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
@@ -270,15 +272,15 @@ export default function Positions() {
       await api.post(`/brokers/${broker.id}/usd-sibling`)
       loadAll()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
   async function confirmCashFlow() {
     const amount = +cashFlowForm.amount
-    if (!amount || amount <= 0) return alert('Ingresá un monto válido.')
+    if (!amount || amount <= 0) return toast.push('Ingresá un monto válido.', { type: 'warn' })
     if (cashFlowForm.direction === 'withdraw' && amount > cashFlowForm.available + 0.001) {
-      return alert(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2)} ${cashFlowForm.currency}.`)
+      return toast.push(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2)} ${cashFlowForm.currency}.`, { type: 'warn' })
     }
     try {
       await api.post('/cash/flow', {
@@ -290,7 +292,7 @@ export default function Positions() {
       setModal(null)
       loadAll()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
@@ -326,7 +328,10 @@ export default function Positions() {
     return { valueArs, valueUsd, pnlArs, pnlUsd, pnlPct: realCostArs > 0 ? pnlArs / realCostArs : 0, priceArs, invUsd }
   }
 
-  const thClass = 'px-3 py-2.5 text-left label-mono whitespace-nowrap'
+  // sticky top-0 + bg matched al thead row para que al scrollear la tabla
+  // (especialmente en mobile o brokers con muchas posiciones) el header
+  // quede pegado arriba — convención fintech standard (Robinhood, Stripe).
+  const thClass = 'px-3 py-2.5 text-left label-mono whitespace-nowrap sticky top-0 z-10 bg-slate-50/95 dark:bg-bg-2/95 backdrop-blur-sm'
   const tdClass = 'px-3 py-2.5 text-sm whitespace-nowrap'
   const inputClass = 'w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2 text-sm text-slate-900 dark:text-ink-0'
 

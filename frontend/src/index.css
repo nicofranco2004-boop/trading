@@ -83,6 +83,8 @@ body {
     line-height: 1;
     letter-spacing: -0.035em;
     font-variant-numeric: tabular-nums;
+    text-wrap: balance;
+    font-feature-settings: 'ss01', 'cv11', 'tnum';
   }
 
   /* Display heading — Instrument Serif regular. Para headers de sección
@@ -184,6 +186,12 @@ body {
 }
 .dark .rendi-range::-moz-range-thumb {
   border-color: #101218;
+}
+
+/* Toast slide-in desde la derecha */
+@keyframes slide-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
 }
 
 /* Live dot pulsante — para PageHeader meta y otros indicadores live */

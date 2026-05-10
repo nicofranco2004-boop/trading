@@ -3,6 +3,7 @@ import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock } fr
 import { api } from '../utils/api'
 import StatCard from '../components/StatCard'
 import { useAuth } from '../contexts/AuthContext'
+import { useToast } from '../components/Toast'
 
 export default function Admin() {
   const { user } = useAuth()
@@ -10,6 +11,7 @@ export default function Admin() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const toast = useToast()
 
   useEffect(() => { load() }, [])
 
@@ -36,7 +38,7 @@ export default function Admin() {
       await api.post(`/admin/users/${u.id}/approve`)
       load()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
@@ -47,7 +49,7 @@ export default function Admin() {
       await api.delete(`/admin/users/${u.id}`)
       load()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 

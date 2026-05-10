@@ -42,8 +42,10 @@ export default function Card({
   const borderClass = accent
     ? 'border border-rendi-pos/40 dark:border-rendi-pos/30'
     : 'border border-slate-200 dark:border-line'
+  // Hover sutil tipo Linear: el border vira al accent al pasar por encima.
+  // Da affordance de "esto se puede inspeccionar / clickear" sin ruido visual.
   const hover = hoverable
-    ? 'transition-colors hover:border-slate-300 dark:hover:border-line-2'
+    ? 'transition-colors hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40'
     : ''
 
   return (

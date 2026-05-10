@@ -6,6 +6,7 @@ import MonthlySummary from '../components/MonthlySummary'
 import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
+import { DashboardSkeleton } from '../components/Skeleton'
 import InsightLine from '../components/InsightLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
@@ -239,7 +240,7 @@ export default function Dashboard() {
     return { delta, pct: dPct }
   }, [evoSeries])
 
-  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
+  if (loading) return <DashboardSkeleton />
 
   const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 
@@ -463,10 +464,19 @@ export default function Dashboard() {
                     width={56}
                   />
                   <Tooltip
-                    contentStyle={{ background: '#101218', border: '1px solid #2C3142', borderRadius: 10, padding: '10px 12px' }}
-                    labelStyle={{ color: '#CFD0C8', fontSize: 11, marginBottom: 6 }}
+                    cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
+                    contentStyle={{
+                      background: '#101218',
+                      border: '1px solid #2C3142',
+                      borderRadius: 10,
+                      padding: '10px 12px',
+                      boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+                      fontFamily: 'JetBrains Mono'
+                    }}
+                    labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.12em' }}
+                    itemStyle={{ color: '#F4F4F0', fontSize: 12, padding: '2px 0' }}
                     formatter={(v, name) => [fmtUsd(v), name === 'valueUsd' ? 'Valor' : 'Aportado']}
-                    labelFormatter={l => `Fecha · ${l}`}
+                    labelFormatter={l => l}
                   />
                   <Area
                     type="monotone"
