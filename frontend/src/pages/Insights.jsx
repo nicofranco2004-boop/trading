@@ -1144,7 +1144,13 @@ export default function Insights() {
       {diagnosis.length > 0 && (() => {
         const balanced = pickBalancedDiagnosis(diagnosis, 3)
         const balancedIds = new Set(balanced.map(d => d.id))
-        const restItems = diagnosis.filter(d => !balancedIds.has(d.id))
+        // Truncamos al múltiplo de 3 inmediatamente inferior. Si quedan
+        // 1-2 observaciones huérfanas en la última fila quedaba un hueco
+        // visual feo — preferimos no mostrar esas en lugar de arruinar la
+        // grilla. Las que se truncan vuelven a aparecer otro día gracias
+        // a la rotación diaria del selector.
+        const allRest = diagnosis.filter(d => !balancedIds.has(d.id))
+        const restItems = allRest.slice(0, allRest.length - (allRest.length % 3))
         return (
           <section id="diagnostico" className="scroll-mt-20">
             <p className="eyebrow mb-3">
