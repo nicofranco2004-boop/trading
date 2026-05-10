@@ -1,9 +1,10 @@
-import { useEffect, useState, useRef } from 'react'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart } from 'lucide-react'
+import { useEffect, useMemo, useState, useRef } from 'react'
+import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
+import StatCard from '../components/StatCard'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -322,9 +323,9 @@ export default function Positions() {
     return { valueArs, valueUsd, pnlArs, pnlUsd, pnlPct: realCostArs > 0 ? pnlArs / realCostArs : 0, priceArs, invUsd }
   }
 
-  const thClass = 'px-3 py-2 text-left text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider whitespace-nowrap'
-  const tdClass = 'px-3 py-2 text-sm whitespace-nowrap'
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200'
+  const thClass = 'px-3 py-2.5 text-left label-mono whitespace-nowrap'
+  const tdClass = 'px-3 py-2.5 text-sm whitespace-nowrap'
+  const inputClass = 'w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2 text-sm text-slate-900 dark:text-ink-0'
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
 
@@ -344,6 +345,19 @@ export default function Positions() {
 
   const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 
+  // Totales agregados (USD) para el hero "Tu portfolio hoy"
+  const totals = useMemo(() => {
+    let value = 0, invested = 0
+    for (const b of brokers) {
+      const r = computeBrokerValue(positions, prices, b, tcBlue)
+      value += r.value || 0
+      invested += r.invested || 0
+    }
+    const pnl = value - invested
+    const pct = invested > 0 ? pnl / invested : 0
+    return { value, invested, pnl, pct }
+  }, [brokers, positions, prices, tcBlue])
+
   return (
     <div className="page-shell-wide">
       <PageHeader
@@ -351,6 +365,30 @@ export default function Positions() {
         subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado."
         meta={meta}
       />
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          HERO — 'Tu portfolio hoy' agregado total. Single hero per page rule.
+          ══════════════════════════════════════════════════════════════════════ */}
+      <div className="mb-8">
+        <StatCard
+          tone="hero"
+          label="Tu portfolio hoy"
+          value={fmtUsd(totals.value)}
+          sub={
+            <span className="inline-flex items-center gap-3 flex-wrap">
+              <span className="text-ink-2">P&L no realizado</span>
+              <span className={`inline-flex items-center gap-1 font-semibold ${totals.pnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                {totals.pnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
+                USD {usd(Math.abs(totals.pnl))}
+              </span>
+              <span className={`tabular ${totals.pnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
+                ({pctSigned(totals.pct)})
+              </span>
+            </span>
+          }
+          hint={`Invertido USD ${usd(totals.invested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`}
+        />
+      </div>
 
       {sortBrokersForDisplay(brokers).map(({ broker, indent, parentName }, bi) => {
         const color = BROKER_COLORS[bi % BROKER_COLORS.length]
@@ -361,28 +399,27 @@ export default function Positions() {
         const r = computeBrokerValue(positions, prices, broker, tcBlue)
 
         // ── Header (compartido) ────────────────────────────────────────────
-        // 2 líneas de info: 1) badges + nombre, 2) métricas natives + acciones
+        // Eyebrow 'Broker' + nombre prominente · badges discretos · métricas
+        // inline · acciones a la derecha. Patrón specimen sheet del audit.
         const headerPnlUsd = r.pnlUsd
         const headerPnlPct = r.invested > 0 ? r.pnlUsd / r.invested : 0
         const Header = (
-          <div className="flex flex-col gap-2 px-3 sm:px-4 py-3 border-b border-slate-200 dark:border-slate-700/50">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                {isSubBroker && (
-                  <span className="text-slate-400 dark:text-slate-500 text-xs select-none" title={`Sub-broker de ${parentName}`}>└─</span>
-                )}
-                <span className={`font-semibold ${color.text}`}>{broker.name}</span>
-                {isARS ? (
-                  <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-600 dark:text-violet-400">ARS</span>
-                ) : (
-                  <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">USD</span>
-                )}
-                {isSubBroker && (
-                  <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-600 dark:text-slate-400" title="Creado automáticamente al convertir ARS a USD">
-                    Sub-broker
-                  </span>
-                )}
-                {isARS && <span className="text-[11px] text-slate-400 dark:text-slate-500">TC blue {tcBlue}</span>}
+          <div className="flex flex-col gap-3 px-4 sm:px-5 py-4 border-b border-slate-200 dark:border-line">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="min-w-0">
+                <p className="eyebrow mb-1 flex items-center gap-2">
+                  {isSubBroker && (
+                    <span className="text-ink-3 select-none" title={`Sub-broker de ${parentName}`}>└─</span>
+                  )}
+                  Broker · {isARS ? 'ARS' : 'USD'}
+                  {isSubBroker && (
+                    <span className="text-ink-3 normal-case tracking-normal" title="Creado automáticamente al convertir ARS a USD">
+                      sub-broker
+                    </span>
+                  )}
+                  {isARS && <span className="text-ink-3 normal-case tracking-normal">· TC blue {tcBlue}</span>}
+                </p>
+                <h3 className={`text-lg font-semibold leading-tight ${color.text}`}>{broker.name}</h3>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {/* Para brokers ARS sin sub-broker USD: ofrecemos crearlo
@@ -391,39 +428,39 @@ export default function Positions() {
                 {isARS && !brokers.some(b => b.parent_broker_id === broker.id) && (
                   <button
                     onClick={() => createUsdSibling(broker)}
-                    className="flex items-center gap-1 text-[11px] text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 px-2 py-1 rounded-md hover:bg-blue-500/10 transition"
+                    className="flex items-center gap-1 text-[11px] text-rendi-accent hover:text-rendi-accent/80 px-2 py-1 rounded-sm hover:bg-rendi-accent/10 transition"
                     title="Crea un sub-broker USD asociado para registrar tenencias en dólares (CEDEARs en USD, USDT, etc.)"
                   >
-                    <DollarSign size={12} /> Crear sub-broker USD
+                    <DollarSign size={12} strokeWidth={1.5} /> Crear sub-broker USD
                   </button>
                 )}
                 <button
                   onClick={() => toggleDetail(broker.name)}
-                  className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700/40 transition"
+                  className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-slate-100 dark:hover:bg-bg-2 transition"
                   title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar tipo de cambio, conversiones y detalles adicionales'}
                 >
-                  {showDetail ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  {showDetail ? <ChevronUp size={12} strokeWidth={1.5} /> : <ChevronDown size={12} strokeWidth={1.5} />}
                   {showDetail ? 'Ocultar detalle' : 'Detalle'}
                 </button>
-                <button onClick={() => openAdd(broker.name)} className={`flex items-center gap-1 text-xs ${color.bg} ${color.text} ${color.hover} px-2 py-1 rounded-md transition-colors`}>
-                  <Plus size={12} /> Agregar
+                <button onClick={() => openAdd(broker.name)} className="flex items-center gap-1 text-xs bg-bg-2 hover:bg-bg-3 border border-line text-slate-700 dark:text-ink-1 px-2.5 py-1.5 rounded-sm transition">
+                  <Plus size={12} strokeWidth={1.5} /> Agregar
                 </button>
               </div>
             </div>
-            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs sm:text-sm tabular">
-              <span className="text-slate-600 dark:text-slate-300">
-                <span className="text-slate-400 dark:text-slate-500 mr-1">Valor</span>
-                <span className="font-semibold text-slate-900 dark:text-slate-100">
+            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-xs sm:text-sm tabular">
+              <span>
+                <span className="label-mono mr-1.5">Valor</span>
+                <span className="font-semibold text-slate-900 dark:text-ink-0">
                   {isARS ? fmtArs(r.valueArs) : fmtUsd(r.value)}
                 </span>
               </span>
-              <span className="text-slate-500 dark:text-slate-400">
-                <span className="text-slate-400 dark:text-slate-500 mr-1">Inv</span>
+              <span className="text-ink-2">
+                <span className="label-mono mr-1.5">Inv</span>
                 {isARS ? fmtArs(r.invArs) : fmtUsd(r.invested)}
               </span>
               <span className={`${colorClass(headerPnlUsd)} font-medium`}>
-                <span className="text-slate-400 dark:text-slate-500 mr-1">P&L</span>
-                {headerPnlUsd >= 0 ? '+' : '-'}{isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(headerPnlUsd))}`}
+                <span className="label-mono mr-1.5 text-ink-2">P&L</span>
+                {headerPnlUsd >= 0 ? '+' : '−'}{isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(headerPnlUsd))}`}
                 <span className="ml-1 opacity-80">({pctSigned(headerPnlPct)})</span>
               </span>
             </div>
@@ -433,12 +470,12 @@ export default function Positions() {
         // ── ARS broker ─────────────────────────────────────────────────────
         if (isARS) {
           return (
-            <div key={broker.id} className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden mb-6">
+            <div key={broker.id} className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden mb-6">
               {Header}
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-slate-100 dark:border-slate-700/30">
+                    <tr className="border-b border-slate-100 dark:border-line bg-slate-50/40 dark:bg-bg-2/40">
                       <th className={thClass}>Activo</th>
                       <th className={thClass}>Cantidad</th>
                       <th className={thClass}>Precio prom.</th>
@@ -456,27 +493,30 @@ export default function Positions() {
                   <tbody>
                     {bpos.map(p => {
                       const c = calcARS(p)
-                      const pnlBg = c.pnlArs == null ? '' : c.pnlArs > 0 ? 'bg-emerald-500/[0.06]' : c.pnlArs < 0 ? 'bg-red-500/[0.06]' : ''
+                      const pnlBg = c.pnlArs == null ? '' : c.pnlArs > 0 ? 'bg-rendi-pos/[0.06]' : c.pnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       // Precio promedio en ARS = invertido / cantidad
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       return (
-                        <tr key={p.id} className={`border-b border-slate-100 dark:border-slate-700/20 hover:bg-slate-50 dark:hover:bg-slate-700/20 ${p.is_cash ? 'bg-slate-50/60 dark:bg-slate-900/30' : ''}`}>
+                        <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                           <td className={`${tdClass}`}>
-                            <div className="min-w-0">
-                              <div className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                                {p.asset}
-                                {!!p.is_cash && <span className="text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 flex items-center gap-0.5"><Wallet size={9} /> CASH</span>}
-                                {!!p.price_override && <span className="text-amber-500" title="Precio manual configurado">●</span>}
-                                {!p.is_cash && (!p.tc_compra || p.tc_compra <= 0) && (
-                                  <span
-                                    className="text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
-                                    title="Falta el tipo de cambio de compra. El P&L en USD se aproxima con el blue actual — editá la posición para mayor precisión."
-                                  >
-                                    TC?
-                                  </span>
-                                )}
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <AssetAvatar asset={p.asset} isCash={p.is_cash} />
+                              <div className="min-w-0">
+                                <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
+                                  {p.asset}
+                                  {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                  {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
+                                  {!p.is_cash && (!p.tc_compra || p.tc_compra <= 0) && (
+                                    <span
+                                      className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30"
+                                      title="Falta el tipo de cambio de compra. El P&L en USD se aproxima con el blue actual — editá la posición para mayor precisión."
+                                    >
+                                      TC?
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-ink-3 mt-0.5 font-mono">{p.entry_date || 'sin fecha'}</div>
                               </div>
-                              <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{p.entry_date || 'sin fecha'}</div>
                             </div>
                           </td>
                           <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{p.quantity ?? '—'}</td>
@@ -497,7 +537,7 @@ export default function Positions() {
                     })}
                   </tbody>
                   <tfoot>
-                    <tr className="border-t-2 border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/30">
+                    <tr className="border-t-2 border-slate-300 dark:border-line-2 bg-slate-50 dark:bg-bg-2/40">
                       {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
                       <td colSpan={4} className="px-3 py-2.5 text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">TOTAL</td>
                       <td className="px-3 py-2.5 text-xs font-bold text-slate-800 dark:text-slate-200 tabular">{fmtArs(r.invArs)}</td>
@@ -520,7 +560,7 @@ export default function Positions() {
 
         // ── USD broker ─────────────────────────────────────────────────────
         return (
-          <div key={broker.id} className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden mb-6">
+          <div key={broker.id} className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden mb-6">
             {Header}
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -540,21 +580,24 @@ export default function Positions() {
                 <tbody>
                   {bpos.map(p => {
                     const c = calcUSDT(p)
-                    const pnlBg = c.pnl == null ? '' : c.pnl > 0 ? 'bg-emerald-500/[0.06]' : c.pnl < 0 ? 'bg-red-500/[0.06]' : ''
+                    const pnlBg = c.pnl == null ? '' : c.pnl > 0 ? 'bg-rendi-pos/[0.06]' : c.pnl < 0 ? 'bg-rendi-neg/[0.06]' : ''
                     // Precio promedio = invertido / cantidad. Si tiene buy_price lo preferimos por precisión histórica.
                     const avgPrice = (!p.is_cash && p.quantity > 0)
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
                     return (
-                      <tr key={p.id} className={`border-b border-slate-100 dark:border-slate-700/20 hover:bg-slate-50 dark:hover:bg-slate-700/20 ${p.is_cash ? 'bg-slate-50/60 dark:bg-slate-900/30' : ''}`}>
+                      <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                         <td className={`${tdClass}`}>
-                          <div className="min-w-0">
-                            <div className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                              {p.asset}
-                              {!!p.is_cash && <span className="text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 flex items-center gap-0.5"><Wallet size={9} /> CASH</span>}
-                              {!!p.price_override && <span className="text-amber-500" title="Precio manual configurado">●</span>}
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <AssetAvatar asset={p.asset} isCash={p.is_cash} />
+                            <div className="min-w-0">
+                              <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
+                                {p.asset}
+                                {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
+                              </div>
+                              <div className="text-[10px] text-ink-3 mt-0.5 font-mono">{p.entry_date || 'sin fecha'}</div>
                             </div>
-                            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{p.entry_date || 'sin fecha'}</div>
                           </div>
                         </td>
                         <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{p.quantity ?? '—'}</td>
@@ -895,6 +938,36 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+// AssetAvatar — chip pequeño con iniciales del ticker, color hash deterministic.
+// Para cash: icono Wallet en lugar de letras. Aporta jerarquía visual sin
+// depender de logos externos.
+function AssetAvatar({ asset, isCash }) {
+  if (isCash) {
+    return (
+      <div className="w-8 h-8 rounded-sm bg-bg-3 border border-line flex items-center justify-center flex-shrink-0">
+        <Wallet size={14} strokeWidth={1.5} className="text-ink-2" />
+      </div>
+    )
+  }
+  // Hash determinístico simple para tonalidad estable por ticker
+  const hash = (asset || '').split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
+  const palette = [
+    'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/30',
+    'bg-blue-500/15 text-blue-500 border-blue-500/30',
+    'bg-violet-500/15 text-violet-500 border-violet-500/30',
+    'bg-cyan-500/15 text-cyan-500 border-cyan-500/30',
+    'bg-amber-500/15 text-amber-500 border-amber-500/30',
+    'bg-pink-500/15 text-pink-500 border-pink-500/30',
+  ]
+  const color = palette[Math.abs(hash) % palette.length]
+  const initials = (asset || '?').slice(0, 2).toUpperCase()
+  return (
+    <div className={`w-8 h-8 rounded-sm border flex items-center justify-center flex-shrink-0 font-mono text-[10px] font-semibold tracking-tighter ${color}`}>
+      {initials}
+    </div>
   )
 }
 
