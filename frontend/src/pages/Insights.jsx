@@ -1003,15 +1003,15 @@ export default function Insights() {
         title="Insights"
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
-          <div className="inline-flex bg-slate-200/70 dark:bg-slate-800/60 p-0.5 rounded-md" title="Cambiar moneda de visualización">
+          <div className="inline-flex bg-slate-100 dark:bg-bg-2 border border-slate-200 dark:border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
             {['USD', 'ARS'].map(c => (
               <button
                 key={c}
                 onClick={() => setCurrency(c)}
-                className={`px-3 py-1 text-xs rounded font-semibold tracking-wide transition-colors ${
+                className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-[0.12em] transition-colors ${
                   currency === c
-                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    ? 'bg-white dark:bg-bg-3 text-slate-900 dark:text-ink-0'
+                    : 'text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0'
                 }`}
               >
                 {c}
@@ -1022,112 +1022,80 @@ export default function Insights() {
       />
 
       {hasMissingPrices && (
-        <div className="flex items-start gap-2.5 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] text-amber-700 dark:text-amber-300 text-xs">
-          <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
+        <div className="flex items-start gap-2.5 px-3 py-2 rounded-sm border border-rendi-warn/25 bg-rendi-warn/[0.08] text-rendi-warn text-xs">
+          <AlertTriangle size={14} strokeWidth={1.75} className="flex-shrink-0 mt-0.5" />
           <span>
             <span className="font-semibold">Cargando cotizaciones de mercado.</span> Algunos cálculos pueden mostrar valores parciales hasta completar la sincronización.
           </span>
         </div>
       )}
 
-      {/* ── Hero: Resultado de tu portfolio ─────────────────────────────────── */}
-      <Section title="Resultado del portfolio" subtitle="La foto general: cuánto vale hoy, cuánto aportaste y qué rendimiento generó.">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <div className="md:col-span-2">
-            <StatCard
-              tone="primary"
-              label="Valor actual"
-              value={amt(totalPortfolio)}
-              tooltip={
-                <>
-                  <p className="font-semibold text-slate-800 dark:text-slate-100">Valor de mercado de tu portfolio</p>
-                  <p>Suma del cash + posiciones abiertas a precios actuales. Para brokers ARS, la conversión a USD usa el blue actual.</p>
-                </>
-              }
-              sub={
-                <span className="inline-flex items-center gap-3 flex-wrap">
-                  <span className="text-slate-500 dark:text-slate-400">
-                    {totalResult >= 0 ? 'Ganancia total' : 'Pérdida total'}
-                  </span>
-                  <span className={`inline-flex items-center gap-1 font-semibold ${totalResult >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
-                    {totalResult >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                    {amt(Math.abs(totalResult))}
-                  </span>
-                  <span className={`tabular ${totalResult >= 0 ? 'text-emerald-500/80 dark:text-emerald-400/80' : 'text-red-500/80 dark:text-red-400/80'}`}>
-                    ({totalResult >= 0 ? '+' : ''}{totalResultPct.toFixed(1)}%)
-                  </span>
-                </span>
-              }
-              hint={`Sobre ${amt(capitalContributed)} de capital aportado · incluye P&L realizado y no realizado`}
-            />
-          </div>
-          <StatCard
-            label="Capital aportado"
-            value={amt(capitalContributed)}
-            sub="Capital inicial + depósitos netos de retiros"
-            icon={<PiggyBank size={14} />}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Plata que vos pusiste</p>
-                <p>Capital inicial + depósitos − retiros. Es la plata que aportaste de tu propio bolsillo, sin contar lo que el mercado generó.</p>
-              </>
-            }
-          />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <StatCard
-            label="Resultado total"
-            value={amt(totalResult, { signed: true })}
-            sub={`${pctSigned(totalResultPct / 100)} desde el inicio`}
-            positive={totalResult >= 0}
-            icon={<Activity size={14} />}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia acumulada (no anualizada)</p>
-                <p>Valor actual − Capital aportado. Cuánto generaste en total desde el inicio, sin importar el período transcurrido.</p>
-                <p className="text-slate-500 dark:text-slate-400">Para comparar contra plazos fijos o S&P 500 en la misma unidad, mirá el <span className="font-medium">CAGR</span> (Objetivos).</p>
-              </>
-            }
-          />
-          <StatCard
-            label="P&L realizado"
-            value={amt(realizedPnl, { signed: true })}
-            sub="Resultado acumulado de operaciones cerradas"
-            positive={realizedPnl >= 0}
-            icon={<CircleDollarSign size={14} />}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia ya cobrada</p>
-                <p>La que <span className="font-medium">ya cristalizaste</span> al cerrar posiciones. Incluye dividendos y conversiones FX realizadas.</p>
-              </>
-            }
-          />
-          <StatCard
-            label="P&L no realizado"
-            value={amt(unrealizedPnl, { signed: true })}
-            sub={totalCostBasis > 0 ? `${pctSigned(unrealizedPnl / totalCostBasis)} sobre costo · posiciones abiertas` : 'Posiciones abiertas'}
-            positive={unrealizedPnl >= 0}
-            icon={<Wallet size={14} />}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia en papel</p>
-                <p>P&L actual de tus <span className="font-medium">posiciones abiertas</span> según precios de mercado de hoy. Cambia día a día y se transforma en realizado al cerrar la posición.</p>
-              </>
-            }
-          />
-        </div>
+      {/* ══════════════════════════════════════════════════════════════════════
+          HERO — Diagnóstico inteligente. La observación más prioritaria toma
+          el lugar de la cifra. Es la sección que define la lectura de la
+          página: 'esto es lo más importante hoy'.
+          'Resultado del portfolio' eliminado: duplicaba el Dashboard.
+          ══════════════════════════════════════════════════════════════════════ */}
+      {diagnosis.length > 0 && (() => {
+        const [primary, ...rest] = diagnosis
+        const sevConfig = {
+          urgent:   { color: 'text-rendi-neg',  bg: 'bg-rendi-neg/[0.08]',  border: 'border-rendi-neg/30',  iconBg: 'bg-rendi-neg/15',  Icon: AlertTriangle, label: 'Urgente' },
+          warn:     { color: 'text-rendi-warn', bg: 'bg-rendi-warn/[0.08]', border: 'border-rendi-warn/30', iconBg: 'bg-rendi-warn/15', Icon: AlertTriangle, label: 'Atención' },
+          positive: { color: 'text-rendi-pos',  bg: 'bg-rendi-pos/[0.08]',  border: 'border-rendi-pos/30',  iconBg: 'bg-rendi-pos/15',  Icon: TrendingUp,    label: 'Positivo' },
+          info:     { color: 'text-rendi-accent', bg: 'bg-bg-1',            border: 'border-line',          iconBg: 'bg-bg-3',          Icon: Stethoscope,   label: 'Diagnóstico' },
+        }
+        const cfg = sevConfig[primary.severity] || sevConfig.info
+        const PrimaryIcon = cfg.Icon
+        return (
+          <section>
+            <p className="eyebrow mb-2">Diagnóstico</p>
+            <div className={`border rounded p-5 sm:p-6 ${cfg.bg} ${cfg.border}`}>
+              <div className="flex items-start gap-4">
+                <div className={`flex-shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-sm ${cfg.iconBg} flex items-center justify-center`}>
+                  <PrimaryIcon size={20} strokeWidth={1.75} className={cfg.color} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className={`label-mono ${cfg.color}`}>{cfg.label}</span>
+                  <p className="mt-1 text-lg sm:text-xl font-semibold leading-snug text-slate-900 dark:text-ink-0">
+                    <DiagnosticText text={primary.text} />
+                  </p>
+                </div>
+              </div>
+              {rest.length > 0 && (
+                <ul className="mt-5 pt-4 border-t border-line/60 space-y-2 text-sm leading-snug">
+                  {rest.map((d, i) => {
+                    const dotColor = d.severity === 'urgent' ? 'bg-rendi-neg'
+                      : d.severity === 'warn' ? 'bg-rendi-warn'
+                      : d.severity === 'positive' ? 'bg-rendi-pos'
+                      : 'bg-ink-3'
+                    return (
+                      <li key={d.id || i} className="flex items-start gap-2.5">
+                        <span className={`flex-shrink-0 mt-1.5 inline-block w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                        <span className="text-slate-700 dark:text-ink-1">
+                          <DiagnosticText text={d.text} />
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          </section>
+        )
+      })()}
 
-        {/* Strip de exposición — cash + clases de activo, complementa el hero */}
-        {(assetTypeBreakdown.length > 0 || cashRatio > 0) && (
-          <div className="mt-4 bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 rounded-xl shadow-sm dark:shadow-none p-4">
+      {/* ── Strip de exposición — cash + clases de activo ─────────────────── */}
+      {(assetTypeBreakdown.length > 0 || cashRatio > 0) && (
+        <section>
+          <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-4 sm:p-5">
             <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Exposición</h3>
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-amber-500 dark:text-amber-400' : 'text-slate-700 dark:text-slate-200'}`}>{cashRatio.toFixed(1)}%</span>
+              <p className="eyebrow">Exposición</p>
+              <span className="text-xs text-ink-2">
+                Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-slate-700 dark:text-ink-1'}`}>{cashRatio.toFixed(1)}%</span>
               </span>
             </div>
             {assetTypeBreakdown.length > 0 && (
-              <div className="flex h-2 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-900/50">
+              <div className="flex h-2 rounded-full overflow-hidden bg-slate-100 dark:bg-bg-2">
                 {assetTypeBreakdown.map((d, i) => (
                   <div
                     key={d.type}
@@ -1138,9 +1106,9 @@ export default function Insights() {
               </div>
             )}
             {assetTypeBreakdown.length > 0 && (
-              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-[11px]">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-[11px] font-mono">
                 {assetTypeBreakdown.map((d, i) => (
-                  <span key={d.type} className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+                  <span key={d.type} className="flex items-center gap-1.5 text-slate-600 dark:text-ink-1">
                     <span className="inline-block w-2 h-2 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
                     {d.type}: <span className="tabular font-medium">{d.sharePct.toFixed(0)}%</span>
                   </span>
@@ -1148,8 +1116,8 @@ export default function Insights() {
               </div>
             )}
           </div>
-        )}
-      </Section>
+        </section>
+      )}
 
       {/* ── Alertas críticas (danger) — solo lo más urgente arriba ─────────── */}
       {criticalAlerts.length > 0 && (
@@ -1483,36 +1451,7 @@ export default function Insights() {
 
       </Section>
 
-      {/* ══════════════════════════════════════════════════════════════════════
-          D. DIAGNÓSTICO — interpretación inteligente del estado actual.
-             Bullets data-driven + qué explica tu resultado + otras señales.
-          ══════════════════════════════════════════════════════════════════════ */}
-      {diagnosis.length > 0 && (
-        <Section title="Diagnóstico" subtitle="Observaciones automáticas basadas en tus datos. Las prioridades se actualizan diariamente según el estado actual del portfolio.">
-          <Card>
-            <div className="flex items-start gap-3">
-              <div className="p-2 rounded-lg bg-bg-3 border border-line text-rendi-accent flex-shrink-0">
-                <Stethoscope size={18} />
-              </div>
-              <ul className="space-y-2.5 text-sm leading-snug flex-1">
-                {diagnosis.map((d, i) => (
-                  <li key={d.id || i} className="flex items-start gap-2.5">
-                    <span className={`flex-shrink-0 mt-1.5 inline-block w-1.5 h-1.5 rounded-full ${
-                      d.severity === 'urgent'   ? 'bg-red-500' :
-                      d.severity === 'warn'     ? 'bg-amber-500' :
-                      d.severity === 'positive' ? 'bg-emerald-500' :
-                      'bg-slate-400'
-                    }`} />
-                    <span className="text-slate-700 dark:text-slate-200">
-                      <DiagnosticText text={d.text} />
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </Card>
-        </Section>
-      )}
+      {/* Diagnóstico se renderiza arriba como hero — ver bloque al inicio. */}
 
       {/* Qué explica tu resultado — top contributors + detractors */}
       {(topContribPos.length > 0 || topContribNeg.length > 0) && (
