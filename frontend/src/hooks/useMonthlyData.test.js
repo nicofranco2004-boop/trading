@@ -94,12 +94,12 @@ describe('buildMonthlyReports', () => {
     expect(out.years.map(y => y.year)).toEqual([2026, 2025, 2024])
   })
 
-  it('ordena meses dentro del año del más reciente al más viejo', () => {
+  it('ordena meses dentro del año cronológicamente (Enero → Diciembre, lectura natural)', () => {
     const entries = [1, 5, 3, 8, 2].map(m => ({
       year: 2025, month: m, broker: 'global', capital_inicio: 5000, capital_final: 5100,
     }))
     const out = buildMonthlyReports(entries, [])
-    expect(out.years[0].months.map(m => m.month)).toEqual([8, 5, 3, 2, 1])
+    expect(out.years[0].months.map(m => m.month)).toEqual([1, 2, 3, 5, 8])
   })
 
   it('calcula bestMonth/worstMonth correctamente entre meses con baseline', () => {
@@ -153,5 +153,95 @@ describe('buildMonthlyReports', () => {
     const may = out.years[0].months[0]
     expect(may.source).toBe('derived')
     expect(may.deltaPct).toBe(0)
+  })
+
+  // ─── Sparkline desde snapshots ───────────────────────────────────────────
+  it('asocia sparkline al mes cuando hay >=2 snapshots dentro del rango', () => {
+    const out = buildMonthlyReports(
+      [{ year: 2026, month: 5, broker: 'global', capital_inicio: 7000, capital_final: 8200 }],
+      [],
+      [
+        { date: '2026-05-01', total_value: 7000 },
+        { date: '2026-05-15', total_value: 7600 },
+        { date: '2026-05-30', total_value: 8200 },
+      ]
+    )
+    const may = out.years[0].months[0]
+    expect(may.sparkline).toHaveLength(3)
+    expect(may.sparkline[0].value).toBe(7000)
+    expect(may.sparkline[2].value).toBe(8200)
+  })
+
+  it('sparkline=null cuando hay solo 1 snapshot en el mes', () => {
+    const out = buildMonthlyReports(
+      [{ year: 2026, month: 5, broker: 'global', capital_inicio: 7000, capital_final: 8200 }],
+      [],
+      [{ date: '2026-05-15', total_value: 7800 }]
+    )
+    expect(out.years[0].months[0].sparkline).toBeNull()
+  })
+
+  it('sparkline ordenada cronológicamente aunque snapshots vengan desordenados', () => {
+    const out = buildMonthlyReports(
+      [{ year: 2026, month: 5, broker: 'global', capital_inicio: 7000, capital_final: 8200 }],
+      [],
+      [
+        { date: '2026-05-30', total_value: 8200 },
+        { date: '2026-05-01', total_value: 7000 },
+        { date: '2026-05-15', total_value: 7600 },
+      ]
+    )
+    const sp = out.years[0].months[0].sparkline
+    expect(sp.map(p => p.date)).toEqual(['2026-05-01', '2026-05-15', '2026-05-30'])
+  })
+
+  // ─── YTD live: año en curso usa snapshot reciente como endUsd ────────────
+  it('año en curso: usa el último snapshot como endUsd (alineado al Dashboard)', () => {
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [{ year: todayYear, month: 1, broker: 'global', capital_inicio: 5000, capital_final: 5500, deposits: 100 }],
+      [],
+      // Snapshot mucho más reciente que el último capital_final manual
+      [{ date: `${todayYear}-12-15`, total_value: 7200 }]
+    )
+    const yr = out.years[0]
+    expect(yr.endSource).toBe('live')
+    expect(yr.endUsd).toBe(7200)
+    // YTD = endUsd - startUsd - flows = 7200 - 5000 - 100 = 2100
+    expect(yr.ytdUsd).toBe(2100)
+    expect(yr.ytdPct).toBeCloseTo((2100 / 5000) * 100, 1)
+  })
+
+  it('año pasado: usa último capital_final manual como endUsd, no snapshot live', () => {
+    const lastYear = new Date().getFullYear() - 1
+    const out = buildMonthlyReports(
+      [
+        { year: lastYear, month: 1,  broker: 'global', capital_inicio: 5000, capital_final: 5300 },
+        { year: lastYear, month: 12, broker: 'global', capital_inicio: 5800, capital_final: 6100 },
+      ],
+      [],
+      // Snapshot live es del año en curso, no debe contaminar el año pasado
+      [{ date: `${new Date().getFullYear()}-06-01`, total_value: 9000 }]
+    )
+    const yr = out.years[0]
+    expect(yr.endSource).toBe('manual')
+    expect(yr.endUsd).toBe(6100)
+  })
+
+  it('flows del año descontados del YTD para que coincida con Dashboard', () => {
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [
+        { year: todayYear, month: 1, broker: 'global', capital_inicio: 5000, capital_final: 5200, deposits: 500, withdrawals: 0 },
+        { year: todayYear, month: 2, broker: 'global', capital_inicio: 5700, capital_final: 5900, deposits: 0,   withdrawals: 200 },
+      ],
+      [],
+      [{ date: `${todayYear}-03-15`, total_value: 6500 }]
+    )
+    const yr = out.years[0]
+    // flowsYear = 500 + 0 - 0 - 200 = 300 (deposits − withdrawals neto)
+    expect(yr.flowsYear).toBe(300)
+    // YTD = 6500 - 5000 - 300 = 1200 (rendimiento puro, sin contar aportes)
+    expect(yr.ytdUsd).toBe(1200)
   })
 })

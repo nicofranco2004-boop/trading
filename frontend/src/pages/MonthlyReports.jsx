@@ -22,6 +22,7 @@ import {
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
 import EmptyState from '../components/EmptyState'
+import MiniSparkline from '../components/MiniSparkline'
 import { usd, fmtUsd, pctSigned } from '../utils/format'
 import useMonthlyData from '../hooks/useMonthlyData'
 
@@ -147,11 +148,18 @@ export default function MonthlyReports() {
                 </span>
               </span>
             }
-            hint={
-              currentYear.bestMonth
-                ? `De ${fmtUsd(currentYear.startUsd).replace('+', '')} a ${fmtUsd(currentYear.endUsd).replace('+', '')} · Mejor mes: ${currentYear.bestMonth.name} (${pctSigned(currentYear.bestMonth.pct / 100)})`
-                : `${currentYear.months.length} ${currentYear.months.length === 1 ? 'mes' : 'meses'} con actividad`
-            }
+            hint={(() => {
+              const startStr = fmtUsd(currentYear.startUsd).replace('+', '')
+              const endStr = fmtUsd(currentYear.endUsd).replace('+', '')
+              const liveTag = currentYear.endSource === 'live' ? ' · live' : ''
+              const flowsTag = currentYear.flowsYear !== 0
+                ? ` · ${currentYear.flowsYear >= 0 ? 'aportes netos' : 'retiros netos'} ${fmtUsd(Math.abs(currentYear.flowsYear)).replace('+', '')}`
+                : ''
+              const bestTag = currentYear.bestMonth
+                ? ` · mejor: ${currentYear.bestMonth.name} (${pctSigned(currentYear.bestMonth.pct / 100)})`
+                : ''
+              return `De ${startStr} a ${endStr}${liveTag}${flowsTag}${bestTag}`
+            })()}
           />
         </div>
       )}
@@ -249,11 +257,12 @@ function MonthCard({ month, onClick }) {
   const sourceBadge = SOURCE_BADGE[month.source]
   const isPositive = month.deltaUsd >= 0
   const showPct = month.source !== 'derived'  // derived no tiene baseline
+  const hasSparkline = Array.isArray(month.sparkline) && month.sparkline.length >= 2
 
   return (
     <button
       onClick={onClick}
-      className="text-left bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group"
+      className="text-left bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group flex flex-col"
       aria-label={`Ver reporte de ${month.name} ${month.year}`}
     >
       <div className="flex items-center justify-between mb-2 gap-2">
@@ -285,7 +294,15 @@ function MonthCard({ month, onClick }) {
           P&amp;L realizado · sin baseline
         </div>
       )}
-      <div className="mt-3 pt-3 border-t border-slate-100 dark:border-line/50 flex items-center justify-between text-[10px] font-mono text-ink-3">
+
+      {/* Sparkline del mes (opcional — depende de tener snapshots diarios) */}
+      {hasSparkline && (
+        <div className="mt-3 -mx-1 h-8" title={`Evolución diaria · ${month.sparkline.length} puntos`}>
+          <MiniSparkline data={month.sparkline} positive={isPositive} />
+        </div>
+      )}
+
+      <div className={`${hasSparkline ? 'mt-2' : 'mt-3'} pt-3 border-t border-slate-100 dark:border-line/50 flex items-center justify-between text-[10px] font-mono text-ink-3`}>
         <span>
           {month.source === 'manual'
             ? `${fmtUsd(month.startUsd).replace('+', '')} → ${fmtUsd(month.endUsd).replace('+', '')}`

@@ -6,8 +6,9 @@
 //
 //   1. monthly_entries WHERE broker='global'  — source of truth si existen
 //   2. operations cerradas por mes            — derivamos pnl_realized
-//   3. snapshots                              — referencia para capital_final
-//      cuando el mes está derivado y no fue cerrado
+//   3. snapshots                              — sparkline por mes + valor
+//      live del portfolio para alinear el YTD del año en curso
+//      con el Dashboard (en lugar de quedarse en el último capital_final)
 //
 // Cada mes resultante lleva un campo `source`:
 //   • 'manual'   — proviene de monthly_entries con capital_inicio + final
@@ -61,6 +62,7 @@ function statusFromPct(deltaPct) {
 export default function useMonthlyData() {
   const [monthly, setMonthly] = useState([])
   const [operations, setOperations] = useState([])
+  const [snapshots, setSnapshots] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -68,13 +70,17 @@ export default function useMonthlyData() {
     let cancelled = false
     async function load() {
       try {
-        const [mon, ops] = await Promise.all([
+        const [mon, ops, snaps] = await Promise.all([
           api.get('/monthly').catch(() => []),
           api.get('/operations').catch(() => []),
+          // 3650 días = ~10 años. Necesitamos toda la historia para sparkline
+          // por mes y para que el snapshot 'más reciente' siempre sea live.
+          api.get('/snapshots?days=3650').catch(() => []),
         ])
         if (cancelled) return
         setMonthly(mon || [])
         setOperations(ops || [])
+        setSnapshots(snaps || [])
         setLoading(false)
       } catch (e) {
         if (cancelled) return
@@ -86,7 +92,10 @@ export default function useMonthlyData() {
     return () => { cancelled = true }
   }, [])
 
-  const data = useMemo(() => buildMonthlyReports(monthly, operations), [monthly, operations])
+  const data = useMemo(
+    () => buildMonthlyReports(monthly, operations, snapshots),
+    [monthly, operations, snapshots]
+  )
 
   return { loading, error, ...data }
 }
@@ -95,7 +104,7 @@ export default function useMonthlyData() {
 // Lógica pura — testeable y separada del fetching
 // ────────────────────────────────────────────────────────────────────────────
 
-export function buildMonthlyReports(monthly, operations) {
+export function buildMonthlyReports(monthly, operations, snapshots = []) {
   // 1. Tomar solo entries 'global' (rollup de todos los brokers)
   const globalEntries = (monthly || []).filter(m => m.broker === 'global')
 
@@ -123,11 +132,33 @@ export function buildMonthlyReports(monthly, operations) {
     return { years: [], hasAnyData: false }
   }
 
-  // 5. Construir lista de meses
+  // 5. Indexar snapshots por mes para sparklines + lookup del valor live.
+  // Cada snapshot tiene shape { date: 'YYYY-MM-DD', total_value, ... }.
+  const snapsByMonth = new Map()
+  for (const s of (snapshots || [])) {
+    if (!s.date || s.total_value == null) continue
+    const period = s.date.slice(0, 7)
+    if (!snapsByMonth.has(period)) snapsByMonth.set(period, [])
+    snapsByMonth.get(period).push(s)
+  }
+  // Cada array dentro de snapsByMonth queda ordenado por fecha ascendente.
+  for (const arr of snapsByMonth.values()) {
+    arr.sort((a, b) => a.date.localeCompare(b.date))
+  }
+
+  // 6. Construir lista de meses
   const months = [...allPeriods].sort().map(period => {
     const [year, month] = period.split('-').map(Number)
     const entry = entriesByPeriod.get(period)
     const realizedFromOps = realizedByPeriod.get(period) || 0
+
+    // Sparkline: serie de valores diarios del portfolio durante el mes.
+    // Si solo hay 1 snapshot, no alcanza para trazar línea — devolvemos null
+    // y el componente no renderiza la sparkline.
+    const monthSnaps = snapsByMonth.get(period) || []
+    const sparkline = monthSnaps.length >= 2
+      ? monthSnaps.map(s => ({ date: s.date, value: s.total_value }))
+      : null
 
     let startUsd, endUsd, deposits, withdrawals, pnlRealized, pnlUnrealized, source
 
@@ -188,37 +219,73 @@ export function buildMonthlyReports(monthly, operations) {
       deltaPct,
       source,
       status: statusFromPct(deltaPct),
+      sparkline,
     }
   })
 
-  // 6. Agrupar por año
+  // 7. Agrupar por año
   const byYear = new Map()
   for (const m of months) {
     if (!byYear.has(m.year)) byYear.set(m.year, [])
     byYear.get(m.year).push(m)
   }
 
-  // 7. Construir struct anual con summary del año
+  // 8. Tomar el snapshot más reciente como `liveValue` global. Lo usamos para
+  // que el YTD del año en curso refleje el valor actual del portfolio
+  // (alineado al Dashboard), no el último capital_final manual cerrado.
+  const latestSnap = (snapshots || [])
+    .filter(s => s.date && s.total_value != null)
+    .sort((a, b) => b.date.localeCompare(a.date))[0]
+  const liveValue = latestSnap?.total_value ?? null
+  const liveDate = latestSnap?.date ?? null
+  const todayYear = new Date().getFullYear()
+
+  // 9. Construir struct anual con summary del año
   const years = [...byYear.entries()]
-    .sort((a, b) => b[0] - a[0])  // años descendentes
+    .sort((a, b) => b[0] - a[0])  // años descendentes (lista vertical: actual arriba)
     .map(([year, monthsInYear]) => {
-      // Orden interno: del más reciente al más antiguo (igual al preview)
-      const sorted = [...monthsInYear].sort((a, b) => b.month - a.month)
+      // Orden interno: cronológico (Enero → Diciembre, lectura natural).
+      // Antes era inverso — feedback del usuario.
+      const sorted = [...monthsInYear].sort((a, b) => a.month - b.month)
 
-      // YTD: suma de delta de los meses con baseline (no los derived)
-      const withBaseline = sorted.filter(m => m.source !== 'derived')
-      const ytdUsd = withBaseline.reduce((s, m) => s + m.deltaUsd, 0) +
-                     sorted.filter(m => m.source === 'derived').reduce((s, m) => s + m.deltaUsd, 0)
-
-      // startUsd del año = capital_inicio del primer mes (más antiguo) que tenga
-      const oldestWithCapital = [...sorted].reverse().find(m => m.source === 'manual')
-      const newestWithCapital = sorted.find(m => m.source === 'manual')
+      // startUsd / endUsd del año
+      const oldestWithCapital = sorted.find(m => m.source === 'manual')          // primero del array (más viejo)
+      const newestWithCapital = [...sorted].reverse().find(m => m.source === 'manual')  // último (más reciente)
       const startUsd = oldestWithCapital?.startUsd || 0
-      const endUsd = newestWithCapital?.endUsd || 0
 
-      const ytdPct = startUsd > 0 ? (ytdUsd / startUsd) * 100 : 0
+      // Para el año actual, si tenemos snapshot live, lo usamos como endUsd.
+      // Eso asegura que el YTD coincida con el valor que muestra el Dashboard
+      // (valor live − capital aportado), no con el último capital_final cerrado
+      // que puede ser de hace varios meses.
+      let endUsd, endSource
+      const isCurrentYear = year === todayYear
+      if (isCurrentYear && liveValue != null) {
+        endUsd = liveValue
+        endSource = 'live'
+      } else {
+        endUsd = newestWithCapital?.endUsd || 0
+        endSource = 'manual'
+      }
 
-      // Best / worst del año (solo entre meses con deltaPct válido)
+      // Flujos netos del año (desde monthly_entries solamente — los derived
+      // no tienen flow tracking porque no hay entry global)
+      const flowsYear = sorted.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
+
+      // YTD del año:
+      //   • Si tenemos startUsd (manual) y endUsd (live o manual):
+      //     YTD = endUsd − startUsd − flowsYear  ← match exacto con Dashboard
+      //   • Sino, fallback a la suma de deltaUsd por mes (legacy)
+      let ytdUsd, ytdPct
+      if (startUsd > 0 && endUsd > 0) {
+        ytdUsd = endUsd - startUsd - flowsYear
+        ytdPct = (ytdUsd / startUsd) * 100
+      } else {
+        // Fallback: suma de deltaUsd por mes (incluye manual + partial + derived)
+        ytdUsd = sorted.reduce((s, m) => s + m.deltaUsd, 0)
+        ytdPct = startUsd > 0 ? (ytdUsd / startUsd) * 100 : 0
+      }
+
+      // Best / worst del año (solo entre meses con deltaPct válido — manual/partial)
       const withPct = sorted.filter(m => m.source !== 'derived')
       const bestMonth = withPct.length > 0
         ? [...withPct].sort((a, b) => b.deltaPct - a.deltaPct)[0]
@@ -233,6 +300,9 @@ export function buildMonthlyReports(monthly, operations) {
         ytdPct,
         startUsd,
         endUsd,
+        endSource,
+        liveDate: endSource === 'live' ? liveDate : null,
+        flowsYear,
         bestMonth: bestMonth ? { name: bestMonth.name, pct: bestMonth.deltaPct } : null,
         worstMonth: worstMonth ? { name: worstMonth.name, pct: worstMonth.deltaPct } : null,
         months: sorted,
@@ -244,5 +314,7 @@ export function buildMonthlyReports(monthly, operations) {
   return {
     years,
     hasAnyData: years.length > 0,
+    liveValue,
+    liveDate,
   }
 }
