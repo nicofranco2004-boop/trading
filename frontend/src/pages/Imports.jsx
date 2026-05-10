@@ -101,7 +101,7 @@ export default function Imports() {
 
       <Card padding="none">
         {loading ? (
-          <div className="p-6 text-center text-slate-400 text-sm">Cargando...</div>
+          <div className="p-6 text-center text-ink-3 text-sm" aria-live="polite">Cargando…</div>
         ) : batches.length === 0 ? (
           <EmptyState
             icon={<FileText size={20} />}

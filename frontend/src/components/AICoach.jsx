@@ -87,6 +87,7 @@ export default function AICoach({ snapshot, suggested }) {
             onClick={reset}
             className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center gap-1"
             title="Empezar de nuevo"
+            aria-label="Empezar conversación de nuevo"
           >
             <RotateCcw size={12} /> Nuevo
           </button>
@@ -167,6 +168,7 @@ export default function AICoach({ snapshot, suggested }) {
             disabled={loading || !input.trim()}
             className="flex-shrink-0 bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg p-2 transition"
             title="Enviar (Enter)"
+            aria-label="Enviar mensaje"
           >
             <Send size={16} />
           </button>

@@ -239,7 +239,7 @@ export default function Dashboard() {
     return { delta, pct: dPct }
   }, [evoSeries])
 
-  if (loading) return <div className="page-shell text-center text-slate-400">Cargando...</div>
+  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
 
   const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 

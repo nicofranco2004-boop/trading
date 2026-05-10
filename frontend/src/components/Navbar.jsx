@@ -80,8 +80,9 @@ export default function Navbar() {
             onClick={toggle}
             className="p-1.5 rounded-sm text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0 transition-colors"
             title={dark ? 'Modo claro' : 'Modo oscuro'}
+            aria-label={dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
           >
-            {dark ? <Sun size={15} strokeWidth={1.5} /> : <Moon size={15} strokeWidth={1.5} />}
+            {dark ? <Sun size={15} strokeWidth={1.5} aria-hidden="true" /> : <Moon size={15} strokeWidth={1.5} aria-hidden="true" />}
           </button>
           <button
             onClick={logout}
@@ -99,8 +100,9 @@ export default function Navbar() {
             onClick={toggle}
             className="p-2 rounded-sm text-slate-500 dark:text-ink-2 hover:bg-slate-100 dark:hover:bg-bg-2 transition"
             title={dark ? 'Modo claro' : 'Modo oscuro'}
+            aria-label={dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
           >
-            {dark ? <Sun size={16} strokeWidth={1.5} /> : <Moon size={16} strokeWidth={1.5} />}
+            {dark ? <Sun size={16} strokeWidth={1.5} aria-hidden="true" /> : <Moon size={16} strokeWidth={1.5} aria-hidden="true" />}
           </button>
           <button
             onClick={() => setOpen(o => !o)}

@@ -140,7 +140,7 @@ export default function Operations() {
               <input
                 value={filterAsset}
                 onChange={e => setFilterAsset(e.target.value)}
-                placeholder="Buscar activo (ej.: BTC, GGAL...)"
+                placeholder="Buscar activo (ej.: BTC, GGAL…)"
                 className="w-full bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md pl-8 pr-3 py-1.5 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:border-rendi-accent/50 focus:ring-1 focus:ring-rendi-accent/20"
               />
             </div>
@@ -223,8 +223,8 @@ export default function Operations() {
                   <td className={tdClass}><ResultPill pnl={op.pnl_usd} /></td>
                   <td className={tdClass}>
                     <div className="flex gap-2">
-                      <button onClick={() => openEdit(op)} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" title="Editar"><Pencil size={13} /></button>
-                      <button onClick={() => del(op.id)} className="text-slate-400 hover:text-red-500" title="Eliminar"><Trash2 size={13} /></button>
+                      <button onClick={() => openEdit(op)} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" title="Editar" aria-label={`Editar operación ${op.asset}`}><Pencil size={13} aria-hidden="true" /></button>
+                      <button onClick={() => del(op.id)} className="text-slate-400 hover:text-rendi-neg" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}><Trash2 size={13} aria-hidden="true" /></button>
                     </div>
                   </td>
                 </tr>

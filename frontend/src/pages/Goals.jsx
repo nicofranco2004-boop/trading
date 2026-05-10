@@ -120,7 +120,7 @@ export default function Goals() {
     loadAll()
   }
 
-  if (loading) return <div className="page-shell text-center text-slate-400">Cargando...</div>
+  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
 
   return (
     <div className="page-shell space-y-6">
@@ -268,8 +268,8 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
           </p>
         </div>
         <div className="flex gap-1">
-          <button onClick={onEdit} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 p-1"><Pencil size={14} /></button>
-          <button onClick={onDelete} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={14} /></button>
+          <button onClick={onEdit} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 p-1" title="Editar objetivo" aria-label={`Editar objetivo ${goal.name || ''}`}><Pencil size={14} aria-hidden="true" /></button>
+          <button onClick={onDelete} className="text-slate-400 hover:text-rendi-neg p-1" title="Eliminar objetivo" aria-label={`Eliminar objetivo ${goal.name || ''}`}><Trash2 size={14} aria-hidden="true" /></button>
         </div>
       </div>
 
@@ -282,7 +282,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
         </div>
         <div className="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
           <div
-            className={`h-full rounded-full transition-all ${reached ? 'bg-rendi-pos' : 'bg-rendi-accent'}`}
+            className={`h-full rounded-full transition-[width] duration-300 ease-out motion-reduce:transition-none ${reached ? 'bg-rendi-pos' : 'bg-rendi-accent'}`}
             style={{ width: `${progressPct}%` }}
           />
         </div>

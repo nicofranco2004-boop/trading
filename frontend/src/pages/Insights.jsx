@@ -154,7 +154,7 @@ export default function Insights() {
     }
   }
 
-  if (loading) return <div className="page-shell text-center text-slate-400">Cargando...</div>
+  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
 
   // ── Distribution ──
   // pieData    → por broker (gráfico de torta "Por broker", concentración por broker).
@@ -1817,12 +1817,12 @@ function PerformanceAttribution({ discipline, amt }) {
       {/* Stacked bar */}
       <div className="h-3 bg-slate-100 dark:bg-slate-900/50 rounded-full overflow-hidden flex">
         <div
-          className="h-full bg-slate-400/70 dark:bg-slate-500/70 transition-all"
+          className="h-full bg-slate-400/70 dark:bg-slate-500/70 transition-[width] duration-300 ease-out motion-reduce:transition-none"
           style={{ width: `${depShare}%` }}
           title="Aportes netos"
         />
         <div
-          className={`h-full transition-all ${pnlPositive ? 'bg-emerald-500' : 'bg-red-500'}`}
+          className={`h-full transition-[width] duration-300 ease-out motion-reduce:transition-none ${pnlPositive ? 'bg-rendi-pos' : 'bg-rendi-neg'}`}
           style={{ width: `${pnlShare}%` }}
           title={pnlPositive ? 'Rendimiento del mercado' : 'Pérdida del mercado'}
         />

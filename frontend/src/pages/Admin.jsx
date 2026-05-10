@@ -63,7 +63,7 @@ export default function Admin() {
     )
   }
 
-  if (loading) return <div className="page-shell text-center text-slate-400">Cargando...</div>
+  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
 
   return (
     <div className="page-shell space-y-6">
