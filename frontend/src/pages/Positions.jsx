@@ -347,8 +347,13 @@ export default function Positions() {
     return { value, invested, pnl, pct }
   }, [brokers, positions, prices, tcBlue])
 
-  // Delta diario — comparamos el valor actual contra el último snapshot
-  // anterior a hoy. Si no hay historial todavía, no mostramos el banner.
+  // Delta vs último snapshot guardado. Se llama "variación diaria" cuando
+  // dayDiff === 1, pero si el usuario no abrió la app durante varios días
+  // el snapshot anterior puede ser de hace 5/16/N días — en ese caso el
+  // copy refleja la realidad ("últimos N días" o "desde DATE") en lugar
+  // de mentir con un "HOY" engañoso.
+  // Para variación diaria 100% confiable hace falta un cron server-side
+  // que tome snapshot automático cada noche (tarea spawneada aparte).
   const daily = useMemo(() => {
     if (!totals.value || snapshots.length === 0) return null
     const today = new Date().toISOString().slice(0, 10)
@@ -356,14 +361,20 @@ export default function Positions() {
     if (!lastClose || !lastClose.total_value) return null
     const delta = totals.value - lastClose.total_value
     const pct = delta / lastClose.total_value
-    // Días de diferencia entre el snapshot y hoy
     const dayDiff = Math.round((new Date(today) - new Date(lastClose.date)) / 86_400_000)
+    // Label corto del badge (lo que va dentro del banner como kicker)
+    const badgeLabel = dayDiff === 1
+      ? 'Hoy'
+      : dayDiff <= 7
+      ? `${dayDiff} días`
+      : 'Variación'
+    // Label largo de referencia (lo que aclara el período exacto)
     const refLabel = dayDiff === 1
       ? 'desde el cierre de ayer'
       : dayDiff <= 7
       ? `últimos ${dayDiff} días`
       : `desde ${lastClose.date}`
-    return { delta, pct, refLabel, lastValue: lastClose.total_value }
+    return { delta, pct, badgeLabel, refLabel, lastValue: lastClose.total_value, dayDiff }
   }, [totals.value, snapshots])
 
   if (brokers.length === 0) {
@@ -430,7 +441,7 @@ export default function Positions() {
             {daily.delta >= 0 ? <TrendingUp size={16} strokeWidth={1.75} /> : <TrendingDown size={16} strokeWidth={1.75} />}
           </div>
           <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="label-mono">Hoy</span>
+            <span className="label-mono">{daily.badgeLabel}</span>
             <span className={`text-base font-semibold tabular ${
               daily.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
             }`}>
