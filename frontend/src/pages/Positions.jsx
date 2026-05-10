@@ -35,6 +35,7 @@ export default function Positions() {
   const [config, setConfig] = useState({ tc_mep: 1415, tc_blue: 1415 })
   const [dolar, setDolar] = useState(null)
   const [brokers, setBrokers] = useState([])
+  const [snapshots, setSnapshots] = useState([])
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY_POS)
   const [sellForm, setSellForm] = useState({ broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '', tc_venta: '', date: '', commissions: '' })
@@ -75,16 +76,18 @@ export default function Positions() {
 
   async function loadAll() {
     try {
-      const [pos, cfg, bkrs, dol] = await Promise.all([
+      const [pos, cfg, bkrs, dol, snaps] = await Promise.all([
         api.get('/positions'),
         api.get('/config'),
         api.get('/brokers'),
         api.get('/dolar').catch(() => null),
+        api.get('/snapshots?days=30').catch(() => []),
       ])
       setPositions(pos)
       setConfig(cfg)
       setBrokers(bkrs)
       setDolar(dol)
+      setSnapshots(snaps || [])
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
     } catch (e) {
@@ -344,6 +347,25 @@ export default function Positions() {
     return { value, invested, pnl, pct }
   }, [brokers, positions, prices, tcBlue])
 
+  // Delta diario — comparamos el valor actual contra el último snapshot
+  // anterior a hoy. Si no hay historial todavía, no mostramos el banner.
+  const daily = useMemo(() => {
+    if (!totals.value || snapshots.length === 0) return null
+    const today = new Date().toISOString().slice(0, 10)
+    const lastClose = snapshots.find(s => s.date < today)  // snapshots vienen DESC
+    if (!lastClose || !lastClose.total_value) return null
+    const delta = totals.value - lastClose.total_value
+    const pct = delta / lastClose.total_value
+    // Días de diferencia entre el snapshot y hoy
+    const dayDiff = Math.round((new Date(today) - new Date(lastClose.date)) / 86_400_000)
+    const refLabel = dayDiff === 1
+      ? 'desde el cierre de ayer'
+      : dayDiff <= 7
+      ? `últimos ${dayDiff} días`
+      : `desde ${lastClose.date}`
+    return { delta, pct, refLabel, lastValue: lastClose.total_value }
+  }, [totals.value, snapshots])
+
   if (brokers.length === 0) {
     return (
       <div className="page-shell-wide">
@@ -371,7 +393,7 @@ export default function Positions() {
       {/* ══════════════════════════════════════════════════════════════════════
           HERO — 'Tu portfolio hoy' agregado total. Single hero per page rule.
           ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mb-8">
+      <div className="mb-4">
         <StatCard
           tone="hero"
           label="Tu portfolio hoy"
@@ -391,6 +413,40 @@ export default function Positions() {
           hint={`Invertido USD ${usd(totals.invested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`}
         />
       </div>
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          BANNER 'Hoy' — variación intradía respecto del último cierre
+          guardado (snapshots diarios). Solo se muestra si hay historial.
+          ══════════════════════════════════════════════════════════════════════ */}
+      {daily && (
+        <div className={`mb-8 flex items-center gap-3 px-4 py-3 rounded border ${
+          daily.delta >= 0
+            ? 'bg-rendi-pos/[0.06] border-rendi-pos/25'
+            : 'bg-rendi-neg/[0.06] border-rendi-neg/25'
+        }`}>
+          <div className={`flex items-center justify-center w-8 h-8 rounded-sm flex-shrink-0 ${
+            daily.delta >= 0 ? 'bg-rendi-pos/15 text-rendi-pos' : 'bg-rendi-neg/15 text-rendi-neg'
+          }`}>
+            {daily.delta >= 0 ? <TrendingUp size={16} strokeWidth={1.75} /> : <TrendingDown size={16} strokeWidth={1.75} />}
+          </div>
+          <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="label-mono">Hoy</span>
+            <span className={`text-base font-semibold tabular ${
+              daily.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+            }`}>
+              {daily.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(daily.delta))}
+            </span>
+            <span className={`text-sm tabular ${
+              daily.delta >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
+            }`}>
+              ({pctSigned(daily.pct)})
+            </span>
+            <span className="text-xs text-ink-2 font-mono">
+              {daily.refLabel} · cierre USD {usd(daily.lastValue)}
+            </span>
+          </div>
+        </div>
+      )}
 
       {sortBrokersForDisplay(brokers).map(({ broker, indent, parentName }, bi) => {
         const color = BROKER_COLORS[bi % BROKER_COLORS.length]
