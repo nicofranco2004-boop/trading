@@ -3,6 +3,7 @@ import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock } fr
 import { api } from '../utils/api'
 import StatCard from '../components/StatCard'
 import { useAuth } from '../contexts/AuthContext'
+import { useToast } from '../components/Toast'
 
 export default function Admin() {
   const { user } = useAuth()
@@ -10,6 +11,7 @@ export default function Admin() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const toast = useToast()
 
   useEffect(() => { load() }, [])
 
@@ -36,7 +38,7 @@ export default function Admin() {
       await api.post(`/admin/users/${u.id}/approve`)
       load()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
@@ -47,7 +49,7 @@ export default function Admin() {
       await api.delete(`/admin/users/${u.id}`)
       load()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
@@ -63,13 +65,13 @@ export default function Admin() {
     )
   }
 
-  if (loading) return <div className="page-shell text-center text-slate-400">Cargando...</div>
+  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
 
   return (
     <div className="page-shell space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Shield size={22} className="text-rendi-green" />
+          <Shield size={22} className="text-rendi-accent" />
           <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">Panel de administración</h1>
         </div>
         <button
@@ -136,7 +138,7 @@ export default function Admin() {
                   <td className="px-3 py-2 text-slate-500 dark:text-slate-400 font-mono text-xs">{u.id}</td>
                   <td className="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">
                     {u.email}
-                    {u.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green font-semibold uppercase tracking-wide">admin</span>}
+                    {u.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold uppercase tracking-wide">admin</span>}
                     {!u.approved && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
                   </td>
                   <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{u.name || '—'}</td>

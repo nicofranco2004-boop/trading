@@ -118,7 +118,7 @@ export default function Operations() {
         title="Operaciones cerradas"
         subtitle="Historial de operaciones realizadas con P&L realizado."
         action={
-          <button onClick={openAdd} className="flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-medium transition-colors">
+          <button onClick={openAdd} className="flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-md font-medium transition-colors">
             <Plus size={14} /> Nueva operación
           </button>
         }
@@ -140,8 +140,8 @@ export default function Operations() {
               <input
                 value={filterAsset}
                 onChange={e => setFilterAsset(e.target.value)}
-                placeholder="Buscar activo (ej.: BTC, GGAL...)"
-                className="w-full bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md pl-8 pr-3 py-1.5 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:border-rendi-green/50 focus:ring-1 focus:ring-rendi-green/20"
+                placeholder="Buscar activo (ej.: BTC, GGAL…)"
+                className="w-full bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md pl-8 pr-3 py-1.5 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:border-rendi-accent/50 focus:ring-1 focus:ring-rendi-accent/20"
               />
             </div>
             <FilterPill label="Broker" value={filterBroker} onChange={setFilterBroker}
@@ -191,7 +191,7 @@ export default function Operations() {
                     title="Aún no hay operaciones registradas"
                     description="Las ventas realizadas desde Posiciones quedan registradas automáticamente con su P&L realizado. También podés agregar operaciones manualmente."
                     action={
-                      <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-medium transition">
+                      <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-md font-medium transition">
                         <Plus size={14} /> Agregar manualmente
                       </button>
                     }
@@ -223,8 +223,8 @@ export default function Operations() {
                   <td className={tdClass}><ResultPill pnl={op.pnl_usd} /></td>
                   <td className={tdClass}>
                     <div className="flex gap-2">
-                      <button onClick={() => openEdit(op)} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" title="Editar"><Pencil size={13} /></button>
-                      <button onClick={() => del(op.id)} className="text-slate-400 hover:text-red-500" title="Eliminar"><Trash2 size={13} /></button>
+                      <button onClick={() => openEdit(op)} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" title="Editar" aria-label={`Editar operación ${op.asset}`}><Pencil size={13} aria-hidden="true" /></button>
+                      <button onClick={() => del(op.id)} className="text-slate-400 hover:text-rendi-neg" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}><Trash2 size={13} aria-hidden="true" /></button>
                     </div>
                   </td>
                 </tr>
@@ -301,7 +301,7 @@ export default function Operations() {
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setModal(null)} className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">Cancelar</button>
-              <button onClick={save} className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg rounded-md font-semibold transition">Guardar</button>
+              <button onClick={save} className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition">Guardar</button>
             </div>
           </div>
         </Modal>
@@ -319,7 +319,7 @@ function FilterPill({ label, value, onChange, options }) {
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200 focus:outline-none focus:border-rendi-green/50 focus:ring-1 focus:ring-rendi-green/20"
+        className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200 focus:outline-none focus:border-rendi-accent/50 focus:ring-1 focus:ring-rendi-accent/20"
       >
         {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
       </select>

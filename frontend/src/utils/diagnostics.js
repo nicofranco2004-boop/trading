@@ -342,7 +342,11 @@ export const DIAGNOSTIC_GENERATORS = [
   {
     id: 'open_winner_strong',
     category: 'Posiciones abiertas',
-    severity: 'positive',
+    // Una ganancia no realizada concentrada NO es un insight positivo:
+    // es una alerta — el texto mismo dice 'una corrección podría reducir
+    // o eliminar esta ganancia'. Es un riesgo de paper gains que conviene
+    // realizar parcialmente. Por eso va en severity='warn', no 'positive'.
+    severity: 'warn',
     generate: ({ openExtremes }) => {
       if (!openExtremes || !openExtremes.best || openExtremes.best.pnl_usd <= 0) return null
       if (openExtremes.best.pnl_pct == null || openExtremes.best.pnl_pct < 30) return null
@@ -387,6 +391,348 @@ export const DIAGNOSTIC_GENERATORS = [
       // Sensibilidad a un movimiento del 10% del blue
       const sensUsd = cashUsd * 0.1
       return `**${sharePct.toFixed(0)}%** del portfolio (≈ **${fmtUsd(cashUsd)}**) está en cash ARS. Una variación del 10% en el dólar blue mueve tu valor en USD aproximadamente ±**${fmtUsd(sensUsd)}** sin operaciones — esto explica buena parte de la diferencia entre Dashboard y Resumen Mensual.`
+    },
+  },
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // BLOQUE 2 — Reglas de comportamiento, costos, consistencia y oportunidad.
+  // ═════════════════════════════════════════════════════════════════════════
+
+  // ─── Actividad operativa ────────────────────────────────────────────────
+  {
+    id: 'inactivity_long',
+    category: 'Comportamiento',
+    severity: 'info',
+    generate: ({ tradeOps }) => {
+      if (!tradeOps || tradeOps.length === 0) return null
+      const lastDate = tradeOps
+        .map(o => o.date)
+        .filter(Boolean)
+        .sort()
+        .pop()
+      if (!lastDate) return null
+      const days = Math.floor((Date.now() - new Date(lastDate).getTime()) / 86_400_000)
+      if (days < 90) return null
+      const months = Math.round(days / 30)
+      return `Hace **${months} ${months === 1 ? 'mes' : 'meses'}** que no realizás operaciones. Si cambiaron tus circunstancias o las tesis originales, conviene revisar la cartera.`
+    },
+  },
+  {
+    id: 'overtrading',
+    category: 'Comportamiento',
+    severity: 'warn',
+    generate: ({ tradeOps }) => {
+      if (!tradeOps || tradeOps.length === 0) return null
+      const cutoff = Date.now() - 30 * 86_400_000
+      const recent = tradeOps.filter(o => o.date && new Date(o.date).getTime() >= cutoff)
+      if (recent.length < 12) return null
+      return `Realizaste **${recent.length} operaciones** en los últimos 30 días. Operar muy seguido suele erosionar el rendimiento por costos, spreads y ruido — los mejores resultados suelen venir de menos decisiones, mejor pensadas.`
+    },
+  },
+
+  // ─── Mejor / peor operación cerrada ─────────────────────────────────────
+  {
+    id: 'best_realized_op',
+    category: 'Comportamiento',
+    severity: 'positive',
+    generate: ({ bestWorstOp }) => {
+      if (!bestWorstOp || !bestWorstOp.best || !bestWorstOp.best.asset) return null
+      if ((bestWorstOp.best.pnl_usd || 0) <= 50) return null  // umbral mínimo para evitar ruido
+      return `Tu mejor operación cerrada fue **${bestWorstOp.best.asset}** con **${fmtUsd(bestWorstOp.best.pnl_usd)}**. Vale la pena identificar qué características compartió esa tesis para repetir el patrón.`
+    },
+  },
+  {
+    id: 'worst_realized_op',
+    category: 'Comportamiento',
+    severity: 'warn',
+    generate: ({ bestWorstOp }) => {
+      if (!bestWorstOp || !bestWorstOp.worst || !bestWorstOp.worst.asset) return null
+      if ((bestWorstOp.worst.pnl_usd || 0) >= -50) return null
+      return `Tu peor operación cerrada fue **${bestWorstOp.worst.asset}** con **${fmtUsd(bestWorstOp.worst.pnl_usd)}**. Identificar qué falló — tesis equivocada, timing, tamaño excesivo — es la forma más barata de no repetir el error.`
+    },
+  },
+
+  // ─── Rachas de operaciones cerradas ─────────────────────────────────────
+  {
+    id: 'losing_streak',
+    category: 'Comportamiento',
+    severity: 'urgent',
+    generate: ({ tradeOps }) => {
+      if (!tradeOps || tradeOps.length < 4) return null
+      // Ordenar por fecha descendente y contar racha de pérdidas consecutivas
+      const sorted = [...tradeOps]
+        .filter(o => o.date && o.pnl_usd != null)
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+      let streak = 0
+      for (const op of sorted) {
+        if (op.pnl_usd < 0) streak++
+        else break
+      }
+      if (streak < 4) return null
+      return `Acumulás **${streak} operaciones perdedoras consecutivas**. Es el momento de pausar y revisar el sistema antes de que el sesgo emocional empuje a sobre-operar para "recuperar".`
+    },
+  },
+  {
+    id: 'winning_streak',
+    category: 'Comportamiento',
+    severity: 'warn',
+    generate: ({ tradeOps }) => {
+      if (!tradeOps || tradeOps.length < 5) return null
+      const sorted = [...tradeOps]
+        .filter(o => o.date && o.pnl_usd != null)
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+      let streak = 0
+      for (const op of sorted) {
+        if (op.pnl_usd > 0) streak++
+        else break
+      }
+      if (streak < 5) return null
+      return `Llevás **${streak} operaciones ganadoras seguidas**. Cuidado con la trampa más común: agrandar el tamaño de posición creyendo que la racha continuará. Mantené el sizing disciplinado.`
+    },
+  },
+
+  // ─── Hold time / estilo del inversor ────────────────────────────────────
+  {
+    id: 'avg_hold_time_classifier',
+    category: 'Comportamiento',
+    severity: 'info',
+    generate: ({ holdTime }) => {
+      if (!holdTime || holdTime.avg == null || holdTime.avg <= 0) return null
+      const d = holdTime.avg
+      let style
+      if (d < 7)        style = 'scalper / day-trader'
+      else if (d < 30)  style = 'swing trader corto'
+      else if (d < 90)  style = 'swing trader / posición corta'
+      else if (d < 365) style = 'inversor de posición'
+      else              style = 'inversor de largo plazo'
+      return `Tu hold time promedio en operaciones cerradas es de **${d.toFixed(0)} días**. Tu perfil operativo se asemeja al de un **${style}** — útil para evaluar si tu estrategia y costos están alineados a ese horizonte.`
+    },
+  },
+
+  // ─── Realizadas vs no realizadas ────────────────────────────────────────
+  {
+    id: 'unrealized_dominates',
+    category: 'Performance',
+    severity: 'warn',
+    generate: ({ realizedPnl, unrealizedPnl }) => {
+      if (realizedPnl == null || unrealizedPnl == null) return null
+      const totalPnl = realizedPnl + unrealizedPnl
+      if (totalPnl <= 0) return null  // si el total es pérdida, no aplica
+      if (unrealizedPnl <= 0) return null
+      const share = (unrealizedPnl / totalPnl) * 100
+      if (share < 75) return null
+      return `El **${share.toFixed(0)}%** de tu P&L total está sin realizar (${fmtUsd(unrealizedPnl)}). Es ganancia "en papel" que puede esfumarse con una corrección — considerá realizar parcialmente las posiciones más concentradas.`
+    },
+  },
+
+  // ─── Comisiones y costos ────────────────────────────────────────────────
+  {
+    id: 'fees_drag',
+    category: 'Performance',
+    severity: 'warn',
+    generate: ({ positions, totalPortfolio }) => {
+      if (!positions || !totalPortfolio) return null
+      const totalCommissions = positions.reduce((s, p) => s + (p.commissions || 0), 0)
+      if (totalCommissions <= 0) return null
+      const share = (totalCommissions / totalPortfolio) * 100
+      if (share < 0.5) return null
+      return `Las comisiones acumuladas suman **${fmtUsd(totalCommissions)}** (**${share.toFixed(1)}%** del portfolio). Cada operación adicional come tu rendimiento — vale la pena chequear si el broker está cobrando comisiones competitivas.`
+    },
+  },
+
+  // ─── Tax-loss harvesting ────────────────────────────────────────────────
+  {
+    id: 'tax_loss_opportunity',
+    category: 'Performance',
+    severity: 'info',
+    generate: ({ pieData }) => {
+      if (!pieData || pieData.length === 0) return null
+      const losers = pieData.filter(p => (p.pnl != null) && p.pnl < -50)
+      if (losers.length === 0) return null
+      const totalLoss = losers.reduce((s, p) => s + p.pnl, 0)
+      if (totalLoss > -100) return null
+      return `Tenés **${losers.length} ${losers.length === 1 ? 'posición' : 'posiciones'}** con pérdida no realizada por **${fmtUsd(totalLoss)}**. Si tributás ganancias del año, realizar pérdidas (tax-loss harvesting) puede compensar parte de esa carga impositiva.`
+    },
+  },
+
+  // ─── Posiciones pequeñas — drag de complejidad ──────────────────────────
+  {
+    id: 'tiny_positions_drag',
+    category: 'Posiciones abiertas',
+    severity: 'info',
+    generate: ({ pieData, totalPortfolio }) => {
+      if (!pieData || pieData.length < 5 || !totalPortfolio) return null
+      const tinies = pieData.filter(p => (p.value / totalPortfolio) * 100 < 2)
+      if (tinies.length < 3) return null
+      const totalShare = tinies.reduce((s, p) => s + (p.value / totalPortfolio) * 100, 0)
+      if (totalShare > 8) return null  // si la suma es >8%, no son tan menores
+      return `Tenés **${tinies.length} posiciones** que pesan menos del 2% cada una y representan apenas el **${totalShare.toFixed(1)}%** del total. Posiciones tan chicas no mueven la aguja pero suman complejidad operativa — considerá consolidar o salir.`
+    },
+  },
+
+  // ─── Posiciones estancadas (sin movimiento) ─────────────────────────────
+  {
+    id: 'stale_positions',
+    category: 'Posiciones abiertas',
+    severity: 'info',
+    generate: ({ positions }) => {
+      if (!positions || positions.length === 0) return null
+      const cutoff = Date.now() - 365 * 86_400_000
+      const stale = positions.filter(p =>
+        !p.is_cash && p.entry_date && new Date(p.entry_date).getTime() < cutoff
+      )
+      if (stale.length < 2) return null
+      return `**${stale.length} posiciones** llevan más de un año sin movimiento. Pueden ser convicciones de largo plazo o posiciones olvidadas — conviene revisar si la tesis original sigue vigente.`
+    },
+  },
+
+  // ─── Concentración geográfica ───────────────────────────────────────────
+  {
+    id: 'geographic_concentration_ar',
+    category: 'Moneda',
+    severity: 'warn',
+    generate: ({ positions, totalPortfolio, brokers, prices, tcBlue }) => {
+      // Posiciones argentinas = activos en brokers ARS (cotizan en BCBA con sufijo .BA)
+      if (!positions || !brokers || !totalPortfolio || !tcBlue) return null
+      const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
+      const arValue = positions
+        .filter(p => arsBrokers.has(p.broker) && !p.is_cash)
+        .reduce((s, p) => {
+          // Aproximación: usamos invested ARS / tcBlue. Si hay precio, igual sirve
+          // para estimar exposición geográfica (no es valor live exacto).
+          const arsAmt = (p.invested || 0) + (p.commissions || 0)
+          return s + arsAmt / tcBlue
+        }, 0)
+      const sharePct = (arValue / totalPortfolio) * 100
+      if (sharePct < 50) return null
+      return `**${sharePct.toFixed(0)}%** del portfolio está en activos argentinos (acciones BCBA, CEDEARs locales). Concentración geográfica alta — para diversificar considerá cuentas USD con ETFs internacionales (SPY, EEM, VEA).`
+    },
+  },
+
+  // ─── Recuperación de drawdown ───────────────────────────────────────────
+  {
+    id: 'drawdown_recovery',
+    category: 'Performance',
+    severity: 'positive',
+    generate: ({ drawdown }) => {
+      if (!drawdown || drawdown.maxPct == null || drawdown.current == null) return null
+      // Si tuvo un drawdown profundo (≤ -10%) y se recuperó (current > -3%)
+      if (drawdown.maxPct > -10) return null
+      if (drawdown.current < -3) return null
+      const recovered = Math.abs(drawdown.maxPct) - Math.abs(drawdown.current)
+      if (recovered < 5) return null
+      return `Recuperaste **${recovered.toFixed(1)}** puntos de un drawdown que llegó a **${drawdown.maxPct.toFixed(1)}%**. Tu portfolio mostró resiliencia — el peor momento ya pasó y se sostuvo la disciplina.`
+    },
+  },
+
+  // ─── Profit factor excepcional ──────────────────────────────────────────
+  {
+    id: 'profit_factor_excellent',
+    category: 'Comportamiento',
+    severity: 'positive',
+    generate: ({ profitFactor }) => {
+      if (!profitFactor || profitFactor.profitFactor === Infinity) return null
+      if (profitFactor.profitFactor < 3) return null
+      return `Profit factor de **${profitFactor.profitFactor.toFixed(1)}**: por cada dólar perdido, generás ${profitFactor.profitFactor.toFixed(1)}. Performance excepcional — el desafío ahora es mantener disciplina y no agrandar el sizing por sobre-confianza.`
+    },
+  },
+
+  // ─── Consistencia mensual ───────────────────────────────────────────────
+  {
+    id: 'monthly_pnl_streak',
+    category: 'Performance',
+    severity: 'positive',
+    generate: ({ globalMonthly }) => {
+      if (!globalMonthly || globalMonthly.length < 3) return null
+      // Ordenar de más reciente a más viejo y contar racha de meses positivos
+      const sorted = [...globalMonthly].sort((a, b) =>
+        b.year !== a.year ? b.year - a.year : b.month - a.month
+      )
+      let streak = 0
+      for (const m of sorted) {
+        const totalPnl = (m.pnl_realized || 0) + (m.pnl_unrealized || 0)
+        if (totalPnl > 0) streak++
+        else break
+      }
+      if (streak < 3) return null
+      return `Llevás **${streak} meses consecutivos** en ganancia. Consistencia es la métrica más difícil de sostener — mantené el plan y evitá decisiones impulsivas en máximos.`
+    },
+  },
+  {
+    id: 'monthly_pnl_negative_streak',
+    category: 'Performance',
+    severity: 'warn',
+    generate: ({ globalMonthly }) => {
+      if (!globalMonthly || globalMonthly.length < 3) return null
+      const sorted = [...globalMonthly].sort((a, b) =>
+        b.year !== a.year ? b.year - a.year : b.month - a.month
+      )
+      let streak = 0
+      for (const m of sorted) {
+        const totalPnl = (m.pnl_realized || 0) + (m.pnl_unrealized || 0)
+        if (totalPnl < 0) streak++
+        else break
+      }
+      if (streak < 3) return null
+      return `Llevás **${streak} meses consecutivos** en pérdida. Conviene revisar si la tesis macro sigue vigente, si el sizing es adecuado, o si vale pausar para no operar contra el viento.`
+    },
+  },
+
+  // ─── Aniversario de portfolio ───────────────────────────────────────────
+  {
+    id: 'first_purchase_anniversary',
+    category: 'Comportamiento',
+    severity: 'info',
+    generate: ({ positions, operations }) => {
+      // Tomamos la fecha más antigua entre positions.entry_date y operations.date
+      const dates = []
+      if (positions) {
+        for (const p of positions) {
+          if (!p.is_cash && p.entry_date) dates.push(p.entry_date)
+        }
+      }
+      if (operations) {
+        for (const o of operations) {
+          if (o.date) dates.push(o.date)
+        }
+      }
+      if (dates.length === 0) return null
+      const earliest = dates.sort()[0]
+      const days = Math.floor((Date.now() - new Date(earliest).getTime()) / 86_400_000)
+      const years = days / 365
+      if (years < 1) return null
+      const yLabel = years >= 2 ? `${Math.floor(years)} años` : '1 año'
+      return `Llevás **${yLabel}** invirtiendo de forma trackeada (desde **${earliest}**). El tiempo en el mercado, no el timing del mercado, es lo que históricamente compone los retornos.`
+    },
+  },
+
+  // ─── Cash vs invertido en broker idle ───────────────────────────────────
+  {
+    id: 'broker_idle_cash',
+    category: 'Liquidez',
+    severity: 'info',
+    generate: ({ positions, brokers, tcBlue, totalPortfolio }) => {
+      if (!positions || !brokers || !tcBlue || !totalPortfolio) return null
+      // Detectamos brokers donde TODO el saldo está en cash (sin posiciones invertidas)
+      const idleBrokers = []
+      for (const b of brokers) {
+        const bpos = positions.filter(p => p.broker === b.name)
+        if (bpos.length === 0) continue
+        const cashPos = bpos.filter(p => p.is_cash)
+        const investPos = bpos.filter(p => !p.is_cash)
+        if (cashPos.length === 0) continue
+        if (investPos.length > 0) continue  // tiene inversiones, no es idle
+        const cashUsd = cashPos.reduce((s, p) => {
+          const amt = p.invested || 0
+          return s + (b.currency === 'ARS' ? amt / tcBlue : amt)
+        }, 0)
+        if (cashUsd < 100) continue  // umbral mínimo
+        idleBrokers.push({ name: b.name, cashUsd, currency: b.currency })
+      }
+      if (idleBrokers.length === 0) return null
+      const total = idleBrokers.reduce((s, b) => s + b.cashUsd, 0)
+      const list = idleBrokers.map(b => `**${b.name}** (≈ ${fmtUsd(b.cashUsd).replace('+', '')})`).join(', ')
+      return `${idleBrokers.length === 1 ? 'Tu broker' : 'Tus brokers'} ${list} ${idleBrokers.length === 1 ? 'tiene' : 'tienen'} cash sin invertir por **${fmtUsd(total)}** total. Si la tesis era esperar oportunidad, considerá si el costo de oportunidad lo justifica.`
     },
   },
 ]

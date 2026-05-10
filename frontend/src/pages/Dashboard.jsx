@@ -6,6 +6,7 @@ import MonthlySummary from '../components/MonthlySummary'
 import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
+import { DashboardSkeleton } from '../components/Skeleton'
 import InsightLine from '../components/InsightLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
@@ -239,7 +240,7 @@ export default function Dashboard() {
     return { delta, pct: dPct }
   }, [evoSeries])
 
-  if (loading) return <div className="page-shell text-center text-slate-400">Cargando...</div>
+  if (loading) return <DashboardSkeleton />
 
   const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 
@@ -252,95 +253,67 @@ export default function Dashboard() {
       />
 
       {positions.filter(p => !p.is_cash).length === 0 && !loading && (
-        <Card className="mb-6 border-rendi-green/30 bg-gradient-to-br from-rendi-green/5 to-transparent">
+        <Card className="mb-6">
           <div className="flex flex-col sm:flex-row sm:items-center gap-4">
             <div className="flex-1">
-              <h2 className="font-semibold text-slate-900 dark:text-slate-100 mb-1">
+              <h2 className="font-semibold text-slate-900 dark:text-ink-0 mb-1">
                 Empezá importando tu historial
               </h2>
-              <p className="text-sm text-slate-600 dark:text-slate-300">
+              <p className="text-sm text-slate-600 dark:text-ink-1">
                 Andá a <strong>Configuración</strong> y subí un CSV con tus operaciones. Reconstruimos tu portfolio en segundos — vas a poder revisar fila por fila antes de guardar.
               </p>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
+              {/* CTA principal — usa rendi-pos como verde de marca/CTA */}
               <a
                 href="/config"
-                className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-4 py-2 rounded-md font-semibold transition"
+                className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-4 py-2 rounded-sm font-semibold transition"
               >
-                <Upload size={14} /> Ir a Configuración
+                <Upload size={14} strokeWidth={1.5} /> Ir a Configuración
               </a>
               <a
                 href="/posiciones"
-                className="inline-flex items-center justify-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 px-3 py-2 rounded-md transition"
+                className="inline-flex items-center justify-center gap-1.5 text-sm text-slate-600 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0 px-3 py-2 transition"
               >
-                Cargar manualmente <ArrowRight size={12} />
+                Cargar manualmente <ArrowRight size={12} strokeWidth={1.5} />
               </a>
             </div>
           </div>
         </Card>
       )}
 
-      {/* ── Hero: Valor actual + InsightLine ─────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
-        <div className="md:col-span-2">
-          <StatCard
-            tone="primary"
-            label="Valor actual"
-            value={fmtUsd(portfolioTotal)}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Valor de mercado de tu portfolio</p>
-                <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
-                <p className="text-slate-500 dark:text-slate-400">Para brokers ARS, la conversión a USD se hace al blue actual.</p>
-              </>
-            }
-            sub={
-              <span className="inline-flex items-center gap-3 flex-wrap">
-                <span className="text-slate-500 dark:text-slate-400">
-                  {totalReturnUsd >= 0 ? 'Ganancia total' : 'Pérdida total'}
-                </span>
-                <span className={`inline-flex items-center gap-1 font-semibold ${totalReturnUsd >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
-                  {totalReturnUsd >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                  USD {usd(Math.abs(totalReturnUsd))}
-                </span>
-                <span className={`tabular ${totalReturnUsd >= 0 ? 'text-emerald-500/80 dark:text-emerald-400/80' : 'text-red-500/80 dark:text-red-400/80'}`}>
-                  ({pctSigned(totalReturnPct)})
-                </span>
+      {/* ══════════════════════════════════════════════════════════════════════
+          HERO — la cifra única de la pantalla. Instrument Serif italic 64-84px.
+          Solo 1 hero por página (audit rule).
+          ══════════════════════════════════════════════════════════════════════ */}
+      <div className="mb-6 sm:mb-8">
+        <StatCard
+          tone="hero"
+          label="Valor actual"
+          value={fmtUsd(portfolioTotal)}
+          tooltip={
+            <>
+              <p className="font-semibold text-slate-800 dark:text-slate-100">Valor de mercado de tu portfolio</p>
+              <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
+              <p className="text-slate-500 dark:text-slate-400">Para brokers ARS, la conversión a USD se hace al blue actual.</p>
+            </>
+          }
+          sub={
+            <span className="inline-flex items-center gap-3 flex-wrap">
+              <span className="text-ink-2">
+                {totalReturnUsd >= 0 ? 'Ganancia total' : 'Pérdida total'}
               </span>
-            }
-            hint={`≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre los ${fmtUsd(netDeposited)} de capital aportado`}
-          />
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-1 gap-4">
-          <StatCard
-            label="Capital aportado"
-            value={fmtUsd(netDeposited)}
-            sub="Depósitos netos de retiros · no se cuenta como rendimiento"
-            icon={<PiggyBank size={14} />}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Plata que vos pusiste</p>
-                <p>Capital inicial + depósitos − retiros. Es la plata que aportaste de tu propio bolsillo, sin contar lo que el mercado generó.</p>
-                <p className="text-slate-500 dark:text-slate-400">Es la base sobre la que se mide tu rendimiento real.</p>
-              </>
-            }
-          />
-          <StatCard
-            label="Resultado total"
-            value={fmtUsd(totalReturnUsd)}
-            sub={`${pctSigned(totalReturnPct)} desde el inicio`}
-            positive={totalReturnUsd >= 0}
-            icon={<Activity size={14} />}
-            tooltip={
-              <>
-                <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia acumulada (no anualizada)</p>
-                <p>Valor actual − Capital aportado. Muestra cuánto generaste en total desde el inicio, sin importar el período.</p>
-                <p className="text-slate-500 dark:text-slate-400">¿Querés ver tu rendimiento anualizado para comparar contra plazos fijos o S&P 500? Mirá el <span className="font-medium">CAGR</span> en Objetivos.</p>
-              </>
-            }
-          />
-        </div>
+              <span className={`inline-flex items-center gap-1 font-semibold ${totalReturnUsd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                {totalReturnUsd >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
+                USD {usd(Math.abs(totalReturnUsd))}
+              </span>
+              <span className={`tabular ${totalReturnUsd >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
+                ({pctSigned(totalReturnPct)})
+              </span>
+            </span>
+          }
+          hint={`≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre los ${fmtUsd(netDeposited)} de capital aportado`}
+        />
       </div>
 
       {/* InsightLine — diagnóstico breve dinámico */}
@@ -352,55 +325,100 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── P&L breakdown: realizado vs no realizado ─────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
-        <StatCard
-          label="P&L realizado"
-          value={fmtUsd(realizedPnl)}
-          sub="Resultado acumulado de operaciones cerradas"
-          positive={realizedPnl >= 0}
-          icon={<CircleDollarSign size={14} />}
-          tooltip={
-            <>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia ya cobrada</p>
-              <p>Es la ganancia o pérdida que <span className="font-medium">ya cristalizaste</span> al vender posiciones. Es plata que ya tenés en tu cuenta.</p>
-              <p className="text-slate-500 dark:text-slate-400">Incluye también dividendos y conversiones FX realizadas.</p>
-            </>
-          }
-        />
-        <StatCard
-          label="P&L no realizado"
-          value={fmtUsd(totalPnl)}
-          sub={`${pctSigned(totalPct)} sobre costo · posiciones abiertas`}
-          positive={totalPnl >= 0}
-          icon={<Wallet size={14} />}
-          tooltip={
-            <>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia en papel</p>
-              <p>Es la ganancia o pérdida actual de tus <span className="font-medium">posiciones abiertas</span> según los precios de mercado de hoy.</p>
-              <p className="text-slate-500 dark:text-slate-400">Va a cambiar todos los días con el mercado y solo se transforma en realizado cuando cierres la posición.</p>
-            </>
-          }
-        />
+      {/* ══════════════════════════════════════════════════════════════════════
+          KPI STRIP — 4 celdas sin caja con divisor vertical 1px.
+          Densidad alta sin claustrofobia (audit rule kpi-cell).
+          ══════════════════════════════════════════════════════════════════════ */}
+      <div className="bg-bg-1 border border-line rounded mb-8 overflow-hidden">
+        <div className="flex flex-col md:flex-row md:divide-x divide-y md:divide-y-0 divide-line">
+          <div className="flex-1 py-3 sm:py-4">
+            <StatCard
+              tone="cell"
+              label="Capital aportado"
+              value={fmtUsd(netDeposited)}
+              sub="Depósitos netos · no es rendimiento"
+              icon={<PiggyBank size={13} strokeWidth={1.5} />}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Plata que vos pusiste</p>
+                  <p>Capital inicial + depósitos − retiros. Es la plata que aportaste de tu propio bolsillo, sin contar lo que el mercado generó.</p>
+                  <p className="text-slate-500 dark:text-slate-400">Es la base sobre la que se mide tu rendimiento real.</p>
+                </>
+              }
+            />
+          </div>
+          <div className="flex-1 py-3 sm:py-4">
+            <StatCard
+              tone="cell"
+              label="Resultado total"
+              value={fmtUsd(totalReturnUsd)}
+              sub={`${pctSigned(totalReturnPct)} desde el inicio`}
+              positive={totalReturnUsd >= 0}
+              icon={<Activity size={13} strokeWidth={1.5} />}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia acumulada (no anualizada)</p>
+                  <p>Valor actual − Capital aportado. Muestra cuánto generaste en total desde el inicio, sin importar el período.</p>
+                  <p className="text-slate-500 dark:text-slate-400">¿Querés ver tu rendimiento anualizado? Mirá el <span className="font-medium">CAGR</span> en Objetivos.</p>
+                </>
+              }
+            />
+          </div>
+          <div className="flex-1 py-3 sm:py-4">
+            <StatCard
+              tone="cell"
+              label="P&L realizado"
+              value={fmtUsd(realizedPnl)}
+              sub="Operaciones cerradas"
+              positive={realizedPnl >= 0}
+              icon={<CircleDollarSign size={13} strokeWidth={1.5} />}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia ya cobrada</p>
+                  <p>Lo que <span className="font-medium">ya cristalizaste</span> al vender posiciones. Plata que ya tenés en tu cuenta.</p>
+                  <p className="text-slate-500 dark:text-slate-400">Incluye dividendos y conversiones FX realizadas.</p>
+                </>
+              }
+            />
+          </div>
+          <div className="flex-1 py-3 sm:py-4">
+            <StatCard
+              tone="cell"
+              label="P&L no realizado"
+              value={fmtUsd(totalPnl)}
+              sub={`${pctSigned(totalPct)} sobre costo`}
+              positive={totalPnl >= 0}
+              icon={<Wallet size={13} strokeWidth={1.5} />}
+              tooltip={
+                <>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">Ganancia en papel</p>
+                  <p>P&L actual de tus <span className="font-medium">posiciones abiertas</span> según precios de hoy.</p>
+                  <p className="text-slate-500 dark:text-slate-400">Cambia con el mercado. Solo se realiza cuando cerrás la posición.</p>
+                </>
+              }
+            />
+          </div>
+        </div>
       </div>
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
-      <Card className="mb-6">
-        <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+      <Card className="mb-8">
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-5">
           <div>
-            <h2 className="font-semibold text-slate-800 dark:text-slate-200">Evolución del portfolio</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Rendimiento ajustado por flujos de capital — los aportes y retiros se neutralizan para reflejar performance pura.
+            <p className="eyebrow mb-1">Evolución</p>
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-ink-0 leading-tight">Performance del portfolio</h2>
+            <p className="text-xs text-ink-2 mt-1 max-w-md">
+              Rendimiento ajustado por flujos de capital — aportes y retiros se neutralizan para reflejar performance pura.
             </p>
             {periodChange && (
-              <p className="text-sm mt-2 tabular">
-                <span className={`font-semibold ${periodChange.delta >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
-                  {periodChange.delta >= 0 ? '+' : '-'}USD {usd(Math.abs(periodChange.delta))}
+              <p className="text-sm mt-3 tabular">
+                <span className={`font-semibold ${periodChange.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                  {periodChange.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(periodChange.delta))}
                 </span>
-                <span className={`ml-2 ${periodChange.delta >= 0 ? 'text-emerald-500/80 dark:text-emerald-400/80' : 'text-red-500/80 dark:text-red-400/80'}`}>
+                <span className={`ml-2 ${periodChange.delta >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                   {pctSigned(periodChange.pct)}
                 </span>
-                <span className="ml-2 text-slate-500 dark:text-slate-400">en {rangeLabel(range)}</span>
+                <span className="ml-2 text-ink-2">en {rangeLabel(range)}</span>
               </p>
             )}
           </div>
@@ -414,66 +432,88 @@ export default function Dashboard() {
             description="Vamos a registrar el valor de tu portfolio cada vez que entres al Dashboard. Con dos días registrados ya podemos mostrar la evolución."
           />
         ) : (
-          <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={evoSeries} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id="grad-value" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#37FF68" stopOpacity={0.45} />
-                  <stop offset="100%" stopColor="#37FF68" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="#334155" strokeOpacity={0.25} vertical={false} />
-              <XAxis
-                dataKey="label"
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
-                minTickGap={28}
-              />
-              <YAxis
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
-                tickFormatter={v => usdCompact(v)}
-                domain={[chartMin > 0 ? chartMin * 0.97 : 0, chartMax * 1.02]}
-                width={56}
-              />
-              <Tooltip
-                contentStyle={{ background: '#0F1614', border: '1px solid #1E2624', borderRadius: 10, padding: '10px 12px' }}
-                labelStyle={{ color: '#cbd5e1', fontSize: 11, marginBottom: 6 }}
-                formatter={(v, name) => [fmtUsd(v), name === 'valueUsd' ? 'Valor' : 'Aportado']}
-                labelFormatter={l => `Fecha · ${l}`}
-              />
-              <Area
-                type="monotone"
-                dataKey="netDeposited"
-                stroke="#64748b"
-                strokeWidth={1.5}
-                strokeDasharray="4 4"
-                fill="none"
-                dot={false}
-                activeDot={false}
-              />
-              <Area
-                type="monotone"
-                dataKey="valueUsd"
-                stroke="#37FF68"
-                strokeWidth={2.4}
-                fill="url(#grad-value)"
-                dot={false}
-                activeDot={{ r: 4, fill: '#37FF68', stroke: '#0B0F0E', strokeWidth: 2 }}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          (() => {
+            // Color condicional: verde solo si el portfolio gana, rojo si pierde.
+            // Audit visual: verde es semántico, no decorativo.
+            const isProfit = totalReturnUsd >= 0
+            const lineColor = isProfit ? '#6FE3A3' : '#F17A7A'
+            const fillId = isProfit ? 'grad-value-pos' : 'grad-value-neg'
+            return (
+              <ResponsiveContainer width="100%" height={300}>
+                <AreaChart data={evoSeries} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={lineColor} stopOpacity={0.18} />
+                      <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="#222636" strokeOpacity={0.6} strokeDasharray="2 4" vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    axisLine={false}
+                    tickLine={false}
+                    minTickGap={28}
+                  />
+                  <YAxis
+                    tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={v => usdCompact(v)}
+                    domain={[chartMin > 0 ? chartMin * 0.97 : 0, chartMax * 1.02]}
+                    width={56}
+                  />
+                  <Tooltip
+                    cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
+                    contentStyle={{
+                      background: '#101218',
+                      border: '1px solid #2C3142',
+                      borderRadius: 10,
+                      padding: '10px 12px',
+                      boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+                      fontFamily: 'JetBrains Mono'
+                    }}
+                    labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.12em' }}
+                    itemStyle={{ color: '#F4F4F0', fontSize: 12, padding: '2px 0' }}
+                    formatter={(v, name) => [fmtUsd(v), name === 'valueUsd' ? 'Valor' : 'Aportado']}
+                    labelFormatter={l => l}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="netDeposited"
+                    stroke="#5A5C5B"
+                    strokeWidth={1.5}
+                    strokeDasharray="4 4"
+                    fill="none"
+                    dot={false}
+                    activeDot={false}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="valueUsd"
+                    stroke={lineColor}
+                    strokeWidth={1.75}
+                    fill={`url(#${fillId})`}
+                    dot={false}
+                    activeDot={{ r: 4, fill: lineColor, stroke: '#0A0B0E', strokeWidth: 2 }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )
+          })()
         )}
 
         {evoSeries.length >= 2 && (
-          <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 mt-3 pt-3 border-t border-slate-200/60 dark:border-slate-700/30">
+          <div className="flex items-center gap-4 text-xs text-ink-2 mt-3 pt-3 border-t border-line font-mono">
             <span className="inline-flex items-center gap-1.5">
-              <span className="inline-block w-3 h-0.5 bg-rendi-green rounded-full" /> Valor del portfolio
+              <span
+                className="inline-block w-3 h-0.5 rounded-full"
+                style={{ background: totalReturnUsd >= 0 ? '#6FE3A3' : '#F17A7A' }}
+              />
+              Valor del portfolio
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="inline-block w-3 h-px border-t border-dashed border-slate-400" /> Capital aportado
+              <span className="inline-block w-3 h-px border-t border-dashed border-ink-3" /> Capital aportado
             </span>
           </div>
         )}
@@ -482,8 +522,11 @@ export default function Dashboard() {
       {/* ── Per-broker grid ──────────────────────────────────────────────────── */}
       {brokers.length > 0 && (
         <div className="mb-8">
-          <h3 className="text-xs uppercase tracking-wider font-medium text-slate-500 dark:text-slate-400 mb-3">Detalle por broker</h3>
-          <div className={`grid gap-4 ${brokers.length === 1 ? 'grid-cols-1 max-w-sm' : brokers.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 md:grid-cols-3'}`}>
+          <div className="mb-4">
+            <p className="eyebrow mb-1">Brokers</p>
+            <h3 className="text-base font-semibold text-slate-800 dark:text-ink-0 leading-tight">Detalle por cuenta</h3>
+          </div>
+          <div className={`grid gap-3 ${brokers.length === 1 ? 'grid-cols-1 max-w-sm' : brokers.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 md:grid-cols-3'}`}>
             {brokerTotals.map(b => {
               const isARS = b.currency === 'ARS'
               if (isARS) {
@@ -494,7 +537,7 @@ export default function Dashboard() {
                     key={b.id}
                     label={`${b.name} · ARS`}
                     value={fmtArs(b.valueArs)}
-                    sub={`Inv ${fmtArs(b.invArs)} · P&L: ${pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlArs))} (${pctSigned(pnlPctArs)})`}
+                    sub={`Inv ${fmtArs(b.invArs)} · P&L: ${pnlArs >= 0 ? '+' : '−'}ARS ${ars(Math.abs(pnlArs))} (${pctSigned(pnlPctArs)})`}
                     pnlPositive={pnlArs >= 0}
                   />
                 )
@@ -506,7 +549,7 @@ export default function Dashboard() {
                   key={b.id}
                   label={`${b.name} · USD`}
                   value={fmtUsd(b.value)}
-                  sub={`Inv ${fmtUsd(b.invested)} · P&L: ${pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(pnlUsd))} (${pctSigned(pnlPctUsd)})`}
+                  sub={`Inv ${fmtUsd(b.invested)} · P&L: ${pnlUsd >= 0 ? '+' : '−'}USD ${usd(Math.abs(pnlUsd))} (${pctSigned(pnlPctUsd)})`}
                   pnlPositive={pnlUsd >= 0}
                 />
               )

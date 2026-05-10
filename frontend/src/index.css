@@ -2,15 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ════════════════════════════════════════════════════════════════════════
+   Sistema visual — Rendi
+   ════════════════════════════════════════════════════════════════════════
+   Tokens definidos en tailwind.config.js. Acá viven utility classes y
+   estilos globales que no caben en Tailwind directo.
+
+   Convención de uso:
+   • bg-bg-0        → fondo de la app
+   • bg-bg-1        → surfaces (cards, panels)
+   • text-ink-0     → texto principal (casi papel)
+   • text-ink-2/3   → texto secundario/terciario
+   • text-rendi-pos → ganancia (verde refinado, NO decorativo)
+   • text-rendi-neg → pérdida
+   • font-display   → Instrument Serif (hero numbers, display headings)
+   • font-mono      → JetBrains Mono (labels uppercase, metadata)
+   ════════════════════════════════════════════════════════════════════════ */
+
 body {
   font-family: 'Manrope', system-ui, sans-serif;
   font-feature-settings: 'ss01', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  letter-spacing: -0.005em;
+  background: #0A0B0E;
+  color: #F4F4F0;
 }
 
-/* ── Page shell ──────────────────────────────────────────────────────────────
-   One consistent max-width + padding for every page.
-   Use: <div className="page-shell"> ... </div>
-   This replaces the mixed `max-w-5xl / 6xl / 7xl` that pages had before. */
+/* Tabular nums por default en cifras monetarias */
+.tabular,
+.font-mono,
+[class*='font-display'] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Page shell ────────────────────────────────────────────────────────────
+   One consistent max-width + padding for every page. */
 @layer components {
   .page-shell {
     @apply pt-20 px-3 sm:px-6 pb-12 max-w-6xl mx-auto;
@@ -18,22 +45,78 @@ body {
   .page-shell-wide {
     @apply pt-20 px-3 sm:px-6 pb-12 max-w-7xl mx-auto;
   }
-  /* Tabular numerics for numbers in tables / cards so digits align */
-  .tabular { font-variant-numeric: tabular-nums; }
 
-  /* Section title — used by every <Section> across pages so spacing/typography is consistent */
+  /* Tabular numerics utility — usar en montos y data numérica */
+  .num {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  /* Label uppercase mono — el patrón "specimen sheet" para etiquetas
+     de KPIs, secciones y metadata. Pequeño + uppercase + mono. */
+  .label-mono {
+    @apply font-mono text-[10px] sm:text-[11px] uppercase tracking-[0.18em] text-ink-2 font-medium;
+  }
+
+  /* Eyebrow — kicker pequeño arriba de un display heading.
+     Ej: "Posiciones activas" arriba de un h1 serif. */
+  .eyebrow {
+    @apply font-mono text-[11px] uppercase tracking-[0.18em] text-ink-2 font-medium;
+  }
+
+  /* Section title — usado por <Section> en Insights y otros. */
   .section-title {
-    @apply text-sm font-semibold uppercase tracking-[0.12em] text-slate-600 dark:text-slate-300;
+    @apply text-sm font-semibold uppercase tracking-[0.12em] text-ink-1;
   }
   .section-subtitle {
-    @apply text-xs text-slate-500 dark:text-slate-400 mt-1;
+    @apply text-xs text-ink-2 mt-1;
+  }
+
+  /* Hero number — Manrope tabular grande. Solo para 1 métrica por pantalla
+     (Valor actual del Dashboard, "Tu portfolio hoy" en Posiciones).
+     Probamos Instrument Serif italic — quedaba editorial/revista.
+     Manrope sans-serif tabular es la convención fintech moderna
+     (Linear, Wealthfront, Stripe, Robinhood). */
+  .hero-number {
+    @apply font-sans text-ink-0 font-medium;
+    font-size: clamp(44px, 6.5vw, 72px);
+    line-height: 1;
+    letter-spacing: -0.035em;
+    font-variant-numeric: tabular-nums;
+    text-wrap: balance;
+    font-feature-settings: 'ss01', 'cv11', 'tnum';
+  }
+
+  /* Display heading — Instrument Serif regular. Para headers de sección
+     decorativos (no hero). */
+  .display-heading {
+    @apply font-display text-ink-0;
+    font-size: clamp(28px, 4vw, 42px);
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+
+  /* Data hero — números grandes secundarios (KPI cells del strip).
+     Manrope tabular, NO mono. Más calmo, menos "Bloomberg". */
+  .data-hero {
+    @apply font-sans text-ink-0 num font-medium;
+    font-size: clamp(22px, 2.5vw, 28px);
+    letter-spacing: -0.02em;
+  }
+
+  /* KPI cell sin caja — el contenedor padre aplica los divisores 1px (con
+     divide-x / divide-y), la celda solo aporta el padding interno.
+     Esto evita conflictos con grids 2x2 donde first-child no acierta. */
+  .kpi-cell {
+    @apply px-4 sm:px-5 py-1;
   }
 }
 
+/* Scrollbar — neutralizado, ya no usa rendi-green decorativo */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #0B0F0E; }
-::-webkit-scrollbar-thumb { background: #1E2624; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #37FF68; }
+::-webkit-scrollbar-track { background: #0A0B0E; }
+::-webkit-scrollbar-thumb { background: #2C3142; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #5A5C5B; }
 
 /* Pretty date input — calendar indicator styling for dark mode */
 .date-input-pretty::-webkit-calendar-picker-indicator {
@@ -51,27 +134,27 @@ body {
 .dark .date-input-pretty::-webkit-datetime-edit-month-field,
 .dark .date-input-pretty::-webkit-datetime-edit-day-field,
 .dark .date-input-pretty::-webkit-datetime-edit-year-field {
-  color: #e2e8f0;
+  color: #F4F4F0;
 }
 .date-input-pretty::-webkit-datetime-edit-text,
 .date-input-pretty::-webkit-datetime-edit-month-field,
 .date-input-pretty::-webkit-datetime-edit-day-field,
 .date-input-pretty::-webkit-datetime-edit-year-field {
-  color: #0f172a;
+  color: #0A0B0E;
 }
 
-/* Range slider con paleta Rendi */
+/* Range slider con paleta nueva (rendi-pos refinado, no rendi-green neón) */
 .rendi-range {
   -webkit-appearance: none;
   appearance: none;
   height: 6px;
   border-radius: 999px;
-  background: linear-gradient(to right, #37FF68 0%, #37FF68 var(--val, 0%), rgba(148, 163, 184, 0.25) var(--val, 0%), rgba(148, 163, 184, 0.25) 100%);
+  background: linear-gradient(to right, #6FE3A3 0%, #6FE3A3 var(--val, 0%), rgba(139, 141, 138, 0.25) var(--val, 0%), rgba(139, 141, 138, 0.25) 100%);
   outline: none;
   cursor: pointer;
 }
 .dark .rendi-range {
-  background: linear-gradient(to right, #37FF68 0%, #37FF68 var(--val, 0%), rgba(71, 85, 105, 0.5) var(--val, 0%), rgba(71, 85, 105, 0.5) 100%);
+  background: linear-gradient(to right, #6FE3A3 0%, #6FE3A3 var(--val, 0%), rgba(44, 49, 66, 0.6) var(--val, 0%), rgba(44, 49, 66, 0.6) 100%);
 }
 .rendi-range::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -79,14 +162,14 @@ body {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #37FF68;
+  background: #6FE3A3;
   border: 3px solid #fff;
-  box-shadow: 0 0 0 1px rgba(55, 255, 104, 0.5), 0 2px 6px rgba(55, 255, 104, 0.4);
+  box-shadow: 0 0 0 1px rgba(111, 227, 163, 0.5), 0 2px 6px rgba(111, 227, 163, 0.4);
   cursor: grab;
   transition: transform 0.1s ease;
 }
 .dark .rendi-range::-webkit-slider-thumb {
-  border-color: #1e293b;
+  border-color: #101218;
 }
 .rendi-range::-webkit-slider-thumb:active {
   cursor: grabbing;
@@ -96,11 +179,31 @@ body {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #37FF68;
+  background: #6FE3A3;
   border: 3px solid #fff;
-  box-shadow: 0 0 0 1px rgba(55, 255, 104, 0.5), 0 2px 6px rgba(55, 255, 104, 0.4);
+  box-shadow: 0 0 0 1px rgba(111, 227, 163, 0.5), 0 2px 6px rgba(111, 227, 163, 0.4);
   cursor: grab;
 }
 .dark .rendi-range::-moz-range-thumb {
-  border-color: #1e293b;
+  border-color: #101218;
+}
+
+/* Toast slide-in desde la derecha */
+@keyframes slide-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* Live dot pulsante — para PageHeader meta y otros indicadores live */
+@keyframes rendi-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(111, 227, 163, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(111, 227, 163, 0); }
+}
+.live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6FE3A3;
+  animation: rendi-pulse 2s ease-in-out infinite;
 }

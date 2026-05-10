@@ -1,9 +1,11 @@
-import { useEffect, useState, useRef } from 'react'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart } from 'lucide-react'
+import { useEffect, useMemo, useState, useRef } from 'react'
+import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
+import StatCard from '../components/StatCard'
+import { useToast } from '../components/Toast'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -34,6 +36,8 @@ export default function Positions() {
   const [config, setConfig] = useState({ tc_mep: 1415, tc_blue: 1415 })
   const [dolar, setDolar] = useState(null)
   const [brokers, setBrokers] = useState([])
+  const [snapshots, setSnapshots] = useState([])
+  const toast = useToast()
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY_POS)
   const [sellForm, setSellForm] = useState({ broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '', tc_venta: '', date: '', commissions: '' })
@@ -74,16 +78,18 @@ export default function Positions() {
 
   async function loadAll() {
     try {
-      const [pos, cfg, bkrs, dol] = await Promise.all([
+      const [pos, cfg, bkrs, dol, snaps] = await Promise.all([
         api.get('/positions'),
         api.get('/config'),
         api.get('/brokers'),
         api.get('/dolar').catch(() => null),
+        api.get('/snapshots?days=30').catch(() => []),
       ])
       setPositions(pos)
       setConfig(cfg)
       setBrokers(bkrs)
       setDolar(dol)
+      setSnapshots(snaps || [])
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
     } catch (e) {
@@ -186,8 +192,8 @@ export default function Positions() {
       commissions: sellForm.commissions !== '' ? +sellForm.commissions : 0,
       ...(sellForm.currency === 'ARS' && sellForm.tc_venta ? { tc_venta: +sellForm.tc_venta } : {}),
     }
-    if (!body.quantity || body.quantity <= 0) return alert('La cantidad ingresada no es válida.')
-    if (body.exit_price == null || body.exit_price < 0) return alert('El precio ingresado no es válido.')
+    if (!body.quantity || body.quantity <= 0) return toast.push('La cantidad ingresada no es válida.', { type: 'warn' })
+    if (body.exit_price == null || body.exit_price < 0) return toast.push('El precio ingresado no es válido.', { type: 'warn' })
     try {
       const res = await api.post('/positions/sell', body)
       setModal(null)
@@ -197,7 +203,7 @@ export default function Positions() {
         // FIFO cerró múltiples lotes
       }
     } catch (e) {
-      alert('No se pudo registrar la venta: ' + e.message)
+      toast.push('No se pudo registrar la venta: ' + e.message, { type: 'error' })
     }
   }
 
@@ -235,14 +241,14 @@ export default function Positions() {
     const arsAmount = +convertForm.ars_amount
     const usdAmount = +convertForm.usd_amount
     const tc = +convertForm.tc
-    if (!arsAmount || arsAmount <= 0) return alert('Ingresá un monto ARS válido.')
-    if (!usdAmount || usdAmount <= 0) return alert('Ingresá un monto USD válido.')
-    if (!tc || tc <= 0) return alert('Ingresá un tipo de cambio válido.')
+    if (!arsAmount || arsAmount <= 0) return toast.push('Ingresá un monto ARS válido.', { type: 'warn' })
+    if (!usdAmount || usdAmount <= 0) return toast.push('Ingresá un monto USD válido.', { type: 'warn' })
+    if (!tc || tc <= 0) return toast.push('Ingresá un tipo de cambio válido.', { type: 'warn' })
     // Validar saldo según dirección
     const debit = convertForm.direction === 'ars_to_usd' ? arsAmount : usdAmount
     if (debit > convertForm.available + 0.001) {
       const curr = convertForm.direction === 'ars_to_usd' ? 'ARS' : 'USD'
-      return alert(`Saldo insuficiente. Disponible: ${convertForm.available.toFixed(2)} ${curr}.`)
+      return toast.push(`Saldo insuficiente. Disponible: ${convertForm.available.toFixed(2)} ${curr}.`, { type: 'warn' })
     }
     try {
       await api.post('/conversions', {
@@ -257,7 +263,7 @@ export default function Positions() {
       setModal(null)
       loadAll()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
@@ -266,15 +272,15 @@ export default function Positions() {
       await api.post(`/brokers/${broker.id}/usd-sibling`)
       loadAll()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
   async function confirmCashFlow() {
     const amount = +cashFlowForm.amount
-    if (!amount || amount <= 0) return alert('Ingresá un monto válido.')
+    if (!amount || amount <= 0) return toast.push('Ingresá un monto válido.', { type: 'warn' })
     if (cashFlowForm.direction === 'withdraw' && amount > cashFlowForm.available + 0.001) {
-      return alert(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2)} ${cashFlowForm.currency}.`)
+      return toast.push(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2)} ${cashFlowForm.currency}.`, { type: 'warn' })
     }
     try {
       await api.post('/cash/flow', {
@@ -286,7 +292,7 @@ export default function Positions() {
       setModal(null)
       loadAll()
     } catch (e) {
-      alert('Ocurrió un error: ' + e.message)
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
   }
 
@@ -322,17 +328,65 @@ export default function Positions() {
     return { valueArs, valueUsd, pnlArs, pnlUsd, pnlPct: realCostArs > 0 ? pnlArs / realCostArs : 0, priceArs, invUsd }
   }
 
-  const thClass = 'px-3 py-2 text-left text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider whitespace-nowrap'
-  const tdClass = 'px-3 py-2 text-sm whitespace-nowrap'
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200'
+  // sticky top-0 + bg matched al thead row para que al scrollear la tabla
+  // (especialmente en mobile o brokers con muchas posiciones) el header
+  // quede pegado arriba — convención fintech standard (Robinhood, Stripe).
+  const thClass = 'px-3 py-2.5 text-left label-mono whitespace-nowrap sticky top-0 z-10 bg-slate-50/95 dark:bg-bg-2/95 backdrop-blur-sm'
+  const tdClass = 'px-3 py-2.5 text-sm whitespace-nowrap'
+  const inputClass = 'w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2 text-sm text-slate-900 dark:text-ink-0'
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
+
+  // Totales agregados (USD) para el hero "Tu portfolio hoy".
+  // IMPORTANTE: useMemo va ANTES del early return — los hooks deben llamarse
+  // en el mismo orden en cada render (rules of hooks).
+  const totals = useMemo(() => {
+    let value = 0, invested = 0
+    for (const b of brokers) {
+      const r = computeBrokerValue(positions, prices, b, tcBlue)
+      value += r.value || 0
+      invested += r.invested || 0
+    }
+    const pnl = value - invested
+    const pct = invested > 0 ? pnl / invested : 0
+    return { value, invested, pnl, pct }
+  }, [brokers, positions, prices, tcBlue])
+
+  // Delta vs último snapshot guardado. Se llama "variación diaria" cuando
+  // dayDiff === 1, pero si el usuario no abrió la app durante varios días
+  // el snapshot anterior puede ser de hace 5/16/N días — en ese caso el
+  // copy refleja la realidad ("últimos N días" o "desde DATE") en lugar
+  // de mentir con un "HOY" engañoso.
+  // Para variación diaria 100% confiable hace falta un cron server-side
+  // que tome snapshot automático cada noche (tarea spawneada aparte).
+  const daily = useMemo(() => {
+    if (!totals.value || snapshots.length === 0) return null
+    const today = new Date().toISOString().slice(0, 10)
+    const lastClose = snapshots.find(s => s.date < today)  // snapshots vienen DESC
+    if (!lastClose || !lastClose.total_value) return null
+    const delta = totals.value - lastClose.total_value
+    const pct = delta / lastClose.total_value
+    const dayDiff = Math.round((new Date(today) - new Date(lastClose.date)) / 86_400_000)
+    // Label corto del badge (lo que va dentro del banner como kicker)
+    const badgeLabel = dayDiff === 1
+      ? 'Hoy'
+      : dayDiff <= 7
+      ? `${dayDiff} días`
+      : 'Variación'
+    // Label largo de referencia (lo que aclara el período exacto)
+    const refLabel = dayDiff === 1
+      ? 'desde el cierre de ayer'
+      : dayDiff <= 7
+      ? `últimos ${dayDiff} días`
+      : `desde ${lastClose.date}`
+    return { delta, pct, badgeLabel, refLabel, lastValue: lastClose.total_value, dayDiff }
+  }, [totals.value, snapshots])
 
   if (brokers.length === 0) {
     return (
       <div className="page-shell-wide">
         <PageHeader title="Posiciones activas" subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado." />
-        <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl">
+        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded">
           <EmptyState
             title="Sin brokers configurados"
             description="Configurá tu primer broker desde la sección Config para comenzar a registrar posiciones."
@@ -352,6 +406,64 @@ export default function Positions() {
         meta={meta}
       />
 
+      {/* ══════════════════════════════════════════════════════════════════════
+          HERO — 'Tu portfolio hoy' agregado total. Single hero per page rule.
+          ══════════════════════════════════════════════════════════════════════ */}
+      <div className="mb-4">
+        <StatCard
+          tone="hero"
+          label="Tu portfolio hoy"
+          value={fmtUsd(totals.value)}
+          sub={
+            <span className="inline-flex items-center gap-3 flex-wrap">
+              <span className="text-ink-2">P&L no realizado</span>
+              <span className={`inline-flex items-center gap-1 font-semibold ${totals.pnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                {totals.pnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
+                USD {usd(Math.abs(totals.pnl))}
+              </span>
+              <span className={`tabular ${totals.pnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
+                ({pctSigned(totals.pct)})
+              </span>
+            </span>
+          }
+          hint={`Invertido USD ${usd(totals.invested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`}
+        />
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          BANNER 'Hoy' — variación intradía respecto del último cierre
+          guardado (snapshots diarios). Solo se muestra si hay historial.
+          ══════════════════════════════════════════════════════════════════════ */}
+      {daily && (
+        <div className={`mb-8 flex items-center gap-3 px-4 py-3 rounded border ${
+          daily.delta >= 0
+            ? 'bg-rendi-pos/[0.06] border-rendi-pos/25'
+            : 'bg-rendi-neg/[0.06] border-rendi-neg/25'
+        }`}>
+          <div className={`flex items-center justify-center w-8 h-8 rounded-sm flex-shrink-0 ${
+            daily.delta >= 0 ? 'bg-rendi-pos/15 text-rendi-pos' : 'bg-rendi-neg/15 text-rendi-neg'
+          }`}>
+            {daily.delta >= 0 ? <TrendingUp size={16} strokeWidth={1.75} /> : <TrendingDown size={16} strokeWidth={1.75} />}
+          </div>
+          <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="label-mono">{daily.badgeLabel}</span>
+            <span className={`text-base font-semibold tabular ${
+              daily.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+            }`}>
+              {daily.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(daily.delta))}
+            </span>
+            <span className={`text-sm tabular ${
+              daily.delta >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
+            }`}>
+              ({pctSigned(daily.pct)})
+            </span>
+            <span className="text-xs text-ink-2 font-mono">
+              {daily.refLabel} · cierre USD {usd(daily.lastValue)}
+            </span>
+          </div>
+        </div>
+      )}
+
       {sortBrokersForDisplay(brokers).map(({ broker, indent, parentName }, bi) => {
         const color = BROKER_COLORS[bi % BROKER_COLORS.length]
         const bpos = sortCash(positions.filter(p => p.broker === broker.name))
@@ -361,28 +473,27 @@ export default function Positions() {
         const r = computeBrokerValue(positions, prices, broker, tcBlue)
 
         // ── Header (compartido) ────────────────────────────────────────────
-        // 2 líneas de info: 1) badges + nombre, 2) métricas natives + acciones
+        // Eyebrow 'Broker' + nombre prominente · badges discretos · métricas
+        // inline · acciones a la derecha. Patrón specimen sheet del audit.
         const headerPnlUsd = r.pnlUsd
         const headerPnlPct = r.invested > 0 ? r.pnlUsd / r.invested : 0
         const Header = (
-          <div className="flex flex-col gap-2 px-3 sm:px-4 py-3 border-b border-slate-200 dark:border-slate-700/50">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                {isSubBroker && (
-                  <span className="text-slate-400 dark:text-slate-500 text-xs select-none" title={`Sub-broker de ${parentName}`}>└─</span>
-                )}
-                <span className={`font-semibold ${color.text}`}>{broker.name}</span>
-                {isARS ? (
-                  <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-600 dark:text-violet-400">ARS</span>
-                ) : (
-                  <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400">USD</span>
-                )}
-                {isSubBroker && (
-                  <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-600 dark:text-slate-400" title="Creado automáticamente al convertir ARS a USD">
-                    Sub-broker
-                  </span>
-                )}
-                {isARS && <span className="text-[11px] text-slate-400 dark:text-slate-500">TC blue {tcBlue}</span>}
+          <div className="flex flex-col gap-3 px-4 sm:px-5 py-4 border-b border-slate-200 dark:border-line">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="min-w-0">
+                <p className="eyebrow mb-1 flex items-center gap-2">
+                  {isSubBroker && (
+                    <span className="text-ink-3 select-none" title={`Sub-broker de ${parentName}`}>└─</span>
+                  )}
+                  Broker · {isARS ? 'ARS' : 'USD'}
+                  {isSubBroker && (
+                    <span className="text-ink-3 normal-case tracking-normal" title="Creado automáticamente al convertir ARS a USD">
+                      sub-broker
+                    </span>
+                  )}
+                  {isARS && <span className="text-ink-3 normal-case tracking-normal">· TC blue {tcBlue}</span>}
+                </p>
+                <h3 className={`text-lg font-semibold leading-tight ${color.text}`}>{broker.name}</h3>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {/* Para brokers ARS sin sub-broker USD: ofrecemos crearlo
@@ -391,39 +502,39 @@ export default function Positions() {
                 {isARS && !brokers.some(b => b.parent_broker_id === broker.id) && (
                   <button
                     onClick={() => createUsdSibling(broker)}
-                    className="flex items-center gap-1 text-[11px] text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 px-2 py-1 rounded-md hover:bg-blue-500/10 transition"
+                    className="flex items-center gap-1 text-[11px] text-rendi-accent hover:text-rendi-accent/80 px-2 py-1 rounded-sm hover:bg-rendi-accent/10 transition"
                     title="Crea un sub-broker USD asociado para registrar tenencias en dólares (CEDEARs en USD, USDT, etc.)"
                   >
-                    <DollarSign size={12} /> Crear sub-broker USD
+                    <DollarSign size={12} strokeWidth={1.5} /> Crear sub-broker USD
                   </button>
                 )}
                 <button
                   onClick={() => toggleDetail(broker.name)}
-                  className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700/40 transition"
+                  className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-slate-100 dark:hover:bg-bg-2 transition"
                   title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar tipo de cambio, conversiones y detalles adicionales'}
                 >
-                  {showDetail ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  {showDetail ? <ChevronUp size={12} strokeWidth={1.5} /> : <ChevronDown size={12} strokeWidth={1.5} />}
                   {showDetail ? 'Ocultar detalle' : 'Detalle'}
                 </button>
-                <button onClick={() => openAdd(broker.name)} className={`flex items-center gap-1 text-xs ${color.bg} ${color.text} ${color.hover} px-2 py-1 rounded-md transition-colors`}>
-                  <Plus size={12} /> Agregar
+                <button onClick={() => openAdd(broker.name)} className="flex items-center gap-1 text-xs bg-bg-2 hover:bg-bg-3 border border-line text-slate-700 dark:text-ink-1 px-2.5 py-1.5 rounded-sm transition">
+                  <Plus size={12} strokeWidth={1.5} /> Agregar
                 </button>
               </div>
             </div>
-            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs sm:text-sm tabular">
-              <span className="text-slate-600 dark:text-slate-300">
-                <span className="text-slate-400 dark:text-slate-500 mr-1">Valor</span>
-                <span className="font-semibold text-slate-900 dark:text-slate-100">
+            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-xs sm:text-sm tabular">
+              <span>
+                <span className="label-mono mr-1.5">Valor</span>
+                <span className="font-semibold text-slate-900 dark:text-ink-0">
                   {isARS ? fmtArs(r.valueArs) : fmtUsd(r.value)}
                 </span>
               </span>
-              <span className="text-slate-500 dark:text-slate-400">
-                <span className="text-slate-400 dark:text-slate-500 mr-1">Inv</span>
+              <span className="text-ink-2">
+                <span className="label-mono mr-1.5">Inv</span>
                 {isARS ? fmtArs(r.invArs) : fmtUsd(r.invested)}
               </span>
               <span className={`${colorClass(headerPnlUsd)} font-medium`}>
-                <span className="text-slate-400 dark:text-slate-500 mr-1">P&L</span>
-                {headerPnlUsd >= 0 ? '+' : '-'}{isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(headerPnlUsd))}`}
+                <span className="label-mono mr-1.5 text-ink-2">P&L</span>
+                {headerPnlUsd >= 0 ? '+' : '−'}{isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(headerPnlUsd))}`}
                 <span className="ml-1 opacity-80">({pctSigned(headerPnlPct)})</span>
               </span>
             </div>
@@ -433,12 +544,12 @@ export default function Positions() {
         // ── ARS broker ─────────────────────────────────────────────────────
         if (isARS) {
           return (
-            <div key={broker.id} className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden mb-6">
+            <div key={broker.id} className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden mb-6">
               {Header}
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-slate-100 dark:border-slate-700/30">
+                    <tr className="border-b border-slate-100 dark:border-line bg-slate-50/40 dark:bg-bg-2/40">
                       <th className={thClass}>Activo</th>
                       <th className={thClass}>Cantidad</th>
                       <th className={thClass}>Precio prom.</th>
@@ -456,27 +567,30 @@ export default function Positions() {
                   <tbody>
                     {bpos.map(p => {
                       const c = calcARS(p)
-                      const pnlBg = c.pnlArs == null ? '' : c.pnlArs > 0 ? 'bg-emerald-500/[0.06]' : c.pnlArs < 0 ? 'bg-red-500/[0.06]' : ''
+                      const pnlBg = c.pnlArs == null ? '' : c.pnlArs > 0 ? 'bg-rendi-pos/[0.06]' : c.pnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       // Precio promedio en ARS = invertido / cantidad
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       return (
-                        <tr key={p.id} className={`border-b border-slate-100 dark:border-slate-700/20 hover:bg-slate-50 dark:hover:bg-slate-700/20 ${p.is_cash ? 'bg-slate-50/60 dark:bg-slate-900/30' : ''}`}>
+                        <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                           <td className={`${tdClass}`}>
-                            <div className="min-w-0">
-                              <div className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                                {p.asset}
-                                {!!p.is_cash && <span className="text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 flex items-center gap-0.5"><Wallet size={9} /> CASH</span>}
-                                {!!p.price_override && <span className="text-amber-500" title="Precio manual configurado">●</span>}
-                                {!p.is_cash && (!p.tc_compra || p.tc_compra <= 0) && (
-                                  <span
-                                    className="text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
-                                    title="Falta el tipo de cambio de compra. El P&L en USD se aproxima con el blue actual — editá la posición para mayor precisión."
-                                  >
-                                    TC?
-                                  </span>
-                                )}
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <AssetAvatar asset={p.asset} isCash={p.is_cash} />
+                              <div className="min-w-0">
+                                <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
+                                  {p.asset}
+                                  {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                  {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
+                                  {!p.is_cash && (!p.tc_compra || p.tc_compra <= 0) && (
+                                    <span
+                                      className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30"
+                                      title="Falta el tipo de cambio de compra. El P&L en USD se aproxima con el blue actual — editá la posición para mayor precisión."
+                                    >
+                                      TC?
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-ink-3 mt-0.5 font-mono">{p.entry_date || 'sin fecha'}</div>
                               </div>
-                              <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{p.entry_date || 'sin fecha'}</div>
                             </div>
                           </td>
                           <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{p.quantity ?? '—'}</td>
@@ -497,7 +611,7 @@ export default function Positions() {
                     })}
                   </tbody>
                   <tfoot>
-                    <tr className="border-t-2 border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/30">
+                    <tr className="border-t-2 border-slate-300 dark:border-line-2 bg-slate-50 dark:bg-bg-2/40">
                       {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
                       <td colSpan={4} className="px-3 py-2.5 text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">TOTAL</td>
                       <td className="px-3 py-2.5 text-xs font-bold text-slate-800 dark:text-slate-200 tabular">{fmtArs(r.invArs)}</td>
@@ -520,7 +634,7 @@ export default function Positions() {
 
         // ── USD broker ─────────────────────────────────────────────────────
         return (
-          <div key={broker.id} className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden mb-6">
+          <div key={broker.id} className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden mb-6">
             {Header}
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -540,21 +654,24 @@ export default function Positions() {
                 <tbody>
                   {bpos.map(p => {
                     const c = calcUSDT(p)
-                    const pnlBg = c.pnl == null ? '' : c.pnl > 0 ? 'bg-emerald-500/[0.06]' : c.pnl < 0 ? 'bg-red-500/[0.06]' : ''
+                    const pnlBg = c.pnl == null ? '' : c.pnl > 0 ? 'bg-rendi-pos/[0.06]' : c.pnl < 0 ? 'bg-rendi-neg/[0.06]' : ''
                     // Precio promedio = invertido / cantidad. Si tiene buy_price lo preferimos por precisión histórica.
                     const avgPrice = (!p.is_cash && p.quantity > 0)
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
                     return (
-                      <tr key={p.id} className={`border-b border-slate-100 dark:border-slate-700/20 hover:bg-slate-50 dark:hover:bg-slate-700/20 ${p.is_cash ? 'bg-slate-50/60 dark:bg-slate-900/30' : ''}`}>
+                      <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                         <td className={`${tdClass}`}>
-                          <div className="min-w-0">
-                            <div className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                              {p.asset}
-                              {!!p.is_cash && <span className="text-[9px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 flex items-center gap-0.5"><Wallet size={9} /> CASH</span>}
-                              {!!p.price_override && <span className="text-amber-500" title="Precio manual configurado">●</span>}
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <AssetAvatar asset={p.asset} isCash={p.is_cash} />
+                            <div className="min-w-0">
+                              <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
+                                {p.asset}
+                                {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
+                              </div>
+                              <div className="text-[10px] text-ink-3 mt-0.5 font-mono">{p.entry_date || 'sin fecha'}</div>
                             </div>
-                            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{p.entry_date || 'sin fecha'}</div>
                           </div>
                         </td>
                         <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{p.quantity ?? '—'}</td>
@@ -727,7 +844,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
     setForm(next)
   }
 
-  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60'
+  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   const title = isArsToUsd
     ? `Comprar USD desde ${form.from_broker}`
@@ -830,7 +947,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
 
         {/* Resumen */}
         {arsNum > 0 && usdNum > 0 && tcNum > 0 && (
-          <div className="bg-rendi-green/[0.06] border border-rendi-green/25 rounded-md px-3 py-2 text-xs leading-relaxed">
+          <div className="bg-rendi-accent/[0.06] border border-rendi-accent/25 rounded-md px-3 py-2 text-xs leading-relaxed">
             {isArsToUsd ? (
               <>
                 Vas a convertir <span className="font-semibold tabular">ARS {arsNum.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>{' '}
@@ -888,13 +1005,43 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
           <button
             onClick={onConfirm}
             disabled={!arsNum || !usdNum || !tcNum}
-            className="px-4 py-2 text-sm rounded-md font-semibold text-rendi-bg bg-rendi-green hover:bg-rendi-green-dark disabled:opacity-40 disabled:cursor-not-allowed transition"
+            className="px-4 py-2 text-sm rounded-md font-semibold text-white bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition"
           >
             Confirmar conversión
           </button>
         </div>
       </div>
     </Modal>
+  )
+}
+
+// AssetAvatar — chip pequeño con iniciales del ticker, color hash deterministic.
+// Para cash: icono Wallet en lugar de letras. Aporta jerarquía visual sin
+// depender de logos externos.
+function AssetAvatar({ asset, isCash }) {
+  if (isCash) {
+    return (
+      <div className="w-8 h-8 rounded-sm bg-bg-3 border border-line flex items-center justify-center flex-shrink-0">
+        <Wallet size={14} strokeWidth={1.5} className="text-ink-2" />
+      </div>
+    )
+  }
+  // Hash determinístico simple para tonalidad estable por ticker
+  const hash = (asset || '').split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
+  const palette = [
+    'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/30',
+    'bg-blue-500/15 text-blue-500 border-blue-500/30',
+    'bg-violet-500/15 text-violet-500 border-violet-500/30',
+    'bg-cyan-500/15 text-cyan-500 border-cyan-500/30',
+    'bg-amber-500/15 text-amber-500 border-amber-500/30',
+    'bg-pink-500/15 text-pink-500 border-pink-500/30',
+  ]
+  const color = palette[Math.abs(hash) % palette.length]
+  const initials = (asset || '?').slice(0, 2).toUpperCase()
+  return (
+    <div className={`w-8 h-8 rounded-sm border flex items-center justify-center flex-shrink-0 font-mono text-[10px] font-semibold tracking-tighter ${color}`}>
+      {initials}
+    </div>
   )
 }
 
@@ -1015,7 +1162,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
   const totalPnl = fifoPreview.reduce((s, x) => s + x.pnl_usd, 0)
   const exceeds = qtyNum > totalQty + 1e-9
 
-  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60'
+  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   return (
     <Modal title={`Vender ${form.asset} en ${form.broker}`} onClose={onClose}>
@@ -1056,7 +1203,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
                   </div>
                   {preview && (
                     <div className="flex items-center gap-2">
-                      <span className="text-rendi-green font-mono text-[11px]">
+                      <span className="text-rendi-accent font-mono text-[11px]">
                         −{preview.take}{preview.partial ? ' (parcial)' : ''}
                       </span>
                     </div>
@@ -1166,7 +1313,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
           <button
             onClick={onConfirm}
             disabled={exceeds || !qtyNum || !priceNum}
-            className="px-4 py-2 text-sm bg-rendi-green text-rendi-bg rounded-md font-semibold hover:bg-rendi-green-dark disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-4 py-2 text-sm bg-rendi-accent text-white rounded-md font-semibold hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Confirmar venta
           </button>
@@ -1187,7 +1334,7 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
         autoFocus={autoFocus}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60 transition"
+        className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
         placeholder={placeholder}
       />
       {hint && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{hint}</p>}
@@ -1210,7 +1357,7 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
   const isARS = selectedBrokerCurrency === 'ARS'
   const [lastEdited, setLastEdited] = useState('invested') // 'invested' | 'quantity'
   const [pricesFetched, setPricesFetched] = useState(false)
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60 transition'
+  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
 
   // Redondeo razonable según rango (cripto = más decimales, acciones = menos)
   const roundQty = (n) => {
@@ -1408,7 +1555,7 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
 
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">Cancelar</button>
-          <button onClick={onSave} className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg rounded-md font-semibold transition">Guardar</button>
+          <button onClick={onSave} className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition">Guardar</button>
         </div>
       </div>
     </Modal>
@@ -1451,14 +1598,14 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
             value={quantity}
             onChange={e => setQty(e.target.value)}
             placeholder="0"
-            className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md pl-3 pr-14 py-2 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60"
+            className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md pl-3 pr-14 py-2 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
           />
           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 dark:text-slate-500 font-medium pointer-events-none">
             {asset}
           </span>
         </div>
         <div className="w-20 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-2 flex items-center justify-center">
-          <span className="font-mono text-sm font-semibold text-rendi-green">{pct.toFixed(0)}%</span>
+          <span className="font-mono text-sm font-semibold text-rendi-accent">{pct.toFixed(0)}%</span>
         </div>
       </div>
 
@@ -1483,7 +1630,7 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
               onClick={() => setPct(p)}
               className={`text-[10px] font-medium px-1.5 py-0.5 rounded transition ${
                 Math.abs(pct - p) < 1
-                  ? 'text-rendi-green-dark dark:text-rendi-green'
+                  ? 'text-rendi-accent'
                   : 'text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               }`}
             >

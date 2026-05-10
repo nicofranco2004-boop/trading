@@ -158,6 +158,192 @@ describe('profit_factor_low_winrate_high', () => {
   })
 })
 
+// ═════════════════════════════════════════════════════════════════════════
+// BLOQUE 2 — Reglas de comportamiento, costos, consistencia y oportunidad.
+// ═════════════════════════════════════════════════════════════════════════
+
+describe('inactivity_long', () => {
+  it('dispara cuando hace más de 90 días sin operaciones', () => {
+    const oldDate = new Date(Date.now() - 200 * 86_400_000).toISOString().slice(0, 10)
+    const out = fire('inactivity_long', {
+      tradeOps: [{ date: oldDate, pnl_usd: 50 }],
+    })
+    expect(out).toMatch(/meses/)
+    expect(out).toMatch(/no realizás operaciones/)
+  })
+
+  it('no dispara con actividad reciente', () => {
+    const recentDate = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
+    expect(fire('inactivity_long', {
+      tradeOps: [{ date: recentDate, pnl_usd: 50 }],
+    })).toBe(null)
+  })
+})
+
+describe('overtrading', () => {
+  it('dispara con 12+ ops en los últimos 30 días', () => {
+    const recent = Array.from({ length: 15 }, (_, i) => ({
+      date: new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10),
+      pnl_usd: 10,
+    }))
+    const out = fire('overtrading', { tradeOps: recent })
+    expect(out).toMatch(/15 operaciones/)
+  })
+
+  it('no dispara con poca actividad', () => {
+    expect(fire('overtrading', {
+      tradeOps: [{ date: new Date().toISOString().slice(0, 10), pnl_usd: 10 }],
+    })).toBe(null)
+  })
+})
+
+describe('losing_streak', () => {
+  it('detecta racha de 4+ pérdidas consecutivas', () => {
+    const ops = [
+      { date: '2025-05-01', pnl_usd: -100 },
+      { date: '2025-05-02', pnl_usd: -50 },
+      { date: '2025-05-03', pnl_usd: -75 },
+      { date: '2025-05-04', pnl_usd: -200 },
+      { date: '2025-04-15', pnl_usd: 300 }, // anterior, ganadora
+    ]
+    const out = fire('losing_streak', { tradeOps: ops })
+    expect(out).toMatch(/4 operaciones perdedoras/)
+  })
+
+  it('no dispara si la última fue ganadora', () => {
+    expect(fire('losing_streak', {
+      tradeOps: [
+        { date: '2025-05-04', pnl_usd: 50 },
+        { date: '2025-05-03', pnl_usd: -100 },
+        { date: '2025-05-02', pnl_usd: -50 },
+        { date: '2025-05-01', pnl_usd: -75 },
+        { date: '2025-04-30', pnl_usd: -200 },
+      ],
+    })).toBe(null)
+  })
+})
+
+describe('winning_streak', () => {
+  it('detecta racha de 5+ ganadoras consecutivas', () => {
+    const ops = Array.from({ length: 5 }, (_, i) => ({
+      date: `2025-05-${String(10 - i).padStart(2, '0')}`,
+      pnl_usd: 50,
+    }))
+    const out = fire('winning_streak', { tradeOps: ops })
+    expect(out).toMatch(/5 operaciones ganadoras/)
+    expect(out).toMatch(/overconfidence|over-confianza|sizing/)
+  })
+})
+
+describe('avg_hold_time_classifier', () => {
+  it('clasifica como swing trader corto entre 7 y 30 días', () => {
+    const out = fire('avg_hold_time_classifier', { holdTime: { avg: 15 } })
+    expect(out).toMatch(/15 días/)
+    expect(out).toMatch(/swing trader corto/)
+  })
+
+  it('clasifica como inversor de largo plazo con 1+ año', () => {
+    const out = fire('avg_hold_time_classifier', { holdTime: { avg: 400 } })
+    expect(out).toMatch(/largo plazo/)
+  })
+
+  it('no dispara sin hold time válido', () => {
+    expect(fire('avg_hold_time_classifier', { holdTime: { avg: 0 } })).toBe(null)
+  })
+})
+
+describe('unrealized_dominates', () => {
+  it('dispara cuando >75% del P&L es no realizado', () => {
+    const out = fire('unrealized_dominates', {
+      realizedPnl: 500,
+      unrealizedPnl: 4500,
+    })
+    expect(out).toMatch(/90%/)
+    expect(out).toMatch(/sin realizar/)
+  })
+
+  it('no dispara si está balanceado', () => {
+    expect(fire('unrealized_dominates', {
+      realizedPnl: 1000,
+      unrealizedPnl: 1500,
+    })).toBe(null)
+  })
+})
+
+describe('fees_drag', () => {
+  it('dispara cuando comisiones >0.5% del portfolio', () => {
+    const out = fire('fees_drag', {
+      positions: [{ commissions: 100 }, { commissions: 50 }],
+      totalPortfolio: 10000,
+    })
+    expect(out).toMatch(/USD 150/)
+    expect(out).toMatch(/1.5%/)
+  })
+
+  it('no dispara si las comisiones son bajas', () => {
+    expect(fire('fees_drag', {
+      positions: [{ commissions: 5 }],
+      totalPortfolio: 10000,
+    })).toBe(null)
+  })
+})
+
+describe('tax_loss_opportunity', () => {
+  it('dispara con pérdidas no realizadas significativas', () => {
+    const out = fire('tax_loss_opportunity', {
+      pieData: [
+        { name: 'A', value: 1000, pnl: -200 },
+        { name: 'B', value: 1500, pnl: -150 },
+        { name: 'C', value: 2000, pnl: 500 },
+      ],
+    })
+    expect(out).toMatch(/2 posiciones/)
+    expect(out).toMatch(/USD 350/)
+    expect(out).toMatch(/tax-loss harvesting/)
+  })
+})
+
+describe('tiny_positions_drag', () => {
+  it('dispara con 3+ posiciones <2% sumando <8% del total', () => {
+    const out = fire('tiny_positions_drag', {
+      pieData: [
+        { name: 'BIG', value: 9000 },
+        { name: 'X', value: 100 },
+        { name: 'Y', value: 100 },
+        { name: 'Z', value: 100 },
+        { name: 'W', value: 100 },
+      ],
+      totalPortfolio: 10000,
+    })
+    expect(out).toMatch(/4 posiciones/)
+    expect(out).toMatch(/4.0%/)
+  })
+})
+
+describe('monthly_pnl_streak', () => {
+  it('detecta 3+ meses positivos consecutivos', () => {
+    const out = fire('monthly_pnl_streak', {
+      globalMonthly: [
+        { year: 2026, month: 4, pnl_realized: 100, pnl_unrealized: 50 },
+        { year: 2026, month: 3, pnl_realized: 200, pnl_unrealized: 0 },
+        { year: 2026, month: 2, pnl_realized: 50, pnl_unrealized: 100 },
+        { year: 2026, month: 1, pnl_realized: -200, pnl_unrealized: 0 },
+      ],
+    })
+    expect(out).toMatch(/3 meses consecutivos/)
+  })
+
+  it('no dispara si el último mes fue pérdida', () => {
+    expect(fire('monthly_pnl_streak', {
+      globalMonthly: [
+        { year: 2026, month: 4, pnl_realized: -100, pnl_unrealized: 0 },
+        { year: 2026, month: 3, pnl_realized: 200, pnl_unrealized: 0 },
+        { year: 2026, month: 2, pnl_realized: 50, pnl_unrealized: 0 },
+      ],
+    })).toBe(null)
+  })
+})
+
 // ─── Selector ──────────────────────────────────────────────────────────────
 
 describe('selectDiagnostics', () => {

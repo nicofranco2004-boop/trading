@@ -155,11 +155,11 @@ export default function Config() {
                       }`}>{b.currency}</span>
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={() => setEditingBroker({ ...b })} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">
-                        <Pencil size={13} />
+                      <button onClick={() => setEditingBroker({ ...b })} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" title="Editar broker" aria-label={`Editar broker ${b.name}`}>
+                        <Pencil size={13} aria-hidden="true" />
                       </button>
-                      <button onClick={() => deleteBroker(b.id)} className="text-slate-400 hover:text-red-500">
-                        <Trash2 size={13} />
+                      <button onClick={() => deleteBroker(b.id)} className="text-slate-400 hover:text-rendi-neg" title="Eliminar broker" aria-label={`Eliminar broker ${b.name}`}>
+                        <Trash2 size={13} aria-hidden="true" />
                       </button>
                     </div>
                   </div>
@@ -175,7 +175,7 @@ export default function Config() {
             <input
               value={newBroker.name}
               onChange={e => setNewBroker(b => ({ ...b, name: e.target.value }))}
-              placeholder="Ej.: Binance, Cocos, IOL..."
+              placeholder="Ej.: Binance, Cocos, IOL…"
               className={inputClass}
             />
           </div>
@@ -213,7 +213,7 @@ export default function Config() {
           <button
             type="button"
             onClick={() => setShowImport(true)}
-            className="inline-flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-semibold transition"
+            className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-md font-semibold transition"
           >
             <Upload size={14} /> Importar CSV
           </button>
@@ -235,7 +235,7 @@ export default function Config() {
         {user && (
           <div className="text-sm text-slate-500 dark:text-slate-400 mb-4">
             Sesión: <span className="text-slate-700 dark:text-slate-200 font-medium">{user.email || user.name}</span>
-            {user.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green font-semibold uppercase tracking-wide">admin</span>}
+            {user.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold uppercase tracking-wide">admin</span>}
           </div>
         )}
         <form onSubmit={changePassword} className="space-y-3">
@@ -264,7 +264,7 @@ export default function Config() {
           <p className="text-xs text-slate-400 dark:text-slate-500">Mínimo 10 caracteres. Al actualizarla, se cierran las sesiones activas en otros dispositivos.</p>
           <button type="submit" disabled={pwState.loading}
             className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-md">
-            {pwState.loading ? 'Guardando...' : 'Cambiar contraseña'}
+            {pwState.loading ? 'Guardando…' : 'Cambiar contraseña'}
           </button>
         </form>
       </div>

@@ -50,7 +50,7 @@ export default function Login() {
     }
   }
 
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-900/60 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors'
+  const inputClass = 'w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-ink-0 placeholder-slate-400 dark:placeholder-ink-3 focus:outline-none focus:border-rendi-accent focus:ring-2 focus:ring-rendi-accent/20 transition-colors'
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center px-4">
@@ -83,9 +83,12 @@ export default function Login() {
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             {mode === 'register' && (
               <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nombre</label>
+                <label htmlFor="login-name" className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nombre</label>
                 <input
+                  id="login-name"
                   type="text"
+                  name="name"
+                  autoComplete="name"
                   value={name}
                   onChange={e => setName(e.target.value)}
                   placeholder="Cómo querés que te llamemos"
@@ -94,9 +97,14 @@ export default function Login() {
               </div>
             )}
             <div>
-              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Email</label>
+              <label htmlFor="login-email" className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Email</label>
               <input
-                type="text"
+                id="login-email"
+                type="email"
+                name="email"
+                autoComplete="email"
+                inputMode="email"
+                spellCheck={false}
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 placeholder="tu@email.com"
@@ -104,9 +112,12 @@ export default function Login() {
               />
             </div>
             <div>
-              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Contraseña</label>
+              <label htmlFor="login-password" className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Contraseña</label>
               <input
+                id="login-password"
                 type="password"
+                name="password"
+                autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 minLength={mode === 'register' ? 10 : undefined}
@@ -124,7 +135,7 @@ export default function Login() {
               disabled={loading}
               className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
             >
-              {loading ? 'Cargando...' : mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
+              {loading ? 'Cargando…' : mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
             </button>
           </form>
         </div>
