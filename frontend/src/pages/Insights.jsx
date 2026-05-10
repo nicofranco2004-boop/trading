@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { ArrowRight } from 'lucide-react'
 import {
   PieChart, Pie, Cell, Legend, Tooltip, LineChart, Line,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
@@ -44,6 +46,28 @@ const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Se
 const monthName = (m) => MONTH_NAMES[(m - 1) % 12] || ''
 
 const PIE_COLORS = ['#4FFF78', '#10EFEC', '#FF46F6', '#f59e0b', '#ef4444', '#8b5cf6']
+
+// Severity → badge styling para las tarjetas de Diagnóstico (audit pattern).
+// La severidad solo se codifica en el badge, no en todo el bloque, para
+// mantener el peso visual del contenido.
+const SEVERITY_BADGE = {
+  urgent:   { label: 'Riesgo alto',      badgeCls: 'bg-rendi-neg/15 text-rendi-neg border-rendi-neg/30' },
+  warn:     { label: 'Atención',         badgeCls: 'bg-rendi-warn/15 text-rendi-warn border-rendi-warn/30' },
+  positive: { label: 'Insight positivo', badgeCls: 'bg-rendi-pos/15 text-rendi-pos border-rendi-pos/30' },
+  info:     { label: 'Diagnóstico',      badgeCls: 'bg-bg-3 text-ink-2 border-line' },
+}
+
+// CTA por categoría — link a la página donde el usuario puede actuar
+// sobre la observación. Devuelve null si no hay acción específica
+// (en ese caso simplemente no se renderiza el CTA).
+function ctaForCategory(cat) {
+  const map = {
+    'Riesgo':         { label: 'Ver posiciones',      href: '/posiciones' },
+    'Performance':    { label: 'Ver atribución',      href: '/insights' },
+    'Comportamiento': { label: 'Revisar operaciones', href: '/operaciones' },
+  }
+  return map[cat] || null
+}
 
 export default function Insights() {
   const { user } = useAuth()
@@ -1071,58 +1095,79 @@ export default function Insights() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          HERO — Diagnóstico inteligente. La observación más prioritaria toma
-          el lugar de la cifra. Es la sección que define la lectura de la
-          página: 'esto es lo más importante hoy'.
-          'Resultado del portfolio' eliminado: duplicaba el Dashboard.
+          HERO — Diagnóstico como 3 tarjetas accionables (audit pattern).
+          Cada tarjeta: badge de severidad + título corto + contexto + CTA.
+          Severidad codificada solo en el BADGE, no en todo el bloque.
+          'Resultado del portfolio' eliminado (duplicaba Dashboard).
           ══════════════════════════════════════════════════════════════════════ */}
-      {diagnosis.length > 0 && (() => {
-        const [primary, ...rest] = diagnosis
-        const sevConfig = {
-          urgent:   { color: 'text-rendi-neg',  bg: 'bg-rendi-neg/[0.08]',  border: 'border-rendi-neg/30',  iconBg: 'bg-rendi-neg/15',  Icon: AlertTriangle, label: 'Urgente' },
-          warn:     { color: 'text-rendi-warn', bg: 'bg-rendi-warn/[0.08]', border: 'border-rendi-warn/30', iconBg: 'bg-rendi-warn/15', Icon: AlertTriangle, label: 'Atención' },
-          positive: { color: 'text-rendi-pos',  bg: 'bg-rendi-pos/[0.08]',  border: 'border-rendi-pos/30',  iconBg: 'bg-rendi-pos/15',  Icon: TrendingUp,    label: 'Positivo' },
-          info:     { color: 'text-rendi-accent', bg: 'bg-bg-1',            border: 'border-line',          iconBg: 'bg-bg-3',          Icon: Stethoscope,   label: 'Diagnóstico' },
-        }
-        const cfg = sevConfig[primary.severity] || sevConfig.info
-        const PrimaryIcon = cfg.Icon
-        return (
-          <section>
-            <p className="eyebrow mb-2">Diagnóstico</p>
-            <div className={`border rounded p-5 sm:p-6 ${cfg.bg} ${cfg.border}`}>
-              <div className="flex items-start gap-4">
-                <div className={`flex-shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-sm ${cfg.iconBg} flex items-center justify-center`}>
-                  <PrimaryIcon size={20} strokeWidth={1.75} className={cfg.color} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className={`label-mono ${cfg.color}`}>{cfg.label}</span>
-                  <p className="mt-1 text-lg sm:text-xl font-semibold leading-snug text-slate-900 dark:text-ink-0">
-                    <DiagnosticText text={primary.text} />
-                  </p>
-                </div>
-              </div>
-              {rest.length > 0 && (
-                <ul className="mt-5 pt-4 border-t border-line/60 space-y-2 text-sm leading-snug">
-                  {rest.map((d, i) => {
-                    const dotColor = d.severity === 'urgent' ? 'bg-rendi-neg'
-                      : d.severity === 'warn' ? 'bg-rendi-warn'
-                      : d.severity === 'positive' ? 'bg-rendi-pos'
-                      : 'bg-ink-3'
-                    return (
-                      <li key={d.id || i} className="flex items-start gap-2.5">
-                        <span className={`flex-shrink-0 mt-1.5 inline-block w-1.5 h-1.5 rounded-full ${dotColor}`} />
-                        <span className="text-slate-700 dark:text-ink-1">
-                          <DiagnosticText text={d.text} />
-                        </span>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
+      {diagnosis.length > 0 && (
+        <section>
+          <p className="eyebrow mb-3">
+            Diagnóstico · {Math.min(diagnosis.length, 3)} {diagnosis.length === 1 ? 'observación' : 'observaciones'} priorizadas
+          </p>
+          <div className="border border-slate-200 dark:border-line rounded overflow-hidden">
+            <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-line">
+              {diagnosis.slice(0, 3).map(d => {
+                const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
+                const cta = ctaForCategory(d.category)
+                // Parse del text: primera oración = título, resto = contexto
+                const parts = d.text.split(/\.\s+/)
+                const title = parts[0] + (parts.length > 1 ? '.' : '')
+                const context = parts.slice(1).join('. ').trim()
+                return (
+                  <div key={d.id} className="bg-white dark:bg-bg-1 p-5 flex flex-col">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
+                        {sev.label}
+                      </span>
+                    </div>
+                    <p className="text-sm font-medium leading-snug text-slate-900 dark:text-ink-0 mb-2">
+                      <DiagnosticText text={title} />
+                    </p>
+                    {context && (
+                      <p className="text-xs text-slate-600 dark:text-ink-2 leading-relaxed flex-1">
+                        <DiagnosticText text={context} />
+                      </p>
+                    )}
+                    {cta && (
+                      <Link
+                        to={cta.href}
+                        className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+                      >
+                        {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+                      </Link>
+                    )}
+                  </div>
+                )
+              })}
             </div>
-          </section>
-        )
-      })()}
+          </div>
+          {diagnosis.length > 3 && (
+            <details className="mt-3 group">
+              <summary className="cursor-pointer text-xs text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 select-none">
+                <ChevronDown size={12} strokeWidth={1.75} className="group-open:rotate-180 transition-transform" />
+                Ver {diagnosis.length - 3} {diagnosis.length - 3 === 1 ? 'observación' : 'observaciones'} más
+              </summary>
+              <ul className="mt-3 space-y-2 text-sm leading-snug pl-1">
+                {diagnosis.slice(3).map((d, i) => {
+                  const dotColor = d.severity === 'urgent' ? 'bg-rendi-neg'
+                    : d.severity === 'warn' ? 'bg-rendi-warn'
+                    : d.severity === 'positive' ? 'bg-rendi-pos'
+                    : 'bg-ink-3'
+                  return (
+                    <li key={d.id || i} className="flex items-start gap-2.5">
+                      <span className={`flex-shrink-0 mt-1.5 inline-block w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                      <span className="text-slate-700 dark:text-ink-1">
+                        <DiagnosticText text={d.text} />
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </details>
+          )}
+        </section>
+      )}
 
       {/* ── Strip de exposición — cash + clases de activo ─────────────────── */}
       {(assetTypeBreakdown.length > 0 || cashRatio > 0) && (
