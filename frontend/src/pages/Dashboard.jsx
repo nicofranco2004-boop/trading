@@ -266,7 +266,7 @@ export default function Dashboard() {
               {/* CTA principal — usa rendi-pos como verde de marca/CTA */}
               <a
                 href="/config"
-                className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-pos text-bg-0 hover:opacity-90 px-4 py-2 rounded-sm font-semibold transition"
+                className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-4 py-2 rounded-sm font-semibold transition"
               >
                 <Upload size={14} strokeWidth={1.5} /> Ir a Configuración
               </a>

@@ -69,7 +69,7 @@ export default function Admin() {
     <div className="page-shell space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Shield size={22} className="text-rendi-green" />
+          <Shield size={22} className="text-rendi-accent" />
           <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">Panel de administración</h1>
         </div>
         <button
@@ -136,7 +136,7 @@ export default function Admin() {
                   <td className="px-3 py-2 text-slate-500 dark:text-slate-400 font-mono text-xs">{u.id}</td>
                   <td className="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">
                     {u.email}
-                    {u.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green font-semibold uppercase tracking-wide">admin</span>}
+                    {u.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold uppercase tracking-wide">admin</span>}
                     {!u.approved && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
                   </td>
                   <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{u.name || '—'}</td>

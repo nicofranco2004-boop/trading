@@ -110,7 +110,7 @@ export default function Imports() {
             action={
               <Link
                 to="/operaciones"
-                className="inline-flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-medium transition"
+                className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-md font-medium transition"
               >
                 <Upload size={14} /> Importar CSV
               </Link>
@@ -152,7 +152,7 @@ export default function Imports() {
                           <button
                             onClick={() => setConfirmRedo(b)}
                             disabled={redoing === b.id || reverting === b.id}
-                            className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 hover:text-rendi-green-dark dark:hover:text-rendi-green px-2 py-1 rounded transition disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 hover:text-rendi-accent px-2 py-1 rounded transition disabled:opacity-50"
                             title="Revertir y abrir el wizard ya pre-cargado para ajustar y reimportar"
                           >
                             {redoing === b.id ? <Loader2 size={12} className="animate-spin" /> : <Edit3 size={12} />}
@@ -207,7 +207,7 @@ export default function Imports() {
               <button
                 onClick={() => doRedo(confirmRedo)}
                 disabled={redoing === confirmRedo.id}
-                className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg rounded-md font-semibold transition disabled:opacity-50 inline-flex items-center gap-1.5"
+                className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 inline-flex items-center gap-1.5"
               >
                 {redoing === confirmRedo.id && <Loader2 size={12} className="animate-spin" />}
                 <Edit3 size={12} />

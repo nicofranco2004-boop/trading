@@ -504,7 +504,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               <button
                 onClick={uploadAndInspect}
                 disabled={busy || !file}
-                className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {busy && <Loader2 size={14} className="animate-spin" />}
                 {isSpecificParser ? 'Generar vista previa' : 'Continuar'}
@@ -514,7 +514,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               <button
                 onClick={confirmMapping}
                 disabled={busy}
-                className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {busy && <Loader2 size={14} className="animate-spin" />}
                 Generar vista previa
@@ -539,7 +539,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                   className={`px-4 py-2 text-sm rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 ${
                     hasSeedSug
                       ? 'border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
-                      : 'bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg'
+                      : 'bg-rendi-accent hover:bg-rendi-accent/90 text-white'
                   }`}
                   title={hasSeedSug ? 'Importar el CSV sin agregar el estado inicial sugerido' : ''}
                 >
@@ -552,7 +552,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               <button
                 onClick={() => confirm({ withSeed: true })}
                 disabled={busy}
-                className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {busy && <Loader2 size={14} className="animate-spin" />}
                 Confirmar con estado inicial
@@ -561,7 +561,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             {step === STEP_DONE && (
               <button
                 onClick={onClose}
-                className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg rounded-md font-semibold transition"
+                className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition"
               >
                 Cerrar
               </button>
@@ -595,7 +595,7 @@ function Stepper({ step, skipMap, hasSeed }) {
       {steps.map((s, i) => (
         <div key={s.id} className="flex items-center gap-2">
           <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-semibold
-            ${i <= idx ? 'bg-rendi-green text-rendi-bg' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'}`}>
+            ${i <= idx ? 'bg-rendi-accent text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'}`}>
             {i + 1}
           </span>
           <span className={i === idx ? 'text-slate-900 dark:text-slate-100 font-medium' : ''}>{s.label}</span>
@@ -647,7 +647,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
     <div className="space-y-4">
       {/* Para parsers específicos, el broker lo hardcodea el parser. */}
       {isSpecific && (
-        <div className="px-3 py-2 rounded-md bg-rendi-green/10 border border-rendi-green/30 text-sm">
+        <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
           <span className="text-slate-700 dark:text-slate-200">
             Este parser crea automáticamente el broker correspondiente
             (<span className="font-semibold">{parserLabel}</span>) si no existe — no necesitás seleccionar uno.
@@ -666,7 +666,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             onClick={() => setImportMode('single')}
             className={`text-left px-3 py-2.5 rounded-md border transition ${
               importMode === 'single'
-                ? 'border-rendi-green bg-rendi-green/10'
+                ? 'border-rendi-accent bg-rendi-accent/10'
                 : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
             }`}
           >
@@ -680,7 +680,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             onClick={() => setImportMode('general')}
             className={`text-left px-3 py-2.5 rounded-md border transition ${
               importMode === 'general'
-                ? 'border-rendi-green bg-rendi-green/10'
+                ? 'border-rendi-accent bg-rendi-accent/10'
                 : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
             }`}
           >
@@ -730,7 +730,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
               type="button"
               onClick={() => setHasUsdOps(true)}
               className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
-                hasUsdOps ? 'border-rendi-green bg-rendi-green/10 text-slate-900 dark:text-slate-100 font-medium'
+                hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-slate-900 dark:text-slate-100 font-medium'
                           : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-300'
               }`}
             >
@@ -740,7 +740,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
               type="button"
               onClick={() => setHasUsdOps(false)}
               className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
-                !hasUsdOps ? 'border-rendi-green bg-rendi-green/10 text-slate-900 dark:text-slate-100 font-medium'
+                !hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-slate-900 dark:text-slate-100 font-medium'
                            : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-300'
               }`}
             >
@@ -802,7 +802,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
 
       <button
         onClick={downloadTemplate}
-        className="inline-flex items-center gap-1.5 text-sm text-rendi-green hover:underline"
+        className="inline-flex items-center gap-1.5 text-sm text-rendi-accent hover:underline"
       >
         <Download size={14} /> Descargar template de ejemplo
       </button>
@@ -822,7 +822,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             e.preventDefault()
             pickFile(e.dataTransfer.files?.[0])
           }}
-          className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg p-6 text-center cursor-pointer hover:border-rendi-green/50 transition"
+          className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg p-6 text-center cursor-pointer hover:border-rendi-accent/50 transition"
         >
           <input
             ref={inputRef}
@@ -887,7 +887,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
   return (
     <div className="space-y-4">
       {importMode === 'single' && singleBroker && (
-        <div className="flex flex-col gap-1 px-3 py-2 rounded-md bg-rendi-green/10 border border-rendi-green/30 text-sm">
+        <div className="flex flex-col gap-1 px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
           <div className="flex items-center gap-2">
             <span className="text-slate-700 dark:text-slate-200">Importando todo a:</span>
             <span className="font-semibold text-slate-900 dark:text-slate-100">{singleBroker}</span>
@@ -950,7 +950,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
               type="button"
               onClick={async () => { await onSaveTemplate?.(templateName); setShowSaveDialog(false) }}
               disabled={!templateName.trim()}
-              className="text-xs px-2 py-1 rounded bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark disabled:opacity-50 font-medium"
+              className="text-xs px-2 py-1 rounded bg-rendi-accent text-white hover:bg-rendi-accent/90 disabled:opacity-50 font-medium"
             >Guardar</button>
             <button
               type="button"
@@ -1147,14 +1147,14 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
           <button
             type="button"
             onClick={onSeedClick}
-            className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg transition"
+            className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rendi-accent hover:bg-rendi-accent/90 text-white transition"
           >
             Cargar estado inicial →
           </button>
         </div>
       )}
       {importMode === 'single' && singleBroker && (
-        <div className="flex flex-col gap-1 px-3 py-2 rounded-md bg-rendi-green/10 border border-rendi-green/30 text-sm">
+        <div className="flex flex-col gap-1 px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
           <div className="flex items-center gap-2">
             <span className="text-slate-700 dark:text-slate-200">Importando todo a:</span>
             <span className="font-semibold text-slate-900 dark:text-slate-100">{singleBroker}</span>
@@ -1191,7 +1191,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
       )}
 
       {isMulti && breakdown.length > 0 && (
-        <div className="px-3 py-2 rounded-md bg-rendi-green/10 border border-rendi-green/30 text-sm">
+        <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
           <div className="text-slate-700 dark:text-slate-200 mb-1.5 font-medium">
             Distribución por broker
           </div>
@@ -1205,7 +1205,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                   · <span className="tabular">{b.usd_rows}</span> USD
                 </span>
                 {b.creates_sibling && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-rendi-green/20 text-slate-700 dark:text-slate-200">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/20 text-slate-700 dark:text-slate-200">
                     USD → {b.sibling_name} (auto-creado)
                   </span>
                 )}
@@ -1434,7 +1434,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
 
   return (
     <div className="space-y-4">
-      <div className="px-3 py-2 rounded-md bg-rendi-green/10 border border-rendi-green/30 text-sm">
+      <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
         <div className="flex flex-col gap-1">
           <div className="text-slate-700 dark:text-slate-200 font-medium">
             Estado inicial al {seedDate}
@@ -1513,7 +1513,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                   <button
                     type="button"
                     onClick={() => addAsset(bi)}
-                    className="text-xs text-rendi-green-dark dark:text-rendi-green hover:underline normal-case"
+                    className="text-xs text-rendi-accent hover:underline normal-case"
                   >
                     + Agregar activo
                   </button>
@@ -1604,7 +1604,7 @@ function DoneStep({ result }) {
   return (
     <div className="py-2 space-y-4">
       <div className="text-center space-y-2">
-        <CheckCircle2 size={36} className={`mx-auto ${hasIssues ? 'text-amber-500' : 'text-rendi-green'}`} />
+        <CheckCircle2 size={36} className={`mx-auto ${hasIssues ? 'text-rendi-warn' : 'text-rendi-pos'}`} />
         <h3 className="font-semibold text-slate-900 dark:text-slate-100">
           {hasIssues ? 'Importación completada con observaciones' : 'Importación completada'}
         </h3>
@@ -1675,7 +1675,7 @@ function DoneStep({ result }) {
       )}
 
       <div className="text-center text-xs text-slate-500 dark:text-slate-400 pt-2">
-        <a href="/imports" className="text-rendi-green-dark dark:text-rendi-green hover:underline">
+        <a href="/imports" className="text-rendi-accent hover:underline">
           Ver historial de importaciones
         </a>
         <span className="mx-1">·</span>

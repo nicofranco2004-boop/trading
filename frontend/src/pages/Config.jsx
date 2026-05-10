@@ -213,7 +213,7 @@ export default function Config() {
           <button
             type="button"
             onClick={() => setShowImport(true)}
-            className="inline-flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-semibold transition"
+            className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-md font-semibold transition"
           >
             <Upload size={14} /> Importar CSV
           </button>
@@ -235,7 +235,7 @@ export default function Config() {
         {user && (
           <div className="text-sm text-slate-500 dark:text-slate-400 mb-4">
             Sesión: <span className="text-slate-700 dark:text-slate-200 font-medium">{user.email || user.name}</span>
-            {user.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green font-semibold uppercase tracking-wide">admin</span>}
+            {user.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold uppercase tracking-wide">admin</span>}
           </div>
         )}
         <form onSubmit={changePassword} className="space-y-3">

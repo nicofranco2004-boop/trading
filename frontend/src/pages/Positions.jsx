@@ -839,7 +839,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
     setForm(next)
   }
 
-  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60'
+  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   const title = isArsToUsd
     ? `Comprar USD desde ${form.from_broker}`
@@ -942,7 +942,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
 
         {/* Resumen */}
         {arsNum > 0 && usdNum > 0 && tcNum > 0 && (
-          <div className="bg-rendi-green/[0.06] border border-rendi-green/25 rounded-md px-3 py-2 text-xs leading-relaxed">
+          <div className="bg-rendi-accent/[0.06] border border-rendi-accent/25 rounded-md px-3 py-2 text-xs leading-relaxed">
             {isArsToUsd ? (
               <>
                 Vas a convertir <span className="font-semibold tabular">ARS {arsNum.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>{' '}
@@ -1000,7 +1000,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
           <button
             onClick={onConfirm}
             disabled={!arsNum || !usdNum || !tcNum}
-            className="px-4 py-2 text-sm rounded-md font-semibold text-rendi-bg bg-rendi-green hover:bg-rendi-green-dark disabled:opacity-40 disabled:cursor-not-allowed transition"
+            className="px-4 py-2 text-sm rounded-md font-semibold text-white bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition"
           >
             Confirmar conversión
           </button>
@@ -1157,7 +1157,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
   const totalPnl = fifoPreview.reduce((s, x) => s + x.pnl_usd, 0)
   const exceeds = qtyNum > totalQty + 1e-9
 
-  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60'
+  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   return (
     <Modal title={`Vender ${form.asset} en ${form.broker}`} onClose={onClose}>
@@ -1198,7 +1198,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
                   </div>
                   {preview && (
                     <div className="flex items-center gap-2">
-                      <span className="text-rendi-green font-mono text-[11px]">
+                      <span className="text-rendi-accent font-mono text-[11px]">
                         −{preview.take}{preview.partial ? ' (parcial)' : ''}
                       </span>
                     </div>
@@ -1308,7 +1308,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
           <button
             onClick={onConfirm}
             disabled={exceeds || !qtyNum || !priceNum}
-            className="px-4 py-2 text-sm bg-rendi-green text-rendi-bg rounded-md font-semibold hover:bg-rendi-green-dark disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-4 py-2 text-sm bg-rendi-accent text-white rounded-md font-semibold hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Confirmar venta
           </button>
@@ -1329,7 +1329,7 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
         autoFocus={autoFocus}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60 transition"
+        className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
         placeholder={placeholder}
       />
       {hint && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{hint}</p>}
@@ -1352,7 +1352,7 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
   const isARS = selectedBrokerCurrency === 'ARS'
   const [lastEdited, setLastEdited] = useState('invested') // 'invested' | 'quantity'
   const [pricesFetched, setPricesFetched] = useState(false)
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60 transition'
+  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
 
   // Redondeo razonable según rango (cripto = más decimales, acciones = menos)
   const roundQty = (n) => {
@@ -1550,7 +1550,7 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
 
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">Cancelar</button>
-          <button onClick={onSave} className="px-4 py-2 text-sm bg-rendi-green hover:bg-rendi-green-dark text-rendi-bg rounded-md font-semibold transition">Guardar</button>
+          <button onClick={onSave} className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition">Guardar</button>
         </div>
       </div>
     </Modal>
@@ -1593,14 +1593,14 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
             value={quantity}
             onChange={e => setQty(e.target.value)}
             placeholder="0"
-            className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md pl-3 pr-14 py-2 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-green/40 focus:border-rendi-green/60"
+            className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md pl-3 pr-14 py-2 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
           />
           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 dark:text-slate-500 font-medium pointer-events-none">
             {asset}
           </span>
         </div>
         <div className="w-20 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-2 flex items-center justify-center">
-          <span className="font-mono text-sm font-semibold text-rendi-green">{pct.toFixed(0)}%</span>
+          <span className="font-mono text-sm font-semibold text-rendi-accent">{pct.toFixed(0)}%</span>
         </div>
       </div>
 
@@ -1625,7 +1625,7 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
               onClick={() => setPct(p)}
               className={`text-[10px] font-medium px-1.5 py-0.5 rounded transition ${
                 Math.abs(pct - p) < 1
-                  ? 'text-rendi-green-dark dark:text-rendi-green'
+                  ? 'text-rendi-accent'
                   : 'text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               }`}
             >

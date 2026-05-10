@@ -130,7 +130,7 @@ export default function Goals() {
         action={
           <button
             onClick={openAdd}
-            className="flex items-center gap-1.5 text-sm px-3 py-2 bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark rounded-md font-semibold transition-colors"
+            className="flex items-center gap-1.5 text-sm px-3 py-2 bg-rendi-accent text-white hover:bg-rendi-accent/90 rounded-md font-semibold transition-colors"
           >
             <Plus size={14} /> Nuevo objetivo
           </button>
@@ -184,7 +184,7 @@ export default function Goals() {
             title="Sin objetivos definidos"
             description="Creá tu primer objetivo (por ejemplo, USD 8.000 en 1 año) y vamos a calcular cuánto necesitás aportar por mes para alcanzarlo."
             action={
-              <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-sm bg-rendi-green text-rendi-bg hover:bg-rendi-green-dark px-3 py-2 rounded-md font-semibold transition">
+              <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-md font-semibold transition">
                 <Plus size={14} /> Crear primer objetivo
               </button>
             }
@@ -282,7 +282,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
         </div>
         <div className="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
           <div
-            className={`h-full rounded-full transition-all ${reached ? 'bg-emerald-500' : 'bg-rendi-green'}`}
+            className={`h-full rounded-full transition-all ${reached ? 'bg-rendi-pos' : 'bg-rendi-accent'}`}
             style={{ width: `${progressPct}%` }}
           />
         </div>
@@ -415,7 +415,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
               onClick={() => setForm(f => ({ ...f, expected_return_pct: cagr }))}
               className={`text-xs px-3 py-1.5 rounded-md border ${
                 Math.abs(form.expected_return_pct - cagr) < 0.01
-                  ? 'border-rendi-green bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green'
+                  ? 'border-rendi-accent bg-rendi-accent/15 text-rendi-accent'
                   : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
               }`}
             >
@@ -429,7 +429,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
               onClick={() => setForm(f => ({ ...f, expected_return_pct: p.pct }))}
               className={`text-xs px-3 py-1.5 rounded-md border ${
                 +form.expected_return_pct === p.pct
-                  ? 'border-rendi-green bg-rendi-green/15 text-rendi-green-dark dark:text-rendi-green'
+                  ? 'border-rendi-accent bg-rendi-accent/15 text-rendi-accent'
                   : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
               }`}
               title={p.hint}

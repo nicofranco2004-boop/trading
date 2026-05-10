@@ -345,7 +345,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           </div>
           <button
             onClick={() => openNext(lastEntry)}
-            className="flex-shrink-0 flex items-center gap-1.5 text-sm font-medium bg-rendi-pos text-bg-0 hover:opacity-90 px-3 py-1.5 rounded-sm transition"
+            className="flex-shrink-0 flex items-center gap-1.5 text-sm font-medium bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-1.5 rounded-sm transition"
           >
             Abrir {MONTHS[nextMonthOf(lastEntry).month - 1]} <ChevronRight size={14} strokeWidth={1.5} />
           </button>
@@ -478,7 +478,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                       title="Sin registros mensuales"
                       description="Cargá tu primer mes para comenzar a registrar flujos, depósitos y P&L."
                       action={
-                        <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos text-bg-0 hover:opacity-90 px-3 py-2 rounded-sm font-semibold transition">
+                        <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-sm font-semibold transition">
                           <Plus size={14} strokeWidth={1.5} /> Agregar primer mes
                         </button>
                       }
@@ -708,7 +708,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
               <button
                 onClick={save}
                 disabled={saving}
-                className="px-4 py-2 text-sm bg-rendi-pos hover:opacity-90 disabled:opacity-50 text-bg-0 rounded-sm font-semibold transition"
+                className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-50 text-white rounded-sm font-semibold transition"
               >
                 {saving ? 'Guardando...' : modal === 'next' ? `Abrir ${MONTHS[form.month - 1]}` : 'Guardar'}
               </button>
