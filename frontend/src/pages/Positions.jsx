@@ -329,23 +329,9 @@ export default function Positions() {
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
 
-  if (brokers.length === 0) {
-    return (
-      <div className="page-shell-wide">
-        <PageHeader title="Posiciones activas" subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado." />
-        <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl">
-          <EmptyState
-            title="Sin brokers configurados"
-            description="Configurá tu primer broker desde la sección Config para comenzar a registrar posiciones."
-          />
-        </div>
-      </div>
-    )
-  }
-
-  const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
-
-  // Totales agregados (USD) para el hero "Tu portfolio hoy"
+  // Totales agregados (USD) para el hero "Tu portfolio hoy".
+  // IMPORTANTE: useMemo va ANTES del early return — los hooks deben llamarse
+  // en el mismo orden en cada render (rules of hooks).
   const totals = useMemo(() => {
     let value = 0, invested = 0
     for (const b of brokers) {
@@ -357,6 +343,22 @@ export default function Positions() {
     const pct = invested > 0 ? pnl / invested : 0
     return { value, invested, pnl, pct }
   }, [brokers, positions, prices, tcBlue])
+
+  if (brokers.length === 0) {
+    return (
+      <div className="page-shell-wide">
+        <PageHeader title="Posiciones activas" subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado." />
+        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded">
+          <EmptyState
+            title="Sin brokers configurados"
+            description="Configurá tu primer broker desde la sección Config para comenzar a registrar posiciones."
+          />
+        </div>
+      </div>
+    )
+  }
+
+  const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 
   return (
     <div className="page-shell-wide">
