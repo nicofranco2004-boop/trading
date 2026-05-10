@@ -342,7 +342,11 @@ export const DIAGNOSTIC_GENERATORS = [
   {
     id: 'open_winner_strong',
     category: 'Posiciones abiertas',
-    severity: 'positive',
+    // Una ganancia no realizada concentrada NO es un insight positivo:
+    // es una alerta — el texto mismo dice 'una corrección podría reducir
+    // o eliminar esta ganancia'. Es un riesgo de paper gains que conviene
+    // realizar parcialmente. Por eso va en severity='warn', no 'positive'.
+    severity: 'warn',
     generate: ({ openExtremes }) => {
       if (!openExtremes || !openExtremes.best || openExtremes.best.pnl_usd <= 0) return null
       if (openExtremes.best.pnl_pct == null || openExtremes.best.pnl_pct < 30) return null

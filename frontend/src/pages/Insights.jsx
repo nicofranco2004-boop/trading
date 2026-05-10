@@ -57,16 +57,21 @@ const SEVERITY_BADGE = {
   info:     { label: 'Diagnóstico',      badgeCls: 'bg-bg-3 text-ink-2 border-line' },
 }
 
-// CTA por categoría — link a la página donde el usuario puede actuar
-// sobre la observación. Devuelve null si no hay acción específica
-// (en ese caso simplemente no se renderiza el CTA).
+// CTA por categoría — TODAS las categorías existentes tienen CTA propio.
+// Si el href empieza con '#', es un anchor a una sección dentro de la misma
+// página y se renderiza como <a> en lugar de <Link> para que el browser
+// scrollee al elemento (react-router no hace ese scroll por defecto).
 function ctaForCategory(cat) {
   const map = {
-    'Riesgo':         { label: 'Ver posiciones',      href: '/posiciones' },
-    'Performance':    { label: 'Ver atribución',      href: '/insights' },
-    'Comportamiento': { label: 'Revisar operaciones', href: '/operaciones' },
+    'Riesgo':             { label: 'Ver posiciones',      href: '/posiciones' },
+    'Performance':        { label: 'Ver atribución',      href: '#atribucion' },
+    'Comportamiento':     { label: 'Revisar operaciones', href: '/operaciones' },
+    'Moneda':             { label: 'Ver brokers',         href: '/posiciones' },
+    'Posiciones abiertas': { label: 'Ver posición',       href: '/posiciones' },
   }
-  return map[cat] || null
+  // Fallback genérico en lugar de null — preferible que TODAS las cards
+  // tengan CTA visible para mantener la simetría visual del audit.
+  return map[cat] || { label: 'Ver detalle', href: '#diagnostico' }
 }
 
 // Balanced picker — toma 1 de cada nivel (urgent / warn / positive) si
@@ -1134,7 +1139,7 @@ export default function Insights() {
         const balancedIds = new Set(balanced.map(d => d.id))
         const restItems = diagnosis.filter(d => !balancedIds.has(d.id))
         return (
-          <section>
+          <section id="diagnostico" className="scroll-mt-20">
             <p className="eyebrow mb-3">
               Diagnóstico · {balanced.length} {balanced.length === 1 ? 'observación' : 'observaciones'} priorizadas
             </p>
@@ -1163,12 +1168,24 @@ export default function Insights() {
                         </p>
                       )}
                       {cta && (
-                        <Link
-                          to={cta.href}
-                          className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
-                        >
-                          {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-                        </Link>
+                        cta.href.startsWith('#') ? (
+                          // Anchor en la misma página — usamos <a> para que el
+                          // browser scrollee al elemento; react-router-dom no
+                          // hace este scroll automáticamente con <Link>.
+                          <a
+                            href={cta.href}
+                            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+                          >
+                            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+                          </a>
+                        ) : (
+                          <Link
+                            to={cta.href}
+                            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+                          >
+                            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+                          </Link>
+                        )
                       )}
                     </div>
                   )
@@ -1575,6 +1592,7 @@ export default function Insights() {
       {/* Qué explica tu resultado — top contributors + detractors */}
       {(topContribPos.length > 0 || topContribNeg.length > 0) && (
         <Section
+          id="atribucion"
           title="Atribución por activo"
           subtitle={`Activos que más impactan tu P&L total — incluye operaciones cerradas y posiciones abiertas, en ${currency}.`}
         >
@@ -1970,9 +1988,9 @@ function DiagnosticText({ text }) {
   )
 }
 
-function Section({ title, subtitle, children }) {
+function Section({ id, title, subtitle, children }) {
   return (
-    <section>
+    <section id={id} className={id ? 'scroll-mt-20' : undefined}>
       <div className="mb-3">
         <h2 className="section-title">{title}</h2>
         {subtitle && <p className="section-subtitle">{subtitle}</p>}
