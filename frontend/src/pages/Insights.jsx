@@ -897,7 +897,14 @@ export default function Insights() {
     positions,
     brokers,
     tcBlue,
-  }, 6)
+    // Variables nuevas para reglas de comportamiento, costos y consistencia.
+    operations,           // todas las operaciones (trade + cash flow)
+    tradeOps,             // solo trades cerrados (sell)
+    bestWorstOp,          // { best, worst } operación cerrada
+    realizedPnl,          // P&L acumulado realizado
+    unrealizedPnl,        // P&L abierto
+    globalMonthly,        // meses globales para streak/consistency
+  }, 12)
 
   // ── Qué explica tu resultado: principales contribuyentes ──────────────────
   // Reusa assetContribFull (computeAssetContribution) para que esta sección y
