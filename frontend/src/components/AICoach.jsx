@@ -2,14 +2,18 @@ import { useState, useRef, useEffect } from 'react'
 import { Sparkles, Send, AlertCircle, RotateCcw } from 'lucide-react'
 import { api } from '../utils/api'
 
-const SUGGESTED = [
+// Preguntas por defecto — se usan si el caller no pasa `suggested` o si la
+// generación dinámica no produjo lo suficiente. Insights las reemplaza por
+// preguntas data-driven basadas en el snapshot real.
+const DEFAULT_SUGGESTED = [
   '¿Cómo está mi portfolio en general?',
   '¿Qué riesgos detectás en mi cartera?',
   '¿Mi nivel de concentración es elevado?',
   '¿Cómo evalúo mi win rate?',
 ]
 
-export default function AICoach({ snapshot }) {
+export default function AICoach({ snapshot, suggested }) {
+  const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 4) : DEFAULT_SUGGESTED
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)

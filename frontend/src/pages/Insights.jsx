@@ -997,6 +997,46 @@ export default function Insights() {
     return `${sign}USD ${abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   }
 
+  // ── Preguntas dinámicas para el AICoach ────────────────────────────────────
+  // En lugar de chips genéricos ('¿Cómo está mi portfolio?'), generamos
+  // preguntas data-driven basadas en lo que el portfolio realmente muestra
+  // hoy. Cada regla aporta 1 candidata; tomamos las 4 más prioritarias.
+  const aiSuggested = (() => {
+    const out = []
+    const top = aiPositions[0]
+    if (top && top.pct_of_portfolio > 30) {
+      out.push(`${top.asset} es el ${top.pct_of_portfolio.toFixed(0)}% de mi portfolio — ¿es demasiada concentración?`)
+    }
+    if (drawdown?.current && drawdown.current < -10) {
+      out.push(`Estoy en un drawdown del ${Math.abs(drawdown.current).toFixed(0)}% — ¿qué hago?`)
+    }
+    if (totalResult < 0) {
+      out.push('¿Por qué estoy perdiendo plata y cómo lo reviero?')
+    }
+    if (vsSp500 != null && vsSp500 < -5) {
+      out.push(`Estoy rindiendo ${Math.abs(vsSp500).toFixed(1)}% peor que el S&P 500 — ¿por qué?`)
+    }
+    if (winRate != null && winRate < 0.5) {
+      out.push(`Mi win rate es ${(winRate * 100).toFixed(0)}% — ¿cómo puedo mejorarlo?`)
+    }
+    if (cashRatio > 25) {
+      out.push(`Tengo ${cashRatio.toFixed(0)}% en cash — ¿estoy perdiendo oportunidades?`)
+    }
+    if (topContribNeg.length > 0) {
+      const worst = topContribNeg[0]
+      if (worst && worst.asset) {
+        out.push(`¿Vendo ${worst.asset}? Es el activo que más me hace perder.`)
+      }
+    }
+    if (totalResult > 0 && winRate >= 0.5 && (drawdown?.current ?? 0) >= -5) {
+      out.push('¿Cómo está mi portfolio en general? ¿Hay algo a optimizar?')
+    }
+    // Fallback siempre presente para que nunca queden menos de 4
+    out.push('¿Qué riesgos detectás en mi cartera?')
+    out.push('¿Mi diversificación está bien?')
+    return [...new Set(out)].slice(0, 4)
+  })()
+
   return (
     <div className="page-shell space-y-8">
       <PageHeader
@@ -1142,7 +1182,7 @@ export default function Insights() {
       >
 
       {/* Cumulative performance chart — la moneda viene del toggle global */}
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5">
+      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-slate-800 dark:text-slate-200">
@@ -1215,7 +1255,7 @@ export default function Insights() {
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
           y duración de las caídas sobre el rendimiento ajustado por flujos. */}
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5 mt-6">
+      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5 mt-6">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-slate-800 dark:text-slate-200">Curva de drawdown</h2>
@@ -1228,8 +1268,8 @@ export default function Insights() {
           </div>
           {drawdownTwrr && (
             <div className="flex gap-3 text-xs">
-              <span className="text-slate-500 dark:text-slate-400">Actual: <span className={`font-semibold tabular ${drawdownTwrr.currentPct < -5 ? 'text-red-500 dark:text-red-400' : 'text-emerald-500 dark:text-emerald-400'}`}>{drawdownTwrr.currentPct.toFixed(1)}%</span></span>
-              <span className="text-slate-500 dark:text-slate-400">Máx histórico: <span className="font-semibold tabular text-red-500 dark:text-red-400">{drawdownTwrr.maxPct.toFixed(1)}%</span></span>
+              <span className="text-slate-500 dark:text-slate-400">Actual: <span className={`font-semibold tabular ${drawdownTwrr.currentPct < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdownTwrr.currentPct.toFixed(1)}%</span></span>
+              <span className="text-slate-500 dark:text-slate-400">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdownTwrr.maxPct.toFixed(1)}%</span></span>
             </div>
           )}
         </div>
@@ -1307,7 +1347,7 @@ export default function Insights() {
               </p>
               {bestWorstOp.worst && bestWorstOp.worst.pnl_usd < 0 && (
                 <p className="text-xs text-slate-600 dark:text-slate-300 mt-3 leading-snug">
-                  Peor operación: <span className="font-semibold text-red-500 dark:text-red-400">{bestWorstOp.worst.asset}</span> con <span className={colorClass(bestWorstOp.worst.pnl_usd)}>{amt(bestWorstOp.worst.pnl_usd, { signed: true })}</span>.
+                  Peor operación: <span className="font-semibold text-rendi-neg">{bestWorstOp.worst.asset}</span> con <span className={colorClass(bestWorstOp.worst.pnl_usd)}>{amt(bestWorstOp.worst.pnl_usd, { signed: true })}</span>.
                 </p>
               )}
             </>
@@ -1338,10 +1378,10 @@ export default function Insights() {
                 </p>
                 {profitFactor && (
                   <p className={`text-base font-semibold tabular ${
-                    profitFactor.profitFactor === Infinity ? 'text-emerald-500 dark:text-emerald-400'
-                    : profitFactor.profitFactor >= 1.5 ? 'text-emerald-500 dark:text-emerald-400'
+                    profitFactor.profitFactor === Infinity ? 'text-rendi-pos'
+                    : profitFactor.profitFactor >= 1.5 ? 'text-rendi-pos'
                     : profitFactor.profitFactor >= 1 ? 'text-emerald-600/80 dark:text-emerald-400/80'
-                    : 'text-red-500 dark:text-red-400'
+                    : 'text-rendi-neg'
                   }`}>
                     PF {profitFactor.profitFactor === Infinity ? '∞' : profitFactor.profitFactor.toFixed(2)}
                   </p>
@@ -1481,7 +1521,7 @@ export default function Insights() {
       <Section title="Distribución" subtitle="Cómo se reparte tu capital entre brokers, activos y clases de instrumento.">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Pie chart por broker */}
-        <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5">
+        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-slate-800 dark:text-slate-200">Por broker</h2>
             {brokerConcentration && (
@@ -1508,7 +1548,7 @@ export default function Insights() {
           )}
         </div>
 
-        <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5">
+        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
           <h2 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Por activo</h2>
           {assetPieData.length === 0 ? (
             <p className="text-slate-400 dark:text-slate-500 text-sm text-center py-8">—</p>
@@ -1529,7 +1569,7 @@ export default function Insights() {
                 )
               })}
               {assetPieData[0] && assetPieData[0].value / totalPortfolio > 0.6 && (
-                <p className="text-xs text-amber-600 dark:text-amber-400 pt-2 flex items-start gap-1">
+                <p className="text-xs text-rendi-warn pt-2 flex items-start gap-1">
                   <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
                   Concentración elevada en {assetPieData[0].name} ({((assetPieData[0].value / totalPortfolio) * 100).toFixed(0)}%).
                 </p>
@@ -1540,7 +1580,7 @@ export default function Insights() {
       </div>
 
       {/* Distribución por tipo de activo (cripto / acción / CEDEAR / cash) */}
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5 mt-6">
+      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5 mt-6">
         <div className="flex items-center gap-1.5 mb-4">
           <h2 className="font-semibold text-slate-800 dark:text-slate-200">Distribución por tipo de activo</h2>
           <InfoTooltip>
@@ -1629,7 +1669,7 @@ export default function Insights() {
 
       {/* ── Coach IA — colapsado por defecto para no robar foco ─────────────── */}
       <Section title="Coach IA" subtitle="Asistente con contexto sobre tu portfolio. Las observaciones son orientativas, no constituyen recomendaciones de inversión.">
-        <CollapsibleCoach snapshot={aiSnapshot} />
+        <CollapsibleCoach snapshot={aiSnapshot} suggested={aiSuggested} />
       </Section>
 
     </div>
@@ -1642,15 +1682,15 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
   // Verde si gano al benchmark, rojo si pierdo.
   if (disabled || benchmarkValue == null || delta == null) {
     return (
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 rounded-xl shadow-sm dark:shadow-none p-5">
+      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
         <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">{label}</p>
         <p className="text-sm text-slate-400 dark:text-slate-500 mt-2">{disabledHint || 'Datos insuficientes para calcular.'}</p>
       </div>
     )
   }
   const gano = delta.delta >= 0
-  const accentBorder = gano ? 'border-emerald-500/40 dark:border-emerald-500/30' : 'border-red-500/40 dark:border-red-500/30'
-  const accentText = gano ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'
+  const accentBorder = gano ? 'border-rendi-pos/40' : 'border-rendi-neg/40'
+  const accentText = gano ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
     <div className={`bg-white dark:bg-slate-800/60 border ${accentBorder} rounded-xl shadow-sm dark:shadow-none p-5`}>
       <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">{label}</p>
@@ -1673,16 +1713,16 @@ function InflationCard({ inflation }) {
   // para mantener poder de compra.
   if (!inflation) {
     return (
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 rounded-xl shadow-sm dark:shadow-none p-5">
+      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
         <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Inflación AR</p>
         <p className="text-sm text-slate-400 dark:text-slate-500 mt-2">No hay datos de IPC suficientes para el período seleccionado.</p>
       </div>
     )
   }
   return (
-    <div className="bg-white dark:bg-slate-800/60 border border-amber-500/30 rounded-xl shadow-sm dark:shadow-none p-5">
+    <div className="bg-white dark:bg-bg-1 border border-rendi-warn/30 rounded p-5">
       <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Inflación AR (período)</p>
-      <p className="text-2xl font-bold tabular mt-2 text-amber-600 dark:text-amber-400">
+      <p className="text-2xl font-bold tabular mt-2 text-rendi-warn">
         +{inflation.cumPct.toFixed(1)}%
       </p>
       <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-3 leading-snug">
@@ -1709,7 +1749,7 @@ function PerformanceAttribution({ discipline, amt }) {
   const pnlPositive = pnl >= 0
 
   return (
-    <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5 mt-6">
+    <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5 mt-6">
       <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
         <div className="flex items-center gap-1.5">
           <h2 className="font-semibold text-slate-800 dark:text-slate-200">Atribución del crecimiento</h2>
@@ -1755,7 +1795,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <span className={`mt-1 inline-block w-2 h-2 rounded-full flex-shrink-0 ${pnlPositive ? 'bg-emerald-500' : 'bg-red-500'}`} />
           <div>
             <p className="text-xs text-slate-500 dark:text-slate-400">{pnlPositive ? 'Rendimiento del mercado' : 'Pérdida del mercado'}</p>
-            <p className={`text-lg font-semibold tabular ${pnlPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>{amt(pnl, { signed: true })}</p>
+            <p className={`text-lg font-semibold tabular ${pnlPositive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{amt(pnl, { signed: true })}</p>
             <p className="text-[11px] text-slate-400 dark:text-slate-500">{pnlShare.toFixed(0)}% del cambio</p>
           </div>
         </div>
@@ -1779,9 +1819,9 @@ function ContribList({ tone, title, items, fmt }) {
   // tone: 'positive' (verde) | 'negative' (rojo)
   // fmt:  formatter that respects the global currency toggle (signed)
   const isPos = tone === 'positive'
-  const accentText = isPos ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+  const accentText = isPos ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
-    <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 rounded-xl shadow-sm dark:shadow-none p-5">
+    <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
       <div className="flex items-center gap-2 mb-3 text-slate-500 dark:text-slate-400">
         {isPos ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
         <span className="text-xs font-semibold uppercase tracking-wider">{title}</span>
@@ -1807,16 +1847,16 @@ function ContribList({ tone, title, items, fmt }) {
   )
 }
 
-function CollapsibleCoach({ snapshot }) {
+function CollapsibleCoach({ snapshot, suggested }) {
   // El AICoach consume créditos de la API por consulta, así que arranca
   // colapsado: el usuario decide cuándo abrirlo. Se abre con un click y
   // queda abierto el resto de la sesión.
   const [open, setOpen] = useState(false)
-  if (open) return <AICoach snapshot={snapshot} />
+  if (open) return <AICoach snapshot={snapshot} suggested={suggested} />
   return (
     <button
       onClick={() => setOpen(true)}
-      className="w-full text-left bg-white dark:bg-bg-1 border border-slate-200/80 dark:border-line rounded-xl shadow-sm dark:shadow-none px-5 py-4 hover:border-rendi-accent/40 hover:bg-rendi-accent/[0.02] dark:hover:bg-rendi-accent/[0.04] transition group"
+      className="w-full text-left bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded px-5 py-4 hover:border-rendi-accent/40 hover:bg-rendi-accent/[0.02] dark:hover:bg-rendi-accent/[0.04] transition group"
     >
       <div className="flex items-center gap-3">
         <div className="p-2 rounded-lg bg-bg-3 border border-line text-rendi-accent flex-shrink-0">
@@ -1865,7 +1905,7 @@ function Section({ title, subtitle, children }) {
 
 function AlertBanner({ level, category, title, text }) {
   const styles = {
-    danger:  { wrap: 'bg-red-500/[0.06] border-red-500/25',     iconColor: 'text-red-500 dark:text-red-400',     titleColor: 'text-red-700 dark:text-red-300',     textColor: 'text-red-700/75 dark:text-red-300/80',     badge: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30',           Icon: AlertTriangle },
+    danger:  { wrap: 'bg-red-500/[0.06] border-red-500/25',     iconColor: 'text-rendi-neg',     titleColor: 'text-red-700 dark:text-red-300',     textColor: 'text-red-700/75 dark:text-red-300/80',     badge: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30',           Icon: AlertTriangle },
     warning: { wrap: 'bg-amber-500/[0.06] border-amber-500/25', iconColor: 'text-amber-500 dark:text-amber-400', titleColor: 'text-amber-700 dark:text-amber-300', textColor: 'text-amber-700/75 dark:text-amber-300/80', badge: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30',  Icon: AlertTriangle },
     info:    { wrap: 'bg-slate-500/[0.06] border-slate-500/25', iconColor: 'text-slate-500 dark:text-slate-300', titleColor: 'text-slate-800 dark:text-slate-100', textColor: 'text-slate-600 dark:text-slate-300',     badge: 'bg-slate-500/15 text-slate-700 dark:text-slate-200 border-slate-500/30',  Icon: Info },
   }
@@ -1889,7 +1929,7 @@ function AlertBanner({ level, category, title, text }) {
 
 function InsightCard({ icon, title, children, accent, tooltip }) {
   return (
-    <div className={`bg-white dark:bg-slate-800/60 border rounded-xl p-5 shadow-sm dark:shadow-none ${
+    <div className={`bg-white dark:bg-bg-1 border rounded p-5 ${
       accent ? 'border-rendi-accent/40 dark:border-rendi-accent/30' : 'border-slate-200/80 dark:border-line'
     }`}>
       <div className="flex items-center gap-2 mb-3 text-slate-500 dark:text-slate-400">
