@@ -18,53 +18,20 @@
 import { useState } from 'react'
 import { Wallet } from 'lucide-react'
 
-// Lista de tickers cripto que CoinCap soporta. La derivamos del backend
-// (CRYPTO_SYMBOLS en main.py). Mantenemos solo los que efectivamente tienen
-// asset en CoinCap — los muy nicho caen al fallback igual.
-const CRYPTO_TICKERS = new Set([
-  'BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'AVAX', 'DOGE', 'TRX', 'DOT',
-  'MATIC', 'POL', 'LINK', 'LTC', 'BCH', 'NEAR', 'UNI', 'ATOM', 'XLM', 'ETC',
-  'APT', 'ARB', 'OP', 'AAVE', 'MKR', 'SNX', 'CRV', 'COMP', 'SUSHI', 'YFI',
-  '1INCH', 'BAL', 'DYDX', 'GMX', 'BLUR', 'GRT', 'LRC', 'ZRX', 'BAT', 'REN',
-  'ALGO', 'VET', 'EGLD', 'FTM', 'FLOW', 'HBAR', 'THETA', 'XTZ', 'EOS', 'WAVES',
-  'ZIL', 'NEO', 'QTUM', 'ICX', 'ONT', 'IOTA', 'ZEC', 'DASH', 'XMR', 'KAVA',
-  'SAND', 'MANA', 'AXS', 'ENJ', 'IMX', 'CHZ', 'GALA',
-  'SHIB', 'PEPE', 'FLOKI', 'BONK', 'WIF',
-  'SUI', 'SEI', 'TIA', 'INJ', 'PYTH', 'STRK', 'WLD',
-  'FIL', 'STX', 'APE', 'LDO', 'PENDLE',
-  'USDT', 'USDC', 'DAI',
-])
+// ════════════════════════════════════════════════════════════════════════════
+// Logos self-hosted. Todos los assets viven en /public/logos/{TICKER}.png
+// generados con scripts/download-logos.mjs (cero dependencia externa en
+// runtime). Si el archivo no existe (ticker raro / nuevo), el onError
+// dispara el fallback de iniciales.
+// ════════════════════════════════════════════════════════════════════════════
 
-// Detecta si un ticker es cripto. Mayúsculas para match con el set.
-function isCryptoTicker(asset) {
-  if (!asset) return false
-  return CRYPTO_TICKERS.has(asset.toUpperCase())
-}
-
-// Tickers que FMP serve con PNG placeholder (técnicamente válido pero casi
-// vacío — no podemos detectarlo desde el browser por CORS taint, así que
-// los hardcodeamos para forzar fallback a iniciales).
-// Si ves un ticker con logo raro (círculo casi blanco con un punto), agregalo
-// acá. Verificable: curl la URL FMP y compara el PNG con un placeholder.
-const FMP_BROKEN = new Set([
-  'INTC',  // Intel — confirmado mayo 2026
-])
-
-// URL del logo según categoría. Devuelve null si no podemos inferir
-// (caso raro — ticker vacío o no-string, o known broken en FMP).
+// URL del logo. /logos/ se sirve desde public/ via Vite.
+// Devolvemos null para ticker vacío (cae al fallback directo).
 function logoUrlFor(asset) {
   if (!asset || typeof asset !== 'string') return null
   const clean = asset.trim().toUpperCase()
   if (!clean) return null
-  if (isCryptoTicker(clean)) {
-    // CoinCap usa lowercase en sus URLs
-    return `https://assets.coincap.io/assets/icons/${clean.toLowerCase()}@2x.png`
-  }
-  // Tickers conocidos sin logo en FMP → forzar fallback
-  if (FMP_BROKEN.has(clean)) return null
-  // Stock / CEDEAR / ADR — FMP cubre US tickers (los CEDEARs argentinos usan
-  // el mismo símbolo que su ADR, así que MELI/GGAL/etc. funcionan).
-  return `https://financialmodelingprep.com/image-stock/${clean}.png`
+  return `/logos/${clean}.png`
 }
 
 // Hash determinístico para el color del fallback (mismo que el AssetAvatar
