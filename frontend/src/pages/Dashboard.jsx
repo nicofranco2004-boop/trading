@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, useRef } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { TrendingUp, TrendingDown, Wallet, PiggyBank, Activity, CircleDollarSign, Upload, ArrowRight } from 'lucide-react'
 import StatCard from '../components/StatCard'
-import MonthlySummary from '../components/MonthlySummary'
+import MonthlyTeaser from '../components/MonthlyTeaser'
 import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
@@ -28,10 +28,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [range, setRange] = useState('1M')
-  // Bump al confirmar import en Config → MonthlySummary recarga sus datos.
-  // Hoy el Dashboard no abre el wizard directamente, pero al volver a esta
-  // página queremos que MonthlySummary refresque por si hubo cambios.
-  const [importedTick, setImportedTick] = useState(0)
   const latestRef = useRef({})
 
   useEffect(() => {
@@ -558,7 +554,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <MonthlySummary refreshKey={importedTick} />
+      <MonthlyTeaser />
     </div>
   )
 }

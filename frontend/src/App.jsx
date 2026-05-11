@@ -12,7 +12,6 @@ import Insights from './pages/Insights'
 import Admin from './pages/Admin'
 import Goals from './pages/Goals'
 import Imports from './pages/Imports'
-import MonthlyReportsPreview from './pages/MonthlyReportsPreview'
 import MonthlyReports from './pages/MonthlyReports'
 
 function Layout() {
@@ -35,7 +34,6 @@ function Layout() {
         <Route path="/insights" element={<Insights />} />
         <Route path="/mensual" element={<Monthly />} />
         <Route path="/reportes" element={<MonthlyReports />} />
-        <Route path="/reportes-preview" element={<MonthlyReportsPreview />} />
         <Route path="/operaciones" element={<Operations />} />
         <Route path="/config" element={<Config />} />
         <Route path="/objetivos" element={<Goals />} />
