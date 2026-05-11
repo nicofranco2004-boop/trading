@@ -14,7 +14,7 @@ import { getBondMeta, formatBondType, formatCouponFreq } from '../utils/bondMeta
 import {
   generateSchedule,
   getRemainingPayments,
-  estimateYield,
+  estimateYieldDetailed,
   nextPaymentForPosition,
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
@@ -1343,18 +1343,26 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, onAddCoupon, 
   const ops = summary?.ops || []
   const recoveryPct = invested > 0 ? (total / invested) : 0
 
-  // ── Fase 2: schedule + TIR + próximo pago ────────────────────────────────
+  // ── Fase 2+3A: schedule + TIR + próximo pago ─────────────────────────────
   // Esto SOLO aplica a bonos con maturity definida en bondMeta. ETFs y
   // tickers sin metadata caen en el fallback de Fase 1.
   const today = new Date().toISOString().slice(0, 10)
   const fullSchedule = generateSchedule(p.asset)
   const remaining = fullSchedule ? getRemainingPayments(p.asset, today) : null
-  // pricePer100: el TIR se calcula sobre "precio por 100 nominal". Si el user
-  // entra qty=nominales y price=USD/ARS por nominal, multiplicamos × 100.
-  const pricePer100 = currentPrice != null && currentPrice > 0
+  // pricePer100: el TIR se calcula sobre "precio por 100 nominal". Asumimos
+  // qty=nominales VN y price=moneda del bono por nominal → ×100.
+  // Phase 3A: usamos la API rica `estimateYieldDetailed`. Por default trata
+  // el input como CLEAN price (precio que ves en el broker) y suma accrued
+  // internamente → TIR sobre dirty price, convención del bono según meta.
+  const pricePer100Clean = currentPrice != null && currentPrice > 0
     ? currentPrice * 100
     : null
-  const yieldEstimate = pricePer100 != null ? estimateYield(p.asset, pricePer100, today) : null
+  const yieldDetail = pricePer100Clean != null
+    ? estimateYieldDetailed(p.asset, pricePer100Clean, today)
+    : null
+  // El YTM devuelto YA es efectivo anual (los t están en años decimales →
+  // discount factor (1+r)^t implica que r es la EAR). No requiere conversión.
+  const yieldEstimate = yieldDetail?.ytm ?? null
   const nextPay = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today) : null
 
   return (
@@ -1436,18 +1444,35 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, onAddCoupon, 
               {yieldEstimate != null ? (
                 <>
                   <p className="text-lg font-bold tabular text-ink-0">
-                    {pctSigned(yieldEstimate)} <span className="text-xs font-normal text-ink-2">anual</span>
+                    {pctSigned(yieldEstimate)} <span className="text-xs font-normal text-ink-2">TIR ef. anual</span>
+                  </p>
+                  {/* Phase 3A: metadata transparente — convención usada, dirty/clean,
+                      accrued, método de convergencia. Si el user duda del número,
+                      ve exactamente por qué se calculó así. */}
+                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
+                    Convención: {yieldDetail.dayCount}
+                    {yieldDetail.accrued > 0.01 && (
+                      <>
+                        {' · '}
+                        dirty {yieldDetail.dirty.toFixed(2)} (clean {yieldDetail.clean.toFixed(2)} + accrued {yieldDetail.accrued.toFixed(2)})
+                      </>
+                    )}
+                    {!yieldDetail.converged && (
+                      <span className="text-rendi-warn"> · ⚠ aproximada</span>
+                    )}
                   </p>
                   <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    TIR aprox. al precio actual ({moneyLabel} {fmt(currentPrice)}/nominal). Asume
-                    qty = nominales VN. Refiná actualizando el "precio override" si difiere de la pantalla del broker.
+                    Asume qty = nominales VN, precio entrado por nominal en moneda del bono.
+                    Refiná el "precio override" si difiere del que ves en el broker.
                   </p>
                 </>
               ) : (
                 <p className="text-xs text-ink-2 leading-snug">
                   {currentPrice == null
                     ? 'Cargá un precio override en la posición para estimar la TIR a precios de mercado.'
-                    : 'No se pudo estimar la TIR — verificá que el precio esté en la misma moneda que el bono.'}
+                    : yieldDetail?.method === 'bracket_failed'
+                      ? 'No se pudo estimar la TIR — precio fuera del rango razonable. Verificá la moneda y la unidad del precio entrado.'
+                      : 'No se pudo estimar la TIR — verificá que el precio esté en la misma moneda que el bono.'}
                 </p>
               )}
               {nextPay && (

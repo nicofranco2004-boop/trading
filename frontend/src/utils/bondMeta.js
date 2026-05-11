@@ -1,31 +1,59 @@
-// bondMeta.js — meta-data básico de cada bono soportado.
+// bondMeta.js — meta-data por bono. Schema evolutivo.
 // ════════════════════════════════════════════════════════════════════════════
-// Por ticker, definimos:
-//   • currency: USD | ARS | USD_CER (CER son ARS-linked vía índice)
+// CAMPOS BÁSICOS (todos los bonos):
+//   • currency: 'USD' | 'ARS' (CER son ARS-linked vía índice; dollar-linked
+//     son ARS pagaderos en pesos a A3500 — distinción llega en Phase 3C)
 //   • issuer: 'Soberano AR' | 'Corporativo AR' | 'Tesoro US' | 'ETF US'
-//   • maturity: fecha YYYY-MM-DD de vencimiento
-//   • couponRate: TNA aproximada (% anual). Para soberanos AR, la stepup
-//     real es complicada — guardamos un proxy promedio.
-//   • couponFreq: 'semiannual' | 'quarterly' | 'monthly' | 'annual' | 'none'
+//   • maturity: 'YYYY-MM-DD' (null para ETFs sin maturity)
+//   • couponRate: % anual TNA. Para soberanos AR canje 2020 es un PROXY
+//     promedio; el step-up real va en `couponSchedule` (forma rica, Phase 3B).
+//   • couponFreq: 'monthly' | 'quarterly' | 'semiannual' | 'annual' | 'none'
 //   • type: 'sovereign' | 'corporate' | 'cer' | 'etf'
-//   • amortStart (opcional): fecha del primer pago de amortización (bonos que
-//     amortizan progresivamente en lugar de devolver el face al vencimiento).
-//   • amortCount (opcional): cantidad total de cuotas de amortización (igual
-//     espaciadas a la frecuencia del cupón). Cada cuota devuelve 100/amortCount
-//     del face original.
 //
-// FASE 2: el bondSchedule.js consume estos campos para generar el cronograma
-// de pagos (cupones + amortizaciones) por ticker, calcular próximo pago y
-// TIR estimada. Falta refinar las step-up exactas de soberanos AR — Fase 3.
+// CAMPOS OPCIONALES — AMORTIZACIÓN:
+//   • amortStart (legacy): fecha del primer pago de amortización para bonos
+//     que amortizan en cuotas iguales semestrales.
+//   • amortCount (legacy): cantidad total de cuotas. Cada cuota devuelve
+//     100/amortCount del face original.
+//   • amortSchedule (forma rica, Phase 3B): [{ date: 'YYYY-MM-DD', pct: 7.69 }]
+//     — fechas EXACTAS del prospecto con su % de amort. Si está presente,
+//     ignora amortStart/amortCount. Validación: suma de pct ≈ 100.
+//
+// CAMPOS OPCIONALES — STEP-UP (Phase 3B):
+//   • couponSchedule: [{ from, to, rate }] — rates por período. La fecha de
+//     pago N usa el rate del período que CONTIENE esa fecha. Si está presente,
+//     ignora couponRate escalar.
+//
+// CAMPOS OPCIONALES — METADATA EXTENDIDA (Phase 3B+):
+//   • issueDate: 'YYYY-MM-DD' — fecha de emisión. Usado para calcular
+//     accrued interest cuando asOf está antes del primer pago en el schedule.
+//   • dayCount: '30/360' | 'ACT/365' | 'ACT/360' | 'ACT/ACT-ISDA'
+//     Convención de cómputo de días del prospecto. Default 'ACT/365.25'.
+//     Bonos AR canje 2020 usan '30/360'.
+//   • governingLaw: 'Argentina' | 'NewYork' — para distinguir AL vs GD.
+//     Informacional, no afecta el cálculo (sí afecta el riesgo de default).
+//   • isin: 'ISIN code' — identifier único del bono.
+//
+// CAMPOS OPCIONALES — INFLATION-LINKED (Phase 3C):
+//   • cerEmissionDate: 'YYYY-MM-DD' — base date del coeficiente CER para
+//     calcular el factor de ajuste = CER(t) / CER(emisión).
+//   • dollarLinked: true | false — bono ARS ajustado por tipo de cambio
+//     A3500 (no por CER).
 //
 // Fuentes de meta-data:
-//   • Soberanos AR: prospecto Ministerio de Economía
+//   • Soberanos AR: prospecto Ministerio de Economía (Decreto 391/2020 para
+//     canje 2020 + anexos con step-up exacto).
 //   • ONs: prospectos en CNV.gov.ar
-//   • ETFs US: ETF.com / iShares.com
+//   • ETFs US: ETF.com / iShares.com / Vanguard 30-day SEC yield JSON.
 //
-// Si un dato cambia (reestructuración, etc.) se actualiza acá. La data está
-// del lado del frontend porque es mostly informativa — el cálculo real
-// (TIR, próximo cupón) llega en Fase 2.
+// CICLO DE VIDA:
+//   • Phase 1-2: forma legacy (couponRate proxy + amortStart/Count).
+//   • Phase 3A (PR #8): bondSchedule.js soporta AMBAS formas — no migra data
+//     todavía. La forma rica está documentada y testeada con stubs.
+//   • Phase 3B (PR #9): migración de los 11 soberanos AR a forma rica con
+//     prospecto-exacto. CER bonds y ONs corporativas siguen en forma legacy.
+//   • Phase 3C (PR #10): CER bonds reciben cerEmissionDate + backend CER
+//     coefficient endpoint.
 
 // Schedules de amortización de soberanos AR (canje 2020).
 // Cada bono amortiza en cuotas iguales semestrales (100/amortCount % del face
