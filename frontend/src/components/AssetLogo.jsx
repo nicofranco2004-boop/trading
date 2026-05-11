@@ -1,47 +1,112 @@
-// AssetLogo — logo real del activo (acción / CEDEAR / cripto) con fallback.
+// AssetLogo — logo del activo (acción / CEDEAR / cripto / fiat) con fallback.
 // ════════════════════════════════════════════════════════════════════════════
-// Estrategia:
-//   • is_cash         → icono Wallet (sin logo, es cash de broker)
-//   • Cripto conocido → CoinCap CDN (assets.coincap.io)
-//   • Stock / CEDEAR  → Financial Modeling Prep CDN (images.financialmodelingprep.com)
-//   • Onerror (404)   → fallback a iniciales del ticker con color hash
-//                       (mismo patrón que el AssetAvatar previo)
+// Orden de resolución (primer match gana):
+//   1. Fiat reconocido (USD, ARS) → render inline con bandera SVG
+//   2. Asset con archivo en /public/logos/{TICKER}.png → <img>
+//   3. is_cash sin asset identificable → icono Wallet (cash genérico)
+//   4. Asset sin archivo → fallback a iniciales con color hash
 //
-// Cero deps nuevas. Logos cacheados por el browser tras el primer load.
-// No hay rate limit relevante para use case web personal.
-//
-// Tamaños:
-//   • 32  → Positions table (default)
-//   • 24  → listas densas (atribución en /insights, drivers en /reportes)
-//   • >32 → cards destacadas
+// Antes el orden tenía is_cash ANTES del archivo, lo cual causaba que la
+// cash position USDT mostrara el Wallet en lugar del logo Tether real.
 
 import { useState } from 'react'
 import { Wallet } from 'lucide-react'
 
-// ════════════════════════════════════════════════════════════════════════════
-// Logos self-hosted. Todos los assets viven en /public/logos/{TICKER}.png
-// generados con scripts/download-logos.mjs (cero dependencia externa en
-// runtime). Si el archivo no existe (ticker raro / nuevo), el onError
-// dispara el fallback de iniciales.
-//
-// Fiat (USD, ARS) se renderiza INLINE como un círculo de color con '$' —
-// no requiere archivo PNG. USDT sí tiene archivo (vino de CoinCap, es el
-// logo de Tether). Eso da consistencia: USDT con su logo de marca real,
-// USD/ARS con render uniforme estilo "fiat icon".
-// ════════════════════════════════════════════════════════════════════════════
+// ─── Banderas inline ────────────────────────────────────────────────────────
+// SVGs simples y reconocibles para USD (bandera US) y ARS (bandera AR).
+// Inscritas dentro de un círculo via clipPath. Sin archivos, sin fetches.
 
-// Configs para monedas fiat — render inline en lugar de fetchear archivo.
-const FIAT = {
-  USD: { bg: '#2E7D5F', sym: '$' },  // verde dollar bill, sobrio
-  ARS: { bg: '#74ACDF', sym: '$' },  // celeste argentino (color bandera)
+function UsFlag({ size }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      aria-label="USD"
+      role="img"
+      className="flex-shrink-0"
+    >
+      <defs>
+        <clipPath id="usf-clip">
+          <circle cx="32" cy="32" r="32" />
+        </clipPath>
+      </defs>
+      <g clipPath="url(#usf-clip)">
+        {/* 13 rayas rojas y blancas */}
+        <rect width="64" height="64" fill="#B22234" />
+        <rect y="5" width="64" height="5" fill="#fff" />
+        <rect y="15" width="64" height="5" fill="#fff" />
+        <rect y="25" width="64" height="5" fill="#fff" />
+        <rect y="35" width="64" height="5" fill="#fff" />
+        <rect y="45" width="64" height="5" fill="#fff" />
+        <rect y="55" width="64" height="5" fill="#fff" />
+        {/* cantón azul superior izq con estrellas estilizadas */}
+        <rect width="28" height="32" fill="#3C3B6E" />
+        {/* 9 puntitos representando estrellas (3×3 grilla simplificada) */}
+        <g fill="#fff">
+          <circle cx="7"  cy="8"  r="1.4" />
+          <circle cx="14" cy="8"  r="1.4" />
+          <circle cx="21" cy="8"  r="1.4" />
+          <circle cx="7"  cy="16" r="1.4" />
+          <circle cx="14" cy="16" r="1.4" />
+          <circle cx="21" cy="16" r="1.4" />
+          <circle cx="7"  cy="24" r="1.4" />
+          <circle cx="14" cy="24" r="1.4" />
+          <circle cx="21" cy="24" r="1.4" />
+        </g>
+      </g>
+      <circle cx="32" cy="32" r="31" fill="none" stroke="rgba(0,0,0,0.08)" strokeWidth="1" />
+    </svg>
+  )
+}
+
+function ArFlag({ size }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      aria-label="ARS"
+      role="img"
+      className="flex-shrink-0"
+    >
+      <defs>
+        <clipPath id="arf-clip">
+          <circle cx="32" cy="32" r="32" />
+        </clipPath>
+      </defs>
+      <g clipPath="url(#arf-clip)">
+        <rect y="0"  width="64" height="22" fill="#74ACDF" />
+        <rect y="22" width="64" height="20" fill="#fff" />
+        <rect y="42" width="64" height="22" fill="#74ACDF" />
+        {/* Sol de mayo estilizado: círculo amarillo + rayos básicos */}
+        <circle cx="32" cy="32" r="6" fill="#F6B40E" />
+        <g stroke="#F6B40E" strokeWidth="1.2" strokeLinecap="round">
+          <line x1="32" y1="22" x2="32" y2="26" />
+          <line x1="32" y1="38" x2="32" y2="42" />
+          <line x1="22" y1="32" x2="26" y2="32" />
+          <line x1="38" y1="32" x2="42" y2="32" />
+          <line x1="25" y1="25" x2="27.5" y2="27.5" />
+          <line x1="36.5" y1="36.5" x2="39" y2="39" />
+          <line x1="25" y1="39" x2="27.5" y2="36.5" />
+          <line x1="36.5" y1="27.5" x2="39" y2="25" />
+        </g>
+      </g>
+      <circle cx="32" cy="32" r="31" fill="none" stroke="rgba(0,0,0,0.08)" strokeWidth="1" />
+    </svg>
+  )
+}
+
+const FIAT_RENDERERS = {
+  USD: UsFlag,
+  ARS: ArFlag,
 }
 
 function isFiat(asset) {
-  return !!FIAT[(asset || '').toUpperCase()]
+  return !!FIAT_RENDERERS[(asset || '').toUpperCase()]
 }
 
 // URL del logo. /logos/ se sirve desde public/ via Vite.
-// Devolvemos null para ticker vacío (cae al fallback directo).
 function logoUrlFor(asset) {
   if (!asset || typeof asset !== 'string') return null
   const clean = asset.trim().toUpperCase()
@@ -49,8 +114,7 @@ function logoUrlFor(asset) {
   return `/logos/${clean}.png`
 }
 
-// Hash determinístico para el color del fallback (mismo que el AssetAvatar
-// previo, así si el logo falla el ticker mantiene su color estable).
+// Hash determinístico para el color del fallback de iniciales.
 function colorClassesForTicker(asset) {
   const hash = (asset || '').split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
   const palette = [
@@ -65,32 +129,47 @@ function colorClassesForTicker(asset) {
 }
 
 export default function AssetLogo({ asset, isCash, size = 32, className = '' }) {
-  // El estado `failed` se setea cuando el browser dispara onError sobre el
-  // <img>. Ahí pintamos las iniciales con el color hash en su lugar.
   const [failed, setFailed] = useState(false)
-
   const px = `${size}px`
-
-  // Fiat (USD, ARS): render inline con $ sobre fondo de color — sin file fetch.
-  // Aplicamos esto incluso cuando isCash=true porque el cash de un broker
-  // USD se llama 'USD' y queremos el icono fiat (más claro que el Wallet
-  // genérico). Lo mismo con cash ARS y USDT (el ticker USDT tiene archivo).
   const clean = (asset || '').trim().toUpperCase()
+
+  // ─── 1. Fiat reconocido (USD, ARS) → bandera SVG inline ──────────────
   if (isFiat(clean)) {
-    const cfg = FIAT[clean]
+    const Renderer = FIAT_RENDERERS[clean]
     return (
       <div
-        className={`rounded-full flex items-center justify-center flex-shrink-0 font-bold ${className}`}
-        style={{ width: px, height: px, background: cfg.bg, color: 'white', fontSize: `${Math.round(size * 0.5)}px` }}
-        aria-label={clean}
-        role="img"
+        className={`flex-shrink-0 ${className}`}
+        style={{ width: px, height: px }}
       >
-        {cfg.sym}
+        <Renderer size={size} />
       </div>
     )
   }
 
-  // is_cash sin ticker fiat reconocido: icono Wallet (cash genérico)
+  // ─── 2. Asset con archivo en /logos/ → <img> con fallback ───────────
+  // OJO: este check va ANTES del isCash. Si la cash position es USDT,
+  // queremos el logo real de Tether (no el Wallet icon genérico).
+  const url = clean ? logoUrlFor(clean) : null
+  if (url && !failed) {
+    return (
+      <div
+        className={`rounded-full bg-white border border-line flex items-center justify-center overflow-hidden flex-shrink-0 ${className}`}
+        style={{ width: px, height: px }}
+      >
+        <img
+          src={url}
+          alt={asset}
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailed(true)}
+          className="object-contain"
+          style={{ width: '78%', height: '78%' }}
+        />
+      </div>
+    )
+  }
+
+  // ─── 3. Cash sin asset reconocible → Wallet icon ────────────────────
   if (isCash) {
     return (
       <div
@@ -107,46 +186,21 @@ export default function AssetLogo({ asset, isCash, size = 32, className = '' }) 
     )
   }
 
-  // Logo real con fallback a iniciales
-  const url = logoUrlFor(asset)
-  const initials = (asset || '?').slice(0, 2).toUpperCase()
-
-  if (!url || failed) {
-    // Fallback: iniciales con color hash (idéntico al AssetAvatar legacy)
-    const colors = colorClassesForTicker(asset)
-    return (
-      <div
-        className={`rounded-full border flex items-center justify-center flex-shrink-0 font-mono font-semibold tracking-tighter ${colors} ${className}`}
-        style={{
-          width: px,
-          height: px,
-          fontSize: `${Math.round(size * 0.32)}px`,
-        }}
-        aria-label={asset || 'Activo'}
-        role="img"
-      >
-        {initials}
-      </div>
-    )
-  }
-
-  // Wrapper circular + img inscrita al ~78%. Sin esto los logos rectangulares
-  // (Amazon, Intel, etc.) quedan recortados al circular y se ven zoomeados.
-  // El padding interno los inscribe con respiración alrededor.
+  // ─── 4. Asset sin archivo → iniciales con color hash ─────────────────
+  const initials = (clean || '?').slice(0, 2)
+  const colors = colorClassesForTicker(asset)
   return (
     <div
-      className={`rounded-full bg-white border border-line flex items-center justify-center overflow-hidden flex-shrink-0 ${className}`}
-      style={{ width: px, height: px }}
+      className={`rounded-full border flex items-center justify-center flex-shrink-0 font-mono font-semibold tracking-tighter ${colors} ${className}`}
+      style={{
+        width: px,
+        height: px,
+        fontSize: `${Math.round(size * 0.32)}px`,
+      }}
+      aria-label={asset || 'Activo'}
+      role="img"
     >
-      <img
-        src={url}
-        alt={asset}
-        loading="lazy"
-        decoding="async"
-        onError={() => setFailed(true)}
-        className="object-contain"
-        style={{ width: '78%', height: '78%' }}
-      />
+      {initials}
     </div>
   )
 }
