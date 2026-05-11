@@ -141,7 +141,8 @@ export default function Insights() {
       setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops)
 
       const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
-      const usdtBrokers = new Set(bkrs.filter(x => x.currency === 'USDT').map(x => x.name))
+      // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
+      const usdtBrokers = new Set(bkrs.filter(x => x.currency !== 'ARS').map(x => x.name))
       const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
       const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
       const all = [...arsSyms, ...usdtSyms].join(',')

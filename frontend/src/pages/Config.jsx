@@ -139,6 +139,7 @@ export default function Config() {
                       className={selectClass}
                     >
                       <option value="USDT">USDT</option>
+                      <option value="USD">USD</option>
                       <option value="ARS">ARS</option>
                     </select>
                     <button type="submit" className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-md">OK</button>
@@ -151,6 +152,8 @@ export default function Config() {
                       <span className={`ml-2 text-xs px-1.5 py-0.5 rounded font-medium ${
                         b.currency === 'ARS'
                           ? 'bg-violet-500/20 text-violet-600 dark:text-violet-400'
+                          : b.currency === 'USD'
+                          ? 'bg-rendi-pos/20 text-rendi-pos'
                           : 'bg-blue-500/20 text-blue-600 dark:text-blue-400'
                       }`}>{b.currency}</span>
                     </div>
@@ -187,6 +190,7 @@ export default function Config() {
               className={selectClass}
             >
               <option value="USDT">USDT</option>
+              <option value="USD">USD</option>
               <option value="ARS">ARS</option>
             </select>
           </div>
@@ -197,9 +201,10 @@ export default function Config() {
             <Plus size={14} /> Agregar
           </button>
         </form>
-        <p className="text-xs text-slate-400 dark:text-slate-500 mt-3">
-          <span className="text-blue-600 dark:text-blue-400 font-medium">USDT</span> · precios en USD (Binance, exchanges crypto) ·
-          <span className="text-violet-600 dark:text-violet-400 font-medium ml-1">ARS</span> · precios en pesos, convertidos a USD según el blue (Cocos, IOL y similares).
+        <p className="text-xs text-slate-400 dark:text-slate-500 mt-3 leading-relaxed">
+          <span className="text-blue-600 dark:text-blue-400 font-medium">USDT</span> · exchanges crypto (Binance) ·
+          <span className="text-rendi-pos font-medium ml-1">USD</span> · brokers tradicionales en dólares (Interactive Brokers, Schwab) ·
+          <span className="text-violet-600 dark:text-violet-400 font-medium ml-1">ARS</span> · brokers en pesos, convertidos a USD según el blue (Cocos, IOL).
         </p>
       </div>
 

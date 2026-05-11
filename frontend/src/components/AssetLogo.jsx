@@ -23,7 +23,22 @@ import { Wallet } from 'lucide-react'
 // generados con scripts/download-logos.mjs (cero dependencia externa en
 // runtime). Si el archivo no existe (ticker raro / nuevo), el onError
 // dispara el fallback de iniciales.
+//
+// Fiat (USD, ARS) se renderiza INLINE como un círculo de color con '$' —
+// no requiere archivo PNG. USDT sí tiene archivo (vino de CoinCap, es el
+// logo de Tether). Eso da consistencia: USDT con su logo de marca real,
+// USD/ARS con render uniforme estilo "fiat icon".
 // ════════════════════════════════════════════════════════════════════════════
+
+// Configs para monedas fiat — render inline en lugar de fetchear archivo.
+const FIAT = {
+  USD: { bg: '#2E7D5F', sym: '$' },  // verde dollar bill, sobrio
+  ARS: { bg: '#74ACDF', sym: '$' },  // celeste argentino (color bandera)
+}
+
+function isFiat(asset) {
+  return !!FIAT[(asset || '').toUpperCase()]
+}
 
 // URL del logo. /logos/ se sirve desde public/ via Vite.
 // Devolvemos null para ticker vacío (cae al fallback directo).
@@ -56,7 +71,26 @@ export default function AssetLogo({ asset, isCash, size = 32, className = '' }) 
 
   const px = `${size}px`
 
-  // is_cash: icono Wallet — no es activo de mercado, no tiene logo
+  // Fiat (USD, ARS): render inline con $ sobre fondo de color — sin file fetch.
+  // Aplicamos esto incluso cuando isCash=true porque el cash de un broker
+  // USD se llama 'USD' y queremos el icono fiat (más claro que el Wallet
+  // genérico). Lo mismo con cash ARS y USDT (el ticker USDT tiene archivo).
+  const clean = (asset || '').trim().toUpperCase()
+  if (isFiat(clean)) {
+    const cfg = FIAT[clean]
+    return (
+      <div
+        className={`rounded-full flex items-center justify-center flex-shrink-0 font-bold ${className}`}
+        style={{ width: px, height: px, background: cfg.bg, color: 'white', fontSize: `${Math.round(size * 0.5)}px` }}
+        aria-label={clean}
+        role="img"
+      >
+        {cfg.sym}
+      </div>
+    )
+  }
+
+  // is_cash sin ticker fiat reconocido: icono Wallet (cash genérico)
   if (isCash) {
     return (
       <div
