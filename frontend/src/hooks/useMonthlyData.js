@@ -35,6 +35,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
+import { computeBrokerValue } from '../utils/valuation'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -59,10 +60,27 @@ function statusFromPct(deltaPct) {
   return 'difficult'
 }
 
-export default function useMonthlyData() {
+/**
+ * Hook principal del módulo de reportes mensuales.
+ * Acepta un filtro por broker para que el usuario pueda alternar entre:
+ *   • 'global'     → rollup de todos los brokers (default)
+ *   • 'Binance'    → solo ese broker
+ *   • 'Cocos'      → etc.
+ *
+ * Cuando el broker es individual, el cálculo del live value usa
+ * computeBrokerValue (no el snapshot global). Snapshots solo se desglosan
+ * por día a nivel portfolio, así que las sparklines por broker no son
+ * posibles hoy — quedan ocultas (sprint aparte agrega snapshot_per_broker).
+ */
+export default function useMonthlyData({ broker = 'global' } = {}) {
   const [monthly, setMonthly] = useState([])
   const [operations, setOperations] = useState([])
   const [snapshots, setSnapshots] = useState([])
+  // Para el live por broker
+  const [positions, setPositions] = useState([])
+  const [prices, setPrices] = useState({})
+  const [brokers, setBrokers] = useState([])
+  const [tcBlue, setTcBlue] = useState(1415)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -70,18 +88,38 @@ export default function useMonthlyData() {
     let cancelled = false
     async function load() {
       try {
-        const [mon, ops, snaps] = await Promise.all([
+        const [mon, ops, snaps, pos, bkrs, cfg, dol] = await Promise.all([
           api.get('/monthly').catch(() => []),
           api.get('/operations').catch(() => []),
           // 3650 días = ~10 años. Necesitamos toda la historia para sparkline
           // por mes y para que el snapshot 'más reciente' siempre sea live.
           api.get('/snapshots?days=3650').catch(() => []),
+          api.get('/positions').catch(() => []),
+          api.get('/brokers').catch(() => []),
+          api.get('/config').catch(() => ({ tc_blue: 1415 })),
+          api.get('/dolar').catch(() => null),
         ])
         if (cancelled) return
         setMonthly(mon || [])
         setOperations(ops || [])
         setSnapshots(snaps || [])
-        setLoading(false)
+        setPositions(pos || [])
+        setBrokers(bkrs || [])
+        const tc = dol?.blue?.venta || cfg?.tc_blue || 1415
+        setTcBlue(tc)
+        // Cargar precios para que el live value por broker sea exacto
+        const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
+        const usdtBrokers = new Set((bkrs || []).filter(b => b.currency === 'USDT').map(b => b.name))
+        const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
+        const usdtSyms = [...new Set((pos || []).filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
+        const all = [...arsSyms, ...usdtSyms].join(',')
+        if (all) {
+          try {
+            const px = await api.get(`/prices?symbols=${all}`)
+            if (!cancelled) setPrices(px || {})
+          } catch {}
+        }
+        if (!cancelled) setLoading(false)
       } catch (e) {
         if (cancelled) return
         setError(e.message || 'No pudimos cargar los reportes')
@@ -92,21 +130,33 @@ export default function useMonthlyData() {
     return () => { cancelled = true }
   }, [])
 
+  // Brokers disponibles para el selector (excluye 'global' que es siempre default)
+  const availableBrokers = useMemo(() => {
+    const set = new Set()
+    for (const m of monthly) {
+      if (m.broker && m.broker !== 'global') set.add(m.broker)
+    }
+    return [...set].sort()
+  }, [monthly])
+
   const data = useMemo(
-    () => buildMonthlyReports(monthly, operations, snapshots),
-    [monthly, operations, snapshots]
+    () => buildMonthlyReports(monthly, operations, snapshots, broker, {
+      positions, prices, brokers, tcBlue,
+    }),
+    [monthly, operations, snapshots, broker, positions, prices, brokers, tcBlue]
   )
 
-  return { loading, error, ...data }
+  return { loading, error, ...data, availableBrokers }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
 // Lógica pura — testeable y separada del fetching
 // ────────────────────────────────────────────────────────────────────────────
 
-export function buildMonthlyReports(monthly, operations, snapshots = []) {
-  // 1. Tomar solo entries 'global' (rollup de todos los brokers)
-  const globalEntries = (monthly || []).filter(m => m.broker === 'global')
+export function buildMonthlyReports(monthly, operations, snapshots = [], selectedBroker = 'global', context = {}) {
+  // 1. Filtrar entries según el broker activo. 'global' = rollup, otros son
+  // los brokers individuales que el usuario configuró.
+  const globalEntries = (monthly || []).filter(m => m.broker === selectedBroker)
 
   // 2. Indexar por 'YYYY-MM' para lookup O(1)
   const entriesByPeriod = new Map()
@@ -115,9 +165,13 @@ export function buildMonthlyReports(monthly, operations, snapshots = []) {
     entriesByPeriod.set(period, e)
   }
 
-  // 3. Calcular pnl_realized derivado por mes desde operations
-  // (solo trades cerrados — espejo de Insights.jsx)
-  const tradeOps = (operations || []).filter(isTradeOp)
+  // 3. Calcular pnl_realized derivado por mes desde operations.
+  // Si el filtro es un broker individual, solo contamos ops de ese broker.
+  // Para 'global' usamos todas las ops (rollup).
+  const opsForBroker = selectedBroker === 'global'
+    ? (operations || [])
+    : (operations || []).filter(o => o.broker === selectedBroker)
+  const tradeOps = opsForBroker.filter(isTradeOp)
   const realizedByPeriod = new Map()
   for (const op of tradeOps) {
     if (!op.date || op.pnl_usd == null) continue
@@ -129,21 +183,26 @@ export function buildMonthlyReports(monthly, operations, snapshots = []) {
   // 4. Unión de períodos: meses con entry O con ops cerradas
   const allPeriods = new Set([...entriesByPeriod.keys(), ...realizedByPeriod.keys()])
   if (allPeriods.size === 0) {
-    return { years: [], hasAnyData: false }
+    return { years: [], hasAnyData: false, selectedBroker, liveValue: null, liveDate: null }
   }
 
   // 5. Indexar snapshots por mes para sparklines + lookup del valor live.
   // Cada snapshot tiene shape { date: 'YYYY-MM-DD', total_value, ... }.
+  // OJO: los snapshots son del portfolio TOTAL (no desglosados por broker).
+  // Cuando hay filtro de broker individual, NO podemos usar snapshots
+  // porque serían engañosos (mostrarían evolución global, no del broker).
+  // En ese caso pasamos un map vacío para que las sparklines no se rendereen.
   const snapsByMonth = new Map()
-  for (const s of (snapshots || [])) {
-    if (!s.date || s.total_value == null) continue
-    const period = s.date.slice(0, 7)
-    if (!snapsByMonth.has(period)) snapsByMonth.set(period, [])
-    snapsByMonth.get(period).push(s)
-  }
-  // Cada array dentro de snapsByMonth queda ordenado por fecha ascendente.
-  for (const arr of snapsByMonth.values()) {
-    arr.sort((a, b) => a.date.localeCompare(b.date))
+  if (selectedBroker === 'global') {
+    for (const s of (snapshots || [])) {
+      if (!s.date || s.total_value == null) continue
+      const period = s.date.slice(0, 7)
+      if (!snapsByMonth.has(period)) snapsByMonth.set(period, [])
+      snapsByMonth.get(period).push(s)
+    }
+    for (const arr of snapsByMonth.values()) {
+      arr.sort((a, b) => a.date.localeCompare(b.date))
+    }
   }
 
   // 6. Construir lista de meses
@@ -230,14 +289,31 @@ export function buildMonthlyReports(monthly, operations, snapshots = []) {
     byYear.get(m.year).push(m)
   }
 
-  // 8. Tomar el snapshot más reciente como `liveValue` global. Lo usamos para
-  // que el YTD del año en curso refleje el valor actual del portfolio
-  // (alineado al Dashboard), no el último capital_final manual cerrado.
-  const latestSnap = (snapshots || [])
-    .filter(s => s.date && s.total_value != null)
-    .sort((a, b) => b.date.localeCompare(a.date))[0]
-  const liveValue = latestSnap?.total_value ?? null
-  const liveDate = latestSnap?.date ?? null
+  // 8. Live value:
+  //   • Broker 'global'   → snapshot más reciente (consistente con Dashboard)
+  //   • Broker individual → computeBrokerValue del broker en USD
+  //                         (requiere positions + prices + tcBlue del context)
+  let liveValue = null
+  let liveDate = null
+  if (selectedBroker === 'global') {
+    const latestSnap = (snapshots || [])
+      .filter(s => s.date && s.total_value != null)
+      .sort((a, b) => b.date.localeCompare(a.date))[0]
+    liveValue = latestSnap?.total_value ?? null
+    liveDate = latestSnap?.date ?? null
+  } else if (context.positions && context.brokers && context.tcBlue) {
+    const brokerObj = context.brokers.find(b => b.name === selectedBroker)
+    if (brokerObj) {
+      try {
+        const r = computeBrokerValue(context.positions, context.prices || {}, brokerObj, context.tcBlue)
+        liveValue = r.value
+        // No tenemos liveDate por broker (sería del momento del fetch),
+        // así que lo dejamos null y la UI no muestra fecha en ese caso.
+      } catch {
+        liveValue = null
+      }
+    }
+  }
   const todayYear = new Date().getFullYear()
 
   // 9. Construir struct anual con summary del año
@@ -339,5 +415,6 @@ export function buildMonthlyReports(monthly, operations, snapshots = []) {
     hasAnyData: years.length > 0,
     liveValue,
     liveDate,
+    selectedBroker,
   }
 }

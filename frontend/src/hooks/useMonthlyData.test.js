@@ -278,6 +278,95 @@ describe('buildMonthlyReports', () => {
     expect(may.isLive).toBeFalsy()
   })
 
+  // ─── Filtro por broker ───────────────────────────────────────────────────
+  describe('broker filter', () => {
+    const monthlyMix = [
+      // global rollup
+      { year: 2026, month: 5, broker: 'global', capital_inicio: 7000, capital_final: 8000, deposits: 200, pnl_realized: 800 },
+      // por broker individual
+      { year: 2026, month: 5, broker: 'Binance', capital_inicio: 3000, capital_final: 3500, deposits: 100, pnl_realized: 400 },
+      { year: 2026, month: 5, broker: 'Cocos',   capital_inicio: 4000, capital_final: 4500, deposits: 100, pnl_realized: 400 },
+    ]
+
+    it('default broker="global" usa solo entries con broker=global', () => {
+      const out = buildMonthlyReports(monthlyMix, [])
+      expect(out.years[0].months[0].startUsd).toBe(7000)
+      expect(out.years[0].months[0].endUsd).toBe(8000)
+    })
+
+    it('filtro broker="Binance" usa solo entries de Binance', () => {
+      const out = buildMonthlyReports(monthlyMix, [], [], 'Binance')
+      expect(out.years[0].months[0].startUsd).toBe(3000)
+      expect(out.years[0].months[0].endUsd).toBe(3500)
+    })
+
+    it('filtro broker="Cocos" usa solo entries de Cocos', () => {
+      const out = buildMonthlyReports(monthlyMix, [], [], 'Cocos')
+      expect(out.years[0].months[0].startUsd).toBe(4000)
+      expect(out.years[0].months[0].endUsd).toBe(4500)
+    })
+
+    it('al filtrar por broker, las operations también se filtran', () => {
+      const out = buildMonthlyReports(
+        [],
+        [
+          { date: '2026-05-10', broker: 'Binance', op_type: 'Venta', pnl_usd: 100 },
+          { date: '2026-05-15', broker: 'Cocos',   op_type: 'Venta', pnl_usd: 200 },
+        ],
+        [],
+        'Binance'
+      )
+      expect(out.years[0].months[0].deltaUsd).toBe(100)
+    })
+
+    it('al filtrar por global, todas las operations cuentan', () => {
+      const out = buildMonthlyReports(
+        [],
+        [
+          { date: '2026-05-10', broker: 'Binance', op_type: 'Venta', pnl_usd: 100 },
+          { date: '2026-05-15', broker: 'Cocos',   op_type: 'Venta', pnl_usd: 200 },
+        ],
+        [],
+        'global'
+      )
+      expect(out.years[0].months[0].deltaUsd).toBe(300)
+    })
+
+    it('selectedBroker se expone en el return para que la UI sepa el filtro activo', () => {
+      const out = buildMonthlyReports([], [], [], 'Cocos')
+      expect(out.selectedBroker).toBe('Cocos')
+    })
+
+    it('sparklines se OMITEN cuando hay filtro de broker (snapshots son globales)', () => {
+      const out = buildMonthlyReports(
+        monthlyMix,
+        [],
+        [
+          { date: '2026-05-01', total_value: 7000 },
+          { date: '2026-05-15', total_value: 7500 },
+          { date: '2026-05-30', total_value: 8000 },
+        ],
+        'Binance'
+      )
+      // Aunque hay 3 snapshots, no se asocian al mes porque el filtro es
+      // por broker — los snapshots son del portfolio total, no del broker.
+      expect(out.years[0].months[0].sparkline).toBeNull()
+    })
+
+    it('sparklines SÍ se asocian con filtro=global (default)', () => {
+      const out = buildMonthlyReports(
+        monthlyMix,
+        [],
+        [
+          { date: '2026-05-01', total_value: 7000 },
+          { date: '2026-05-30', total_value: 8000 },
+        ]
+        // sin selectedBroker → 'global'
+      )
+      expect(out.years[0].months[0].sparkline).toHaveLength(2)
+    })
+  })
+
   it('flows del año descontados del YTD para que coincida con Dashboard', () => {
     const todayYear = new Date().getFullYear()
     const out = buildMonthlyReports(

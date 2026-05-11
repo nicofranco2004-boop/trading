@@ -14,7 +14,7 @@
 // Por ahora el modal muestra info básica.
 
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, ArrowRight, ChevronDown, ChevronUp,
   X, Sparkles, Settings, AlertCircle,
@@ -52,7 +52,19 @@ function deltaColor(deltaUsd) {
 // Componente principal
 // ════════════════════════════════════════════════════════════════════════════
 export default function MonthlyReports() {
-  const { loading, error, years, hasAnyData } = useMonthlyData()
+  // El broker activo se sincroniza con la URL (?broker=Cocos). Si no hay
+  // param, default = 'global' (rollup). Esto permite linkear directamente
+  // a una vista filtrada y mantiene el estado al refrescar / back-forward.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const broker = searchParams.get('broker') || 'global'
+  const setBroker = (next) => {
+    const params = new URLSearchParams(searchParams)
+    if (next === 'global') params.delete('broker')
+    else params.set('broker', next)
+    setSearchParams(params, { replace: true })
+  }
+
+  const { loading, error, years, hasAnyData, availableBrokers } = useMonthlyData({ broker })
   // Año actual (más reciente) arranca expandido
   const [expandedYear, setExpandedYear] = useState(null)
   const [selectedMonth, setSelectedMonth] = useState(null)
@@ -120,7 +132,7 @@ export default function MonthlyReports() {
         subtitle="Cómo se comportó tu portfolio mes a mes — performance, drivers e insights por período."
         action={
           <Link
-            to="/mensual"
+            to={broker === 'global' ? '/mensual' : `/mensual?broker=${encodeURIComponent(broker)}`}
             className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-sm bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 transition"
           >
             <Settings size={12} strokeWidth={1.75} aria-hidden="true" />
@@ -129,12 +141,24 @@ export default function MonthlyReports() {
         }
       />
 
+      {/* Tabs de broker — solo aparecen si el user tiene al menos 1 broker
+          configurado en monthly_entries (además del rollup 'global'). */}
+      {availableBrokers.length > 0 && (
+        <BrokerTabs
+          options={['global', ...availableBrokers]}
+          active={broker}
+          onChange={setBroker}
+        />
+      )}
+
       {/* ─── HERO YTD del año actual ────────────────────────────────── */}
       {hasManualData && (
         <div className="mb-8">
           <StatCard
             tone="hero"
-            label={`Rendimiento ${currentYear.year}`}
+            label={broker === 'global'
+              ? `Rendimiento ${currentYear.year}`
+              : `Rendimiento ${currentYear.year} · ${broker}`}
             value={fmtUsd(currentYear.endUsd)}
             sub={
               <span className="inline-flex items-center gap-3 flex-wrap">
@@ -191,7 +215,7 @@ export default function MonthlyReports() {
 
       {/* ─── MODAL DETALLE MENSUAL (Fase B: drivers + benchmarks) ──── */}
       {selectedMonth && (
-        <MonthDetailModal month={selectedMonth} onClose={() => setSelectedMonth(null)} />
+        <MonthDetailModal month={selectedMonth} broker={broker} onClose={() => setSelectedMonth(null)} />
       )}
     </div>
   )
@@ -331,7 +355,7 @@ function MonthCard({ month, onClick }) {
 // MonthDetailModal (Fase A: solo el resumen base; drivers/benchmarks/chart
 // llegan en Fase B cuando tengamos los cálculos por mes)
 // ════════════════════════════════════════════════════════════════════════════
-function MonthDetailModal({ month, onClose }) {
+function MonthDetailModal({ month, broker, onClose }) {
   const isPositive = month.deltaUsd >= 0
   const isManual = month.source === 'manual'
 
@@ -346,7 +370,7 @@ function MonthDetailModal({ month, onClose }) {
       >
         <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-200 dark:border-line flex-shrink-0">
           <div className="min-w-0">
-            <p className="eyebrow mb-1">Reporte mensual</p>
+            <p className="eyebrow mb-1">Reporte mensual{broker && broker !== 'global' ? ` · ${broker}` : ''}</p>
             <h2 className="text-xl font-semibold text-ink-0">{month.name} {month.year}</h2>
           </div>
           <button onClick={onClose} className="text-ink-3 hover:text-ink-0 -mt-1 -mr-1 p-1" aria-label="Cerrar reporte">
@@ -407,7 +431,7 @@ function MonthDetailModal({ month, onClose }) {
                   <p className="text-ink-2">Para ver delta real, capital invertido y rendimiento porcentual, cerrá el mes desde Cierre mensual.</p>
                 </div>
                 <Link
-                  to="/mensual"
+                  to={broker === 'global' ? '/mensual' : `/mensual?broker=${encodeURIComponent(broker)}`}
                   className="flex-shrink-0 inline-flex items-center gap-1 text-xs text-rendi-accent hover:underline"
                   onClick={onClose}
                 >
@@ -442,6 +466,42 @@ function Metric({ label, value, positive }) {
     <div className="bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-line rounded p-3">
       <p className="label-mono mb-1">{label}</p>
       <p className={`text-sm font-semibold tabular ${color}`}>{value}</p>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// BrokerTabs — segmented control para alternar entre 'global' y cada broker
+// individual. El control se muestra solo si el user tiene >=1 broker en
+// monthly_entries (además de 'global'). Sigue la convención de label-mono
+// del resto del sistema.
+// ════════════════════════════════════════════════════════════════════════════
+function BrokerTabs({ options, active, onChange }) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Filtrar por broker"
+      className="mb-6 inline-flex bg-slate-100 dark:bg-bg-2 border border-slate-200 dark:border-line p-0.5 rounded-sm overflow-x-auto"
+    >
+      {options.map(opt => {
+        const isActive = opt === active
+        const label = opt === 'global' ? 'Global' : opt
+        return (
+          <button
+            key={opt}
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onChange(opt)}
+            className={`px-3 py-1.5 text-xs font-mono uppercase tracking-[0.12em] rounded-sm transition-colors whitespace-nowrap ${
+              isActive
+                ? 'bg-white dark:bg-bg-3 text-slate-900 dark:text-ink-0'
+                : 'text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0'
+            }`}
+          >
+            {label}
+          </button>
+        )
+      })}
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Plus, Pencil, Trash2, Lock, ChevronRight, CalendarClock, Eye, EyeOff } from 'lucide-react'
 import Modal from './Modal'
 import Card from './Card'
@@ -37,9 +38,14 @@ function nextMonthOf(entry) {
 }
 
 export default function MonthlySummary({ refreshKey = 0 } = {}) {
+  // Deeplink desde /reportes?broker=Cocos → abrir el tab de Cocos por default.
+  // Si el param no matchea con los brokers cargados, queda en 'global'.
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('broker') || 'global'
+
   const [entries, setEntries] = useState([])
   const [brokers, setBrokers] = useState([])
-  const [tab, setTab] = useState('global')
+  const [tab, setTab] = useState(initialTab)
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [closingEntry, setClosingEntry] = useState(null)
