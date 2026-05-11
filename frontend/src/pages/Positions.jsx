@@ -119,6 +119,9 @@ export default function Positions() {
       broker: p.broker,
       brokerCurrency: broker?.currency || 'USDT',
       asset: p.asset,
+      // Phase 3D: pasamos la posición para que el modal pueda pre-llenar la
+      // fecha + monto estimado del próximo pago según el cronograma.
+      position: p,
     })
   }
 
@@ -172,29 +175,59 @@ export default function Positions() {
   }
 
   // Índice por `${broker}:${asset}` con totales y lista cronológica de cobranzas.
-  // Esto alimenta el panel expandible + el cálculo de P&L "incluyendo cupones".
+  // Phase 3D: además del total en moneda nativa, calcula el total convertido
+  // a USD canónico usando operations.fx_to_usd cuando está stampado (PR #11),
+  // o fallback al blue actual con warning si la op es legacy sin FX.
   const bondCashflowsByKey = useMemo(() => {
     const map = new Map()
     for (const op of bondOps) {
       const key = `${op.broker}:${op.asset}`
-      if (!map.has(key)) map.set(key, { ops: [], coupons: 0, amortizations: 0, total: 0 })
+      if (!map.has(key)) map.set(key, {
+        ops: [],
+        coupons: 0,            // total en moneda nativa
+        amortizations: 0,
+        total: 0,
+        totalUsd: 0,           // total convertido a USD canónico
+        couponsUsd: 0,
+        amortizationsUsd: 0,
+        hasLegacyOps: false,   // true si alguna op carece de fx_to_usd
+        currency: op.currency || null,  // primera op define la moneda
+      })
       const entry = map.get(key)
       entry.ops.push(op)
-      // pnl_usd guarda el monto neto acreditado (positivo). En ARS brokers
-      // el campo está en ARS — la moneda la sabemos por el broker, no la
-      // mezclamos. El frontend usa este número tal cual para mostrar el total
-      // en la misma moneda en que se cargó.
       const amt = +op.pnl_usd || 0
       entry.total += amt
-      if (op.op_type === 'Cupón') entry.coupons += amt
-      else entry.amortizations += amt
+
+      // Conversión a USD: fx_to_usd stampado en op (Phase 3D), o fallback.
+      let fx = op.fx_to_usd
+      if (fx == null || fx <= 0) {
+        entry.hasLegacyOps = true
+        // Fallback heurístico: si la moneda nativa es ARS, dividir por blue
+        // actual (conservador — el blue actual ≠ blue del día del evento, pero
+        // ≈ MEP-equivalente). Si es USD/USDT, fx = 1.
+        if (op.currency === 'ARS' || (op.currency == null && amt > 1000)) {
+          fx = 1 / (tcBlue || 1)
+        } else {
+          fx = 1.0
+        }
+      }
+      const amtUsd = amt * fx
+      entry.totalUsd += amtUsd
+
+      if (op.op_type === 'Cupón') {
+        entry.coupons += amt
+        entry.couponsUsd += amtUsd
+      } else {
+        entry.amortizations += amt
+        entry.amortizationsUsd += amtUsd
+      }
     }
     // Ordenar por fecha desc (más reciente primero)
     for (const v of map.values()) {
       v.ops.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
     }
     return map
-  }, [bondOps])
+  }, [bondOps, tcBlue])
 
   async function fetchPrices(pos, cfg, bkrs) {
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
@@ -771,6 +804,7 @@ export default function Positions() {
                             summary={bondSummary}
                             isARS={true}
                             currentPrice={c.priceArs}
+                            tcMep={tcMep}
                             cerSeries={cerSeries}
                             cerStale={cerStale}
                             onAddCoupon={() => openBondCashflow(p, 'coupon')}
@@ -905,6 +939,7 @@ export default function Positions() {
                           summary={bondSummary}
                           isARS={false}
                           currentPrice={c.price}
+                          tcMep={tcMep}
                           cerSeries={cerSeries}
                           cerStale={cerStale}
                           onAddCoupon={() => openBondCashflow(p, 'coupon')}
@@ -1048,6 +1083,7 @@ export default function Positions() {
           broker={bondCashflow.broker}
           brokerCurrency={bondCashflow.brokerCurrency}
           asset={bondCashflow.asset}
+          position={bondCashflow.position}
           onClose={() => setBondCashflow(null)}
           onSuccess={onBondCashflowSuccess}
         />
@@ -1361,7 +1397,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
 // Convención para TIR: usamos `currentPrice × 100` como precio por 100 nominal,
 // asumiendo qty=nominales-individuales (1 nominal = 1 USD/ARS de face value).
 // Para ETFs y bonos sin maturity, omitimos TIR.
-function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, cerStale, onAddCoupon, onAddAmortization }) {
+function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSeries, cerStale, onAddCoupon, onAddAmortization }) {
   const meta = getBondMeta(p.asset)
   const moneyLabel = isARS ? 'ARS' : 'USD'
   const fmt = isARS ? ars : usd
@@ -1369,25 +1405,51 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
   const coupons = summary?.coupons || 0
   const amortizations = summary?.amortizations || 0
   const total = summary?.total || 0
+  // Phase 3D: si el broker es ARS y los cobranzas se convirtieron a USD via
+  // fx_to_usd stampado (o fallback al blue), mostramos también el equivalente
+  // USD. Útil para reportes consolidados.
+  const totalUsd = summary?.totalUsd || 0
+  const hasLegacyOps = summary?.hasLegacyOps || false
   const ops = summary?.ops || []
   const recoveryPct = invested > 0 ? (total / invested) : 0
 
-  // ── Fase 2+3A+3C: schedule + TIR + próximo pago ──────────────────────────
+  // ── Fase 2+3A+3C+3D: schedule + TIR + próximo pago ───────────────────────
   // Esto SOLO aplica a bonos con maturity definida en bondMeta. ETFs y
   // tickers sin metadata caen en el fallback de Fase 1.
   //
-  // Phase 3C: si el bono es CER (meta.type === 'cer'), pasamos la serie CER
-  // al motor para que ajuste capital + cupones. Si cerSeries aún no llegó
-  // (state null o vacío), el motor cae a comportamiento nominal con warning
-  // visual.
+  // Phase 3C: ajuste CER (capital indexado por inflación) para bonos
+  // type='cer' cuando la serie está disponible.
+  //
+  // Phase 3D — Cross-currency (fix C5 del audit):
+  // Para un bono USD comprado en broker ARS, currentPrice viene en pesos
+  // (lo que cotiza AL30 en BYMA). El schedule está en USD. Para que la
+  // TIR sea coherente, convertimos el precio ARS → USD vía MEP (el dolar
+  // financiero implícito en bonos hard-dollar). Sin MEP cargado, fallback
+  // al blue con warning.
   const today = new Date().toISOString().slice(0, 10)
   const cerOpts = (meta?.type === 'cer' && cerSeries && Object.keys(cerSeries).length > 0)
     ? { cerSeries }
     : {}
   const fullSchedule = generateSchedule(p.asset, cerOpts)
   const remaining = fullSchedule ? getRemainingPayments(p.asset, today, cerOpts) : null
-  const pricePer100Clean = currentPrice != null && currentPrice > 0
-    ? currentPrice * 100
+
+  const bondCurrency = meta?.currency || 'USD'
+  const brokerCurrency = isARS ? 'ARS' : 'USD'
+  const isCrossCurrency = bondCurrency !== brokerCurrency
+  // Si hay cross-currency, normalizar precio a moneda del bono.
+  let priceInBondCurrency = currentPrice
+  let priceConversion = null
+  if (isCrossCurrency && currentPrice != null && currentPrice > 0) {
+    if (bondCurrency === 'USD' && brokerCurrency === 'ARS' && tcMep) {
+      priceInBondCurrency = currentPrice / tcMep
+      priceConversion = { from: 'ARS', to: 'USD', rate: tcMep, type: 'MEP' }
+    } else if (bondCurrency === 'ARS' && brokerCurrency === 'USD' && tcMep) {
+      priceInBondCurrency = currentPrice * tcMep
+      priceConversion = { from: 'USD', to: 'ARS', rate: tcMep, type: 'MEP' }
+    }
+  }
+  const pricePer100Clean = priceInBondCurrency != null && priceInBondCurrency > 0
+    ? priceInBondCurrency * 100
     : null
   const yieldDetail = pricePer100Clean != null
     ? estimateYieldDetailed(p.asset, pricePer100Clean, today, cerOpts)
@@ -1483,6 +1545,13 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
                   {coupons > 0 && amortizations > 0 && ' · '}
                   {amortizations > 0 && <>Amortizaciones: {moneyLabel} {fmt(amortizations)}</>}
                 </p>
+                {/* Phase 3D: equivalente USD canónico. Si hay ops legacy sin
+                    fx_to_usd stampado, indicamos que es aproximado. */}
+                {isARS && totalUsd > 0 && (
+                  <p className="text-[10px] text-ink-3 font-mono">
+                    ≈ USD {usd(totalUsd)} {hasLegacyOps && <span className="text-rendi-warn">(aprox — algunas ops sin FX stampado)</span>}
+                  </p>
+                )}
                 {invested > 0 && (
                   <p className="text-xs text-rendi-accent font-semibold">
                     {pctSigned(recoveryPct)} del capital recuperado
@@ -1529,9 +1598,9 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
                   <p className="text-lg font-bold tabular text-ink-0">
                     {pctSigned(yieldEstimate)} <span className="text-xs font-normal text-ink-2">TIR ef. anual</span>
                   </p>
-                  {/* Phase 3A: metadata transparente — convención usada, dirty/clean,
-                      accrued, método de convergencia. Si el user duda del número,
-                      ve exactamente por qué se calculó así. */}
+                  {/* Phase 3A: metadata transparente. Phase 3D: si hay conversión
+                      cross-currency, mostrarla también para que el user entienda
+                      por qué la TIR no coincide con un cálculo "ARS vs USD" naïve. */}
                   <p className="text-[10px] text-ink-3 font-mono leading-snug">
                     Convención: {yieldDetail.dayCount}
                     {yieldDetail.accrued > 0.01 && (
@@ -1544,9 +1613,16 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
                       <span className="text-rendi-warn"> · ⚠ aproximada</span>
                     )}
                   </p>
+                  {priceConversion && (
+                    <p className="text-[10px] text-rendi-accent font-mono leading-snug">
+                      ✓ Precio convertido {priceConversion.from} → {priceConversion.to} al {priceConversion.type} {priceConversion.rate.toFixed(2)}
+                    </p>
+                  )}
                   <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    Asume qty = nominales VN, precio entrado por nominal en moneda del bono.
-                    Refiná el "precio override" si difiere del que ves en el broker.
+                    Asume qty = nominales VN, precio entrado por nominal en moneda del broker.
+                    {isCrossCurrency && !priceConversion && (
+                      <span className="text-rendi-warn"> ⚠ Bono {bondCurrency} en broker {brokerCurrency} sin MEP disponible — TIR puede estar distorsionada.</span>
+                    )}
                   </p>
                 </>
               ) : (

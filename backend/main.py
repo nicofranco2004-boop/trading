@@ -314,6 +314,21 @@ def init_db():
     cols = _table_cols(conn, 'operations')
     if cols and 'notes' not in cols:
         conn.execute("ALTER TABLE operations ADD COLUMN notes TEXT")
+    # Migración Phase 3D: tracking de moneda nativa y FX al momento del evento.
+    # Esto permite convertir operations.pnl_usd (que históricamente guardaba
+    # el monto en moneda del broker, no necesariamente USD) a un USD canónico
+    # consistente para reportes cross-broker / cross-currency.
+    #   • currency: 'ARS' | 'USD' | 'USDT' | 'EUR' (futuras). Moneda nativa del flujo.
+    #   • fx_to_usd: factor de conversión nativa→USD al momento del evento.
+    #     - ARS broker recibiendo cupón ARS de bono USD: fx_to_usd = MEP del día.
+    #     - ARS broker recibiendo cupón ARS de bono ARS (CER): fx_to_usd = blue.
+    #     - USD broker (USDT/USD): fx_to_usd = 1.0.
+    #     - NULL para ops históricas → frontend usa blue actual como fallback con warning.
+    cols = _table_cols(conn, 'operations')
+    if cols and 'currency' not in cols:
+        conn.execute("ALTER TABLE operations ADD COLUMN currency TEXT")
+    if cols and 'fx_to_usd' not in cols:
+        conn.execute("ALTER TABLE operations ADD COLUMN fx_to_usd REAL")
     conn.commit()
 
     # ─── bond_indices_daily ────────────────────────────────────────────────
@@ -1668,11 +1683,18 @@ class ConversionIn(BaseModel):
 class BondCashflowIn(BaseModel):
     """Registro de un pago recibido de un bono (cupón o amortización).
 
-    Crea:
-      1. Una operation type='Cupón' o 'Amortización' (registro histórico).
-      2. Acreditación al cash del broker por el monto recibido.
+    Phase 3D: agrega tracking de moneda + FX para enable reportes cross-broker
+    + reduce quantity de la posición cuando es amortización (cost basis amortizante).
 
-    Todo atómico (mismo conn / transaction).
+    Crea:
+      1. Una operation type='Cupón' o 'Amortización' con currency + fx_to_usd
+         stampados.
+      2. Acreditación al cash del broker por el monto neto.
+      3. Si decrement_quantity=True Y flow_type='amortization': reduce FIFO la
+         quantity + invested de los lotes de la posición proporcionalmente al
+         face amortizado.
+
+    Todo atómico.
     """
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
     asset: str = Field(..., min_length=1, max_length=20)
@@ -1681,6 +1703,15 @@ class BondCashflowIn(BaseModel):
     date: str = Field(..., max_length=10)
     commissions: Optional[float] = Field(0, ge=0, le=1e12)
     notes: Optional[str] = Field(None, max_length=MAX_NOTES)
+    # Phase 3D fields (todos opcionales para backward-compat):
+    #   • currency: moneda nativa del flujo. Default: derivada del broker.
+    #   • fx_to_usd: factor nativa→USD al momento del evento. Default: 1.0 si
+    #     broker es USD/USDT, NULL si ARS (frontend mostrará warning).
+    #   • decrement_quantity: si True Y flow_type='amortization', se reduce la
+    #     quantity de la posición. Default: False (preserva comportamiento legacy).
+    currency: Optional[str] = Field(None, max_length=10)
+    fx_to_usd: Optional[float] = Field(None, gt=0, le=1e6)
+    decrement_quantity: Optional[bool] = Field(False)
 
     @field_validator('flow_type')
     @classmethod
@@ -1701,13 +1732,18 @@ class BondCashflowIn(BaseModel):
 def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
     """Registra un cupón cobrado o amortización recibida de un bono.
 
-    Hace 2 cosas atómicamente:
-      1. INSERT en operations (op_type='Cupón' o 'Amortización')
-      2. _adjust_cash del broker por el monto neto (amount - commissions)
+    Hace 2-3 cosas atómicamente:
+      1. INSERT en operations (op_type='Cupón' o 'Amortización') con
+         currency + fx_to_usd stampados.
+      2. _adjust_cash del broker por el monto neto (amount - commissions).
+      3. Si decrement_quantity=True Y flow_type='amortization': reduce FIFO
+         la quantity + invested de los lotes hasta cubrir el monto amortizado.
+         Esto refleja que en un bono amortizante, cada amort te devuelve face
+         (reduce tu nominal en cartera) — sin afectar tu cost basis por VN
+         remanente.
 
     El monto se acredita en la moneda del broker (USDT/USD/ARS). Si el bono
-    paga en USD pero el broker es ARS, el user debe cargar el equivalente
-    en pesos que efectivamente recibió.
+    paga en USD pero el broker es ARS, el user carga el equivalente en pesos.
     """
     conn = get_db()
     try:
@@ -1724,17 +1760,35 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
         if net_amount <= 0:
             raise HTTPException(400, "El monto neto (descontando comisiones) debe ser > 0")
 
+        # Resolver currency + fx_to_usd con defaults sensatos.
+        broker_currency = broker_row['currency']
+        currency = data.currency or broker_currency
+        if data.fx_to_usd is not None:
+            fx_to_usd = data.fx_to_usd
+        elif broker_currency in ('USD', 'USDT'):
+            fx_to_usd = 1.0  # ya es USD-equivalente
+        else:
+            fx_to_usd = None  # ARS sin FX explícito — frontend usa fallback
+
         with conn:  # tx atómica
             # 1. Insert operation
             conn.execute(
                 """INSERT INTO operations (user_id, date, broker, asset, op_type,
-                   pnl_usd, commissions, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   pnl_usd, commissions, notes, currency, fx_to_usd)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (uid, data.date, data.broker, data.asset.upper(), op_type,
-                 net_amount, commissions, data.notes),
+                 net_amount, commissions, data.notes, currency, fx_to_usd),
             )
             # 2. Acreditar cash del broker
-            _adjust_cash(conn, uid, data.broker, _cash_asset_for_currency(broker_row['currency']), net_amount)
+            _adjust_cash(conn, uid, data.broker, _cash_asset_for_currency(broker_currency), net_amount)
+
+            # 3. (Opcional) decrementar quantity FIFO si es amortización
+            qty_decremented = 0.0
+            invested_decremented = 0.0
+            if data.decrement_quantity and data.flow_type == 'amortization':
+                qty_decremented, invested_decremented = _amortize_position_fifo(
+                    conn, uid, data.broker, data.asset.upper(), net_amount
+                )
 
         return {
             'ok': True,
@@ -1742,6 +1796,10 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
             'op_type': op_type,
             'broker': data.broker,
             'asset': data.asset.upper(),
+            'currency': currency,
+            'fx_to_usd': fx_to_usd,
+            'qty_decremented': qty_decremented,
+            'invested_decremented': invested_decremented,
         }
     except HTTPException:
         raise
@@ -1749,6 +1807,69 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
         raise HTTPException(500, f"Error al registrar el cashflow del bono: {ex}")
     finally:
         conn.close()
+
+
+def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amount: float):
+    """Reduce FIFO la quantity + invested de los lotes de (broker, asset).
+
+    Conceptualmente: una amortización te devuelve `amort_amount` de face value.
+    Para bonos AR canje 2020 (USD denominado, 1 VN = 1 USD face), eso significa
+    qty_a_descontar = amort_amount. Cada lote se reduce proporcionalmente:
+        ratio = take / lot.quantity
+        lot.quantity -= take
+        lot.invested *= (1 - ratio)  # cost basis remanente proporcional
+        lot.commissions *= (1 - ratio)
+
+    Si el monto excede el face total disponible, igual amortiza todo lo que hay
+    (caso edge — no debería ocurrir con data consistente). Devuelve los totales
+    decrementados para auditoría / response.
+
+    NOTA: esta función asume `1 VN = 1 USD face` (estándar para soberanos AR
+    canje 2020). Para bonos CER con face ajustado, la math sería distinta —
+    pero esos bonos son bullet, no amortizantes, así que este código nunca
+    se invoca con ellos.
+    """
+    lots = conn.execute(
+        """SELECT * FROM positions
+           WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
+           ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
+        (uid, broker, asset),
+    ).fetchall()
+
+    if not lots:
+        return 0.0, 0.0
+
+    total_qty_available = sum((l['quantity'] or 0) for l in lots)
+    qty_to_take = min(amort_amount, total_qty_available)
+    if qty_to_take <= 0:
+        return 0.0, 0.0
+
+    remaining = qty_to_take
+    total_invested_dec = 0.0
+    for lot in lots:
+        if remaining <= 1e-9:
+            break
+        lot_qty = lot['quantity'] or 0
+        take = min(remaining, lot_qty)
+        if take <= 0:
+            continue
+        ratio = take / lot_qty
+        new_qty = lot_qty - take
+        new_invested = (lot['invested'] or 0) * (1 - ratio)
+        new_commissions = (lot['commissions'] or 0) * (1 - ratio)
+        invested_taken = (lot['invested'] or 0) * ratio
+        total_invested_dec += invested_taken
+        if new_qty <= 1e-9:
+            # Lote totalmente amortizado — borramos para que no quede zombie.
+            conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (lot['id'], uid))
+        else:
+            conn.execute(
+                "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
+                (new_qty, round(new_invested, 6), round(new_commissions, 6), lot['id'], uid),
+            )
+        remaining -= take
+
+    return qty_to_take, round(total_invested_dec, 6)
 
 
 def _cash_asset_for_currency(currency: str) -> str:
