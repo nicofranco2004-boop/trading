@@ -8,6 +8,10 @@ import sqlite3, os, secrets, time, hashlib, hmac, json
 from collections import defaultdict
 import yfinance as yf
 import requests
+import logging
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from snapshots_job import run_daily_snapshot
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
@@ -3083,3 +3087,78 @@ def import_redo(batch_id: str, uid: int = Depends(get_current_user)):
         raise HTTPException(500, f"Error al rehacer el import: {ex}")
     finally:
         conn.close()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Daily snapshot cron — toma snapshot del portfolio de todos los usuarios
+# automáticamente, sin depender de que abran el Dashboard.
+#
+# Schedule: 01:00 UTC = 22:00 ART. Después del cierre NYSE (5pm ET = 22:00 UTC
+# en horario estándar) y mucho después del cierre BCBA (17h ART).
+#
+# Si el server se reinicia justo a la hora del cron, se saltea esa corrida
+# (in-process scheduler). Trade-off aceptable para una app personal — al día
+# siguiente corre normal. Endpoint admin abajo permite forzar manualmente.
+# ════════════════════════════════════════════════════════════════════════════
+
+logging.basicConfig(level=logging.INFO)
+_snapshot_log = logging.getLogger('snapshots_job')
+
+# Helper que el job usa para obtener el blue. Reusa la lógica + cache existente.
+def _get_blue_for_scheduler() -> float:
+    blue = _fetch_dolar("blue")
+    if blue and blue.get("venta"):
+        return float(blue["venta"])
+    raise RuntimeError("No se pudo obtener cotización del blue")
+
+
+def _run_daily_snapshot_job():
+    """Wrapper que el scheduler invoca. Pasa la config + cierra logs."""
+    try:
+        result = run_daily_snapshot(
+            db_path=DB_PATH,
+            fetch_tc_blue=_get_blue_for_scheduler,
+            crypto_yf=CRYPTO_YF,
+        )
+        _snapshot_log.info(f"Daily snapshot result: {result}")
+    except Exception as e:
+        _snapshot_log.error(f"Daily snapshot job failed: {e}", exc_info=True)
+
+
+# Scheduler in-process
+_scheduler = BackgroundScheduler(timezone='UTC')
+
+@app.on_event("startup")
+def _start_scheduler():
+    # 01:00 UTC todos los días = 22:00 ART
+    _scheduler.add_job(
+        _run_daily_snapshot_job,
+        CronTrigger(hour=1, minute=0),
+        id='daily_snapshot',
+        replace_existing=True,
+    )
+    _scheduler.start()
+    _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 01:00 UTC)")
+
+
+@app.on_event("shutdown")
+def _stop_scheduler():
+    if _scheduler.running:
+        _scheduler.shutdown(wait=False)
+
+
+# ─── Admin endpoints ────────────────────────────────────────────────────────
+
+@app.post("/api/admin/snapshots/run-now")
+def admin_run_snapshot(uid: int = Depends(get_admin_user)):
+    """Triggea el job manualmente — útil para testing y para forzar un
+    snapshot fuera del horario programado.
+
+    Solo accesible por usuarios admin.
+    """
+    result = run_daily_snapshot(
+        db_path=DB_PATH,
+        fetch_tc_blue=_get_blue_for_scheduler,
+        crypto_yf=CRYPTO_YF,
+    )
+    return result
