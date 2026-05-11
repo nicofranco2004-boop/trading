@@ -3162,3 +3162,24 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
         crypto_yf=CRYPTO_YF,
     )
     return result
+
+
+# ─── Health check (público) ─────────────────────────────────────────────────
+
+@app.get("/api/health")
+def health_check():
+    """Endpoint público sin auth — sirve para:
+
+    1. Despertar la app si está hibernada (Railway auto-sleep). Configurá
+       un cron en cron-job.org que pingue esta URL ~5 min antes del horario
+       del daily snapshot (01:00 UTC) y la app se levanta antes.
+    2. Monitoreo / uptime checks (UptimeRobot, etc.)
+
+    Devuelve siempre 200 con timestamp para que el caller verifique que
+    la app está respondiendo.
+    """
+    return {
+        "ok": True,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "service": "rendi-api",
+    }
