@@ -16,17 +16,31 @@
 //   • Mobile         → bottom sheet full-width con safe-area
 
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2 } from 'lucide-react'
-import { CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL } from '../utils/tickers'
+import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark } from 'lucide-react'
+import {
+  CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
+  BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF,
+} from '../utils/tickers'
 import AssetLogo from './AssetLogo'
 
 // ─── Categorías ──────────────────────────────────────────────────────────────
 // El orden refleja prioridad UX: tipos más usados primero.
+// Bonos: combinamos las 4 sub-listas en una sola lista visible en step 2.
+// Para que se distingan visualmente, cada item lleva un sufijo del subgrupo
+// que se renderiza chiquito al lado del nombre.
+const BONDS_COMBINED = [
+  ...BONDS_AR_SOV_USD.map(b => ({ ...b, _sub: 'Soberano AR' })),
+  ...BONDS_AR_CER.map(b =>     ({ ...b, _sub: 'CER (ARS)' })),
+  ...BONDS_AR_ONS.map(b =>     ({ ...b, _sub: 'ON (Argentina)' })),
+  ...BONDS_US_ETF.map(b =>     ({ ...b, _sub: 'ETF US' })),
+]
+
 const CATEGORIES = [
   { id: 'crypto',  label: 'Cripto',        icon: Coins,      list: CRYPTO,        hint: 'Bitcoin, Ethereum, stablecoins' },
   { id: 'stocks',  label: 'Acciones US',   icon: TrendingUp, list: STOCKS_US,     hint: 'NVDA, AAPL, MSFT…' },
   { id: 'cedears', label: 'CEDEARs',       icon: Layers,     list: CEDEARS_LIST,  hint: 'Acciones US listadas en BCBA' },
   { id: 'etfs',    label: 'ETFs',          icon: BarChart3,  list: ETFS,          hint: 'SPY, QQQ, VTI…' },
+  { id: 'bonds',   label: 'Bonos y ONs',   icon: Landmark,   list: BONDS_COMBINED, hint: 'Soberanos AR, CER, obligaciones negociables, ETFs US' },
   { id: 'ar_lider',label: 'Panel Líder',   icon: Building2,  list: ARG_LIDER,     hint: 'Acciones argentinas — panel líder' },
   { id: 'ar_gen',  label: 'Panel General', icon: Building2,  list: ARG_GENERAL,   hint: 'Acciones argentinas — panel general' },
   { id: 'indices', label: 'Índices',       icon: Activity,   list: INDICES,       hint: 'S&P 500, Merval, IBOV…' },
@@ -211,7 +225,14 @@ function Step2TickerPicker({ category, onPick }) {
                 >
                   <AssetLogo asset={t.s} size={32} />
                   <div className="min-w-0 flex-1">
-                    <p className="font-semibold text-ink-0 text-sm tabular">{t.s}</p>
+                    <p className="font-semibold text-ink-0 text-sm tabular flex items-center gap-2">
+                      {t.s}
+                      {t._sub && (
+                        <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-bg-3 text-ink-2 border border-line">
+                          {t._sub}
+                        </span>
+                      )}
+                    </p>
                     <p className="text-xs text-ink-2 truncate">{t.n}</p>
                   </div>
                 </button>

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, useRef } from 'react'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown } from 'lucide-react'
+import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
+import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -8,6 +8,15 @@ import StatCard from '../components/StatCard'
 import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
+import BondCashflowModal from '../components/BondCashflowModal'
+import { isBondTicker } from '../utils/tickers'
+import { getBondMeta, formatBondType, formatCouponFreq } from '../utils/bondMeta'
+import {
+  generateSchedule,
+  getRemainingPayments,
+  estimateYield,
+  nextPaymentForPosition,
+} from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -58,7 +67,42 @@ export default function Positions() {
   // Per-broker "show detail" state. Default = collapsed (clean view).
   // Stored as a Set of broker names; flipping a name toggles its detail mode.
   const [detailBrokers, setDetailBrokers] = useState(() => new Set())
+  // Estado del modal de cobranza de bonos. null = cerrado; {flowType, broker, brokerCurrency, asset} = abierto.
+  const [bondCashflow, setBondCashflow] = useState(null)
+  // Posiciones de bono expandidas inline (mostrar meta + historial cobranzas).
+  // Keyeado por `${broker}:${asset}` para que múltiples bonos puedan estar abiertos.
+  const [expandedBonds, setExpandedBonds] = useState(() => new Set())
+  // Listado plano de ops Cupón/Amortización (cobranzas de bonos). Se carga
+  // de /operations al montar y se refresca con loadAll() después de un INSERT.
+  // Lo agrupamos por `${broker}:${asset}` vía useMemo en `bondCashflowsByKey`.
+  const [bondOps, setBondOps] = useState([])
   const latestRef = useRef({})
+
+  function toggleBondExpand(p) {
+    const key = `${p.broker}:${p.asset}`
+    setExpandedBonds(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  function openBondCashflow(p, flowType) {
+    const broker = brokers.find(b => b.name === p.broker)
+    setBondCashflow({
+      flowType,
+      broker: p.broker,
+      brokerCurrency: broker?.currency || 'USDT',
+      asset: p.asset,
+    })
+  }
+
+  // Tras registrar un cupón/amortización: recargar positions (cash actualizado)
+  // + refrescar el listado de cobranzas para el bond expandable.
+  async function onBondCashflowSuccess() {
+    setBondCashflow(null)
+    await loadAll()
+  }
 
   function toggleDetail(brokerName) {
     setDetailBrokers(prev => {
@@ -80,24 +124,52 @@ export default function Positions() {
 
   async function loadAll() {
     try {
-      const [pos, cfg, bkrs, dol, snaps] = await Promise.all([
+      const [pos, cfg, bkrs, dol, snaps, ops] = await Promise.all([
         api.get('/positions'),
         api.get('/config'),
         api.get('/brokers'),
         api.get('/dolar').catch(() => null),
         api.get('/snapshots?days=30').catch(() => []),
+        api.get('/operations').catch(() => []),
       ])
       setPositions(pos)
       setConfig(cfg)
       setBrokers(bkrs)
       setDolar(dol)
       setSnapshots(snaps || [])
+      // Sólo necesitamos las ops de cobranza de bonos para el render expandido.
+      setBondOps((ops || []).filter(o => o.op_type === 'Cupón' || o.op_type === 'Amortización'))
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
     } catch (e) {
       console.error('Positions loadAll error:', e)
     }
   }
+
+  // Índice por `${broker}:${asset}` con totales y lista cronológica de cobranzas.
+  // Esto alimenta el panel expandible + el cálculo de P&L "incluyendo cupones".
+  const bondCashflowsByKey = useMemo(() => {
+    const map = new Map()
+    for (const op of bondOps) {
+      const key = `${op.broker}:${op.asset}`
+      if (!map.has(key)) map.set(key, { ops: [], coupons: 0, amortizations: 0, total: 0 })
+      const entry = map.get(key)
+      entry.ops.push(op)
+      // pnl_usd guarda el monto neto acreditado (positivo). En ARS brokers
+      // el campo está en ARS — la moneda la sabemos por el broker, no la
+      // mezclamos. El frontend usa este número tal cual para mostrar el total
+      // en la misma moneda en que se cargó.
+      const amt = +op.pnl_usd || 0
+      entry.total += amt
+      if (op.op_type === 'Cupón') entry.coupons += amt
+      else entry.amortizations += amt
+    }
+    // Ordenar por fecha desc (más reciente primero)
+    for (const v of map.values()) {
+      v.ops.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+    }
+    return map
+  }, [bondOps])
 
   async function fetchPrices(pos, cfg, bkrs) {
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
@@ -580,18 +652,46 @@ export default function Positions() {
                   <tbody>
                     {bpos.map(p => {
                       const c = calcARS(p)
-                      const pnlBg = c.pnlArs == null ? '' : c.pnlArs > 0 ? 'bg-rendi-pos/[0.06]' : c.pnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
+                      // P&L "con cupones": sumamos cobranzas (en ARS, misma moneda
+                      // que el broker) al P&L mark-to-market. Es el "total return"
+                      // del bono — captura tanto la variación de precio como los
+                      // flujos cobrados durante la tenencia.
+                      const isBond = isBondTicker(p.asset) && !p.is_cash
+                      const bondKey = `${p.broker}:${p.asset}`
+                      const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
+                      const cobranzas = bondSummary?.total || 0
+                      const adjPnlArs = (c.pnlArs != null && cobranzas)
+                        ? c.pnlArs + cobranzas
+                        : c.pnlArs
+                      const adjPnlPct = (isBond && adjPnlArs != null && p.invested > 0)
+                        ? adjPnlArs / p.invested
+                        : c.pnlPct
+                      const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       // Precio promedio en ARS = invertido / cantidad
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
+                      const expanded = isBond && expandedBonds.has(bondKey)
+                      const arsColSpan = showDetail ? 12 : 9
+                      const pnlTooltip = (isBond && cobranzas > 0)
+                        ? `Incluye +ARS ${ars(cobranzas)} cobrados de cupones/amortizaciones (mark-to-market: ${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))})`
+                        : undefined
                       return (
-                        <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
+                        <Fragment key={p.id}>
+                        <tr className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                           <td className={`${tdClass}`}>
                             <div className="flex items-center gap-2.5 min-w-0">
                               <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
                               <div className="min-w-0">
-                                <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
+                                <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5 flex-wrap">
                                   {p.asset}
                                   {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                  {isBond && (
+                                    <span
+                                      className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5"
+                                      title="Bono / Obligación Negociable"
+                                    >
+                                      <Coins size={9} strokeWidth={1.5} /> BONO
+                                    </span>
+                                  )}
                                   {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
                                   {!p.is_cash && (!p.tc_compra || p.tc_compra <= 0) && (
                                     <span
@@ -602,7 +702,21 @@ export default function Positions() {
                                     </span>
                                   )}
                                 </div>
-                                <div className="text-[10px] text-ink-3 mt-0.5 font-mono">{p.entry_date || 'sin fecha'}</div>
+                                <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
+                                  <span>{p.entry_date || 'sin fecha'}</span>
+                                  {isBond && (
+                                    <button
+                                      onClick={() => toggleBondExpand(p)}
+                                      className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
+                                      title={expanded ? 'Ocultar cobranzas y meta del bono' : 'Ver meta + historial de cobranzas'}
+                                    >
+                                      {expanded ? <ChevronUp size={10} strokeWidth={1.75} /> : <ChevronDown size={10} strokeWidth={1.75} />}
+                                      {expanded
+                                        ? 'Ocultar cobranzas'
+                                        : `Ver cobranzas${bondSummary?.ops?.length ? ` (${bondSummary.ops.length})` : ''}`}
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </td>
@@ -613,13 +727,30 @@ export default function Positions() {
                           {showDetail && <td className={`${tdClass} text-slate-500 dark:text-slate-400 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
                           {showDetail && <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{c.invUsd != null ? fmtUsd(c.invUsd) : '—'}</td>}
                           <td className={`${tdClass} text-slate-900 dark:text-slate-100 font-medium tabular`}>{c.valueArs != null ? fmtArs(c.valueArs) : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
-                          <td className={`${tdClass} font-bold tabular ${colorClass(c.pnlArs)} ${pnlBg}`}>{c.pnlArs != null ? `${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs))}` : '—'}</td>
+                          <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlArs)} ${pnlBg}`} title={pnlTooltip}>
+                            {adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—'}
+                            {isBond && cobranzas > 0 && (
+                              <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
+                            )}
+                          </td>
                           {showDetail && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—'}</td>}
-                          <td className={`${tdClass} font-bold tabular ${colorClass(c.pnlPct)} ${pnlBg}`}>{c.pnlPct != null ? pctSigned(c.pnlPct) : '—'}</td>
+                          <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
                           <td className={tdClass}>
-                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, broker })} />
+                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker })} />
                           </td>
                         </tr>
+                        {expanded && (
+                          <BondDetailRow
+                            p={p}
+                            colSpan={arsColSpan}
+                            summary={bondSummary}
+                            isARS={true}
+                            currentPrice={c.priceArs}
+                            onAddCoupon={() => openBondCashflow(p, 'coupon')}
+                            onAddAmortization={() => openBondCashflow(p, 'amortization')}
+                          />
+                        )}
+                        </Fragment>
                       )
                     })}
                   </tbody>
@@ -667,23 +798,60 @@ export default function Positions() {
                 <tbody>
                   {bpos.map(p => {
                     const c = calcUSDT(p)
-                    const pnlBg = c.pnl == null ? '' : c.pnl > 0 ? 'bg-rendi-pos/[0.06]' : c.pnl < 0 ? 'bg-rendi-neg/[0.06]' : ''
+                    const isBond = isBondTicker(p.asset) && !p.is_cash
+                    const bondKey = `${p.broker}:${p.asset}`
+                    const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
+                    const cobranzas = bondSummary?.total || 0
+                    const adjPnl = (c.pnl != null && cobranzas)
+                      ? c.pnl + cobranzas
+                      : c.pnl
+                    const adjPnlPct = (isBond && adjPnl != null && p.invested > 0)
+                      ? adjPnl / p.invested
+                      : c.pnlPct
+                    const pnlBg = adjPnl == null ? '' : adjPnl > 0 ? 'bg-rendi-pos/[0.06]' : adjPnl < 0 ? 'bg-rendi-neg/[0.06]' : ''
                     // Precio promedio = invertido / cantidad. Si tiene buy_price lo preferimos por precisión histórica.
                     const avgPrice = (!p.is_cash && p.quantity > 0)
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
+                    const expanded = isBond && expandedBonds.has(bondKey)
+                    const pnlTooltip = (isBond && cobranzas > 0)
+                      ? `Incluye +USD ${usd(cobranzas)} cobrados de cupones/amortizaciones (mark-to-market: ${c.pnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnl || 0))})`
+                      : undefined
                     return (
-                      <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
+                      <Fragment key={p.id}>
+                      <tr className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                         <td className={`${tdClass}`}>
                           <div className="flex items-center gap-2.5 min-w-0">
                             <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
                             <div className="min-w-0">
-                              <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
+                              <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5 flex-wrap">
                                 {p.asset}
                                 {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                {isBond && (
+                                  <span
+                                    className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5"
+                                    title="Bono / Obligación Negociable"
+                                  >
+                                    <Coins size={9} strokeWidth={1.5} /> BONO
+                                  </span>
+                                )}
                                 {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
                               </div>
-                              <div className="text-[10px] text-ink-3 mt-0.5 font-mono">{p.entry_date || 'sin fecha'}</div>
+                              <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
+                                <span>{p.entry_date || 'sin fecha'}</span>
+                                {isBond && (
+                                  <button
+                                    onClick={() => toggleBondExpand(p)}
+                                    className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
+                                    title={expanded ? 'Ocultar cobranzas y meta del bono' : 'Ver meta + historial de cobranzas'}
+                                  >
+                                    {expanded ? <ChevronUp size={10} strokeWidth={1.75} /> : <ChevronDown size={10} strokeWidth={1.75} />}
+                                    {expanded
+                                      ? 'Ocultar cobranzas'
+                                      : `Ver cobranzas${bondSummary?.ops?.length ? ` (${bondSummary.ops.length})` : ''}`}
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </td>
@@ -692,12 +860,29 @@ export default function Positions() {
                         <td className={`${tdClass} text-slate-700 dark:text-slate-200 tabular`}>{c.price != null ? fmtUsd(c.price) : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
                         <td className={`${tdClass} text-slate-700 dark:text-slate-200 tabular`}>{fmtUsd(p.invested)}</td>
                         <td className={`${tdClass} text-slate-900 dark:text-slate-100 font-medium tabular`}>{c.value != null ? fmtUsd(c.value) : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
-                        <td className={`${tdClass} font-bold tabular ${colorClass(c.pnl)} ${pnlBg}`}>{c.pnl != null ? `${c.pnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnl))}` : '—'}</td>
-                        <td className={`${tdClass} font-bold tabular ${colorClass(c.pnlPct)} ${pnlBg}`}>{c.pnlPct != null ? pctSigned(c.pnlPct) : '—'}</td>
+                        <td className={`${tdClass} font-bold tabular ${colorClass(adjPnl)} ${pnlBg}`} title={pnlTooltip}>
+                          {adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—'}
+                          {isBond && cobranzas > 0 && (
+                            <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
+                          )}
+                        </td>
+                        <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
                         <td className={tdClass}>
-                          <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, broker })} />
+                          <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker })} />
                         </td>
                       </tr>
+                      {expanded && (
+                        <BondDetailRow
+                          p={p}
+                          colSpan={9}
+                          summary={bondSummary}
+                          isARS={false}
+                          currentPrice={c.price}
+                          onAddCoupon={() => openBondCashflow(p, 'coupon')}
+                          onAddAmortization={() => openBondCashflow(p, 'amortization')}
+                        />
+                      )}
+                      </Fragment>
                     )
                   })}
                 </tbody>
@@ -825,6 +1010,17 @@ export default function Positions() {
           tcBlue={tcBlue}
           onClose={() => setModal(null)}
           onConfirm={confirmConvert}
+        />
+      )}
+
+      {bondCashflow && (
+        <BondCashflowModal
+          flowType={bondCashflow.flowType}
+          broker={bondCashflow.broker}
+          brokerCurrency={bondCashflow.brokerCurrency}
+          asset={bondCashflow.asset}
+          onClose={() => setBondCashflow(null)}
+          onSuccess={onBondCashflowSuccess}
         />
       )}
 
@@ -1077,7 +1273,7 @@ function sortBrokersForDisplay(brokers) {
   return out
 }
 
-function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, broker }) {
+function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker }) {
   if (p.is_cash) {
     const isArsCash = broker?.currency === 'ARS'
     const isUsdCashSubBroker = broker?.currency === 'USDT' && broker?.parent_broker_id != null
@@ -1098,6 +1294,22 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
     )
     return items
   }
+  // Para bonos agregamos entries específicas — cupón y amortización son
+  // los eventos que generan cash recibido del bono. Van arriba porque son
+  // las acciones más frecuentes en una posición de renta fija.
+  const isBond = isBondTicker(p.asset)
+  if (isBond) {
+    return [
+      { label: 'Registrar cupón',         icon: <Coins size={13} className="text-rendi-pos" />,       onClick: () => openBondCashflow(p, 'coupon') },
+      { label: 'Registrar amortización',  icon: <LayersIcon size={13} className="text-rendi-accent" />, onClick: () => openBondCashflow(p, 'amortization') },
+      { divider: true },
+      { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd(p.broker) },
+      { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
+      { divider: true },
+      { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
+      { label: 'Eliminar',        icon: <Trash2 size={13} />,       onClick: () => del(p.id), danger: true },
+    ]
+  }
   return [
     { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd(p.broker) },
     { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
@@ -1105,6 +1317,230 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
     { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
     { label: 'Eliminar',        icon: <Trash2 size={13} />,       onClick: () => del(p.id), danger: true },
   ]
+}
+
+// ─── BondDetailRow ────────────────────────────────────────────────────────────
+// Fila expandible que aparece debajo de una posición de bono cuando el user
+// hace click en el chevron "Ver cobranzas". Muestra (Fase 1 + Fase 2):
+//   • Meta del bono (issuer, vencimiento, cupón, frecuencia)
+//   • Totales de lo cobrado (cupones + amortizaciones) y % del capital recuperado
+//   • Calendario futuro generado del bondSchedule + TIR estimada al precio actual
+//   • Lista cronológica de cobranzas registradas
+// El "% recuperado" es el diferencial Rendi: contexto narrativo "ya recuperaste
+// X% del capital vía cupones", no se ve en otras apps de tracking.
+//
+// Convención para TIR: usamos `currentPrice × 100` como precio por 100 nominal,
+// asumiendo qty=nominales-individuales (1 nominal = 1 USD/ARS de face value).
+// Para ETFs y bonos sin maturity, omitimos TIR.
+function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, onAddCoupon, onAddAmortization }) {
+  const meta = getBondMeta(p.asset)
+  const moneyLabel = isARS ? 'ARS' : 'USD'
+  const fmt = isARS ? ars : usd
+  const invested = p.invested || 0
+  const coupons = summary?.coupons || 0
+  const amortizations = summary?.amortizations || 0
+  const total = summary?.total || 0
+  const ops = summary?.ops || []
+  const recoveryPct = invested > 0 ? (total / invested) : 0
+
+  // ── Fase 2: schedule + TIR + próximo pago ────────────────────────────────
+  // Esto SOLO aplica a bonos con maturity definida en bondMeta. ETFs y
+  // tickers sin metadata caen en el fallback de Fase 1.
+  const today = new Date().toISOString().slice(0, 10)
+  const fullSchedule = generateSchedule(p.asset)
+  const remaining = fullSchedule ? getRemainingPayments(p.asset, today) : null
+  // pricePer100: el TIR se calcula sobre "precio por 100 nominal". Si el user
+  // entra qty=nominales y price=USD/ARS por nominal, multiplicamos × 100.
+  const pricePer100 = currentPrice != null && currentPrice > 0
+    ? currentPrice * 100
+    : null
+  const yieldEstimate = pricePer100 != null ? estimateYield(p.asset, pricePer100, today) : null
+  const nextPay = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today) : null
+
+  return (
+    <tr className="bg-rendi-accent/[0.04] dark:bg-rendi-accent/[0.05] border-b border-line">
+      <td colSpan={colSpan} className="px-5 py-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Meta */}
+          <div className="space-y-1">
+            <p className="eyebrow text-rendi-accent">Bono</p>
+            {meta ? (
+              <>
+                <p className="text-sm font-semibold text-ink-0">{formatBondType(meta.type)} · {meta.issuer}</p>
+                <p className="text-xs text-ink-2 font-mono">
+                  {meta.maturity ? `Vence ${meta.maturity}` : 'ETF · sin vencimiento'}
+                  {meta.couponRate > 0 && ` · ${meta.couponRate}% TNA ${formatCouponFreq(meta.couponFreq)}`}
+                  {meta.couponFreq === 'none' && ' · cero-cupón'}
+                </p>
+                <p className="text-[10px] text-ink-3 font-mono">Moneda original: {meta.currency}</p>
+              </>
+            ) : (
+              <p className="text-xs text-ink-2">Sin metadata configurada para este ticker.</p>
+            )}
+          </div>
+
+          {/* Totales cobrados */}
+          <div className="space-y-1">
+            <p className="eyebrow text-rendi-accent">Ya cobraste</p>
+            {total > 0 ? (
+              <>
+                <p className="text-lg font-bold text-rendi-pos tabular">
+                  +{moneyLabel} {fmt(total)}
+                </p>
+                <p className="text-[11px] text-ink-2 font-mono">
+                  {coupons > 0 && <>Cupones: {moneyLabel} {fmt(coupons)}</>}
+                  {coupons > 0 && amortizations > 0 && ' · '}
+                  {amortizations > 0 && <>Amortizaciones: {moneyLabel} {fmt(amortizations)}</>}
+                </p>
+                {invested > 0 && (
+                  <p className="text-xs text-rendi-accent font-semibold">
+                    {pctSigned(recoveryPct)} del capital recuperado
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-ink-2">
+                Aún no registraste cobranzas. Cuando recibas un cupón o amortización,
+                cargalo desde el menú de acciones para que se acredite al cash del broker
+                y aparezca acá.
+              </p>
+            )}
+          </div>
+
+          {/* Acciones rápidas */}
+          <div className="space-y-1">
+            <p className="eyebrow text-rendi-accent">Registrar pago</p>
+            <div className="flex flex-col gap-1.5">
+              <button
+                onClick={onAddCoupon}
+                className="inline-flex items-center justify-center gap-1.5 text-xs bg-rendi-pos/15 hover:bg-rendi-pos/25 text-rendi-pos border border-rendi-pos/30 rounded-sm px-2.5 py-1.5 transition"
+              >
+                <Coins size={12} strokeWidth={1.5} /> Cupón cobrado
+              </button>
+              <button
+                onClick={onAddAmortization}
+                className="inline-flex items-center justify-center gap-1.5 text-xs bg-rendi-accent/15 hover:bg-rendi-accent/25 text-rendi-accent border border-rendi-accent/30 rounded-sm px-2.5 py-1.5 transition"
+              >
+                <LayersIcon size={12} strokeWidth={1.5} /> Amortización
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Fase 2: cronograma + TIR + próximo pago ────────────────────── */}
+        {fullSchedule && remaining && remaining.length > 0 && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 pt-3 border-t border-line/60">
+            {/* TIR + próximo pago */}
+            <div className="space-y-2 md:col-span-1">
+              <p className="eyebrow text-rendi-accent">Rendimiento estimado</p>
+              {yieldEstimate != null ? (
+                <>
+                  <p className="text-lg font-bold tabular text-ink-0">
+                    {pctSigned(yieldEstimate)} <span className="text-xs font-normal text-ink-2">anual</span>
+                  </p>
+                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
+                    TIR aprox. al precio actual ({moneyLabel} {fmt(currentPrice)}/nominal). Asume
+                    qty = nominales VN. Refiná actualizando el "precio override" si difiere de la pantalla del broker.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-ink-2 leading-snug">
+                  {currentPrice == null
+                    ? 'Cargá un precio override en la posición para estimar la TIR a precios de mercado.'
+                    : 'No se pudo estimar la TIR — verificá que el precio esté en la misma moneda que el bono.'}
+                </p>
+              )}
+              {nextPay && (
+                <div className="pt-2 mt-1 border-t border-line/40">
+                  <p className="eyebrow text-rendi-accent">Próximo pago</p>
+                  <p className="text-sm font-semibold text-ink-0 tabular">{nextPay.date}</p>
+                  <p className="text-xs text-rendi-pos font-mono">
+                    ≈ +{moneyLabel} {fmt(nextPay.total)}
+                  </p>
+                  <p className="text-[10px] text-ink-3 font-mono">
+                    {nextPay.isPureAmort ? 'Amortización' : nextPay.isPureCoupon ? 'Cupón' : 'Cupón + amort.'}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Mini-cronograma de los próximos pagos */}
+            <div className="md:col-span-2">
+              <p className="eyebrow text-rendi-accent mb-1.5">
+                Calendario futuro · {remaining.length} {remaining.length === 1 ? 'pago' : 'pagos'} hasta {meta?.maturity}
+              </p>
+              <div className="border border-line/60 rounded-sm overflow-hidden">
+                <div className="bg-bg-2/40 px-3 py-1 grid grid-cols-12 gap-2 text-[10px] uppercase tracking-wider text-ink-3 font-mono">
+                  <div className="col-span-3">Fecha</div>
+                  <div className="col-span-3 text-right">Cupón</div>
+                  <div className="col-span-3 text-right">Amort.</div>
+                  <div className="col-span-3 text-right">Tu monto</div>
+                </div>
+                <div className="max-h-44 overflow-y-auto divide-y divide-line/30">
+                  {remaining.slice(0, 8).map(pay => {
+                    const qty = p.quantity || 0
+                    const tuMonto = qty > 0 ? (pay.total * qty / 100) : null
+                    return (
+                      <div key={pay.date} className="px-3 py-1.5 grid grid-cols-12 gap-2 text-xs">
+                        <div className="col-span-3 text-ink-1 font-mono">{pay.date}</div>
+                        <div className="col-span-3 text-right tabular text-ink-2">
+                          {pay.coupon > 0 ? pay.coupon.toFixed(3) : '—'}
+                        </div>
+                        <div className="col-span-3 text-right tabular text-ink-2">
+                          {pay.amort > 0 ? pay.amort.toFixed(3) : '—'}
+                        </div>
+                        <div className="col-span-3 text-right tabular font-semibold text-rendi-pos">
+                          {tuMonto != null ? `${moneyLabel} ${fmt(tuMonto)}` : '—'}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {remaining.length > 8 && (
+                  <div className="bg-bg-2/30 px-3 py-1 text-[10px] text-ink-3 font-mono text-center border-t border-line/30">
+                    + {remaining.length - 8} pago{remaining.length - 8 === 1 ? '' : 's'} más hasta vencimiento
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-ink-3 font-mono mt-1 leading-snug">
+                Aproximación basada en cupón promedio del prospecto. Step-up exacto y CER ajustado vienen en Fase 3.
+                Cupón/Amort. expresados por 100 nominal.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Historial */}
+        {ops.length > 0 && (
+          <div className="mt-4 border border-line rounded-sm overflow-hidden">
+            <div className="bg-bg-2/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-2">
+              Historial de cobranzas · {ops.length} {ops.length === 1 ? 'pago' : 'pagos'}
+            </div>
+            <div className="max-h-48 overflow-y-auto divide-y divide-line/50">
+              {ops.map(o => (
+                <div key={o.id} className="px-3 py-2 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-ink-3 font-mono shrink-0">{o.date}</span>
+                    <span className={`text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm border shrink-0 ${
+                      o.op_type === 'Cupón'
+                        ? 'bg-rendi-pos/15 text-rendi-pos border-rendi-pos/30'
+                        : 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/30'
+                    }`}>
+                      {o.op_type}
+                    </span>
+                    {o.notes && <span className="text-ink-3 truncate">{o.notes}</span>}
+                  </div>
+                  <span className="font-mono font-semibold text-rendi-pos tabular shrink-0">
+                    +{moneyLabel} {fmt(+o.pnl_usd || 0)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </td>
+    </tr>
+  )
 }
 
 function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
@@ -1459,9 +1895,28 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
   })()
   const moneyLabel = isARS ? 'ARS' : 'USD'
 
+  // Si es bono, mostramos un banner con la meta-data arriba del form
+  const bondMeta = form.asset ? getBondMeta(form.asset) : null
+
   return (
     <Modal title={mode === 'edit' ? 'Editar posición' : 'Nueva posición'} onClose={onClose}>
       <div className="space-y-3">
+        {bondMeta && (
+          <div className="px-3 py-2.5 rounded bg-rendi-accent/[0.06] border border-rendi-accent/25">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30">
+                Bono
+              </span>
+              <span className="text-xs font-semibold text-ink-0">{formatBondType(bondMeta.type)} · {bondMeta.issuer}</span>
+            </div>
+            <p className="text-[11px] text-ink-2 font-mono">
+              {bondMeta.maturity ? `Vence ${bondMeta.maturity}` : 'Sin vencimiento (ETF)'}
+              {bondMeta.couponRate > 0 && ` · cupón ${bondMeta.couponRate}% TNA ${formatCouponFreq(bondMeta.couponFreq)}`}
+              {bondMeta.couponFreq === 'none' && ' · cero-cupón (paga todo al vencimiento)'}
+              {` · moneda ${bondMeta.currency}`}
+            </p>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Broker</label>
