@@ -13,7 +13,7 @@
 // Fase B (próxima): modal de detalle con drivers + benchmarks + insights.
 // Por ahora el modal muestra info básica.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, ArrowRight, ChevronDown, ChevronUp,
@@ -358,6 +358,16 @@ function MonthCard({ month, onClick }) {
 function MonthDetailModal({ month, broker, onClose }) {
   const isPositive = month.deltaUsd >= 0
   const isManual = month.source === 'manual'
+
+  // A11y: tecla Escape cierra el modal. Práctica estándar — sin esto los
+  // usuarios de teclado quedan atrapados hasta hacer click fuera o en X.
+  useEffect(() => {
+    function handleKey(e) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
 
   return (
     <div
