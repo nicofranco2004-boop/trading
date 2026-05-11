@@ -6,6 +6,7 @@ import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import StatCard from '../components/StatCard'
 import { useToast } from '../components/Toast'
+import AssetLogo from '../components/AssetLogo'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -574,7 +575,7 @@ export default function Positions() {
                         <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                           <td className={`${tdClass}`}>
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <AssetAvatar asset={p.asset} isCash={p.is_cash} />
+                              <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
                               <div className="min-w-0">
                                 <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
                                   {p.asset}
@@ -663,7 +664,7 @@ export default function Positions() {
                       <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                         <td className={`${tdClass}`}>
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <AssetAvatar asset={p.asset} isCash={p.is_cash} />
+                            <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
                             <div className="min-w-0">
                               <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
                                 {p.asset}
@@ -1012,36 +1013,6 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
         </div>
       </div>
     </Modal>
-  )
-}
-
-// AssetAvatar — chip pequeño con iniciales del ticker, color hash deterministic.
-// Para cash: icono Wallet en lugar de letras. Aporta jerarquía visual sin
-// depender de logos externos.
-function AssetAvatar({ asset, isCash }) {
-  if (isCash) {
-    return (
-      <div className="w-8 h-8 rounded-sm bg-bg-3 border border-line flex items-center justify-center flex-shrink-0">
-        <Wallet size={14} strokeWidth={1.5} className="text-ink-2" />
-      </div>
-    )
-  }
-  // Hash determinístico simple para tonalidad estable por ticker
-  const hash = (asset || '').split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
-  const palette = [
-    'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/30',
-    'bg-blue-500/15 text-blue-500 border-blue-500/30',
-    'bg-violet-500/15 text-violet-500 border-violet-500/30',
-    'bg-cyan-500/15 text-cyan-500 border-cyan-500/30',
-    'bg-amber-500/15 text-amber-500 border-amber-500/30',
-    'bg-pink-500/15 text-pink-500 border-pink-500/30',
-  ]
-  const color = palette[Math.abs(hash) % palette.length]
-  const initials = (asset || '?').slice(0, 2).toUpperCase()
-  return (
-    <div className={`w-8 h-8 rounded-sm border flex items-center justify-center flex-shrink-0 font-mono text-[10px] font-semibold tracking-tighter ${color}`}>
-      {initials}
-    </div>
   )
 }
 

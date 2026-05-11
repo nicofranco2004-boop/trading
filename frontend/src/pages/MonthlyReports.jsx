@@ -23,6 +23,7 @@ import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
 import EmptyState from '../components/EmptyState'
 import MiniSparkline from '../components/MiniSparkline'
+import AssetLogo from '../components/AssetLogo'
 import { usd, fmtUsd, pctSigned } from '../utils/format'
 import useMonthlyData from '../hooks/useMonthlyData'
 
@@ -509,10 +510,13 @@ function DriverMetric({ label, asset, pnl, positive }) {
     <div className="bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-line rounded p-3">
       <p className="label-mono mb-1">{label}</p>
       {hasData ? (
-        <p className="text-sm font-semibold tabular flex items-baseline gap-1.5">
-          <span className="text-ink-0">{asset}</span>
-          <span className={color}>{pnl >= 0 ? '+' : '−'}USD {usd(Math.abs(pnl))}</span>
-        </p>
+        <div className="flex items-center gap-2">
+          <AssetLogo asset={asset} size={24} />
+          <p className="text-sm font-semibold tabular flex items-baseline gap-1.5 min-w-0">
+            <span className="text-ink-0">{asset}</span>
+            <span className={color}>{pnl >= 0 ? '+' : '−'}USD {usd(Math.abs(pnl))}</span>
+          </p>
+        </div>
       ) : (
         <p className="text-sm font-semibold tabular text-ink-3">—</p>
       )}
