@@ -329,6 +329,16 @@ def init_db():
         conn.execute("ALTER TABLE operations ADD COLUMN currency TEXT")
     if cols and 'fx_to_usd' not in cols:
         conn.execute("ALTER TABLE operations ADD COLUMN fx_to_usd REAL")
+    # Phase 3D sub-fix: cost basis consumido por amortizaciones (lo que costó
+    # el face devuelto). Permite distinguir "devolución de capital" de
+    # "ganancia realizada del amort":
+    #   • Cash recibido (pnl_usd) = monto neto acreditado al broker.
+    #   • Cost basis consumido = parte proporcional del invested original.
+    #   • Ganancia del amort = pnl_usd − cost_basis_consumed.
+    # NULL para cupones (no aplica) y para amorts viejas (legacy, pre Phase 3D).
+    cols = _table_cols(conn, 'operations')
+    if cols and 'cost_basis_consumed' not in cols:
+        conn.execute("ALTER TABLE operations ADD COLUMN cost_basis_consumed REAL")
     conn.commit()
 
     # ─── bond_indices_daily ────────────────────────────────────────────────
@@ -1771,24 +1781,42 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
             fx_to_usd = None  # ARS sin FX explícito — frontend usa fallback
 
         with conn:  # tx atómica
-            # 1. Insert operation
+            # Pre-cálculo del cost basis consumido para amortizaciones.
+            # Esto se necesita ANTES del INSERT para guardarlo en la operation,
+            # y también ANTES del decrement (si aplica) — aunque si decrementamos,
+            # la versión "read-only" debería dar el mismo número que la "mutate".
+            cost_basis_consumed = None
+            qty_decremented = 0.0
+            invested_decremented = 0.0
+            if data.flow_type == 'amortization':
+                if data.decrement_quantity:
+                    qty_decremented, invested_decremented = _amortize_position_fifo(
+                        conn, uid, data.broker, data.asset.upper(), net_amount
+                    )
+                    cost_basis_consumed = invested_decremented
+                else:
+                    # Calcular sin tocar las posiciones — útil para tracking
+                    # del P&L real cuando el user prefiere mantener qty intacta.
+                    cost_basis_consumed = _compute_amort_cost_basis_fifo(
+                        conn, uid, data.broker, data.asset.upper(), net_amount
+                    )
+
+            # 1. Insert operation (con cost_basis_consumed si aplica)
             conn.execute(
                 """INSERT INTO operations (user_id, date, broker, asset, op_type,
-                   pnl_usd, commissions, notes, currency, fx_to_usd)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   pnl_usd, commissions, notes, currency, fx_to_usd, cost_basis_consumed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (uid, data.date, data.broker, data.asset.upper(), op_type,
-                 net_amount, commissions, data.notes, currency, fx_to_usd),
+                 net_amount, commissions, data.notes, currency, fx_to_usd, cost_basis_consumed),
             )
             # 2. Acreditar cash del broker
             _adjust_cash(conn, uid, data.broker, _cash_asset_for_currency(broker_currency), net_amount)
 
-            # 3. (Opcional) decrementar quantity FIFO si es amortización
-            qty_decremented = 0.0
-            invested_decremented = 0.0
-            if data.decrement_quantity and data.flow_type == 'amortization':
-                qty_decremented, invested_decremented = _amortize_position_fifo(
-                    conn, uid, data.broker, data.asset.upper(), net_amount
-                )
+        # Ganancia realizada del amort (sólo para diagnóstico / response):
+        # cash recibido − cost basis consumido. Para cupones siempre = cash.
+        realized_gain = None
+        if data.flow_type == 'amortization' and cost_basis_consumed is not None:
+            realized_gain = round(net_amount - cost_basis_consumed, 6)
 
         return {
             'ok': True,
@@ -1800,6 +1828,8 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
             'fx_to_usd': fx_to_usd,
             'qty_decremented': qty_decremented,
             'invested_decremented': invested_decremented,
+            'cost_basis_consumed': cost_basis_consumed,
+            'realized_gain': realized_gain,
         }
     except HTTPException:
         raise
@@ -1807,6 +1837,44 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
         raise HTTPException(500, f"Error al registrar el cashflow del bono: {ex}")
     finally:
         conn.close()
+
+
+def _compute_amort_cost_basis_fifo(conn, uid: int, broker: str, asset: str, amort_amount: float) -> float:
+    """Versión READ-ONLY de _amortize_position_fifo. Calcula cuánto cost basis
+    SE CONSUMIRÍA al aplicar una amortización FIFO, sin modificar las posiciones.
+
+    Útil cuando el user registra una amortización pero NO quiere decrementar la
+    quantity (decrement_quantity=false): igual queremos saber la ganancia
+    realizada del amort para reportes de P&L correctos.
+
+    Devuelve 0 si no hay posiciones de ese (broker, asset) o si amort_amount
+    es 0 o no aplica.
+    """
+    lots = conn.execute(
+        """SELECT quantity, invested FROM positions
+           WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
+           ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
+        (uid, broker, asset),
+    ).fetchall()
+    if not lots or amort_amount <= 0:
+        return 0.0
+    total_qty = sum((l['quantity'] or 0) for l in lots)
+    qty_to_take = min(amort_amount, total_qty)
+    if qty_to_take <= 0:
+        return 0.0
+    remaining = qty_to_take
+    total_consumed = 0.0
+    for lot in lots:
+        if remaining <= 1e-9:
+            break
+        lot_qty = lot['quantity'] or 0
+        take = min(remaining, lot_qty)
+        if take <= 0:
+            continue
+        ratio = take / lot_qty
+        total_consumed += (lot['invested'] or 0) * ratio
+        remaining -= take
+    return round(total_consumed, 6)
 
 
 def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amount: float):
