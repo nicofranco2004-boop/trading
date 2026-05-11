@@ -316,6 +316,24 @@ def init_db():
         conn.execute("ALTER TABLE operations ADD COLUMN notes TEXT")
     conn.commit()
 
+    # ─── bond_indices_daily ────────────────────────────────────────────────
+    # Cache de índices financieros publicados diariamente (CER, UVA, A3500).
+    # Tabla shared cross-user — los índices son datos públicos macro, no
+    # personales. Phase 3C: CER para bonos AR ajustados por inflación
+    # (TX26, TX28, TZX26/27/28).
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS bond_indices_daily (
+            index_name TEXT NOT NULL,    -- 'CER' | 'UVA' | 'A3500'
+            date TEXT NOT NULL,          -- 'YYYY-MM-DD'
+            value REAL NOT NULL,         -- coeficiente del día
+            source TEXT,                 -- 'bcra' | 'argentinadatos' | 'manual'
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (index_name, date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_bond_indices_date ON bond_indices_daily(date);
+    """)
+    conn.commit()
+
     # config
     cols = _table_cols(conn, 'config')
     if not cols:
@@ -960,6 +978,146 @@ def get_benchmarks(uid: int = Depends(get_current_user)):
     _bench_cache["data"] = data
     _bench_cache["ts"] = now
     return data
+
+
+# ─── Bond indices (CER / UVA / A3500) ─────────────────────────────────────────
+# Phase 3C: serie diaria de coeficientes para bonos AR ajustados por
+# inflación o tipo de cambio. CER es el más urgente (audit hallazgo C1):
+# bonos TX26/TX28/TZX26/27/28 ajustan capital diariamente por este índice.
+#
+# Estrategia de cache:
+#   • Persistimos cada (index_name, date) en `bond_indices_daily`.
+#   • Una request entra → consultamos tabla → si falta cobertura del rango
+#     pedido, fetcheamos source externa → upsert → devolvemos.
+#   • Frescura: TTL de 4 horas en MEMORY cache (`_indices_fetched`) para
+#     no martillar la fuente cuando se piden los mismos rangos repetidamente.
+#   • Fallback graceful: si la fuente externa falla, devolvemos lo cacheado
+#     + flag `stale: true` para que el frontend muestre warning.
+
+_indices_fetched = {}  # { index_name: last_fetch_ts }
+INDICES_TTL = 4 * 3600  # 4 hours
+
+
+def _fetch_cer_series():
+    """Trae la serie histórica diaria de CER desde argentinadatos.com.
+
+    Endpoint público: https://api.argentinadatos.com/v1/finanzas/indices/cer
+    Formato: [{ fecha: 'YYYY-MM-DD', valor: number }]. Returns dict
+    {YYYY-MM-DD: value} o {} en caso de error.
+    """
+    try:
+        r = requests.get("https://api.argentinadatos.com/v1/finanzas/indices/cer", timeout=10)
+        if r.status_code != 200:
+            return {}
+        out = {}
+        for item in r.json():
+            fecha = item.get("fecha", "")
+            val = item.get("valor")
+            if fecha and val is not None and _DATE_RE.match(fecha):
+                out[fecha] = float(val)
+        return out
+    except Exception:
+        return {}
+
+
+def _ensure_index_cached(conn, index_name: str):
+    """Refresca el cache de un índice si TTL expiró. No-op si fresh."""
+    now = time.time()
+    last = _indices_fetched.get(index_name, 0)
+    if now - last < INDICES_TTL:
+        return
+    fetcher_map = {"CER": _fetch_cer_series}
+    fetcher = fetcher_map.get(index_name)
+    if not fetcher:
+        return
+    series = fetcher()
+    if not series:
+        return  # No actualizamos timestamp en caso de error
+    iso_now = datetime.utcnow().isoformat() + "Z"
+    with conn:
+        for date, value in series.items():
+            conn.execute(
+                """INSERT INTO bond_indices_daily (index_name, date, value, source, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(index_name, date) DO UPDATE SET
+                       value = excluded.value,
+                       source = excluded.source,
+                       updated_at = excluded.updated_at""",
+                (index_name, date, value, 'argentinadatos', iso_now),
+            )
+    _indices_fetched[index_name] = now
+
+
+@app.get("/api/bond-indices/{index_name}")
+def get_bond_index_series(
+    index_name: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    date: Optional[str] = None,
+    uid: int = Depends(get_current_user),
+):
+    """Devuelve la serie diaria del índice solicitado.
+
+    Query params:
+      • date_from + date_to: rango cerrado [from, to].
+      • date: un solo día (atajo, equivalente a from=to=date).
+      • sin params: serie completa disponible en cache.
+
+    Response:
+      {
+        index_name: 'CER',
+        series: { 'YYYY-MM-DD': 123.45, ... },
+        count: number,
+        latest_date: 'YYYY-MM-DD',
+        stale: false   // true si TTL expiró y no se pudo actualizar
+      }
+    """
+    if index_name not in ("CER", "UVA", "A3500"):
+        raise HTTPException(400, f"Índice no soportado: {index_name}")
+    if date and (date_from or date_to):
+        raise HTTPException(400, "Usá `date` o `date_from`/`date_to`, no ambos")
+    if date:
+        if not _DATE_RE.match(date):
+            raise HTTPException(422, f"Fecha inválida: {date}")
+        date_from = date_to = date
+    for d in (date_from, date_to):
+        if d and not _DATE_RE.match(d):
+            raise HTTPException(422, f"Fecha inválida: {d}")
+
+    conn = get_db()
+    try:
+        # Best-effort refresh del cache (no falla si la fuente externa cae).
+        try:
+            _ensure_index_cached(conn, index_name)
+        except Exception:
+            pass
+
+        q = "SELECT date, value FROM bond_indices_daily WHERE index_name = ?"
+        params = [index_name]
+        if date_from:
+            q += " AND date >= ?"
+            params.append(date_from)
+        if date_to:
+            q += " AND date <= ?"
+            params.append(date_to)
+        q += " ORDER BY date ASC"
+        rows = conn.execute(q, params).fetchall()
+        series = {r["date"]: r["value"] for r in rows}
+
+        # Stale check: si no se actualizó hace TTL+1h Y no hay data fresh
+        last_fetch = _indices_fetched.get(index_name, 0)
+        stale = (time.time() - last_fetch) > (INDICES_TTL + 3600)
+
+        latest_date = rows[-1]["date"] if rows else None
+        return {
+            "index_name": index_name,
+            "series": series,
+            "count": len(series),
+            "latest_date": latest_date,
+            "stale": stale,
+        }
+    finally:
+        conn.close()
 
 
 # ─── Prices ──────────────────────────────────────────────────────────────────

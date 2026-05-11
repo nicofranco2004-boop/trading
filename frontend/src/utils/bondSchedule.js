@@ -77,6 +77,25 @@ function monthsForFreq(freq) {
   }
 }
 
+// LOCF (Last Observation Carried Forward) sobre la serie CER.
+// El BCRA publica el CER con lag de 1-2 días; si la fecha exacta no está,
+// usamos el último valor publicado anterior. Si la fecha es FUTURA y no hay
+// publicación, también usamos LOCF — el caller debe entender que el flujo
+// futuro se proyecta con CER plana desde el último observado (conservador).
+function lookupCer(series, date, sortedDates) {
+  if (!series) return null
+  if (series[date] != null) return series[date]
+  const keys = sortedDates || Object.keys(series).sort()
+  // Buscar la última fecha < `date`. Binary search seria mejor pero la serie
+  // tiene <2000 días → linear es OK.
+  let best = null
+  for (const k of keys) {
+    if (k <= date) best = k
+    else break
+  }
+  return best ? series[best] : null
+}
+
 // Devuelve el rate efectivo % anual aplicable a una fecha dada.
 // Si meta tiene `couponSchedule` (forma rica), busca el período que contiene
 // la fecha. Si no, devuelve `couponRate` constante (forma legacy).
@@ -95,21 +114,64 @@ function getRateForDate(meta, date) {
 // el ticker dado. Devuelve null si el bono no tiene metadata o no aplica
 // (ej: ETF sin maturity).
 //
-// Cada entry: { date, coupon, amort, total, rate }
+// Cada entry: { date, coupon, amort, total, rate, cerFactor? }
 //   • date: 'YYYY-MM-DD'
 //   • coupon: monto del cupón en esa fecha, por 100 face original
 //   • amort: monto de amortización en esa fecha, por 100 face original
 //   • total: coupon + amort (conveniencia)
 //   • rate: rate anual % aplicable en ese período (para display + debug)
-export function generateSchedule(ticker) {
+//   • cerFactor: si el bono es CER y se pasó `options.cerSeries`, el factor
+//     aplicado en esa fecha (CER(date) / CER(emission)). Para entries sin
+//     ajuste (bonos no-CER, o serie no disponible), cerFactor es null/1.
+//
+// Phase 3C: argumento `options.cerSeries` es un dict {YYYY-MM-DD: value} con
+// la serie CER. Si está presente Y el bono es type='cer' con cerEmissionDate
+// definido, el motor multiplica cada flujo por el factor del CER en esa fecha.
+// Si la fecha exacta no está en la serie, busca el último valor anterior
+// disponible (CER se publica diariamente con lag de 1-2 días).
+export function generateSchedule(ticker, options = {}) {
   const meta = getBondMeta(ticker)
   if (!meta) return null
   if (!meta.maturity) return null  // ETFs sin maturity → no schedule
   const { maturity, couponRate, couponFreq } = meta
 
-  // ── Caso zero-cupón: pago único = 100 al vencimiento ─────────────────────
+  // ── Resolver función de ajuste CER ───────────────────────────────────────
+  // Si el bono es CER y se pasó la serie, factor(date) = serie[date] / serie[emission].
+  // Si la fecha exacta falta, usamos la última fecha previa disponible
+  // (LOCF — Last Observation Carried Forward, convención BCRA).
+  const cerSeries = options.cerSeries
+  const isCer = meta.type === 'cer' && meta.cerEmissionDate && cerSeries
+  let cerBase = null
+  let sortedCerDates = null
+  if (isCer) {
+    cerBase = lookupCer(cerSeries, meta.cerEmissionDate)
+    sortedCerDates = Object.keys(cerSeries).sort()
+    if (!cerBase) {
+      // No tenemos el CER base — no podemos calcular factor de ajuste.
+      // Fallback: schedule sin ajuste, callers verán cerFactor=null.
+    }
+  }
+  function adjFactor(date) {
+    if (!isCer || !cerBase) return 1
+    const val = lookupCer(cerSeries, date, sortedCerDates)
+    if (!val) return 1
+    return val / cerBase
+  }
+
+  // ── Caso zero-cupón: pago único = 100 × CER_factor al vencimiento ────────
   if (couponFreq === 'none' || !couponRate) {
-    return [{ date: maturity, coupon: 0, amort: 100, total: 100, rate: 0 }]
+    const factor = adjFactor(maturity)
+    const amortAjustado = +(100 * factor).toFixed(6)
+    const entry = {
+      date: maturity,
+      coupon: 0,
+      amort: amortAjustado,
+      total: amortAjustado,
+      rate: 0,
+    }
+    // Sólo agregamos cerFactor en bonos CER (con o sin serie disponible)
+    if (meta.type === 'cer') entry.cerFactor = isCer && cerBase ? factor : null
+    return [entry]
   }
 
   const months = monthsForFreq(couponFreq)
@@ -167,24 +229,34 @@ export function generateSchedule(ticker) {
   for (const date of dates) {
     const rateAnnual = getRateForDate(meta, date)
     const couponPerPeriod = rateAnnual / (12 / months)
-    const couponAmount = +(couponPerPeriod * face / 100).toFixed(6)
+    const couponAmountNominal = couponPerPeriod * face / 100
 
-    let amortOnThisDate = 0
+    let amortNominal = 0
     if (isAmortizing) {
-      amortOnThisDate = amortMap.get(date) || 0
+      amortNominal = amortMap.get(date) || 0
     } else if (date === maturity) {
       // Bullet: maturity devuelve todo el face remanente
-      amortOnThisDate = face
+      amortNominal = face
     }
 
-    schedule.push({
+    // Phase 3C: ajuste CER. Para bonos CER, el capital nominal se multiplica
+    // por el factor de la fecha de pago. Cupón y amort van AMBOS sobre el
+    // capital ajustado (es el comportamiento estándar de los TX y TZX según
+    // prospecto BCRA / MECON).
+    const factor = adjFactor(date)
+    const couponAmount = +(couponAmountNominal * factor).toFixed(6)
+    const amortOnThisDate = +(amortNominal * factor).toFixed(6)
+
+    const entry = {
       date,
       coupon: couponAmount,
-      amort: +amortOnThisDate.toFixed(6),
+      amort: amortOnThisDate,
       total: +(couponAmount + amortOnThisDate).toFixed(6),
       rate: rateAnnual,
-    })
-    face = Math.max(0, face - amortOnThisDate)
+    }
+    if (meta.type === 'cer') entry.cerFactor = isCer && cerBase ? factor : null
+    schedule.push(entry)
+    face = Math.max(0, face - amortNominal)  // face nominal decrece sin ajuste CER
   }
 
   // Sanity: si después de todos los pagos sobró face, lo devolvemos en el
@@ -204,23 +276,24 @@ function todayIso() {
 }
 
 // Devuelve sólo los pagos futuros (date > from). Si from no se pasa, usa hoy.
-export function getRemainingPayments(ticker, from) {
-  const sched = generateSchedule(ticker)
+// `options.cerSeries` se propaga a generateSchedule para ajuste de CER.
+export function getRemainingPayments(ticker, from, options = {}) {
+  const sched = generateSchedule(ticker, options)
   if (!sched) return null
   const cutoff = from || todayIso()
   return sched.filter(p => p.date > cutoff)
 }
 
 // El próximo pago, o null si ya venció.
-export function getNextPayment(ticker, from) {
-  const rest = getRemainingPayments(ticker, from)
+export function getNextPayment(ticker, from, options = {}) {
+  const rest = getRemainingPayments(ticker, from, options)
   if (!rest || rest.length === 0) return null
   return rest[0]
 }
 
 // Suma total a cobrar de acá hasta maturity (por 100 face).
-export function totalRemainingPayout(ticker, from) {
-  const rest = getRemainingPayments(ticker, from)
+export function totalRemainingPayout(ticker, from, options = {}) {
+  const rest = getRemainingPayments(ticker, from, options)
   if (!rest) return null
   return rest.reduce((s, p) => s + p.total, 0)
 }
@@ -239,14 +312,14 @@ export function totalRemainingPayout(ticker, from) {
 // `estimateYield(ticker, price, from)` para no romper consumers existentes.
 
 export function estimateYieldDetailed(ticker, priceInput, from, options = {}) {
-  const { priceIsDirty = false } = options
+  const { priceIsDirty = false, cerSeries = null } = options
   if (!priceInput || priceInput <= 0) {
     return { ytm: null, converged: false, method: 'invalid_price', accrued: 0, dirty: null, clean: null }
   }
   const meta = getBondMeta(ticker)
   if (!meta) return { ytm: null, converged: false, method: 'no_meta', accrued: 0 }
 
-  const sched = generateSchedule(ticker)
+  const sched = generateSchedule(ticker, { cerSeries })
   if (!sched) return { ytm: null, converged: false, method: 'no_schedule', accrued: 0 }
 
   const base = from || todayIso()
