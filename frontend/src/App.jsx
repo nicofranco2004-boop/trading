@@ -12,6 +12,7 @@ import Insights from './pages/Insights'
 import Admin from './pages/Admin'
 import Goals from './pages/Goals'
 import Imports from './pages/Imports'
+import MonthlyReports from './pages/MonthlyReports'
 
 function Layout() {
   const { user } = useAuth()
@@ -32,6 +33,7 @@ function Layout() {
         <Route path="/posiciones" element={<Positions />} />
         <Route path="/insights" element={<Insights />} />
         <Route path="/mensual" element={<Monthly />} />
+        <Route path="/reportes" element={<MonthlyReports />} />
         <Route path="/operaciones" element={<Operations />} />
         <Route path="/config" element={<Config />} />
         <Route path="/objetivos" element={<Goals />} />
