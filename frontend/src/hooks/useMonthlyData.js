@@ -108,16 +108,24 @@ function computeDriversForMonth({ monthOps, deltaPct, sp500Map, inflationMap, pe
     }
   }
 
-  // Inflación: el map ya viene como % del mes directamente
+  // Inflación: el map ya viene como % del mes directamente.
+  // Si showInflation === true pero el mes aún no tiene dato publicado
+  // (lag típico INDEC ~14 días), devolvemos pending=true en lugar de
+  // ocultar la fila — así el usuario entiende que la métrica existe pero
+  // todavía no hay data oficial. Si showInflation === false (cartera sin
+  // ARS), vsInflation queda null y la fila se oculta como hasta ahora.
   let vsInflation = null
-  if (showInflation && inflationMap && deltaPct != null) {
-    const inflPct = inflationMap[period]
+  let vsInflationPending = false
+  if (showInflation && deltaPct != null) {
+    const inflPct = inflationMap?.[period]
     if (inflPct != null) {
       vsInflation = deltaPct - inflPct
+    } else {
+      vsInflationPending = true
     }
   }
 
-  return { bestOp, worstOp, vsSp500, vsInflation }
+  return { bestOp, worstOp, vsSp500, vsInflation, vsInflationPending }
 }
 
 /**

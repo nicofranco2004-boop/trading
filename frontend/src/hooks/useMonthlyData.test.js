@@ -469,6 +469,40 @@ describe('buildMonthlyReports', () => {
       expect(out.years[0].months[0].drivers.vsInflation).toBeNull()
     })
 
+    it('vsInflationPending=true cuando hay cartera ARS pero falta data INDEC del mes', () => {
+      // INDEC publica con lag de ~14 días → meses recientes pueden no tener
+      // dato aún. La fila debe seguir visible (pending) en lugar de ocultarse.
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 4, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+        [],
+        [],
+        'global',
+        {
+          bench: { sp500: { '2026-03': 5000, '2026-04': 5100 }, inflation_ar: { '2026-03': 3.4 } },
+          brokers: brokersArs,
+        }
+      )
+      const d = out.years[0].months[0].drivers
+      expect(d.vsInflation).toBeNull()
+      expect(d.vsInflationPending).toBe(true)
+    })
+
+    it('vsInflationPending=false cuando NO hay cartera ARS (la fila se oculta)', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 4, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+        [],
+        [],
+        'global',
+        {
+          bench: { inflation_ar: {} },
+          brokers: brokersUsd,
+        }
+      )
+      const d = out.years[0].months[0].drivers
+      expect(d.vsInflation).toBeNull()
+      expect(d.vsInflationPending).toBe(false)
+    })
+
     it('vsSp500 = null si falta data del mes o del mes anterior', () => {
       const out = buildMonthlyReports(
         [{ year: 2026, month: 5, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],

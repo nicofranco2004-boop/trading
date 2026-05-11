@@ -462,10 +462,12 @@ function MonthDetailModal({ month, broker, onClose }) {
                   label="vs S&P 500"
                   deltaPct={month.drivers.vsSp500}
                 />
-                {month.drivers.vsInflation != null && (
+                {(month.drivers.vsInflation != null || month.drivers.vsInflationPending) && (
                   <BenchmarkMetric
                     label="vs Inflación (ARS)"
                     deltaPct={month.drivers.vsInflation}
+                    pending={month.drivers.vsInflationPending}
+                    pendingTooltip="INDEC publica la inflación con ~14 días de lag. El dato de este mes aún no está disponible."
                   />
                 )}
               </div>
@@ -509,15 +511,30 @@ function DriverMetric({ label, asset, pnl, positive }) {
 }
 
 // vs S&P / vs Inflación. Delta en puntos %.
-function BenchmarkMetric({ label, deltaPct }) {
+// Si pending=true, mostramos '—' + tooltip explicando que la data aún no está
+// disponible (caso típico: INDEC con lag de ~14 días).
+function BenchmarkMetric({ label, deltaPct, pending, pendingTooltip }) {
   const hasData = deltaPct != null && !isNaN(deltaPct)
   const positive = hasData && deltaPct >= 0
   const color = hasData
     ? (positive ? 'text-rendi-pos' : 'text-rendi-neg')
     : 'text-ink-3'
   return (
-    <div className="bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-line rounded p-3">
-      <p className="label-mono mb-1">{label}</p>
+    <div
+      className="bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-line rounded p-3"
+      title={pending && pendingTooltip ? pendingTooltip : undefined}
+    >
+      <p className="label-mono mb-1 inline-flex items-center gap-1.5">
+        {label}
+        {pending && (
+          <span
+            className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 text-ink-2 border border-line"
+            aria-label="Pendiente de publicación"
+          >
+            Pendiente
+          </span>
+        )}
+      </p>
       {hasData ? (
         <p className={`text-sm font-semibold tabular ${color}`}>
           {pctSigned(deltaPct / 100)}
