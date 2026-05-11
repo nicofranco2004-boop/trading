@@ -309,6 +309,11 @@ def init_db():
     cols = _table_cols(conn, 'operations')
     if cols and 'commissions' not in cols:
         conn.execute("ALTER TABLE operations ADD COLUMN commissions REAL DEFAULT 0")
+    # Migración: columna notes (texto libre — usada por cobranzas de bonos,
+    # eventualmente extensible a otras ops para capturar contexto del user)
+    cols = _table_cols(conn, 'operations')
+    if cols and 'notes' not in cols:
+        conn.execute("ALTER TABLE operations ADD COLUMN notes TEXT")
     conn.commit()
 
     # config
@@ -1498,6 +1503,103 @@ class ConversionIn(BaseModel):
         if not _DATE_RE.match(v):
             raise ValueError('Fecha inválida')
         return v
+
+
+# ─── Bonos: cobranza de cupones / amortizaciones ─────────────────────────────
+
+class BondCashflowIn(BaseModel):
+    """Registro de un pago recibido de un bono (cupón o amortización).
+
+    Crea:
+      1. Una operation type='Cupón' o 'Amortización' (registro histórico).
+      2. Acreditación al cash del broker por el monto recibido.
+
+    Todo atómico (mismo conn / transaction).
+    """
+    broker: str = Field(..., min_length=1, max_length=MAX_STR)
+    asset: str = Field(..., min_length=1, max_length=20)
+    flow_type: str = Field(..., max_length=20)  # 'coupon' | 'amortization'
+    amount: float = Field(..., gt=0, le=1e12)
+    date: str = Field(..., max_length=10)
+    commissions: Optional[float] = Field(0, ge=0, le=1e12)
+    notes: Optional[str] = Field(None, max_length=MAX_NOTES)
+
+    @field_validator('flow_type')
+    @classmethod
+    def valid_flow_type(cls, v):
+        if v not in ('coupon', 'amortization'):
+            raise ValueError("flow_type debe ser 'coupon' o 'amortization'")
+        return v
+
+    @field_validator('date')
+    @classmethod
+    def valid_date(cls, v):
+        if not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida')
+        return v
+
+
+@app.post("/api/bonds/cashflow")
+def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
+    """Registra un cupón cobrado o amortización recibida de un bono.
+
+    Hace 2 cosas atómicamente:
+      1. INSERT en operations (op_type='Cupón' o 'Amortización')
+      2. _adjust_cash del broker por el monto neto (amount - commissions)
+
+    El monto se acredita en la moneda del broker (USDT/USD/ARS). Si el bono
+    paga en USD pero el broker es ARS, el user debe cargar el equivalente
+    en pesos que efectivamente recibió.
+    """
+    conn = get_db()
+    try:
+        # Validar broker existe y es del user
+        broker_row = conn.execute(
+            "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, data.broker)
+        ).fetchone()
+        if not broker_row:
+            raise HTTPException(404, f"Broker '{data.broker}' no encontrado")
+
+        op_type = 'Cupón' if data.flow_type == 'coupon' else 'Amortización'
+        commissions = data.commissions or 0
+        net_amount = data.amount - commissions
+        if net_amount <= 0:
+            raise HTTPException(400, "El monto neto (descontando comisiones) debe ser > 0")
+
+        with conn:  # tx atómica
+            # 1. Insert operation
+            conn.execute(
+                """INSERT INTO operations (user_id, date, broker, asset, op_type,
+                   pnl_usd, commissions, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (uid, data.date, data.broker, data.asset.upper(), op_type,
+                 net_amount, commissions, data.notes),
+            )
+            # 2. Acreditar cash del broker
+            _adjust_cash(conn, uid, data.broker, _cash_asset_for_currency(broker_row['currency']), net_amount)
+
+        return {
+            'ok': True,
+            'amount_net': net_amount,
+            'op_type': op_type,
+            'broker': data.broker,
+            'asset': data.asset.upper(),
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"Error al registrar el cashflow del bono: {ex}")
+    finally:
+        conn.close()
+
+
+def _cash_asset_for_currency(currency: str) -> str:
+    """Mapea la currency del broker al asset name del cash position."""
+    if currency == 'ARS':
+        return 'ARS'
+    if currency == 'USD':
+        return 'USD'
+    return 'USDT'
 
 
 def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
