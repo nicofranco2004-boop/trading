@@ -76,7 +76,29 @@ export default function Positions() {
   // de /operations al montar y se refresca con loadAll() después de un INSERT.
   // Lo agrupamos por `${broker}:${asset}` vía useMemo en `bondCashflowsByKey`.
   const [bondOps, setBondOps] = useState([])
+  // Phase 3C: serie diaria de CER, fetcheada lazy cuando el user expande un
+  // bono CER. Cache shared para todos los bonos CER (la serie es la misma).
+  // null = no se intentó fetch; {} = se intentó pero vino vacío (graceful);
+  // dict no-vacío = serie disponible.
+  const [cerSeries, setCerSeries] = useState(null)
+  const [cerStale, setCerStale] = useState(false)
   const latestRef = useRef({})
+
+  // Carga la serie CER del backend (idempotente — sólo la primera llamada
+  // dispara fetch real, las siguientes son cache hit en `cerSeries`).
+  async function ensureCerSeries() {
+    if (cerSeries !== null) return cerSeries
+    try {
+      const res = await api.get('/bond-indices/CER')
+      setCerSeries(res.series || {})
+      setCerStale(!!res.stale)
+      return res.series || {}
+    } catch {
+      setCerSeries({})
+      setCerStale(true)
+      return {}
+    }
+  }
 
   function toggleBondExpand(p) {
     const key = `${p.broker}:${p.asset}`
@@ -85,6 +107,9 @@ export default function Positions() {
       next.has(key) ? next.delete(key) : next.add(key)
       return next
     })
+    // Si es CER y la serie aún no se trajo, traerla async (no bloqueante).
+    const meta = getBondMeta(p.asset)
+    if (meta?.type === 'cer') ensureCerSeries()
   }
 
   function openBondCashflow(p, flowType) {
@@ -746,6 +771,8 @@ export default function Positions() {
                             summary={bondSummary}
                             isARS={true}
                             currentPrice={c.priceArs}
+                            cerSeries={cerSeries}
+                            cerStale={cerStale}
                             onAddCoupon={() => openBondCashflow(p, 'coupon')}
                             onAddAmortization={() => openBondCashflow(p, 'amortization')}
                           />
@@ -878,6 +905,8 @@ export default function Positions() {
                           summary={bondSummary}
                           isARS={false}
                           currentPrice={c.price}
+                          cerSeries={cerSeries}
+                          cerStale={cerStale}
                           onAddCoupon={() => openBondCashflow(p, 'coupon')}
                           onAddAmortization={() => openBondCashflow(p, 'amortization')}
                         />
@@ -1332,7 +1361,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
 // Convención para TIR: usamos `currentPrice × 100` como precio por 100 nominal,
 // asumiendo qty=nominales-individuales (1 nominal = 1 USD/ARS de face value).
 // Para ETFs y bonos sin maturity, omitimos TIR.
-function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, onAddCoupon, onAddAmortization }) {
+function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, cerStale, onAddCoupon, onAddAmortization }) {
   const meta = getBondMeta(p.asset)
   const moneyLabel = isARS ? 'ARS' : 'USD'
   const fmt = isARS ? ars : usd
@@ -1343,27 +1372,47 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, onAddCoupon, 
   const ops = summary?.ops || []
   const recoveryPct = invested > 0 ? (total / invested) : 0
 
-  // ── Fase 2+3A: schedule + TIR + próximo pago ─────────────────────────────
+  // ── Fase 2+3A+3C: schedule + TIR + próximo pago ──────────────────────────
   // Esto SOLO aplica a bonos con maturity definida en bondMeta. ETFs y
   // tickers sin metadata caen en el fallback de Fase 1.
+  //
+  // Phase 3C: si el bono es CER (meta.type === 'cer'), pasamos la serie CER
+  // al motor para que ajuste capital + cupones. Si cerSeries aún no llegó
+  // (state null o vacío), el motor cae a comportamiento nominal con warning
+  // visual.
   const today = new Date().toISOString().slice(0, 10)
-  const fullSchedule = generateSchedule(p.asset)
-  const remaining = fullSchedule ? getRemainingPayments(p.asset, today) : null
-  // pricePer100: el TIR se calcula sobre "precio por 100 nominal". Asumimos
-  // qty=nominales VN y price=moneda del bono por nominal → ×100.
-  // Phase 3A: usamos la API rica `estimateYieldDetailed`. Por default trata
-  // el input como CLEAN price (precio que ves en el broker) y suma accrued
-  // internamente → TIR sobre dirty price, convención del bono según meta.
+  const cerOpts = (meta?.type === 'cer' && cerSeries && Object.keys(cerSeries).length > 0)
+    ? { cerSeries }
+    : {}
+  const fullSchedule = generateSchedule(p.asset, cerOpts)
+  const remaining = fullSchedule ? getRemainingPayments(p.asset, today, cerOpts) : null
   const pricePer100Clean = currentPrice != null && currentPrice > 0
     ? currentPrice * 100
     : null
   const yieldDetail = pricePer100Clean != null
-    ? estimateYieldDetailed(p.asset, pricePer100Clean, today)
+    ? estimateYieldDetailed(p.asset, pricePer100Clean, today, cerOpts)
     : null
-  // El YTM devuelto YA es efectivo anual (los t están en años decimales →
-  // discount factor (1+r)^t implica que r es la EAR). No requiere conversión.
   const yieldEstimate = yieldDetail?.ytm ?? null
   const nextPay = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today) : null
+  // Para bonos CER: el coeficiente actual (factor al día de hoy) ayuda a
+  // mostrar contexto: "CER hoy ≈ 2.4× emisión" → el user ve el ajuste
+  // implícito en sus flujos futuros.
+  function cerLocfLookup(date) {
+    if (!cerSeries || !date) return null
+    if (cerSeries[date] != null) return cerSeries[date]
+    const dates = Object.keys(cerSeries).sort()
+    let best = null
+    for (const d of dates) {
+      if (d <= date) best = d
+      else break
+    }
+    return best ? cerSeries[best] : null
+  }
+  const cerToday = meta?.type === 'cer' ? cerLocfLookup(today) : null
+  const cerBase = meta?.type === 'cer' && meta.cerEmissionDate ? cerLocfLookup(meta.cerEmissionDate) : null
+  const cerFactorToday = (cerToday != null && cerBase != null && cerBase > 0)
+    ? cerToday / cerBase
+    : null
 
   return (
     <tr className="bg-rendi-accent/[0.04] dark:bg-rendi-accent/[0.05] border-b border-line">
@@ -1403,6 +1452,25 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, onAddCoupon, 
                   <p className="text-[10px] text-rendi-warn font-mono">
                     ⚠ Cronograma aproximado — verificar contra prospecto para fineza
                   </p>
+                )}
+                {/* Phase 3C: status del ajuste CER. Sólo aplica a bonos type='cer'. */}
+                {meta.type === 'cer' && (
+                  <div className="mt-1">
+                    {cerFactorToday != null ? (
+                      <p className="text-[10px] text-rendi-accent font-mono">
+                        ✓ Capital ajustado por CER · factor hoy ≈ {cerFactorToday.toFixed(3)}×
+                        {cerStale && <span className="text-rendi-warn"> (serie posiblemente desactualizada)</span>}
+                      </p>
+                    ) : cerSeries === null ? (
+                      <p className="text-[10px] text-ink-3 font-mono">
+                        Cargando coeficiente CER…
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-rendi-warn font-mono">
+                        ⚠ Serie CER no disponible — flujos mostrados en nominal sin ajuste de inflación
+                      </p>
+                    )}
+                  </div>
                 )}
               </>
             ) : (

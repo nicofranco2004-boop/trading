@@ -105,13 +105,31 @@ export const BOND_META = {
   GD46: arSovereign({ ticker: 'GD46', governingLaw: 'NewYork', isin: 'US040114HY88', displayRate: 2.5 }),
 
   // ─── CER / ARS-Linked ─────────────────────────────────────────────────────
-  TX26: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2026-11-09', couponRate: 2.0, couponFreq: 'semiannual' },
-  TX28: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2028-11-09', couponRate: 2.25, couponFreq: 'semiannual' },
-  T2X5: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2025-11-09', couponRate: 1.4, couponFreq: 'semiannual' },
+  // Phase 3C: agregamos `cerEmissionDate` para el factor de ajuste del capital.
+  // El motor (bondSchedule v3) multiplica cada flujo por:
+  //   factor(payment_date) = CER(payment_date) / CER(cerEmissionDate)
+  // Si la serie CER no está disponible, fallback graceful: asume factor = 1
+  // (comportamiento legacy) con warning visual.
+  TX26: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2026-11-09',
+          couponRate: 2.0, couponFreq: 'semiannual', dayCount: 'ACT/365',
+          cerEmissionDate: '2020-08-04' },
+  TX28: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2028-11-09',
+          couponRate: 2.25, couponFreq: 'semiannual', dayCount: 'ACT/365',
+          cerEmissionDate: '2020-08-04' },
+  T2X5: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2025-11-09',
+          couponRate: 1.4, couponFreq: 'semiannual', dayCount: 'ACT/365',
+          cerEmissionDate: '2020-08-04' },
   // Los TZX son cero-cupón (no pagan intereses periódicos, todo al vencimiento)
-  TZX26: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2026-06-30', couponRate: 0, couponFreq: 'none' },
-  TZX27: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2027-06-30', couponRate: 0, couponFreq: 'none' },
-  TZX28: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2028-06-30', couponRate: 0, couponFreq: 'none' },
+  // ajustado por CER desde fecha de emisión hasta vencimiento.
+  TZX26: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2026-06-30',
+           couponRate: 0, couponFreq: 'none', dayCount: 'ACT/365',
+           cerEmissionDate: '2023-06-30' },
+  TZX27: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2027-06-30',
+           couponRate: 0, couponFreq: 'none', dayCount: 'ACT/365',
+           cerEmissionDate: '2023-06-30' },
+  TZX28: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2028-06-30',
+           couponRate: 0, couponFreq: 'none', dayCount: 'ACT/365',
+           cerEmissionDate: '2023-06-30' },
 
   // ─── ONs corporativas AR (USD) ────────────────────────────────────────────
   YCA0O: { currency: 'USD', issuer: 'YPF', type: 'corporate', maturity: '2026-02-12', couponRate: 8.5, couponFreq: 'semiannual' },
