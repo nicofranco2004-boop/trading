@@ -367,6 +367,120 @@ describe('buildMonthlyReports', () => {
     })
   })
 
+  // ─── Drivers y benchmarks por mes ────────────────────────────────────────
+  describe('drivers por mes', () => {
+    it('bestOp y worstOp identifican las operaciones del mes', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 7000, capital_final: 8200 }],
+        [
+          { date: '2026-05-10', asset: 'NVDA', op_type: 'Venta', pnl_usd: 320 },
+          { date: '2026-05-15', asset: 'BTC',  op_type: 'Venta', pnl_usd: 540 },
+          { date: '2026-05-22', asset: 'TSLA', op_type: 'Venta', pnl_usd: -41 },
+        ]
+      )
+      const d = out.years[0].months[0].drivers
+      expect(d.bestOp.asset).toBe('BTC')
+      expect(d.bestOp.pnl).toBe(540)
+      expect(d.worstOp.asset).toBe('TSLA')
+      expect(d.worstOp.pnl).toBe(-41)
+    })
+
+    it('si no hay ops negativas, worstOp es null (no inventa)', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 7000, capital_final: 7500 }],
+        [{ date: '2026-05-10', asset: 'NVDA', op_type: 'Venta', pnl_usd: 100 }]
+      )
+      const d = out.years[0].months[0].drivers
+      expect(d.bestOp.asset).toBe('NVDA')
+      expect(d.worstOp).toBeNull()
+    })
+
+    it('ignora pnl_usd despreciable (≤ $1) para evitar ruido', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 7000, capital_final: 7500 }],
+        [{ date: '2026-05-10', asset: 'X', op_type: 'Venta', pnl_usd: 0.5 }]
+      )
+      expect(out.years[0].months[0].drivers.bestOp).toBeNull()
+    })
+  })
+
+  describe('benchmarks por mes', () => {
+    const bench = {
+      sp500: { '2026-04': 5000, '2026-05': 5200 },        // +4.0%
+      inflation_ar: { '2026-05': 4.5 },                    // 4.5%
+    }
+    const brokersArs = [{ name: 'Cocos', currency: 'ARS' }]
+    const brokersUsd = [{ name: 'Binance', currency: 'USDT' }]
+
+    it('vsSp500 = deltaPct del portfolio − deltaPct del S&P', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+        [],
+        [],
+        'global',
+        { bench, brokers: brokersUsd }
+      )
+      // deltaPct portfolio = +10%, S&P = +4%, diferencia = +6 puntos
+      expect(out.years[0].months[0].drivers.vsSp500).toBeCloseTo(6, 1)
+    })
+
+    it('vsInflation solo se calcula cuando hay broker ARS (filter=global)', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+        [],
+        [],
+        'global',
+        { bench, brokers: brokersArs }
+      )
+      // delta = 10%, inflación = 4.5%, diferencia = +5.5
+      expect(out.years[0].months[0].drivers.vsInflation).toBeCloseTo(5.5, 1)
+    })
+
+    it('vsInflation es NULL cuando NO hay brokers ARS (solo USD)', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+        [],
+        [],
+        'global',
+        { bench, brokers: brokersUsd }
+      )
+      expect(out.years[0].months[0].drivers.vsInflation).toBeNull()
+    })
+
+    it('vsInflation funciona si filter es un broker ARS individual', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'Cocos', capital_inicio: 5000, capital_final: 5500 }],
+        [],
+        [],
+        'Cocos',
+        { bench, brokers: brokersArs }
+      )
+      expect(out.years[0].months[0].drivers.vsInflation).toBeCloseTo(5.5, 1)
+    })
+
+    it('vsInflation es NULL si filter es un broker USD individual', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'Binance', capital_inicio: 5000, capital_final: 5500 }],
+        [],
+        [],
+        'Binance',
+        { bench, brokers: brokersUsd }
+      )
+      expect(out.years[0].months[0].drivers.vsInflation).toBeNull()
+    })
+
+    it('vsSp500 = null si falta data del mes o del mes anterior', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2026, month: 5, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+        [],
+        [],
+        'global',
+        { bench: { sp500: { '2026-05': 5200 } /* falta abril */ }, brokers: brokersUsd }
+      )
+      expect(out.years[0].months[0].drivers.vsSp500).toBeNull()
+    })
+  })
+
   it('flows del año descontados del YTD para que coincida con Dashboard', () => {
     const todayYear = new Date().getFullYear()
     const out = buildMonthlyReports(

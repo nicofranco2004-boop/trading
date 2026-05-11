@@ -441,19 +441,36 @@ function MonthDetailModal({ month, broker, onClose }) {
             </div>
           )}
 
-          {/* Placeholder Fase B */}
-          <section className="opacity-60">
-            <div className="flex items-center gap-2 mb-3">
-              <p className="eyebrow">Drivers y benchmarks</p>
-              <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm border bg-bg-3 text-ink-2 border-line">
-                Próximamente
-              </span>
-            </div>
-            <p className="text-xs text-ink-2 leading-relaxed">
-              En la próxima fase agregamos: top contribuyentes, peores posiciones, comparación
-              vs S&amp;P 500 / inflación, y 2-3 insights data-driven específicos del mes.
-            </p>
-          </section>
+          {/* Drivers y benchmarks — métricas simples, no listas largas */}
+          {month.drivers && (month.drivers.bestOp || month.drivers.worstOp || month.drivers.vsSp500 != null || month.drivers.vsInflation != null) && (
+            <section>
+              <p className="eyebrow mb-3">Drivers y benchmarks</p>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <DriverMetric
+                  label="Mejor operación"
+                  asset={month.drivers.bestOp?.asset}
+                  pnl={month.drivers.bestOp?.pnl}
+                  positive={true}
+                />
+                <DriverMetric
+                  label="Peor operación"
+                  asset={month.drivers.worstOp?.asset}
+                  pnl={month.drivers.worstOp?.pnl}
+                  positive={false}
+                />
+                <BenchmarkMetric
+                  label="vs S&P 500"
+                  deltaPct={month.drivers.vsSp500}
+                />
+                {month.drivers.vsInflation != null && (
+                  <BenchmarkMetric
+                    label="vs Inflación (ARS)"
+                    deltaPct={month.drivers.vsInflation}
+                  />
+                )}
+              </div>
+            </section>
+          )}
         </div>
       </div>
     </div>
@@ -463,9 +480,51 @@ function MonthDetailModal({ month, broker, onClose }) {
 function Metric({ label, value, positive }) {
   const color = positive == null ? 'text-ink-1' : positive ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
-    <div className="bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-line rounded p-3">
+    <div className="bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-slate-200 dark:border-line rounded p-3">
       <p className="label-mono mb-1">{label}</p>
       <p className={`text-sm font-semibold tabular ${color}`}>{value}</p>
+    </div>
+  )
+}
+
+// Mejor / peor operación del mes. Si no hay data, se muestra '—' con tono neutral.
+function DriverMetric({ label, asset, pnl, positive }) {
+  const hasData = !!asset && pnl != null
+  const color = hasData
+    ? (positive ? 'text-rendi-pos' : 'text-rendi-neg')
+    : 'text-ink-3'
+  return (
+    <div className="bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-line rounded p-3">
+      <p className="label-mono mb-1">{label}</p>
+      {hasData ? (
+        <p className="text-sm font-semibold tabular flex items-baseline gap-1.5">
+          <span className="text-ink-0">{asset}</span>
+          <span className={color}>{pnl >= 0 ? '+' : '−'}USD {usd(Math.abs(pnl))}</span>
+        </p>
+      ) : (
+        <p className="text-sm font-semibold tabular text-ink-3">—</p>
+      )}
+    </div>
+  )
+}
+
+// vs S&P / vs Inflación. Delta en puntos %.
+function BenchmarkMetric({ label, deltaPct }) {
+  const hasData = deltaPct != null && !isNaN(deltaPct)
+  const positive = hasData && deltaPct >= 0
+  const color = hasData
+    ? (positive ? 'text-rendi-pos' : 'text-rendi-neg')
+    : 'text-ink-3'
+  return (
+    <div className="bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-line rounded p-3">
+      <p className="label-mono mb-1">{label}</p>
+      {hasData ? (
+        <p className={`text-sm font-semibold tabular ${color}`}>
+          {pctSigned(deltaPct / 100)}
+        </p>
+      ) : (
+        <p className="text-sm font-semibold tabular text-ink-3">—</p>
+      )}
     </div>
   )
 }

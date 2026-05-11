@@ -36,6 +36,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
+import { computeBestWorstClosedOp } from '../utils/insightsModel'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -60,6 +61,65 @@ function statusFromPct(deltaPct) {
   return 'difficult'
 }
 
+// Período YYYY-MM anterior (Enero → 'YYYY(prev)-12')
+function prevPeriodOf(period) {
+  const [y, m] = period.split('-').map(Number)
+  if (m === 1) return `${y - 1}-12`
+  return `${y}-${String(m - 1).padStart(2, '0')}`
+}
+
+/**
+ * Calcula drivers del mes:
+ *   • bestOp / worstOp     → mejor/peor operación cerrada del mes (asset + pnl_usd)
+ *   • vsSp500              → diferencia entre rendimiento del mes y el del S&P 500
+ *                            (en puntos porcentuales)
+ *   • vsInflation          → idem vs inflación INDEC (solo si hay exposure ARS)
+ *
+ * @param {object} ctx
+ *   monthOps: ops del mes ya filtradas por broker y período
+ *   deltaPct: rendimiento del mes (en %)
+ *   sp500Map: dict { 'YYYY-MM': close }
+ *   inflationMap: dict { 'YYYY-MM': pct }
+ *   period: 'YYYY-MM'
+ *   showInflation: bool (si la cartera tiene exposure a ARS)
+ */
+function computeDriversForMonth({ monthOps, deltaPct, sp500Map, inflationMap, period, showInflation }) {
+  // Mejor / peor operación cerrada del mes (solo trades, sin compras/dividendos/etc)
+  const tradesInMonth = (monthOps || []).filter(isTradeOp).filter(o => o.pnl_usd != null)
+  let bestOp = null, worstOp = null
+  if (tradesInMonth.length > 0) {
+    const bw = computeBestWorstClosedOp(tradesInMonth)
+    if (bw) {
+      // Pasamos los thresholds que ya usa el sistema en otras alertas:
+      // ignoramos PNL muy chicos (≤ $1) para evitar ruido.
+      if (bw.best.pnl_usd > 1) bestOp = { asset: bw.best.asset, pnl: bw.best.pnl_usd }
+      if (bw.worst.pnl_usd < -1) worstOp = { asset: bw.worst.asset, pnl: bw.worst.pnl_usd }
+    }
+  }
+
+  // S&P 500: (close_mes / close_mes_anterior - 1) * 100
+  let vsSp500 = null
+  if (sp500Map && deltaPct != null) {
+    const curr = sp500Map[period]
+    const prev = sp500Map[prevPeriodOf(period)]
+    if (curr && prev) {
+      const sp500Pct = ((curr / prev) - 1) * 100
+      vsSp500 = deltaPct - sp500Pct
+    }
+  }
+
+  // Inflación: el map ya viene como % del mes directamente
+  let vsInflation = null
+  if (showInflation && inflationMap && deltaPct != null) {
+    const inflPct = inflationMap[period]
+    if (inflPct != null) {
+      vsInflation = deltaPct - inflPct
+    }
+  }
+
+  return { bestOp, worstOp, vsSp500, vsInflation }
+}
+
 /**
  * Hook principal del módulo de reportes mensuales.
  * Acepta un filtro por broker para que el usuario pueda alternar entre:
@@ -81,6 +141,8 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
   const [prices, setPrices] = useState({})
   const [brokers, setBrokers] = useState([])
   const [tcBlue, setTcBlue] = useState(1415)
+  // Benchmarks históricos (S&P 500 + inflación AR) para drivers por mes
+  const [bench, setBench] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -88,7 +150,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
     let cancelled = false
     async function load() {
       try {
-        const [mon, ops, snaps, pos, bkrs, cfg, dol] = await Promise.all([
+        const [mon, ops, snaps, pos, bkrs, cfg, dol, bnch] = await Promise.all([
           api.get('/monthly').catch(() => []),
           api.get('/operations').catch(() => []),
           // 3650 días = ~10 años. Necesitamos toda la historia para sparkline
@@ -98,6 +160,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
           api.get('/brokers').catch(() => []),
           api.get('/config').catch(() => ({ tc_blue: 1415 })),
           api.get('/dolar').catch(() => null),
+          api.get('/benchmarks').catch(() => null),
         ])
         if (cancelled) return
         setMonthly(mon || [])
@@ -105,6 +168,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         setSnapshots(snaps || [])
         setPositions(pos || [])
         setBrokers(bkrs || [])
+        setBench(bnch)
         const tc = dol?.blue?.venta || cfg?.tc_blue || 1415
         setTcBlue(tc)
         // Cargar precios para que el live value por broker sea exacto
@@ -141,9 +205,9 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
 
   const data = useMemo(
     () => buildMonthlyReports(monthly, operations, snapshots, broker, {
-      positions, prices, brokers, tcBlue,
+      positions, prices, brokers, tcBlue, bench,
     }),
-    [monthly, operations, snapshots, broker, positions, prices, brokers, tcBlue]
+    [monthly, operations, snapshots, broker, positions, prices, brokers, tcBlue, bench]
   )
 
   return { loading, error, ...data, availableBrokers }
@@ -185,6 +249,33 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
   if (allPeriods.size === 0) {
     return { years: [], hasAnyData: false, selectedBroker, liveValue: null, liveDate: null }
   }
+
+  // 4.5. Indexar ops POR PERÍODO (no solo realizedByPeriod) — necesitamos
+  // las ops completas para computar mejor/peor operación por mes.
+  const opsByPeriod = new Map()
+  for (const op of opsForBroker) {
+    if (!op.date) continue
+    const period = op.date.slice(0, 7)
+    if (!opsByPeriod.has(period)) opsByPeriod.set(period, [])
+    opsByPeriod.get(period).push(op)
+  }
+
+  // 4.6. Decidir si mostramos la comparación con inflación AR. Regla:
+  //   • Filter 'global'  → sí, si el user tiene al menos un broker ARS
+  //   • Filter individual → sí, solo si ese broker tiene currency ARS
+  // Esto cumple con: "comparación inflación solo cuando hay inversión ARS".
+  let showInflation = false
+  if (context.brokers && context.brokers.length > 0) {
+    if (selectedBroker === 'global') {
+      showInflation = context.brokers.some(b => b.currency === 'ARS')
+    } else {
+      const bObj = context.brokers.find(b => b.name === selectedBroker)
+      showInflation = bObj?.currency === 'ARS'
+    }
+  }
+
+  const sp500Map = context.bench?.sp500 || null
+  const inflationMap = context.bench?.inflation_ar || null
 
   // 5. Indexar snapshots por mes para sparklines + lookup del valor live.
   // Cada snapshot tiene shape { date: 'YYYY-MM-DD', total_value, ... }.
@@ -263,6 +354,17 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       deltaPct = 0   // sin baseline, no calculamos %
     }
 
+    // Drivers del mes: mejor/peor operación + vs benchmarks
+    const monthOps = opsByPeriod.get(period) || []
+    const drivers = computeDriversForMonth({
+      monthOps,
+      deltaPct,
+      sp500Map,
+      inflationMap,
+      period,
+      showInflation,
+    })
+
     return {
       period,
       year,
@@ -279,6 +381,7 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       source,
       status: statusFromPct(deltaPct),
       sparkline,
+      drivers,
     }
   })
 
