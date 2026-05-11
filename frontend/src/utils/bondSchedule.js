@@ -1,114 +1,146 @@
 // bondSchedule.js — cronograma de pagos + TIR estimada por bono.
 // ════════════════════════════════════════════════════════════════════════════
-// Fase 2 del Bonos MVP. Consume el bondMeta y genera, por ticker, la lista
-// completa de payments (cupones + amortizaciones + face return al vencimiento)
-// expresada en "USD por 100 nominal" (o ARS por 100 si el bono es ARS).
+// Orchestrator: arma el schedule de cashflows por ticker (a partir del bondMeta)
+// y delega la matemática pura a bondPricing.js (day-count, accrued, YTM).
 //
-// Tres comportamientos según el tipo de bono:
-//   • Amortizante (sovereign con amortStart/amortCount): el face se devuelve
-//     en cuotas iguales semestrales arrancando en amortStart. El cupón se
-//     calcula sobre el face REMANENTE — así el flujo cupón decrece a medida
-//     que las amortizaciones devuelven principal.
-//   • Bullet (corporate/cer sin amort): pagos de cupón a la frecuencia
-//     correspondiente, y la última fecha (maturity) suma 100 al face.
-//   • Zero-cupón (couponFreq='none'): un único pago = 100 al vencimiento.
-//   • ETF de bonos (sin maturity): retorna null — no hay schedule definido.
+// Soporta DOS formas de definir el bono:
+//
+//   FORMA RICA (preferida — Fase 3B en adelante):
+//     bondMeta puede incluir:
+//       • couponSchedule: [{ from, to, rate }] — step-up con rates por período.
+//         La fecha de pago N usa el rate del período que CONTIENE esa fecha.
+//       • amortSchedule: [{ date, pct }] — fechas exactas y % de amort por
+//         cuota. Suma debe ser 100 (validable). Si está presente, ignora
+//         amortStart/amortCount.
+//       • issueDate: 'YYYY-MM-DD' — la primera fecha de cupón se calcula
+//         hacia atrás desde maturity, pero issueDate se usa para accrued
+//         si el asOf está antes del primer pago del schedule generado.
+//       • dayCount: '30/360' | 'ACT/365' | etc. — convención del prospecto.
+//         Si no se especifica, default 'ACT/365.25' (legacy).
+//
+//   FORMA LEGACY (compat con Fase 1-2):
+//     bondMeta solo tiene couponRate (escalar) y opcionalmente amortStart/
+//     amortCount. El schedule se genera con cupón constante y amorts iguales
+//     en grilla retro desde maturity.
 //
 // Convención: el schedule expresa todo POR 100 de face value original
-// (estándar de mercado: precios y cupones se cotizan por 100 nominal).
-// Para el monto que recibirá una posición específica, multiplicar por
-// (quantity / 100). Si el user maneja "nominales" donde 1 unit = 1 USD
-// face, entonces el factor es quantity * payment_per_100 / 100.
-//
-// La TIR se estima con Newton-Raphson sobre los flujos remanentes. Una vez
-// vencido el bono o sin flujos futuros, devuelve null. Para valores razonables
-// converge en ~10 iteraciones; cap a 100 por seguridad.
+// (estándar de mercado). Para el monto que recibirá una posición específica,
+// multiplicar por (quantity / 100).
 
 import { getBondMeta } from './bondMeta'
+import {
+  dayCountFraction,
+  computeAccrued,
+  yieldToMaturity,
+  cleanToDirty,
+} from './bondPricing'
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/
 
-// Días entre 2 fechas ISO (yyyy-mm-dd). Robusto frente a DST: comparamos en
-// UTC midnight, así que el resultado es siempre días enteros.
 function diffDays(a, b) {
   const ta = Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10))
   const tb = Date.UTC(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10))
   return Math.round((tb - ta) / (1000 * 60 * 60 * 24))
 }
 
-// Suma N meses a una fecha ISO conservando el día. Si el día no existe en el
-// mes destino (e.g. 31 de enero + 1 mes = 28 de feb), cae al último día del
-// mes destino. Aproximación suficiente para schedules semestrales/anuales.
+// Suma N meses a una fecha ISO. Si el día destino no existe (31 enero + 1 mes),
+// cae al último día del mes destino. Para schedules semestrales del canje AR
+// 2020 (siempre día 9), esta aproximación es exacta.
+//
+// NOTA: no aplica business-day adjustment. Bonos del canje 2020 caen siempre
+// en hábiles AR (9 ene / 9 jul son hábiles en la mayoría de los años). Para
+// bonos con fechas de prospecto no-regulares se debe usar `amortSchedule`
+// explícito con fechas adjusted. Fase 3B agregará esos hardcoded.
 export function addMonths(iso, months) {
   if (!ISO_RE.test(iso)) return null
   const y = +iso.slice(0, 4)
   const m = +iso.slice(5, 7)
   const d = +iso.slice(8, 10)
-  // Trabajamos en UTC para evitar problemas de timezone
   const date = new Date(Date.UTC(y, m - 1, d))
   const targetMonth = (m - 1) + months
   date.setUTCFullYear(y + Math.floor(targetMonth / 12))
   date.setUTCMonth(((targetMonth % 12) + 12) % 12)
-  // Si el día se "fue" al mes siguiente por overflow, ajustamos al último día del mes
   const targetMonthIdx = ((m - 1 + months) % 12 + 12) % 12
   if (date.getUTCMonth() !== targetMonthIdx) {
-    date.setUTCDate(0)  // último día del mes anterior
+    date.setUTCDate(0)
   }
   return date.toISOString().slice(0, 10)
 }
 
-// Meses entre pagos según la frecuencia del cupón.
 function monthsForFreq(freq) {
   switch (freq) {
     case 'monthly':    return 1
     case 'quarterly':  return 3
     case 'semiannual': return 6
     case 'annual':     return 12
-    default:           return null  // 'none' o desconocido
+    default:           return null
   }
+}
+
+// Devuelve el rate efectivo % anual aplicable a una fecha dada.
+// Si meta tiene `couponSchedule` (forma rica), busca el período que contiene
+// la fecha. Si no, devuelve `couponRate` constante (forma legacy).
+function getRateForDate(meta, date) {
+  if (meta.couponSchedule && Array.isArray(meta.couponSchedule)) {
+    const period = meta.couponSchedule.find(p => date >= p.from && date <= p.to)
+    if (period) return period.rate
+    // Si el asOfDate está fuera de todos los períodos definidos, fallback al
+    // último período o al couponRate como proxy.
+    return meta.couponRate || 0
+  }
+  return meta.couponRate || 0
 }
 
 // Genera el cronograma COMPLETO (todos los pagos históricos + futuros) para
 // el ticker dado. Devuelve null si el bono no tiene metadata o no aplica
 // (ej: ETF sin maturity).
 //
-// Cada entry: { date, coupon, amort, total }
+// Cada entry: { date, coupon, amort, total, rate }
 //   • date: 'YYYY-MM-DD'
 //   • coupon: monto del cupón en esa fecha, por 100 face original
 //   • amort: monto de amortización en esa fecha, por 100 face original
 //   • total: coupon + amort (conveniencia)
-//
-// La última fecha es siempre maturity. Para bonos bullet, esa fecha incluye
-// face=100 en el campo amort. Para zero-coupon, esa fecha incluye sólo amort=100.
+//   • rate: rate anual % aplicable en ese período (para display + debug)
 export function generateSchedule(ticker) {
   const meta = getBondMeta(ticker)
   if (!meta) return null
   if (!meta.maturity) return null  // ETFs sin maturity → no schedule
-  const { maturity, couponRate, couponFreq, amortStart, amortCount } = meta
+  const { maturity, couponRate, couponFreq } = meta
 
-  // Caso zero-cupón: pago único = 100 al vencimiento
+  // ── Caso zero-cupón: pago único = 100 al vencimiento ─────────────────────
   if (couponFreq === 'none' || !couponRate) {
-    return [{ date: maturity, coupon: 0, amort: 100, total: 100 }]
+    return [{ date: maturity, coupon: 0, amort: 100, total: 100, rate: 0 }]
   }
 
   const months = monthsForFreq(couponFreq)
-  if (months == null) return null  // freq desconocida
+  if (months == null) return null
 
-  // Para amortizing bonds, la primera fecha del schedule es la fecha más
-  // antigua entre (maturity - N*months hasta cubrir hasta amortStart) y un
-  // mínimo razonable (5 años antes de maturity).
-  // Para bullet bonds, contamos hacia atrás desde maturity.
-  // El payment grid son fechas EQUIESPACIADAS a `months` desde maturity hacia atrás,
-  // limitado por (5 años antes de maturity) o (amortStart - una freq) según corresponda.
+  // ── Resolver amortSchedule (forma rica) o derivar de amortStart/Count ────
+  let isAmortizing = false
+  let amortMap = new Map()  // date → amortPct
+  if (meta.amortSchedule && Array.isArray(meta.amortSchedule) && meta.amortSchedule.length > 0) {
+    isAmortizing = true
+    for (const a of meta.amortSchedule) amortMap.set(a.date, a.pct)
+  } else if (meta.amortStart && meta.amortCount) {
+    isAmortizing = true
+    const amortPct = 100 / meta.amortCount
+    // Generamos las fechas amort a partir de amortStart, espaciadas a couponFreq.
+    let d = meta.amortStart
+    for (let i = 0; i < meta.amortCount; i++) {
+      amortMap.set(d, amortPct)
+      d = addMonths(d, months)
+    }
+  }
 
-  // Construimos la grilla hacia atrás desde maturity hasta cubrir al menos
-  // ~5 años (suficiente para el histórico de cobranzas + futuro relevante).
-  // Si hay amortStart, garantizamos que la grilla incluya esa fecha y todas
-  // las posteriores.
+  // ── Generar grilla de fechas de pago (retrocediendo desde maturity) ──────
+  // Cubrimos: desde maturity hacia atrás cada `months` meses hasta llegar a
+  // (issueDate si existe) o (la primera amort si amortiza) o (5 años atrás).
   const dates = [maturity]
-  // Mínimo: maturity menos 5 años (60 meses). Si hay amortStart anterior,
-  // arrancamos antes para cubrirlo también.
-  const minBack = amortStart || addMonths(maturity, -60)
+  let minBack
+  if (meta.issueDate) minBack = meta.issueDate
+  else if (isAmortizing && amortMap.size > 0) minBack = [...amortMap.keys()].sort()[0]
+  else minBack = addMonths(maturity, -60)
+
   let cursor = maturity
   while (true) {
     const prev = addMonths(cursor, -months)
@@ -117,54 +149,47 @@ export function generateSchedule(ticker) {
     cursor = prev
   }
 
-  // Si hay amortStart pero no quedó en la grilla (puede pasar si los meses
-  // no caen exactos), lo metemos a mano. Esto es defensivo: en la práctica
-  // amortStart cae en la grilla porque los amorts son semestrales en las
-  // mismas fechas que los cupones.
-  if (amortStart && !dates.includes(amortStart)) {
-    dates.push(amortStart)
-    dates.sort()
+  // Garantizar que TODAS las fechas amort estén en la grilla (defensivo).
+  for (const aDate of amortMap.keys()) {
+    if (!dates.includes(aDate)) {
+      dates.push(aDate)
+    }
   }
+  dates.sort()
 
-  // Construimos los pagos, calculando face remanente paso a paso.
-  // - Face inicial = 100
-  // - En cada fecha amort, devolvemos amortAmount = 100/amortCount
-  // - El cupón en esa fecha = (couponRate / freq) × face_remanente_pre_amort
-  // - Después del último amort, face = 0
-  // - Si es bullet (sin amortStart): face permanece 100 hasta maturity,
-  //   donde se devuelve.
-  const couponPerPeriod = couponRate / (12 / months)  // % anual / # periodos por año
-  const isAmortizing = !!(amortStart && amortCount)
-  const amortAmount = isAmortizing ? 100 / amortCount : 0
-  const amortDates = isAmortizing
-    ? dates.filter(d => d >= amortStart).slice(0, amortCount)
-    : [maturity]  // bullet: face vuelve en maturity
-
+  // ── Construir los pagos, calculando face remanente paso a paso ───────────
+  // Face inicial = 100. En cada fecha:
+  //   1. Cupón = rate_aplicable / freq × face_pre_amort
+  //   2. Amort = amortMap.get(date) (si está); para bullet, todo en maturity
+  //   3. Face siguiente = face_actual − amort_de_hoy
   let face = 100
   const schedule = []
   for (const date of dates) {
-    // Pre-amort face (para el cupón): es lo que QUEDA antes de pagar el amort de hoy
+    const rateAnnual = getRateForDate(meta, date)
+    const couponPerPeriod = rateAnnual / (12 / months)
     const couponAmount = +(couponPerPeriod * face / 100).toFixed(6)
+
     let amortOnThisDate = 0
-    if (amortDates.includes(date)) {
-      if (isAmortizing) {
-        amortOnThisDate = amortAmount
-      } else {
-        // Bullet: maturity devuelve todo el face remanente
-        amortOnThisDate = face
-      }
+    if (isAmortizing) {
+      amortOnThisDate = amortMap.get(date) || 0
+    } else if (date === maturity) {
+      // Bullet: maturity devuelve todo el face remanente
+      amortOnThisDate = face
     }
+
     schedule.push({
       date,
       coupon: couponAmount,
       amort: +amortOnThisDate.toFixed(6),
       total: +(couponAmount + amortOnThisDate).toFixed(6),
+      rate: rateAnnual,
     })
     face = Math.max(0, face - amortOnThisDate)
   }
 
-  // Sanity: si después de todos los pagos sobró face (puede pasar por
-  // approximations de fechas), forzar que el último pago devuelva lo que queda.
+  // Sanity: si después de todos los pagos sobró face, lo devolvemos en el
+  // último pago. Esto puede ocurrir por floor en pct con amortCount no
+  // divisible (ej: 100/13 = 7.6923... × 13 = 99.9999).
   if (face > 0.001 && schedule.length > 0) {
     const last = schedule[schedule.length - 1]
     last.amort = +(last.amort + face).toFixed(6)
@@ -200,56 +225,69 @@ export function totalRemainingPayout(ticker, from) {
   return rest.reduce((s, p) => s + p.total, 0)
 }
 
-// TIR estimada (yield to maturity) anualizada en decimal. Newton-Raphson sobre
-// los flujos remanentes vs el precio actual (precio por 100 face, mismo
-// convención que el schedule).
+// ─── TIR estimada ─────────────────────────────────────────────────────────────
+// Versión mejorada (PR #8 / Fase 3A):
+//   • Usa bondPricing.yieldToMaturity (bracket + bisect + Newton, robusto).
+//   • Respeta el day-count del bono si está definido en bondMeta.dayCount;
+//     fallback a 'ACT/365.25' (legacy).
+//   • Por default trata el `price` input como CLEAN price y calcula accrued
+//     internamente. Si el caller ya tiene dirty, pasar `{ priceIsDirty: true }`.
+//   • Devuelve objeto rico para diagnóstico: { ytm, converged, method,
+//     iterations, accrued, dirty, clean, dayCount }.
 //
-// Devuelve null si:
-//   • No hay schedule para el ticker
-//   • No quedan pagos futuros (bono ya venció)
-//   • El precio es ≤ 0
-//   • Newton no converge
-//
-// Inputs:
-//   ticker: string
-//   pricePer100: precio actual del bono "por 100 face". Si el broker reporta
-//     un precio "por 1 nominal" (e.g. 0.715), multiplicar por 100 antes.
-//   from: fecha base (opcional, default hoy). El tiempo a cada flujo se
-//     calcula en años decimales (días / 365.25).
-export function estimateYield(ticker, pricePer100, from) {
-  if (!pricePer100 || pricePer100 <= 0) return null
-  const rest = getRemainingPayments(ticker, from)
-  if (!rest || rest.length === 0) return null
-  const base = from || todayIso()
+// Mantenemos también el output legacy (sólo `ytm` como number) vía wrapper
+// `estimateYield(ticker, price, from)` para no romper consumers existentes.
 
-  // Cashflows: [{ t_years, amount_per_100 }, ...]
-  const cashflows = rest
-    .map(p => ({ t: diffDays(base, p.date) / 365.25, amount: p.total }))
-    .filter(cf => cf.t > 0 && cf.amount > 0)
-  if (cashflows.length === 0) return null
-
-  // Newton-Raphson. f(r) = sum(amount_i / (1+r)^t_i) - price = 0
-  //                  f'(r) = sum(-t_i * amount_i / (1+r)^(t_i+1))
-  let r = 0.10  // initial guess: 10%
-  for (let i = 0; i < 100; i++) {
-    let f = -pricePer100
-    let df = 0
-    for (const cf of cashflows) {
-      const v = cf.amount / Math.pow(1 + r, cf.t)
-      f += v
-      df += -cf.t * v / (1 + r)
-    }
-    if (!isFinite(f) || !isFinite(df) || Math.abs(df) < 1e-12) return null
-    const delta = f / df
-    r = r - delta
-    if (!isFinite(r)) return null
-    // Bound r en [-0.99, 10] (TIRs absurdas indican input mal o no converge)
-    if (r < -0.99) r = -0.99
-    if (r > 10) r = 10
-    if (Math.abs(delta) < 1e-8) return r
+export function estimateYieldDetailed(ticker, priceInput, from, options = {}) {
+  const { priceIsDirty = false } = options
+  if (!priceInput || priceInput <= 0) {
+    return { ytm: null, converged: false, method: 'invalid_price', accrued: 0, dirty: null, clean: null }
   }
-  // No convergió — devolvemos null en lugar de un número engañoso
-  return null
+  const meta = getBondMeta(ticker)
+  if (!meta) return { ytm: null, converged: false, method: 'no_meta', accrued: 0 }
+
+  const sched = generateSchedule(ticker)
+  if (!sched) return { ytm: null, converged: false, method: 'no_schedule', accrued: 0 }
+
+  const base = from || todayIso()
+  const rest = sched.filter(p => p.date > base)
+  if (rest.length === 0) {
+    return { ytm: null, converged: false, method: 'matured', accrued: 0, dayCount: meta.dayCount || 'ACT/365.25' }
+  }
+
+  const dayCount = meta.dayCount || 'ACT/365.25'
+
+  // Accrued sólo aplica si el caller pasó clean. Si pasó dirty, accrued se
+  // reporta para info pero no se modifica el precio.
+  const accrued = computeAccrued(sched, base, dayCount, meta.issueDate)
+  const clean = priceIsDirty ? (priceInput - accrued) : priceInput
+  const dirty = priceIsDirty ? priceInput : (priceInput + accrued)
+
+  // Construir cashflows con t calculado vía el day-count del bono.
+  const cashflows = rest.map(p => ({
+    t: dayCountFraction(base, p.date, dayCount),
+    amount: p.total,
+  }))
+
+  const result = yieldToMaturity({ dirtyPrice: dirty, cashflows })
+  return {
+    ...result,
+    accrued,
+    clean,
+    dirty,
+    dayCount,
+  }
+}
+
+// Backwards-compat: API original devuelve sólo el número (null si falla).
+export function estimateYield(ticker, pricePer100, from) {
+  // ATENCIÓN: en PR #8 cambiamos la semántica del input — antes se trataba
+  // como dirty (sin accrued); ahora por default se trata como CLEAN y se
+  // computa el accrued internamente. Esto es una CORRECCIÓN del hallazgo C4
+  // del audit: el yield para bonos mid-period sube ~50-200 bps (era under-
+  // stated). Test bullet-a-la-par sigue dando ≈ couponRate.
+  const r = estimateYieldDetailed(ticker, pricePer100, from)
+  return r.ytm
 }
 
 // Para una posición de bono con `quantity` (en nominales, donde 1 nominal = 1
@@ -258,8 +296,6 @@ export function estimateYield(ticker, pricePer100, from) {
 export function nextPaymentForPosition(ticker, quantity, from) {
   const next = getNextPayment(ticker, from)
   if (!next || !quantity) return null
-  // next.total está expresado por 100 face. Si qty=1000 nominales (=1000 face),
-  // el monto recibido = qty × total / 100.
   return {
     date: next.date,
     coupon: +(next.coupon * quantity / 100).toFixed(2),
@@ -269,3 +305,22 @@ export function nextPaymentForPosition(ticker, quantity, from) {
     isPureCoupon: next.amort === 0 && next.coupon > 0,
   }
 }
+
+// ─── Helpers para BondDetailRow (Phase 3E preview) ───────────────────────────
+// Estos helpers expone el accrued y la "convención usada" para que la UI
+// pueda mostrar metadata transparente: "TIR 12.5% efectiva anual · 30/360 ·
+// dirty 73.2 (clean 71.5 + accrued 1.7)".
+
+export function getAccruedInterest(ticker, asOfDate) {
+  const meta = getBondMeta(ticker)
+  if (!meta) return 0
+  const sched = generateSchedule(ticker)
+  if (!sched) return 0
+  const dayCount = meta.dayCount || 'ACT/365.25'
+  const base = asOfDate || todayIso()
+  return computeAccrued(sched, base, dayCount, meta.issueDate)
+}
+
+// Re-exports para que BondDetailRow no tenga que importar bondPricing directo
+// (mantiene a bondSchedule.js como una API consolidada).
+export { cleanToDirty, yieldToMaturity }

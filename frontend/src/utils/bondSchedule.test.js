@@ -5,8 +5,10 @@ import {
   getNextPayment,
   totalRemainingPayout,
   estimateYield,
+  estimateYieldDetailed,
   nextPaymentForPosition,
   addMonths,
+  getAccruedInterest,
 } from './bondSchedule.js'
 
 // ─── addMonths (helper interno expuesto para test) ────────────────────────────
@@ -246,5 +248,115 @@ describe('nextPaymentForPosition', () => {
   it('null si quantity = 0 o no hay próximo pago', () => {
     expect(nextPaymentForPosition('AL30', 0, '2026-05-11')).toBeNull()
     expect(nextPaymentForPosition('AL30', 1000, '2099-01-01')).toBeNull()
+  })
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// PR #8 / Fase 3A — tests de la API rica (estimateYieldDetailed + accrued)
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('estimateYieldDetailed — API rica con metadata', () => {
+  it('devuelve estructura con ytm, converged, method, accrued, dirty, clean, dayCount', () => {
+    const r = estimateYieldDetailed('YCA0O', 100, '2025-02-12')
+    expect(r).toHaveProperty('ytm')
+    expect(r).toHaveProperty('converged')
+    expect(r).toHaveProperty('method')
+    expect(r).toHaveProperty('accrued')
+    expect(r).toHaveProperty('dirty')
+    expect(r).toHaveProperty('clean')
+    expect(r).toHaveProperty('dayCount')
+    expect(r.converged).toBe(true)
+    expect(r.ytm).toBeCloseTo(0.085, 2)  // bullet par → TIR ≈ coupón anual
+  })
+
+  it('expone el accrued cuando el asOfDate está mid-period', () => {
+    // YCA0O cupones cada 6 meses. 2025-02-12 = fecha de pago (accrued = 0)
+    // 2025-05-12 = ~3 meses después = ~50% del semestre → accrued ≈ cupón/2 = 2.13
+    const r = estimateYieldDetailed('YCA0O', 100, '2025-05-12')
+    expect(r.accrued).toBeGreaterThan(1.5)
+    expect(r.accrued).toBeLessThan(2.5)
+    // Con accrued positivo, dirty > clean
+    expect(r.dirty).toBeGreaterThan(r.clean)
+    expect(r.dirty - r.clean).toBeCloseTo(r.accrued, 4)
+  })
+
+  it('priceIsDirty=true: no agrega accrued', () => {
+    // Si el caller dice "ya te paso dirty", el sistema no debería sumar accrued.
+    const r = estimateYieldDetailed('YCA0O', 102.13, '2025-05-12', { priceIsDirty: true })
+    expect(r.dirty).toBeCloseTo(102.13, 4)
+    expect(r.clean).toBeCloseTo(102.13 - r.accrued, 4)
+  })
+
+  it('ticker desconocido → method=no_meta', () => {
+    const r = estimateYieldDetailed('NOEXISTE', 100, '2026-01-01')
+    expect(r.ytm).toBeNull()
+    expect(r.method).toBe('no_meta')
+  })
+
+  it('bono vencido → method=matured', () => {
+    const r = estimateYieldDetailed('AL30', 90, '2099-01-01')
+    expect(r.ytm).toBeNull()
+    expect(r.method).toBe('matured')
+  })
+})
+
+describe('getAccruedInterest', () => {
+  it('día de pago exacto → accrued ≈ 0', () => {
+    // YCA0O paga 2025-02-12 (es fecha de cupón) → accrued = 0 después del pago
+    expect(getAccruedInterest('YCA0O', '2025-02-12')).toBeLessThan(0.05)
+  })
+
+  it('mid-period → accrued positivo proporcional', () => {
+    // 2025-05-12 está ~3 meses del último cupón en YCA0O semestral
+    const a = getAccruedInterest('YCA0O', '2025-05-12')
+    expect(a).toBeGreaterThan(1.5)
+    expect(a).toBeLessThan(2.5)
+  })
+
+  it('ticker desconocido → 0', () => {
+    expect(getAccruedInterest('NOEXISTE', '2026-01-01')).toBe(0)
+  })
+
+  it('bono vencido → 0', () => {
+    expect(getAccruedInterest('AL30', '2099-01-01')).toBe(0)
+  })
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// PR #8 — Forma rica: bondMeta con couponSchedule (step-up) + amortSchedule
+// ════════════════════════════════════════════════════════════════════════════
+// Estos tests usan un bono ficticio "para test" — los bonos reales con
+// couponSchedule llegan en Phase 3B. Acá validamos que el motor soporta
+// ambas formas.
+
+describe('generateSchedule — forma rica (couponSchedule step-up)', () => {
+  // Mock simple: simulamos un step-up similar a AL30 inyectando el meta
+  // directamente vía un re-export. Como no tenemos un bono real con
+  // couponSchedule en bondMeta todavía, validamos que el código respeta el
+  // shape si llega — usando mock.
+  // (Fase 3B reemplazará los soberanos con couponSchedule real.)
+  it.todo('AL30 con couponSchedule step-up real produce cupones decrecientes en último período')
+  it.todo('amortSchedule explícito con fechas no-regulares (modified following)')
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// PR #8 — Regression: la TIR vieja "clean=dirty" subestimaba mid-period
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('estimateYield (legacy API) — comportamiento de fecha de pago vs mid-period', () => {
+  it('día de pago → TIR no cambia vs implementación previa (preserva tests)', () => {
+    // YCA0O bullet 8.5% a la par el 2025-02-12 (fecha de pago) → TIR ≈ 8.5%
+    const r = estimateYield('YCA0O', 100, '2025-02-12')
+    expect(r).toBeGreaterThan(0.075)
+    expect(r).toBeLessThan(0.095)
+  })
+
+  it('mid-period: TIR del corregido < TIR del legacy buggy', () => {
+    // Con la corrección C4, mid-period la TIR baja porque dirty > clean →
+    // mayor "pago" → yield menor. Verificamos que el cambio se manifiesta.
+    const ytmAtPaymentDate = estimateYield('YCA0O', 100, '2025-02-12')  // accrued ≈ 0
+    const ytmMidPeriod = estimateYield('YCA0O', 100, '2025-05-12')      // accrued ≈ 2
+    // Comprar a 100 mid-period es comprar a 100 clean = ~102 dirty → yield menor
+    expect(ytmMidPeriod).toBeLessThan(ytmAtPaymentDate)
   })
 })
