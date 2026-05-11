@@ -234,13 +234,98 @@ export const ARG_GENERAL = [
   { s: 'TGLT', n: 'TGLT' },
 ]
 
-// Para autocomplete simple (compat retro)
-const sym = arr => arr.map(x => x.s)
-export const ARS_TICKERS = [...new Set([...sym(CEDEARS_LIST), ...sym(ARG_LIDER), ...sym(ARG_GENERAL)])].sort()
-export const USDT_TICKERS = [...new Set([...sym(CRYPTO), ...sym(STOCKS_US), ...sym(ETFS)])].sort()
+// === BONOS — Soberanos AR en USD ============================================
+// Los AL son ley local, los GD ley extranjera (NY/UK). AE = ley local variantes.
+// Los sufijos C/D = USD nominal (vs los normales que se operan en pesos al TC).
+export const BONDS_AR_SOV_USD = [
+  { s: 'AL29', n: 'Argentina 2029 (USD ley local)' },
+  { s: 'AL30', n: 'Argentina 2030 (USD ley local)' },
+  { s: 'AL35', n: 'Argentina 2035 (USD ley local)' },
+  { s: 'AE38', n: 'Argentina 2038 (USD ley local)' },
+  { s: 'AL41', n: 'Argentina 2041 (USD ley local)' },
+  { s: 'GD29', n: 'Argentina 2029 (USD ley extranjera)' },
+  { s: 'GD30', n: 'Argentina 2030 (USD ley extranjera)' },
+  { s: 'GD35', n: 'Argentina 2035 (USD ley extranjera)' },
+  { s: 'GD38', n: 'Argentina 2038 (USD ley extranjera)' },
+  { s: 'GD41', n: 'Argentina 2041 (USD ley extranjera)' },
+  { s: 'GD46', n: 'Argentina 2046 (USD ley extranjera)' },
+]
 
-// Helper para encontrar nombre de un ticker
+// === BONOS — Soberanos AR en pesos / CER ====================================
+// Bonos del Tesoro AR que ajustan por CER (inflación) o son a tasa fija ARS.
+export const BONDS_AR_CER = [
+  { s: 'TX26', n: 'Bonos CER 2026 (TX26)' },
+  { s: 'TX28', n: 'Bonos CER 2028 (TX28)' },
+  { s: 'T2X5', n: 'Bonos CER 2025 (T2X5)' },
+  { s: 'TZX26', n: 'Bonos Cero-Cupón CER 2026 (TZX26)' },
+  { s: 'TZX27', n: 'Bonos Cero-Cupón CER 2027 (TZX27)' },
+  { s: 'TZX28', n: 'Bonos Cero-Cupón CER 2028 (TZX28)' },
+]
+
+// === BONOS — Obligaciones Negociables (ONs) AR ==============================
+// Bonos corporativos argentinos en USD. Si tu ON no está, agregala con su
+// meta-data en bondMeta.js o usá el flujo de bono custom (Fase 2).
+export const BONDS_AR_ONS = [
+  { s: 'YCA0O', n: 'YPF Clase XXIII Garantizada 2026' },
+  { s: 'YCAMO', n: 'YPF Clase XXVII 2026' },
+  { s: 'YCAQO', n: 'YPF Clase IX 2031' },
+  { s: 'YMCFO', n: 'YPF Clase XXXIX 2028' },
+  { s: 'TLC1O', n: 'Telecom Argentina 2026' },
+  { s: 'TLC5O', n: 'Telecom Argentina 2031' },
+  { s: 'PMCAO', n: 'Pampa Energía 2027' },
+  { s: 'PMCJO', n: 'Pampa Energía 2029' },
+  { s: 'MGC1O', n: 'Mastellone Hnos. 2026' },
+  { s: 'IRC1O', n: 'IRSA 2028' },
+  { s: 'IRC9O', n: 'IRSA Propiedades 2030' },
+  { s: 'GNCAO', n: 'Genneia 2027' },
+  { s: 'DNC1O', n: 'Edenor 2030' },
+  { s: 'CGCDO', n: 'CGC 2025' },
+  { s: 'TGN1O', n: 'TGN 2025' },
+  { s: 'CSC1O', n: 'Capex 2026' },
+]
+
+// === BONOS — ETFs de bonos US ===============================================
+// ETFs con bonos como underlying. Tienen logo real en FMP y se valúan
+// directo en USD. Conceptualmente se tratan como bonos diversificados.
+export const BONDS_US_ETF = [
+  { s: 'TLT', n: 'iShares 20+ Year Treasury Bond ETF' },
+  { s: 'IEF', n: 'iShares 7-10 Year Treasury Bond ETF' },
+  { s: 'SHY', n: 'iShares 1-3 Year Treasury Bond ETF' },
+  { s: 'AGG', n: 'iShares Core US Aggregate Bond ETF' },
+  { s: 'BND', n: 'Vanguard Total Bond Market ETF' },
+  { s: 'LQD', n: 'iShares iBoxx $ Investment Grade Corporate Bond ETF' },
+  { s: 'HYG', n: 'iShares iBoxx $ High Yield Corporate Bond ETF' },
+  { s: 'TIP', n: 'iShares TIPS Bond ETF' },
+]
+
+// Para autocomplete simple (compat retro). Incluye bonos AR en ARS_TICKERS
+// (porque se operan en brokers AR) y ETFs US bond en USDT_TICKERS.
+const sym = arr => arr.map(x => x.s)
+export const ARS_TICKERS = [...new Set([
+  ...sym(CEDEARS_LIST), ...sym(ARG_LIDER), ...sym(ARG_GENERAL),
+  ...sym(BONDS_AR_SOV_USD), ...sym(BONDS_AR_CER), ...sym(BONDS_AR_ONS),
+])].sort()
+export const USDT_TICKERS = [...new Set([
+  ...sym(CRYPTO), ...sym(STOCKS_US), ...sym(ETFS), ...sym(BONDS_US_ETF),
+])].sort()
+
+// Set rápido de tickers que son bonos (de cualquier subcategoría)
+export const BOND_TICKERS = new Set([
+  ...sym(BONDS_AR_SOV_USD), ...sym(BONDS_AR_CER),
+  ...sym(BONDS_AR_ONS), ...sym(BONDS_US_ETF),
+])
+
+// Helper para encontrar nombre de un ticker (incluye bonos)
 export function tickerName(s) {
-  const all = [...CRYPTO, ...STOCKS_US, ...ETFS, ...INDICES, ...CEDEARS_LIST, ...ARG_LIDER, ...ARG_GENERAL]
+  const all = [
+    ...CRYPTO, ...STOCKS_US, ...ETFS, ...INDICES,
+    ...CEDEARS_LIST, ...ARG_LIDER, ...ARG_GENERAL,
+    ...BONDS_AR_SOV_USD, ...BONDS_AR_CER, ...BONDS_AR_ONS, ...BONDS_US_ETF,
+  ]
   return all.find(x => x.s === s)?.n || null
+}
+
+// Helper: dado un ticker, devuelve true si es un bono.
+export function isBondTicker(s) {
+  return BOND_TICKERS.has((s || '').toUpperCase())
 }

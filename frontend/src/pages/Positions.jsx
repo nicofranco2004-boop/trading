@@ -8,6 +8,8 @@ import StatCard from '../components/StatCard'
 import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
+import { isBondTicker } from '../utils/tickers'
+import { getBondMeta, formatBondType, formatCouponFreq } from '../utils/bondMeta'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -1459,9 +1461,28 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
   })()
   const moneyLabel = isARS ? 'ARS' : 'USD'
 
+  // Si es bono, mostramos un banner con la meta-data arriba del form
+  const bondMeta = form.asset ? getBondMeta(form.asset) : null
+
   return (
     <Modal title={mode === 'edit' ? 'Editar posición' : 'Nueva posición'} onClose={onClose}>
       <div className="space-y-3">
+        {bondMeta && (
+          <div className="px-3 py-2.5 rounded bg-rendi-accent/[0.06] border border-rendi-accent/25">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30">
+                Bono
+              </span>
+              <span className="text-xs font-semibold text-ink-0">{formatBondType(bondMeta.type)} · {bondMeta.issuer}</span>
+            </div>
+            <p className="text-[11px] text-ink-2 font-mono">
+              {bondMeta.maturity ? `Vence ${bondMeta.maturity}` : 'Sin vencimiento (ETF)'}
+              {bondMeta.couponRate > 0 && ` · cupón ${bondMeta.couponRate}% TNA ${formatCouponFreq(bondMeta.couponFreq)}`}
+              {bondMeta.couponFreq === 'none' && ' · cero-cupón (paga todo al vencimiento)'}
+              {` · moneda ${bondMeta.currency}`}
+            </p>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Broker</label>
