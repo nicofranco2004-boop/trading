@@ -119,6 +119,9 @@ export default function Positions() {
       broker: p.broker,
       brokerCurrency: broker?.currency || 'USDT',
       asset: p.asset,
+      // Phase 3D: pasamos la posición para que el modal pueda pre-llenar la
+      // fecha + monto estimado del próximo pago según el cronograma.
+      position: p,
     })
   }
 
@@ -172,29 +175,83 @@ export default function Positions() {
   }
 
   // Índice por `${broker}:${asset}` con totales y lista cronológica de cobranzas.
-  // Esto alimenta el panel expandible + el cálculo de P&L "incluyendo cupones".
+  // Phase 3D: distinguimos DOS conceptos críticos por op (especialmente amorts):
+  //
+  //   • TOTAL (cash recibido): lo que efectivamente entró al broker. Es lo
+  //     que el user "cobró". Cupones + amortizaciones se suman acá.
+  //
+  //   • PNL CONTRIBUTION (aporte al P&L): la ganancia REAL que ese flujo
+  //     aporta al P&L del bono. Para cupones = total (100% es ganancia).
+  //     Para amorts = total − cost_basis_consumed (sólo la ganancia
+  //     realizada, no la devolución de capital).
+  //
+  //   Ejemplo (AL30 comprado a 70):
+  //     Amort de USD 76.92 → cost_basis_consumed=53.84, gain=23.08.
+  //     → "Ya cobraste" suma 76.92 (cash). "P&L con cupones" suma 23.08.
+  //
+  //   También: conversión a USD canónico vía fx_to_usd o fallback al blue.
   const bondCashflowsByKey = useMemo(() => {
     const map = new Map()
     for (const op of bondOps) {
       const key = `${op.broker}:${op.asset}`
-      if (!map.has(key)) map.set(key, { ops: [], coupons: 0, amortizations: 0, total: 0 })
+      if (!map.has(key)) map.set(key, {
+        ops: [],
+        coupons: 0, amortizations: 0, total: 0,    // cash neto recibido
+        couponsUsd: 0, amortizationsUsd: 0, totalUsd: 0,
+        pnlContribution: 0,                         // aporte al P&L
+        pnlContributionUsd: 0,
+        hasLegacyOps: false,
+        currency: op.currency || null,
+      })
       const entry = map.get(key)
       entry.ops.push(op)
-      // pnl_usd guarda el monto neto acreditado (positivo). En ARS brokers
-      // el campo está en ARS — la moneda la sabemos por el broker, no la
-      // mezclamos. El frontend usa este número tal cual para mostrar el total
-      // en la misma moneda en que se cargó.
       const amt = +op.pnl_usd || 0
       entry.total += amt
-      if (op.op_type === 'Cupón') entry.coupons += amt
-      else entry.amortizations += amt
+
+      // Conversión a USD: fx_to_usd stampado en op (Phase 3D), o fallback.
+      let fx = op.fx_to_usd
+      if (fx == null || fx <= 0) {
+        entry.hasLegacyOps = true
+        if (op.currency === 'ARS' || (op.currency == null && amt > 1000)) {
+          fx = 1 / (tcBlue || 1)
+        } else {
+          fx = 1.0
+        }
+      }
+      const amtUsd = amt * fx
+      entry.totalUsd += amtUsd
+
+      // Aporte al P&L: cupones = 100%; amorts = sólo la ganancia realizada.
+      let pnlContrib = amt
+      if (op.op_type === 'Amortización') {
+        const cbConsumed = op.cost_basis_consumed
+        if (cbConsumed != null && cbConsumed >= 0) {
+          pnlContrib = amt - cbConsumed  // puede ser negativo si compró premium
+        } else {
+          // Op legacy sin cost_basis_consumed stampado. Sin la info, no
+          // podemos calcular la ganancia → conservativo: asume 0 (toda la
+          // amort es devolución de capital).
+          pnlContrib = 0
+          entry.hasLegacyOps = true
+        }
+      }
+      entry.pnlContribution += pnlContrib
+      entry.pnlContributionUsd += pnlContrib * fx
+
+      if (op.op_type === 'Cupón') {
+        entry.coupons += amt
+        entry.couponsUsd += amtUsd
+      } else {
+        entry.amortizations += amt
+        entry.amortizationsUsd += amtUsd
+      }
     }
     // Ordenar por fecha desc (más reciente primero)
     for (const v of map.values()) {
       v.ops.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
     }
     return map
-  }, [bondOps])
+  }, [bondOps, tcBlue])
 
   async function fetchPrices(pos, cfg, bkrs) {
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
@@ -684,20 +741,24 @@ export default function Positions() {
                       const isBond = isBondTicker(p.asset) && !p.is_cash
                       const bondKey = `${p.broker}:${p.asset}`
                       const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
-                      const cobranzas = bondSummary?.total || 0
-                      const adjPnlArs = (c.pnlArs != null && cobranzas)
-                        ? c.pnlArs + cobranzas
+                      // Phase 3D sub-fix: P&L augmentado usa pnlContribution
+                      // (sólo cupones + ganancia realizada de amorts), NO el
+                      // cash total — la devolución de capital de los amorts
+                      // no es ganancia.
+                      const cobranzasCash = bondSummary?.total || 0
+                      const pnlContrib = bondSummary?.pnlContribution || 0
+                      const adjPnlArs = (c.pnlArs != null && pnlContrib)
+                        ? c.pnlArs + pnlContrib
                         : c.pnlArs
                       const adjPnlPct = (isBond && adjPnlArs != null && p.invested > 0)
                         ? adjPnlArs / p.invested
                         : c.pnlPct
                       const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
-                      // Precio promedio en ARS = invertido / cantidad
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       const expanded = isBond && expandedBonds.has(bondKey)
                       const arsColSpan = showDetail ? 12 : 9
-                      const pnlTooltip = (isBond && cobranzas > 0)
-                        ? `Incluye +ARS ${ars(cobranzas)} cobrados de cupones/amortizaciones (mark-to-market: ${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))})`
+                      const pnlTooltip = (isBond && pnlContrib !== 0)
+                        ? `P&L = mark-to-market (${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlContrib))} de ganancia realizada (cupones + parte de ganancia de amorts). Cash total cobrado: ARS ${ars(cobranzasCash)}.`
                         : undefined
                       return (
                         <Fragment key={p.id}>
@@ -754,7 +815,7 @@ export default function Positions() {
                           <td className={`${tdClass} text-slate-900 dark:text-slate-100 font-medium tabular`}>{c.valueArs != null ? fmtArs(c.valueArs) : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
                           <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlArs)} ${pnlBg}`} title={pnlTooltip}>
                             {adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—'}
-                            {isBond && cobranzas > 0 && (
+                            {isBond && pnlContrib !== 0 && (
                               <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
                             )}
                           </td>
@@ -771,6 +832,7 @@ export default function Positions() {
                             summary={bondSummary}
                             isARS={true}
                             currentPrice={c.priceArs}
+                            tcMep={tcMep}
                             cerSeries={cerSeries}
                             cerStale={cerStale}
                             onAddCoupon={() => openBondCashflow(p, 'coupon')}
@@ -828,21 +890,22 @@ export default function Positions() {
                     const isBond = isBondTicker(p.asset) && !p.is_cash
                     const bondKey = `${p.broker}:${p.asset}`
                     const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
-                    const cobranzas = bondSummary?.total || 0
-                    const adjPnl = (c.pnl != null && cobranzas)
-                      ? c.pnl + cobranzas
+                    // Phase 3D sub-fix: ver comentario equivalente en tabla ARS.
+                    const cobranzasCash = bondSummary?.total || 0
+                    const pnlContrib = bondSummary?.pnlContribution || 0
+                    const adjPnl = (c.pnl != null && pnlContrib)
+                      ? c.pnl + pnlContrib
                       : c.pnl
                     const adjPnlPct = (isBond && adjPnl != null && p.invested > 0)
                       ? adjPnl / p.invested
                       : c.pnlPct
                     const pnlBg = adjPnl == null ? '' : adjPnl > 0 ? 'bg-rendi-pos/[0.06]' : adjPnl < 0 ? 'bg-rendi-neg/[0.06]' : ''
-                    // Precio promedio = invertido / cantidad. Si tiene buy_price lo preferimos por precisión histórica.
                     const avgPrice = (!p.is_cash && p.quantity > 0)
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
                     const expanded = isBond && expandedBonds.has(bondKey)
-                    const pnlTooltip = (isBond && cobranzas > 0)
-                      ? `Incluye +USD ${usd(cobranzas)} cobrados de cupones/amortizaciones (mark-to-market: ${c.pnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnl || 0))})`
+                    const pnlTooltip = (isBond && pnlContrib !== 0)
+                      ? `P&L = mark-to-market (${c.pnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnl || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}USD ${usd(Math.abs(pnlContrib))} de ganancia realizada (cupones + ganancia de amorts). Cash total cobrado: USD ${usd(cobranzasCash)}.`
                       : undefined
                     return (
                       <Fragment key={p.id}>
@@ -889,7 +952,7 @@ export default function Positions() {
                         <td className={`${tdClass} text-slate-900 dark:text-slate-100 font-medium tabular`}>{c.value != null ? fmtUsd(c.value) : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(adjPnl)} ${pnlBg}`} title={pnlTooltip}>
                           {adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—'}
-                          {isBond && cobranzas > 0 && (
+                          {isBond && pnlContrib !== 0 && (
                             <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
                           )}
                         </td>
@@ -905,6 +968,7 @@ export default function Positions() {
                           summary={bondSummary}
                           isARS={false}
                           currentPrice={c.price}
+                          tcMep={tcMep}
                           cerSeries={cerSeries}
                           cerStale={cerStale}
                           onAddCoupon={() => openBondCashflow(p, 'coupon')}
@@ -1048,6 +1112,7 @@ export default function Positions() {
           broker={bondCashflow.broker}
           brokerCurrency={bondCashflow.brokerCurrency}
           asset={bondCashflow.asset}
+          position={bondCashflow.position}
           onClose={() => setBondCashflow(null)}
           onSuccess={onBondCashflowSuccess}
         />
@@ -1361,7 +1426,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
 // Convención para TIR: usamos `currentPrice × 100` como precio por 100 nominal,
 // asumiendo qty=nominales-individuales (1 nominal = 1 USD/ARS de face value).
 // Para ETFs y bonos sin maturity, omitimos TIR.
-function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, cerStale, onAddCoupon, onAddAmortization }) {
+function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSeries, cerStale, onAddCoupon, onAddAmortization }) {
   const meta = getBondMeta(p.asset)
   const moneyLabel = isARS ? 'ARS' : 'USD'
   const fmt = isARS ? ars : usd
@@ -1369,25 +1434,55 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
   const coupons = summary?.coupons || 0
   const amortizations = summary?.amortizations || 0
   const total = summary?.total || 0
+  // Phase 3D: distinción crítica entre CASH (lo que entró al broker) y
+  // P&L CONTRIBUTION (la ganancia real). Para cupones son iguales; para amorts
+  // el cash incluye devolución de capital, el pnlContribution no.
+  const totalUsd = summary?.totalUsd || 0
+  const pnlContribution = summary?.pnlContribution || 0
+  const pnlContributionUsd = summary?.pnlContributionUsd || 0
+  const hasLegacyOps = summary?.hasLegacyOps || false
   const ops = summary?.ops || []
   const recoveryPct = invested > 0 ? (total / invested) : 0
+  // Ganancia realizada del amort = amorts cash − parte que es devolución de capital
+  const amortRealizedGain = pnlContribution - coupons
 
-  // ── Fase 2+3A+3C: schedule + TIR + próximo pago ──────────────────────────
+  // ── Fase 2+3A+3C+3D: schedule + TIR + próximo pago ───────────────────────
   // Esto SOLO aplica a bonos con maturity definida en bondMeta. ETFs y
   // tickers sin metadata caen en el fallback de Fase 1.
   //
-  // Phase 3C: si el bono es CER (meta.type === 'cer'), pasamos la serie CER
-  // al motor para que ajuste capital + cupones. Si cerSeries aún no llegó
-  // (state null o vacío), el motor cae a comportamiento nominal con warning
-  // visual.
+  // Phase 3C: ajuste CER (capital indexado por inflación) para bonos
+  // type='cer' cuando la serie está disponible.
+  //
+  // Phase 3D — Cross-currency (fix C5 del audit):
+  // Para un bono USD comprado en broker ARS, currentPrice viene en pesos
+  // (lo que cotiza AL30 en BYMA). El schedule está en USD. Para que la
+  // TIR sea coherente, convertimos el precio ARS → USD vía MEP (el dolar
+  // financiero implícito en bonos hard-dollar). Sin MEP cargado, fallback
+  // al blue con warning.
   const today = new Date().toISOString().slice(0, 10)
   const cerOpts = (meta?.type === 'cer' && cerSeries && Object.keys(cerSeries).length > 0)
     ? { cerSeries }
     : {}
   const fullSchedule = generateSchedule(p.asset, cerOpts)
   const remaining = fullSchedule ? getRemainingPayments(p.asset, today, cerOpts) : null
-  const pricePer100Clean = currentPrice != null && currentPrice > 0
-    ? currentPrice * 100
+
+  const bondCurrency = meta?.currency || 'USD'
+  const brokerCurrency = isARS ? 'ARS' : 'USD'
+  const isCrossCurrency = bondCurrency !== brokerCurrency
+  // Si hay cross-currency, normalizar precio a moneda del bono.
+  let priceInBondCurrency = currentPrice
+  let priceConversion = null
+  if (isCrossCurrency && currentPrice != null && currentPrice > 0) {
+    if (bondCurrency === 'USD' && brokerCurrency === 'ARS' && tcMep) {
+      priceInBondCurrency = currentPrice / tcMep
+      priceConversion = { from: 'ARS', to: 'USD', rate: tcMep, type: 'MEP' }
+    } else if (bondCurrency === 'ARS' && brokerCurrency === 'USD' && tcMep) {
+      priceInBondCurrency = currentPrice * tcMep
+      priceConversion = { from: 'USD', to: 'ARS', rate: tcMep, type: 'MEP' }
+    }
+  }
+  const pricePer100Clean = priceInBondCurrency != null && priceInBondCurrency > 0
+    ? priceInBondCurrency * 100
     : null
   const yieldDetail = pricePer100Clean != null
     ? estimateYieldDetailed(p.asset, pricePer100Clean, today, cerOpts)
@@ -1483,6 +1578,27 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
                   {coupons > 0 && amortizations > 0 && ' · '}
                   {amortizations > 0 && <>Amortizaciones: {moneyLabel} {fmt(amortizations)}</>}
                 </p>
+                {/* Phase 3D sub-fix: distinguir cash recibido vs aporte al P&L.
+                    Los amorts incluyen DEVOLUCIÓN DE CAPITAL (no es ganancia)
+                    + GANANCIA REALIZADA. Mostramos la separación para que el
+                    user entienda dónde "está" su rentabilidad. */}
+                {amortizations > 0 && (
+                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
+                    De los amorts, sólo{' '}
+                    <span className={amortRealizedGain >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}>
+                      {moneyLabel} {fmt(amortRealizedGain)}
+                    </span>{' '}
+                    {amortRealizedGain >= 0 ? 'es ganancia' : 'es pérdida'}; el resto es devolución de capital.
+                  </p>
+                )}
+                <p className="text-[11px] text-rendi-pos font-semibold">
+                  Aporte al P&L: {pnlContribution >= 0 ? '+' : '-'}{moneyLabel} {fmt(Math.abs(pnlContribution))}
+                </p>
+                {isARS && totalUsd > 0 && (
+                  <p className="text-[10px] text-ink-3 font-mono">
+                    ≈ USD {usd(totalUsd)} en cash {hasLegacyOps && <span className="text-rendi-warn">(aprox)</span>}
+                  </p>
+                )}
                 {invested > 0 && (
                   <p className="text-xs text-rendi-accent font-semibold">
                     {pctSigned(recoveryPct)} del capital recuperado
@@ -1529,9 +1645,9 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
                   <p className="text-lg font-bold tabular text-ink-0">
                     {pctSigned(yieldEstimate)} <span className="text-xs font-normal text-ink-2">TIR ef. anual</span>
                   </p>
-                  {/* Phase 3A: metadata transparente — convención usada, dirty/clean,
-                      accrued, método de convergencia. Si el user duda del número,
-                      ve exactamente por qué se calculó así. */}
+                  {/* Phase 3A: metadata transparente. Phase 3D: si hay conversión
+                      cross-currency, mostrarla también para que el user entienda
+                      por qué la TIR no coincide con un cálculo "ARS vs USD" naïve. */}
                   <p className="text-[10px] text-ink-3 font-mono leading-snug">
                     Convención: {yieldDetail.dayCount}
                     {yieldDetail.accrued > 0.01 && (
@@ -1544,9 +1660,16 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
                       <span className="text-rendi-warn"> · ⚠ aproximada</span>
                     )}
                   </p>
+                  {priceConversion && (
+                    <p className="text-[10px] text-rendi-accent font-mono leading-snug">
+                      ✓ Precio convertido {priceConversion.from} → {priceConversion.to} al {priceConversion.type} {priceConversion.rate.toFixed(2)}
+                    </p>
+                  )}
                   <p className="text-[10px] text-ink-3 font-mono leading-snug">
-                    Asume qty = nominales VN, precio entrado por nominal en moneda del bono.
-                    Refiná el "precio override" si difiere del que ves en el broker.
+                    Asume qty = nominales VN, precio entrado por nominal en moneda del broker.
+                    {isCrossCurrency && !priceConversion && (
+                      <span className="text-rendi-warn"> ⚠ Bono {bondCurrency} en broker {brokerCurrency} sin MEP disponible — TIR puede estar distorsionada.</span>
+                    )}
                   </p>
                 </>
               ) : (

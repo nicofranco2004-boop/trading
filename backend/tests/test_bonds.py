@@ -306,6 +306,354 @@ class BondCashflowEndpointTest(unittest.TestCase):
         self.assertEqual(res.status_code, 404)
 
 
+class Phase3DCashflowExtensionsTest(unittest.TestCase):
+    """Tests de Phase 3D: currency stamping + fx_to_usd + decrement_quantity.
+
+    Asegura que las nuevas columnas y el comportamiento amortizante funcionen
+    sin romper el flujo legacy.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, f"phase3d-{self.id()}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        _add_broker(conn, self.uid, "IBKR", "USD")
+        # Crear posición de prueba: 1000 VN de AL30, costo USD 700
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested,
+               quantity, buy_price, commissions, entry_date)
+               VALUES (?, 'IBKR', 'AL30', 0, 700, 1000, 0.70, 0, '2024-06-01')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+
+    def _post(self, body):
+        return self.client.post(
+            "/api/bonds/cashflow",
+            json=body,
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    # ─── Currency stamping ───────────────────────────────────────────────────
+
+    def test_currency_defaults_to_broker_currency(self):
+        """Sin currency explícito: usa la del broker (Cocos → ARS)."""
+        res = self._post({
+            "broker": "Cocos", "asset": "AL30",
+            "flow_type": "coupon", "amount": 5000, "date": "2026-05-10",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["currency"], "ARS")
+
+        conn = main.get_db()
+        op = conn.execute(
+            "SELECT currency, fx_to_usd FROM operations WHERE user_id=? AND asset='AL30'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(op["currency"], "ARS")
+        # ARS broker sin fx explícito → fx_to_usd queda NULL
+        self.assertIsNone(op["fx_to_usd"])
+
+    def test_fx_to_usd_default_one_for_usd_broker(self):
+        """Broker USD/USDT: fx_to_usd default = 1.0."""
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "coupon", "amount": 25, "date": "2026-05-10",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["currency"], "USD")
+        self.assertEqual(body["fx_to_usd"], 1.0)
+
+    def test_explicit_currency_and_fx_are_stamped(self):
+        """Si el cliente manda currency + fx_to_usd, se respetan."""
+        res = self._post({
+            "broker": "Cocos", "asset": "AL30",
+            "flow_type": "coupon", "amount": 32480,
+            "date": "2026-05-10",
+            "currency": "ARS",
+            "fx_to_usd": 0.0008,  # ≈ 1/1250 ARS por USD (MEP)
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["fx_to_usd"], 0.0008)
+
+        conn = main.get_db()
+        op = conn.execute(
+            "SELECT currency, fx_to_usd FROM operations WHERE user_id=? AND asset='AL30'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(op["currency"], "ARS")
+        self.assertAlmostEqual(op["fx_to_usd"], 0.0008, places=6)
+
+    # ─── Amortization decrement ──────────────────────────────────────────────
+
+    def test_amort_without_decrement_flag_preserves_legacy(self):
+        """Sin decrement_quantity, la posición no cambia (comportamiento Fase 1-2)."""
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 76.92, "date": "2026-07-09",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["qty_decremented"], 0.0)
+
+        conn = main.get_db()
+        pos = conn.execute(
+            "SELECT quantity, invested FROM positions WHERE user_id=? AND asset='AL30' AND is_cash=0",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertAlmostEqual(pos["quantity"], 1000)
+        self.assertAlmostEqual(pos["invested"], 700)
+
+    def test_amort_with_decrement_reduces_quantity_and_invested(self):
+        """decrement_quantity=true Y flow_type=amortization → qty y cost basis bajan."""
+        # Amortización del 7.692% de 1000 VN = 76.92 (= USD recibidos = face devuelto)
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 76.92, "date": "2026-07-09",
+            "decrement_quantity": True,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertAlmostEqual(body["qty_decremented"], 76.92, places=2)
+        # invested decrementado proporcional: 700 × (76.92/1000) = 53.844
+        self.assertAlmostEqual(body["invested_decremented"], 53.844, places=2)
+
+        conn = main.get_db()
+        pos = conn.execute(
+            "SELECT quantity, invested FROM positions WHERE user_id=? AND asset='AL30' AND is_cash=0",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # Quantity remanente: 1000 - 76.92 = 923.08
+        self.assertAlmostEqual(pos["quantity"], 923.08, places=2)
+        # Invested remanente: 700 × (1 - 76.92/1000) = 700 × 0.9231 = 646.16
+        self.assertAlmostEqual(pos["invested"], 646.156, places=2)
+        # Cost basis por VN se preserva: 646.16 / 923.08 = 0.70 ✓
+        self.assertAlmostEqual(pos["invested"] / pos["quantity"], 0.70, places=3)
+
+    def test_amort_with_decrement_no_effect_on_coupon(self):
+        """flow_type=coupon + decrement_quantity=true: la quantity NO cambia."""
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "coupon", "amount": 5, "date": "2026-07-09",
+            "decrement_quantity": True,  # ignorado para coupon
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["qty_decremented"], 0.0)
+
+        conn = main.get_db()
+        pos = conn.execute(
+            "SELECT quantity FROM positions WHERE user_id=? AND asset='AL30' AND is_cash=0",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertAlmostEqual(pos["quantity"], 1000)
+
+    def test_amort_fifo_across_multiple_lots(self):
+        """Si hay múltiples lotes del mismo bono, decrementa FIFO."""
+        conn = main.get_db()
+        # Agregar segundo lote (más viejo) — debe consumirse primero
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested,
+               quantity, buy_price, commissions, entry_date)
+               VALUES (?, 'IBKR', 'AL30', 0, 100, 100, 1.00, 0, '2024-01-01')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+
+        # Amort de 150 — debe consumir todo el lote viejo (100) + 50 del nuevo
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 150, "date": "2026-07-09",
+            "decrement_quantity": True,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+
+        conn = main.get_db()
+        lots = conn.execute(
+            """SELECT id, quantity, invested FROM positions
+               WHERE user_id=? AND asset='AL30' AND is_cash=0
+               ORDER BY entry_date""",
+            (self.uid,),
+        ).fetchall()
+        conn.close()
+        # El lote viejo debe haberse borrado, queda solo el nuevo con 950 VN
+        self.assertEqual(len(lots), 1)
+        self.assertAlmostEqual(lots[0]["quantity"], 950)  # 1000 - 50
+        # Invested del lote nuevo: 700 × (1 - 50/1000) = 665
+        self.assertAlmostEqual(lots[0]["invested"], 665)
+
+    # ─── Realized gain por amort (sub-fix Phase 3D) ──────────────────────────
+    # CASO CANÓNICO del audit financiero: la amortización tiene DOS componentes:
+    #   1. Devolución de capital (NO ganancia) = cost basis consumido
+    #   2. Ganancia realizada = cash recibido − cost basis consumido
+    # Que la "ganancia" sea positiva, cero o negativa depende del precio al
+    # que se compró el bono vs el face que se devuelve.
+
+    def test_amort_at_par_has_zero_realized_gain(self):
+        """Bono comprado a la par: amort = devolución de capital pura, gain = 0."""
+        # Setup: comprar 1000 VN a USD 1000 (precio 100/100 = par)
+        conn = main.get_db()
+        # Borrar la posición de setUp y crear una nueva al par
+        conn.execute("DELETE FROM positions WHERE user_id=? AND broker='IBKR' AND is_cash=0", (self.uid,))
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested,
+               quantity, buy_price, commissions, entry_date)
+               VALUES (?, 'IBKR', 'AL30', 0, 1000, 1000, 1.00, 0, '2024-06-01')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+
+        # Amort de USD 76.92 (= 7.69% del face)
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 76.92, "date": "2026-07-09",
+            "decrement_quantity": True,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        # Cost basis consumido = invested × take/qty = 1000 × 76.92/1000 = 76.92
+        self.assertAlmostEqual(body["cost_basis_consumed"], 76.92, places=2)
+        # Realized gain = cash − cost_basis = 76.92 − 76.92 = 0
+        self.assertAlmostEqual(body["realized_gain"], 0.0, places=2)
+
+    def test_amort_below_par_has_positive_realized_gain(self):
+        """Bono comprado BAJO la par: amort tiene ganancia realizada > 0.
+
+        Es el caso típico de los soberanos AR canje 2020 cotizando a ~70%.
+        """
+        # Setup en setUp: 1000 VN, invested 700 (precio 70/100). Bajo par.
+        # Amort de USD 76.92
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 76.92, "date": "2026-07-09",
+            "decrement_quantity": True,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        # Cost basis consumido = 700 × 76.92/1000 = 53.844
+        self.assertAlmostEqual(body["cost_basis_consumed"], 53.844, places=2)
+        # Realized gain = 76.92 − 53.844 = 23.076 (≈ 30% del face devuelto)
+        self.assertAlmostEqual(body["realized_gain"], 23.076, places=2)
+
+    def test_amort_above_par_has_negative_realized_gain(self):
+        """Bono comprado en premium (sobre par): amort tiene pérdida realizada."""
+        conn = main.get_db()
+        conn.execute("DELETE FROM positions WHERE user_id=? AND broker='IBKR' AND is_cash=0", (self.uid,))
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested,
+               quantity, buy_price, commissions, entry_date)
+               VALUES (?, 'IBKR', 'AL30', 0, 1100, 1000, 1.10, 0, '2024-06-01')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 76.92, "date": "2026-07-09",
+            "decrement_quantity": True,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        # Cost basis consumido = 1100 × 76.92/1000 = 84.612
+        self.assertAlmostEqual(body["cost_basis_consumed"], 84.612, places=2)
+        # Realized gain = 76.92 − 84.612 = -7.692 (pérdida)
+        self.assertAlmostEqual(body["realized_gain"], -7.692, places=2)
+
+    def test_amort_without_decrement_still_computes_cost_basis(self):
+        """Aún si decrement_quantity=false, calculamos cost_basis_consumed
+        para reportes (el user puede preferir no decrementar pero igual queremos
+        el P&L correcto del bono)."""
+        # Setup de setUp: 1000 VN invested 700 (bajo par)
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 76.92, "date": "2026-07-09",
+            "decrement_quantity": False,  # NO decrementar
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        # Cost basis consumido SE CALCULA igual (read-only FIFO)
+        self.assertAlmostEqual(body["cost_basis_consumed"], 53.844, places=2)
+        self.assertAlmostEqual(body["realized_gain"], 23.076, places=2)
+        # Pero qty NO cambió
+        self.assertEqual(body["qty_decremented"], 0.0)
+
+        conn = main.get_db()
+        pos = conn.execute(
+            "SELECT quantity, invested FROM positions WHERE user_id=? AND asset='AL30' AND is_cash=0",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertAlmostEqual(pos["quantity"], 1000)
+        self.assertAlmostEqual(pos["invested"], 700)
+
+    def test_coupon_has_no_cost_basis_consumed(self):
+        """Para cupones, cost_basis_consumed siempre es NULL (no aplica)."""
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "coupon", "amount": 5, "date": "2026-07-09",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertIsNone(body["cost_basis_consumed"])
+        self.assertIsNone(body["realized_gain"])
+
+    def test_cost_basis_consumed_persisted_in_operations(self):
+        """El valor se guarda en operations.cost_basis_consumed para queries posteriores."""
+        self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 50, "date": "2026-07-09",
+            "decrement_quantity": True,
+        })
+        conn = main.get_db()
+        op = conn.execute(
+            "SELECT pnl_usd, cost_basis_consumed FROM operations WHERE user_id=? AND op_type='Amortización'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(op["cost_basis_consumed"])
+        # 700 × 50/1000 = 35
+        self.assertAlmostEqual(op["cost_basis_consumed"], 35, places=2)
+        # Pnl_usd sigue guardando el cash neto (50)
+        self.assertAlmostEqual(op["pnl_usd"], 50, places=2)
+
+    def test_amort_with_decrement_exceeding_total_caps_at_available(self):
+        """Si amount > face total disponible, decrementa todo lo disponible sin error."""
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 9999,  # mucho más que los 1000 VN
+            "date": "2026-07-09",
+            "decrement_quantity": True,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertAlmostEqual(body["qty_decremented"], 1000)  # capped a disponible
+
+        conn = main.get_db()
+        pos = conn.execute(
+            "SELECT COUNT(*) AS n FROM positions WHERE user_id=? AND asset='AL30' AND is_cash=0",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(pos["n"], 0)  # lote consumido entero
+
+
 class CashAssetForCurrencyTest(unittest.TestCase):
     """Helper puro: mapeo currency → asset name."""
 
