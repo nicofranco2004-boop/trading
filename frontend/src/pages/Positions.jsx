@@ -10,7 +10,7 @@ import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
 import BondCashflowModal from '../components/BondCashflowModal'
 import { isBondTicker } from '../utils/tickers'
-import { getBondMeta, formatBondType, formatCouponFreq } from '../utils/bondMeta'
+import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel } from '../utils/bondMeta'
 import {
   generateSchedule,
   getRemainingPayments,
@@ -1433,16 +1433,8 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, cerSeries, ce
                 </p>
                 <p className="text-xs text-ink-2 font-mono">
                   {meta.maturity ? `Vence ${meta.maturity}` : 'ETF · sin vencimiento'}
-                  {/* Step-up: si tiene couponSchedule, mostrar rango "min → max" */}
-                  {meta.couponSchedule && meta.couponSchedule.length > 1 && (() => {
-                    const rates = meta.couponSchedule.map(p => p.rate)
-                    const min = Math.min(...rates)
-                    const max = Math.max(...rates)
-                    return ` · step-up ${min}% → ${max}% TNA ${formatCouponFreq(meta.couponFreq)}`
-                  })()}
-                  {/* Sin step-up: rate constante */}
-                  {!meta.couponSchedule && meta.couponRate > 0 && ` · ${meta.couponRate}% TNA ${formatCouponFreq(meta.couponFreq)}`}
-                  {meta.couponFreq === 'none' && ' · cero-cupón'}
+                  {meta.couponFreq && meta.couponFreq !== 'none' && ` · ${formatCouponLabel(meta)}`}
+                  {meta.couponFreq === 'none' && ` · ${formatCouponLabel(meta)}`}
                 </p>
                 <p className="text-[10px] text-ink-3 font-mono">
                   Moneda original: {meta.currency}
@@ -2027,8 +2019,7 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
             </div>
             <p className="text-[11px] text-ink-2 font-mono">
               {bondMeta.maturity ? `Vence ${bondMeta.maturity}` : 'Sin vencimiento (ETF)'}
-              {bondMeta.couponRate > 0 && ` · cupón ${bondMeta.couponRate}% TNA ${formatCouponFreq(bondMeta.couponFreq)}`}
-              {bondMeta.couponFreq === 'none' && ' · cero-cupón (paga todo al vencimiento)'}
+              {(bondMeta.couponRate > 0 || bondMeta.couponSchedule || bondMeta.couponFreq === 'none') && ` · ${formatCouponLabel(bondMeta)}`}
               {` · moneda ${bondMeta.currency}`}
             </p>
           </div>
@@ -2079,14 +2070,21 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
 
         {!form.is_cash && (
           <>
-            {/* Precio de compra — autofill al elegir ticker */}
+            {/* Precio de compra — autofill al elegir ticker. Para bonos
+                agregamos hint sobre la convención (precio por unidad VN,
+                no por 100 VN) — esto es ambiguo en la UI de Cocos/BYMA
+                donde el precio quoted es típicamente por 100 nominal. */}
             <Field
-              label={`Precio de compra (${moneyLabel})`}
+              label={`Precio de compra ${bondMeta ? '· por unidad VN' : ''}(${moneyLabel})`}
               value={form.buy_price}
               onChange={onPriceChange}
               type="number"
               step="any"
-              hint={pricesFetched && form.buy_price ? 'Precio actual de mercado · editable.' : 'Se autocompleta al seleccionar el activo. Ajustalo si la compra se realizó a otro precio.'}
+              hint={
+                bondMeta
+                  ? `Convención del sistema: precio por 1 VN (valor nominal). Si Cocos te muestra "${form.buy_price ? Math.round((+form.buy_price)*100) : '71.5'} por 100 VN", entrá ${form.buy_price ? (+form.buy_price).toFixed(3) : '0.715'} acá (precio quote ÷ 100). El total invertido se autocompleta abajo.`
+                  : (pricesFetched && form.buy_price ? 'Precio actual de mercado · editable.' : 'Se autocompleta al seleccionar el activo. Ajustalo si la compra se realizó a otro precio.')
+              }
             />
 
             {/* Invertido ⇄ Cantidad — bidireccional */}
@@ -2099,11 +2097,12 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
                 step="any"
               />
               <Field
-                label="Cantidad"
+                label={bondMeta ? 'Cantidad (VN)' : 'Cantidad'}
                 value={form.quantity}
                 onChange={onQuantityChange}
                 type="number"
                 step="any"
+                hint={bondMeta ? 'Valor nominal: 1 VN = 1 unidad de face value. Ej: 1000 VN de AL30 = USD 1000 face.' : undefined}
               />
             </div>
           </>
