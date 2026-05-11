@@ -690,8 +690,10 @@ class BrokerIn(BaseModel):
     @field_validator('currency')
     @classmethod
     def valid_currency(cls, v):
-        if v not in ('USDT', 'ARS'):
-            raise ValueError('currency debe ser USDT o ARS')
+        # USDT (exchanges crypto) y USD (brokers tradicionales) ambos representan
+        # 1 USD a efectos de valuación — la diferencia es solo semántica.
+        if v not in ('USDT', 'USD', 'ARS'):
+            raise ValueError('currency debe ser USDT, USD o ARS')
         return v
 
     @field_validator('name')
@@ -724,6 +726,17 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_current_user)):
         cur = conn.execute(
             "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
             (uid, data.name, data.currency, data.parent_broker_id),
+        )
+        # Auto-crear posición cash con saldo 0. Esto evita el gap donde el
+        # usuario crea un broker nuevo y no tiene cómo hacer su primer
+        # depósito (el botón 'Depositar' vive dentro del menú de cada
+        # posición). Con la cash position pre-creada, el menú aparece
+        # inmediatamente con saldo $0.
+        cash_asset = 'ARS' if data.currency == 'ARS' else ('USD' if data.currency == 'USD' else 'USDT')
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
+               VALUES (?, ?, ?, 1, 0, 0)""",
+            (uid, data.name, cash_asset),
         )
         conn.commit()
         # Safe: lastrowid always belongs to this user (just inserted)
@@ -1274,7 +1287,9 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
             (uid, broker),
         ).fetchone()
         currency = broker_row["currency"] if broker_row else "USDT"
-        asset_name = "ARS" if currency == "ARS" else "USDT"
+        # ARS para brokers en pesos; USD para brokers tradicionales; USDT para
+        # exchanges crypto. Antes USD se forzaba a USDT — ahora es independiente.
+        asset_name = "ARS" if currency == "ARS" else ("USD" if currency == "USD" else "USDT")
         conn.execute(
             """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
                VALUES (?,?,?,1,?)""",
@@ -1414,7 +1429,7 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_current_user)):
                 if data.direction == 'withdraw':
                     raise HTTPException(400, "No hay posición cash para este broker.")
                 # Crear posición cash si no existe (solo en depósito)
-                asset_name = 'ARS' if currency == 'ARS' else 'USDT'
+                asset_name = 'ARS' if currency == 'ARS' else ('USD' if currency == 'USD' else 'USDT')
                 conn.execute(
                     """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
                        VALUES (?,?,?,1,?)""",

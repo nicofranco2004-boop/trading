@@ -67,7 +67,8 @@ export default function Dashboard() {
 
   async function loadPrices(pos, cfg, bkrs) {
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
-    const usdtBrokers = new Set(bkrs.filter(b => b.currency === 'USDT').map(b => b.name))
+    // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
+    const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
 
     const arsSyms = [...new Set(
       pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA')

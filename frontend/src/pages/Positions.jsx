@@ -6,6 +6,8 @@ import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import StatCard from '../components/StatCard'
 import { useToast } from '../components/Toast'
+import AssetLogo from '../components/AssetLogo'
+import AddPositionFlow from '../components/AddPositionFlow'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -99,7 +101,8 @@ export default function Positions() {
 
   async function fetchPrices(pos, cfg, bkrs) {
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
-    const usdtBrokers = new Set(bkrs.filter(b => b.currency === 'USDT').map(b => b.name))
+    // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
+    const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
 
     const arsSyms = [...new Set(
       pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA')
@@ -120,7 +123,17 @@ export default function Positions() {
   const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
 
   function openAdd(broker) {
+    // El flujo nuevo siempre pasa por el AddPositionFlow (asset type → ticker
+    // → form). Si ya viene un broker preseleccionado (desde el menú de cada
+    // broker), lo cargamos en el form para que el step 3 lo tenga listo.
     setForm({ ...EMPTY_POS, broker: broker || (brokers[0]?.name ?? ''), entry_date: today() })
+    setModal('add-flow')
+  }
+
+  // Callback del AddPositionFlow cuando el user selecciona un ticker.
+  // Cierra el flow y abre el form (PositionFormModal) con el asset ya cargado.
+  function onAssetSelectedFromFlow({ asset }) {
+    setForm(f => ({ ...f, asset }))
     setModal('add')
   }
   function openEdit(p) {
@@ -574,7 +587,7 @@ export default function Positions() {
                         <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                           <td className={`${tdClass}`}>
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <AssetAvatar asset={p.asset} isCash={p.is_cash} />
+                              <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
                               <div className="min-w-0">
                                 <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
                                   {p.asset}
@@ -663,7 +676,7 @@ export default function Positions() {
                       <tr key={p.id} className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
                         <td className={`${tdClass}`}>
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <AssetAvatar asset={p.asset} isCash={p.is_cash} />
+                            <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
                             <div className="min-w-0">
                               <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5">
                                 {p.asset}
@@ -707,6 +720,13 @@ export default function Positions() {
         )
       })}
 
+      {modal === 'add-flow' && (
+        <AddPositionFlow
+          onClose={() => setModal(null)}
+          onAssetSelected={onAssetSelectedFromFlow}
+        />
+      )}
+
       {(modal === 'add' || modal === 'edit') && (
         <PositionFormModal
           mode={modal}
@@ -717,6 +737,9 @@ export default function Positions() {
           tcBlue={tcBlue}
           onClose={() => setModal(null)}
           onSave={save}
+          onChangeAsset={modal === 'add'
+            ? () => { setForm(f => ({ ...f, asset: '' })); setModal('add-flow') }
+            : undefined}
         />
       )}
 
@@ -1012,36 +1035,6 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
         </div>
       </div>
     </Modal>
-  )
-}
-
-// AssetAvatar — chip pequeño con iniciales del ticker, color hash deterministic.
-// Para cash: icono Wallet en lugar de letras. Aporta jerarquía visual sin
-// depender de logos externos.
-function AssetAvatar({ asset, isCash }) {
-  if (isCash) {
-    return (
-      <div className="w-8 h-8 rounded-sm bg-bg-3 border border-line flex items-center justify-center flex-shrink-0">
-        <Wallet size={14} strokeWidth={1.5} className="text-ink-2" />
-      </div>
-    )
-  }
-  // Hash determinístico simple para tonalidad estable por ticker
-  const hash = (asset || '').split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
-  const palette = [
-    'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/30',
-    'bg-blue-500/15 text-blue-500 border-blue-500/30',
-    'bg-violet-500/15 text-violet-500 border-violet-500/30',
-    'bg-cyan-500/15 text-cyan-500 border-cyan-500/30',
-    'bg-amber-500/15 text-amber-500 border-amber-500/30',
-    'bg-pink-500/15 text-pink-500 border-pink-500/30',
-  ]
-  const color = palette[Math.abs(hash) % palette.length]
-  const initials = (asset || '?').slice(0, 2).toUpperCase()
-  return (
-    <div className={`w-8 h-8 rounded-sm border flex items-center justify-center flex-shrink-0 font-mono text-[10px] font-semibold tracking-tighter ${color}`}>
-      {initials}
-    </div>
   )
 }
 
@@ -1353,11 +1346,21 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
 //  • Sin "Precio override" — quien quiera editar el precio actual lo hace
 //    directo en el campo principal.
 //  • Comisiones: campo opcional. Real cost = invertido + comisiones.
-function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcBlue, onClose, onSave }) {
+function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcBlue, onClose, onSave, onChangeAsset }) {
   const isARS = selectedBrokerCurrency === 'ARS'
   const [lastEdited, setLastEdited] = useState('invested') // 'invested' | 'quantity'
   const [pricesFetched, setPricesFetched] = useState(false)
   const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
+
+  // Si el asset viene preseteado desde el AddPositionFlow (no por TickerSearch
+  // interno), hacemos el auto-fetch de precio igual. Solo al montar / cuando
+  // cambia el asset por la prop externa.
+  useEffect(() => {
+    if (mode === 'add' && form.asset && !pricesFetched && !form.buy_price) {
+      fetchAndFillPrice(form.asset)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, form.asset])
 
   // Redondeo razonable según rango (cripto = más decimales, acciones = menos)
   const roundQty = (n) => {
@@ -1472,11 +1475,29 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
           </div>
           <div>
             <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Activo</label>
-            <TickerSearch
-              value={form.asset}
-              onChange={onAssetChange}
-              currency={selectedBrokerCurrency}
-            />
+            {/* En modo 'add' el asset viene preseleccionado desde el flow
+                (AddPositionFlow → step 2). Mostramos un display con logo +
+                botón 'Cambiar' que vuelve al flow. En modo 'edit' o si no
+                hay asset (fallback), mantenemos el TickerSearch. */}
+            {mode === 'add' && form.asset && onChangeAsset ? (
+              <div className="flex items-center gap-2.5 bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2">
+                <AssetLogo asset={form.asset} size={28} />
+                <span className="font-semibold text-ink-0 text-sm tabular flex-1">{form.asset}</span>
+                <button
+                  type="button"
+                  onClick={onChangeAsset}
+                  className="text-xs text-rendi-accent hover:underline"
+                >
+                  Cambiar
+                </button>
+              </div>
+            ) : (
+              <TickerSearch
+                value={form.asset}
+                onChange={onAssetChange}
+                currency={selectedBrokerCurrency}
+              />
+            )}
           </div>
         </div>
 

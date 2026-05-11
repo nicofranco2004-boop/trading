@@ -51,7 +51,7 @@ export default function Goals() {
       // Calcular valor actual del portfolio (USD)
       const tcBlue = dolar?.blue?.venta || 1415
       const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
-      const usdtBrokers = new Set(brokers.filter(b => b.currency === 'USDT').map(b => b.name))
+      const usdtBrokers = new Set(brokers.filter(b => b.currency !== 'ARS').map(b => b.name))
       const arsSyms = [...new Set(positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
       const usdtSyms = [...new Set(positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
       const all = [...arsSyms, ...usdtSyms].join(',')

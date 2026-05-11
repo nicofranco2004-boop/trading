@@ -40,6 +40,7 @@ import {
   computeInflationCumulative,
 } from '../utils/benchmarkSim'
 import { selectDiagnostics } from '../utils/diagnostics'
+import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
 
 const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -140,7 +141,8 @@ export default function Insights() {
       setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops)
 
       const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
-      const usdtBrokers = new Set(bkrs.filter(x => x.currency === 'USDT').map(x => x.name))
+      // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
+      const usdtBrokers = new Set(bkrs.filter(x => x.currency !== 'ARS').map(x => x.name))
       const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
       const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
       const all = [...arsSyms, ...usdtSyms].join(',')
@@ -1879,8 +1881,9 @@ function ContribList({ tone, title, items, fmt }) {
         <ul className="space-y-2">
           {items.map((it, i) => (
             <li key={it.asset} className="flex items-center justify-between gap-3 py-1">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className={`tabular text-xs font-semibold w-4 ${isPos ? 'text-emerald-500/70' : 'text-red-500/70'}`}>{i + 1}</span>
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className={`tabular text-xs font-semibold w-4 ${isPos ? 'text-rendi-pos/70' : 'text-rendi-neg/70'}`}>{i + 1}</span>
+                <AssetLogo asset={it.asset} size={24} />
                 <span className="font-semibold text-slate-800 dark:text-slate-200">{it.asset}</span>
               </div>
               <span className={`tabular font-bold ${accentText}`}>
