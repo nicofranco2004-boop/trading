@@ -178,6 +178,68 @@ export function formatCouponFreq(freq) {
   return map[freq] || freq
 }
 
+// Cupones por año según frecuencia (para calcular cupón POR PERÍODO desde TNA).
+function periodsPerYear(freq) {
+  switch (freq) {
+    case 'monthly':    return 12
+    case 'quarterly':  return 4
+    case 'semiannual': return 2
+    case 'annual':     return 1
+    default:           return null
+  }
+}
+
+// Adjetivo de frecuencia en español, en singular ("semestral", "anual", etc.).
+function freqAdjective(freq) {
+  const map = {
+    monthly: 'mensual',
+    quarterly: 'trimestral',
+    semiannual: 'semestral',
+    annual: 'anual',
+  }
+  return map[freq] || freq
+}
+
+// Construye el label legible del cupón para mostrar en la UI.
+// Convención: TNA es ANUAL por definición. El adjetivo "semestral / trimestral
+// / mensual" indica la FRECUENCIA DE PAGO, no la tasa.
+//
+// Ejemplos:
+//   • { couponRate: 2.0, couponFreq: 'semiannual' }
+//       → "cupón 2% TNA (1% por cupón, semestral)"
+//   • { couponSchedule: [...] }  (step-up canje 2020)
+//       → "cupón step-up 0.125% → 1.75% TNA (semestral)"
+//   • { couponFreq: 'none' }
+//       → "cero-cupón (paga todo al vencimiento)"
+//
+// La razón del "(X% por cupón, Y)" es disambiguar para retail: "2% TNA" se
+// presta a confusión con "2% por cupón" (sería 4% TNA si es semestral). El
+// formato explícito previene errores de interpretación.
+export function formatCouponLabel(meta) {
+  if (!meta) return ''
+  if (meta.couponFreq === 'none' || (!meta.couponRate && !meta.couponSchedule)) {
+    return 'cero-cupón (paga todo al vencimiento)'
+  }
+  const adj = freqAdjective(meta.couponFreq)
+  const ppy = periodsPerYear(meta.couponFreq)
+
+  // Step-up: rango min → max (ambos en TNA), frecuencia entre paréntesis.
+  if (Array.isArray(meta.couponSchedule) && meta.couponSchedule.length > 1) {
+    const rates = meta.couponSchedule.map(p => p.rate)
+    const min = Math.min(...rates)
+    const max = Math.max(...rates)
+    return `cupón step-up ${min}% → ${max}% TNA (${adj})`
+  }
+
+  // Cupón fijo: TNA + cupón por período si la freq es conocida.
+  const rate = meta.couponRate
+  if (ppy && rate) {
+    const perPeriod = +(rate / ppy).toFixed(4)
+    return `cupón ${rate}% TNA (${perPeriod}% por cupón, ${adj})`
+  }
+  return `cupón ${rate}% TNA (${adj})`
+}
+
 // Type human-readable
 export function formatBondType(type) {
   const map = {
