@@ -267,6 +267,29 @@ export function buildMonthlyReports(monthly, operations, snapshots = []) {
         endSource = 'manual'
       }
 
+      // CONSISTENCY FIX: si el año en curso usa liveValue como endUsd, el
+      // YTD del Hero incluye lo que pasó DESPUÉS del último capital_final
+      // cerrado (gap entre 'cierre de mayo' y 'hoy'). Sin este fix, la
+      // suma de delta por mes ≠ YTD. Solución: actualizamos el endUsd del
+      // último mes manual del año en curso para que refleje el live, y
+      // recalculamos su delta. Marcamos con isLive=true para que la UI
+      // muestre un badge sutil 'LIVE'.
+      if (isCurrentYear && endSource === 'live' && newestWithCapital) {
+        const gap = liveValue - (newestWithCapital.endUsd || 0)
+        if (Math.abs(gap) > 0.01) {
+          // Mutamos el mes en su lugar dentro de `sorted` (es el mismo
+          // objeto). Recalculamos delta con el live como endUsd.
+          newestWithCapital.endUsd = liveValue
+          const flows = (newestWithCapital.deposits || 0) - (newestWithCapital.withdrawals || 0)
+          newestWithCapital.deltaUsd = liveValue - (newestWithCapital.startUsd || 0) - flows
+          newestWithCapital.deltaPct = (newestWithCapital.startUsd || 0) > 0
+            ? (newestWithCapital.deltaUsd / newestWithCapital.startUsd) * 100
+            : 0
+          newestWithCapital.status = statusFromPct(newestWithCapital.deltaPct)
+          newestWithCapital.isLive = true
+        }
+      }
+
       // Flujos netos del año (desde monthly_entries solamente — los derived
       // no tienen flow tracking porque no hay entry global)
       const flowsYear = sorted.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)

@@ -266,7 +266,18 @@ function MonthCard({ month, onClick }) {
       aria-label={`Ver reporte de ${month.name} ${month.year}`}
     >
       <div className="flex items-center justify-between mb-2 gap-2">
-        <span className="label-mono">{month.name}</span>
+        <span className="label-mono inline-flex items-center gap-1.5">
+          {month.name}
+          {month.isLive && (
+            <span
+              className="inline-flex items-center gap-1 text-[8px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30"
+              title="El valor del mes refleja el último snapshot del portfolio (post-cierre)"
+            >
+              <span className="w-1 h-1 rounded-full bg-rendi-accent animate-pulse motion-reduce:animate-none" />
+              Live
+            </span>
+          )}
+        </span>
         {sourceBadge ? (
           <span
             className={`text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm border ${sourceBadge.cls}`}

@@ -228,6 +228,56 @@ describe('buildMonthlyReports', () => {
     expect(yr.endUsd).toBe(6100)
   })
 
+  it('CONSISTENCIA: suma de deltaUsd por mes === ytdUsd del año en curso', () => {
+    // Bug reportado: el Hero usaba liveValue pero el último mes mostraba
+    // capital_final cerrado. La suma visual no daba el YTD. Fix: el último
+    // mes manual del año en curso se actualiza con liveValue como endUsd.
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [
+        { year: todayYear, month: 2, broker: 'global', capital_inicio: 5557, capital_final: 5927.24, deposits: 370.24 },
+        { year: todayYear, month: 3, broker: 'global', capital_inicio: 5927.24, capital_final: 6489.96, deposits: 604.72 },
+        { year: todayYear, month: 4, broker: 'global', capital_inicio: 6489.96, capital_final: 6998.31, deposits: 500.80 },
+        { year: todayYear, month: 5, broker: 'global', capital_inicio: 6998.31, capital_final: 8299.38, deposits: 112 },
+      ],
+      [],
+      // Live snapshot está $240.57 por encima del último capital_final
+      [{ date: `${todayYear}-05-11`, total_value: 8539.95 }]
+    )
+    const yr = out.years[0]
+    const sumOfDeltas = yr.months.reduce((s, m) => s + m.deltaUsd, 0)
+    expect(sumOfDeltas).toBeCloseTo(yr.ytdUsd, 1)
+    // El último mes (Mayo) debe estar marcado isLive y reflejar el gap
+    const mayo = yr.months.find(m => m.month === 5)
+    expect(mayo.isLive).toBe(true)
+    expect(mayo.endUsd).toBe(8539.95)
+    // delta de mayo = 8539.95 - 6998.31 - 112 = 1429.64
+    expect(mayo.deltaUsd).toBeCloseTo(1429.64, 1)
+  })
+
+  it('isLive solo se aplica al año en curso, no a años pasados', () => {
+    const lastYear = new Date().getFullYear() - 1
+    const out = buildMonthlyReports(
+      [{ year: lastYear, month: 12, broker: 'global', capital_inicio: 5000, capital_final: 5500 }],
+      [],
+      [{ date: `${new Date().getFullYear()}-01-15`, total_value: 7000 }]
+    )
+    const dec = out.years[0].months[0]
+    expect(dec.isLive).toBeFalsy()
+    expect(dec.endUsd).toBe(5500)  // capital_final original, no live
+  })
+
+  it('isLive NO se aplica si el gap entre live y capital_final es despreciable', () => {
+    const todayYear = new Date().getFullYear()
+    const out = buildMonthlyReports(
+      [{ year: todayYear, month: 5, broker: 'global', capital_inicio: 7000, capital_final: 8000 }],
+      [],
+      [{ date: `${todayYear}-05-31`, total_value: 8000.0001 }]  // gap < 0.01
+    )
+    const may = out.years[0].months[0]
+    expect(may.isLive).toBeFalsy()
+  })
+
   it('flows del año descontados del YTD para que coincida con Dashboard', () => {
     const todayYear = new Date().getFullYear()
     const out = buildMonthlyReports(
