@@ -41,8 +41,17 @@ function isCryptoTicker(asset) {
   return CRYPTO_TICKERS.has(asset.toUpperCase())
 }
 
+// Tickers que FMP serve con PNG placeholder (técnicamente válido pero casi
+// vacío — no podemos detectarlo desde el browser por CORS taint, así que
+// los hardcodeamos para forzar fallback a iniciales).
+// Si ves un ticker con logo raro (círculo casi blanco con un punto), agregalo
+// acá. Verificable: curl la URL FMP y compara el PNG con un placeholder.
+const FMP_BROKEN = new Set([
+  'INTC',  // Intel — confirmado mayo 2026
+])
+
 // URL del logo según categoría. Devuelve null si no podemos inferir
-// (caso raro — ticker vacío o no-string).
+// (caso raro — ticker vacío o no-string, o known broken en FMP).
 function logoUrlFor(asset) {
   if (!asset || typeof asset !== 'string') return null
   const clean = asset.trim().toUpperCase()
@@ -51,6 +60,8 @@ function logoUrlFor(asset) {
     // CoinCap usa lowercase en sus URLs
     return `https://assets.coincap.io/assets/icons/${clean.toLowerCase()}@2x.png`
   }
+  // Tickers conocidos sin logo en FMP → forzar fallback
+  if (FMP_BROKEN.has(clean)) return null
   // Stock / CEDEAR / ADR — FMP cubre US tickers (los CEDEARs argentinos usan
   // el mismo símbolo que su ADR, así que MELI/GGAL/etc. funcionan).
   return `https://financialmodelingprep.com/image-stock/${clean}.png`
@@ -131,46 +142,10 @@ export default function AssetLogo({ asset, isCash, size = 32, className = '' }) 
         alt={asset}
         loading="lazy"
         decoding="async"
-        crossOrigin="anonymous"
         onError={() => setFailed(true)}
-        onLoad={handleLoadValidation}
         className="object-contain"
         style={{ width: '78%', height: '78%' }}
       />
     </div>
   )
-
-  // ─── Validador post-load ────────────────────────────────────────────────
-  // Algunas fuentes (notoriamente FMP con INTC, GOOG y otros) devuelven 200
-  // con un PNG de tamaño normal pero CASI VACÍO (placeholder transparente).
-  // En esos casos el browser no dispara onError. Detectamos midiendo qué
-  // proporción de pixels tienen alpha > umbral: si menos del 8% del área
-  // tiene contenido visible, lo tratamos como broken y caemos al fallback.
-  function handleLoadValidation(e) {
-    const img = e.target
-    // Dimensiones muy pequeñas → broken (ej. 1×1 transparent pixel)
-    if (img.naturalWidth < 16 || img.naturalHeight < 16) {
-      setFailed(true)
-      return
-    }
-    try {
-      const canvas = document.createElement('canvas')
-      const SAMPLE = 24
-      canvas.width = SAMPLE
-      canvas.height = SAMPLE
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0, SAMPLE, SAMPLE)
-      const data = ctx.getImageData(0, 0, SAMPLE, SAMPLE).data
-      // Contamos pixels con alpha > 50/255 = ~20% opacidad mínima
-      let opaque = 0
-      for (let i = 3; i < data.length; i += 4) {
-        if (data[i] > 50) opaque++
-      }
-      const ratio = opaque / (SAMPLE * SAMPLE)
-      // Threshold: si menos del 8% del bitmap es visible, es placeholder
-      if (ratio < 0.08) setFailed(true)
-    } catch {
-      // CORS taint impide leer pixels — asumimos OK (no marcamos failed)
-    }
-  }
 }
