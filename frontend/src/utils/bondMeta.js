@@ -1,4 +1,4 @@
-// bondMeta.js — meta-data básico de cada bono soportado en Fase 1.
+// bondMeta.js — meta-data básico de cada bono soportado.
 // ════════════════════════════════════════════════════════════════════════════
 // Por ticker, definimos:
 //   • currency: USD | ARS | USD_CER (CER son ARS-linked vía índice)
@@ -6,12 +6,17 @@
 //   • maturity: fecha YYYY-MM-DD de vencimiento
 //   • couponRate: TNA aproximada (% anual). Para soberanos AR, la stepup
 //     real es complicada — guardamos un proxy promedio.
-//   • couponFreq: 'semiannual' | 'quarterly' | 'monthly' | 'annual'
+//   • couponFreq: 'semiannual' | 'quarterly' | 'monthly' | 'annual' | 'none'
 //   • type: 'sovereign' | 'corporate' | 'cer' | 'etf'
+//   • amortStart (opcional): fecha del primer pago de amortización (bonos que
+//     amortizan progresivamente en lugar de devolver el face al vencimiento).
+//   • amortCount (opcional): cantidad total de cuotas de amortización (igual
+//     espaciadas a la frecuencia del cupón). Cada cuota devuelve 100/amortCount
+//     del face original.
 //
-// FASE 1: schedule (cronograma de pagos) vacío. Se registran cupones cobrados
-// manualmente desde el ActionMenu. FASE 2: agregar el array `schedule` con
-// las fechas y montos exactos por unidad nominal (USD 100 / ARS 1000 según).
+// FASE 2: el bondSchedule.js consume estos campos para generar el cronograma
+// de pagos (cupones + amortizaciones) por ticker, calcular próximo pago y
+// TIR estimada. Falta refinar las step-up exactas de soberanos AR — Fase 3.
 //
 // Fuentes de meta-data:
 //   • Soberanos AR: prospecto Ministerio de Economía
@@ -22,21 +27,25 @@
 // del lado del frontend porque es mostly informativa — el cálculo real
 // (TIR, próximo cupón) llega en Fase 2.
 
+// Schedules de amortización de soberanos AR (canje 2020).
+// Cada bono amortiza en cuotas iguales semestrales (100/amortCount % del face
+// original cada una) a partir de amortStart. Aproximación basada en los
+// prospectos públicos — los rates step-up exactos viven en Fase 3.
 export const BOND_META = {
   // ─── Soberanos AR USD — ley local ─────────────────────────────────────────
-  AL29: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2029-07-09', couponRate: 1.0, couponFreq: 'semiannual' },
-  AL30: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2030-07-09', couponRate: 0.75, couponFreq: 'semiannual' },
-  AL35: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2035-07-09', couponRate: 1.875, couponFreq: 'semiannual' },
-  AE38: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2038-01-09', couponRate: 2.0, couponFreq: 'semiannual' },
-  AL41: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2041-07-09', couponRate: 2.5, couponFreq: 'semiannual' },
+  AL29: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2029-07-09', couponRate: 1.0,   couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 10 },
+  AL30: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2030-07-09', couponRate: 0.75,  couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 13 },
+  AL35: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2035-07-09', couponRate: 1.875, couponFreq: 'semiannual', amortStart: '2031-01-09', amortCount: 10 },
+  AE38: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2038-01-09', couponRate: 2.0,   couponFreq: 'semiannual', amortStart: '2027-07-09', amortCount: 22 },
+  AL41: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2041-07-09', couponRate: 2.5,   couponFreq: 'semiannual', amortStart: '2028-01-09', amortCount: 28 },
 
   // ─── Soberanos AR USD — ley extranjera ────────────────────────────────────
-  GD29: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2029-07-09', couponRate: 1.0, couponFreq: 'semiannual' },
-  GD30: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2030-07-09', couponRate: 0.75, couponFreq: 'semiannual' },
-  GD35: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2035-07-09', couponRate: 1.875, couponFreq: 'semiannual' },
-  GD38: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2038-01-09', couponRate: 2.0, couponFreq: 'semiannual' },
-  GD41: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2041-07-09', couponRate: 2.5, couponFreq: 'semiannual' },
-  GD46: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2046-07-09', couponRate: 2.5, couponFreq: 'semiannual' },
+  GD29: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2029-07-09', couponRate: 1.0,   couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 10 },
+  GD30: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2030-07-09', couponRate: 0.75,  couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 13 },
+  GD35: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2035-07-09', couponRate: 1.875, couponFreq: 'semiannual', amortStart: '2031-01-09', amortCount: 10 },
+  GD38: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2038-01-09', couponRate: 2.0,   couponFreq: 'semiannual', amortStart: '2027-07-09', amortCount: 22 },
+  GD41: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2041-07-09', couponRate: 2.5,   couponFreq: 'semiannual', amortStart: '2028-01-09', amortCount: 28 },
+  GD46: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2046-07-09', couponRate: 2.5,   couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 44 },
 
   // ─── CER / ARS-Linked ─────────────────────────────────────────────────────
   TX26: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2026-11-09', couponRate: 2.0, couponFreq: 'semiannual' },

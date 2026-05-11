@@ -11,6 +11,12 @@ import AddPositionFlow from '../components/AddPositionFlow'
 import BondCashflowModal from '../components/BondCashflowModal'
 import { isBondTicker } from '../utils/tickers'
 import { getBondMeta, formatBondType, formatCouponFreq } from '../utils/bondMeta'
+import {
+  generateSchedule,
+  getRemainingPayments,
+  estimateYield,
+  nextPaymentForPosition,
+} from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -739,6 +745,7 @@ export default function Positions() {
                             colSpan={arsColSpan}
                             summary={bondSummary}
                             isARS={true}
+                            currentPrice={c.priceArs}
                             onAddCoupon={() => openBondCashflow(p, 'coupon')}
                             onAddAmortization={() => openBondCashflow(p, 'amortization')}
                           />
@@ -870,6 +877,7 @@ export default function Positions() {
                           colSpan={9}
                           summary={bondSummary}
                           isARS={false}
+                          currentPrice={c.price}
                           onAddCoupon={() => openBondCashflow(p, 'coupon')}
                           onAddAmortization={() => openBondCashflow(p, 'amortization')}
                         />
@@ -1313,15 +1321,20 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
 
 // ─── BondDetailRow ────────────────────────────────────────────────────────────
 // Fila expandible que aparece debajo de una posición de bono cuando el user
-// hace click en el chevron "Ver cobranzas". Muestra:
+// hace click en el chevron "Ver cobranzas". Muestra (Fase 1 + Fase 2):
 //   • Meta del bono (issuer, vencimiento, cupón, frecuencia)
 //   • Totales de lo cobrado (cupones + amortizaciones) y % del capital recuperado
-//   • Lista cronológica de operaciones
+//   • Calendario futuro generado del bondSchedule + TIR estimada al precio actual
+//   • Lista cronológica de cobranzas registradas
 // El "% recuperado" es el diferencial Rendi: contexto narrativo "ya recuperaste
 // X% del capital vía cupones", no se ve en otras apps de tracking.
-function BondDetailRow({ p, colSpan, summary, isARS, onAddCoupon, onAddAmortization }) {
+//
+// Convención para TIR: usamos `currentPrice × 100` como precio por 100 nominal,
+// asumiendo qty=nominales-individuales (1 nominal = 1 USD/ARS de face value).
+// Para ETFs y bonos sin maturity, omitimos TIR.
+function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, onAddCoupon, onAddAmortization }) {
   const meta = getBondMeta(p.asset)
-  const moneyLabel = isARS ? 'ARS' : (p.asset === 'USD' ? 'USD' : 'USD') // bonos USD/ETF muestran USD
+  const moneyLabel = isARS ? 'ARS' : 'USD'
   const fmt = isARS ? ars : usd
   const invested = p.invested || 0
   const coupons = summary?.coupons || 0
@@ -1329,6 +1342,20 @@ function BondDetailRow({ p, colSpan, summary, isARS, onAddCoupon, onAddAmortizat
   const total = summary?.total || 0
   const ops = summary?.ops || []
   const recoveryPct = invested > 0 ? (total / invested) : 0
+
+  // ── Fase 2: schedule + TIR + próximo pago ────────────────────────────────
+  // Esto SOLO aplica a bonos con maturity definida en bondMeta. ETFs y
+  // tickers sin metadata caen en el fallback de Fase 1.
+  const today = new Date().toISOString().slice(0, 10)
+  const fullSchedule = generateSchedule(p.asset)
+  const remaining = fullSchedule ? getRemainingPayments(p.asset, today) : null
+  // pricePer100: el TIR se calcula sobre "precio por 100 nominal". Si el user
+  // entra qty=nominales y price=USD/ARS por nominal, multiplicamos × 100.
+  const pricePer100 = currentPrice != null && currentPrice > 0
+    ? currentPrice * 100
+    : null
+  const yieldEstimate = pricePer100 != null ? estimateYield(p.asset, pricePer100, today) : null
+  const nextPay = p.quantity ? nextPaymentForPosition(p.asset, p.quantity, today) : null
 
   return (
     <tr className="bg-rendi-accent/[0.04] dark:bg-rendi-accent/[0.05] border-b border-line">
@@ -1399,6 +1426,89 @@ function BondDetailRow({ p, colSpan, summary, isARS, onAddCoupon, onAddAmortizat
             </div>
           </div>
         </div>
+
+        {/* ── Fase 2: cronograma + TIR + próximo pago ────────────────────── */}
+        {fullSchedule && remaining && remaining.length > 0 && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 pt-3 border-t border-line/60">
+            {/* TIR + próximo pago */}
+            <div className="space-y-2 md:col-span-1">
+              <p className="eyebrow text-rendi-accent">Rendimiento estimado</p>
+              {yieldEstimate != null ? (
+                <>
+                  <p className="text-lg font-bold tabular text-ink-0">
+                    {pctSigned(yieldEstimate)} <span className="text-xs font-normal text-ink-2">anual</span>
+                  </p>
+                  <p className="text-[10px] text-ink-3 font-mono leading-snug">
+                    TIR aprox. al precio actual ({moneyLabel} {fmt(currentPrice)}/nominal). Asume
+                    qty = nominales VN. Refiná actualizando el "precio override" si difiere de la pantalla del broker.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-ink-2 leading-snug">
+                  {currentPrice == null
+                    ? 'Cargá un precio override en la posición para estimar la TIR a precios de mercado.'
+                    : 'No se pudo estimar la TIR — verificá que el precio esté en la misma moneda que el bono.'}
+                </p>
+              )}
+              {nextPay && (
+                <div className="pt-2 mt-1 border-t border-line/40">
+                  <p className="eyebrow text-rendi-accent">Próximo pago</p>
+                  <p className="text-sm font-semibold text-ink-0 tabular">{nextPay.date}</p>
+                  <p className="text-xs text-rendi-pos font-mono">
+                    ≈ +{moneyLabel} {fmt(nextPay.total)}
+                  </p>
+                  <p className="text-[10px] text-ink-3 font-mono">
+                    {nextPay.isPureAmort ? 'Amortización' : nextPay.isPureCoupon ? 'Cupón' : 'Cupón + amort.'}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Mini-cronograma de los próximos pagos */}
+            <div className="md:col-span-2">
+              <p className="eyebrow text-rendi-accent mb-1.5">
+                Calendario futuro · {remaining.length} {remaining.length === 1 ? 'pago' : 'pagos'} hasta {meta?.maturity}
+              </p>
+              <div className="border border-line/60 rounded-sm overflow-hidden">
+                <div className="bg-bg-2/40 px-3 py-1 grid grid-cols-12 gap-2 text-[10px] uppercase tracking-wider text-ink-3 font-mono">
+                  <div className="col-span-3">Fecha</div>
+                  <div className="col-span-3 text-right">Cupón</div>
+                  <div className="col-span-3 text-right">Amort.</div>
+                  <div className="col-span-3 text-right">Tu monto</div>
+                </div>
+                <div className="max-h-44 overflow-y-auto divide-y divide-line/30">
+                  {remaining.slice(0, 8).map(pay => {
+                    const qty = p.quantity || 0
+                    const tuMonto = qty > 0 ? (pay.total * qty / 100) : null
+                    return (
+                      <div key={pay.date} className="px-3 py-1.5 grid grid-cols-12 gap-2 text-xs">
+                        <div className="col-span-3 text-ink-1 font-mono">{pay.date}</div>
+                        <div className="col-span-3 text-right tabular text-ink-2">
+                          {pay.coupon > 0 ? pay.coupon.toFixed(3) : '—'}
+                        </div>
+                        <div className="col-span-3 text-right tabular text-ink-2">
+                          {pay.amort > 0 ? pay.amort.toFixed(3) : '—'}
+                        </div>
+                        <div className="col-span-3 text-right tabular font-semibold text-rendi-pos">
+                          {tuMonto != null ? `${moneyLabel} ${fmt(tuMonto)}` : '—'}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {remaining.length > 8 && (
+                  <div className="bg-bg-2/30 px-3 py-1 text-[10px] text-ink-3 font-mono text-center border-t border-line/30">
+                    + {remaining.length - 8} pago{remaining.length - 8 === 1 ? '' : 's'} más hasta vencimiento
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-ink-3 font-mono mt-1 leading-snug">
+                Aproximación basada en cupón promedio del prospecto. Step-up exacto y CER ajustado vienen en Fase 3.
+                Cupón/Amort. expresados por 100 nominal.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Historial */}
         {ops.length > 0 && (
