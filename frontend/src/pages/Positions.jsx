@@ -1374,13 +1374,36 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, onAddCoupon, 
             <p className="eyebrow text-rendi-accent">Bono</p>
             {meta ? (
               <>
-                <p className="text-sm font-semibold text-ink-0">{formatBondType(meta.type)} · {meta.issuer}</p>
+                <p className="text-sm font-semibold text-ink-0">
+                  {formatBondType(meta.type)} · {meta.issuer}
+                  {meta.governingLaw && (
+                    <span className="ml-1.5 text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2">
+                      Ley {meta.governingLaw === 'Argentina' ? 'AR' : 'NY'}
+                    </span>
+                  )}
+                </p>
                 <p className="text-xs text-ink-2 font-mono">
                   {meta.maturity ? `Vence ${meta.maturity}` : 'ETF · sin vencimiento'}
-                  {meta.couponRate > 0 && ` · ${meta.couponRate}% TNA ${formatCouponFreq(meta.couponFreq)}`}
+                  {/* Step-up: si tiene couponSchedule, mostrar rango "min → max" */}
+                  {meta.couponSchedule && meta.couponSchedule.length > 1 && (() => {
+                    const rates = meta.couponSchedule.map(p => p.rate)
+                    const min = Math.min(...rates)
+                    const max = Math.max(...rates)
+                    return ` · step-up ${min}% → ${max}% TNA ${formatCouponFreq(meta.couponFreq)}`
+                  })()}
+                  {/* Sin step-up: rate constante */}
+                  {!meta.couponSchedule && meta.couponRate > 0 && ` · ${meta.couponRate}% TNA ${formatCouponFreq(meta.couponFreq)}`}
                   {meta.couponFreq === 'none' && ' · cero-cupón'}
                 </p>
-                <p className="text-[10px] text-ink-3 font-mono">Moneda original: {meta.currency}</p>
+                <p className="text-[10px] text-ink-3 font-mono">
+                  Moneda original: {meta.currency}
+                  {meta.dayCount && ` · day-count ${meta.dayCount}`}
+                </p>
+                {meta._verificationLevel === 'approx' && (
+                  <p className="text-[10px] text-rendi-warn font-mono">
+                    ⚠ Cronograma aproximado — verificar contra prospecto para fineza
+                  </p>
+                )}
               </>
             ) : (
               <p className="text-xs text-ink-2">Sin metadata configurada para este ticker.</p>

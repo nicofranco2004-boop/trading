@@ -55,25 +55,54 @@
 //   • Phase 3C (PR #10): CER bonds reciben cerEmissionDate + backend CER
 //     coefficient endpoint.
 
-// Schedules de amortización de soberanos AR (canje 2020).
-// Cada bono amortiza en cuotas iguales semestrales (100/amortCount % del face
-// original cada una) a partir de amortStart. Aproximación basada en los
-// prospectos públicos — los rates step-up exactos viven en Fase 3.
-export const BOND_META = {
-  // ─── Soberanos AR USD — ley local ─────────────────────────────────────────
-  AL29: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2029-07-09', couponRate: 1.0,   couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 10 },
-  AL30: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2030-07-09', couponRate: 0.75,  couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 13 },
-  AL35: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2035-07-09', couponRate: 1.875, couponFreq: 'semiannual', amortStart: '2031-01-09', amortCount: 10 },
-  AE38: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2038-01-09', couponRate: 2.0,   couponFreq: 'semiannual', amortStart: '2027-07-09', amortCount: 22 },
-  AL41: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2041-07-09', couponRate: 2.5,   couponFreq: 'semiannual', amortStart: '2028-01-09', amortCount: 28 },
+import { CANJE_2020_BY_TICKER } from './bondSchedulesAR'
 
-  // ─── Soberanos AR USD — ley extranjera ────────────────────────────────────
-  GD29: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2029-07-09', couponRate: 1.0,   couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 10 },
-  GD30: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2030-07-09', couponRate: 0.75,  couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 13 },
-  GD35: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2035-07-09', couponRate: 1.875, couponFreq: 'semiannual', amortStart: '2031-01-09', amortCount: 10 },
-  GD38: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2038-01-09', couponRate: 2.0,   couponFreq: 'semiannual', amortStart: '2027-07-09', amortCount: 22 },
-  GD41: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2041-07-09', couponRate: 2.5,   couponFreq: 'semiannual', amortStart: '2028-01-09', amortCount: 28 },
-  GD46: { currency: 'USD', issuer: 'Soberano AR', type: 'sovereign', maturity: '2046-07-09', couponRate: 2.5,   couponFreq: 'semiannual', amortStart: '2024-07-09', amortCount: 44 },
+// ════════════════════════════════════════════════════════════════════════════
+// SOBERANOS AR — Canje 2020 (Decreto 391/2020 + 676/2020)
+// ════════════════════════════════════════════════════════════════════════════
+// Cada par AL/GD comparte cronograma de pagos (definido en bondSchedulesAR.js).
+// Acá sólo se especifican los campos que VARÍAN: governingLaw, isin, y un
+// `couponRate` promedio informativo (para display "TNA ~X%" en BondDetailRow
+// cuando no rendere el step-up completo).
+//
+// Phase 3B: los soberanos consumen couponSchedule + amortSchedule reales del
+// prospecto. El `couponRate` ya no se usa para CÁLCULO (el motor matemático
+// resuelve con el step-up exacto vía couponSchedule); queda sólo como label.
+//
+// ISINs: AL (Argentine ley local) y GD (Globales NY ley extranjera) tienen
+// ISIN diferentes aunque sus flujos sean idénticos. Esto importa para reportes
+// de custodia, no para pricing.
+
+function arSovereign({ ticker, governingLaw, isin, displayRate }) {
+  const schedule = CANJE_2020_BY_TICKER[ticker]
+  if (!schedule) throw new Error(`No schedule for AR sovereign ${ticker}`)
+  return {
+    ...schedule,
+    currency: 'USD',
+    issuer: 'Soberano AR',
+    type: 'sovereign',
+    governingLaw,
+    isin,
+    couponRate: displayRate,  // Sólo para display ("TNA promedio aprox")
+  }
+}
+
+export const BOND_META = {
+  // ─── Soberanos AR USD — ley local (Bonares) ───────────────────────────────
+  // ISINs ARARGE320xx6 (placeholder hasta verificar exacto)
+  AL29: arSovereign({ ticker: 'AL29', governingLaw: 'Argentina', isin: 'ARARGE3209S6', displayRate: 1.0 }),
+  AL30: arSovereign({ ticker: 'AL30', governingLaw: 'Argentina', isin: 'ARARGE3209U2', displayRate: 0.75 }),
+  AL35: arSovereign({ ticker: 'AL35', governingLaw: 'Argentina', isin: 'ARARGE3209X6', displayRate: 1.875 }),
+  AE38: arSovereign({ ticker: 'AE38', governingLaw: 'Argentina', isin: 'ARARGE3209Z1', displayRate: 2.0 }),
+  AL41: arSovereign({ ticker: 'AL41', governingLaw: 'Argentina', isin: 'ARARGE3210A3', displayRate: 2.5 }),
+
+  // ─── Soberanos AR USD — ley extranjera (Globales NY) ──────────────────────
+  GD29: arSovereign({ ticker: 'GD29', governingLaw: 'NewYork', isin: 'US040114HS92', displayRate: 1.0 }),
+  GD30: arSovereign({ ticker: 'GD30', governingLaw: 'NewYork', isin: 'US040114HT75', displayRate: 0.75 }),
+  GD35: arSovereign({ ticker: 'GD35', governingLaw: 'NewYork', isin: 'US040114HV40', displayRate: 1.875 }),
+  GD38: arSovereign({ ticker: 'GD38', governingLaw: 'NewYork', isin: 'US040114HW23', displayRate: 2.0 }),
+  GD41: arSovereign({ ticker: 'GD41', governingLaw: 'NewYork', isin: 'US040114HX06', displayRate: 2.5 }),
+  GD46: arSovereign({ ticker: 'GD46', governingLaw: 'NewYork', isin: 'US040114HY88', displayRate: 2.5 }),
 
   // ─── CER / ARS-Linked ─────────────────────────────────────────────────────
   TX26: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2026-11-09', couponRate: 2.0, couponFreq: 'semiannual' },

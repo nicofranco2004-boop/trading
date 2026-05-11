@@ -58,11 +58,12 @@ describe('generateSchedule — amortizing sovereign (AL30)', () => {
     expect(totalAmort).toBeCloseTo(100, 1)
   })
 
-  it('el primer cupón se calcula sobre face=100', () => {
-    // AL30 couponRate=0.75% anual → 0.375% semestral
-    // Primer cupón: 0.375% × 100 = 0.375
+  it('el primer cupón se calcula sobre face=100 al step-up rate inicial', () => {
+    // Phase 3B: AL30 step-up real = 0.125% TNA en período 2020-2021.
+    // Primer cupón = 0.125%/2 × 100 = 0.0625 (no 0.375 del proxy 0.75%).
+    // Esto corrige hallazgo C2 del audit (step-up promedio mata la TIR real).
     const first = sched[0]
-    expect(first.coupon).toBeCloseTo(0.375, 3)
+    expect(first.coupon).toBeCloseTo(0.0625, 4)
   })
 
   it('cupones decrecen después de cada amortización', () => {
