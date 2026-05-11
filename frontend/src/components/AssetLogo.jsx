@@ -118,17 +118,23 @@ export default function AssetLogo({ asset, isCash, size = 32, className = '' }) 
     )
   }
 
+  // Wrapper circular + img inscrita al ~78%. Sin esto los logos rectangulares
+  // (Amazon, Intel, etc.) quedan recortados al circular y se ven zoomeados.
+  // El padding interno los inscribe con respiración alrededor.
   return (
-    <img
-      src={url}
-      alt={asset}
-      width={size}
-      height={size}
-      loading="lazy"
-      decoding="async"
-      onError={() => setFailed(true)}
-      className={`rounded-full bg-white object-contain flex-shrink-0 ${className}`}
+    <div
+      className={`rounded-full bg-white border border-line flex items-center justify-center overflow-hidden flex-shrink-0 ${className}`}
       style={{ width: px, height: px }}
-    />
+    >
+      <img
+        src={url}
+        alt={asset}
+        loading="lazy"
+        decoding="async"
+        onError={() => setFailed(true)}
+        className="object-contain"
+        style={{ width: '78%', height: '78%' }}
+      />
+    </div>
   )
 }
