@@ -12,14 +12,14 @@ import { Calendar, Filter, AlertCircle } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
+import EventBadge from '../components/EventBadge'
 import { api } from '../utils/api'
 import {
   upcomingBondEvents,
   normalizeBackendEvents,
   mergeEvents,
   groupEventsByDate,
-  eventTypeLabel,
-  eventTypeIcon,
+  formatRelativeDate,
 } from '../utils/upcomingEvents'
 
 const WINDOW_OPTIONS = [
@@ -149,9 +149,9 @@ export default function Events() {
         />
       )}
 
-      {/* Lista cronológica agrupada por día */}
+      {/* Lista cronológica con sticky day headers estilo Delta */}
       {!loading && allEvents.length > 0 && (
-        <div className="space-y-4">
+        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden">
           {[...byDate.entries()].map(([date, events]) => (
             <DateGroup key={date} date={date} events={events} />
           ))}
@@ -168,20 +168,15 @@ export default function Events() {
 }
 
 function DateGroup({ date, events }) {
-  const dateLabel = formatDateLabel(date)
-  const daysAway = events[0]?.daysAway
+  const relativeLabel = formatRelativeDate(date)
   return (
-    <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-slate-200 dark:border-line bg-slate-50/40 dark:bg-bg-2/40 flex items-center justify-between">
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm font-semibold text-ink-0">{dateLabel}</span>
-          <span className="text-[10px] text-ink-3 font-mono">
-            {daysAway === 0 ? 'hoy' :
-             daysAway === 1 ? 'mañana' :
-             `en ${daysAway} días`}
-          </span>
-        </div>
-        <span className="text-[10px] text-ink-2 font-mono">
+    <div>
+      {/* Header sticky estilo Delta — queda fijo al hacer scroll dentro de la lista */}
+      <div className="sticky top-0 z-10 px-4 py-2 border-b border-slate-200 dark:border-line bg-slate-50/95 dark:bg-bg-2/95 backdrop-blur-sm flex items-baseline justify-between">
+        <span className="text-sm font-semibold text-ink-0">
+          {relativeLabel}
+        </span>
+        <span className="text-[10px] text-ink-3 font-mono">
           {events.length} {events.length === 1 ? 'evento' : 'eventos'}
         </span>
       </div>
@@ -195,24 +190,24 @@ function DateGroup({ date, events }) {
 }
 
 function EventItem({ event }) {
-  const { ticker, broker, eventType, details, confirmed } = event
+  const { ticker, broker, eventType, confirmed } = event
   return (
     <li className="px-4 py-3 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-bg-2/40">
       <AssetLogo asset={ticker} size={32} />
       <div className="min-w-0 flex-1">
-        <p className="font-semibold text-ink-0 text-sm tabular flex items-center gap-2 flex-wrap">
-          {ticker}
+        <div className="flex items-center gap-2 flex-wrap mb-0.5">
+          <span className="font-semibold text-ink-0 text-sm tabular">{ticker}</span>
           {broker && (
-            <span className="text-[10px] font-mono text-ink-2 normal-case">· {broker}</span>
+            <span className="text-[10px] font-mono text-ink-2">· {broker}</span>
           )}
-          <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2">
-            {eventTypeIcon(eventType)} {eventTypeLabel(eventType)}
-          </span>
-          {!confirmed && (
-            <span className="text-[9px] font-mono text-rendi-warn">(estimado)</span>
-          )}
-        </p>
+          <EventBadge eventType={eventType} />
+        </div>
         <EventDetails event={event} />
+        {!confirmed && (
+          <p className="text-[10px] text-ink-3 font-mono mt-0.5 opacity-70">
+            · estimado
+          </p>
+        )}
       </div>
     </li>
   )
@@ -270,17 +265,3 @@ function EventDetails({ event }) {
   return null
 }
 
-// Formato amigable: "Mié 9 de jul 2026"
-function formatDateLabel(iso) {
-  try {
-    const d = new Date(iso + 'T00:00:00')
-    return d.toLocaleDateString('es-AR', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    })
-  } catch {
-    return iso
-  }
-}
