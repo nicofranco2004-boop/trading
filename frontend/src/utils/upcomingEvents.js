@@ -174,6 +174,55 @@ export function eventTypeIcon(t) {
     case 'bond_amort':         return '📥'
     case 'bond_coupon_amort':  return '🪙'
     case 'bond_maturity':      return '🏁'
+    case 'macro':              return '🌐'
+    case 'economic':           return '🌐'
     default:                   return '•'
   }
+}
+
+// Categoría de alto nivel para colorear el badge. Inspirado en Delta:
+//   • EARNINGS  → purple
+//   • DIVIDENDO → blue
+//   • BONO      → amber
+//   • ECONÓMICO → green (macro events, futuro PR #2.B)
+export function eventCategoryColor(eventType) {
+  if (!eventType) return 'gray'
+  if (eventType === 'earnings') return 'purple'
+  if (eventType === 'ex_dividend' || eventType === 'payment_date') return 'blue'
+  if (eventType.startsWith('bond_')) return 'amber'
+  if (eventType === 'macro' || eventType === 'economic') return 'green'
+  return 'gray'
+}
+
+// Label corto para el badge — uppercase tracking-wide estilo Delta.
+export function eventCategoryLabel(eventType) {
+  if (!eventType) return ''
+  if (eventType === 'earnings') return 'EARNINGS'
+  if (eventType === 'ex_dividend' || eventType === 'payment_date') return 'DIVIDENDO'
+  if (eventType.startsWith('bond_')) return 'BONO'
+  if (eventType === 'macro' || eventType === 'economic') return 'ECONÓMICO'
+  return eventType.toUpperCase()
+}
+
+// Fecha relativa estilo Delta: "Hoy", "Mañana", "Mié 20 may", "Mié 20 may 2027".
+// El año sólo aparece si es distinto al actual.
+export function formatRelativeDate(iso, today) {
+  const todayIsoStr = today || new Date().toISOString().slice(0, 10)
+  if (!iso) return ''
+  const d = new Date(iso + 'T00:00:00')
+  const t = new Date(todayIsoStr + 'T00:00:00')
+  if (isNaN(d.getTime())) return iso
+  const diffDays = Math.round((d.getTime() - t.getTime()) / 86400000)
+  if (diffDays === 0)  return 'Hoy'
+  if (diffDays === 1)  return 'Mañana'
+  if (diffDays === -1) return 'Ayer'
+  const sameYear = d.getFullYear() === t.getFullYear()
+  // toLocaleDateString puede variar — formato manual para consistencia.
+  const weekday = d.toLocaleDateString('es-AR', { weekday: 'short' }).replace('.', '')
+  const day = d.getDate()
+  const month = d.toLocaleDateString('es-AR', { month: 'short' }).replace('.', '')
+  // Capitalizar primera letra (es-AR devuelve minúscula)
+  const w = weekday.charAt(0).toUpperCase() + weekday.slice(1)
+  const m = month.charAt(0).toUpperCase() + month.slice(1)
+  return sameYear ? `${w} ${day} ${m}` : `${w} ${day} ${m} ${d.getFullYear()}`
 }

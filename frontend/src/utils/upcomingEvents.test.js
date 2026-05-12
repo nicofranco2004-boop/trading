@@ -6,6 +6,9 @@ import {
   groupEventsByDate,
   eventTypeLabel,
   eventTypeIcon,
+  eventCategoryColor,
+  eventCategoryLabel,
+  formatRelativeDate,
 } from './upcomingEvents.js'
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -191,6 +194,70 @@ describe('groupEventsByDate', () => {
 })
 
 // ─── eventTypeLabel / eventTypeIcon ──────────────────────────────────────────
+
+describe('eventCategoryColor', () => {
+  it('earnings → purple', () => {
+    expect(eventCategoryColor('earnings')).toBe('purple')
+  })
+  it('dividendos (ex_dividend / payment_date) → blue', () => {
+    expect(eventCategoryColor('ex_dividend')).toBe('blue')
+    expect(eventCategoryColor('payment_date')).toBe('blue')
+  })
+  it('bond_* → amber', () => {
+    expect(eventCategoryColor('bond_coupon')).toBe('amber')
+    expect(eventCategoryColor('bond_amort')).toBe('amber')
+    expect(eventCategoryColor('bond_coupon_amort')).toBe('amber')
+    expect(eventCategoryColor('bond_maturity')).toBe('amber')
+  })
+  it('macro / economic → green', () => {
+    expect(eventCategoryColor('macro')).toBe('green')
+    expect(eventCategoryColor('economic')).toBe('green')
+  })
+  it('desconocido / null → gray', () => {
+    expect(eventCategoryColor('mystery')).toBe('gray')
+    expect(eventCategoryColor(null)).toBe('gray')
+    expect(eventCategoryColor(undefined)).toBe('gray')
+  })
+})
+
+describe('eventCategoryLabel', () => {
+  it('labels en uppercase estilo Delta', () => {
+    expect(eventCategoryLabel('earnings')).toBe('EARNINGS')
+    expect(eventCategoryLabel('ex_dividend')).toBe('DIVIDENDO')
+    expect(eventCategoryLabel('bond_coupon')).toBe('BONO')
+    expect(eventCategoryLabel('bond_coupon_amort')).toBe('BONO')
+    expect(eventCategoryLabel('macro')).toBe('ECONÓMICO')
+  })
+  it('desconocido se uppercasea', () => {
+    expect(eventCategoryLabel('mystery_type')).toBe('MYSTERY_TYPE')
+  })
+})
+
+describe('formatRelativeDate', () => {
+  it('Hoy / Mañana / Ayer para diff ±1 día', () => {
+    expect(formatRelativeDate('2026-05-13', '2026-05-13')).toBe('Hoy')
+    expect(formatRelativeDate('2026-05-14', '2026-05-13')).toBe('Mañana')
+    expect(formatRelativeDate('2026-05-12', '2026-05-13')).toBe('Ayer')
+  })
+  it('mismo año: "Lun 9 jul"', () => {
+    const r = formatRelativeDate('2026-07-09', '2026-05-13')
+    // formato: "Jue 9 Jul" (sin punto, capitalized)
+    expect(r).toMatch(/^[A-ZÁÉÍÓÚ][a-záéíóú]{2} \d{1,2} [A-ZÁÉÍÓÚ][a-záéíóú]{2,3}$/)
+    expect(r).toContain('9')
+    expect(r.toLowerCase()).toContain('jul')
+  })
+  it('año distinto: incluye el año', () => {
+    const r = formatRelativeDate('2027-07-09', '2026-05-13')
+    expect(r).toMatch(/2027$/)
+  })
+  it('ISO inválido → devuelve el input tal cual', () => {
+    expect(formatRelativeDate('not-a-date', '2026-05-13')).toBe('not-a-date')
+  })
+  it('null / vacío → ""', () => {
+    expect(formatRelativeDate(null, '2026-05-13')).toBe('')
+    expect(formatRelativeDate('', '2026-05-13')).toBe('')
+  })
+})
 
 describe('eventTypeLabel + eventTypeIcon', () => {
   it('labels conocidos vienen en español', () => {

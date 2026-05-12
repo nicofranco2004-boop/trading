@@ -10,13 +10,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Calendar, ArrowRight } from 'lucide-react'
 import AssetLogo from './AssetLogo'
+import EventBadge from './EventBadge'
 import { api } from '../utils/api'
 import {
   upcomingBondEvents,
   normalizeBackendEvents,
   mergeEvents,
-  eventTypeLabel,
-  eventTypeIcon,
+  formatRelativeDate,
 } from '../utils/upcomingEvents'
 
 const WINDOW_DAYS = 30  // mostrar sólo el próximo mes en /home
@@ -68,22 +68,18 @@ export default function UpcomingEventsCard({ positions }) {
 }
 
 function EventRow({ event }) {
-  const { ticker, eventType, eventDate, details, daysAway, confirmed } = event
+  const { ticker, eventType, eventDate, confirmed } = event
   return (
     <li className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-bg-2/40">
       <AssetLogo asset={ticker} size={28} />
       <div className="min-w-0 flex-1">
-        <p className="font-semibold text-ink-0 text-sm tabular flex items-center gap-2 flex-wrap">
-          {ticker}
-          <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2">
-            {eventTypeIcon(eventType)} {eventTypeLabel(eventType)}
-          </span>
-        </p>
+        <div className="flex items-center gap-2 flex-wrap mb-0.5">
+          <span className="font-semibold text-ink-0 text-sm tabular">{ticker}</span>
+          <EventBadge eventType={eventType} />
+        </div>
         <p className="text-[11px] text-ink-2 font-mono">
-          {eventDate}
-          {' · '}
-          {daysAway === 0 ? 'hoy' : daysAway === 1 ? 'mañana' : `en ${daysAway} días`}
-          {!confirmed && <span className="text-rendi-warn"> · estimado</span>}
+          {formatRelativeDate(eventDate)}
+          {!confirmed && <span className="text-ink-3 opacity-70"> · estimado</span>}
         </p>
       </div>
       <RowAmount event={event} />
