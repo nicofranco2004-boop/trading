@@ -357,6 +357,25 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_bond_indices_date ON bond_indices_daily(date);
     """)
+
+    # ─── bond_cashflow_skips (Phase 3E) ────────────────────────────────────
+    # El frontend detecta cobranzas teóricas pendientes comparando el cronograma
+    # del bono vs operations existentes. Si el user no recibió ese pago (default,
+    # bono ya vendido, etc.) puede marcarlo como "skipped" para que no aparezca
+    # más en el inbox. Esta tabla persiste esos skips por (user, broker, asset, date).
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS bond_cashflow_skips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            broker TEXT NOT NULL,
+            asset TEXT NOT NULL,
+            date TEXT NOT NULL,          -- fecha del pago teórico saltado
+            reason TEXT,                 -- opcional: 'default', 'sold_before', 'already_in_cocos', etc.
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, broker, asset, date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_bond_skips_user ON bond_cashflow_skips(user_id, broker, asset);
+    """)
     conn.commit()
 
     # config
@@ -1947,6 +1966,109 @@ def _cash_asset_for_currency(currency: str) -> str:
     if currency == 'USD':
         return 'USD'
     return 'USDT'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3E — Inbox de cobranzas pendientes
+# ═══════════════════════════════════════════════════════════════════════════
+# El frontend detecta cobranzas teóricas pendientes (fechas pasadas del
+# cronograma sin operation registrada). Estos endpoints permiten al user
+# "saltar" pagos que no debe procesar (default, bono vendido antes, etc.)
+# para que no reaparezcan en el inbox.
+
+class BondCashflowSkipIn(BaseModel):
+    """Marca una cobranza teórica como "no aplica" para no sugerirla más."""
+    broker: str = Field(..., min_length=1, max_length=MAX_STR)
+    asset: str = Field(..., min_length=1, max_length=20)
+    date: str = Field(..., max_length=10)
+    reason: Optional[str] = Field(None, max_length=200)
+
+    @field_validator('date')
+    @classmethod
+    def valid_date(cls, v):
+        if not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida')
+        return v
+
+
+@app.get("/api/bonds/cashflow/skips")
+def list_bond_cashflow_skips(uid: int = Depends(get_current_user)):
+    """Lista todos los skips del user. Frontend los consume para filtrar
+    el inbox de pendientes."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT broker, asset, date, reason, created_at
+               FROM bond_cashflow_skips
+               WHERE user_id=?
+               ORDER BY date ASC""",
+            (uid,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.post("/api/bonds/cashflow/skip")
+def skip_bond_cashflow(data: BondCashflowSkipIn, uid: int = Depends(get_current_user)):
+    """Marca una cobranza teórica como saltada. Idempotente: re-aplicar el
+    mismo skip no falla, sólo actualiza el `reason` si difiere."""
+    conn = get_db()
+    try:
+        # Validar broker existe y es del user
+        broker_row = conn.execute(
+            "SELECT id FROM brokers WHERE user_id=? AND name=?", (uid, data.broker)
+        ).fetchone()
+        if not broker_row:
+            raise HTTPException(404, f"Broker '{data.broker}' no encontrado")
+        iso_now = datetime.utcnow().isoformat() + "Z"
+        with conn:
+            conn.execute(
+                """INSERT INTO bond_cashflow_skips
+                   (user_id, broker, asset, date, reason, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, broker, asset, date) DO UPDATE SET
+                       reason = excluded.reason,
+                       created_at = excluded.created_at""",
+                (uid, data.broker, data.asset.upper(), data.date, data.reason, iso_now),
+            )
+        return {
+            'ok': True,
+            'broker': data.broker,
+            'asset': data.asset.upper(),
+            'date': data.date,
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"Error al guardar skip: {ex}")
+    finally:
+        conn.close()
+
+
+@app.delete("/api/bonds/cashflow/skip")
+def unskip_bond_cashflow(
+    broker: str,
+    asset: str,
+    date: str,
+    uid: int = Depends(get_current_user),
+):
+    """Elimina un skip — el pago vuelve a aparecer en el inbox. Usado si el
+    user marca por error o si la situación cambia (ej: bono salió de default)."""
+    if not _DATE_RE.match(date):
+        raise HTTPException(422, f"Fecha inválida: {date}")
+    conn = get_db()
+    try:
+        with conn:
+            cur = conn.execute(
+                """DELETE FROM bond_cashflow_skips
+                   WHERE user_id=? AND broker=? AND asset=? AND date=?""",
+                (uid, broker, asset.upper(), date),
+            )
+            deleted = cur.rowcount
+        return {'ok': True, 'deleted': deleted}
+    finally:
+        conn.close()
 
 
 def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
