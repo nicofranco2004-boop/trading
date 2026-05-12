@@ -9,6 +9,8 @@ import {
   eventCategoryColor,
   eventCategoryLabel,
   formatRelativeDate,
+  countryFlag,
+  isMacroEvent,
 } from './upcomingEvents.js'
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -256,6 +258,43 @@ describe('formatRelativeDate', () => {
   it('null / vacío → ""', () => {
     expect(formatRelativeDate(null, '2026-05-13')).toBe('')
     expect(formatRelativeDate('', '2026-05-13')).toBe('')
+  })
+})
+
+describe('countryFlag', () => {
+  it('USA → 🇺🇸', () => {
+    expect(countryFlag('USA')).toBe('🇺🇸')
+    expect(countryFlag('US')).toBe('🇺🇸')
+  })
+  it('AR → 🇦🇷', () => {
+    expect(countryFlag('AR')).toBe('🇦🇷')
+  })
+  it('UK / EU otros también', () => {
+    expect(countryFlag('UK')).toBe('🇬🇧')
+    expect(countryFlag('EU')).toBe('🇪🇺')
+  })
+  it('desconocido → globo', () => {
+    expect(countryFlag('XX')).toBe('🌐')
+    expect(countryFlag(null)).toBe('🌐')
+  })
+})
+
+describe('isMacroEvent', () => {
+  it('detecta eventType="macro" (frontend camelCase)', () => {
+    expect(isMacroEvent({ eventType: 'macro' })).toBe(true)
+  })
+  it('detecta event_type="macro" (backend snake_case)', () => {
+    expect(isMacroEvent({ event_type: 'macro' })).toBe(true)
+  })
+  it('false para earnings, bonos, dividendos', () => {
+    expect(isMacroEvent({ eventType: 'earnings' })).toBe(false)
+    expect(isMacroEvent({ eventType: 'bond_coupon' })).toBe(false)
+    expect(isMacroEvent({ eventType: 'ex_dividend' })).toBe(false)
+  })
+  it('null / undefined / objeto sin tipo → false', () => {
+    expect(isMacroEvent(null)).toBe(false)
+    expect(isMacroEvent(undefined)).toBe(false)
+    expect(isMacroEvent({})).toBe(false)
   })
 })
 

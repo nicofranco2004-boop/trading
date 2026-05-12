@@ -204,6 +204,144 @@ class EventsPortfolioTest(unittest.TestCase):
         self.assertEqual(ev["details"]["currency"], "USD")
 
 
+class PopularEventsTest(unittest.TestCase):
+    """Tests del endpoint /api/events/popular — eventos del mercado (no del
+    portfolio del user) — macro + earnings de tickers populares."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, f"popular-{self.id()}@rendi.test")
+        _add_broker(conn, self.uid, "IBKR", "USDT")
+        main._events_fetched_at.clear()
+        with conn:
+            conn.execute("DELETE FROM financial_events")
+        # Para que el fetcher no haga llamadas reales a yfinance en tests:
+        # marcamos todos los populares como "ya fetcheados"
+        for t in main.POPULAR_TICKERS_US + main.POPULAR_TICKERS_AR_ADR:
+            main._events_fetched_at[t] = main.time.time()
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+
+    def _get(self, path):
+        return self.client.get(path, headers={"Authorization": f"Bearer {self.token}"})
+
+    def _seed_popular_event(self, ticker, event_type, date, details=None):
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO financial_events
+                   (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                   VALUES (?, ?, ?, ?, 1, 'yfinance', '2026-05-12T00:00:00Z')""",
+                (ticker, event_type, date, json.dumps(details or {})),
+            )
+        conn.close()
+
+    # ─── Macro events ────────────────────────────────────────────────────────
+
+    def test_returns_macro_events_within_window(self):
+        res = self._get("/api/events/popular?days=365")
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        # Debería incluir algunos macros (depende de la fecha actual del sistema)
+        macros = [e for e in body["events"] if e["event_type"] == "macro"]
+        self.assertGreaterEqual(len(macros), 0)
+        for ev in macros:
+            self.assertEqual(ev["source"], "hardcoded")
+            self.assertTrue(ev["confirmed"])
+            self.assertIn(ev["details"]["country"], ("USA", "AR"))
+
+    def test_macro_events_include_country_and_title(self):
+        res = self._get("/api/events/popular?days=365")
+        body = res.json()
+        macros = [e for e in body["events"] if e["event_type"] == "macro"]
+        if macros:
+            sample = macros[0]
+            self.assertIn("country", sample["details"])
+            self.assertIn("title", sample["details"])
+            self.assertIn("category", sample["details"])
+            # El ticker es un código sintético tipo "USA-CPI" / "AR-IPC"
+            self.assertRegex(sample["ticker"], r"^(USA|AR)-[A-Z]+$")
+
+    # ─── Earnings populares ──────────────────────────────────────────────────
+
+    def test_includes_popular_ticker_earnings(self):
+        # Seed earnings de NVDA (magnificent 7) en ventana
+        self._seed_popular_event("NVDA", "earnings", "2026-08-20", {"eps_estimate": 5.10})
+        res = self._get("/api/events/popular?days=365")
+        body = res.json()
+        nvda = [e for e in body["events"] if e["ticker"] == "NVDA"]
+        self.assertEqual(len(nvda), 1)
+        self.assertEqual(nvda[0]["event_type"], "earnings")
+        self.assertEqual(nvda[0]["details"]["eps_estimate"], 5.10)
+        self.assertFalse(nvda[0]["in_portfolio"])  # user no tiene NVDA
+
+    def test_in_portfolio_flag_when_user_owns_ticker(self):
+        conn = main.get_db()
+        _add_position(conn, self.uid, "IBKR", "TSLA", qty=10)
+        conn.commit()
+        conn.close()
+        self._seed_popular_event("TSLA", "earnings", "2026-07-22", {"eps_estimate": 0.85})
+        res = self._get("/api/events/popular?days=365")
+        body = res.json()
+        tsla = [e for e in body["events"] if e["ticker"] == "TSLA"][0]
+        self.assertTrue(tsla["in_portfolio"])
+
+    def test_ar_adr_ticker_included(self):
+        self._seed_popular_event("GGAL", "earnings", "2026-08-05", {})
+        res = self._get("/api/events/popular?days=365")
+        body = res.json()
+        tickers = {e["ticker"] for e in body["events"]}
+        self.assertIn("GGAL", tickers)
+
+    # ─── Sorting / filtros ───────────────────────────────────────────────────
+
+    def test_events_sorted_by_date(self):
+        self._seed_popular_event("AAPL", "earnings", "2026-09-25", {})
+        self._seed_popular_event("MSFT", "earnings", "2026-07-25", {})
+        self._seed_popular_event("AMZN", "earnings", "2026-08-10", {})
+        res = self._get("/api/events/popular?days=365")
+        body = res.json()
+        # Filtrar sólo earnings que sembramos (macros pueden estar mezclados)
+        seeded_dates = [e["event_date"] for e in body["events"]
+                        if e["ticker"] in ("AAPL", "MSFT", "AMZN")]
+        self.assertEqual(seeded_dates, sorted(seeded_dates))
+
+    def test_days_window_filters_events(self):
+        # Earnings lejano + cercano
+        self._seed_popular_event("NVDA", "earnings", "2026-06-01", {})
+        self._seed_popular_event("AAPL", "earnings", "2027-01-15", {})  # >1 año
+        res = self._get("/api/events/popular?days=180")
+        body = res.json()
+        tickers = {e["ticker"] for e in body["events"] if e["event_type"] == "earnings"}
+        self.assertIn("NVDA", tickers)
+        self.assertNotIn("AAPL", tickers)
+
+    # ─── Counts en response ─────────────────────────────────────────────────
+
+    def test_response_includes_macro_and_ticker_counts(self):
+        self._seed_popular_event("NVDA", "earnings", "2026-06-01", {})
+        res = self._get("/api/events/popular?days=365")
+        body = res.json()
+        self.assertIn("macro_count", body)
+        self.assertIn("ticker_count", body)
+        self.assertGreaterEqual(body["ticker_count"], 1)
+
+    # ─── Validación ─────────────────────────────────────────────────────────
+
+    def test_invalid_days_rejected(self):
+        res = self._get("/api/events/popular?days=999")
+        self.assertEqual(res.status_code, 422)
+
+    def test_unauthorized_without_token(self):
+        res = self.client.get("/api/events/popular")
+        self.assertIn(res.status_code, (401, 403))
+
+
 class FetcherTest(unittest.TestCase):
     """Tests del fetcher yfinance — siempre mockeado para no depender de la red."""
 

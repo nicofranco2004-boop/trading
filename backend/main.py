@@ -1206,6 +1206,183 @@ _events_fetched_at = {}  # { ticker: timestamp último fetch }
 EVENTS_TTL = 6 * 3600  # 6 horas
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# PR #2.B — Eventos populares (Tab "Popular" en /eventos)
+# ═══════════════════════════════════════════════════════════════════════════
+# Dos sources distintas:
+#
+#   1. MACRO_EVENTS_CALENDAR: fechas hardcoded de eventos económicos
+#      conocidos (FOMC, CPI, NFP, INDEC, etc.) USA + AR. Como son fechas
+#      relativamente predecibles, hardcodear es más confiable y barato que
+#      API externa con quota.
+#
+#   2. POPULAR_TICKERS_US + POPULAR_TICKERS_AR_ADR: lista de empresas
+#      "que mueven el mercado" cuyas earnings sí valen la pena mostrar
+#      aunque el user no las tenga. Se fetchean via yfinance con el mismo
+#      patrón que el endpoint /events/portfolio.
+#
+# Mantenimiento: las fechas macro hay que renovarlas cada año (las publican
+# oficialmente Fed/BLS/INDEC). Los tickers populares pueden refinarse según
+# feedback del user.
+
+# Macro events de USA + AR — fechas próximas conocidas.
+# Para regenerar: copiar del calendario oficial de Fed/BLS/INDEC.
+# Cada entry: { date, country, code, title, category }
+MACRO_EVENTS_CALENDAR = [
+    # ─── USA — FOMC 2026 (8 reuniones programadas Reserva Federal) ─────────
+    {"date": "2026-01-28", "country": "USA", "code": "USA-FOMC", "title": "FOMC — Decisión de tasas", "category": "fed_rate"},
+    {"date": "2026-03-18", "country": "USA", "code": "USA-FOMC", "title": "FOMC — Decisión de tasas", "category": "fed_rate"},
+    {"date": "2026-04-29", "country": "USA", "code": "USA-FOMC", "title": "FOMC — Decisión de tasas", "category": "fed_rate"},
+    {"date": "2026-06-17", "country": "USA", "code": "USA-FOMC", "title": "FOMC — Decisión de tasas", "category": "fed_rate"},
+    {"date": "2026-07-29", "country": "USA", "code": "USA-FOMC", "title": "FOMC — Decisión de tasas", "category": "fed_rate"},
+    {"date": "2026-09-16", "country": "USA", "code": "USA-FOMC", "title": "FOMC — Decisión de tasas", "category": "fed_rate"},
+    {"date": "2026-10-28", "country": "USA", "code": "USA-FOMC", "title": "FOMC — Decisión de tasas", "category": "fed_rate"},
+    {"date": "2026-12-09", "country": "USA", "code": "USA-FOMC", "title": "FOMC — Decisión de tasas", "category": "fed_rate"},
+
+    # ─── USA — CPI Release ~día 11-15 cada mes (Bureau of Labor Statistics) ─
+    {"date": "2026-05-13", "country": "USA", "code": "USA-CPI", "title": "Inflación USA (CPI)", "category": "cpi"},
+    {"date": "2026-06-11", "country": "USA", "code": "USA-CPI", "title": "Inflación USA (CPI)", "category": "cpi"},
+    {"date": "2026-07-15", "country": "USA", "code": "USA-CPI", "title": "Inflación USA (CPI)", "category": "cpi"},
+    {"date": "2026-08-12", "country": "USA", "code": "USA-CPI", "title": "Inflación USA (CPI)", "category": "cpi"},
+    {"date": "2026-09-10", "country": "USA", "code": "USA-CPI", "title": "Inflación USA (CPI)", "category": "cpi"},
+    {"date": "2026-10-15", "country": "USA", "code": "USA-CPI", "title": "Inflación USA (CPI)", "category": "cpi"},
+    {"date": "2026-11-12", "country": "USA", "code": "USA-CPI", "title": "Inflación USA (CPI)", "category": "cpi"},
+    {"date": "2026-12-10", "country": "USA", "code": "USA-CPI", "title": "Inflación USA (CPI)", "category": "cpi"},
+
+    # ─── USA — NFP (Non-Farm Payrolls), primer viernes de cada mes ─────────
+    {"date": "2026-05-01", "country": "USA", "code": "USA-NFP", "title": "Empleo USA (Non-Farm Payrolls)", "category": "employment"},
+    {"date": "2026-06-05", "country": "USA", "code": "USA-NFP", "title": "Empleo USA (Non-Farm Payrolls)", "category": "employment"},
+    {"date": "2026-07-03", "country": "USA", "code": "USA-NFP", "title": "Empleo USA (Non-Farm Payrolls)", "category": "employment"},
+    {"date": "2026-08-07", "country": "USA", "code": "USA-NFP", "title": "Empleo USA (Non-Farm Payrolls)", "category": "employment"},
+    {"date": "2026-09-04", "country": "USA", "code": "USA-NFP", "title": "Empleo USA (Non-Farm Payrolls)", "category": "employment"},
+    {"date": "2026-10-02", "country": "USA", "code": "USA-NFP", "title": "Empleo USA (Non-Farm Payrolls)", "category": "employment"},
+    {"date": "2026-11-06", "country": "USA", "code": "USA-NFP", "title": "Empleo USA (Non-Farm Payrolls)", "category": "employment"},
+    {"date": "2026-12-04", "country": "USA", "code": "USA-NFP", "title": "Empleo USA (Non-Farm Payrolls)", "category": "employment"},
+
+    # ─── AR — INDEC IPC mensual (release ~día 13-15) ───────────────────────
+    {"date": "2026-05-14", "country": "AR", "code": "AR-IPC", "title": "Inflación AR (IPC INDEC)", "category": "cpi"},
+    {"date": "2026-06-15", "country": "AR", "code": "AR-IPC", "title": "Inflación AR (IPC INDEC)", "category": "cpi"},
+    {"date": "2026-07-14", "country": "AR", "code": "AR-IPC", "title": "Inflación AR (IPC INDEC)", "category": "cpi"},
+    {"date": "2026-08-13", "country": "AR", "code": "AR-IPC", "title": "Inflación AR (IPC INDEC)", "category": "cpi"},
+    {"date": "2026-09-15", "country": "AR", "code": "AR-IPC", "title": "Inflación AR (IPC INDEC)", "category": "cpi"},
+    {"date": "2026-10-14", "country": "AR", "code": "AR-IPC", "title": "Inflación AR (IPC INDEC)", "category": "cpi"},
+    {"date": "2026-11-13", "country": "AR", "code": "AR-IPC", "title": "Inflación AR (IPC INDEC)", "category": "cpi"},
+    {"date": "2026-12-15", "country": "AR", "code": "AR-IPC", "title": "Inflación AR (IPC INDEC)", "category": "cpi"},
+]
+
+# Tickers "que mueven el mercado" cuyas earnings se muestran en Popular
+# aunque el user no las tenga en cartera. Mantenimiento manual periódico.
+POPULAR_TICKERS_US = [
+    # Magnificent 7
+    'NVDA', 'MSFT', 'AAPL', 'GOOGL', 'AMZN', 'META', 'TSLA',
+    # Otras grandes US que generan ruido
+    'NFLX', 'AMD', 'INTC', 'COIN', 'DIS', 'PYPL',
+]
+
+# ADRs argentinos populares (cotizan en NYSE/NASDAQ — yfinance los tiene)
+POPULAR_TICKERS_AR_ADR = [
+    'GGAL', 'YPF', 'BMA', 'PAM', 'TEO', 'EDN', 'SUPV',
+]
+
+
+@app.get("/api/events/popular")
+def get_popular_events(
+    days: int = 90,
+    uid: int = Depends(get_current_user),
+):
+    """Eventos "del mercado" en general — no filtrados al portfolio del user.
+
+    Dos categorías combinadas:
+      1. Macro events hardcoded (FOMC, CPI, NFP, INDEC IPC) — USA + AR.
+      2. Earnings de tickers populares (magnificent 7 + ADRs AR) via yfinance.
+
+    Para items en los que el user TIENE el ticker en cartera, agregamos el
+    flag `in_portfolio=True` para que el frontend marque "👁 En tu cartera".
+
+    Query params:
+      • days: ventana hacia adelante. Default 90, max 365.
+    """
+    if days <= 0 or days > 365:
+        raise HTTPException(422, "days debe estar entre 1 y 365")
+
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    end_date = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%d')
+
+    conn = get_db()
+    try:
+        # Tickers que el user tiene en cartera (para flag in_portfolio)
+        user_rows = conn.execute(
+            """SELECT DISTINCT asset FROM positions
+               WHERE user_id=? AND is_cash=0""",
+            (uid,),
+        ).fetchall()
+        user_tickers = {r['asset'] for r in user_rows}
+
+        # 1. Macro events filtrados por ventana
+        macro_events = []
+        for ev in MACRO_EVENTS_CALENDAR:
+            if today <= ev['date'] <= end_date:
+                macro_events.append({
+                    'ticker': ev['code'],          # ej: 'USA-CPI'
+                    'event_type': 'macro',
+                    'event_date': ev['date'],
+                    'details': {
+                        'country': ev['country'],
+                        'title': ev['title'],
+                        'category': ev['category'],
+                    },
+                    'confirmed': True,
+                    'source': 'hardcoded',
+                    'in_portfolio': False,
+                })
+
+        # 2. Earnings de tickers populares — refresh + query
+        popular = POPULAR_TICKERS_US + POPULAR_TICKERS_AR_ADR
+        try:
+            _refresh_events_for_tickers(conn, popular)
+        except Exception:
+            pass
+
+        placeholders = ','.join('?' for _ in popular)
+        rows = conn.execute(
+            f"""SELECT ticker, event_type, event_date, details, confirmed, source
+                FROM financial_events
+                WHERE ticker IN ({placeholders})
+                  AND event_date >= ?
+                  AND event_date <= ?
+                ORDER BY event_date ASC""",
+            (*popular, today, end_date),
+        ).fetchall()
+
+        ticker_events = []
+        for r in rows:
+            try:
+                details = json.loads(r['details']) if r['details'] else {}
+            except Exception:
+                details = {}
+            ticker_events.append({
+                'ticker': r['ticker'],
+                'event_type': r['event_type'],
+                'event_date': r['event_date'],
+                'details': details,
+                'confirmed': bool(r['confirmed']),
+                'source': r['source'],
+                'in_portfolio': r['ticker'] in user_tickers,
+            })
+
+        # Combinamos y ordenamos por fecha
+        all_events = macro_events + ticker_events
+        all_events.sort(key=lambda e: e['event_date'])
+
+        return {
+            'events': all_events,
+            'macro_count': len(macro_events),
+            'ticker_count': len(ticker_events),
+        }
+    finally:
+        conn.close()
+
+
 def _fetch_yf_events(ticker: str) -> list:
     """Trae earnings + ex-dividend + dividend payment dates de un ticker via yfinance.
 

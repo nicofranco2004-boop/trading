@@ -148,6 +148,22 @@ export function groupEventsByDate(events) {
   return map
 }
 
+// Bandera emoji para macro events según country.
+export function countryFlag(country) {
+  if (country === 'USA' || country === 'US') return '🇺🇸'
+  if (country === 'AR') return '🇦🇷'
+  if (country === 'EU' || country === 'EUR') return '🇪🇺'
+  if (country === 'UK' || country === 'GB') return '🇬🇧'
+  return '🌐'
+}
+
+// Si el evento es macro (PR #2.B), el "ticker" es un código sintético
+// tipo "USA-CPI" — usamos `details.title` para el display y la bandera
+// del país para el "logo".
+export function isMacroEvent(event) {
+  return event?.eventType === 'macro' || event?.event_type === 'macro'
+}
+
 // Label en español según event_type. Para UI.
 export function eventTypeLabel(t) {
   switch (t) {
