@@ -1846,6 +1846,13 @@ class BondCashflowIn(BaseModel):
     currency: Optional[str] = Field(None, max_length=10)
     fx_to_usd: Optional[float] = Field(None, gt=0, le=1e6)
     decrement_quantity: Optional[bool] = Field(False)
+    # Phase 3F: cantidad explícita de VN a decrementar cuando decrement_quantity=True.
+    # Necesario para evitar el bug cross-currency (broker ARS + bono USD):
+    # `amount` está en pesos pero `quantity` está en VN; trataralos como
+    # equivalentes borra la posición entera.
+    # Si está NULL, fallback a `amount` como qty (comportamiento legacy — sólo
+    # seguro si broker_currency == bond_currency).
+    face_amortized: Optional[float] = Field(None, ge=0, le=1e12)
 
     @field_validator('flow_type')
     @classmethod
@@ -1912,17 +1919,45 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
             cost_basis_consumed = None
             qty_decremented = 0.0
             invested_decremented = 0.0
+            cross_currency_skipped = False
             if data.flow_type == 'amortization':
+                # Resolver la qty a decrementar. Si el frontend pasó
+                # `face_amortized` explícito (caso cross-currency, donde
+                # `amount` está en moneda del broker pero la qty está en VN
+                # del bono), usamos ESE valor. Sino, fallback a `net_amount`
+                # como qty (comportamiento legacy — sólo correcto cuando
+                # broker_currency == bond_currency).
+                face_to_decrement = (
+                    data.face_amortized
+                    if data.face_amortized is not None and data.face_amortized > 0
+                    else net_amount
+                )
                 if data.decrement_quantity:
-                    qty_decremented, invested_decremented = _amortize_position_fifo(
-                        conn, uid, data.broker, data.asset.upper(), net_amount
-                    )
-                    cost_basis_consumed = invested_decremented
+                    # Sanity check (Phase 3F / hallazgo N1): si la qty a
+                    # decrementar parece desproporcionadamente alta vs el
+                    # face disponible (e.g., user pasó amount en ARS sin
+                    # face_amortized → 95.000 ARS vs 1.000 VN), abortamos
+                    # el decrement para no destruir la posición. Igual
+                    # registramos la operation + acreditamos el cash.
+                    total_qty = _bond_total_qty(conn, uid, data.broker, data.asset.upper())
+                    if total_qty > 0 and face_to_decrement > total_qty * 1.5:
+                        cross_currency_skipped = True
+                        # Calculamos cost basis conservador sobre el face
+                        # plausible (al menos quedó la cobranza registrada).
+                        plausible_face = min(face_to_decrement, total_qty)
+                        cost_basis_consumed = _compute_amort_cost_basis_fifo(
+                            conn, uid, data.broker, data.asset.upper(), plausible_face
+                        )
+                    else:
+                        qty_decremented, invested_decremented = _amortize_position_fifo(
+                            conn, uid, data.broker, data.asset.upper(), face_to_decrement
+                        )
+                        cost_basis_consumed = invested_decremented
                 else:
                     # Calcular sin tocar las posiciones — útil para tracking
                     # del P&L real cuando el user prefiere mantener qty intacta.
                     cost_basis_consumed = _compute_amort_cost_basis_fifo(
-                        conn, uid, data.broker, data.asset.upper(), net_amount
+                        conn, uid, data.broker, data.asset.upper(), face_to_decrement
                     )
 
             # 1. Insert operation (con cost_basis_consumed si aplica)
@@ -1954,6 +1989,11 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
             'invested_decremented': invested_decremented,
             'cost_basis_consumed': cost_basis_consumed,
             'realized_gain': realized_gain,
+            # Flag para el frontend: si pidió decrement pero el sanity check
+            # lo aborto (probable mismatch ARS/VN cross-currency), el toast
+            # del frontend explica que la cobranza se registró pero la qty
+            # quedó intacta.
+            'cross_currency_skipped': cross_currency_skipped,
         }
     except HTTPException:
         raise
@@ -1961,6 +2001,18 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_current_user)):
         raise HTTPException(500, f"Error al registrar el cashflow del bono: {ex}")
     finally:
         conn.close()
+
+
+def _bond_total_qty(conn, uid: int, broker: str, asset: str) -> float:
+    """Suma de quantity de todos los lotes de (broker, asset) — para sanity
+    checks que necesitan saber el face total disponible antes de decrementar.
+    """
+    row = conn.execute(
+        """SELECT COALESCE(SUM(quantity), 0) AS total FROM positions
+           WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0""",
+        (uid, broker, asset),
+    ).fetchone()
+    return float(row['total'] or 0)
 
 
 def _compute_amort_cost_basis_fifo(conn, uid: int, broker: str, asset: str, amort_amount: float) -> float:
