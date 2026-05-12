@@ -9,7 +9,9 @@ import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
 import BondCashflowModal from '../components/BondCashflowModal'
+import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import { isBondTicker } from '../utils/tickers'
+import { detectPendingCashflows } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel } from '../utils/bondMeta'
 import {
   generateSchedule,
@@ -82,7 +84,16 @@ export default function Positions() {
   // dict no-vacío = serie disponible.
   const [cerSeries, setCerSeries] = useState(null)
   const [cerStale, setCerStale] = useState(false)
+  // Phase 3E: skips de cobranzas teóricas (pagos del cronograma que el user
+  // marcó como "no aplica"). Persistido en backend; lo cargamos al mount.
+  const [bondSkips, setBondSkips] = useState([])
   const latestRef = useRef({})
+
+  // TC blue/MEP derivados — se declaran ACÁ (arriba de los useMemo que los
+  // consumen vía closure/deps) para evitar ReferenceError por temporal dead
+  // zone si JS evalúa el array de deps antes de la declaración de `const`.
+  const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
+  const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
 
   // Carga la serie CER del backend (idempotente — sólo la primera llamada
   // dispara fetch real, las siguientes son cache hit en `cerSeries`).
@@ -125,6 +136,42 @@ export default function Positions() {
     })
   }
 
+  // Phase 3E — Inbox de cobranzas pendientes (detección + acciones)
+  // ────────────────────────────────────────────────────────────────────────
+  // Compara cronograma teórico vs operations vs skips para listar pagos
+  // pendientes de confirmar. Usa los mismos bondOps + bondSkips ya cargados.
+  const pendingCashflows = useMemo(() => {
+    return detectPendingCashflows(positions, bondOps, bondSkips)
+  }, [positions, bondOps, bondSkips])
+
+  // Click "Confirmar" en un item del inbox → abre BondCashflowModal con la
+  // posición correspondiente. El modal usa nextPaymentForPosition para
+  // pre-llenar fecha + monto (ya implementado en Phase 3D — Nivel 1).
+  function confirmPendingCashflow(item) {
+    const flowType = item.kind === 'amortizacion' ? 'amortization' : 'coupon'
+    openBondCashflow(item.position, flowType)
+  }
+
+  // Click "Saltar" en un item → POST /bonds/cashflow/skip + actualiza state.
+  async function skipPendingCashflow(item) {
+    try {
+      await api.post('/bonds/cashflow/skip', {
+        broker: item.broker,
+        asset: item.asset,
+        date: item.date,
+        reason: null,  // futuro: prompt al user "¿por qué?" (default, vendido, etc.)
+      })
+      // Actualizar state local sin re-fetch (más responsive)
+      setBondSkips(prev => [...prev, {
+        broker: item.broker, asset: item.asset, date: item.date, reason: null,
+        created_at: new Date().toISOString(),
+      }])
+      toast.push(`${item.asset} · pago del ${item.date} saltado`, { type: 'success' })
+    } catch (e) {
+      toast.push(`No se pudo saltar: ${e.message}`, { type: 'error' })
+    }
+  }
+
   // Tras registrar un cupón/amortización: recargar positions (cash actualizado)
   // + refrescar el listado de cobranzas para el bond expandable.
   async function onBondCashflowSuccess() {
@@ -152,21 +199,22 @@ export default function Positions() {
 
   async function loadAll() {
     try {
-      const [pos, cfg, bkrs, dol, snaps, ops] = await Promise.all([
+      const [pos, cfg, bkrs, dol, snaps, ops, skips] = await Promise.all([
         api.get('/positions'),
         api.get('/config'),
         api.get('/brokers'),
         api.get('/dolar').catch(() => null),
         api.get('/snapshots?days=30').catch(() => []),
         api.get('/operations').catch(() => []),
+        api.get('/bonds/cashflow/skips').catch(() => []),
       ])
       setPositions(pos)
       setConfig(cfg)
       setBrokers(bkrs)
       setDolar(dol)
       setSnapshots(snaps || [])
-      // Sólo necesitamos las ops de cobranza de bonos para el render expandido.
       setBondOps((ops || []).filter(o => o.op_type === 'Cupón' || o.op_type === 'Amortización'))
+      setBondSkips(skips || [])
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
     } catch (e) {
@@ -272,9 +320,6 @@ export default function Positions() {
       setLastUpdated(new Date())
     } catch {}
   }
-
-  const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
-  const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
 
   function openAdd(broker) {
     // El flujo nuevo siempre pasa por el AddPositionFlow (asset type → ticker
@@ -571,6 +616,16 @@ export default function Positions() {
         title="Posiciones activas"
         subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado."
         meta={meta}
+      />
+
+      {/* Phase 3E — Inbox de cobranzas pendientes. Sólo se renderea cuando hay
+          al menos una pendiente. Va arriba del hero para máxima visibilidad —
+          pagos no registrados distorsionan el P&L total. */}
+      <PendingCashflowsBanner
+        pending={pendingCashflows}
+        brokers={brokers}
+        onConfirm={confirmPendingCashflow}
+        onSkip={skipPendingCashflow}
       />
 
       {/* ══════════════════════════════════════════════════════════════════════
