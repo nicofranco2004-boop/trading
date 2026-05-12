@@ -89,6 +89,12 @@ export default function Positions() {
   const [bondSkips, setBondSkips] = useState([])
   const latestRef = useRef({})
 
+  // TC blue/MEP derivados — se declaran ACÁ (arriba de los useMemo que los
+  // consumen vía closure/deps) para evitar ReferenceError por temporal dead
+  // zone si JS evalúa el array de deps antes de la declaración de `const`.
+  const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
+  const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
+
   // Carga la serie CER del backend (idempotente — sólo la primera llamada
   // dispara fetch real, las siguientes son cache hit en `cerSeries`).
   async function ensureCerSeries() {
@@ -314,9 +320,6 @@ export default function Positions() {
       setLastUpdated(new Date())
     } catch {}
   }
-
-  const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
-  const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
 
   function openAdd(broker) {
     // El flujo nuevo siempre pasa por el AddPositionFlow (asset type → ticker
