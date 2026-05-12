@@ -12,7 +12,7 @@ import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import { isBondTicker } from '../utils/tickers'
 import { detectPendingCashflows } from '../utils/pendingCashflows'
-import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel } from '../utils/bondMeta'
+import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import {
   generateSchedule,
   getRemainingPayments,
@@ -1583,8 +1583,17 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSer
                 </p>
                 <p className="text-xs text-ink-2 font-mono">
                   {meta.maturity ? `Vence ${meta.maturity}` : 'ETF · sin vencimiento'}
-                  {meta.couponFreq && meta.couponFreq !== 'none' && ` · ${formatCouponLabel(meta)}`}
-                  {meta.couponFreq === 'none' && ` · ${formatCouponLabel(meta)}`}
+                  {meta.couponFreq && (
+                    <>
+                      {' · '}
+                      <span
+                        className="border-b border-dotted border-ink-3/40 cursor-help"
+                        title={formatCouponTooltip(meta)}
+                      >
+                        {formatCouponLabel(meta)}
+                      </span>
+                    </>
+                  )}
                 </p>
                 <p className="text-[10px] text-ink-3 font-mono">
                   Moneda original: {meta.currency}
@@ -2197,7 +2206,17 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
             </div>
             <p className="text-[11px] text-ink-2 font-mono">
               {bondMeta.maturity ? `Vence ${bondMeta.maturity}` : 'Sin vencimiento (ETF)'}
-              {(bondMeta.couponRate > 0 || bondMeta.couponSchedule || bondMeta.couponFreq === 'none') && ` · ${formatCouponLabel(bondMeta)}`}
+              {(bondMeta.couponRate > 0 || bondMeta.couponSchedule || bondMeta.couponFreq === 'none') && (
+                <>
+                  {' · '}
+                  <span
+                    className="border-b border-dotted border-ink-3/40 cursor-help"
+                    title={formatCouponTooltip(bondMeta)}
+                  >
+                    {formatCouponLabel(bondMeta)}
+                  </span>
+                </>
+              )}
               {` · moneda ${bondMeta.currency}`}
             </p>
           </div>

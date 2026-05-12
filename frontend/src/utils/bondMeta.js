@@ -240,6 +240,27 @@ export function formatCouponLabel(meta) {
   return `cupón ${rate}% TNA (${adj})`
 }
 
+// Tooltip explicativo del cupón TNA — disambiguar para usuarios no expertos.
+// Las apps de bonos AR siempre usan TNA por convención del prospecto, pero
+// "TNA" es término técnico. Este texto se muestra al hover sobre el label.
+export function formatCouponTooltip(meta) {
+  if (!meta) return ''
+  if (meta.couponFreq === 'none') {
+    return 'Cero-cupón: no paga intereses periódicos. El retorno viene de la diferencia entre el precio de compra y los 100 que devuelve al vencimiento.'
+  }
+  const adj = freqAdjective(meta.couponFreq)
+  const ppy = periodsPerYear(meta.couponFreq)
+  const stepUp = Array.isArray(meta.couponSchedule) && meta.couponSchedule.length > 1
+  const baseTxt = `TNA = Tasa Nominal Anual del prospecto. Cada cupón ${adj} se calcula como TNA ÷ ${ppy} × face vigente. `
+  const stepUpTxt = stepUp
+    ? 'Este bono tiene step-up: la rate cambia por período (ver "Calendario futuro" para los montos exactos). '
+    : ''
+  const amortTxt = (meta.amortSchedule || meta.amortStart)
+    ? 'El "face vigente" decrece con cada amortización, por eso el cupón en pesos también baja a medida que se amortiza el capital.'
+    : 'Para bonos bullet (sin amorts), el face vigente = 100 hasta el vencimiento.'
+  return baseTxt + stepUpTxt + amortTxt
+}
+
 // Type human-readable
 export function formatBondType(type) {
   const map = {
