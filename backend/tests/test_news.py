@@ -308,5 +308,134 @@ class PortfolioNewsEndpointTest(unittest.TestCase):
         self.assertIn(res.status_code, (401, 403))
 
 
+class EnsureNewsBatchParallelTest(unittest.TestCase):
+    """Tests del helper paralelo — TTL skip, aislamiento de errores, timestamps."""
+
+    def setUp(self):
+        main._news_fetched_at.clear()
+        conn = main.get_db()
+        with conn:
+            conn.execute("DELETE FROM news")
+        conn.close()
+
+    def test_skips_queries_within_ttl(self):
+        """Si la query está fresh (dentro de TTL), no se llama a _refresh_news_query."""
+        now = main.time.time()
+        # Marcamos query como fetcheada hace 10s; TTL es 60s → debe saltar.
+        main._news_fetched_at["test:fresh-query"] = now - 10
+        with patch('main._refresh_news_query') as mock_refresh:
+            main._ensure_news_batch_parallel(
+                [("fresh-query", "en", "test")],
+                ttl_seconds=60,
+            )
+        mock_refresh.assert_not_called()
+
+    def test_calls_refresh_for_stale_queries(self):
+        """Si la query es stale (más allá del TTL), se refresca."""
+        now = main.time.time()
+        main._news_fetched_at["test:stale-query"] = now - 9999  # muy viejo
+        with patch('main._refresh_news_query') as mock_refresh:
+            main._ensure_news_batch_parallel(
+                [("stale-query", "en", "test")],
+                ttl_seconds=60,
+            )
+        mock_refresh.assert_called_once()
+        # Args posicionales: (conn, query, lang, category)
+        args, kwargs = mock_refresh.call_args
+        self.assertEqual(args[1], "stale-query")
+        self.assertEqual(args[2], "en")
+        self.assertEqual(args[3], "test")
+
+    def test_calls_refresh_for_unknown_queries(self):
+        """Una query sin entry previa en _news_fetched_at es tratada como stale."""
+        with patch('main._refresh_news_query') as mock_refresh:
+            main._ensure_news_batch_parallel(
+                [("first-time", "en", "test")],
+                ttl_seconds=60,
+            )
+        mock_refresh.assert_called_once()
+
+    def test_empty_queries_no_op(self):
+        """Sin queries no spawnea threads ni llama a refresh."""
+        with patch('main._refresh_news_query') as mock_refresh:
+            main._ensure_news_batch_parallel([], ttl_seconds=60)
+        mock_refresh.assert_not_called()
+
+    def test_marks_query_as_fetched_after_success(self):
+        """Tras un fetch exitoso, _news_fetched_at se updatea con timestamp reciente."""
+        before = main.time.time()
+        with patch('main._refresh_news_query', return_value=0):
+            main._ensure_news_batch_parallel(
+                [("query1", "en", "cat-a")],
+                ttl_seconds=60,
+            )
+        after = main.time.time()
+        ts = main._news_fetched_at.get("cat-a:query1")
+        self.assertIsNotNone(ts)
+        self.assertGreaterEqual(ts, before)
+        self.assertLessEqual(ts, after)
+
+    def test_error_in_one_worker_does_not_break_batch(self):
+        """Una query que falla no impide que las otras se procesen."""
+        def _flaky(conn, query, lang, cat):
+            if query == "bad":
+                raise RuntimeError("simulated failure")
+            return 0
+
+        with patch('main._refresh_news_query', side_effect=_flaky):
+            main._ensure_news_batch_parallel(
+                [
+                    ("good-1", "en", "test"),
+                    ("bad",    "en", "test"),
+                    ("good-2", "en", "test"),
+                ],
+                ttl_seconds=60,
+            )
+
+        # good-1 y good-2 deben quedar marcados; "bad" NO debe quedar marcado
+        # (porque la excepción aborta la asignación de timestamp en el worker).
+        self.assertIn("test:good-1", main._news_fetched_at)
+        self.assertIn("test:good-2", main._news_fetched_at)
+        self.assertNotIn("test:bad", main._news_fetched_at)
+
+    def test_parallel_execution_is_faster_than_serial(self):
+        """Smoke test: con queries que tardan 0.2s cada una, paralelo termina <1s
+        para 5 queries (serial tomaría 1.0s+). Verifica que efectivamente
+        corre en paralelo, no de forma secuencial.
+        """
+        def _slow(conn, query, lang, cat):
+            main.time.sleep(0.2)
+            return 0
+
+        queries = [(f"q{i}", "en", "test") for i in range(5)]
+        with patch('main._refresh_news_query', side_effect=_slow):
+            start = main.time.time()
+            main._ensure_news_batch_parallel(queries, ttl_seconds=60)
+            elapsed = main.time.time() - start
+
+        # Serial sería ~1.0s. Paralelo con 5 workers debería ser ~0.3s.
+        # Damos margen amplio (0.8s) para entornos lentos como CI.
+        self.assertLess(elapsed, 0.8, f"parallel took {elapsed:.2f}s, expected <0.8s")
+
+    def test_respects_max_workers_cap(self):
+        """Con max_workers=2 y 4 queries lentas, el wall time debe ser ~2x duración,
+        no 1x (no todas en paralelo) ni 4x (no secuencial).
+        """
+        def _slow(conn, query, lang, cat):
+            main.time.sleep(0.15)
+            return 0
+
+        queries = [(f"q{i}", "en", "test") for i in range(4)]
+        with patch('main._refresh_news_query', side_effect=_slow):
+            start = main.time.time()
+            main._ensure_news_batch_parallel(queries, ttl_seconds=60, max_workers=2)
+            elapsed = main.time.time() - start
+
+        # Con 4 queries × 0.15s y max 2 workers: 2 batches de 2 → ~0.3s.
+        # Aceptamos 0.25-0.7s (margen para overhead).
+        self.assertGreater(elapsed, 0.25, f"too fast — workers not capped? {elapsed:.2f}s")
+        self.assertLess(elapsed, 0.7,    f"too slow — not parallel?      {elapsed:.2f}s")
+
+
 if __name__ == "__main__":
     unittest.main()

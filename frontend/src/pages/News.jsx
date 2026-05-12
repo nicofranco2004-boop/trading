@@ -11,7 +11,8 @@
 // Diseño minimal: lista, no feed infinito. ~15-20 noticias por tab.
 // Click → abre la noticia original en tab nueva.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Newspaper, ExternalLink, AlertCircle } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
@@ -24,10 +25,31 @@ const TABS = [
 ]
 
 const LIMIT = 25
+const TAB_VALUES = TABS.map(t => t.value)
 
-// `embedded=true` oculta el PageHeader interno (uso desde Novedades.jsx).
+// `embedded=true` oculta el PageHeader interno (uso desde Novedades.jsx) y
+// persiste el sub-tab en URL via ?sub=portfolio|market para deep-linking.
 export default function News({ embedded = false }) {
-  const [tab, setTab] = useState('portfolio')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const urlSub = searchParams.get('sub')
+  const initialTab = embedded && TAB_VALUES.includes(urlSub) ? urlSub : 'portfolio'
+  const [tab, setTabState] = useState(initialTab)
+
+  useEffect(() => {
+    if (!embedded) return
+    const s = searchParams.get('sub')
+    if (TAB_VALUES.includes(s) && s !== tab) setTabState(s)
+  }, [searchParams, embedded, tab])
+
+  function setTab(value) {
+    setTabState(value)
+    if (embedded) {
+      const next = new URLSearchParams(searchParams)
+      next.set('sub', value)
+      setSearchParams(next, { replace: true })
+    }
+  }
+
   const [portfolioNews, setPortfolioNews] = useState([])
   const [marketNews, setMarketNews] = useState([])
   const [loading, setLoading] = useState(true)
@@ -72,21 +94,30 @@ export default function News({ embedded = false }) {
         />
       )}
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 mb-4 border-b border-slate-200 dark:border-line">
-        {TABS.map(t => (
-          <button
-            key={t.value}
-            onClick={() => setTab(t.value)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
-              tab === t.value
-                ? 'border-rendi-accent text-ink-0'
-                : 'border-transparent text-ink-2 hover:text-ink-0'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      {/* Sub-tabs Para ti / Mercado — pills (ver Events.jsx para racional). */}
+      <div
+        role="tablist"
+        aria-label="Origen de noticias"
+        className="flex items-center gap-1.5 mb-3 flex-wrap"
+      >
+        {TABS.map(t => {
+          const active = tab === t.value
+          return (
+            <button
+              key={t.value}
+              role="tab"
+              aria-selected={active}
+              onClick={() => setTab(t.value)}
+              className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                active
+                  ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
+                  : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3'
+              }`}
+            >
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
       <p className="text-xs text-ink-2 mb-4">

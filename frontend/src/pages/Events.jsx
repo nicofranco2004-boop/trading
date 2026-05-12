@@ -12,6 +12,7 @@
 //     alguno, badge "👁 En tu cartera".
 
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Calendar, Filter, AlertCircle, Eye } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
@@ -59,10 +60,35 @@ function matchesFilter(event, filter) {
   return true
 }
 
+const TAB_VALUES = TABS.map(t => t.value)
+
 // Si `embedded=true`, el componente se renderea sin PageHeader (para usar
 // dentro de un container que ya provee el header — ej: pages/Novedades.jsx).
+// En modo embedded el sub-tab se persiste en URL via ?sub=portfolio|popular
+// para que la sección Novedades sea deep-linkable.
 export default function Events({ embedded = false }) {
-  const [tab, setTab] = useState('portfolio')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const urlSub = searchParams.get('sub')
+  const initialTab = embedded && TAB_VALUES.includes(urlSub) ? urlSub : 'portfolio'
+  const [tab, setTabState] = useState(initialTab)
+
+  // Cuando estamos embebidos, el sub-tab queda en URL. Sincronizamos en ambas
+  // direcciones: clicks → URL, y back/forward → state local.
+  useEffect(() => {
+    if (!embedded) return
+    const s = searchParams.get('sub')
+    if (TAB_VALUES.includes(s) && s !== tab) setTabState(s)
+  }, [searchParams, embedded, tab])
+
+  function setTab(value) {
+    setTabState(value)
+    if (embedded) {
+      const next = new URLSearchParams(searchParams)
+      next.set('sub', value)
+      setSearchParams(next, { replace: true })
+    }
+  }
+
   const [windowDays, setWindowDays] = useState(90)
   const [filter, setFilter] = useState('all')
   const [positions, setPositions] = useState([])
@@ -169,21 +195,31 @@ export default function Events({ embedded = false }) {
         />
       )}
 
-      {/* Tabs Para ti / Popular */}
-      <div className="flex items-center gap-1 mb-4 border-b border-slate-200 dark:border-line">
-        {TABS.map(t => (
-          <button
-            key={t.value}
-            onClick={() => setTab(t.value)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
-              tab === t.value
-                ? 'border-rendi-accent text-ink-0'
-                : 'border-transparent text-ink-2 hover:text-ink-0'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      {/* Sub-tabs Para ti / Popular — pills para diferenciarlos del nivel
+          superior (Novedades usa border-b prominent). */}
+      <div
+        role="tablist"
+        aria-label="Tipo de eventos"
+        className="flex items-center gap-1.5 mb-3 flex-wrap"
+      >
+        {TABS.map(t => {
+          const active = tab === t.value
+          return (
+            <button
+              key={t.value}
+              role="tab"
+              aria-selected={active}
+              onClick={() => setTab(t.value)}
+              className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                active
+                  ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
+                  : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3'
+              }`}
+            >
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
       {/* Subtítulo dinámico de la tab activa */}

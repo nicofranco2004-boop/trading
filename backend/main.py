@@ -6,6 +6,7 @@ from pydantic import BaseModel, field_validator, Field
 from typing import Optional
 import sqlite3, os, secrets, time, hashlib, hmac, json
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 import requests
 import logging
@@ -1701,7 +1702,11 @@ def _rfc822_to_iso(s: str):
 
 
 def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int = 15):
-    """Refresca el cache de noticias para un query dado. Idempotente."""
+    """Refresca el cache de noticias para un query dado. Idempotente.
+
+    Devuelve la cantidad de filas nuevas insertadas (los items ya conocidos se
+    saltean por el UNIQUE(source, external_id) + INSERT OR IGNORE).
+    """
     items = _fetch_google_news_rss(query, lang=lang, limit=limit)
     if not items:
         return 0
@@ -1710,7 +1715,7 @@ def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int =
     with conn:
         for it in items:
             try:
-                conn.execute(
+                cur = conn.execute(
                     """INSERT OR IGNORE INTO news
                        (source, external_id, title, summary, url, image_url,
                         published_at, tickers, category, query_source, fetched_at)
@@ -1718,7 +1723,9 @@ def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int =
                     (it['external_id'], it['title'], it['summary'], it['url'],
                      it['published_at'], None, category, query, iso_now),
                 )
-                inserted += conn.total_changes
+                # rowcount es el delta del execute (0 si IGNORE saltó por dedup),
+                # no el acumulado de la conexión.
+                inserted += cur.rowcount if cur.rowcount > 0 else 0
             except Exception:
                 pass
     return inserted
@@ -1737,43 +1744,50 @@ def _ensure_news_for_query(conn, query: str, lang: str, category: str, ttl_secon
 def _ensure_news_batch_parallel(queries, ttl_seconds, max_workers=8):
     """Versión paralelizada: fetcha múltiples queries en threads concurrentes.
 
-    `queries`: lista de tuplas (query, lang, category).
+    `queries`: iterable de tuplas (query, lang, category).
 
-    Cada thread:
-      • Verifica TTL en memoria (skip si fresh).
-      • Hace HTTP a Google News (parte slow).
-      • Persiste a DB en su propia conexión (SQLite es thread-safe en read y
-        para INSERT con shared cache).
+    Cada worker:
+      • Hace HTTP a Google News (parte slow — I/O-bound, GIL no es problema).
+      • Persiste a DB en su propia conexión (sqlite3 con check_same_thread=True
+        no permite compartir cursors entre threads).
+      • Captura su propio timestamp DESPUÉS del fetch para que el TTL refleje
+        cuándo se obtuvo realmente la data, no cuándo arrancó el batch.
 
-    Reduce wall time de N×500ms a max ~600ms (= 1 round-trip a Google News).
-    Cap a 8 workers — más threads no agregan velocidad (limitado por Google).
+    El cap de workers limita threads concurrentes contra Google News — pasarlo
+    no acelera más (cada query es ~500ms en wall time).
+
+    Errores individuales se aíslan: una query fallida no rompe el resto.
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     now = time.time()
     # Filtrar lo que está fresh — no hace falta thread para esos.
-    stale = []
-    for q, lang, cat in queries:
-        cache_key = f"{cat}:{q}"
-        if now - _news_fetched_at.get(cache_key, 0) >= ttl_seconds:
-            stale.append((q, lang, cat))
+    stale = [
+        (q, lang, cat) for q, lang, cat in queries
+        if now - _news_fetched_at.get(f"{cat}:{q}", 0) >= ttl_seconds
+    ]
     if not stale:
         return
 
     def _worker(q, lang, cat):
-        # Cada thread abre su propia conexión SQLite (no podemos compartir
-        # cursors entre threads). Es barato — SQLite reusa el file.
         local_conn = get_db()
         try:
             _refresh_news_query(local_conn, q, lang, cat)
-            _news_fetched_at[f"{cat}:{q}"] = now
-        except Exception:
-            pass  # Falla individual no rompe el batch
+            # Timestamp local del worker — refleja cuándo terminó este fetch
+            # específicamente (ver docstring).
+            _news_fetched_at[f"{cat}:{q}"] = time.time()
         finally:
             local_conn.close()
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        list(pool.map(lambda args: _worker(*args), stale))
+        futures = [pool.submit(_worker, q, lang, cat) for q, lang, cat in stale]
+        for fut in as_completed(futures):
+            # Drenamos el resultado para que las excepciones no queden mudas
+            # — las logueamos pero no rompemos el batch.
+            try:
+                fut.result()
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "news batch worker failed: %s", e
+                )
 
 
 @app.get("/api/news/market")
