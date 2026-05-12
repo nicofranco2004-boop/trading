@@ -1202,6 +1202,94 @@ def _fetch_one(yf_ticker: str):
         return None
 
 
+# ─── Bonos AR — live price via data912.com ───────────────────────────────────
+# data912 expone cotizaciones live de BYMA (que yfinance no cubre para bonos
+# AR). Convención de los sufijos en data912:
+#   • Sin sufijo (AL30, GD30, AE38, TX26): cotización en ARS pesos por 100 face.
+#   • Sufijo D (AL30D, GD30D, AE38D): cotización USD MEP por 100 face.
+#   • Sufijo C: cotización USD CCL por 100 face.
+#
+# Rendi mapea según el broker en el frontend:
+#   • Broker ARS → fetcha el ticker sin sufijo (precio en ARS).
+#   • Broker USD/USDT → fetcha ticker + "D" (precio USD MEP).
+#
+# Convertimos data912 (per 100 face) a "per VN" dividiendo por 100, así el
+# resto del frontend que computa `value = price × quantity` funciona sin
+# cambios de convención.
+
+# Cobertura validada (2026-05-12): 11 soberanos canje 2020 + 5 CER con precio.
+# ONs corporativas tienen tickers no-coincidentes con bondMeta.js — se fixea
+# por separado actualizando los IDs en bondMeta.
+AR_BONDS_DATA912 = {
+    'AL29', 'AL30', 'AL35', 'AE38', 'AL41',
+    'GD29', 'GD30', 'GD35', 'GD38', 'GD41', 'GD46',
+    'TX26', 'TX28', 'T2X5', 'TZX26', 'TZX27', 'TZX28',
+}
+
+_data912_cache = {'data': None, 'ts': 0}
+DATA912_TTL = 300  # 5 minutos — los precios cambian frecuente pero no hace
+                   # falta refrescar más rápido para tracking de cartera
+
+
+def _fetch_data912_bonds():
+    """Fetch + cache de precios live de bonos AR. Devuelve dict {symbol: close}.
+
+    Falla gracefully: si data912 cae, devolvemos el cache anterior (puede ser
+    stale pero mejor que nada) o {} si nunca tuvimos data.
+    """
+    now = time.time()
+    cached = _data912_cache['data']
+    if cached is not None and now - _data912_cache['ts'] < DATA912_TTL:
+        return cached
+    try:
+        result = {}
+        for endpoint in ('arg_bonds', 'arg_corp'):
+            r = requests.get(f"https://data912.com/live/{endpoint}", timeout=8)
+            if r.status_code != 200:
+                continue
+            for item in r.json():
+                sym = item.get('symbol')
+                close = item.get('c')
+                if sym and close and close > 0:
+                    result[sym] = close
+        if result:  # sólo actualizamos cache si hubo data nueva
+            _data912_cache['data'] = result
+            _data912_cache['ts'] = now
+        return result
+    except Exception:
+        return cached or {}
+
+
+def _resolve_ar_bond_price(symbol):
+    """Resuelve el precio per-VN de un bono AR usando data912.
+
+    Reglas de mapeo según convención del frontend (ver `fetchPrices` en
+    Positions.jsx):
+      • Sufijo .BA: tipico de broker ARS → usamos el ticker base SIN sufijo
+        para obtener precio en ARS por 100 face → divido por 100.
+      • Sin sufijo .BA: vino de broker USD/USDT → usamos ticker base + 'D'
+        para obtener precio USD MEP por 100 face → divido por 100.
+
+    Devuelve None si el ticker no está en AR_BONDS_DATA912 o data912 no
+    tiene precio. El caller cae a yfinance como fallback.
+    """
+    if not symbol:
+        return None
+    base = symbol[:-3] if symbol.endswith('.BA') else symbol
+    if base not in AR_BONDS_DATA912:
+        return None
+    prices = _fetch_data912_bonds()
+    if not prices:
+        return None
+    # ARS si vino con .BA, USD MEP si vino sin sufijo
+    lookup_key = base if symbol.endswith('.BA') else (base + 'D')
+    raw = prices.get(lookup_key)
+    if raw is None or raw <= 0:
+        return None
+    # data912 quotea per 100 face. El resto del sistema usa per VN.
+    return raw / 100.0
+
+
 @app.get("/api/prices")
 def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     raw = [s.strip().upper() for s in symbols.split(",") if s.strip()]
@@ -1215,12 +1303,29 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     if not sym_list:
         return {}
 
-    sym_to_yf = {}
+    result = {sym: None for sym in sym_list}
+
+    # Phase 3F: prefetch de bonos AR via data912.com (precio live de BYMA).
+    # Para tickers conocidos como bonos AR canje 2020 o CER, resolvemos acá
+    # — yfinance no tiene cobertura. Lo que NO resuelva data912 (acciones,
+    # ETFs, crypto, ONs corporativas con tickers exactos no cubiertos) cae
+    # al path yfinance de abajo.
+    yf_targets = []
     for sym in sym_list:
+        ar_price = _resolve_ar_bond_price(sym)
+        if ar_price is not None:
+            result[sym] = ar_price
+        else:
+            yf_targets.append(sym)
+
+    if not yf_targets:
+        return result
+
+    sym_to_yf = {}
+    for sym in yf_targets:
         sym_to_yf[sym] = CRYPTO_YF[sym] if sym in CRYPTO_YF else sym
 
     yf_tickers = list(set(sym_to_yf.values()))
-    result = {sym: None for sym in sym_list}
 
     try:
         tickers_str = " ".join(yf_tickers)
@@ -1250,7 +1355,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     except Exception:
         pass
 
-    for sym in [s for s in sym_list if result[s] is None]:
+    for sym in [s for s in yf_targets if result[s] is None]:
         yf_t = sym_to_yf[sym]
         price = _fetch_one(yf_t)
         if price is None and not sym.endswith('.BA') and sym not in CRYPTO_YF:
