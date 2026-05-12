@@ -52,7 +52,7 @@ export default function UpcomingEventsCard({ positions }) {
           <span className="text-[10px] text-ink-3 font-mono">· próximos {WINDOW_DAYS} días</span>
         </div>
         <Link
-          to="/eventos"
+          to="/novedades?tab=eventos"
           className="text-[11px] text-rendi-accent hover:text-rendi-accent/80 font-mono inline-flex items-center gap-0.5"
         >
           Ver todos <ArrowRight size={11} strokeWidth={1.75} />

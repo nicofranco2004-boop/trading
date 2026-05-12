@@ -3,7 +3,7 @@
 // Muestra hasta 3 noticias recientes de los tickers del user. Si no hay
 // noticias personalizadas, NO se renderea — el dashboard no se inunda.
 //
-// Link "Ver todas" → /noticias.
+// Link "Ver todas" → /novedades?tab=noticias.
 
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -34,7 +34,7 @@ export default function TopNewsCard() {
           <span className="text-sm font-semibold text-ink-0">Lo que pasó hoy en tu cartera</span>
         </div>
         <Link
-          to="/noticias"
+          to="/novedades?tab=noticias"
           className="text-[11px] text-rendi-accent hover:text-rendi-accent/80 font-mono inline-flex items-center gap-0.5"
         >
           Ver todas <ArrowRight size={11} strokeWidth={1.75} />

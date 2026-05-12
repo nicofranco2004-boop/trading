@@ -59,7 +59,9 @@ function matchesFilter(event, filter) {
   return true
 }
 
-export default function Events() {
+// Si `embedded=true`, el componente se renderea sin PageHeader (para usar
+// dentro de un container que ya provee el header — ej: pages/Novedades.jsx).
+export default function Events({ embedded = false }) {
   const [tab, setTab] = useState('portfolio')
   const [windowDays, setWindowDays] = useState(90)
   const [filter, setFilter] = useState('all')
@@ -157,12 +159,15 @@ export default function Events() {
 
   const byDate = useMemo(() => groupEventsByDate(visibleEvents), [visibleEvents])
 
+  const containerClass = embedded ? '' : 'page-shell-wide'
   return (
-    <div className="page-shell-wide">
-      <PageHeader
-        title="Eventos financieros"
-        subtitle="Próximos cupones, earnings, dividendos y eventos macro."
-      />
+    <div className={containerClass}>
+      {!embedded && (
+        <PageHeader
+          title="Eventos financieros"
+          subtitle="Próximos cupones, earnings, dividendos y eventos macro."
+        />
+      )}
 
       {/* Tabs Para ti / Popular */}
       <div className="flex items-center gap-1 mb-4 border-b border-slate-200 dark:border-line">

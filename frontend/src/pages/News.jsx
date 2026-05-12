@@ -25,7 +25,8 @@ const TABS = [
 
 const LIMIT = 25
 
-export default function News() {
+// `embedded=true` oculta el PageHeader interno (uso desde Novedades.jsx).
+export default function News({ embedded = false }) {
   const [tab, setTab] = useState('portfolio')
   const [portfolioNews, setPortfolioNews] = useState([])
   const [marketNews, setMarketNews] = useState([])
@@ -61,12 +62,15 @@ export default function News() {
 
   const visibleNews = tab === 'portfolio' ? portfolioNews : marketNews
 
+  const containerClass = embedded ? '' : 'page-shell-wide'
   return (
-    <div className="page-shell-wide">
-      <PageHeader
-        title="Noticias"
-        subtitle="Lo que pasa en el mercado y en los activos de tu cartera."
-      />
+    <div className={containerClass}>
+      {!embedded && (
+        <PageHeader
+          title="Noticias"
+          subtitle="Lo que pasa en el mercado y en los activos de tu cartera."
+        />
+      )}
 
       {/* Tabs */}
       <div className="flex items-center gap-1 mb-4 border-b border-slate-200 dark:border-line">

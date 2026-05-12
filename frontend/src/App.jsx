@@ -15,6 +15,7 @@ import Imports from './pages/Imports'
 import MonthlyReports from './pages/MonthlyReports'
 import Events from './pages/Events'
 import News from './pages/News'
+import Novedades from './pages/Novedades'
 
 function Layout() {
   const { user } = useAuth()
@@ -36,6 +37,9 @@ function Layout() {
         <Route path="/insights" element={<Insights />} />
         <Route path="/mensual" element={<Monthly />} />
         <Route path="/reportes" element={<MonthlyReports />} />
+        <Route path="/novedades" element={<Novedades />} />
+        {/* Mantenemos /eventos y /noticias como alias para back-compat con
+            bookmarks. El navbar principal apunta a /novedades. */}
         <Route path="/eventos" element={<Events />} />
         <Route path="/noticias" element={<News />} />
         <Route path="/operaciones" element={<Operations />} />

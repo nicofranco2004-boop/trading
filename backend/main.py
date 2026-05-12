@@ -1734,6 +1734,48 @@ def _ensure_news_for_query(conn, query: str, lang: str, category: str, ttl_secon
     _news_fetched_at[cache_key] = now
 
 
+def _ensure_news_batch_parallel(queries, ttl_seconds, max_workers=8):
+    """Versión paralelizada: fetcha múltiples queries en threads concurrentes.
+
+    `queries`: lista de tuplas (query, lang, category).
+
+    Cada thread:
+      • Verifica TTL en memoria (skip si fresh).
+      • Hace HTTP a Google News (parte slow).
+      • Persiste a DB en su propia conexión (SQLite es thread-safe en read y
+        para INSERT con shared cache).
+
+    Reduce wall time de N×500ms a max ~600ms (= 1 round-trip a Google News).
+    Cap a 8 workers — más threads no agregan velocidad (limitado por Google).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    now = time.time()
+    # Filtrar lo que está fresh — no hace falta thread para esos.
+    stale = []
+    for q, lang, cat in queries:
+        cache_key = f"{cat}:{q}"
+        if now - _news_fetched_at.get(cache_key, 0) >= ttl_seconds:
+            stale.append((q, lang, cat))
+    if not stale:
+        return
+
+    def _worker(q, lang, cat):
+        # Cada thread abre su propia conexión SQLite (no podemos compartir
+        # cursors entre threads). Es barato — SQLite reusa el file.
+        local_conn = get_db()
+        try:
+            _refresh_news_query(local_conn, q, lang, cat)
+            _news_fetched_at[f"{cat}:{q}"] = now
+        except Exception:
+            pass  # Falla individual no rompe el batch
+        finally:
+            local_conn.close()
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        list(pool.map(lambda args: _worker(*args), stale))
+
+
 @app.get("/api/news/market")
 def get_market_news(
     limit: int = 20,
@@ -1746,15 +1788,15 @@ def get_market_news(
     if limit <= 0 or limit > 100:
         raise HTTPException(422, "limit debe estar entre 1 y 100")
 
+    # Refresh paralelo — bajamos wall time de ~4s (8 queries seriales) a ~1s.
+    try:
+        queries_batch = [(q, lang, cat) for q, cat, lang in MARKET_NEWS_QUERIES]
+        _ensure_news_batch_parallel(queries_batch, NEWS_MARKET_TTL)
+    except Exception:
+        pass
+
     conn = get_db()
     try:
-        # Refresh idempotente para cada query (in-memory TTL)
-        for query, category, lang in MARKET_NEWS_QUERIES:
-            try:
-                _ensure_news_for_query(conn, query, lang, category, NEWS_MARKET_TTL)
-            except Exception:
-                pass
-
         # Devolver últimas N noticias de categoría market/macro
         rows = conn.execute(
             """SELECT title, summary, url, published_at, query_source, category, source
@@ -1795,16 +1837,17 @@ def get_portfolio_news(
         if not tickers:
             return {'news': [], 'count': 0}
 
-        # Refresh por ticker — usamos categoría 'portfolio' para distinguirlas
-        for ticker in tickers[:20]:  # cap a 20 para no martillar Google
-            # Heurística simple: si está en POPULAR_TICKERS_AR_ADR o es bono AR, español; resto inglés
+        # Build queries batch (cap a 20 para no martillar Google) + paralelo
+        queries_batch = []
+        for ticker in tickers[:20]:
             is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
             lang = "es" if is_ar else "en"
             query = f"{ticker} {'acciones' if is_ar else 'stock'}"
-            try:
-                _ensure_news_for_query(conn, query, lang, 'portfolio', NEWS_TICKER_TTL)
-            except Exception:
-                pass
+            queries_batch.append((query, lang, 'portfolio'))
+        try:
+            _ensure_news_batch_parallel(queries_batch, NEWS_TICKER_TTL)
+        except Exception:
+            pass
 
         # Devolver noticias del portfolio matcheando query_source con cualquiera
         # de los tickers (que es el "{TICKER} stock"/"acciones" que sembramos).
