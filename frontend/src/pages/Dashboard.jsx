@@ -3,6 +3,7 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { TrendingUp, TrendingDown, Wallet, PiggyBank, Activity, CircleDollarSign, Upload, ArrowRight } from 'lucide-react'
 import StatCard from '../components/StatCard'
 import MonthlyTeaser from '../components/MonthlyTeaser'
+import UpcomingEventsCard from '../components/UpcomingEventsCard'
 import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
@@ -554,6 +555,12 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Próximos eventos del portfolio (cupones, earnings, dividendos).
+          Sólo se renderea si hay eventos en el próximo mes — silencioso si no. */}
+      <div className="mb-6">
+        <UpcomingEventsCard positions={positions} />
+      </div>
 
       <MonthlyTeaser />
     </div>

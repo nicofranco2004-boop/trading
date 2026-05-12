@@ -358,6 +358,30 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_bond_indices_date ON bond_indices_daily(date);
     """)
 
+    # ─── financial_events (Eventos financieros) ────────────────────────────
+    # Cache de eventos por ticker: earnings, ex-dividend, payment date, etc.
+    # Compartido cross-user — los eventos son data pública. El frontend filtra
+    # según el portfolio del user en query time.
+    #
+    # Para eventos de BONOS (cupones / amortizaciones / vencimientos), NO usamos
+    # esta tabla — esos se generan runtime en frontend desde bondSchedule.js
+    # (que ya tiene la data, sin duplicar en backend).
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS financial_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,            -- 'AAPL', 'MSFT', 'TSLA', etc.
+            event_type TEXT NOT NULL,        -- 'earnings' | 'ex_dividend' | 'payment_date' | 'split'
+            event_date TEXT NOT NULL,        -- 'YYYY-MM-DD'
+            details TEXT,                    -- JSON: {eps_estimate, dividend_amount, ...}
+            confirmed INTEGER DEFAULT 0,     -- 1 si la fuente lo confirma, 0 estimado
+            source TEXT,                     -- 'yfinance' | 'finnhub' | 'manual'
+            fetched_at TEXT NOT NULL,
+            UNIQUE(ticker, event_type, event_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_date ON financial_events(event_date);
+        CREATE INDEX IF NOT EXISTS idx_events_ticker ON financial_events(ticker);
+    """)
+
     # ─── bond_cashflow_skips (Phase 3E) ────────────────────────────────────
     # El frontend detecta cobranzas teóricas pendientes comparando el cronograma
     # del bono vs operations existentes. Si el user no recibió ese pago (default,
@@ -1160,6 +1184,216 @@ def get_bond_index_series(
             "latest_date": latest_date,
             "stale": stale,
         }
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Eventos financieros (earnings / ex-dividend / payment date)
+# ═══════════════════════════════════════════════════════════════════════════
+# Para STOCKS / ETFs / CEDEARs: usamos yfinance .calendar y .actions().
+# Para BONOS (cupones / amorts): los genera el frontend desde bondSchedule.js
+# en runtime — no se cachean acá (la data del cronograma vive en el frontend).
+#
+# Caching:
+#   • Persistente: tabla `financial_events`, upsert por (ticker, type, date).
+#   • In-memory TTL: 6 horas — earnings dates no cambian más rápido que eso.
+#
+# Auto-refresh: si el cache está stale al pedir, refresh sólo para los tickers
+# del portfolio del user (no para todo el universo).
+
+_events_fetched_at = {}  # { ticker: timestamp último fetch }
+EVENTS_TTL = 6 * 3600  # 6 horas
+
+
+def _fetch_yf_events(ticker: str) -> list:
+    """Trae earnings + ex-dividend + dividend payment dates de un ticker via yfinance.
+
+    Returns: lista de eventos como dicts (sin guardar todavía).
+    Falla gracefully — si yfinance no tiene data, devuelve [].
+    """
+    events = []
+    try:
+        t = yf.Ticker(ticker)
+
+        # Earnings (próximos + recientes)
+        try:
+            cal = t.calendar
+            if cal is not None and not (hasattr(cal, 'empty') and cal.empty):
+                # cal puede ser DataFrame o dict según versión de yfinance
+                earnings_date = None
+                eps_estimate = None
+                if hasattr(cal, 'loc'):
+                    # DataFrame variant — buscar Earnings Date
+                    if 'Earnings Date' in cal.index:
+                        ed = cal.loc['Earnings Date']
+                        earnings_date = ed.iloc[0] if hasattr(ed, 'iloc') else ed
+                    if 'Earnings Average' in cal.index:
+                        ea = cal.loc['Earnings Average']
+                        eps_estimate = float(ea.iloc[0]) if hasattr(ea, 'iloc') else float(ea)
+                elif isinstance(cal, dict):
+                    earnings_date = cal.get('Earnings Date')
+                    if isinstance(earnings_date, list):
+                        earnings_date = earnings_date[0] if earnings_date else None
+                    eps_estimate = cal.get('Earnings Average')
+                if earnings_date is not None:
+                    date_str = (earnings_date.strftime('%Y-%m-%d')
+                                if hasattr(earnings_date, 'strftime')
+                                else str(earnings_date)[:10])
+                    if _DATE_RE.match(date_str):
+                        details = {}
+                        if eps_estimate is not None and isinstance(eps_estimate, (int, float)) and not math.isnan(eps_estimate):
+                            details['eps_estimate'] = round(float(eps_estimate), 4)
+                        events.append({
+                            'ticker': ticker,
+                            'event_type': 'earnings',
+                            'event_date': date_str,
+                            'details': details,
+                            'confirmed': 1,
+                        })
+        except Exception:
+            pass
+
+        # Ex-dividend date + dividend amount (próximo)
+        try:
+            info = t.info  # cache interno de yfinance
+            ex_div = info.get('exDividendDate')  # timestamp UNIX
+            div_amount = info.get('lastDividendValue')
+            if ex_div:
+                # ex_div es timestamp unix (segundos); convertir a fecha ISO
+                d = datetime.utcfromtimestamp(ex_div).strftime('%Y-%m-%d')
+                if _DATE_RE.match(d):
+                    details = {}
+                    if div_amount is not None and isinstance(div_amount, (int, float)):
+                        details['dividend_per_share'] = round(float(div_amount), 4)
+                    events.append({
+                        'ticker': ticker,
+                        'event_type': 'ex_dividend',
+                        'event_date': d,
+                        'details': details,
+                        'confirmed': 1,
+                    })
+        except Exception:
+            pass
+
+    except Exception:
+        # ticker desconocido o yfinance error → vacío
+        pass
+    return events
+
+
+def _refresh_events_for_tickers(conn, tickers: list):
+    """Refresca el cache de eventos para una lista de tickers. Idempotente:
+    si un ticker ya fue refrescado hace <TTL, lo skipea."""
+    now = time.time()
+    iso_now = datetime.utcnow().isoformat() + "Z"
+    for ticker in tickers:
+        if not ticker:
+            continue
+        if now - _events_fetched_at.get(ticker, 0) < EVENTS_TTL:
+            continue
+        events = _fetch_yf_events(ticker)
+        if not events:
+            # Marcamos como "fetched" igual para no retry constantemente
+            _events_fetched_at[ticker] = now
+            continue
+        with conn:
+            for ev in events:
+                conn.execute(
+                    """INSERT INTO financial_events
+                       (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
+                           details = excluded.details,
+                           confirmed = excluded.confirmed,
+                           fetched_at = excluded.fetched_at""",
+                    (ev['ticker'], ev['event_type'], ev['event_date'],
+                     json.dumps(ev['details']), ev['confirmed'], 'yfinance', iso_now),
+                )
+        _events_fetched_at[ticker] = now
+
+
+@app.get("/api/events/portfolio")
+def get_portfolio_events(
+    days: int = 90,
+    uid: int = Depends(get_current_user),
+):
+    """Eventos próximos para los activos en el portfolio del user.
+
+    Sólo devuelve eventos de STOCKS / ETFs / CEDEARs (de yfinance). Los eventos
+    de BONOS los calcula el frontend desde bondSchedule — están filtrados por
+    `_is_bond_like_ticker` y se excluyen acá para no duplicar.
+
+    Query params:
+      • days: ventana hacia adelante. Default 90, max 365.
+
+    Response:
+      {
+        events: [{ticker, event_type, event_date, details, confirmed, source}],
+        refreshed_tickers: number,  // cuántos tickers se refrescaron del cache
+      }
+    """
+    if days <= 0 or days > 365:
+        raise HTTPException(422, "days debe estar entre 1 y 365")
+
+    conn = get_db()
+    try:
+        # Tickers del portfolio del user, excluyendo cash + bonos (que se generan frontend).
+        # Convención: bonos AR tienen tickers en BOND_TICKERS_BACKEND (set hardcoded);
+        # ETFs y stocks son los que cuentan acá.
+        rows = conn.execute(
+            """SELECT DISTINCT asset FROM positions
+               WHERE user_id=? AND is_cash=0 AND asset NOT IN ('USDT', 'USD', 'ARS')""",
+            (uid,),
+        ).fetchall()
+        all_tickers = [r['asset'] for r in rows]
+        # Excluir bonos AR (los maneja frontend via bondSchedule)
+        stock_tickers = [t for t in all_tickers if t not in AR_BONDS_DATA912 and t not in CRYPTO_SYMBOLS]
+
+        # Refresh proactivo (idempotente). No falla la request si yfinance falla.
+        refreshed = 0
+        try:
+            before = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
+            _refresh_events_for_tickers(conn, stock_tickers)
+            after = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
+            refreshed = after - before
+        except Exception:
+            pass
+
+        # Query: eventos próximos para los tickers del portfolio
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        end_date = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%d')
+        if not stock_tickers:
+            return {'events': [], 'refreshed_tickers': 0}
+
+        placeholders = ','.join('?' for _ in stock_tickers)
+        rows = conn.execute(
+            f"""SELECT ticker, event_type, event_date, details, confirmed, source
+                FROM financial_events
+                WHERE ticker IN ({placeholders})
+                  AND event_date >= ?
+                  AND event_date <= ?
+                ORDER BY event_date ASC""",
+            (*stock_tickers, today, end_date),
+        ).fetchall()
+
+        events = []
+        for r in rows:
+            details = {}
+            try:
+                details = json.loads(r['details']) if r['details'] else {}
+            except Exception:
+                pass
+            events.append({
+                'ticker': r['ticker'],
+                'event_type': r['event_type'],
+                'event_date': r['event_date'],
+                'details': details,
+                'confirmed': bool(r['confirmed']),
+                'source': r['source'],
+            })
+
+        return {'events': events, 'refreshed_tickers': refreshed}
     finally:
         conn.close()
 
