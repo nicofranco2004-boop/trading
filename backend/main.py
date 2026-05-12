@@ -358,6 +358,34 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_bond_indices_date ON bond_indices_daily(date);
     """)
 
+    # ─── news (Noticias del mercado y portfolio) ───────────────────────────
+    # Cache de noticias financieras del mercado + tagged por ticker.
+    # Compartido cross-user — las noticias son data pública. La personalización
+    # se hace en query time (filtrar a tickers del user).
+    #
+    # Source primaria: Google News RSS — sin auth, sin quota. Patrón
+    # `query → items`, donde el query es "AAPL stock" o "BCRA Argentina"
+    # según el contexto.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS news (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,            -- 'google_news_rss' | 'finnhub' | ...
+            external_id TEXT NOT NULL,       -- guid del feed — para dedup
+            title TEXT NOT NULL,
+            summary TEXT,                    -- description del RSS (opcional)
+            url TEXT NOT NULL,
+            image_url TEXT,
+            published_at TEXT NOT NULL,      -- ISO datetime
+            tickers TEXT,                    -- JSON array: '["AAPL","NVDA"]'
+            category TEXT,                   -- 'market' | 'portfolio' | 'macro'
+            query_source TEXT,               -- el query que la trajo (para debug + dedup soft)
+            fetched_at TEXT NOT NULL,
+            UNIQUE(source, external_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_news_category ON news(category);
+    """)
+
     # ─── financial_events (Eventos financieros) ────────────────────────────
     # Cache de eventos por ticker: earnings, ex-dividend, payment date, etc.
     # Compartido cross-user — los eventos son data pública. El frontend filtra
@@ -1571,6 +1599,239 @@ def get_portfolio_events(
             })
 
         return {'events': events, 'refreshed_tickers': refreshed}
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PR #3 — Noticias (Google News RSS)
+# ═══════════════════════════════════════════════════════════════════════════
+# Source: Google News RSS — sin auth, sin quota declarada. Queries por ticker
+# o macro topic. Parsing con xml.etree (stdlib).
+#
+# Estrategia de cache:
+#   • Persistente: tabla `news`, dedup por (source, external_id).
+#   • TTL in-memory por query: 30 min para tickers del user, 60 min macro.
+#   • Fetch lazy al endpoint, idempotente (no refetch si stale<TTL).
+#
+# Queries macro hardcoded — cubren el bloque "Noticias generales del mercado"
+# del plan original.
+
+_news_fetched_at = {}  # { query: timestamp }
+NEWS_TICKER_TTL = 30 * 60   # 30 min
+NEWS_MARKET_TTL = 60 * 60   # 60 min
+
+# Queries macro precanned para el feed "Mercado".
+# Mix USA + AR — categorías que mencionó el user en el plan original.
+MARKET_NEWS_QUERIES = [
+    ("S&P 500", "market", "en"),
+    ("Federal Reserve FED", "macro", "en"),
+    ("US inflation CPI", "macro", "en"),
+    ("Nasdaq", "market", "en"),
+    ("Merval Argentina", "market", "es"),
+    ("BCRA Argentina", "macro", "es"),
+    ("inflación Argentina INDEC", "macro", "es"),
+    ("dolar blue MEP", "macro", "es"),
+]
+
+
+def _fetch_google_news_rss(query: str, lang: str = "en", limit: int = 15):
+    """Trae items del Google News RSS para un query dado.
+
+    Devuelve lista de dicts con: external_id, title, summary, url,
+    published_at (ISO), source_label.
+    Falla gracefully con [] si HTTP no-200 o parseo falla.
+    """
+    # gl/ceid por idioma — para AR usamos es-419, para US en-US.
+    if lang == "es":
+        params = {"q": query, "hl": "es-419", "gl": "AR", "ceid": "AR:es-419"}
+    else:
+        params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
+    try:
+        from urllib.parse import urlencode
+        url = "https://news.google.com/rss/search?" + urlencode(params)
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Rendi/1.0"})
+        if r.status_code != 200:
+            return []
+        return _parse_google_news_rss(r.content, limit=limit)
+    except Exception:
+        return []
+
+
+def _parse_google_news_rss(xml_bytes: bytes, limit: int = 15):
+    """Parser puro de RSS Google News → lista de items normalizados."""
+    import xml.etree.ElementTree as ET
+    items = []
+    try:
+        root = ET.fromstring(xml_bytes)
+        for item in root.findall('.//item')[:limit]:
+            guid = item.findtext('guid') or item.findtext('link') or ''
+            title = (item.findtext('title') or '').strip()
+            link = (item.findtext('link') or '').strip()
+            pub = (item.findtext('pubDate') or '').strip()
+            desc = (item.findtext('description') or '').strip()
+            source_elem = item.find('source')
+            source_label = source_elem.text if source_elem is not None else None
+            if not title or not link:
+                continue
+            published_iso = _rfc822_to_iso(pub) or datetime.utcnow().isoformat() + "Z"
+            items.append({
+                'external_id': guid[:200],
+                'title': title[:500],
+                'summary': desc[:1000] if desc else None,
+                'url': link,
+                'published_at': published_iso,
+                'source_label': source_label,
+            })
+    except ET.ParseError:
+        pass
+    return items
+
+
+def _rfc822_to_iso(s: str):
+    """Convierte 'Tue, 28 Apr 2026 17:00:22 GMT' → ISO. None si falla."""
+    if not s:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(s)
+        return dt.isoformat()
+    except Exception:
+        return None
+
+
+def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int = 15):
+    """Refresca el cache de noticias para un query dado. Idempotente."""
+    items = _fetch_google_news_rss(query, lang=lang, limit=limit)
+    if not items:
+        return 0
+    iso_now = datetime.utcnow().isoformat() + "Z"
+    inserted = 0
+    with conn:
+        for it in items:
+            try:
+                conn.execute(
+                    """INSERT OR IGNORE INTO news
+                       (source, external_id, title, summary, url, image_url,
+                        published_at, tickers, category, query_source, fetched_at)
+                       VALUES ('google_news_rss', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)""",
+                    (it['external_id'], it['title'], it['summary'], it['url'],
+                     it['published_at'], None, category, query, iso_now),
+                )
+                inserted += conn.total_changes
+            except Exception:
+                pass
+    return inserted
+
+
+def _ensure_news_for_query(conn, query: str, lang: str, category: str, ttl_seconds: int):
+    """Refresh idempotente: sólo fetcha si TTL expiró."""
+    now = time.time()
+    cache_key = f"{category}:{query}"
+    if now - _news_fetched_at.get(cache_key, 0) < ttl_seconds:
+        return
+    _refresh_news_query(conn, query, lang, category)
+    _news_fetched_at[cache_key] = now
+
+
+@app.get("/api/news/market")
+def get_market_news(
+    limit: int = 20,
+    uid: int = Depends(get_current_user),
+):
+    """Feed general del mercado — noticias macro y de índices populares.
+
+    Combina queries hardcoded de USA + AR (FED, S&P, inflación, Merval, BCRA, etc.).
+    """
+    if limit <= 0 or limit > 100:
+        raise HTTPException(422, "limit debe estar entre 1 y 100")
+
+    conn = get_db()
+    try:
+        # Refresh idempotente para cada query (in-memory TTL)
+        for query, category, lang in MARKET_NEWS_QUERIES:
+            try:
+                _ensure_news_for_query(conn, query, lang, category, NEWS_MARKET_TTL)
+            except Exception:
+                pass
+
+        # Devolver últimas N noticias de categoría market/macro
+        rows = conn.execute(
+            """SELECT title, summary, url, published_at, query_source, category, source
+               FROM news
+               WHERE category IN ('market', 'macro')
+               ORDER BY published_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return {'news': [dict(r) for r in rows], 'count': len(rows)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/news/portfolio")
+def get_portfolio_news(
+    limit: int = 15,
+    uid: int = Depends(get_current_user),
+):
+    """Noticias relevantes a los tickers en el portfolio del user.
+
+    Para cada ticker, query "{TICKER} stock" en Google News (con idioma según
+    si es AR o US). Excluye crypto y cash. Cache TTL 30 min por ticker.
+    """
+    if limit <= 0 or limit > 100:
+        raise HTTPException(422, "limit debe estar entre 1 y 100")
+
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT DISTINCT asset FROM positions
+               WHERE user_id=? AND is_cash=0 AND asset NOT IN ('USDT','USD','ARS')""",
+            (uid,),
+        ).fetchall()
+        all_tickers = [r['asset'] for r in rows]
+        # Filtrar crypto (no relevante para news en este endpoint)
+        tickers = [t for t in all_tickers if t not in CRYPTO_SYMBOLS]
+        if not tickers:
+            return {'news': [], 'count': 0}
+
+        # Refresh por ticker — usamos categoría 'portfolio' para distinguirlas
+        for ticker in tickers[:20]:  # cap a 20 para no martillar Google
+            # Heurística simple: si está en POPULAR_TICKERS_AR_ADR o es bono AR, español; resto inglés
+            is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
+            lang = "es" if is_ar else "en"
+            query = f"{ticker} {'acciones' if is_ar else 'stock'}"
+            try:
+                _ensure_news_for_query(conn, query, lang, 'portfolio', NEWS_TICKER_TTL)
+            except Exception:
+                pass
+
+        # Devolver noticias del portfolio matcheando query_source con cualquiera
+        # de los tickers (que es el "{TICKER} stock"/"acciones" que sembramos).
+        placeholders = ','.join(
+            ['?'] * len(tickers)
+        )
+        like_clauses = ' OR '.join(['query_source LIKE ?'] * len(tickers))
+        like_params = [f'{t} %' for t in tickers]
+        rows = conn.execute(
+            f"""SELECT title, summary, url, published_at, query_source, category, source
+                FROM news
+                WHERE category = 'portfolio'
+                  AND ({like_clauses})
+                ORDER BY published_at DESC
+                LIMIT ?""",
+            (*like_params, limit),
+        ).fetchall()
+
+        # Extraer el ticker del query_source para que el frontend pueda
+        # mostrar a qué ticker pertenece la noticia.
+        result = []
+        for r in rows:
+            d = dict(r)
+            # query_source es "AAPL stock" o "GGAL acciones"
+            d['ticker'] = d.get('query_source', '').split(' ', 1)[0] if d.get('query_source') else None
+            result.append(d)
+        return {'news': result, 'count': len(result)}
     finally:
         conn.close()
 

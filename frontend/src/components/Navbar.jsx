@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Briefcase, List, Settings, LogOut, Sun, Moon, Compass, Shield, Target, Menu, X, BarChart3, Calendar } from 'lucide-react'
+import { LayoutDashboard, Briefcase, List, Settings, LogOut, Sun, Moon, Compass, Shield, Target, Menu, X, BarChart3, Calendar, Newspaper } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
@@ -11,6 +11,7 @@ const links = [
   { to: '/posiciones',  label: 'Posiciones',  icon: Briefcase },
   { to: '/insights',    label: 'Insights',    icon: Compass },
   { to: '/eventos',     label: 'Eventos',     icon: Calendar },
+  { to: '/noticias',    label: 'Noticias',    icon: Newspaper },
   { to: '/reportes',    label: 'Reportes',    icon: BarChart3 },
   { to: '/objetivos',   label: 'Objetivos',   icon: Target },
   { to: '/config',      label: 'Configuración', icon: Settings },
