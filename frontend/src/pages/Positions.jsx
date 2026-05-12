@@ -1707,7 +1707,17 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSer
               {yieldEstimate != null ? (
                 <>
                   <p className="text-lg font-bold tabular text-ink-0">
-                    {pctSigned(yieldEstimate)} <span className="text-xs font-normal text-ink-2">TIR ef. anual</span>
+                    {pctSigned(yieldEstimate)}{' '}
+                    {meta?.type === 'cer' ? (
+                      <span
+                        className="text-xs font-normal text-ink-2 border-b border-dotted border-ink-3/40 cursor-help"
+                        title="TIR REAL sobre la inflación. El motor descuenta los flujos al CER actual (último observado, sin proyectar inflación futura) — el rendimiento mostrado representa lo que ganás POR ENCIMA de la inflación, no el yield nominal. Para CER, la TIR real es el indicador relevante (los flujos futuros se ajustan automáticamente)."
+                      >
+                        TIR real (sobre CER)
+                      </span>
+                    ) : (
+                      <span className="text-xs font-normal text-ink-2">TIR ef. anual</span>
+                    )}
                   </p>
                   {/* Phase 3A: metadata transparente. Phase 3D: si hay conversión
                       cross-currency, mostrarla también para que el user entienda

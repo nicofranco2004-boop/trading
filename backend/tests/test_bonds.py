@@ -633,25 +633,130 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         # Pnl_usd sigue guardando el cash neto (50)
         self.assertAlmostEqual(op["pnl_usd"], 50, places=2)
 
-    def test_amort_with_decrement_exceeding_total_caps_at_available(self):
-        """Si amount > face total disponible, decrementa todo lo disponible sin error."""
+    # ─── Phase 3F: sanity check cross-currency (hallazgo N1 audit final) ─────
+    # Bug que detectaba: en broker ARS con bono USD, `amount` está en pesos
+    # pero `quantity` está en VN. Tratar amount como face borra la posición
+    # entera. Fix: sanity check + face_amortized explícito.
+
+    def test_amort_cross_currency_without_face_amortized_triggers_sanity_check(self):
+        """Sin face_amortized, si amount (en moneda broker) >> total qty, abortamos
+        decrement para no destruir la posición."""
+        # Setup: posición típica AR — Cocos ARS broker, AL30 USD bono.
+        conn = main.get_db()
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'CocosARS', 'ARS')", (self.uid,))
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested,
+               quantity, buy_price, commissions, entry_date)
+               VALUES (?, 'CocosARS', 'AL30', 0, 715000, 1000, 715, 0, '2024-06-01')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+
+        # User registra amort: 95.000 ARS (= ~76 USD al MEP). 95000 >> 1000 VN.
         res = self._post({
-            "broker": "IBKR", "asset": "AL30",
-            "flow_type": "amortization", "amount": 9999,  # mucho más que los 1000 VN
+            "broker": "CocosARS", "asset": "AL30",
+            "flow_type": "amortization", "amount": 95000, "date": "2026-07-09",
+            "decrement_quantity": True,
+            # face_amortized NO se manda — bug se manifestaría
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        # El sanity check disparó: qty NO se decrementó.
+        self.assertEqual(body["qty_decremented"], 0.0)
+        self.assertTrue(body["cross_currency_skipped"])
+
+        # Posición sigue intacta
+        conn = main.get_db()
+        pos = conn.execute(
+            "SELECT quantity, invested FROM positions WHERE user_id=? AND broker='CocosARS' AND asset='AL30' AND is_cash=0",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertAlmostEqual(pos["quantity"], 1000)
+        self.assertAlmostEqual(pos["invested"], 715000)
+
+    def test_amort_cross_currency_with_face_amortized_decrements_correctly(self):
+        """Con face_amortized explícito, decrementa el VN correcto (no el monto ARS)."""
+        conn = main.get_db()
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'CocosARS2', 'ARS')", (self.uid,))
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested,
+               quantity, buy_price, commissions, entry_date)
+               VALUES (?, 'CocosARS2', 'AL30', 0, 715000, 1000, 715, 0, '2024-06-01')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+
+        # User registra amort: 95.000 ARS cash + 76.92 VN amortizados.
+        res = self._post({
+            "broker": "CocosARS2", "asset": "AL30",
+            "flow_type": "amortization",
+            "amount": 95000,             # cash en ARS
+            "face_amortized": 76.92,      # VN explícito
             "date": "2026-07-09",
             "decrement_quantity": True,
         })
         self.assertEqual(res.status_code, 200, res.text)
         body = res.json()
-        self.assertAlmostEqual(body["qty_decremented"], 1000)  # capped a disponible
+        self.assertAlmostEqual(body["qty_decremented"], 76.92, places=2)
+        self.assertFalse(body["cross_currency_skipped"])
 
         conn = main.get_db()
         pos = conn.execute(
-            "SELECT COUNT(*) AS n FROM positions WHERE user_id=? AND asset='AL30' AND is_cash=0",
+            "SELECT quantity, invested FROM positions WHERE user_id=? AND broker='CocosARS2' AND asset='AL30' AND is_cash=0",
             (self.uid,),
         ).fetchone()
         conn.close()
-        self.assertEqual(pos["n"], 0)  # lote consumido entero
+        # Quantity remanente: 1000 - 76.92 = 923.08
+        self.assertAlmostEqual(pos["quantity"], 923.08, places=2)
+        # Invested remanente proporcional: 715000 × (1 - 76.92/1000) = 660.998
+        self.assertAlmostEqual(pos["invested"], 715000 * (1 - 76.92/1000), places=1)
+
+    def test_amort_same_currency_without_face_amortized_still_works(self):
+        """Backward compat: en broker USD con bono USD, amount ≈ face → fallback works."""
+        # Usar el setup default de setUp: IBKR USD broker + AL30 USD bono
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 76.92, "date": "2026-07-09",
+            "decrement_quantity": True,
+            # face_amortized no se manda → fallback a amount
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertAlmostEqual(body["qty_decremented"], 76.92, places=2)
+        self.assertFalse(body["cross_currency_skipped"])
+
+    def test_amort_with_amount_grossly_exceeding_qty_triggers_sanity_check(self):
+        """Phase 3F (post audit final): si amount >> qty (señal típica de
+        cross-currency mismatch — usuario pasó ARS donde VN se esperaba),
+        el sanity check aborta el decrement. La cobranza igual queda
+        registrada. La posición sobrevive intacta.
+
+        Reemplaza el test legacy 'caps_at_available' que asumía decrement
+        ciego — eso era exactamente el bug N1 reportado en audit final."""
+        res = self._post({
+            "broker": "IBKR", "asset": "AL30",
+            "flow_type": "amortization", "amount": 9999,  # >> 1000 VN
+            "date": "2026-07-09",
+            "decrement_quantity": True,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        # Sanity check disparado → no decrementa
+        self.assertEqual(body["qty_decremented"], 0.0)
+        self.assertTrue(body["cross_currency_skipped"])
+
+        # Posición sigue viva con qty original
+        conn = main.get_db()
+        pos = conn.execute(
+            "SELECT quantity FROM positions WHERE user_id=? AND asset='AL30' AND is_cash=0",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(pos)
+        self.assertAlmostEqual(pos["quantity"], 1000)
 
 
 class CashAssetForCurrencyTest(unittest.TestCase):

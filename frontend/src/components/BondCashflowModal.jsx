@@ -26,7 +26,7 @@ import { X, ArrowDownCircle, Layers as LayersIcon } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from './Toast'
 import AssetLogo from './AssetLogo'
-import { getBondMeta } from '../utils/bondMeta'
+import { getBondMeta, formatBondType } from '../utils/bondMeta'
 import { nextPaymentForPosition } from '../utils/bondSchedule'
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -70,7 +70,18 @@ export default function BondCashflowModal({
   const [notes, setNotes] = useState(
     estimate ? 'Estimado por cronograma — ajustá monto si difiere por retenciones/comisiones' : ''
   )
-  const [decrementQty, setDecrementQty] = useState(flowType === 'amortization')
+  // Phase 3F (audit final / hallazgos N1, N4): el toggle decrement_quantity
+  // sólo aplica si:
+  //   • flow_type === 'amortization' (cupones no decrementan VN)
+  //   • el bono ES amortizante (tiene amortSchedule o amortStart)
+  //   • broker.currency === bond.currency (sin cross-currency)
+  // En cualquier otro caso, el toggle está disabled + default OFF.
+  const isAmortizingBond = !!(bondMeta?.amortSchedule || bondMeta?.amortStart)
+  const decrementApplies = flowType === 'amortization' && isAmortizingBond
+  const moneyLabel = brokerCurrency === 'ARS' ? 'ARS' : (brokerCurrency === 'USD' ? 'USD' : 'USDT')
+  const crossCurrency = bondMeta && bondMeta.currency !== 'ARS' && brokerCurrency === 'ARS'
+  const decrementSafeDefault = decrementApplies && !crossCurrency
+  const [decrementQty, setDecrementQty] = useState(decrementSafeDefault)
   const [saving, setSaving] = useState(false)
   const toast = useToast()
 
@@ -85,10 +96,6 @@ export default function BondCashflowModal({
 
   const title = isCoupon ? 'Registrar cupón cobrado' : 'Registrar amortización'
   const Icon = isCoupon ? ArrowDownCircle : LayersIcon
-  const moneyLabel = brokerCurrency === 'ARS' ? 'ARS' : (brokerCurrency === 'USD' ? 'USD' : 'USDT')
-  // Para bonos USD en broker ARS, el monto teórico está en moneda del bono
-  // pero el user va a recibir en pesos. Mostrar disclaimer.
-  const crossCurrency = bondMeta && bondMeta.currency !== 'ARS' && brokerCurrency === 'ARS'
 
   async function submit(e) {
     e.preventDefault()
@@ -99,6 +106,15 @@ export default function BondCashflowModal({
     }
     setSaving(true)
     try {
+      // Phase 3F: si el user marcó decrement_quantity Y tenemos estimate del
+      // schedule, mandamos `face_amortized` explícito (en VN) además del
+      // `amount` (en moneda del broker). Esto soluciona el bug N1: en
+      // cross-currency, amount está en pesos pero la qty está en VN; sin
+      // face_amortized, el backend trata pesos como face y borra la posición.
+      const willDecrement = decrementApplies && decrementQty
+      const faceAmortized = willDecrement && estimate?.amount && position?.quantity
+        ? (estimate.amount * position.quantity / 100)  // pmt.amort (per 100) × qty / 100 = VN
+        : undefined
       const payload = {
         broker,
         asset: asset.toUpperCase(),
@@ -107,12 +123,21 @@ export default function BondCashflowModal({
         date,
         commissions: +commissions || 0,
         notes: notes.trim() || null,
-        decrement_quantity: flowType === 'amortization' && decrementQty,
+        decrement_quantity: willDecrement,
+        ...(faceAmortized != null ? { face_amortized: faceAmortized } : {}),
       }
       const res = await api.post('/bonds/cashflow', payload)
       let msg = `${isCoupon ? 'Cupón' : 'Amortización'} de ${asset} registrado · ${moneyLabel} ${amt}`
       if (res.qty_decremented > 0) {
         msg += ` · ${res.qty_decremented.toFixed(2)} VN amortizados`
+      } else if (res.cross_currency_skipped) {
+        // El sanity check disparó — informar al user que su qty NO se tocó.
+        msg += ' · qty intacta (cross-currency: pasá face_amortized para decrementar)'
+        toast.push(msg, { type: 'warn' })
+        onSuccess?.()
+        onClose()
+        setSaving(false)
+        return
       }
       toast.push(msg, { type: 'success' })
       onSuccess?.()
@@ -230,23 +255,46 @@ export default function BondCashflowModal({
             </p>
           </div>
 
-          {/* Decrement quantity toggle — sólo para amortización */}
+          {/* Decrement quantity toggle — sólo para amortización en bonos
+              amortizantes (no bullet). Phase 3F: disabled si el bono NO
+              amortiza (N4) o si hay cross-currency mismatch (N1) — en
+              ambos casos el decrement automático rompería los datos. */}
           {flowType === 'amortization' && (
-            <div className="px-3 py-2.5 rounded-sm bg-bg-3 border border-line">
-              <label className="flex items-start gap-2 cursor-pointer">
+            <div className={`px-3 py-2.5 rounded-sm border ${decrementApplies ? 'bg-bg-3 border-line' : 'bg-bg-2/30 border-line/40'}`}>
+              <label className={`flex items-start gap-2 ${decrementApplies ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                 <input
                   type="checkbox"
                   checked={decrementQty}
+                  disabled={!decrementApplies}
                   onChange={e => setDecrementQty(e.target.checked)}
                   className="mt-0.5"
                 />
-                <div className="text-xs leading-snug">
-                  <span className="text-ink-0 font-medium">Reducir cantidad de la posición</span>
-                  <p className="text-[10px] text-ink-2 mt-0.5">
-                    Una amortización devuelve capital → tu VN remanente decrece. Si está activo,
-                    el sistema reduce automáticamente la quantity y el cost basis del lote (FIFO).
-                    Desactivá si querés trackear sólo el cash sin tocar la posición.
-                  </p>
+                <div className="text-xs leading-snug flex-1">
+                  <span className={`font-medium ${decrementApplies ? 'text-ink-0' : 'text-ink-3'}`}>
+                    Reducir cantidad de la posición
+                  </span>
+                  {!isAmortizingBond && (
+                    <p className="text-[10px] text-rendi-warn mt-0.5">
+                      ⚠ {bondMeta?.issuer ? `${formatBondType(bondMeta.type)} ${bondMeta.issuer}` : 'Este bono'} es bullet
+                      (no amortiza progresivamente — devuelve face al vencimiento). El decrement no aplica
+                      antes del maturity.
+                    </p>
+                  )}
+                  {isAmortizingBond && crossCurrency && (
+                    <p className="text-[10px] text-rendi-warn mt-0.5">
+                      ⚠ Cross-currency ({bondMeta.currency} bono en broker {brokerCurrency}): el sistema necesita
+                      saber cuántos VN se amortizaron, no podemos inferirlo del monto en {brokerCurrency}.
+                      Si confirmás con esto activo, la cobranza se registra pero la qty queda intacta
+                      (backend abort el decrement por sanity check).
+                    </p>
+                  )}
+                  {decrementApplies && (
+                    <p className="text-[10px] text-ink-2 mt-0.5">
+                      Una amortización devuelve capital → tu VN remanente decrece. Si está activo,
+                      el sistema reduce automáticamente la quantity y el cost basis del lote (FIFO).
+                      Desactivá si querés trackear sólo el cash sin tocar la posición.
+                    </p>
+                  )}
                 </div>
               </label>
             </div>
