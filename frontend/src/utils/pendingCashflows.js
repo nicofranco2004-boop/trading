@@ -36,6 +36,12 @@ const DATE_TOLERANCE_DAYS = 14
 // con históricos al cargar un AL30 que paga semestral desde 2024.
 const MAX_BACKLOG_DAYS = 730
 
+// Margen "antes de entry_date" que igualmente consideramos. Si el user cargó
+// la posición con entry_date 2026-01-15 pero el último cupón fue 2026-01-09,
+// es razonable que ese cupón LE corresponda (lo cobró el vendedor por T+x
+// settlement). 7 días de gracia cubre casos normales sin generar ruido.
+const ENTRY_DATE_GRACE_DAYS = 7
+
 function todayIso() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -46,6 +52,15 @@ function diffDaysAbs(a, b) {
   const ta = Date.UTC(pa[0], pa[1] - 1, pa[2])
   const tb = Date.UTC(pb[0], pb[1] - 1, pb[2])
   return Math.abs(Math.round((tb - ta) / 86400000))
+}
+
+// Resta N días a una fecha ISO. Útil para aplicar el margen de gracia sobre
+// entry_date. Trabaja en UTC para evitar timezone drift.
+function subDays(iso, days) {
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number)
+  const date = new Date(Date.UTC(y, m - 1, d))
+  date.setUTCDate(date.getUTCDate() - days)
+  return date.toISOString().slice(0, 10)
 }
 
 // Mira si existe alguna op registrada (Cupón o Amortización) para
@@ -100,9 +115,18 @@ export function detectPendingCashflows(positions, bondOps, skips = [], options =
     const meta = getBondMeta(p.asset)
     const bondCurrency = meta?.currency || 'USD'
 
+    // Mínimo por posición: si tiene entry_date, no sugerimos pagos anteriores
+    // a esa fecha (con margen de gracia). Esos pagos NO corresponden al user —
+    // los cobró el vendedor previo. Sin entry_date, fallback al backlog global.
+    let posMinDate = earliestDate
+    if (p.entry_date) {
+      const gracedEntry = subDays(p.entry_date, ENTRY_DATE_GRACE_DAYS)
+      if (gracedEntry > posMinDate) posMinDate = gracedEntry
+    }
+
     for (const pmt of schedule) {
       if (pmt.date > today) break  // futuro, no nos interesa para el inbox
-      if (pmt.date < earliestDate) continue  // demasiado viejo, ignorar
+      if (pmt.date < posMinDate) continue  // antes de entry_date o backlog
       // Pagos teóricos = 0 (caso edge en el schedule) tampoco son útiles.
       if ((pmt.total || 0) <= 0) continue
       // ¿Ya tiene operation registrada?
