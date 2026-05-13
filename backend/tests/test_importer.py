@@ -2978,6 +2978,59 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         # 100000 ARS / 1415 tc_blue default = ~70.67 USD
         self.assertAlmostEqual(row["deposits"], 70.67, delta=0.1)
 
+    def test_recalc_deletes_empty_rows_and_clears_baseline(self):
+        """REGRESIÓN: tras recalc, una fila con todo en 0 pero capital_inicio
+        residual de cycles previos seguía afectando netDeposited del dashboard.
+        Ahora se borran las filas vacías y se resetea capital_inicio del
+        primer mes a 0."""
+        conn = main.get_db()
+        with conn:
+            # Simular drift: capital_inicio residual sin nada que lo justifique
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 0, 0, 0, 0, 832.44, 832.44)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'global', 0, 0, 0, 0, 832.44, 832.44)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        rows = conn.execute(
+            "SELECT COUNT(*) AS c FROM monthly_entries WHERE user_id=?",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # Filas borradas porque deposits/withdrawals/pnl están en 0
+        self.assertEqual(rows["c"], 0,
+            "monthly_entries vacías deberían eliminarse para que el baseline "
+            "no quede inflado de cycles previos")
+
+    def test_recalc_clears_snapshots_when_no_state(self):
+        """Si tras recalc no quedan positions/operations/monthly_entries, los
+        snapshots del dashboard también se limpian (sino el gráfico de
+        evolución mostraría valores de cycles previos)."""
+        conn = main.get_db()
+        with conn:
+            # Snapshot stale de un cycle anterior
+            conn.execute(
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+                   VALUES (?, '2025-05-15', 375000, 200000, 175000)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        snaps = conn.execute(
+            "SELECT COUNT(*) AS c FROM snapshots WHERE user_id=?",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(snaps["c"], 0)
+
     def test_endpoint_recalc_returns_count(self):
         from fastapi.testclient import TestClient
         client = TestClient(main.app)

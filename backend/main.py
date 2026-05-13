@@ -2657,6 +2657,52 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         updates += 1
         brokers_touched.add(broker)
 
+    # Limpieza: borrar monthly_entries que quedaron TODAS en 0 después del recalc
+    # (sin pnl, sin deposits, sin withdrawals, sin pnl_unrealized). Estas son
+    # filas huérfanas de cycles previos que no tienen respaldo en ninguna fuente.
+    # Sin borrarlas, su `capital_inicio` heredado de cycles anteriores ensucia
+    # netDeposited del dashboard.
+    conn.execute(
+        """DELETE FROM monthly_entries
+            WHERE user_id=?
+              AND COALESCE(deposits, 0) = 0
+              AND COALESCE(withdrawals, 0) = 0
+              AND COALESCE(pnl_realized, 0) = 0
+              AND COALESCE(pnl_unrealized, 0) = 0""",
+        (uid,),
+    )
+
+    # Si tras el recalc no quedan positions ni operations ni monthly_entries,
+    # el user está en "estado limpio" — también borramos snapshots stale para
+    # que el gráfico de evolución no muestre data de cycles previos.
+    has_positions = conn.execute(
+        "SELECT 1 FROM positions WHERE user_id=? LIMIT 1", (uid,),
+    ).fetchone()
+    has_operations = conn.execute(
+        "SELECT 1 FROM operations WHERE user_id=? LIMIT 1", (uid,),
+    ).fetchone()
+    has_monthly = conn.execute(
+        "SELECT 1 FROM monthly_entries WHERE user_id=? LIMIT 1", (uid,),
+    ).fetchone()
+    if not has_positions and not has_operations and not has_monthly:
+        conn.execute("DELETE FROM snapshots WHERE user_id=?", (uid,))
+
+    # Para brokers que SÍ tienen actividad, resetear capital_inicio del primer
+    # mes a 0 (es la "baseline" y debería empezar en 0 si nada precede al
+    # primer movimiento; _repair_monthly_chain propaga forward desde ahí).
+    for b in brokers_touched:
+        first = conn.execute(
+            """SELECT id FROM monthly_entries
+               WHERE user_id=? AND broker=?
+               ORDER BY year ASC, month ASC LIMIT 1""",
+            (uid, b),
+        ).fetchone()
+        if first:
+            conn.execute(
+                "UPDATE monthly_entries SET capital_inicio=0 WHERE id=?",
+                (first["id"],),
+            )
+
     # Re-reparar capital_final chain con los nuevos valores
     for b in brokers_touched:
         _repair_monthly_chain(conn, uid, b)
