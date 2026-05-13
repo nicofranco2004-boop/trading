@@ -42,10 +42,16 @@ def validate(
 
     # Estado simulado para evaluar SELL contra compras previas del mismo CSV.
     # Procesamos en orden cronológico (date, row_index) para que las ventas vean
-    # las compras anteriores, sin importar el orden original del CSV.
+    # las compras anteriores. Dentro del mismo día, BUYs primero — consistente
+    # con el sort del persister, así el preview no reporta falsos "stock
+    # insuficiente" cuando hay un trading intra-día (Venta + Compra mismo día).
     sim_qty: Dict[Tuple[str, str], float] = dict(existing_positions)
 
-    sorted_txs = sorted(txs, key=lambda t: (t.date, t.row_index))
+    sorted_txs = sorted(txs, key=lambda t: (
+        t.date,
+        0 if t.operation_type == OP_BUY else 1,
+        t.row_index,
+    ))
 
     for tx in sorted_txs:
         ridx = tx.row_index

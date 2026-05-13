@@ -44,8 +44,15 @@ def simulate(
     starting_cash: Dict[Tuple[str, str], float],  # (broker, currency) → saldo inicial
     route_by_currency: bool = False,
 ) -> CashSimResult:
-    """Recorre las txs en orden cronológico y simula el cash."""
-    sorted_txs = sorted(txs, key=lambda t: (t.date, t.row_index))
+    """Recorre las txs en orden cronológico y simula el cash. Dentro del mismo
+    día, BUYs primero — consistente con el sort del persister, así el preview
+    no reporta cash flows falsos cuando hay trading intra-día (la Venta sin
+    su Compra previa mostraría cash insuficiente)."""
+    sorted_txs = sorted(txs, key=lambda t: (
+        t.date,
+        0 if t.operation_type == OP_BUY else 1,
+        t.row_index,
+    ))
     balances = dict(starting_cash)
     warnings: List[CashWarning] = []
 
