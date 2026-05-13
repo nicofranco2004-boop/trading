@@ -225,9 +225,9 @@ export default function Events({ embedded = false }) {
         })}
       </div>
 
-      {/* KPI Strip — el primer vistazo. Sin caja externa: 4 celdas con divisores. */}
-      <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
-        <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} portfolioTotalUsd={portfolioTotalUsd} tickerValueUsd={tickerValueUsd} />
+      {/* KPI Strip — 3 celdas con divisores. */}
+      <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-3 divide-x divide-line">
+        <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} />
       </div>
 
       {/* Controles: ventana + filtro — compactos, una sola línea cuando hay espacio. */}
@@ -296,7 +296,7 @@ export default function Events({ embedded = false }) {
 
 // ─── KPI Strip ──────────────────────────────────────────────────────────────
 
-function KpiStripCells({ events, tab, windowDays, portfolioTotalUsd, tickerValueUsd }) {
+function KpiStripCells({ events, tab, windowDays }) {
   const sorted = useMemo(
     () => [...events].sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || '')),
     [events]
@@ -306,28 +306,7 @@ function KpiStripCells({ events, tab, windowDays, portfolioTotalUsd, tickerValue
   const confirmedCount = events.filter(e => e.confirmed).length
   const confirmedPct = total > 0 ? confirmedCount / total : 0
 
-  // Suma de cobranzas esperadas en USD (sólo bonos del portfolio, ya en USD).
-  // Para amortizing-coupon bonds, details.total puede ser una mezcla de moneda
-  // — simplificamos sumando lo USD-denominated.
-  const totalUsd = useMemo(() => {
-    if (tab !== 'portfolio') return null
-    return events.reduce((sum, e) => {
-      if (!e.eventType?.startsWith('bond_')) return sum
-      const t = e.details?.total
-      const cur = e.details?.currency || 'USD'
-      if (typeof t !== 'number') return sum
-      // Sólo sumamos lo USD-direct (los ARS los reportamos aparte). Esto es
-      // conservador: si el bono es CER/ARS lo dejamos fuera del KPI USD.
-      if (cur === 'USD') return sum + t
-      return sum
-    }, 0)
-  }, [events, tab])
-
-  const inPortfolioCount = tab === 'popular'
-    ? events.filter(e => e.inPortfolio).length
-    : null
-
-  // Determinar countdown del próximo evento.
+  // Countdown del próximo evento.
   const daysToNext = next ? daysUntil(next.eventDate) : null
   const nextLabel = daysToNext == null
     ? '—'
@@ -338,6 +317,13 @@ function KpiStripCells({ events, tab, windowDays, portfolioTotalUsd, tickerValue
   const nextSubLabel = next
     ? (isMacroEvent(next) ? (next.details?.title || 'macro') : next.ticker)
     : 'sin eventos próximos'
+
+  // Tercera celda: cambia según tab.
+  //   • Portfolio → Confirmados (cuántos eventos están confirmados por la fuente).
+  //   • Popular   → En tu cartera (cuántos te impactan).
+  const inPortfolioCount = tab === 'popular'
+    ? events.filter(e => e.inPortfolio).length
+    : null
 
   return (
     <>
@@ -352,26 +338,20 @@ function KpiStripCells({ events, tab, windowDays, portfolioTotalUsd, tickerValue
         value={total}
         sub={total === 1 ? 'evento' : 'eventos'}
       />
-      {tab === 'portfolio' ? (
-        <KpiCell
-          label="A cobrar"
-          value={totalUsd > 0 ? `$${formatCompact(totalUsd)}` : '—'}
-          sub="bonos USD"
-          tone={totalUsd > 0 ? 'pos' : 'neutral'}
-        />
-      ) : (
+      {tab === 'popular' ? (
         <KpiCell
           label="En tu cartera"
           value={inPortfolioCount}
           sub={`de ${total}`}
           tone={inPortfolioCount > 0 ? 'accent' : 'neutral'}
         />
+      ) : (
+        <KpiCell
+          label="Confirmados"
+          value={`${Math.round(confirmedPct * 100)}%`}
+          sub={`${confirmedCount}/${total}`}
+        />
       )}
-      <KpiCell
-        label="Confirmados"
-        value={`${Math.round(confirmedPct * 100)}%`}
-        sub={`${confirmedCount}/${total}`}
-      />
     </>
   )
 }
