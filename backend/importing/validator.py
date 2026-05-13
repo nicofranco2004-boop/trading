@@ -74,7 +74,10 @@ def validate(
                 row_errs.append(RowError(ridx, "cantidad", "MISSING_QUANTITY",
                                          "La compra necesita una cantidad mayor a 0. Si tu CSV solo tiene 'monto' "
                                          "sin desglosar cantidad y precio, completá precio para que lo calculemos."))
-            if not _gt_zero(tx.unit_price) and not _gt_zero(tx.gross_amount):
+            # Aceptamos price=0 / monto=0 explícitos (caso típico: Stock Split,
+            # share grants, transfer-in con cost basis 0). Solo rechazamos si
+            # AMBOS están UNDEFINED (None), señalando que el CSV no aportó info.
+            if tx.unit_price is None and tx.gross_amount is None:
                 row_errs.append(RowError(ridx, "precio", "MISSING_PRICE",
                                          "La compra necesita 'precio' o 'monto' para calcular el costo. "
                                          "Mapeá una de las dos columnas en el wizard."))

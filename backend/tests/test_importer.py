@@ -784,6 +784,37 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(len(valid), 0)
         self.assertTrue(any(e.code == "INSUFFICIENT_STOCK" for e in errors))
 
+    def test_buy_with_zero_price_accepted_for_stock_split(self):
+        """REGRESIÓN: Stock Split emite BUY sintético con price=0, monto=0.
+        Antes el validator lo rechazaba con MISSING_PRICE — ahora lo acepta
+        porque las cantidades están definidas (cost basis 0 es válido)."""
+        rows = [
+            RawRow(1, {"fecha": "2024-01-15", "tipo": "COMPRA", "broker": "Schwab",
+                       "activo": "XLK", "cantidad": "3", "precio": "289.28",
+                       "monto": "867.84", "moneda": "USD"}),
+            # Stock Split sintético: qty>0 pero price=0 / monto=0
+            RawRow(2, {"fecha": "2024-06-15", "tipo": "COMPRA", "broker": "Schwab",
+                       "activo": "XLK", "cantidad": "3", "precio": "0",
+                       "monto": "0", "moneda": "USD"}),
+            # Venta de las 6 — debería pasar (3 originales + 3 del split)
+            RawRow(3, {"fecha": "2024-12-15", "tipo": "VENTA", "broker": "Schwab",
+                       "activo": "XLK", "cantidad": "6", "precio": "150",
+                       "moneda": "USD"}),
+        ]
+        txs, _ = normalize_rows(rows)
+        valid, errors = validate(txs, user_brokers={"Schwab": {"currency": "USDT"}}, existing_positions={})
+        self.assertEqual(len(valid), 3, f"Errores: {[e.to_dict() for e in errors]}")
+        self.assertEqual(len(errors), 0)
+
+    def test_buy_with_no_price_and_no_amount_still_rejected(self):
+        """Pero si price Y monto están AMBOS undefined (None), sí rechazamos."""
+        rows = [RawRow(1, {"fecha": "2024-01-15", "tipo": "COMPRA", "broker": "IBKR",
+                           "activo": "AAPL", "cantidad": "10", "moneda": "USD"})]
+        txs, _ = normalize_rows(rows)
+        valid, errors = validate(txs, user_brokers={"IBKR": {"currency": "USDT"}}, existing_positions={})
+        self.assertEqual(len(valid), 0)
+        self.assertTrue(any(e.code == "MISSING_PRICE" for e in errors))
+
 
 class PipelineE2ETest(unittest.TestCase):
     def setUp(self):
