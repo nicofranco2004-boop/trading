@@ -106,8 +106,17 @@ def persist_batch(
             txs = list(seed_txs) + list(txs)
 
     # Orden cronológico determinístico — el seed (1 día antes) cae naturalmente
-    # primero en este sort.
-    sorted_txs = sorted(txs, key=lambda t: (t.date, t.row_index))
+    # primero en este sort. Dentro del mismo día, BUYs van antes que SELLs:
+    # evita "stock insuficiente" cuando el CSV tiene una venta intra-día antes
+    # que su compra correspondiente (típico en Cocos "Venta Trading" + "Compra
+    # Trading" mismo día). El neto en posición/cash es idéntico — solo cambia
+    # el orden de ejecución.
+    _BUY_FIRST_KEY = {OP_BUY: 0}  # BUY = 0, todo lo demás (SELL/etc) = 1
+    sorted_txs = sorted(txs, key=lambda t: (
+        t.date,
+        _BUY_FIRST_KEY.get(t.operation_type, 1),
+        t.row_index,
+    ))
 
     # Currency routing: por cada broker ARS mencionado en las txs que tenga al
     # menos una fila con moneda USD/USDT, auto-creamos su sub-broker USD y
@@ -336,13 +345,19 @@ def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     unit = float(tx.unit_price or 0)
     invested = float(tx.gross_amount) if tx.gross_amount is not None else (unit * qty)
     fees = float(tx.fees or 0)
+    # Persistimos la moneda nativa del lote (USD para Compra Dolar Mep, ARS
+    # para compras normales). Sin esto, el SELL no podía distinguir lots
+    # cross-currency y producía P&L absurdo.
+    lot_currency = (tx.currency or "").upper() or None
+    if lot_currency == "USDT":
+        lot_currency = "USD"
 
     cur = conn.execute(
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
-           invested, tc_compra, price_override, notes, entry_date, commissions)
-           VALUES (?,?,?,0,?,?,?,?,?,?,?,?)""",
+           invested, tc_compra, price_override, notes, entry_date, commissions, currency)
+           VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?)""",
         (uid, tx.broker, tx.asset_symbol, unit if unit > 0 else None, qty,
-         invested, None, None, tx.notes, tx.date, fees),
+         invested, None, None, tx.notes, tx.date, fees, lot_currency),
     )
     position_id = cur.lastrowid
     cost_total = invested + fees
@@ -360,11 +375,22 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     el P&L ARS a USD-equivalente (mismo patrón que el flow manual con data.tc_venta).
     Para brokers USDT/USD: el cálculo es directo sin conversión.
     """
-    # Resolver currency del broker
+    # Resolver currency del broker (para cash side y monthly_entries)
     br = conn.execute(
         "SELECT currency FROM brokers WHERE name=? AND user_id=?", (tx.broker, uid)
     ).fetchone()
-    currency = br["currency"] if br else "USDT"
+    broker_currency = br["currency"] if br else "USDT"
+
+    # Moneda EN LA QUE SE VENDIÓ — viene del CSV. Para Cocos "Venta Dolar Mep"
+    # esto es USD aunque el broker padre sea ARS. Antes usábamos broker_currency
+    # acá, lo que comparaba ARS entry_invested vs USD exit_price (P&L -99.8%
+    # falso para SELLs MEP).
+    sell_currency = (tx.currency or "").upper() or broker_currency
+    if sell_currency == "USDT":
+        sell_currency = "USD"
+    if sell_currency not in ("ARS", "USD"):
+        sell_currency = broker_currency  # fallback defensivo
+    currency = sell_currency  # alias usado abajo (mantengo el nombre antiguo)
 
     positions = conn.execute(
         """SELECT * FROM positions
@@ -388,8 +414,8 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     total_proceeds_native = 0.0
     ops_created: List[int] = []
 
-    # TC efectivo de venta para brokers ARS (USD para ARS no aplica)
-    tc_venta = tc_blue if currency == "ARS" else 1.0
+    # TC efectivo de venta para SELLs ARS (USD para SELLs USD no aplica)
+    tc_venta = tc_blue if sell_currency == "ARS" else 1.0
 
     for p in positions:
         if remaining <= 1e-9:
@@ -401,6 +427,22 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         ratio = take / pos_qty if pos_qty > 0 else 0
         pos_buy_commissions = (p["commissions"] if "commissions" in p.keys() else 0) or 0
         base_invested = (p["invested"] or 0) + pos_buy_commissions
+
+        # Moneda nativa del lote — la guardamos en positions.currency desde
+        # el BUY. Si el lote es viejo (pre-migración) o no la trajo el parser,
+        # asumimos la moneda del broker para back-compat.
+        lot_currency = (p["currency"] if "currency" in p.keys() else None) or currency
+
+        # CROSS-CURRENCY: si el SELL es en otra moneda que el BUY, convertimos
+        # el invested del lote a la moneda del SELL al tc_blue actual. Sin esto,
+        # un lote comprado por USD 573 (Compra Dolar Mep) vs SELL en ARS daba
+        # P&L de +160000% por comparar USD invested contra ARS exit price.
+        if lot_currency != currency and tc_blue:
+            if lot_currency == "USD" and currency == "ARS":
+                base_invested = base_invested * tc_blue
+            elif lot_currency == "ARS" and currency == "USD":
+                base_invested = base_invested / tc_blue
+
         entry_invested = base_invested * ratio if base_invested else None
 
         chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0
@@ -927,15 +969,19 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
             ).fetchone()
             broker_currency = broker_row["currency"] if broker_row else ""
             amount_usd = (amount / tc_blue) if (row_currency == "ARS" or broker_currency == "ARS") else amount
-            # Revertir el cash movement (en moneda nativa del broker)
+            # Revertir el cash movement (en moneda nativa del broker).
+            # Aceptamos saldo negativo resultante — consistente con la policy
+            # del módulo ("se permiten balances negativos — señal visible de
+            # overdraft / margen") y con los otros revert paths (BUY, WITHDRAW,
+            # DIVIDEND) que no validan. Antes este check bloqueaba reverts
+            # legítimos cuando ya se había gastado parte del depósito en BUYs
+            # que se revertirán después en este mismo loop.
             cash = conn.execute(
                 "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, tx["broker"]),
             ).fetchone()
             if cash:
                 new_inv = (cash["invested"] or 0) - amount
-                if new_inv < 0:
-                    raise PersistError(0, f"No alcanza el cash en {tx['broker']} para revertir el depósito.")
                 conn.execute(
                     "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
                     (new_inv, cash["id"], uid),
@@ -1092,6 +1138,14 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
     for b in brokers_touched:
         helpers._repair_monthly_chain(conn, uid, b)
     helpers._repair_monthly_chain(conn, uid, "global")
+
+    # Self-heal: recalcular pnl_realized desde operations. Sin esto, cycles
+    # de import/revert con bugs cross-currency dejaban drift acumulado en
+    # monthly_entries (operations se borraban correctamente, pero el resto
+    # del pnl_realized inflado quedaba como huérfano).
+    recalc_fn = getattr(helpers, "_recalc_pnl_realized_from_ops", None)
+    if recalc_fn:
+        recalc_fn(conn, uid)
 
     conn.execute(
         "UPDATE import_batches SET status='reverted', reverted_at=datetime('now') WHERE id=? AND user_id=?",

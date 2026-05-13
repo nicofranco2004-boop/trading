@@ -412,12 +412,160 @@ class BinanceFuturesTradeHistoryTest(unittest.TestCase):
 
 
 class CocosParserTest(unittest.TestCase):
-    def test_returns_clear_error_message(self):
+    """Tests del parser oficial de Cocos Capital (Actividad → Movimientos)."""
+
+    @classmethod
+    def setUpClass(cls):
         from importing.parsers.cocos import CocosParser
-        result = CocosParser().parse("anything")
+        cls.parser = CocosParser()
+        cls.fixture = _read_fixture("cocos_export.csv").decode("utf-8")
+
+    def test_can_handle_cocos_headers(self):
+        headers = [
+            "nroTicket", "nroComprobante", "fechaEjecucion", "fechaLiquidacion",
+            "tipoOperacion", "instrumento", "moneda",
+        ]
+        self.assertTrue(self.parser.can_handle(headers))
+
+    def test_can_handle_rejects_generic_headers(self):
+        self.assertFalse(self.parser.can_handle(["fecha", "tipo", "broker"]))
+
+    def test_rejects_file_without_cocos_columns(self):
+        result = self.parser.parse("foo;bar;baz\n1;2;3\n")
         self.assertEqual(len(result.parse_errors), 1)
-        self.assertEqual(result.parse_errors[0].code, "COCOS_NO_EXPORT")
-        self.assertIn("template genérico", result.parse_errors[0].message)
+        self.assertEqual(result.parse_errors[0].code, "COCOS_HEADERS_MISMATCH")
+
+    def test_parses_buy_extracting_ticker(self):
+        result = self.parser.parse(self.fixture)
+        netflix = next(r for r in result.raw_rows
+                       if r.data["tipo"] == "COMPRA" and r.data["activo"] == "NFLX")
+        self.assertEqual(netflix.data["fecha"], "2026-01-26")
+        self.assertEqual(netflix.data["broker"], "Cocos")
+        self.assertEqual(netflix.data["cantidad"], "280")
+        self.assertEqual(netflix.data["moneda"], "ARS")
+        # montoBruto = -762560 → abs = 762560 (sin separadores)
+        self.assertEqual(netflix.data["monto"], "762560")
+        # fees = 3431.52 + 381.28 + 800.688 = 4613.49 (aprox)
+        self.assertAlmostEqual(float(netflix.data["comisiones"]), 4613.49, places=1)
+
+    def test_parses_sell_with_negative_quantity(self):
+        """Cocos pone cantidad negativa en ventas. Tomamos abs()."""
+        result = self.parser.parse(self.fixture)
+        tsla = next(r for r in result.raw_rows
+                    if r.data["tipo"] == "VENTA" and r.data["activo"] == "TSLA"
+                    and r.data["moneda"] == "ARS")
+        self.assertEqual(tsla.data["cantidad"], "35")  # era -35 en el CSV
+        self.assertEqual(tsla.data["monto"], "1566600")
+
+    def test_dolar_mep_forces_usd_currency(self):
+        """Compra/Venta Dolar Mep deben quedar en USD aunque la columna diga otra cosa."""
+        result = self.parser.parse(self.fixture)
+        mep_buy = next(r for r in result.raw_rows
+                       if r.data["activo"] == "TSLA" and r.data["moneda"] == "USD")
+        self.assertEqual(mep_buy.data["tipo"], "COMPRA")
+        self.assertIn("MEP", mep_buy.data["notas"])
+
+    def test_fci_subscription_maps_to_buy_cocorma(self):
+        result = self.parser.parse(self.fixture)
+        fci = [r for r in result.raw_rows if r.data["activo"] == "COCORMA"]
+        self.assertEqual(len(fci), 2)
+        types = {r.data["tipo"] for r in fci}
+        self.assertEqual(types, {"COMPRA", "VENTA"})
+        for r in fci:
+            self.assertIn("FCI", r.data["notas"])
+
+    def test_recibo_de_cobro_maps_to_deposito(self):
+        result = self.parser.parse(self.fixture)
+        dep = next(r for r in result.raw_rows if r.data["tipo"] == "DEPOSITO"
+                   and r.data["monto"] == "100000")
+        self.assertEqual(dep.data["moneda"], "ARS")
+        self.assertEqual(dep.data["activo"], "")  # cash flow puro
+
+    def test_orden_de_pago_maps_to_retiro_with_abs_amount(self):
+        result = self.parser.parse(self.fixture)
+        wd = next(r for r in result.raw_rows
+                  if r.data["tipo"] == "RETIRO" and r.data["monto"] == "45000")
+        self.assertEqual(wd.data["moneda"], "ARS")
+
+    def test_dividendos_peso_no_asset_uses_total(self):
+        """Dividendos en pesos: el CSV no dice qué stock pagó → asset vacío.
+        Usa `total` (neto) en vez de `montoBruto` (bruto)."""
+        result = self.parser.parse(self.fixture)
+        div = next(r for r in result.raw_rows if r.data["tipo"] == "DIVIDENDO")
+        self.assertEqual(div.data["activo"], "")
+        self.assertEqual(div.data["moneda"], "ARS")
+        self.assertEqual(div.data["monto"], "2366.81")  # total neto
+
+    def test_dividendos_en_especie_is_skipped(self):
+        """No debe aparecer en raw_rows — evitamos doble-conteo con la Nota
+        De Credito Conversion que llega después."""
+        result = self.parser.parse(self.fixture)
+        # No debe haber ningún DIVIDENDO en USD (que sería el "en especie")
+        usd_divs = [r for r in result.raw_rows
+                    if r.data["tipo"] == "DIVIDENDO" and r.data["moneda"] == "USD"]
+        self.assertEqual(usd_divs, [])
+        # La nota de credito SÍ debe estar como DEPOSITO USD con nota de conversión
+        nota = [r for r in result.raw_rows
+                if r.data["tipo"] == "DEPOSITO" and r.data["moneda"] == "USD"]
+        self.assertEqual(len(nota), 1)
+        self.assertIn("conversión", nota[0].data["notas"])
+
+    def test_unknown_op_type_emits_warning(self):
+        csv = ("nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;"
+               "tipoOperacion;instrumento;moneda;mercado;cantidad;precio;"
+               "montoBruto;comision;ddmm;iva;otros;total\n"
+               "1;2;01-01-2026;01-01-2026;OperacionInventada;X (Y);ARS;;;;100;0;0;0;0;100\n")
+        result = self.parser.parse(csv)
+        self.assertEqual(len(result.raw_rows), 0)
+        self.assertEqual(len(result.parse_errors), 1)
+        self.assertEqual(result.parse_errors[0].code, "COCOS_OP_UNKNOWN")
+
+    def test_template_csv_has_required_columns(self):
+        t = self.parser.template_csv()
+        self.assertIn("nroTicket", t)
+        self.assertIn("tipoOperacion", t)
+        self.assertIn("Recibo De Cobro", t)
+        self.assertIn("Dividendos", t)
+
+    def test_template_csv_is_self_parseable(self):
+        """El template que descarga el user debería volver a parsearse sin errores."""
+        t = self.parser.template_csv()
+        result = self.parser.parse(t)
+        self.assertEqual(len(result.parse_errors), 0)
+        self.assertGreater(len(result.raw_rows), 0)
+
+    def test_ar_number_cleaner(self):
+        """El cleaner de números AR maneja casos típicos."""
+        from importing.parsers.cocos import _clean_ar_number
+        self.assertEqual(_clean_ar_number("1.948.815"), "1948815")
+        self.assertEqual(_clean_ar_number("-1.557.122,07"), "-1557122.07")
+        self.assertEqual(_clean_ar_number("0,86"), "0.86")
+        self.assertEqual(_clean_ar_number("41.580"), "41580")  # AR thousands
+        self.assertEqual(_clean_ar_number("100"), "100")
+        self.assertEqual(_clean_ar_number(""), "")
+
+    def test_precio_computed_from_monto_div_qty_not_parsed(self):
+        """REGRESIÓN crítica: para FCI, la columna precio del CSV de Cocos
+        tiene formato ambiguo (ej '10.094,497' interpretado AR-strict da
+        10094.497 pero el valor real es 10.094). Si el parser usara la columna
+        directamente, el persister calcularía SELL proceeds = 10094 × 192644
+        = ~1.97 BILLONES ARS → P&L Realizado falso de $1.4M USD.
+        El fix: precio = monto/qty (siempre consistente con monto)."""
+        result = self.parser.parse(self.fixture)
+
+        # FCI Suscripción del fixture
+        fci_buy = next(r for r in result.raw_rows
+                       if r.data["activo"] == "COCORMA" and r.data["tipo"] == "COMPRA")
+        precio = float(fci_buy.data["precio"])
+        # El precio real está cerca de 10.094, no 10094
+        self.assertAlmostEqual(precio, 10.094497, places=4,
+            msg=f"precio FCI inflado: {precio} — debería ser ~10.09")
+
+        # CEDEAR/stock — el precio computado debe coincidir con el del CSV
+        # (donde AR-strict daría el mismo resultado)
+        nflx = next(r for r in result.raw_rows
+                    if r.data["activo"] == "NFLX" and r.data["tipo"] == "COMPRA")
+        self.assertAlmostEqual(float(nflx.data["precio"]), 2723.4285714, places=3)
 
 
 class GenericParserTest(unittest.TestCase):
@@ -2226,15 +2374,1019 @@ class DividendInterestAsGainTest(unittest.TestCase):
             conn.close()
 
 
-class CocosHiddenFromDropdownTest(unittest.TestCase):
-    """parser_options_grouped() no debería mostrar Cocos al usuario."""
-    def test_cocos_not_in_grouped_options(self):
+class IntradayTradingOrderTest(unittest.TestCase):
+    """Cuando hay BUY y SELL del mismo día y el SELL precede al BUY en el CSV
+    (típico en 'Compra Trading' + 'Venta Trading' de Cocos), el persister
+    debe procesar BUYs primero para no fallar con 'stock insuficiente'."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"intraday-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+
+    def _persist_sample(self, txs):
+        """Helper: persiste una lista de NormalizedTx + asserta no errores."""
+        from importing.persister import persist_batch
+        import uuid, json
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            # raw_rows necesarias para FK desde import_normalized_tx
+            for tx in txs:
+                cur = conn.execute(
+                    """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                       VALUES (?,?,?,'valid',NULL)""",
+                    (batch_id, tx.row_index, json.dumps({"_test": "x"})),
+                )
+                raw_row_ids[tx.row_index] = cur.lastrowid
+        result = persist_batch(
+            conn,
+            uid=self.uid,
+            batch_id=batch_id,
+            txs=txs,
+            raw_row_ids_by_index=raw_row_ids,
+            helpers=main,
+        )
+        conn.close()
+        return batch_id, result
+
+    def test_intraday_sell_before_buy_does_not_skip(self):
+        """Replica el caso BMA del CSV real:
+          1. BUY 50 (jun)
+          2. SELL 91 trading (sep, row_index 2 — antes que el BUY trading)
+          3. BUY 91 trading (sep, row_index 3)
+          4. SELL 50 (sep, row_index 4)
+        Sin fix: SELL 91 falla porque solo hay 50 → resulta en 91 abiertas.
+        Con fix: BUYs procesados primero → net = 0.
+        """
+        from importing.schema import NormalizedTx, OP_BUY, OP_SELL
+        txs = [
+            NormalizedTx(row_index=1, date="2025-06-23", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="BMA",
+                         quantity=50, unit_price=8140, gross_amount=407000,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=2, date="2025-09-08", broker="Cocos",
+                         operation_type=OP_SELL, asset_symbol="BMA",
+                         quantity=91, unit_price=6590, gross_amount=599690,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=3, date="2025-09-08", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="BMA",
+                         quantity=91, unit_price=6610, gross_amount=601510,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=4, date="2025-09-08", broker="Cocos",
+                         operation_type=OP_SELL, asset_symbol="BMA",
+                         quantity=50, unit_price=6590, gross_amount=329500,
+                         currency="ARS", settlement_currency="ARS"),
+        ]
+        batch_id, result = self._persist_sample(txs)
+        # Ninguna fila debe skipearse
+        self.assertEqual(result.get("skipped", []), [],
+            f"Filas skipeadas inesperadamente: {result.get('skipped')}")
+
+        # La posición BMA debería estar cerrada (qty 0 o no existir)
+        conn = main.get_db()
+        rows = conn.execute(
+            "SELECT quantity FROM positions WHERE user_id=? AND asset=? AND is_cash=0",
+            (self.uid, "BMA"),
+        ).fetchall()
+        conn.close()
+        net_qty = sum(r["quantity"] or 0 for r in rows)
+        self.assertEqual(net_qty, 0,
+            f"BMA debería estar cerrada (qty=0), quedó {net_qty}")
+
+
+class CashFlowDepositAllowsRecoverFromNegativeTest(unittest.TestCase):
+    """Un depósito debe permitir reducir un saldo negativo (incluso si después
+    sigue siendo negativo). Antes el check `new_invested < 0` bloqueaba
+    depósitos cuando la deuda era mayor al depósito — el user no podía
+    recuperarse del overdraft sin depositar todo de una."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"cashflow-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        # Crear cash position con saldo NEGATIVO (overdraft)
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
+               VALUES (?,'Cocos','ARS',1,?)""",
+            (self.uid, -204447),
+        )
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _post_cashflow(self, direction, amount):
+        return self.client.post(
+            "/api/cash/flow",
+            json={"broker_name": "Cocos", "direction": direction, "amount": amount},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def test_deposit_smaller_than_overdraft_allowed(self):
+        """Depositar 100k sobre saldo -204k → debe ir a -104k (no fallar)."""
+        res = self._post_cashflow("deposit", 100000)
+        self.assertEqual(res.status_code, 200, f"body: {res.text}")
+        conn = main.get_db()
+        balance = conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND is_cash=1",
+            (self.uid,),
+        ).fetchone()["invested"]
+        conn.close()
+        self.assertEqual(balance, -104447)
+
+    def test_deposit_equal_to_overdraft_allowed(self):
+        """Depositar exactamente el overdraft lleva a 0."""
+        res = self._post_cashflow("deposit", 204447)
+        self.assertEqual(res.status_code, 200, f"body: {res.text}")
+
+    def test_deposit_larger_than_overdraft_allowed(self):
+        """Depositar más del overdraft deja saldo positivo."""
+        res = self._post_cashflow("deposit", 300000)
+        self.assertEqual(res.status_code, 200, f"body: {res.text}")
+
+    def test_withdraw_from_negative_still_blocked(self):
+        """Pero un withdrawal sobre saldo negativo SÍ debe seguir bloqueado."""
+        res = self._post_cashflow("withdraw", 10000)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("insuficiente", res.text.lower())
+
+
+class RevertDepositAllowsNegativeCashTest(unittest.TestCase):
+    """Revertir un DEPOSIT debe permitir saldo negativo resultante. Antes
+    bloqueaba con 'No alcanza el cash en X para revertir el depósito',
+    impidiendo revert nuclear de imports donde ya se había gastado parte
+    del cash en BUYs que se revertirán después en el mismo loop."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"revert-dep-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+
+    def test_nuclear_revert_with_overdraft_succeeds(self):
+        """Persiste deposit + buy, luego revierte (nuclear). Aunque el revert
+        del deposit pase el cash a negativo temporal, debe completarse OK."""
+        from importing.persister import persist_batch, revert_batch
+        from importing.schema import NormalizedTx, OP_BUY, OP_DEPOSIT
+        import uuid, json
+
+        # Import: deposit 100k + buy 80k → cash final 20k
+        txs = [
+            NormalizedTx(row_index=1, date="2025-01-01", broker="Cocos",
+                         operation_type=OP_DEPOSIT, gross_amount=100000,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=2, date="2025-01-02", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="BMA",
+                         quantity=10, unit_price=8000, gross_amount=80000,
+                         currency="ARS", settlement_currency="ARS"),
+        ]
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            for tx in txs:
+                cur = conn.execute(
+                    """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                       VALUES (?,?,?,'valid',NULL)""",
+                    (batch_id, tx.row_index, json.dumps({})),
+                )
+                raw_row_ids[tx.row_index] = cur.lastrowid
+        persist_batch(conn, uid=self.uid, batch_id=batch_id, txs=txs,
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+
+        # Simulamos un retiro externo que deja cash en 5k (debajo de los 100k del deposit)
+        conn.execute(
+            "UPDATE positions SET invested = 5000 WHERE user_id=? AND is_cash=1",
+            (self.uid,),
+        )
+        conn.execute(
+            "UPDATE import_batches SET status='confirmed' WHERE id=?", (batch_id,),
+        )
+        conn.commit()
+
+        # Revertir en nuclear: debe completarse sin "No alcanza el cash"
+        with conn:
+            result = revert_batch(conn, uid=self.uid, batch_id=batch_id,
+                                   helpers=main, nuclear=True)
+        # El batch quedó marcado como reverted
+        batch_row = conn.execute(
+            "SELECT status FROM import_batches WHERE id=?", (batch_id,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(batch_row["status"], "reverted")
+
+
+class CrossCurrencyLotSellTest(unittest.TestCase):
+    """Cuando un BUY fue en USD (ej Cocos Compra Dolar Mep) y la SELL es en
+    ARS sobre el mismo broker, el persister debe convertir el invested del
+    lote a ARS al tc_blue actual antes de calcular P&L. Sin esto, comparaba
+    USD invested vs ARS exit price → P&L de +160,000%."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"xc-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        # Cargar TC blue para que el persister haga las conversiones (key/value)
+        conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, 'tc_blue', '1415')",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_sell_in_ars_uses_usd_lot_cost_converted_to_ars(self):
+        """Replica el caso TSLA: 21 lots comprados en USD a 27.32, vendidos
+        en ARS a 44760. El P&L razonable es ~+15% (no +160000%)."""
+        from importing.persister import persist_batch
+        from importing.schema import NormalizedTx, OP_BUY, OP_SELL
+        import uuid, json
+
+        txs = [
+            # BUY 21 TSLA via MEP en USD: invested = 21 × 27.32 = 573.72 USD
+            NormalizedTx(row_index=1, date="2025-11-13", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="TSLA",
+                         quantity=21, unit_price=27.32, gross_amount=573.72,
+                         currency="USD", settlement_currency="USD"),
+            # SELL 21 TSLA en ARS a 44760/share (~6 semanas después)
+            NormalizedTx(row_index=2, date="2026-01-06", broker="Cocos",
+                         operation_type=OP_SELL, asset_symbol="TSLA",
+                         quantity=21, unit_price=44760, gross_amount=939960,
+                         currency="ARS", settlement_currency="ARS"),
+        ]
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            for tx in txs:
+                cur = conn.execute(
+                    """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                       VALUES (?,?,?,'valid',NULL)""",
+                    (batch_id, tx.row_index, json.dumps({})),
+                )
+                raw_row_ids[tx.row_index] = cur.lastrowid
+        persist_batch(conn, uid=self.uid, batch_id=batch_id, txs=txs,
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+
+        # Verificar que la operación SELL quedó con P&L razonable, no inflado
+        op = conn.execute(
+            "SELECT pnl_usd, pnl_pct FROM operations WHERE user_id=? AND asset='TSLA' AND op_type='Venta'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(op)
+        # P&L esperado en USD: ~+90 (= 21 × (44760 - 27.32 × 1415) / 1415)
+        # = (939960 - 811684.8) / 1415 ≈ +90.65 USD
+        self.assertAlmostEqual(op["pnl_usd"], 90.65, delta=1.0,
+            msg=f"P&L USD: {op['pnl_usd']} (esperado ~90)")
+        # P&L pct razonable (no >100000%)
+        self.assertLess(abs(op["pnl_pct"]), 50,
+            msg=f"P&L pct: {op['pnl_pct']}% (esperado < 50%, no miles)")
+
+    def test_sell_in_usd_uses_tx_currency_not_broker_currency(self):
+        """REGRESIÓN: para "Venta Dolar Mep" en Cocos (broker=ARS pero tx.currency=USD),
+        el persister debe usar la moneda de la TX, no la del broker. Antes
+        comparaba ARS invested vs USD exit_price → P&L falso -99.8%."""
+        from importing.persister import persist_batch
+        from importing.schema import NormalizedTx, OP_BUY, OP_SELL
+        import uuid, json
+
+        # AMD bought in ARS (broker Cocos ARS), then sold in USD (Venta Dolar Mep)
+        txs = [
+            NormalizedTx(row_index=1, date="2024-01-15", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="AMD",
+                         quantity=23, unit_price=14000, gross_amount=322000,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=2, date="2025-10-27", broker="Cocos",
+                         operation_type=OP_SELL, asset_symbol="AMD",
+                         quantity=23, unit_price=25.25, gross_amount=580.75,
+                         currency="USD", settlement_currency="USD"),
+        ]
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            for tx in txs:
+                cur = conn.execute(
+                    """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                       VALUES (?,?,?,'valid',NULL)""",
+                    (batch_id, tx.row_index, json.dumps({})),
+                )
+                raw_row_ids[tx.row_index] = cur.lastrowid
+        persist_batch(conn, uid=self.uid, batch_id=batch_id, txs=txs,
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+
+        # Verificar P&L razonable:
+        # cost basis USD: 322000 ARS / 1415 = 227.56 USD
+        # proceeds USD: 25.25 × 23 = 580.75 USD
+        # P&L USD: 580.75 - 227.56 = +353 USD (~155% gain)
+        op = conn.execute(
+            "SELECT pnl_usd, pnl_pct FROM operations WHERE user_id=? AND asset='AMD'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(op)
+        # P&L NO debe ser -99% (el bug original) — debe ser positivo y razonable
+        self.assertGreater(op["pnl_usd"], 0,
+            f"P&L USD: {op['pnl_usd']} (esperado positivo, bug daba -97)")
+        self.assertLess(abs(op["pnl_pct"]), 500,
+            f"P&L %: {op['pnl_pct']}% (esperado razonable, bug daba -99.8%)")
+
+    def test_position_stores_currency_from_tx(self):
+        """La posición creada por un BUY USD debe quedar con currency='USD'."""
+        from importing.persister import persist_batch
+        from importing.schema import NormalizedTx, OP_BUY
+        import uuid, json
+
+        txs = [
+            NormalizedTx(row_index=1, date="2025-11-13", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="AAPL",
+                         quantity=10, unit_price=20, gross_amount=200,
+                         currency="USD", settlement_currency="USD"),
+        ]
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                   VALUES (?,?,?,'valid',NULL)""",
+                (batch_id, 1, json.dumps({})),
+            )
+            raw_row_ids[1] = cur.lastrowid
+        persist_batch(conn, uid=self.uid, batch_id=batch_id, txs=txs,
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+        pos = conn.execute(
+            "SELECT currency FROM positions WHERE user_id=? AND asset='AAPL'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(pos["currency"], "USD")
+
+
+class RecalcPnlFromOpsTest(unittest.TestCase):
+    """Verifica que _recalc_pnl_realized_from_ops repara drift en
+    monthly_entries.pnl_realized desde la tabla operations."""
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"recalc-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+
+    def test_recalcs_from_operations_zeroing_orphan_pnl(self):
+        """monthly_entries.pnl_realized inflado y SIN operations matching →
+        se zero-ea tras el recalc."""
+        conn = main.get_db()
+        with conn:
+            # Inflar pnl_realized con drift artificial — simula bug viejo
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 10, 'Cocos', 0, 0, -9890.92, 0, 0, -9890.92)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 10, 'global', 0, 0, -9890.92, 0, 0, -9890.92)""",
+                (self.uid,),
+            )
+        # No hay operations → recalc debe poner pnl_realized en 0
+        with conn:
+            updates = main._recalc_pnl_realized_from_ops(conn, self.uid)
+        rows = conn.execute(
+            "SELECT broker, pnl_realized FROM monthly_entries WHERE user_id=?",
+            (self.uid,),
+        ).fetchall()
+        conn.close()
+        self.assertGreaterEqual(updates, 2)
+        for r in rows:
+            self.assertEqual(r["pnl_realized"], 0.0,
+                f"{r['broker']}: pnl_realized={r['pnl_realized']} (esperado 0)")
+
+    def test_recalcs_to_sum_of_existing_operations(self):
+        """Con operations reales, monthly_entries.pnl_realized debe quedar
+        igual a SUM(operations.pnl_usd) para ese (broker, year, month)."""
+        conn = main.get_db()
+        with conn:
+            # Seed: 2 operations en Oct 2025 para Cocos
+            conn.execute(
+                """INSERT INTO operations
+                   (user_id, date, broker, asset, op_type, pnl_usd)
+                   VALUES (?, '2025-10-15', 'Cocos', 'AAPL', 'Venta', 50.50)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO operations
+                   (user_id, date, broker, asset, op_type, pnl_usd)
+                   VALUES (?, '2025-10-20', 'Cocos', 'TSLA', 'Venta', -25.30)""",
+                (self.uid,),
+            )
+            # Pre-existente con drift
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 10, 'Cocos', 0, 0, 9999.99, 0, 0, 0)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 10, 'global', 0, 0, -8888.88, 0, 0, 0)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        rows = conn.execute(
+            "SELECT broker, pnl_realized FROM monthly_entries WHERE user_id=? ORDER BY broker",
+            (self.uid,),
+        ).fetchall()
+        conn.close()
+        # Cocos: 50.50 + (-25.30) = 25.20
+        # global: igual (suma cross-broker)
+        by_broker = {r["broker"]: r["pnl_realized"] for r in rows}
+        self.assertAlmostEqual(by_broker["Cocos"], 25.20, places=2)
+        self.assertAlmostEqual(by_broker["global"], 25.20, places=2)
+
+    def test_endpoint_recalc_returns_count(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(main.app)
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 1, 'Cocos', 0, 0, -1000, 0, 0, -1000)""",
+                (self.uid,),
+            )
+        conn.close()
+        token = main.create_token(self.uid)
+        res = client.post(
+            "/api/imports/recalc-pnl",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertTrue(body["recalculated"])
+        self.assertGreaterEqual(body["rows_updated"], 1)
+
+
+class CombineCsvFilesTest(unittest.TestCase):
+    """Unit tests del helper combine_csv_files (multi-file upload)."""
+
+    def test_empty_list_returns_error(self):
+        from importing.pipeline import combine_csv_files
+        data, name, err = combine_csv_files([])
+        self.assertIn("ningún archivo", err.lower())
+
+    def test_single_file_returns_unchanged(self):
+        from importing.pipeline import combine_csv_files
+        body = b"a;b\n1;2\n3;4\n"
+        data, name, err = combine_csv_files([(body, "x.csv")])
+        self.assertIsNone(err)
+        self.assertEqual(data, body)
+        self.assertEqual(name, "x.csv")
+
+    def test_two_files_combined_with_single_header(self):
+        from importing.pipeline import combine_csv_files
+        f1 = b"a;b\n1;2\n3;4\n"
+        f2 = b"a;b\n5;6\n7;8\n"
+        data, name, err = combine_csv_files([(f1, "y1.csv"), (f2, "y2.csv")])
+        self.assertIsNone(err)
+        text = data.decode("utf-8")
+        # Header aparece UNA sola vez
+        self.assertEqual(text.count("a;b"), 1)
+        # Las 4 filas de datos están
+        for v in ("1;2", "3;4", "5;6", "7;8"):
+            self.assertIn(v, text)
+        self.assertEqual(name, "y1.csv + y2.csv")
+
+    def test_three_files_preserves_order(self):
+        from importing.pipeline import combine_csv_files
+        files = [
+            (b"h\nrow_a\n", "2024.csv"),
+            (b"h\nrow_b\n", "2025.csv"),
+            (b"h\nrow_c\n", "2026.csv"),
+        ]
+        data, _, err = combine_csv_files(files)
+        self.assertIsNone(err)
+        text = data.decode("utf-8")
+        self.assertLess(text.index("row_a"), text.index("row_b"))
+        self.assertLess(text.index("row_b"), text.index("row_c"))
+
+    def test_mismatched_headers_returns_error(self):
+        from importing.pipeline import combine_csv_files
+        f1 = b"a;b\n1;2\n"
+        f2 = b"x;y\n3;4\n"
+        data, name, err = combine_csv_files([(f1, "a.csv"), (f2, "b.csv")])
+        self.assertIsNotNone(err)
+        self.assertIn("b.csv", err)
+        self.assertIn("header", err.lower())
+
+    def test_bom_in_second_file_handled(self):
+        """El segundo archivo puede tener BOM; el header debe matchear igual."""
+        from importing.pipeline import combine_csv_files
+        f1 = b"a;b\n1;2\n"
+        # BOM al inicio del segundo
+        f2 = "﻿a;b\n3;4\n".encode("utf-8")
+        data, _, err = combine_csv_files([(f1, "a.csv"), (f2, "b.csv")])
+        self.assertIsNone(err)
+        text = data.decode("utf-8")
+        self.assertIn("3;4", text)
+
+    def test_empty_file_skipped_silently(self):
+        from importing.pipeline import combine_csv_files
+        f1 = b"a;b\n1;2\n"
+        empty = b""
+        data, _, err = combine_csv_files([(f1, "a.csv"), (empty, "empty.csv")])
+        self.assertIsNone(err)
+        self.assertIn("1;2", data.decode("utf-8"))
+
+    def test_long_combined_name_truncated(self):
+        from importing.pipeline import combine_csv_files
+        files = [(b"h\n1\n", f"very_long_name_{i:03d}.csv") for i in range(20)]
+        data, name, err = combine_csv_files(files)
+        self.assertIsNone(err)
+        self.assertLessEqual(len(name), 200)
+
+    def test_handles_cp1252_encoding(self):
+        """Excel-on-Windows exporta cp1252 con chars 0x80-0x9F que latin-1
+        decodifica mal. utf-8-sig falla y debemos caer a cp1252 antes."""
+        from importing.pipeline import combine_csv_files
+        # 'á' en cp1252 = 0xE1 (igual que latin-1), pero '€' = 0x80 (latin-1 lo decodifica
+        # como control char invisible). Usamos un char Windows-1252-specific.
+        f1 = 'h\n€100\n'.encode('cp1252')
+        f2 = b'h\n200\n'
+        data, _, err = combine_csv_files([(f1, 'cp1252.csv'), (f2, 'utf.csv')])
+        self.assertIsNone(err)
+        text = data.decode('utf-8')
+        self.assertIn('€', text)
+
+    def test_header_match_tolerates_bom_in_either_file(self):
+        """Si el primer archivo tiene BOM y el segundo no (o viceversa), el
+        match de headers debe pasar igual."""
+        from importing.pipeline import combine_csv_files
+        f1 = '﻿a;b\n1;2\n'.encode('utf-8')  # con BOM
+        f2 = b'a;b\n3;4\n'                    # sin BOM
+        data, _, err = combine_csv_files([(f1, 'a.csv'), (f2, 'b.csv')])
+        self.assertIsNone(err)
+        # Y al revés
+        data, _, err = combine_csv_files([(f2, 'b.csv'), (f1, 'a.csv')])
+        self.assertIsNone(err)
+
+    def test_header_match_case_insensitive(self):
+        from importing.pipeline import combine_csv_files
+        f1 = b'Fecha;Tipo\n2024;Compra\n'
+        f2 = b'FECHA;TIPO\n2025;Venta\n'  # mismo header en distinto casing
+        data, _, err = combine_csv_files([(f1, 'a.csv'), (f2, 'b.csv')])
+        self.assertIsNone(err)
+
+    def test_combined_with_cocos_real_format(self):
+        """Realista: 2 CSVs de Cocos combinados. El header de Cocos tiene
+        muchas columnas, así que validamos que no rompe."""
+        from importing.pipeline import combine_csv_files
+        header = (
+            "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;"
+            "tipoOperacion;instrumento;moneda;mercado;cantidad;precio;"
+            "montoBruto;comision;ddmm;iva;otros;total"
+        )
+        row_2024 = "100;200;15-06-2024;15-06-2024;Compra;CEDEAR APPLE (AAPL);ARS;BYMA;10;100;-1000;0;0;0;0;-1000"
+        row_2025 = "300;400;15-06-2025;15-06-2025;Venta;CEDEAR APPLE (AAPL);ARS;BYMA;-5;200;1000;0;0;0;0;1000"
+        f1 = f"{header}\n{row_2024}\n".encode("utf-8")
+        f2 = f"{header}\n{row_2025}\n".encode("utf-8")
+        data, _, err = combine_csv_files([(f1, "2024.csv"), (f2, "2025.csv")])
+        self.assertIsNone(err)
+        text = data.decode("utf-8")
+        self.assertEqual(text.count(header), 1)
+        self.assertIn("2024", text)
+        self.assertIn("2025", text)
+
+
+class MultiFilePreviewE2ETest(unittest.TestCase):
+    """E2E: subir múltiples CSVs por el endpoint /imports/preview."""
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions",
+                  "monthly_entries", "brokers", "users"):
+            conn.execute(f"DELETE FROM {t}")
+        conn.commit()
+        self.uid = _new_user(conn, email="multifile@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+
+    def _post_files(self, *files_with_names, format="cocos", broker="Cocos"):
+        """Helper: POST multipart con N files al endpoint preview."""
+        import io
+        multipart_files = [
+            ("files", (name, io.BytesIO(data), "text/csv"))
+            for data, name in files_with_names
+        ]
+        return self.client.post(
+            "/api/imports/preview",
+            files=multipart_files,
+            data={"format": format, "broker": broker},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def _cocos_csv(self, *rows):
+        header = (
+            "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;"
+            "tipoOperacion;instrumento;moneda;mercado;cantidad;precio;"
+            "montoBruto;comision;ddmm;iva;otros;total"
+        )
+        return ("\n".join([header] + list(rows)) + "\n").encode("utf-8")
+
+    def test_single_file_via_files_field_works(self):
+        """`files` con 1 elemento debe funcionar igual que `file` legacy."""
+        csv = self._cocos_csv(
+            "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000",
+        )
+        res = self._post_files((csv, "2024.csv"))
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body.get("source_file_count"), 1)
+        self.assertGreaterEqual(body["summary"]["valid_rows"], 1)
+
+    def test_three_files_combined_into_one_batch(self):
+        """Subir 2024+2025+2026: debe haber un solo session_id y todas las
+        filas válidas en él."""
+        csv_2024 = self._cocos_csv(
+            "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000",
+        )
+        csv_2025 = self._cocos_csv(
+            "10;20;15-06-2025;15-06-2025;Compra;CEDEAR APPLE (AAPL);ARS;BYMA;10;100;-1000;0;0;0;0;-1000",
+        )
+        csv_2026 = self._cocos_csv(
+            "100;200;15-06-2026;15-06-2026;Venta;CEDEAR APPLE (AAPL);ARS;BYMA;-10;150;1500;0;0;0;0;1500",
+        )
+        res = self._post_files(
+            (csv_2024, "2024.csv"),
+            (csv_2025, "2025.csv"),
+            (csv_2026, "2026.csv"),
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["source_file_count"], 3)
+        # 3 filas válidas (1 deposit + 1 buy + 1 sell)
+        self.assertEqual(body["summary"]["valid_rows"], 3)
+        # Un solo session_id
+        self.assertTrue(body["session_id"])
+
+    def test_files_with_mismatched_headers_returns_400(self):
+        """Headers distintos entre archivos → 400 con mensaje claro."""
+        ok = self._cocos_csv("1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000")
+        bad = b"fecha,tipo,monto\n2025-06-15,DEPOSITO,500\n"
+        res = self._post_files((ok, "cocos.csv"), (bad, "otro.csv"), format="cocos")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("formato", res.json()["detail"].lower())
+
+    def test_no_files_returns_400(self):
+        res = self.client.post(
+            "/api/imports/preview",
+            data={"format": "cocos"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_total_size_cap_enforced(self):
+        """Total > 5MB rechaza con 400 antes de tocar el parser."""
+        # 5.5MB de "x;y\n" (4 bytes/línea)
+        big = b"a;b\n" + b"x;y\n" * 1_400_000
+        res = self._post_files((big, "huge.csv"))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("excede", res.json()["detail"].lower())
+
+    def test_too_many_files_rejected(self):
+        """Cap de 20 archivos para evitar abuse."""
+        csv = self._cocos_csv("1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;1;0;0;0;0;1")
+        files = [(csv, f"y{i:02d}.csv") for i in range(21)]
+        res = self._post_files(*files)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("demasiados", res.json()["detail"].lower())
+
+    def test_filename_with_path_traversal_sanitized(self):
+        """Filename con ../ debe sanitizarse antes de persistir en DB."""
+        import io
+        csv = self._cocos_csv(
+            "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100;0;0;0;0;100",
+        )
+        # filename malicioso con path traversal + newline
+        evil = "../../../etc/passwd\n.csv"
+        res = self.client.post(
+            "/api/imports/preview",
+            files={"file": (evil, io.BytesIO(csv), "text/csv")},
+            data={"format": "cocos", "broker": "Cocos"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        # El batch persiste un file_name sin chars peligrosos
+        conn = main.get_db()
+        row = conn.execute(
+            "SELECT file_name FROM import_batches WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # Ni newlines ni slashes ni .. en el nombre persistido
+        self.assertNotIn("/", row["file_name"])
+        self.assertNotIn("\n", row["file_name"])
+        self.assertNotIn("..", row["file_name"])
+
+    def test_sanitize_filename_unit(self):
+        from importing.pipeline import sanitize_filename
+        # Path traversal
+        self.assertNotIn("/", sanitize_filename("../../etc/passwd.csv"))
+        self.assertNotIn("\\", sanitize_filename("..\\windows\\file.csv"))
+        # Newlines / control chars
+        self.assertNotIn("\n", sanitize_filename("foo\nbar.csv"))
+        self.assertNotIn("\r", sanitize_filename("foo\rbar.csv"))
+        # Vacío → default
+        self.assertEqual(sanitize_filename(""), "archivo.csv")
+        self.assertEqual(sanitize_filename(None), "archivo.csv")
+        # Solo basura → default
+        self.assertEqual(sanitize_filename("///"), "archivo.csv")
+        # Caso normal
+        self.assertEqual(sanitize_filename("2024.csv"), "2024.csv")
+        # Truncado a 80 chars
+        long = "a" * 200 + ".csv"
+        self.assertLessEqual(len(sanitize_filename(long)), 80)
+
+    def test_legacy_file_field_still_works(self):
+        """Back-compat: clientes viejos que mandan `file` (singular)."""
+        import io
+        csv = self._cocos_csv("1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000")
+        res = self.client.post(
+            "/api/imports/preview",
+            files={"file": ("legacy.csv", io.BytesIO(csv), "text/csv")},
+            data={"format": "cocos", "broker": "Cocos"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["source_file_count"], 1)
+
+
+class UniversalUserScenariosTest(unittest.TestCase):
+    """Verifica que el feature funcione para múltiples casos de user, no solo
+    para el caso particular del que reportó (Cocos + multi-año).
+
+    Cubre: new user limpio, multi-user isolation, parser distinto,
+    multi-file con N=1 (back-compat), recalc en DB vacía."""
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        conn = main.get_db()
+        # Limpiar TODO para empezar desde cero
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions",
+                  "monthly_entries", "brokers", "users"):
+            conn.execute(f"DELETE FROM {t}")
+        conn.commit()
+        conn.close()
+
+    def _token(self, uid):
+        return main.create_token(uid)
+
+    def test_new_user_recalc_pnl_empty_db_safe(self):
+        """User recién creado, sin imports ni operations: recalc no debe romper."""
+        conn = main.get_db()
+        uid = _new_user(conn, email="newbie@rendi.test")
+        conn.commit()
+        conn.close()
+        res = self.client.post(
+            "/api/imports/recalc-pnl",
+            headers={"Authorization": f"Bearer {self._token(uid)}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(res.json()["recalculated"])
+
+    def test_recalc_isolation_between_users(self):
+        """Recalc del user A no debe tocar monthly_entries del user B."""
+        conn = main.get_db()
+        a = _new_user(conn, email="user_a@rendi.test")
+        b = _new_user(conn, email="user_b@rendi.test")
+        _add_broker(conn, a, "Cocos", "ARS")
+        _add_broker(conn, b, "Cocos", "ARS")
+        # B tiene drift en pnl_realized (sin operations)
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 0, 0, -5000, 0, 0, -5000)""",
+                (b,),
+            )
+        conn.close()
+
+        # A corre recalc → no debe tocar a B
+        self.client.post(
+            "/api/imports/recalc-pnl",
+            headers={"Authorization": f"Bearer {self._token(a)}"},
+        )
+        conn = main.get_db()
+        b_pnl = conn.execute(
+            "SELECT pnl_realized FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (b,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(b_pnl["pnl_realized"], -5000,
+            "Recalc de user A no debería tocar al user B")
+
+    def test_inspect_chunked_cap_enforced(self):
+        """/inspect debe rechazar archivos sobre el cap antes de leerlos completos."""
+        import io
+        conn = main.get_db()
+        uid = _new_user(conn, email="big_inspect@rendi.test")
+        conn.commit()
+        conn.close()
+        # Archivo > 5MB
+        big = b"a,b\n" + b"1,2\n" * 1_400_000
+        res = self.client.post(
+            "/api/imports/inspect",
+            files={"file": ("big.csv", io.BytesIO(big), "text/csv")},
+            headers={"Authorization": f"Bearer {self._token(uid)}"},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("excede", res.json()["detail"].lower())
+        self.assertIn("MB", res.json()["detail"])
+
+    def test_inspect_size_error_message_uses_correct_mb_value(self):
+        """El mensaje de error debe reflejar el cap REAL (5MB), no hardcoded "1 MB"."""
+        # Test del helper interno (sin endpoint)
+        from importing.pipeline import inspect, MAX_FILE_BYTES
+        # Pasar más bytes del cap
+        big = b"a,b\n" + b"x,y\n" * (MAX_FILE_BYTES // 4 + 100)
+        result = inspect(big)
+        self.assertIn("error", result)
+        # El mensaje debe contener el MB real
+        expected_mb = MAX_FILE_BYTES // 1_000_000
+        self.assertIn(str(expected_mb), result["error"])
+
+    def test_multi_file_n1_backwards_compat_with_generic_parser(self):
+        """Multi-file con N=1 usando rendi_generic (no parser específico).
+        Verifica que el endpoint preview + el flow inspect funcionen con files."""
+        import io
+        conn = main.get_db()
+        uid = _new_user(conn, email="generic@rendi.test")
+        _add_broker(conn, uid, "MiBroker", "ARS")
+        conn.commit()
+        conn.close()
+
+        csv = (
+            "fecha,tipo,broker,activo,cantidad,precio,monto,moneda\n"
+            "2025-01-15,COMPRA,MiBroker,GGAL,100,500,50000,ARS\n"
+            "2025-02-15,DEPOSITO,MiBroker,,,,200000,ARS\n"
+        ).encode("utf-8")
+        token = self._token(uid)
+        # Multi-file con files=[csv]: debe procesar como single file
+        res = self.client.post(
+            "/api/imports/preview",
+            files=[("files", ("ops.csv", io.BytesIO(csv), "text/csv"))],
+            data={"format": "rendi_generic", "broker": "MiBroker"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["source_file_count"], 1)
+        self.assertGreaterEqual(body["summary"]["valid_rows"], 2)
+
+    def test_revert_recalcs_pnl_automatically(self):
+        """Tras revert nuclear, el pnl_realized debe auto-recalcularse."""
+        from importing.persister import persist_batch, revert_batch
+        from importing.schema import NormalizedTx, OP_BUY, OP_SELL
+        import uuid, json
+        conn = main.get_db()
+        uid = _new_user(conn, email="revert_recalc@rendi.test")
+        _add_broker(conn, uid, "Cocos", "ARS")
+
+        # Inflar pnl_realized previo (drift simulado de cycle anterior)
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 0, 0, -9999, 0, 0, -9999)""",
+                (uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'global', 0, 0, -9999, 0, 0, -9999)""",
+                (uid,),
+            )
+
+        # Persist un batch trivial
+        batch_id = str(uuid.uuid4())
+        tx = NormalizedTx(row_index=1, date="2025-05-15", broker="Cocos",
+                          operation_type=OP_BUY, asset_symbol="GGAL",
+                          quantity=10, unit_price=500, gross_amount=5000,
+                          currency="ARS", settlement_currency="ARS")
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'x.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, uid, batch_id),
+            )
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                   VALUES (?,?,?,'valid',NULL)""",
+                (batch_id, 1, json.dumps({})),
+            )
+            raw_row_ids[1] = cur.lastrowid
+        persist_batch(conn, uid=uid, batch_id=batch_id, txs=[tx],
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+        conn.execute("UPDATE import_batches SET status='confirmed' WHERE id=?", (batch_id,))
+        conn.commit()
+
+        # Revert con nuclear → debe disparar el auto-recalc
+        with conn:
+            revert_batch(conn, uid=uid, batch_id=batch_id, helpers=main, nuclear=True)
+
+        # Después del revert: pnl_realized debería estar en 0 (no -9999) porque
+        # no hay operations matching y el recalc auto-corrió.
+        rows = conn.execute(
+            "SELECT broker, pnl_realized FROM monthly_entries WHERE user_id=?",
+            (uid,),
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            self.assertEqual(r["pnl_realized"], 0.0,
+                f"{r['broker']}: drift no se limpió en revert ({r['pnl_realized']})")
+
+
+class CocosVisibleInDropdownTest(unittest.TestCase):
+    """Cocos ya tiene export oficial (Actividad → Movimientos), así que debe
+    aparecer en el dropdown agrupado del wizard."""
+    def test_cocos_in_grouped_options(self):
         groups = pl.parser_options_grouped()
         platforms = [g["platform"] for g in groups]
-        self.assertNotIn("cocos", platforms)
-        # Pero parser_options() (lista plana) sí lo incluye, para back-compat
+        self.assertIn("cocos", platforms)
+        # Y el export del grupo debe estar marcado como supported
+        cocos_group = next(g for g in groups if g["platform"] == "cocos")
+        self.assertEqual(len(cocos_group["exports"]), 1)
+        self.assertTrue(cocos_group["exports"][0]["supported"])
+
+    def test_cocos_in_flat_options(self):
         opts = pl.parser_options()
-        self.assertIn("cocos", [o["id"] for o in opts])
+        cocos = next(o for o in opts if o["id"] == "cocos")
+        self.assertTrue(cocos["supported"])
 
 
 if __name__ == "__main__":

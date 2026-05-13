@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator, Field
-from typing import Optional
+from typing import Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -218,6 +218,14 @@ def init_db():
     cols = _table_cols(conn, 'positions')
     if cols and 'commissions' not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN commissions REAL DEFAULT 0")
+    # Migración: columna currency — moneda en que está expresado `invested`.
+    # Sin esto, el persister no podía saber si una posición fue comprada en
+    # USD (Compra Dolar Mep en Cocos) vs ARS, generando P&L cross-currency
+    # absurdo en SELLs posteriores. Default NULL = back-compat (asume ARS o
+    # USDT según el broker, igual que antes).
+    cols = _table_cols(conn, 'positions')
+    if cols and 'currency' not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN currency TEXT")
     conn.commit()
 
     # monthly_entries
@@ -2552,6 +2560,62 @@ class CashFlowIn(BaseModel):
         return v.strip()
 
 
+def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
+    """Recalcula `monthly_entries.pnl_realized` desde la tabla `operations`.
+
+    Self-healing del drift que pueden generar cycles de import/revert con bugs
+    cross-currency: el revert deshace operations correctamente, pero si el
+    persist agregó pnl_realized con un cálculo viejo y el revert lo deshizo
+    con el cálculo nuevo, queda diferencia acumulada.
+
+    Para cada (broker, year, month) en monthly_entries:
+      pnl_realized[broker, y, m] = SUM(operations.pnl_usd WHERE broker, y, m)
+      pnl_realized[global, y, m] = SUM(operations.pnl_usd WHERE y, m)
+
+    Re-repara la cadena de capital_final tras actualizar.
+    Idempotente. Devuelve la cantidad de rows actualizados.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT broker, year, month FROM monthly_entries WHERE user_id=?",
+        (uid,),
+    ).fetchall()
+    updates = 0
+    brokers_touched: set = set()
+    for r in rows:
+        broker, y, m = r["broker"], r["year"], r["month"]
+        year_str = f"{y:04d}"
+        month_str = f"{m:02d}"
+        if broker == "global":
+            row = conn.execute(
+                """SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations
+                   WHERE user_id=?
+                     AND strftime('%Y', date)=?
+                     AND strftime('%m', date)=?""",
+                (uid, year_str, month_str),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations
+                   WHERE user_id=? AND broker=?
+                     AND strftime('%Y', date)=?
+                     AND strftime('%m', date)=?""",
+                (uid, broker, year_str, month_str),
+            ).fetchone()
+        new_pnl = round(float(row["s"] or 0), 4)
+        conn.execute(
+            """UPDATE monthly_entries SET pnl_realized=?
+               WHERE user_id=? AND broker=? AND year=? AND month=?""",
+            (new_pnl, uid, broker, y, m),
+        )
+        updates += 1
+        brokers_touched.add(broker)
+
+    # Re-reparar capital_final chain con los nuevos pnl_realized
+    for b in brokers_touched:
+        _repair_monthly_chain(conn, uid, b)
+    return updates
+
+
 def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
     """Phase 8 — repara la cadena de monthly_entries para (uid, broker).
 
@@ -2782,7 +2846,11 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_current_user)):
 
             if cash_pos:
                 new_invested = (cash_pos['invested'] or 0) + sign * data.amount
-                if new_invested < 0:
+                # Solo bloqueamos cuando es un WITHDRAW que dejaría negativo.
+                # Para DEPOSIT permitimos siempre (incluso si el resultado sigue
+                # negativo porque la deuda era mayor al depósito — la idea es
+                # ir reduciendo el overdraft progresivamente).
+                if data.direction == 'withdraw' and new_invested < 0:
                     raise HTTPException(
                         400,
                         f"Saldo insuficiente. Disponible: {cash_pos['invested'] or 0:.2f} {currency}"
@@ -3283,6 +3351,11 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
 
     Convención de nombre: '<Padre> · USD'. El campo `parent_broker_id` apunta al
     padre. La currency del hijo es USDT.
+
+    NOTA: para brokers AR (Cocos/IOL/Balanz) el USD es real (no USDT), pero el
+    modelo interno usa USDT como bucket de "stablecoin USD" para unificar
+    crypto + tradfi. El nombre del broker ('<Padre> · USD') refleja la realidad
+    del user; el currency field es plumbing interno.
     """
     parent_id = parent_broker_row['id']
     parent_name = parent_broker_row['name']
@@ -4543,6 +4616,7 @@ _import_helpers._update_monthly_pnl_realized = _update_monthly_pnl_realized
 _import_helpers._update_monthly_flow = _update_monthly_flow
 _import_helpers._repair_monthly_chain = _repair_monthly_chain
 _import_helpers._ensure_usd_sibling = _ensure_usd_sibling
+_import_helpers._recalc_pnl_realized_from_ops = _recalc_pnl_realized_from_ops
 
 
 @app.get("/api/imports/template")
@@ -4581,7 +4655,24 @@ async def import_inspect(
     """Lee headers y primeras filas del CSV. Devuelve también un mapping
     sugerido (auto-detect) y la lista de campos internos de Rendi para
     armar el wizard de mapeo de columnas."""
-    contents = await file.read()
+    # Lectura chunked + cap progresivo (consistente con /preview): evita
+    # OOM si un client manda un archivo de cientos de MB. Cap es el mismo
+    # MAX_FILE_BYTES del pipeline.
+    cap = _import_pipeline.MAX_FILE_BYTES
+    chunks: List[bytes] = []
+    total = 0
+    while total <= cap:
+        chunk = await file.read(min(64 * 1024, cap - total + 1))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > cap:
+            raise HTTPException(
+                400,
+                f"El archivo excede el límite de {cap // 1_000_000} MB.",
+            )
+    contents = b"".join(chunks)
     payload = _import_pipeline.inspect(contents)
     if payload.get("error"):
         raise HTTPException(400, payload["error"])
@@ -4590,16 +4681,64 @@ async def import_inspect(
 
 @app.post("/api/imports/preview")
 async def import_preview(
-    file: UploadFile = File(...),
+    files: Optional[List[UploadFile]] = File(None),       # multi-file (preferido)
+    file: Optional[UploadFile] = File(None),               # legacy, single file
     broker: Optional[str] = Form(None),
     format: Optional[str] = Form(None),
-    mapping: Optional[str] = Form(None),  # JSON string: {"columns": {...}, "defaults": {...}}
-    route_by_currency: Optional[str] = Form(None),  # "1"/"true" → activa ruteo per-row USD→sub
+    mapping: Optional[str] = Form(None),                   # JSON: {"columns":{}, "defaults":{}}
+    route_by_currency: Optional[str] = Form(None),         # "1"/"true" → routing per-row
     uid: int = Depends(get_current_user),
 ):
-    """Sube el CSV y genera el preview. Persiste un batch en estado 'preview'.
-    Devuelve session_id (= batch_id) para usar en /confirm."""
-    contents = await file.read()
+    """Sube uno o más CSVs y genera el preview unificado. Persiste un batch en
+    estado 'preview'. Devuelve session_id (= batch_id) para usar en /confirm.
+
+    Compatibilidad: acepta `file` (un solo CSV — back-compat con clients
+    viejos) o `files` (lista — preferido para multi-año de Cocos/etc).
+    Si llegan ambos, `files` gana.
+    """
+    # Resolver input: lista de UploadFile (puede ser uno o varios)
+    actual_files: List[UploadFile] = []
+    if files:
+        actual_files = [f for f in files if f and f.filename]
+    elif file:
+        actual_files = [file]
+    if not actual_files:
+        raise HTTPException(400, "Subí al menos un archivo CSV.")
+    # Cap de cantidad de archivos — evita un client que abuse pidiendo 1000 files
+    if len(actual_files) > 20:
+        raise HTTPException(400, "Subiste demasiados archivos (máximo 20).")
+
+    # Cap total con lectura CHUNKED para no bufferear archivos enormes antes
+    # de validar. Sin esto, un cliente que manda 1 archivo de 500MB OOM-ea el
+    # proceso entero (FastAPI/Starlette no impone cap default).
+    MAX_TOTAL_BYTES = _import_pipeline.MAX_TOTAL_BYTES
+    file_data: List[tuple] = []  # [(bytes, sanitized_name), ...]
+    total_size = 0
+    for f in actual_files:
+        # Leer en chunks; abortar apenas excedemos el cap (no buffereamos todo).
+        chunks: List[bytes] = []
+        remaining = MAX_TOTAL_BYTES - total_size + 1  # +1 para detectar overflow
+        while remaining > 0:
+            chunk = await f.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total_size += len(chunk)
+            remaining -= len(chunk)
+            if total_size > MAX_TOTAL_BYTES:
+                raise HTTPException(
+                    400,
+                    f"Tamaño total excede {MAX_TOTAL_BYTES // 1_000_000} MB. "
+                    "Subí menos archivos o más chicos.",
+                )
+        data = b"".join(chunks)
+        safe_name = _import_pipeline.sanitize_filename(f.filename)
+        file_data.append((data, safe_name))
+
+    combined_bytes, combined_name, combine_err = _import_pipeline.combine_csv_files(file_data)
+    if combine_err:
+        raise HTTPException(400, combine_err)
+
     parsed_mapping = None
     if mapping:
         try:
@@ -4613,8 +4752,8 @@ async def import_preview(
             payload = _import_pipeline.run_preview(
                 conn,
                 uid=uid,
-                file_bytes=contents,
-                file_name=file.filename,
+                file_bytes=combined_bytes,
+                file_name=combined_name,
                 broker_hint=broker,
                 parser_format=format,
                 mapping=parsed_mapping,
@@ -4623,6 +4762,8 @@ async def import_preview(
         if payload.get("error"):
             # No es 500 — es un error esperado (archivo inválido, formato no soportado).
             raise HTTPException(400, payload["error"])
+        # Anotamos cuántos archivos componen el batch (para el preview UI)
+        payload["source_file_count"] = len(file_data)
         return payload
     except HTTPException:
         raise
@@ -4774,6 +4915,28 @@ def import_mappings_delete(mid: int, uid: int = Depends(get_current_user)):
         with conn:
             conn.execute("DELETE FROM import_mappings WHERE id=? AND user_id=?", (mid, uid))
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/imports/recalc-pnl")
+def import_recalc_pnl(uid: int = Depends(get_current_user)):
+    """Recalcula `monthly_entries.pnl_realized` desde la tabla `operations`.
+
+    Útil cuando cycles previos de import/revert con bugs dejaron drift en el
+    P&L acumulado. Después de correr esto, el dashboard refleja exactamente
+    la suma de pnl_usd de las operations actuales.
+
+    Idempotente. No borra operations ni positions — sólo recalcula los
+    aggregates mensuales. Es seguro de correr en cualquier momento.
+    """
+    conn = get_db()
+    try:
+        with conn:
+            updates = _recalc_pnl_realized_from_ops(conn, uid)
+        return {"recalculated": True, "rows_updated": updates}
+    except Exception as ex:
+        raise HTTPException(500, f"Error al recalcular P&L: {ex}")
     finally:
         conn.close()
 

@@ -88,7 +88,10 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   const [parserGroups, setParserGroups] = useState([])
   const [platform, setPlatform] = useState('generic')
   const [format, setFormat] = useState('rendi_generic')
-  const [file, setFile] = useState(null)
+  // Multi-file: el wizard ahora acepta N CSVs en un mismo import. El backend
+  // los combina (manteniendo el header del primero) y los procesa como un
+  // solo batch. Ideal para subir un año por archivo de Cocos/IOL/etc.
+  const [files, setFiles] = useState([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [inspect, setInspect] = useState(null)        // {headers, sample_rows, rendi_fields, suggested_mapping}
@@ -123,6 +126,14 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     api.get('/imports/mappings').then(setSavedTemplates).catch(() => setSavedTemplates([]))
   }, [])
 
+  // Nota: anteriormente forzábamos hasUsdOps=true para Cocos, pero rompe
+  // SELLs que mezclan lots ARS+USD del mismo CEDEAR (el CEDEAR es fungible
+  // pero el routing separa los lots en dos sub-brokers, y un Venta de 35
+  // TSLA en ARS no podía consumir los 21 lots USD del sibling). El P&L
+  // cross-currency ya se maneja correctamente en el persister via la
+  // columna positions.currency, así que no hace falta routing forzado.
+  // El user puede activarlo manualmente si prefiere ver el cash separado.
+
   async function saveTemplate(name) {
     if (!name?.trim()) return
     try {
@@ -156,7 +167,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
 
   function reset() {
     setStep(STEP_UPLOAD)
-    setFile(null)
+    setFiles([])
     setInspect(null)
     setMapping({ columns: {}, defaults: {} })
     setPreview(null)
@@ -224,8 +235,8 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   const isSpecificParser = format && format !== 'rendi_generic'
 
   async function uploadAndInspect() {
-    if (!file) {
-      setError('Seleccioná un archivo CSV.')
+    if (!files || files.length === 0) {
+      setError('Seleccioná al menos un archivo CSV.')
       return
     }
     // Cuando usás un parser específico (Binance/Balanz), el broker viene
@@ -240,7 +251,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
       // Para parsers específicos saltamos el Map step y vamos directo al Preview.
       if (isSpecificParser) {
         const fd = new FormData()
-        fd.append('file', file)
+        files.forEach(f => fd.append('files', f))
         fd.append('format', format)
         if (importMode === 'single' && singleBroker) {
           fd.append('broker', singleBroker)
@@ -251,9 +262,10 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
         setStep(STEP_PREVIEW)
         return
       }
-      // Genérico: inspect → map → preview
+      // Genérico: inspect → map → preview. Inspect lee solo el primer archivo
+      // (los demás deben tener el mismo header — se valida al subirlos juntos).
       const fd = new FormData()
-      fd.append('file', file)
+      fd.append('file', files[0])
       const data = await api.upload('/imports/inspect', fd)
       setInspect(data)
       const initial = {
@@ -285,7 +297,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     setBusy(true)
     try {
       const fd = new FormData()
-      fd.append('file', file)
+      files.forEach(f => fd.append('files', f))
       fd.append('format', 'rendi_generic')
       fd.append('mapping', JSON.stringify(mapping))
       if (useCurrencyRouting) fd.append('route_by_currency', '1')
@@ -411,7 +423,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               parserGroups={parserGroups}
               platform={platform} setPlatform={setPlatform}
               format={format} setFormat={setFormat}
-              file={file} setFile={setFile}
+              files={files} setFiles={setFiles}
               downloadTemplate={downloadTemplate}
               inputRef={inputRef}
               importMode={importMode} setImportMode={setImportMode}
@@ -503,7 +515,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             {step === STEP_UPLOAD && (
               <button
                 onClick={uploadAndInspect}
-                disabled={busy || !file}
+                disabled={busy || files.length === 0}
                 className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {busy && <Loader2 size={14} className="animate-spin" />}
@@ -608,7 +620,7 @@ function Stepper({ step, skipMap, hasSeed }) {
 
 
 function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
-                      format, setFormat, file, setFile, downloadTemplate, inputRef,
+                      format, setFormat, files, setFiles, downloadTemplate, inputRef,
                       importMode, setImportMode, singleBroker, setSingleBroker, brokers,
                       isArsBroker, hasUsdOps, setHasUsdOps }) {
   const [fileError, setFileError] = useState(null)
@@ -631,17 +643,56 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
     }
   }
 
-  function pickFile(f) {
-    if (!f) return
-    const name = (f.name || '').toLowerCase()
-    const ok = name.endsWith('.csv') || name.endsWith('.txt')
-    if (!ok) {
-      setFileError(`"${f.name}" no es un CSV. Solo aceptamos archivos .csv. Si el broker te dio un PDF o Excel, exportalo como CSV o copiá los datos al template.`)
-      setFile(null)
-      return
+  // Acumula files: en cada pickFiles agregamos al state existente (no
+  // reemplazamos). Permite seleccionar archivos en pasos o por drag-and-drop
+  // múltiples veces. Dedup por (name, size).
+  function pickFiles(newFiles) {
+    if (!newFiles || newFiles.length === 0) return
+    const incoming = Array.from(newFiles)
+    const errors = []
+    const valid = []
+    for (const f of incoming) {
+      const name = (f.name || '').toLowerCase()
+      if (!(name.endsWith('.csv') || name.endsWith('.txt'))) {
+        errors.push(`"${f.name}" no es un CSV.`)
+        continue
+      }
+      valid.push(f)
     }
-    setFileError(null)
-    setFile(f)
+    // Dedup + feedback de duplicates
+    let dupCount = 0
+    setFiles(prev => {
+      const seen = new Set(prev.map(f => `${f.name}::${f.size}`))
+      const merged = [...prev]
+      for (const f of valid) {
+        const key = `${f.name}::${f.size}`
+        if (seen.has(key)) {
+          dupCount++
+        } else {
+          merged.push(f)
+          seen.add(key)
+        }
+      }
+      return merged
+    })
+    // Feedback: combinamos errores (no-CSV) + duplicates ignorados (info).
+    if (errors.length > 0) {
+      setFileError(
+        errors.join(' ') +
+        ' Solo aceptamos archivos .csv. Si tu broker te dio PDF/Excel, exportalo como CSV.',
+      )
+    } else if (dupCount > 0) {
+      setFileError(
+        `${dupCount} ${dupCount === 1 ? 'archivo ya estaba' : 'archivos ya estaban'} seleccionado${dupCount === 1 ? '' : 's'} — lo ignoramos.`,
+      )
+    } else {
+      setFileError(null)
+    }
+  }
+
+  // Quita un archivo por (name+size) — key estable independiente del orden.
+  function removeFile(name, size) {
+    setFiles(prev => prev.filter(f => !(f.name === name && f.size === size)))
   }
   return (
     <div className="space-y-4">
@@ -816,31 +867,73 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
           </div>
         )}
         <div
+          role="button"
+          tabIndex={0}
+          aria-label="Seleccionar archivos CSV — arrastrá o hacé clic"
           onClick={() => inputRef.current?.click()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              inputRef.current?.click()
+            }
+          }}
           onDragOver={e => { e.preventDefault() }}
           onDrop={e => {
             e.preventDefault()
-            pickFile(e.dataTransfer.files?.[0])
+            pickFiles(e.dataTransfer?.files)
           }}
-          className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg p-6 text-center cursor-pointer hover:border-rendi-accent/50 transition"
+          className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg p-6 text-center cursor-pointer hover:border-rendi-accent/50 focus:border-rendi-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-rendi-accent/40 transition"
         >
           <input
             ref={inputRef}
             type="file"
-            accept=".csv,text/csv"
+            accept=".csv,text/csv,text/plain"
+            multiple
             className="hidden"
-            onChange={e => pickFile(e.target.files?.[0])}
+            onChange={e => pickFiles(e.target.files)}
           />
-          {file ? (
-            <div className="flex items-center justify-center gap-2 text-sm text-slate-700 dark:text-slate-200">
-              <FileText size={16} />
-              <span className="font-medium">{file.name}</span>
-              <span className="text-slate-500">({(file.size / 1024).toFixed(1)} KB)</span>
-            </div>
-          ) : (
+          {files.length === 0 ? (
             <div className="text-sm text-slate-500 dark:text-slate-400">
               <Upload size={20} className="mx-auto mb-2 opacity-60" />
-              Soltá un archivo CSV o hacé clic para seleccionarlo
+              Soltá uno o varios CSV o hacé clic para seleccionarlos
+              <div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                Tip: para importar varios años de Cocos, seleccioná los CSVs juntos
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-700 dark:text-slate-200">
+              <div className="text-xs text-slate-500 dark:text-slate-400 mb-2">
+                {files.length} {files.length === 1 ? 'archivo seleccionado' : 'archivos seleccionados'} · hacé clic para agregar más
+              </div>
+              <ul className="space-y-1 text-left max-w-md mx-auto">
+                {files.map(f => (
+                  <li
+                    key={`${f.name}::${f.size}`}
+                    className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-slate-100 dark:bg-slate-800"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <FileText size={14} className="flex-shrink-0 text-slate-500" />
+                      <span className="font-medium truncate">{f.name}</span>
+                      <span className="text-slate-500 text-xs flex-shrink-0">({(f.size / 1024).toFixed(1)} KB)</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); removeFile(f.name, f.size) }}
+                      className="text-slate-400 hover:text-red-500 transition p-0.5"
+                      title="Quitar archivo"
+                      aria-label={`Quitar ${f.name}`}
+                    >
+                      <X size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {!isSpecific && files.length > 1 && (
+                <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                  Nota: vamos a mapear las columnas del primer archivo. Los demás
+                  deben tener el mismo header.
+                </div>
+              )}
             </div>
           )}
         </div>
