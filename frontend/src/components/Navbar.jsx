@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Briefcase, List, Settings, LogOut, Sun, Moon, Compass, Shield, Target, Menu, X, BarChart3, Bell } from 'lucide-react'
+import { LayoutDashboard, Briefcase, List, Settings, LogOut, Sun, Moon, Compass, Shield, Target, Menu, X, BarChart3, Bell, Home as HomeIcon } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 
 const links = [
-  { to: '/',            label: 'Dashboard',   icon: LayoutDashboard },
+  { to: '/',            label: 'Home',        icon: HomeIcon },
+  { to: '/dashboard',   label: 'Dashboard',   icon: LayoutDashboard },
   { to: '/operaciones', label: 'Operaciones', icon: List },
   { to: '/posiciones',  label: 'Posiciones',  icon: Briefcase },
   { to: '/insights',    label: 'Insights',    icon: Compass },

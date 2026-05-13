@@ -5424,6 +5424,112 @@ def reports_period_detail(
         conn.close()
 
 
+# ─── Home: market data + briefing personalizado ──────────────────────────────
+# Nueva landing page `/home` (mostrada como primer ítem del navbar).
+# Composición: índices + heatmap S&P + movers + cards personales + news/events.
+# Backend: módulo `home/` con pure functions + cache in-memory.
+
+from home.market import (
+    get_indices_strip,
+    get_heatmap_sp500,
+    get_movers_sp500,
+    _fetch_batch_quotes,
+)
+from home.briefing import build_personal_cards
+
+
+@app.get("/api/home/indices")
+def home_indices(uid: int = Depends(get_current_user)):
+    """Strip superior: S&P, Nasdaq, Merval, BTC, ETH, Oro."""
+    return {"items": get_indices_strip()}
+
+
+@app.get("/api/home/heatmap")
+def home_heatmap(market: str = "sp500", uid: int = Depends(get_current_user)):
+    """Heatmap del mercado. V1 solo soporta sp500."""
+    if market != "sp500":
+        raise HTTPException(400, "Solo S&P 500 soportado en V1.")
+    return {"market": market, "blocks": get_heatmap_sp500()}
+
+
+@app.get("/api/home/movers")
+def home_movers(market: str = "sp500", uid: int = Depends(get_current_user)):
+    """Top 5 gainers + top 5 losers del día."""
+    if market != "sp500":
+        raise HTTPException(400, "Solo S&P 500 soportado en V1.")
+    return get_movers_sp500()
+
+
+@app.get("/api/home/personal")
+def home_personal(uid: int = Depends(get_current_user)):
+    """Cards "Lo que te afecta" — holdings que se mueven + earnings próximos.
+
+    Reusa quotes del heatmap (cacheadas) + lista de eventos del portfolio.
+    Si el user no tiene holdings, devuelve cards vacío.
+    """
+    conn = get_db()
+    try:
+        # Holdings del user → símbolos para fetchear quotes
+        rows = conn.execute(
+            """SELECT DISTINCT asset FROM positions
+                WHERE user_id = ? AND is_cash = 0
+                  AND quantity > 0
+                  AND asset NOT LIKE '%-%'  -- excluir cash-like duplicates
+                LIMIT 30""",
+            (uid,),
+        ).fetchall()
+        symbols = [r["asset"] for r in rows if r["asset"]]
+        all_quotes = _fetch_batch_quotes(symbols) if symbols else {}
+
+        # Eventos del portfolio (reuso de _get_portfolio_events si existe;
+        # sino devolvemos lista vacía)
+        try:
+            events = _get_portfolio_events_cached(uid)
+        except Exception:
+            events = []
+
+        cards = build_personal_cards(
+            conn, uid,
+            all_quotes=all_quotes,
+            portfolio_events=events,
+        )
+        return {"cards": cards}
+    finally:
+        conn.close()
+
+
+def _get_portfolio_events_cached(uid: int) -> list:
+    """Helper que reusa la lógica de /api/events/portfolio sin re-pegar al fetcher.
+    Por simplicidad consultamos directo a la tabla `events` con los tickers del user."""
+    conn = get_db()
+    try:
+        # Tickers del user
+        rows = conn.execute(
+            """SELECT DISTINCT asset FROM positions
+                WHERE user_id = ? AND is_cash = 0 AND quantity > 0""",
+            (uid,),
+        ).fetchall()
+        tickers = [r["asset"] for r in rows if r["asset"]]
+        if not tickers:
+            return []
+        # Buscar eventos en próximos 14 días para esos tickers
+        from datetime import date as _date, timedelta as _td
+        today = _date.today().isoformat()
+        cutoff = (_date.today() + _td(days=14)).isoformat()
+        placeholders = ",".join("?" * len(tickers))
+        events = conn.execute(
+            f"""SELECT ticker, event_type, event_date, details, confirmed
+                  FROM events
+                 WHERE ticker IN ({placeholders})
+                   AND event_date >= ? AND event_date <= ?
+                 ORDER BY event_date ASC""",
+            (*tickers, today, cutoff),
+        ).fetchall()
+        return [dict(e) for e in events]
+    finally:
+        conn.close()
+
+
 @app.post("/api/admin/snapshots/run-now")
 def admin_run_snapshot(uid: int = Depends(get_admin_user)):
     """Triggea el job manualmente — útil para testing y para forzar un
