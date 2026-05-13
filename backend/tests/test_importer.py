@@ -544,6 +544,29 @@ class CocosParserTest(unittest.TestCase):
         self.assertEqual(_clean_ar_number("100"), "100")
         self.assertEqual(_clean_ar_number(""), "")
 
+    def test_precio_computed_from_monto_div_qty_not_parsed(self):
+        """REGRESIÓN crítica: para FCI, la columna precio del CSV de Cocos
+        tiene formato ambiguo (ej '10.094,497' interpretado AR-strict da
+        10094.497 pero el valor real es 10.094). Si el parser usara la columna
+        directamente, el persister calcularía SELL proceeds = 10094 × 192644
+        = ~1.97 BILLONES ARS → P&L Realizado falso de $1.4M USD.
+        El fix: precio = monto/qty (siempre consistente con monto)."""
+        result = self.parser.parse(self.fixture)
+
+        # FCI Suscripción del fixture
+        fci_buy = next(r for r in result.raw_rows
+                       if r.data["activo"] == "COCORMA" and r.data["tipo"] == "COMPRA")
+        precio = float(fci_buy.data["precio"])
+        # El precio real está cerca de 10.094, no 10094
+        self.assertAlmostEqual(precio, 10.094497, places=4,
+            msg=f"precio FCI inflado: {precio} — debería ser ~10.09")
+
+        # CEDEAR/stock — el precio computado debe coincidir con el del CSV
+        # (donde AR-strict daría el mismo resultado)
+        nflx = next(r for r in result.raw_rows
+                    if r.data["activo"] == "NFLX" and r.data["tipo"] == "COMPRA")
+        self.assertAlmostEqual(float(nflx.data["precio"]), 2723.4285714, places=3)
+
 
 class GenericParserTest(unittest.TestCase):
     def test_parses_basic_csv(self):

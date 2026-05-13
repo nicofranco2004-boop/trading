@@ -162,6 +162,26 @@ def _sum_fees(*raw_values: str) -> str:
     return f"{total:.2f}" if total else "0"
 
 
+def _safe_div_str(num_str: str, den_str: str) -> str:
+    """Computa num/den como float y devuelve string limpio. Sirve para
+    derivar precio=monto/qty evitando la ambigüedad de la columna precio del
+    CSV de Cocos. Devuelve "" si no parsea o den es 0.
+
+       _safe_div_str('762560', '280') → '2723.4285714285716'
+       _safe_div_str('1948815', '193057.1677') → '10.094497..."
+    """
+    if not num_str or not den_str:
+        return ""
+    try:
+        n = float(num_str)
+        d = float(den_str)
+        if d == 0:
+            return ""
+        return repr(n / d)
+    except (ValueError, TypeError):
+        return ""
+
+
 class CocosParser(Parser):
     format_id = "cocos"
     display_name = "Cocos Capital"
@@ -259,10 +279,16 @@ class CocosParser(Parser):
 
             # Monto y campos numéricos
             if tipo_rendi in ("COMPRA", "VENTA"):
-                # Bruto (qty * price); fees por separado
+                # Bruto (qty * price); fees por separado.
                 monto = _abs_number_str(G(row, "montobruto"))
                 qty = _abs_number_str(G(row, "cantidad"))
-                precio = _clean_ar_number(G(row, "precio"))
+                # IMPORTANTE: NO usamos la columna `precio` del CSV — el formato
+                # de Cocos es ambiguo (ej: '10.094,497' interpretado AR-strict
+                # da 10094.497, pero el valor real para FCI es 10.094). El
+                # persister hace `proceeds = unit_price × qty` en SELLs, y un
+                # precio inflado x1000 genera P&L falso millonario.
+                # Computamos precio = monto/qty → siempre consistente con monto.
+                precio = _safe_div_str(monto, qty)
                 fees = _sum_fees(
                     G(row, "comision"),
                     G(row, "ddmm"),
