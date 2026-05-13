@@ -12,7 +12,7 @@ import Insights from './pages/Insights'
 import Admin from './pages/Admin'
 import Goals from './pages/Goals'
 import Imports from './pages/Imports'
-import MonthlyReports from './pages/MonthlyReports'
+import Reports from './pages/Reports'
 import Novedades from './pages/Novedades'
 
 function Layout() {
@@ -34,7 +34,7 @@ function Layout() {
         <Route path="/posiciones" element={<Positions />} />
         <Route path="/insights" element={<Insights />} />
         <Route path="/mensual" element={<Monthly />} />
-        <Route path="/reportes" element={<MonthlyReports />} />
+        <Route path="/reportes" element={<Reports />} />
         <Route path="/novedades" element={<Novedades />} />
         {/* Redirects para back-compat con bookmarks/links viejos. Antes
             estas rutas montaban las páginas standalone; ahora reenvían al
