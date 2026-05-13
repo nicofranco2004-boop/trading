@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator, Field
-from typing import Optional
+from typing import Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3295,6 +3295,11 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
 
     Convención de nombre: '<Padre> · USD'. El campo `parent_broker_id` apunta al
     padre. La currency del hijo es USDT.
+
+    NOTA: para brokers AR (Cocos/IOL/Balanz) el USD es real (no USDT), pero el
+    modelo interno usa USDT como bucket de "stablecoin USD" para unificar
+    crypto + tradfi. El nombre del broker ('<Padre> · USD') refleja la realidad
+    del user; el currency field es plumbing interno.
     """
     parent_id = parent_broker_row['id']
     parent_name = parent_broker_row['name']
@@ -4602,16 +4607,64 @@ async def import_inspect(
 
 @app.post("/api/imports/preview")
 async def import_preview(
-    file: UploadFile = File(...),
+    files: Optional[List[UploadFile]] = File(None),       # multi-file (preferido)
+    file: Optional[UploadFile] = File(None),               # legacy, single file
     broker: Optional[str] = Form(None),
     format: Optional[str] = Form(None),
-    mapping: Optional[str] = Form(None),  # JSON string: {"columns": {...}, "defaults": {...}}
-    route_by_currency: Optional[str] = Form(None),  # "1"/"true" → activa ruteo per-row USD→sub
+    mapping: Optional[str] = Form(None),                   # JSON: {"columns":{}, "defaults":{}}
+    route_by_currency: Optional[str] = Form(None),         # "1"/"true" → routing per-row
     uid: int = Depends(get_current_user),
 ):
-    """Sube el CSV y genera el preview. Persiste un batch en estado 'preview'.
-    Devuelve session_id (= batch_id) para usar en /confirm."""
-    contents = await file.read()
+    """Sube uno o más CSVs y genera el preview unificado. Persiste un batch en
+    estado 'preview'. Devuelve session_id (= batch_id) para usar en /confirm.
+
+    Compatibilidad: acepta `file` (un solo CSV — back-compat con clients
+    viejos) o `files` (lista — preferido para multi-año de Cocos/etc).
+    Si llegan ambos, `files` gana.
+    """
+    # Resolver input: lista de UploadFile (puede ser uno o varios)
+    actual_files: List[UploadFile] = []
+    if files:
+        actual_files = [f for f in files if f and f.filename]
+    elif file:
+        actual_files = [file]
+    if not actual_files:
+        raise HTTPException(400, "Subí al menos un archivo CSV.")
+    # Cap de cantidad de archivos — evita un client que abuse pidiendo 1000 files
+    if len(actual_files) > 20:
+        raise HTTPException(400, "Subiste demasiados archivos (máximo 20).")
+
+    # Cap total con lectura CHUNKED para no bufferear archivos enormes antes
+    # de validar. Sin esto, un cliente que manda 1 archivo de 500MB OOM-ea el
+    # proceso entero (FastAPI/Starlette no impone cap default).
+    MAX_TOTAL_BYTES = _import_pipeline.MAX_TOTAL_BYTES
+    file_data: List[tuple] = []  # [(bytes, sanitized_name), ...]
+    total_size = 0
+    for f in actual_files:
+        # Leer en chunks; abortar apenas excedemos el cap (no buffereamos todo).
+        chunks: List[bytes] = []
+        remaining = MAX_TOTAL_BYTES - total_size + 1  # +1 para detectar overflow
+        while remaining > 0:
+            chunk = await f.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total_size += len(chunk)
+            remaining -= len(chunk)
+            if total_size > MAX_TOTAL_BYTES:
+                raise HTTPException(
+                    400,
+                    f"Tamaño total excede {MAX_TOTAL_BYTES // 1_000_000} MB. "
+                    "Subí menos archivos o más chicos.",
+                )
+        data = b"".join(chunks)
+        safe_name = _import_pipeline.sanitize_filename(f.filename)
+        file_data.append((data, safe_name))
+
+    combined_bytes, combined_name, combine_err = _import_pipeline.combine_csv_files(file_data)
+    if combine_err:
+        raise HTTPException(400, combine_err)
+
     parsed_mapping = None
     if mapping:
         try:
@@ -4625,8 +4678,8 @@ async def import_preview(
             payload = _import_pipeline.run_preview(
                 conn,
                 uid=uid,
-                file_bytes=contents,
-                file_name=file.filename,
+                file_bytes=combined_bytes,
+                file_name=combined_name,
                 broker_hint=broker,
                 parser_format=format,
                 mapping=parsed_mapping,
@@ -4635,6 +4688,8 @@ async def import_preview(
         if payload.get("error"):
             # No es 500 — es un error esperado (archivo inválido, formato no soportado).
             raise HTTPException(400, payload["error"])
+        # Anotamos cuántos archivos componen el batch (para el preview UI)
+        payload["source_file_count"] = len(file_data)
         return payload
     except HTTPException:
         raise

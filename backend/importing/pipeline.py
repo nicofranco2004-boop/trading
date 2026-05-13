@@ -23,8 +23,32 @@ from . import seed as _seed
 
 
 PREVIEW_TTL_HOURS = 1
-MAX_FILE_BYTES = 1_000_000      # 1 MB
+MAX_FILE_BYTES = 5_000_000      # 5 MB por archivo individual (input al pipeline)
+MAX_TOTAL_BYTES = 5_000_000     # 5 MB sumado al cargar multi-file (cap del endpoint)
 MAX_ROWS = 10_000
+
+
+def sanitize_filename(name: Optional[str]) -> str:
+    """Sanitiza un nombre de archivo que llega del cliente. Reduce a chars
+    seguros (alfanuméricos + ._- + espacio) y trunca a 80 chars.
+
+    Defensa contra:
+    - Path traversal (../) — descartamos slashes
+    - Newlines / control chars que rompen logs y la UI de batches
+    - Filenames vacíos / None — devolvemos "archivo.csv" como default
+    """
+    import re
+    raw = (name or "").strip()
+    if not raw:
+        return "archivo.csv"
+    # Saca el path en caso de que el navegador haya mandado uno completo
+    raw = raw.replace("\\", "/").split("/")[-1]
+    # Whitelist conservadora: letras (incluyendo acentos básicos), dígitos,
+    # ._- y espacio. Cualquier otra cosa → underscore.
+    cleaned = re.sub(r"[^\w\.\- ]", "_", raw, flags=re.UNICODE)
+    # Colapsa underscores múltiples y trim
+    cleaned = re.sub(r"_+", "_", cleaned).strip(" ._-") or "archivo.csv"
+    return cleaned[:80]
 
 
 def _file_hash(content: bytes) -> str:
@@ -102,6 +126,90 @@ def inspect(file_bytes: bytes) -> Dict[str, Any]:
         except UnicodeDecodeError:
             return {"error": "No pudimos decodificar el archivo. Probá guardarlo como UTF-8."}
     return mapper_inspect(content)
+
+
+def _decode_csv(file_bytes: bytes) -> Optional[str]:
+    """Decodifica bytes a string. None si falla.
+
+    Probamos en orden: utf-8 (con BOM), cp1252 (Excel Windows), latin-1 (catch-all).
+    cp1252 cubre exports de Excel Windows que latin-1 muta mal (chars 0x80-0x9F).
+    """
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return file_bytes.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
+def _normalize_header_for_match(line: str) -> str:
+    """Normaliza la primera línea de un CSV para comparar headers entre files:
+    saca BOM residual, lowercase, strip. Tolera diferencias menores de encoding."""
+    return line.lstrip("﻿").strip().lower()
+
+
+def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optional[str]]:
+    """Combina N CSVs en un único stream, manteniendo el header del primero y
+    saltando el de los siguientes. Útil para multi-file upload del wizard.
+
+    `files`: lista de (bytes, name).
+
+    Devuelve `(combined_bytes, combined_name, error)`. Si `error` es no-None,
+    el combinado no se debe usar — el caller debe surface al user.
+
+    Validaciones:
+    - Todos los archivos deben ser decodificables (UTF-8 o Latin-1).
+    - Todos deben tener el MISMO header en la primera línea — sino no podemos
+      garantizar que los row_index sean coherentes ni que el parser funcione.
+    - Excluye archivos vacíos.
+
+    Output:
+    - combined_name: "2024.csv + 2025.csv + 2026.csv" (max ~200 chars)
+    - file_hash se calcula sobre el combined_bytes en run_preview, así dos
+      uploads idénticos quedan dedup-eados aunque el orden sea distinto si los
+      archivos individuales son iguales (cuestión menor — el orden importa).
+    """
+    if not files:
+        return (b"", "", "No se subió ningún archivo.")
+    if len(files) == 1:
+        return (files[0][0], files[0][1] or "import.csv", None)
+
+    decoded: List[Tuple[List[str], str]] = []  # [(lines, name), ...]
+    for data, name in files:
+        if not data:
+            continue
+        text = _decode_csv(data)
+        if text is None:
+            return (b"", "", f"No pudimos decodificar '{name}'. Probá guardarlo como UTF-8.")
+        lines = text.splitlines()
+        if not lines:
+            continue
+        decoded.append((lines, name or "archivo.csv"))
+
+    if not decoded:
+        return (b"", "", "Todos los archivos estaban vacíos.")
+    if len(decoded) == 1:
+        return ("\n".join(decoded[0][0]).encode("utf-8"), decoded[0][1], None)
+
+    # El header del primero define el formato — los demás deben matchear.
+    # Normalizamos para tolerar BOM residual / casing al comparar entre files.
+    first_header_norm = _normalize_header_for_match(decoded[0][0][0])
+    parts: List[str] = [decoded[0][0][0]]  # header original del primero
+    for lines, name in decoded:
+        if _normalize_header_for_match(lines[0]) != first_header_norm:
+            return (
+                b"", "",
+                f"Los archivos no coinciden en formato. "
+                f"'{name}' tiene un header distinto al primero. "
+                f"Subí archivos del mismo broker/export.",
+            )
+        parts.extend(lines[1:])  # skip header de archivos 2..N
+
+    combined_text = "\n".join(parts)
+    names_joined = " + ".join(n for _, n in decoded)
+    # Cap el nombre combinado para que entre en la columna file_name
+    combined_name = names_joined if len(names_joined) <= 200 else names_joined[:197] + "..."
+    return (combined_text.encode("utf-8"), combined_name, None)
 
 
 def run_preview(

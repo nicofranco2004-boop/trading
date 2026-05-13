@@ -2704,6 +2704,308 @@ class CrossCurrencyLotSellTest(unittest.TestCase):
         self.assertEqual(pos["currency"], "USD")
 
 
+class CombineCsvFilesTest(unittest.TestCase):
+    """Unit tests del helper combine_csv_files (multi-file upload)."""
+
+    def test_empty_list_returns_error(self):
+        from importing.pipeline import combine_csv_files
+        data, name, err = combine_csv_files([])
+        self.assertIn("ningún archivo", err.lower())
+
+    def test_single_file_returns_unchanged(self):
+        from importing.pipeline import combine_csv_files
+        body = b"a;b\n1;2\n3;4\n"
+        data, name, err = combine_csv_files([(body, "x.csv")])
+        self.assertIsNone(err)
+        self.assertEqual(data, body)
+        self.assertEqual(name, "x.csv")
+
+    def test_two_files_combined_with_single_header(self):
+        from importing.pipeline import combine_csv_files
+        f1 = b"a;b\n1;2\n3;4\n"
+        f2 = b"a;b\n5;6\n7;8\n"
+        data, name, err = combine_csv_files([(f1, "y1.csv"), (f2, "y2.csv")])
+        self.assertIsNone(err)
+        text = data.decode("utf-8")
+        # Header aparece UNA sola vez
+        self.assertEqual(text.count("a;b"), 1)
+        # Las 4 filas de datos están
+        for v in ("1;2", "3;4", "5;6", "7;8"):
+            self.assertIn(v, text)
+        self.assertEqual(name, "y1.csv + y2.csv")
+
+    def test_three_files_preserves_order(self):
+        from importing.pipeline import combine_csv_files
+        files = [
+            (b"h\nrow_a\n", "2024.csv"),
+            (b"h\nrow_b\n", "2025.csv"),
+            (b"h\nrow_c\n", "2026.csv"),
+        ]
+        data, _, err = combine_csv_files(files)
+        self.assertIsNone(err)
+        text = data.decode("utf-8")
+        self.assertLess(text.index("row_a"), text.index("row_b"))
+        self.assertLess(text.index("row_b"), text.index("row_c"))
+
+    def test_mismatched_headers_returns_error(self):
+        from importing.pipeline import combine_csv_files
+        f1 = b"a;b\n1;2\n"
+        f2 = b"x;y\n3;4\n"
+        data, name, err = combine_csv_files([(f1, "a.csv"), (f2, "b.csv")])
+        self.assertIsNotNone(err)
+        self.assertIn("b.csv", err)
+        self.assertIn("header", err.lower())
+
+    def test_bom_in_second_file_handled(self):
+        """El segundo archivo puede tener BOM; el header debe matchear igual."""
+        from importing.pipeline import combine_csv_files
+        f1 = b"a;b\n1;2\n"
+        # BOM al inicio del segundo
+        f2 = "﻿a;b\n3;4\n".encode("utf-8")
+        data, _, err = combine_csv_files([(f1, "a.csv"), (f2, "b.csv")])
+        self.assertIsNone(err)
+        text = data.decode("utf-8")
+        self.assertIn("3;4", text)
+
+    def test_empty_file_skipped_silently(self):
+        from importing.pipeline import combine_csv_files
+        f1 = b"a;b\n1;2\n"
+        empty = b""
+        data, _, err = combine_csv_files([(f1, "a.csv"), (empty, "empty.csv")])
+        self.assertIsNone(err)
+        self.assertIn("1;2", data.decode("utf-8"))
+
+    def test_long_combined_name_truncated(self):
+        from importing.pipeline import combine_csv_files
+        files = [(b"h\n1\n", f"very_long_name_{i:03d}.csv") for i in range(20)]
+        data, name, err = combine_csv_files(files)
+        self.assertIsNone(err)
+        self.assertLessEqual(len(name), 200)
+
+    def test_handles_cp1252_encoding(self):
+        """Excel-on-Windows exporta cp1252 con chars 0x80-0x9F que latin-1
+        decodifica mal. utf-8-sig falla y debemos caer a cp1252 antes."""
+        from importing.pipeline import combine_csv_files
+        # 'á' en cp1252 = 0xE1 (igual que latin-1), pero '€' = 0x80 (latin-1 lo decodifica
+        # como control char invisible). Usamos un char Windows-1252-specific.
+        f1 = 'h\n€100\n'.encode('cp1252')
+        f2 = b'h\n200\n'
+        data, _, err = combine_csv_files([(f1, 'cp1252.csv'), (f2, 'utf.csv')])
+        self.assertIsNone(err)
+        text = data.decode('utf-8')
+        self.assertIn('€', text)
+
+    def test_header_match_tolerates_bom_in_either_file(self):
+        """Si el primer archivo tiene BOM y el segundo no (o viceversa), el
+        match de headers debe pasar igual."""
+        from importing.pipeline import combine_csv_files
+        f1 = '﻿a;b\n1;2\n'.encode('utf-8')  # con BOM
+        f2 = b'a;b\n3;4\n'                    # sin BOM
+        data, _, err = combine_csv_files([(f1, 'a.csv'), (f2, 'b.csv')])
+        self.assertIsNone(err)
+        # Y al revés
+        data, _, err = combine_csv_files([(f2, 'b.csv'), (f1, 'a.csv')])
+        self.assertIsNone(err)
+
+    def test_header_match_case_insensitive(self):
+        from importing.pipeline import combine_csv_files
+        f1 = b'Fecha;Tipo\n2024;Compra\n'
+        f2 = b'FECHA;TIPO\n2025;Venta\n'  # mismo header en distinto casing
+        data, _, err = combine_csv_files([(f1, 'a.csv'), (f2, 'b.csv')])
+        self.assertIsNone(err)
+
+    def test_combined_with_cocos_real_format(self):
+        """Realista: 2 CSVs de Cocos combinados. El header de Cocos tiene
+        muchas columnas, así que validamos que no rompe."""
+        from importing.pipeline import combine_csv_files
+        header = (
+            "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;"
+            "tipoOperacion;instrumento;moneda;mercado;cantidad;precio;"
+            "montoBruto;comision;ddmm;iva;otros;total"
+        )
+        row_2024 = "100;200;15-06-2024;15-06-2024;Compra;CEDEAR APPLE (AAPL);ARS;BYMA;10;100;-1000;0;0;0;0;-1000"
+        row_2025 = "300;400;15-06-2025;15-06-2025;Venta;CEDEAR APPLE (AAPL);ARS;BYMA;-5;200;1000;0;0;0;0;1000"
+        f1 = f"{header}\n{row_2024}\n".encode("utf-8")
+        f2 = f"{header}\n{row_2025}\n".encode("utf-8")
+        data, _, err = combine_csv_files([(f1, "2024.csv"), (f2, "2025.csv")])
+        self.assertIsNone(err)
+        text = data.decode("utf-8")
+        self.assertEqual(text.count(header), 1)
+        self.assertIn("2024", text)
+        self.assertIn("2025", text)
+
+
+class MultiFilePreviewE2ETest(unittest.TestCase):
+    """E2E: subir múltiples CSVs por el endpoint /imports/preview."""
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions",
+                  "monthly_entries", "brokers", "users"):
+            conn.execute(f"DELETE FROM {t}")
+        conn.commit()
+        self.uid = _new_user(conn, email="multifile@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+
+    def _post_files(self, *files_with_names, format="cocos", broker="Cocos"):
+        """Helper: POST multipart con N files al endpoint preview."""
+        import io
+        multipart_files = [
+            ("files", (name, io.BytesIO(data), "text/csv"))
+            for data, name in files_with_names
+        ]
+        return self.client.post(
+            "/api/imports/preview",
+            files=multipart_files,
+            data={"format": format, "broker": broker},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def _cocos_csv(self, *rows):
+        header = (
+            "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;"
+            "tipoOperacion;instrumento;moneda;mercado;cantidad;precio;"
+            "montoBruto;comision;ddmm;iva;otros;total"
+        )
+        return ("\n".join([header] + list(rows)) + "\n").encode("utf-8")
+
+    def test_single_file_via_files_field_works(self):
+        """`files` con 1 elemento debe funcionar igual que `file` legacy."""
+        csv = self._cocos_csv(
+            "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000",
+        )
+        res = self._post_files((csv, "2024.csv"))
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body.get("source_file_count"), 1)
+        self.assertGreaterEqual(body["summary"]["valid_rows"], 1)
+
+    def test_three_files_combined_into_one_batch(self):
+        """Subir 2024+2025+2026: debe haber un solo session_id y todas las
+        filas válidas en él."""
+        csv_2024 = self._cocos_csv(
+            "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000",
+        )
+        csv_2025 = self._cocos_csv(
+            "10;20;15-06-2025;15-06-2025;Compra;CEDEAR APPLE (AAPL);ARS;BYMA;10;100;-1000;0;0;0;0;-1000",
+        )
+        csv_2026 = self._cocos_csv(
+            "100;200;15-06-2026;15-06-2026;Venta;CEDEAR APPLE (AAPL);ARS;BYMA;-10;150;1500;0;0;0;0;1500",
+        )
+        res = self._post_files(
+            (csv_2024, "2024.csv"),
+            (csv_2025, "2025.csv"),
+            (csv_2026, "2026.csv"),
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["source_file_count"], 3)
+        # 3 filas válidas (1 deposit + 1 buy + 1 sell)
+        self.assertEqual(body["summary"]["valid_rows"], 3)
+        # Un solo session_id
+        self.assertTrue(body["session_id"])
+
+    def test_files_with_mismatched_headers_returns_400(self):
+        """Headers distintos entre archivos → 400 con mensaje claro."""
+        ok = self._cocos_csv("1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000")
+        bad = b"fecha,tipo,monto\n2025-06-15,DEPOSITO,500\n"
+        res = self._post_files((ok, "cocos.csv"), (bad, "otro.csv"), format="cocos")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("formato", res.json()["detail"].lower())
+
+    def test_no_files_returns_400(self):
+        res = self.client.post(
+            "/api/imports/preview",
+            data={"format": "cocos"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_total_size_cap_enforced(self):
+        """Total > 5MB rechaza con 400 antes de tocar el parser."""
+        # 5.5MB de "x;y\n" (4 bytes/línea)
+        big = b"a;b\n" + b"x;y\n" * 1_400_000
+        res = self._post_files((big, "huge.csv"))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("excede", res.json()["detail"].lower())
+
+    def test_too_many_files_rejected(self):
+        """Cap de 20 archivos para evitar abuse."""
+        csv = self._cocos_csv("1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;1;0;0;0;0;1")
+        files = [(csv, f"y{i:02d}.csv") for i in range(21)]
+        res = self._post_files(*files)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("demasiados", res.json()["detail"].lower())
+
+    def test_filename_with_path_traversal_sanitized(self):
+        """Filename con ../ debe sanitizarse antes de persistir en DB."""
+        import io
+        csv = self._cocos_csv(
+            "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100;0;0;0;0;100",
+        )
+        # filename malicioso con path traversal + newline
+        evil = "../../../etc/passwd\n.csv"
+        res = self.client.post(
+            "/api/imports/preview",
+            files={"file": (evil, io.BytesIO(csv), "text/csv")},
+            data={"format": "cocos", "broker": "Cocos"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        # El batch persiste un file_name sin chars peligrosos
+        conn = main.get_db()
+        row = conn.execute(
+            "SELECT file_name FROM import_batches WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # Ni newlines ni slashes ni .. en el nombre persistido
+        self.assertNotIn("/", row["file_name"])
+        self.assertNotIn("\n", row["file_name"])
+        self.assertNotIn("..", row["file_name"])
+
+    def test_sanitize_filename_unit(self):
+        from importing.pipeline import sanitize_filename
+        # Path traversal
+        self.assertNotIn("/", sanitize_filename("../../etc/passwd.csv"))
+        self.assertNotIn("\\", sanitize_filename("..\\windows\\file.csv"))
+        # Newlines / control chars
+        self.assertNotIn("\n", sanitize_filename("foo\nbar.csv"))
+        self.assertNotIn("\r", sanitize_filename("foo\rbar.csv"))
+        # Vacío → default
+        self.assertEqual(sanitize_filename(""), "archivo.csv")
+        self.assertEqual(sanitize_filename(None), "archivo.csv")
+        # Solo basura → default
+        self.assertEqual(sanitize_filename("///"), "archivo.csv")
+        # Caso normal
+        self.assertEqual(sanitize_filename("2024.csv"), "2024.csv")
+        # Truncado a 80 chars
+        long = "a" * 200 + ".csv"
+        self.assertLessEqual(len(sanitize_filename(long)), 80)
+
+    def test_legacy_file_field_still_works(self):
+        """Back-compat: clientes viejos que mandan `file` (singular)."""
+        import io
+        csv = self._cocos_csv("1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000")
+        res = self.client.post(
+            "/api/imports/preview",
+            files={"file": ("legacy.csv", io.BytesIO(csv), "text/csv")},
+            data={"format": "cocos", "broker": "Cocos"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["source_file_count"], 1)
+
+
 class CocosVisibleInDropdownTest(unittest.TestCase):
     """Cocos ya tiene export oficial (Actividad → Movimientos), así que debe
     aparecer en el dropdown agrupado del wizard."""
