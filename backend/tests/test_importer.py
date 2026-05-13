@@ -412,12 +412,137 @@ class BinanceFuturesTradeHistoryTest(unittest.TestCase):
 
 
 class CocosParserTest(unittest.TestCase):
-    def test_returns_clear_error_message(self):
+    """Tests del parser oficial de Cocos Capital (Actividad → Movimientos)."""
+
+    @classmethod
+    def setUpClass(cls):
         from importing.parsers.cocos import CocosParser
-        result = CocosParser().parse("anything")
+        cls.parser = CocosParser()
+        cls.fixture = _read_fixture("cocos_export.csv").decode("utf-8")
+
+    def test_can_handle_cocos_headers(self):
+        headers = [
+            "nroTicket", "nroComprobante", "fechaEjecucion", "fechaLiquidacion",
+            "tipoOperacion", "instrumento", "moneda",
+        ]
+        self.assertTrue(self.parser.can_handle(headers))
+
+    def test_can_handle_rejects_generic_headers(self):
+        self.assertFalse(self.parser.can_handle(["fecha", "tipo", "broker"]))
+
+    def test_rejects_file_without_cocos_columns(self):
+        result = self.parser.parse("foo;bar;baz\n1;2;3\n")
         self.assertEqual(len(result.parse_errors), 1)
-        self.assertEqual(result.parse_errors[0].code, "COCOS_NO_EXPORT")
-        self.assertIn("template genérico", result.parse_errors[0].message)
+        self.assertEqual(result.parse_errors[0].code, "COCOS_HEADERS_MISMATCH")
+
+    def test_parses_buy_extracting_ticker(self):
+        result = self.parser.parse(self.fixture)
+        netflix = next(r for r in result.raw_rows
+                       if r.data["tipo"] == "COMPRA" and r.data["activo"] == "NFLX")
+        self.assertEqual(netflix.data["fecha"], "2026-01-26")
+        self.assertEqual(netflix.data["broker"], "Cocos")
+        self.assertEqual(netflix.data["cantidad"], "280")
+        self.assertEqual(netflix.data["moneda"], "ARS")
+        # montoBruto = -762560 → abs = 762560 (sin separadores)
+        self.assertEqual(netflix.data["monto"], "762560")
+        # fees = 3431.52 + 381.28 + 800.688 = 4613.49 (aprox)
+        self.assertAlmostEqual(float(netflix.data["comisiones"]), 4613.49, places=1)
+
+    def test_parses_sell_with_negative_quantity(self):
+        """Cocos pone cantidad negativa en ventas. Tomamos abs()."""
+        result = self.parser.parse(self.fixture)
+        tsla = next(r for r in result.raw_rows
+                    if r.data["tipo"] == "VENTA" and r.data["activo"] == "TSLA"
+                    and r.data["moneda"] == "ARS")
+        self.assertEqual(tsla.data["cantidad"], "35")  # era -35 en el CSV
+        self.assertEqual(tsla.data["monto"], "1566600")
+
+    def test_dolar_mep_forces_usd_currency(self):
+        """Compra/Venta Dolar Mep deben quedar en USD aunque la columna diga otra cosa."""
+        result = self.parser.parse(self.fixture)
+        mep_buy = next(r for r in result.raw_rows
+                       if r.data["activo"] == "TSLA" and r.data["moneda"] == "USD")
+        self.assertEqual(mep_buy.data["tipo"], "COMPRA")
+        self.assertIn("MEP", mep_buy.data["notas"])
+
+    def test_fci_subscription_maps_to_buy_cocorma(self):
+        result = self.parser.parse(self.fixture)
+        fci = [r for r in result.raw_rows if r.data["activo"] == "COCORMA"]
+        self.assertEqual(len(fci), 2)
+        types = {r.data["tipo"] for r in fci}
+        self.assertEqual(types, {"COMPRA", "VENTA"})
+        for r in fci:
+            self.assertIn("FCI", r.data["notas"])
+
+    def test_recibo_de_cobro_maps_to_deposito(self):
+        result = self.parser.parse(self.fixture)
+        dep = next(r for r in result.raw_rows if r.data["tipo"] == "DEPOSITO"
+                   and r.data["monto"] == "100000")
+        self.assertEqual(dep.data["moneda"], "ARS")
+        self.assertEqual(dep.data["activo"], "")  # cash flow puro
+
+    def test_orden_de_pago_maps_to_retiro_with_abs_amount(self):
+        result = self.parser.parse(self.fixture)
+        wd = next(r for r in result.raw_rows
+                  if r.data["tipo"] == "RETIRO" and r.data["monto"] == "45000")
+        self.assertEqual(wd.data["moneda"], "ARS")
+
+    def test_dividendos_peso_no_asset_uses_total(self):
+        """Dividendos en pesos: el CSV no dice qué stock pagó → asset vacío.
+        Usa `total` (neto) en vez de `montoBruto` (bruto)."""
+        result = self.parser.parse(self.fixture)
+        div = next(r for r in result.raw_rows if r.data["tipo"] == "DIVIDENDO")
+        self.assertEqual(div.data["activo"], "")
+        self.assertEqual(div.data["moneda"], "ARS")
+        self.assertEqual(div.data["monto"], "2366.81")  # total neto
+
+    def test_dividendos_en_especie_is_skipped(self):
+        """No debe aparecer en raw_rows — evitamos doble-conteo con la Nota
+        De Credito Conversion que llega después."""
+        result = self.parser.parse(self.fixture)
+        # No debe haber ningún DIVIDENDO en USD (que sería el "en especie")
+        usd_divs = [r for r in result.raw_rows
+                    if r.data["tipo"] == "DIVIDENDO" and r.data["moneda"] == "USD"]
+        self.assertEqual(usd_divs, [])
+        # La nota de credito SÍ debe estar como DEPOSITO USD con nota de conversión
+        nota = [r for r in result.raw_rows
+                if r.data["tipo"] == "DEPOSITO" and r.data["moneda"] == "USD"]
+        self.assertEqual(len(nota), 1)
+        self.assertIn("conversión", nota[0].data["notas"])
+
+    def test_unknown_op_type_emits_warning(self):
+        csv = ("nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;"
+               "tipoOperacion;instrumento;moneda;mercado;cantidad;precio;"
+               "montoBruto;comision;ddmm;iva;otros;total\n"
+               "1;2;01-01-2026;01-01-2026;OperacionInventada;X (Y);ARS;;;;100;0;0;0;0;100\n")
+        result = self.parser.parse(csv)
+        self.assertEqual(len(result.raw_rows), 0)
+        self.assertEqual(len(result.parse_errors), 1)
+        self.assertEqual(result.parse_errors[0].code, "COCOS_OP_UNKNOWN")
+
+    def test_template_csv_has_required_columns(self):
+        t = self.parser.template_csv()
+        self.assertIn("nroTicket", t)
+        self.assertIn("tipoOperacion", t)
+        self.assertIn("Recibo De Cobro", t)
+        self.assertIn("Dividendos", t)
+
+    def test_template_csv_is_self_parseable(self):
+        """El template que descarga el user debería volver a parsearse sin errores."""
+        t = self.parser.template_csv()
+        result = self.parser.parse(t)
+        self.assertEqual(len(result.parse_errors), 0)
+        self.assertGreater(len(result.raw_rows), 0)
+
+    def test_ar_number_cleaner(self):
+        """El cleaner de números AR maneja casos típicos."""
+        from importing.parsers.cocos import _clean_ar_number
+        self.assertEqual(_clean_ar_number("1.948.815"), "1948815")
+        self.assertEqual(_clean_ar_number("-1.557.122,07"), "-1557122.07")
+        self.assertEqual(_clean_ar_number("0,86"), "0.86")
+        self.assertEqual(_clean_ar_number("41.580"), "41580")  # AR thousands
+        self.assertEqual(_clean_ar_number("100"), "100")
+        self.assertEqual(_clean_ar_number(""), "")
 
 
 class GenericParserTest(unittest.TestCase):
@@ -2226,15 +2351,22 @@ class DividendInterestAsGainTest(unittest.TestCase):
             conn.close()
 
 
-class CocosHiddenFromDropdownTest(unittest.TestCase):
-    """parser_options_grouped() no debería mostrar Cocos al usuario."""
-    def test_cocos_not_in_grouped_options(self):
+class CocosVisibleInDropdownTest(unittest.TestCase):
+    """Cocos ya tiene export oficial (Actividad → Movimientos), así que debe
+    aparecer en el dropdown agrupado del wizard."""
+    def test_cocos_in_grouped_options(self):
         groups = pl.parser_options_grouped()
         platforms = [g["platform"] for g in groups]
-        self.assertNotIn("cocos", platforms)
-        # Pero parser_options() (lista plana) sí lo incluye, para back-compat
+        self.assertIn("cocos", platforms)
+        # Y el export del grupo debe estar marcado como supported
+        cocos_group = next(g for g in groups if g["platform"] == "cocos")
+        self.assertEqual(len(cocos_group["exports"]), 1)
+        self.assertTrue(cocos_group["exports"][0]["supported"])
+
+    def test_cocos_in_flat_options(self):
         opts = pl.parser_options()
-        self.assertIn("cocos", [o["id"] for o in opts])
+        cocos = next(o for o in opts if o["id"] == "cocos")
+        self.assertTrue(cocos["supported"])
 
 
 if __name__ == "__main__":
