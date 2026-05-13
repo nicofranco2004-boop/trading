@@ -2666,6 +2666,61 @@ class CrossCurrencyLotSellTest(unittest.TestCase):
         self.assertLess(abs(op["pnl_pct"]), 50,
             msg=f"P&L pct: {op['pnl_pct']}% (esperado < 50%, no miles)")
 
+    def test_sell_in_usd_uses_tx_currency_not_broker_currency(self):
+        """REGRESIÓN: para "Venta Dolar Mep" en Cocos (broker=ARS pero tx.currency=USD),
+        el persister debe usar la moneda de la TX, no la del broker. Antes
+        comparaba ARS invested vs USD exit_price → P&L falso -99.8%."""
+        from importing.persister import persist_batch
+        from importing.schema import NormalizedTx, OP_BUY, OP_SELL
+        import uuid, json
+
+        # AMD bought in ARS (broker Cocos ARS), then sold in USD (Venta Dolar Mep)
+        txs = [
+            NormalizedTx(row_index=1, date="2024-01-15", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="AMD",
+                         quantity=23, unit_price=14000, gross_amount=322000,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=2, date="2025-10-27", broker="Cocos",
+                         operation_type=OP_SELL, asset_symbol="AMD",
+                         quantity=23, unit_price=25.25, gross_amount=580.75,
+                         currency="USD", settlement_currency="USD"),
+        ]
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            for tx in txs:
+                cur = conn.execute(
+                    """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                       VALUES (?,?,?,'valid',NULL)""",
+                    (batch_id, tx.row_index, json.dumps({})),
+                )
+                raw_row_ids[tx.row_index] = cur.lastrowid
+        persist_batch(conn, uid=self.uid, batch_id=batch_id, txs=txs,
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+
+        # Verificar P&L razonable:
+        # cost basis USD: 322000 ARS / 1415 = 227.56 USD
+        # proceeds USD: 25.25 × 23 = 580.75 USD
+        # P&L USD: 580.75 - 227.56 = +353 USD (~155% gain)
+        op = conn.execute(
+            "SELECT pnl_usd, pnl_pct FROM operations WHERE user_id=? AND asset='AMD'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(op)
+        # P&L NO debe ser -99% (el bug original) — debe ser positivo y razonable
+        self.assertGreater(op["pnl_usd"], 0,
+            f"P&L USD: {op['pnl_usd']} (esperado positivo, bug daba -97)")
+        self.assertLess(abs(op["pnl_pct"]), 500,
+            f"P&L %: {op['pnl_pct']}% (esperado razonable, bug daba -99.8%)")
+
     def test_position_stores_currency_from_tx(self):
         """La posición creada por un BUY USD debe quedar con currency='USD'."""
         from importing.persister import persist_batch

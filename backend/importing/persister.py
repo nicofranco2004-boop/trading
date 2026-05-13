@@ -375,11 +375,22 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     el P&L ARS a USD-equivalente (mismo patrón que el flow manual con data.tc_venta).
     Para brokers USDT/USD: el cálculo es directo sin conversión.
     """
-    # Resolver currency del broker
+    # Resolver currency del broker (para cash side y monthly_entries)
     br = conn.execute(
         "SELECT currency FROM brokers WHERE name=? AND user_id=?", (tx.broker, uid)
     ).fetchone()
-    currency = br["currency"] if br else "USDT"
+    broker_currency = br["currency"] if br else "USDT"
+
+    # Moneda EN LA QUE SE VENDIÓ — viene del CSV. Para Cocos "Venta Dolar Mep"
+    # esto es USD aunque el broker padre sea ARS. Antes usábamos broker_currency
+    # acá, lo que comparaba ARS entry_invested vs USD exit_price (P&L -99.8%
+    # falso para SELLs MEP).
+    sell_currency = (tx.currency or "").upper() or broker_currency
+    if sell_currency == "USDT":
+        sell_currency = "USD"
+    if sell_currency not in ("ARS", "USD"):
+        sell_currency = broker_currency  # fallback defensivo
+    currency = sell_currency  # alias usado abajo (mantengo el nombre antiguo)
 
     positions = conn.execute(
         """SELECT * FROM positions
@@ -403,8 +414,8 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     total_proceeds_native = 0.0
     ops_created: List[int] = []
 
-    # TC efectivo de venta para brokers ARS (USD para ARS no aplica)
-    tc_venta = tc_blue if currency == "ARS" else 1.0
+    # TC efectivo de venta para SELLs ARS (USD para SELLs USD no aplica)
+    tc_venta = tc_blue if sell_currency == "ARS" else 1.0
 
     for p in positions:
         if remaining <= 1e-9:
