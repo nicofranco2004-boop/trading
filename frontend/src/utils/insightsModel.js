@@ -53,9 +53,22 @@ export function netCapitalContributed(globalMonthly) {
  * del manager" porque NEUTRALIZA depósitos y retiros — un aporte grande no
  * cuenta como ganancia, un retiro no cuenta como caída.
  *
- * Para cada mes:
- *   monthly_return = (capital_final − capital_inicio − net_flow) / capital_inicio
- *   net_flow = deposits − withdrawals
+ * Para cada mes (Modified Dietz):
+ *   net_flow      = deposits − withdrawals
+ *   avg_capital   = capital_inicio + 0.5 × net_flow
+ *   monthly_return = (capital_final − capital_inicio − net_flow) / avg_capital
+ *
+ * Modified Dietz (vs el "TWRR ingenuo" anterior con denominador = capital_inicio)
+ * tiene dos ventajas:
+ *   1. Funciona cuando capital_inicio = 0 (primer mes) si hay depósitos.
+ *   2. No infla artificialmente el retorno cuando un depósito grande llega
+ *      sobre un capital chico (e.g. start=$1k, deposit=$10k, gain=$200 →
+ *      la fórmula vieja daba 20%; Modified Dietz da ~3%).
+ *
+ * El monthly_return se clampea a ≥ −0.99 para evitar que un mes con
+ * `capital_final` muy negativo (drift de cash en negativo tras imports/reverts)
+ * haga colapsar el índice acumulado a 0 o lo invierta — el peor caso "real"
+ * de un mes es perder ~todo lo invertido.
  *
  * El índice empieza en 1.0 antes del primer mes y se compone:
  *   index_t = index_(t-1) × (1 + monthly_return_t)
@@ -86,9 +99,14 @@ export function buildCumulativeReturnSeries(globalMonthly, liveValue = null) {
       ? liveValue
       : (m.capital_final || 0)
 
-    const monthlyReturn = capInicio > 0
-      ? (capFinal - capInicio - net) / capInicio
+    const avgCapital = capInicio + 0.5 * net
+    const rawReturn = avgCapital > 0
+      ? (capFinal - capInicio - net) / avgCapital
       : 0
+    // Clamp inferior: un mes individual no puede perder más del 99% en TWRR.
+    // Sin clamp, datos corruptos (cap_final < 0) propagan el daño a TODOS los
+    // meses posteriores vía multiplicación, inflando el drawdown a cientos.
+    const monthlyReturn = Math.max(rawReturn, -0.99)
 
     idx = idx * (1 + monthlyReturn)
 

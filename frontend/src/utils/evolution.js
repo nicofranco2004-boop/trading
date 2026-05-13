@@ -106,30 +106,88 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
   const seriesUsd = []
   const seriesArs = []
 
+  // TWRR chain-linked vía Modified Dietz entre snapshots consecutivos.
+  // La fórmula simple (value - net_deposited) / net_deposited es MWR — se
+  // distorsiona cuando hay retiros/depósitos grandes (e.g. tras un withdrawal
+  // de $177k, net_deposited baja y el ratio se infla a +90% sin que hubiera
+  // ganancia real). TWRR usa el rendimiento por período (ajustado por flujos)
+  // y los encadena multiplicativamente — neutraliza el timing de flujos.
+  //
+  //   flows_t       = net_deposited_t − net_deposited_t-1
+  //   pnl_t         = (value_t − value_t-1) − flows_t
+  //   period_return = pnl_t / (value_t-1 + 0.5 × flows_t)
+  //   cum_t         = cum_t-1 × (1 + period_return)
+  //
+  // Clampeamos period_return ≥ −0.99 para que un período con value=0 (data
+  // corrupta) no colapse el multiplicador. -99% es "perdiste casi todo".
+  let cumUsd = 1
+  let cumArs = 1
+  let prevValueUsd = null
+  let prevNetDep = null
+  let prevValueArs = null
+  let prevBaselineArs = null
+
   for (const s of sorted) {
     const baselineUsd = (s.net_deposited && s.net_deposited > 0) ? s.net_deposited : s.total_invested
-    const totalPctUsd = baselineUsd > 0 ? ((s.total_value - baselineUsd) / baselineUsd) * 100 : 0
-    const realPctUsd  = baselineUsd > 0 ? (realizedAt(s.date) / baselineUsd) * 100 : 0
+    const value = s.total_value || 0
+    const netDep = baselineUsd || 0
+
+    // First snapshot → baseline = 0% TWRR
+    if (prevValueUsd === null) {
+      cumUsd = 1
+      // Initialize ARS baselines too (snapshot por snapshot tiene su propio fx)
+      const y0 = +s.date.slice(0, 4)
+      const mo0 = +s.date.slice(5, 7)
+      const fx0 = lookupHistoricalDolar(bench, y0, mo0, tcBlue)
+      prevBaselineArs = netDep * fx0
+      prevValueArs = value * fx0
+    } else {
+      // USD TWRR period return
+      const flows = netDep - prevNetDep
+      const pnl = (value - prevValueUsd) - flows
+      const avgCap = prevValueUsd + 0.5 * flows
+      const rRaw = avgCap > 0 ? pnl / avgCap : 0
+      const r = Math.max(rRaw, -0.99)
+      cumUsd *= (1 + r)
+    }
+
+    const realPctUsd = baselineUsd > 0 ? (realizedAt(s.date) / baselineUsd) * 100 : 0
     seriesUsd.push({
       key: s.date,
       label: s.date.slice(5),       // MM-DD
-      total: +totalPctUsd.toFixed(2),
+      total: +((cumUsd - 1) * 100).toFixed(2),
       realized: +realPctUsd.toFixed(2),
     })
 
+    // ARS: convertir value e invested al fx del snapshot — la conversión
+    // afecta tanto numerador como denominador del period_return, así que
+    // técnicamente el % se mantiene; sin embargo lo replicamos por simetría.
     const y = +s.date.slice(0, 4)
     const mo = +s.date.slice(5, 7)
     const fx = lookupHistoricalDolar(bench, y, mo, tcBlue)
-    const valueArs    = s.total_value * fx
-    const baselineArs = baselineUsd * fx
-    const totalPctArs = baselineArs > 0 ? ((valueArs - baselineArs) / baselineArs) * 100 : 0
-    const realPctArs  = baselineArs > 0 ? ((realizedAt(s.date) * fx) / baselineArs) * 100 : 0
+    const valueArs    = value * fx
+    const baselineArs = netDep * fx
+
+    if (prevValueArs !== null && prevBaselineArs !== null) {
+      const flowsArs = baselineArs - prevBaselineArs
+      const pnlArs = (valueArs - prevValueArs) - flowsArs
+      const avgArs = prevValueArs + 0.5 * flowsArs
+      const rRawArs = avgArs > 0 ? pnlArs / avgArs : 0
+      const rArs = Math.max(rRawArs, -0.99)
+      cumArs *= (1 + rArs)
+    }
+    const realPctArs = baselineArs > 0 ? ((realizedAt(s.date) * fx) / baselineArs) * 100 : 0
     seriesArs.push({
       key: s.date,
       label: s.date.slice(5),
-      total: +totalPctArs.toFixed(2),
+      total: +((cumArs - 1) * 100).toFixed(2),
       realized: +realPctArs.toFixed(2),
     })
+
+    prevValueUsd = value
+    prevNetDep = netDep
+    prevValueArs = valueArs
+    prevBaselineArs = baselineArs
   }
 
   return { seriesUsd, seriesArs }

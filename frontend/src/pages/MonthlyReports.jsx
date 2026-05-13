@@ -24,6 +24,7 @@ import StatCard from '../components/StatCard'
 import EmptyState from '../components/EmptyState'
 import MiniSparkline from '../components/MiniSparkline'
 import AssetLogo from '../components/AssetLogo'
+import InfoTooltip from '../components/InfoTooltip'
 import { usd, fmtUsd, pctSigned } from '../utils/format'
 import useMonthlyData from '../hooks/useMonthlyData'
 
@@ -171,6 +172,7 @@ export default function MonthlyReports() {
                 <span className={`tabular ${currentYear.ytdUsd >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                   ({pctSigned(currentYear.ytdPct / 100)})
                 </span>
+                <InfoTooltip text="Rendimiento sobre el capital al inicio del año (TWRR — Time-Weighted Return). Es la métrica estándar de la industria y la que usa el S&P 500 para reportar performance: compara cuánto creció tu portfolio independiente del momento en que metiste o sacaste plata." />
               </span>
             }
             hint={(() => {
@@ -183,7 +185,15 @@ export default function MonthlyReports() {
               const bestTag = currentYear.bestMonth
                 ? ` · mejor: ${currentYear.bestMonth.name} (${pctSigned(currentYear.bestMonth.pct / 100)})`
                 : ''
-              return `De ${startStr} a ${endStr}${liveTag}${flowsTag}${bestTag}`
+              // Métrica alternativa: sobre capital aportado total al cierre.
+              // Solo la mostramos si difiere significativamente del TWRR (>1pp)
+              // — sino es ruido visual.
+              const altPctTag = currentYear.ytdPctOverContrib != null
+                && currentYear.capContribAtYearEnd > 0
+                && Math.abs(currentYear.ytdPctOverContrib - currentYear.ytdPct) > 1
+                ? ` · ${pctSigned(currentYear.ytdPctOverContrib / 100)} sobre capital aportado (USD ${usd(currentYear.capContribAtYearEnd)})`
+                : ''
+              return `De ${startStr} a ${endStr}${liveTag}${flowsTag}${bestTag}${altPctTag}`
             })()}
           />
         </div>
@@ -238,17 +248,32 @@ function YearCard({ year, isExpanded, onToggle, onMonthClick }) {
         <div className="flex items-baseline gap-4 min-w-0 flex-wrap">
           <span className="font-display text-3xl text-ink-0 tracking-tight">{year.year}</span>
           {hasYtd ? (
-            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 min-w-0">
-              <span className={`text-base font-semibold tabular ${year.ytdUsd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {pctSigned(year.ytdPct / 100)}
-              </span>
-              <span className={`text-sm tabular ${year.ytdUsd >= 0 ? 'text-rendi-pos/70' : 'text-rendi-neg/70'}`}>
-                {year.ytdUsd >= 0 ? '+' : '−'}USD {usd(Math.abs(year.ytdUsd))}
-              </span>
-              <span className="text-xs text-ink-2 font-mono">
-                {year.months.length} {year.months.length === 1 ? 'mes' : 'meses'}
-                {year.bestMonth && ` · mejor: ${year.bestMonth.name}`}
-              </span>
+            <div className="flex flex-col min-w-0">
+              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 min-w-0">
+                <span className={`text-base font-semibold tabular ${year.ytdUsd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                  {pctSigned(year.ytdPct / 100)}
+                </span>
+                <span className={`text-sm tabular ${year.ytdUsd >= 0 ? 'text-rendi-pos/70' : 'text-rendi-neg/70'}`}>
+                  {year.ytdUsd >= 0 ? '+' : '−'}USD {usd(Math.abs(year.ytdUsd))}
+                </span>
+                <span className="text-xs text-ink-2 font-mono">
+                  {year.months.length} {year.months.length === 1 ? 'mes' : 'meses'}
+                  {year.bestMonth && ` · mejor: ${year.bestMonth.name}`}
+                </span>
+              </div>
+              {/* Métrica alternativa: % sobre capital aportado total al cierre
+                  del año. Más conservadora que el TWRR (que mide sobre el
+                  capital de inicio del año), útil cuando hay recuperación post-
+                  crash y el TWRR parece "demasiado alto". */}
+              {year.ytdPctOverContrib != null && year.capContribAtYearEnd > 0 && (
+                <div className="text-[11px] text-ink-3 font-mono mt-0.5">
+                  ↳ sobre capital aportado total (USD {usd(year.capContribAtYearEnd)}):
+                  {' '}
+                  <span className={`tabular ${year.ytdPctOverContrib >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
+                    {pctSigned(year.ytdPctOverContrib / 100)}
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <span className="text-xs text-ink-2 font-mono">

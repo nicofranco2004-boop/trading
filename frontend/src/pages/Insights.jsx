@@ -214,17 +214,22 @@ export default function Insights() {
   const totalResult = totalPortfolio - capitalContributed
   const totalResultPct = capitalContributed > 0 ? (totalResult / capitalContributed) * 100 : 0
 
-  // ── Simple, transparent calculation ──
-  // baseline = capital_inicio del primer mes con registro
-  // En cada punto t:
-  //   net_flows_t = Σ(deposits - withdrawals) hasta el mes t
-  //   invested_t = baseline + net_flows_t
-  //   value_t   = capital_final del mes t (o totalPortfolio live para "Hoy")
-  //   total %   = (value_t - invested_t) / invested_t
-  //   realized %= (Σ pnl_realized hasta t) / invested_t
+  // ── Money-Weighted Return (MWR) ──
+  // Coherente con el dashboard (que muestra `(valor − aportado) / aportado`).
+  // Para cada punto t:
+  //   net_flows_t = Σ(deposits − withdrawals) hasta el mes t
+  //   invested_t  = baseline + net_flows_t
+  //   value_t     = capital_final del mes (cierra con realized para meses
+  //                 cerrados; con realized + unrealized para el mes en curso)
+  //   total %     = (value_t − invested_t) / invested_t
+  //   realized %  = (Σ pnl_realized hasta t) / invested_t
   //
-  // ARS: convertir value_t e invested_t a pesos usando el dólar blue del mes correspondiente
-  // (los flujos quedan al fx de cuando ocurrieron — aproximación: se usa el fx del mes)
+  // Clamp inferior a −99% por seguridad — si `value_t < 0` por data corrupta
+  // (residuos de imports antiguos), el % no se va a < −100% y no rompe el
+  // rebase chain-linked del chart de benchmarks.
+  //
+  // ARS: convertir value_t e invested_t a pesos usando el dólar blue del mes
+  // correspondiente (los flujos quedan al fx de cuando ocurrieron — aproximación).
   const seriesUsd = []
   const seriesArs = []
 
@@ -243,19 +248,17 @@ export default function Insights() {
     const lookupDolar = (key) => {
       if (!bench?.dolar_blue) return null
       if (bench.dolar_blue[key]) return bench.dolar_blue[key]
-      // Buscar el mes más reciente <= key (no el siguiente — eso da fx futuro raro).
       let found = null
       for (const k of dolarKeys) {
         if (k <= key) found = k
         else break
       }
-      // Fallback: si no hay ninguno <=, usar el más antiguo disponible.
       if (!found) found = dolarKeys[0]
       return found ? bench.dolar_blue[found] : null
     }
     const fxBase = lookupDolar(firstKey)
 
-    // Punto inicial = 0% (baseline)
+    // Punto inicial = 0%
     seriesUsd.push({
       key: firstKey,
       label: `${MONTHS[globalMonthly[0].month - 1].slice(0, 3)} ${String(globalMonthly[0].year).slice(2)}`,
@@ -269,18 +272,20 @@ export default function Insights() {
 
     let netFlows = 0
     let cumRealized = 0
-    let netFlowsArs = 0  // flujos convertidos al fx de cuando ocurrieron
+    let netFlowsArs = 0
     let cumRealizedArs = 0
     const baselineArs = baseline * (fxBase || 0)
 
     for (const m of globalMonthly) {
-      const net = m.deposits - m.withdrawals
+      const net = (m.deposits || 0) - (m.withdrawals || 0)
       netFlows += net
-      cumRealized += m.pnl_realized
+      cumRealized += (m.pnl_realized || 0)
 
       const invested = baseline + netFlows
-      const value = m.capital_final
-      const totalPct = invested > 0 ? ((value - invested) / invested) * 100 : 0
+      const value = m.capital_final || 0
+      // Clamp a -99 — meses con value < 0 (drift residual) no rompen el rebase.
+      const rawTotal = invested > 0 ? ((value - invested) / invested) * 100 : 0
+      const totalPct = Math.max(rawTotal, -99)
       const realPct = invested > 0 ? (cumRealized / invested) * 100 : 0
 
       seriesUsd.push({
@@ -294,10 +299,11 @@ export default function Insights() {
       if (fxBase && bench?.dolar_blue) {
         const fx = lookupDolar(monthKey(m.year, m.month)) || fxBase
         netFlowsArs += net * fx
-        cumRealizedArs += m.pnl_realized * fx
+        cumRealizedArs += (m.pnl_realized || 0) * fx
         const investedArs = baselineArs + netFlowsArs
         const valueArs = value * fx
-        const totalPctArs = investedArs > 0 ? ((valueArs - investedArs) / investedArs) * 100 : 0
+        const rawTotalArs = investedArs > 0 ? ((valueArs - investedArs) / investedArs) * 100 : 0
+        const totalPctArs = Math.max(rawTotalArs, -99)
         const realPctArs = investedArs > 0 ? (cumRealizedArs / investedArs) * 100 : 0
         seriesArs.push({
           key: monthKey(m.year, m.month),
@@ -311,14 +317,16 @@ export default function Insights() {
     // Punto "Hoy" — usa live portfolio
     if (totalPortfolio > 0) {
       const investedLive = baseline + netFlows
-      const totalLive = investedLive > 0 ? ((totalPortfolio - investedLive) / investedLive) * 100 : 0
+      const rawTotalLive = investedLive > 0 ? ((totalPortfolio - investedLive) / investedLive) * 100 : 0
+      const totalLive = Math.max(rawTotalLive, -99)
       const realLive = investedLive > 0 ? (cumRealized / investedLive) * 100 : 0
       seriesUsd.push({ key: 'today', label: 'Hoy', realized: +realLive.toFixed(2), total: +totalLive.toFixed(2) })
 
       if (fxBase && tcBlue) {
         const investedArsLive = baselineArs + netFlowsArs
         const valueArsLive = totalPortfolio * tcBlue
-        const totalArsLive = investedArsLive > 0 ? ((valueArsLive - investedArsLive) / investedArsLive) * 100 : 0
+        const rawTotalArsLive = investedArsLive > 0 ? ((valueArsLive - investedArsLive) / investedArsLive) * 100 : 0
+        const totalArsLive = Math.max(rawTotalArsLive, -99)
         const realArsLive = investedArsLive > 0 ? (cumRealizedArs / investedArsLive) * 100 : 0
         seriesArs.push({ key: 'today', label: 'Hoy', realized: +realArsLive.toFixed(2), total: +totalArsLive.toFixed(2) })
       }
@@ -354,28 +362,30 @@ export default function Insights() {
     return found ? bench.dolar_blue[found] : null
   }
 
-  // benchSeriesUsd — portfolio total en USD (globalMonthly) en % acumulado
+  // benchSeriesUsd — portfolio total en USD (globalMonthly) en % MWR acumulado.
+  // Misma fórmula que seriesUsd arriba (consistente con el dashboard).
   const benchSeriesUsd = (() => {
     if (globalMonthly.length === 0) return []
     const out = []
     const baseline = globalMonthly[0].capital_inicio || 0
     let netFlows = 0, cumRealized = 0
-    // Punto base
     const firstMk = monthKey(globalMonthly[0].year, globalMonthly[0].month)
     out.push({ key: firstMk, label: benchLabel(firstMk), total: 0, realized: 0 })
     for (const m of globalMonthly) {
       netFlows += (m.deposits || 0) - (m.withdrawals || 0)
-      cumRealized += m.pnl_realized || 0
+      cumRealized += (m.pnl_realized || 0)
       const invested = baseline + netFlows
-      const total  = invested > 0 ? ((m.capital_final - invested) / invested) * 100 : 0
-      const real   = invested > 0 ? (cumRealized / invested) * 100 : 0
+      const rawTotal = invested > 0 ? ((m.capital_final - invested) / invested) * 100 : 0
+      const total = Math.max(rawTotal, -99)
+      const real  = invested > 0 ? (cumRealized / invested) * 100 : 0
       const k = monthKey(m.year, m.month)
       out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
     // Punto "Hoy"
     if (totalPortfolio > 0) {
       const invested = baseline + netFlows
-      const total = invested > 0 ? ((totalPortfolio - invested) / invested) * 100 : 0
+      const rawTotal = invested > 0 ? ((totalPortfolio - invested) / invested) * 100 : 0
+      const total = Math.max(rawTotal, -99)
       const real  = invested > 0 ? (cumRealized / invested) * 100 : 0
       out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
@@ -384,7 +394,7 @@ export default function Insights() {
     return out.filter(p => { if (seen.has(p.key)) return false; seen.add(p.key); return true })
   })()
 
-  // benchSeriesArs — solo brokers ARS, capital en pesos (USD × blue del mes) en % acumulado
+  // benchSeriesArs — solo brokers ARS, capital en pesos (USD × blue del mes) en % acumulado MWR.
   const benchSeriesArs = (() => {
     if (arsBrokerNames.size === 0 || !bench?.dolar_blue) return []
     // Agrupar monthly entries de brokers ARS por mes (suma si hay varios brokers)
@@ -407,7 +417,6 @@ export default function Insights() {
     if (!blueBase) return []
 
     const out = []
-    // baseline en pesos
     const baselinePesos = arsMonths[0][1].capital_inicio * blueBase
     let netFlowsPesos = 0, cumRealizedPesos = 0
     out.push({ key: firstKey, label: benchLabel(firstKey), total: 0, realized: 0 })
@@ -418,9 +427,10 @@ export default function Insights() {
       netFlowsPesos += net * fx
       cumRealizedPesos += (m.pnl_realized || 0) * fx
       const investedPesos = baselinePesos + netFlowsPesos
-      const valuePesos    = m.capital_final * fx
-      const total   = investedPesos > 0 ? ((valuePesos - investedPesos) / investedPesos) * 100 : 0
-      const real    = investedPesos > 0 ? (cumRealizedPesos / investedPesos) * 100 : 0
+      const valuePesos    = (m.capital_final || 0) * fx
+      const rawTotal   = investedPesos > 0 ? ((valuePesos - investedPesos) / investedPesos) * 100 : 0
+      const total      = Math.max(rawTotal, -99)
+      const real       = investedPesos > 0 ? (cumRealizedPesos / investedPesos) * 100 : 0
       out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
     // Punto "Hoy" — valor live de posiciones ARS al blue actual
@@ -430,7 +440,8 @@ export default function Insights() {
     if (arsLiveUsd > 0) {
       const valueNow = arsLiveUsd * tcBlue
       const investedPesos = baselinePesos + netFlowsPesos
-      const total = investedPesos > 0 ? ((valueNow - investedPesos) / investedPesos) * 100 : 0
+      const rawTotal = investedPesos > 0 ? ((valueNow - investedPesos) / investedPesos) * 100 : 0
+      const total = Math.max(rawTotal, -99)
       const real  = investedPesos > 0 ? (cumRealizedPesos / investedPesos) * 100 : 0
       out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
@@ -1237,10 +1248,15 @@ export default function Insights() {
               {currency === 'USD' ? 'Portfolio vs S&P 500 (USD)' : 'Portfolio vs Inflación (ARS)'}
             </h2>
             <InfoTooltip>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Cómo se calcula</p>
-              <p>Rendimiento % acumulado, ajustado por depósitos y retiros (los flujos de capital no se contabilizan como performance).</p>
+              <p className="font-semibold text-slate-800 dark:text-slate-100">Time-Weighted Return (TWRR)</p>
+              <p>Rendimiento <strong>independiente del timing</strong> de tus aportes y retiros — mide solamente cómo performeó el capital invertido. Es la métrica estándar de la industria (la que usa el S&P 500 para reportar).</p>
+              <p className="text-slate-500 dark:text-slate-400">
+                Puede no coincidir con "Resultado total / Capital aportado" del Dashboard:
+                el Dashboard mide cuánto creció tu plata neta; el chart compone rendimientos mes a mes
+                — un crash temprano cuesta más en TWRR porque después tenés que recuperar desde una base chica.
+              </p>
               {currency === 'USD'
-                ? <p className="text-slate-500 dark:text-slate-400">Ambas líneas se rebasan en 0% al inicio del período seleccionado para comparación directa.</p>
+                ? <p className="text-slate-500 dark:text-slate-400">Ambas líneas arrancan en 0% al inicio del período seleccionado para comparación directa.</p>
                 : <p className="text-slate-500 dark:text-slate-400">Fijado a los últimos 12 meses. Períodos más extensos pierden comparabilidad por la hiperinflación previa.</p>
               }
             </InfoTooltip>
