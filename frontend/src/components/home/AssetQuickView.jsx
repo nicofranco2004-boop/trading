@@ -7,7 +7,7 @@
 // Diseño: modal centrado, dismiss con X o click fuera. Mobile: full-width.
 
 import { useEffect, useState } from 'react'
-import { X, TrendingUp, TrendingDown, ExternalLink } from 'lucide-react'
+import { X, TrendingUp, TrendingDown, ExternalLink, Star, Check } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
 
@@ -26,21 +26,45 @@ export default function AssetQuickView({ symbol, onClose }) {
   const [quote, setQuote] = useState(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
+  const [inWatchlist, setInWatchlist] = useState(false)
+  const [addingWl, setAddingWl] = useState(false)
 
   useEffect(() => {
     if (!symbol) return
     let cancelled = false
     setLoading(true)
-    api.get(`/prices?symbols=${encodeURIComponent(symbol)}`)
-      .then(d => {
+    // Fetch quote + check si ya está en watchlist (paralelo)
+    Promise.all([
+      api.get(`/prices?symbols=${encodeURIComponent(symbol)}`),
+      api.get('/watchlist').catch(() => ({ items: [] })),
+    ])
+      .then(([prices, wl]) => {
         if (cancelled) return
-        const price = d[symbol]
-        setQuote({ price, symbol })
+        setQuote({ price: prices[symbol], symbol })
+        setInWatchlist((wl.items || []).some(i => i.symbol === symbol))
       })
       .catch(ex => { if (!cancelled) setErr(ex.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [symbol])
+
+  async function toggleWatchlist() {
+    if (addingWl) return
+    setAddingWl(true)
+    try {
+      if (inWatchlist) {
+        await api.delete(`/watchlist/${encodeURIComponent(symbol)}`)
+        setInWatchlist(false)
+      } else {
+        await api.post('/watchlist', { symbol })
+        setInWatchlist(true)
+      }
+    } catch (ex) {
+      console.error('Watchlist toggle:', ex)
+    } finally {
+      setAddingWl(false)
+    }
+  }
 
   // ESC para cerrar
   useEffect(() => {
@@ -105,17 +129,27 @@ export default function AssetQuickView({ symbol, onClose }) {
           )}
         </div>
 
-        <footer className="px-4 py-3 border-t border-line/40 flex items-center justify-between text-xs">
+        <footer className="px-4 py-3 border-t border-line/40 flex items-center justify-between gap-2 text-xs">
+          <button
+            onClick={toggleWatchlist}
+            disabled={addingWl || loading}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm border transition-colors disabled:opacity-50 ${
+              inWatchlist
+                ? 'border-rendi-warn/30 bg-rendi-warn/10 text-rendi-warn hover:bg-rendi-warn/15'
+                : 'border-line bg-bg-2 text-ink-1 hover:bg-bg-3'
+            }`}
+          >
+            {inWatchlist
+              ? <><Check size={11} strokeWidth={2} /> En watchlist</>
+              : <><Star size={11} strokeWidth={1.75} /> Agregar a watchlist</>}
+          </button>
           <a
             href={`https://finance.yahoo.com/quote/${symbol}`}
             target="_blank" rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-ink-2 hover:text-ink-0"
           >
-            Ver en Yahoo Finance <ExternalLink size={11} strokeWidth={1.75} />
+            Yahoo Finance <ExternalLink size={11} strokeWidth={1.75} />
           </a>
-          <button onClick={onClose} className="text-ink-2 hover:text-ink-0">
-            Cerrar
-          </button>
         </footer>
       </div>
     </div>

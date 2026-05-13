@@ -66,6 +66,64 @@ SP500_META = {
 }
 
 
+# ─── Merval — Panel general BCBA (acciones AR top 25 por liquidez) ───────────
+# Tickers en formato yfinance ".BA". Market caps en miles de millones de ARS
+# (aprox); para visualización en el heatmap los usamos crudos (proporciones
+# relativas se preservan independientemente de la moneda).
+MERVAL_TOP_25 = [
+    "GGAL.BA", "YPFD.BA", "PAMP.BA", "BMA.BA", "BBAR.BA",
+    "ALUA.BA", "CRES.BA", "TXAR.BA", "COME.BA", "EDN.BA",
+    "TGSU2.BA", "TGNO4.BA", "CEPU.BA", "MIRG.BA", "VALO.BA",
+    "TRAN.BA", "LOMA.BA", "AGRO.BA", "SUPV.BA", "BYMA.BA",
+    "HARG.BA", "CVH.BA", "DGCU2.BA", "GCLA.BA", "CGPA2.BA",
+]
+
+MERVAL_META = {
+    "GGAL.BA":  ("Galicia",          900),  "YPFD.BA":  ("YPF",              780),
+    "PAMP.BA":  ("Pampa Energía",    600),  "BMA.BA":   ("Banco Macro",      550),
+    "BBAR.BA":  ("BBVA Argentina",   400),  "ALUA.BA":  ("Aluar",            350),
+    "CRES.BA":  ("Cresud",           280),  "TXAR.BA":  ("Ternium AR",       260),
+    "COME.BA":  ("Sociedad Com.",    200),  "EDN.BA":   ("Edenor",           180),
+    "TGSU2.BA": ("TGS",              170),  "TGNO4.BA": ("TGN",              160),
+    "CEPU.BA":  ("Central Puerto",   150),  "MIRG.BA":  ("Mirgor",           130),
+    "VALO.BA":  ("Banco de Valores", 120),  "TRAN.BA":  ("Transener",        110),
+    "LOMA.BA":  ("Loma Negra",       100),  "AGRO.BA":  ("Agrometal",         85),
+    "SUPV.BA":  ("Supervielle",       80),  "BYMA.BA":  ("BYMA",              75),
+    "HARG.BA":  ("Holcim AR",         70),  "CVH.BA":   ("Cablevisión",       65),
+    "DGCU2.BA": ("Distrib. de Gas",   60),  "GCLA.BA":  ("Grupo Clarín",      55),
+    "CGPA2.BA": ("Camuzzi Gas",       50),
+}
+
+
+# ─── Cripto top 30 (por market cap aproximado) ───────────────────────────────
+CRYPTO_TOP_30 = [
+    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "BNB-USD",
+    "ADA-USD", "DOGE-USD", "TRX-USD", "AVAX-USD", "DOT-USD",
+    "LINK-USD", "MATIC-USD", "TON-USD", "SHIB-USD", "LTC-USD",
+    "BCH-USD", "UNI-USD", "ATOM-USD", "ETC-USD", "XLM-USD",
+    "NEAR-USD", "APT-USD", "ARB-USD", "OP-USD", "FIL-USD",
+    "ALGO-USD", "ICP-USD", "VET-USD", "HBAR-USD", "AAVE-USD",
+]
+
+CRYPTO_META = {
+    "BTC-USD":  ("Bitcoin",       1600), "ETH-USD":   ("Ethereum",       500),
+    "SOL-USD":  ("Solana",         140), "XRP-USD":   ("XRP",            135),
+    "BNB-USD":  ("BNB",            120), "ADA-USD":   ("Cardano",         45),
+    "DOGE-USD": ("Dogecoin",        38), "TRX-USD":   ("TRON",            30),
+    "AVAX-USD": ("Avalanche",       25), "DOT-USD":   ("Polkadot",        20),
+    "LINK-USD": ("Chainlink",       18), "MATIC-USD": ("Polygon",         15),
+    "TON-USD":  ("Toncoin",         14), "SHIB-USD":  ("Shiba Inu",       12),
+    "LTC-USD":  ("Litecoin",        10), "BCH-USD":   ("Bitcoin Cash",     8),
+    "UNI-USD":  ("Uniswap",          7), "ATOM-USD":  ("Cosmos",           6),
+    "ETC-USD":  ("Ethereum Classic", 6), "XLM-USD":   ("Stellar",          5),
+    "NEAR-USD": ("NEAR Protocol",    5), "APT-USD":   ("Aptos",            4),
+    "ARB-USD":  ("Arbitrum",         4), "OP-USD":    ("Optimism",         3),
+    "FIL-USD":  ("Filecoin",         3), "ALGO-USD":  ("Algorand",         3),
+    "ICP-USD":  ("Internet Comp.",   2), "VET-USD":   ("VeChain",          2),
+    "HBAR-USD": ("Hedera",           2), "AAVE-USD":  ("Aave",             2),
+}
+
+
 # Índices de referencia que muestra el strip superior del Home
 # (S&P 500 vía SPY ETF para tener un símbolo con datos consistentes en yfinance)
 INDICES = [
@@ -185,38 +243,48 @@ def get_indices_strip() -> List[Dict[str, Any]]:
     return out
 
 
-@_cached("heatmap_sp500", ttl_s=1800)  # 30min
-def get_heatmap_sp500() -> List[Dict[str, Any]]:
-    """Datos del heatmap S&P 500 top 50.
+# Registry de mercados soportados — clave usada por los endpoints
+# (?market=sp500 | merval | crypto).
+MARKETS = {
+    "sp500":  {"symbols": SP500_TOP_50,  "meta": SP500_META,  "label": "S&P 500"},
+    "merval": {"symbols": MERVAL_TOP_25, "meta": MERVAL_META, "label": "Merval"},
+    "crypto": {"symbols": CRYPTO_TOP_30, "meta": CRYPTO_META, "label": "Cripto top 30"},
+}
 
-    Devuelve lista de bloques con: symbol, name, price, change_pct, market_cap.
-    Frontend ordena por market_cap (block size) y colorea por change_pct.
-    """
-    quotes = _fetch_batch_quotes(SP500_TOP_50)
+
+def _build_heatmap(market_key: str) -> List[Dict[str, Any]]:
+    """Versión genérica de get_heatmap_X. Recorre los símbolos de un mercado,
+    fetchea quotes batched y compone los bloques."""
+    cfg = MARKETS.get(market_key)
+    if not cfg:
+        return []
+    quotes = _fetch_batch_quotes(cfg["symbols"])
     out = []
-    for sym in SP500_TOP_50:
+    for sym in cfg["symbols"]:
         q = quotes.get(sym)
         if not q:
             continue
-        meta = SP500_META.get(sym, (sym, 100))
+        meta = cfg["meta"].get(sym, (sym, 100))
         out.append({
             "symbol": sym,
             "name": meta[0],
             "price": q["price"],
             "change_pct": q["change_pct"],
-            "market_cap": meta[1],  # en B USD (estático)
+            "market_cap": meta[1],
         })
     return out
 
 
-@_cached("movers_sp500", ttl_s=1800)  # 30min
-def get_movers_sp500() -> Dict[str, List[Dict[str, Any]]]:
-    """Top 5 gainers y top 5 losers del S&P top 50."""
-    quotes = _fetch_batch_quotes(SP500_TOP_50)
+def _build_movers(market_key: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Top 5 gainers / losers de un mercado."""
+    cfg = MARKETS.get(market_key)
+    if not cfg:
+        return {"gainers": [], "losers": []}
+    quotes = _fetch_batch_quotes(cfg["symbols"])
     with_data = [
         {
             "symbol": sym,
-            "name": SP500_META.get(sym, (sym, 0))[0],
+            "name": cfg["meta"].get(sym, (sym, 0))[0],
             "price": q["price"],
             "change_pct": q["change_pct"],
         }
@@ -227,3 +295,39 @@ def get_movers_sp500() -> Dict[str, List[Dict[str, Any]]]:
         "gainers": sorted_by_change[:5],
         "losers": sorted_by_change[-5:][::-1],
     }
+
+
+# Wrappers con cache por mercado (TTL 30min — sintonizable por mercado)
+@_cached("heatmap_sp500",  ttl_s=1800)
+def get_heatmap_sp500()  -> List[Dict[str, Any]]: return _build_heatmap("sp500")
+
+@_cached("heatmap_merval", ttl_s=1800)
+def get_heatmap_merval() -> List[Dict[str, Any]]: return _build_heatmap("merval")
+
+@_cached("heatmap_crypto", ttl_s=900)  # crypto se mueve más rápido → 15min
+def get_heatmap_crypto() -> List[Dict[str, Any]]: return _build_heatmap("crypto")
+
+
+@_cached("movers_sp500",  ttl_s=1800)
+def get_movers_sp500()  -> Dict[str, List[Dict[str, Any]]]: return _build_movers("sp500")
+
+@_cached("movers_merval", ttl_s=1800)
+def get_movers_merval() -> Dict[str, List[Dict[str, Any]]]: return _build_movers("merval")
+
+@_cached("movers_crypto", ttl_s=900)
+def get_movers_crypto() -> Dict[str, List[Dict[str, Any]]]: return _build_movers("crypto")
+
+
+def get_heatmap(market: str) -> List[Dict[str, Any]]:
+    """Dispatch por mercado. Usado desde el endpoint /api/home/heatmap."""
+    if market == "sp500":  return get_heatmap_sp500()
+    if market == "merval": return get_heatmap_merval()
+    if market == "crypto": return get_heatmap_crypto()
+    return []
+
+
+def get_movers(market: str) -> Dict[str, List[Dict[str, Any]]]:
+    if market == "sp500":  return get_movers_sp500()
+    if market == "merval": return get_movers_merval()
+    if market == "crypto": return get_movers_crypto()
+    return {"gainers": [], "losers": []}

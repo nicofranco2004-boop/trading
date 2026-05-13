@@ -21,6 +21,7 @@ import PersonalLayer from '../components/home/PersonalLayer'
 import NewsPreview from '../components/home/NewsPreview'
 import EventsPreview from '../components/home/EventsPreview'
 import SearchBar from '../components/home/SearchBar'
+import Watchlist from '../components/home/Watchlist'
 
 export default function Home() {
   return (
@@ -35,12 +36,9 @@ export default function Home() {
         {/* 1. Strip de índices (S&P, Nasdaq, Merval, BTC, blue, oro) */}
         <IndicesStrip />
 
-        {/* 2. Heatmap S&P 500 — el visual hero */}
+        {/* 2. Heatmap (tabs S&P / Merval / Cripto) — el visual hero */}
         <section>
-          <h2 className="font-display text-sm uppercase tracking-wider text-ink-3 mb-2">
-            S&P 500 — heatmap
-          </h2>
-          <Heatmap market="sp500" />
+          <Heatmap defaultMarket="sp500" />
         </section>
 
         {/* 3. Capa personalizada — solo si el user tiene portfolio */}
@@ -54,7 +52,10 @@ export default function Home() {
           <MoversRail market="sp500" />
         </section>
 
-        {/* 5. Noticias + eventos — preview, deep dive en /novedades */}
+        {/* 5. Watchlist — tickers que el user sigue (sin tenerlos) */}
+        <Watchlist />
+
+        {/* 6. Noticias + eventos — preview, deep dive en /novedades */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <NewsPreview />
           <EventsPreview />

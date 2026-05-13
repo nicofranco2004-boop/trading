@@ -498,6 +498,22 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id);
     """)
 
+    # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────
+    # Tickers que el user "sigue" sin tenerlos en portfolio. Se renderiza en el
+    # Home como sección dedicada. No tiene relación con `positions` — son
+    # universos separados.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            asset_type TEXT,
+            added_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, symbol)
+        );
+        CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
+    """)
+
     # ─── CSV Importer ────────────────────────────────────────────────────────
     # import_batches: cada upload (en estado 'preview' es la sesión; al confirm
     # pasa a 'confirmed'; al revert pasa a 'reverted').
@@ -5431,9 +5447,10 @@ def reports_period_detail(
 
 from home.market import (
     get_indices_strip,
-    get_heatmap_sp500,
-    get_movers_sp500,
+    get_heatmap,
+    get_movers,
     _fetch_batch_quotes,
+    MARKETS,
 )
 from home.briefing import build_personal_cards
 
@@ -5446,18 +5463,91 @@ def home_indices(uid: int = Depends(get_current_user)):
 
 @app.get("/api/home/heatmap")
 def home_heatmap(market: str = "sp500", uid: int = Depends(get_current_user)):
-    """Heatmap del mercado. V1 solo soporta sp500."""
-    if market != "sp500":
-        raise HTTPException(400, "Solo S&P 500 soportado en V1.")
-    return {"market": market, "blocks": get_heatmap_sp500()}
+    """Heatmap del mercado. V1.5 soporta sp500 / merval / crypto."""
+    if market not in MARKETS:
+        raise HTTPException(400, f"Mercado no soportado: {market}")
+    return {"market": market, "label": MARKETS[market]["label"], "blocks": get_heatmap(market)}
 
 
 @app.get("/api/home/movers")
 def home_movers(market: str = "sp500", uid: int = Depends(get_current_user)):
     """Top 5 gainers + top 5 losers del día."""
-    if market != "sp500":
-        raise HTTPException(400, "Solo S&P 500 soportado en V1.")
-    return get_movers_sp500()
+    if market not in MARKETS:
+        raise HTTPException(400, f"Mercado no soportado: {market}")
+    return get_movers(market)
+
+
+# ─── Watchlist (Home V1.5) ───────────────────────────────────────────────────
+
+class WatchlistAddIn(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20)
+    asset_type: Optional[str] = Field(None, max_length=20)
+
+    @field_validator('symbol')
+    @classmethod
+    def normalize_symbol(cls, v):
+        v = v.strip().upper()
+        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD)?$', v):
+            raise ValueError('Símbolo inválido')
+        return v
+
+
+@app.get("/api/watchlist")
+def watchlist_list(uid: int = Depends(get_current_user)):
+    """Devuelve los tickers en watchlist + quote actual (price + change_pct)."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT id, symbol, asset_type, added_at
+                 FROM watchlist
+                WHERE user_id = ?
+                ORDER BY added_at DESC""",
+            (uid,),
+        ).fetchall()
+        items = [dict(r) for r in rows]
+        # Enrich con quotes (batch)
+        symbols = [it["symbol"] for it in items]
+        quotes = _fetch_batch_quotes(symbols) if symbols else {}
+        for it in items:
+            q = quotes.get(it["symbol"])
+            it["price"] = q["price"] if q else None
+            it["change_pct"] = q["change_pct"] if q else None
+        return {"items": items}
+    finally:
+        conn.close()
+
+
+@app.post("/api/watchlist")
+def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_current_user)):
+    """Agrega un símbolo a la watchlist. Si ya existe, devuelve 200 silenciosamente
+    (idempotente para el flow "Agregar a watchlist" desde la UI)."""
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO watchlist (user_id, symbol, asset_type)
+                   VALUES (?, ?, ?)""",
+                (uid, data.symbol, data.asset_type),
+            )
+        return {"ok": True, "symbol": data.symbol}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/watchlist/{symbol}")
+def watchlist_remove(symbol: str, uid: int = Depends(get_current_user)):
+    """Borra un símbolo de la watchlist."""
+    sym = symbol.strip().upper()
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute(
+                "DELETE FROM watchlist WHERE user_id = ? AND symbol = ?",
+                (uid, sym),
+            )
+        return {"ok": True, "symbol": sym}
+    finally:
+        conn.close()
 
 
 @app.get("/api/home/personal")

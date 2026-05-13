@@ -126,7 +126,14 @@ function squarify(blocks, width, height) {
 const WIDTH = 1200
 const HEIGHT = 540
 
-export default function Heatmap({ market = "sp500" }) {
+const MARKETS = [
+  { key: 'sp500',  label: 'S&P 500' },
+  { key: 'merval', label: 'Merval' },
+  { key: 'crypto', label: 'Cripto' },
+]
+
+export default function Heatmap({ defaultMarket = "sp500" }) {
+  const [market, setMarket] = useState(defaultMarket)
   const [blocks, setBlocks] = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
@@ -135,6 +142,7 @@ export default function Heatmap({ market = "sp500" }) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+    setErr(null)
     api.get(`/home/heatmap?market=${market}`)
       .then(d => { if (!cancelled) setBlocks(d.blocks || []) })
       .catch(ex => { if (!cancelled) setErr(ex.message) })
@@ -142,22 +150,45 @@ export default function Heatmap({ market = "sp500" }) {
     return () => { cancelled = true }
   }, [market])
 
-  if (loading) {
-    return (
-      <div className="rounded-sm bg-bg-2 animate-pulse" style={{ aspectRatio: `${WIDTH}/${HEIGHT}` }} />
-    )
-  }
-  if (err) {
-    return <div className="text-xs text-rendi-neg">Heatmap no disponible: {err}</div>
-  }
-  if (blocks.length === 0) {
-    return <div className="text-xs text-ink-3 p-4">Sin data del heatmap por ahora.</div>
-  }
+  // Tabs siempre visibles (incluso durante loading), así el user no pierde el switcher
+  const Tabs = (
+    <div className="inline-flex gap-1 bg-bg-2 border border-line rounded-sm p-0.5">
+      {MARKETS.map(m => (
+        <button
+          key={m.key}
+          onClick={() => setMarket(m.key)}
+          className={`px-2.5 py-1 text-xs rounded-sm transition-colors ${
+            market === m.key
+              ? 'bg-bg-1 text-ink-0 font-medium'
+              : 'text-ink-2 hover:text-ink-0'
+          }`}
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  )
 
-  const laid = squarify(blocks, WIDTH, HEIGHT)
+  const laid = loading || err || blocks.length === 0 ? [] : squarify(blocks, WIDTH, HEIGHT)
 
   return (
     <>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] uppercase tracking-wider text-ink-3 font-mono">
+          {MARKETS.find(m => m.key === market)?.label || market} · {blocks.length} activos
+        </div>
+        {Tabs}
+      </div>
+      {loading && (
+        <div className="rounded-sm bg-bg-2 animate-pulse" style={{ aspectRatio: `${WIDTH}/${HEIGHT}` }} />
+      )}
+      {err && !loading && (
+        <div className="text-xs text-rendi-neg p-4">Heatmap no disponible: {err}</div>
+      )}
+      {!loading && !err && blocks.length === 0 && (
+        <div className="text-xs text-ink-3 p-4">Sin data del heatmap por ahora.</div>
+      )}
+      {!loading && !err && blocks.length > 0 && (
       <div
         className="relative rounded-sm overflow-hidden border border-line"
         style={{ width: "100%", aspectRatio: `${WIDTH}/${HEIGHT}` }}
@@ -205,6 +236,7 @@ export default function Heatmap({ market = "sp500" }) {
           ))}
         </svg>
       </div>
+      )}
       {selected && (
         <AssetQuickView
           symbol={selected.symbol}
