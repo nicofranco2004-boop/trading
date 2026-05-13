@@ -2561,19 +2561,24 @@ class CashFlowIn(BaseModel):
 
 
 def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
-    """Recalcula `monthly_entries.pnl_realized` desde la tabla `operations`.
+    """Recalcula `monthly_entries.pnl_realized`, `deposits` y `withdrawals`
+    desde las fuentes (operations + import_normalized_tx confirmados).
 
-    Self-healing del drift que pueden generar cycles de import/revert con bugs
-    cross-currency: el revert deshace operations correctamente, pero si el
-    persist agregó pnl_realized con un cálculo viejo y el revert lo deshizo
-    con el cálculo nuevo, queda diferencia acumulada.
+    Self-healing de drift acumulado por cycles import/revert/reimport con
+    cálculos cambiantes entre versiones. Cada fila queda con:
+      pnl_realized = SUM(operations.pnl_usd)
+      deposits     = SUM(monto USD de DEPOSITs en batches confirmed)
+      withdrawals  = SUM(monto USD de WITHDRAWs en batches confirmed)
 
-    Para cada (broker, year, month) en monthly_entries:
-      pnl_realized[broker, y, m] = SUM(operations.pnl_usd WHERE broker, y, m)
-      pnl_realized[global, y, m] = SUM(operations.pnl_usd WHERE y, m)
+    Para broker='global', suma cross-broker.
 
-    Re-repara la cadena de capital_final tras actualizar.
-    Idempotente. Devuelve la cantidad de rows actualizados.
+    Re-repara la cadena de capital_final.
+
+    CAVEAT: si el user hizo cash flows MANUALES (desde /api/cash/flow, no
+    desde un import), esos se zero-ean — son raros, el user los puede
+    re-hacer si fueran necesarios.
+
+    Idempotente. Devuelve cantidad de rows actualizados.
     """
     rows = conn.execute(
         "SELECT DISTINCT broker, year, month FROM monthly_entries WHERE user_id=?",
@@ -2581,36 +2586,130 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     ).fetchall()
     updates = 0
     brokers_touched: set = set()
+    # TC blue para convertir DEPOSITs/WITHDRAWs en ARS a USD-equivalente
+    # (consistente con _persist_cash_in/out)
+    tc_blue_row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
+    ).fetchone()
+    try:
+        tc_blue = float(tc_blue_row["value"]) if tc_blue_row else 1415.0
+        if tc_blue <= 0:
+            tc_blue = 1415.0
+    except (TypeError, ValueError):
+        tc_blue = 1415.0
+
     for r in rows:
         broker, y, m = r["broker"], r["year"], r["month"]
         year_str = f"{y:04d}"
         month_str = f"{m:02d}"
-        if broker == "global":
-            row = conn.execute(
-                """SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations
-                   WHERE user_id=?
-                     AND strftime('%Y', date)=?
-                     AND strftime('%m', date)=?""",
-                (uid, year_str, month_str),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                """SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations
-                   WHERE user_id=? AND broker=?
-                     AND strftime('%Y', date)=?
-                     AND strftime('%m', date)=?""",
-                (uid, broker, year_str, month_str),
-            ).fetchone()
-        new_pnl = round(float(row["s"] or 0), 4)
+        broker_filter_sql = "" if broker == "global" else " AND o.broker = ?"
+        broker_filter_args = () if broker == "global" else (broker,)
+
+        # 1) pnl_realized desde operations
+        pnl_row = conn.execute(
+            f"""SELECT COALESCE(SUM(o.pnl_usd), 0) AS s FROM operations o
+                WHERE o.user_id=?
+                  AND strftime('%Y', o.date)=?
+                  AND strftime('%m', o.date)=?
+                  {broker_filter_sql}""",
+            (uid, year_str, month_str, *broker_filter_args),
+        ).fetchone()
+        new_pnl = round(float(pnl_row["s"] or 0), 4)
+
+        # 2) deposits + withdrawals desde import_normalized_tx (solo batches
+        #    confirmed). Convierte ARS a USD para tracking en USD-base.
+        tx_broker_filter = "" if broker == "global" else " AND n.broker = ?"
+        tx_broker_args = () if broker == "global" else (broker,)
+        flow_row = conn.execute(
+            f"""SELECT n.operation_type AS op,
+                       COALESCE(SUM(n.gross_amount), 0) AS s,
+                       n.currency AS cur
+                FROM import_normalized_tx n
+                JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
+                  AND strftime('%Y', n.date)=?
+                  AND strftime('%m', n.date)=?
+                  {tx_broker_filter}
+                GROUP BY n.operation_type, n.currency""",
+            (uid, year_str, month_str, *tx_broker_args),
+        ).fetchall()
+        new_deposits = 0.0
+        new_withdrawals = 0.0
+        for f in flow_row:
+            amt = float(f["s"] or 0)
+            cur_norm = (f["cur"] or "").upper()
+            # Convertir ARS a USD para el aggregate USD
+            amt_usd = amt / tc_blue if cur_norm == "ARS" else amt
+            if f["op"] == "DEPOSIT":
+                new_deposits += amt_usd
+            else:
+                new_withdrawals += amt_usd
+        new_deposits = round(new_deposits, 4)
+        new_withdrawals = round(new_withdrawals, 4)
+
+        # También reseteamos pnl_unrealized: es un live snapshot que se
+        # recalcula desde positions actuales (via /sync-unrealized en el
+        # dashboard). Si quedó un valor stale de cycles previos, ensucia
+        # el "delta del mes" en /reportes — fórmula `partial`: deltaUsd =
+        # pnl_realized + pnl_unrealized, así un -$69k phantom rompe el view.
         conn.execute(
-            """UPDATE monthly_entries SET pnl_realized=?
+            """UPDATE monthly_entries
+               SET pnl_realized=?, pnl_unrealized=0,
+                   deposits=?, withdrawals=?
                WHERE user_id=? AND broker=? AND year=? AND month=?""",
-            (new_pnl, uid, broker, y, m),
+            (new_pnl, new_deposits, new_withdrawals, uid, broker, y, m),
         )
         updates += 1
         brokers_touched.add(broker)
 
-    # Re-reparar capital_final chain con los nuevos pnl_realized
+    # Limpieza: borrar monthly_entries que quedaron TODAS en 0 después del recalc
+    # (sin pnl, sin deposits, sin withdrawals, sin pnl_unrealized). Estas son
+    # filas huérfanas de cycles previos que no tienen respaldo en ninguna fuente.
+    # Sin borrarlas, su `capital_inicio` heredado de cycles anteriores ensucia
+    # netDeposited del dashboard.
+    conn.execute(
+        """DELETE FROM monthly_entries
+            WHERE user_id=?
+              AND COALESCE(deposits, 0) = 0
+              AND COALESCE(withdrawals, 0) = 0
+              AND COALESCE(pnl_realized, 0) = 0
+              AND COALESCE(pnl_unrealized, 0) = 0""",
+        (uid,),
+    )
+
+    # Si tras el recalc no quedan positions ni operations ni monthly_entries,
+    # el user está en "estado limpio" — también borramos snapshots stale para
+    # que el gráfico de evolución no muestre data de cycles previos.
+    has_positions = conn.execute(
+        "SELECT 1 FROM positions WHERE user_id=? LIMIT 1", (uid,),
+    ).fetchone()
+    has_operations = conn.execute(
+        "SELECT 1 FROM operations WHERE user_id=? LIMIT 1", (uid,),
+    ).fetchone()
+    has_monthly = conn.execute(
+        "SELECT 1 FROM monthly_entries WHERE user_id=? LIMIT 1", (uid,),
+    ).fetchone()
+    if not has_positions and not has_operations and not has_monthly:
+        conn.execute("DELETE FROM snapshots WHERE user_id=?", (uid,))
+
+    # Para brokers que SÍ tienen actividad, resetear capital_inicio del primer
+    # mes a 0 (es la "baseline" y debería empezar en 0 si nada precede al
+    # primer movimiento; _repair_monthly_chain propaga forward desde ahí).
+    for b in brokers_touched:
+        first = conn.execute(
+            """SELECT id FROM monthly_entries
+               WHERE user_id=? AND broker=?
+               ORDER BY year ASC, month ASC LIMIT 1""",
+            (uid, b),
+        ).fetchone()
+        if first:
+            conn.execute(
+                "UPDATE monthly_entries SET capital_inicio=0 WHERE id=?",
+                (first["id"],),
+            )
+
+    # Re-reparar capital_final chain con los nuevos valores
     for b in brokers_touched:
         _repair_monthly_chain(conn, uid, b)
     return updates
@@ -2819,6 +2918,117 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
                VALUES (?,?,?,?,?,?,0,0,?,?)""",
             (uid, year, month, broker, deposits, withdrawals, cap_inicio, max(0.0, cap_final)),
         )
+
+
+class BrokerReconcileCashIn(BaseModel):
+    """Reconcilia el cash de un broker con el balance real reportado por el
+    broker externo (ej.: lo que ves cuando abrís Schwab en la app)."""
+    broker_name: str = Field(..., min_length=1, max_length=MAX_STR)
+    target_cash: float = Field(..., ge=-1e12, le=1e12)  # cash real ahora — puede ser 0
+    tc_blue: float = Field(1415, gt=0, le=1_000_000)    # ARS→USD para monthly_entries global
+
+    @field_validator('broker_name')
+    @classmethod
+    def strip_broker(cls, v):
+        return v.strip()
+
+
+@app.post("/api/brokers/reconcile-cash")
+def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_current_user)):
+    """Ajusta el cash actual de un broker a un valor real (el que el broker
+    externo reporta), y registra la diferencia como movimiento sintético en
+    el primer mes del broker — de modo que:
+
+      • La posición cash queda en el valor exacto que dijo el usuario.
+      • La diferencia se acredita/debita en `monthly_entries` del mes más
+        antiguo del broker, así "capital aportado" refleja correctamente
+        el cash pre-CSV (deposits) o las salidas pre-CSV que el CSV no
+        capturó (withdrawals).
+
+    Casos:
+      • diff > 0 (target > computed) → DEPOSITO sintético = cash que ya estaba
+        antes de que arranque el CSV. Suma a "capital aportado".
+      • diff < 0 (target < computed) → RETIRO sintético = cash que salió por
+        movimientos que el CSV no incluyó. Resta de "capital aportado".
+
+    Útil después de un import con CSV parcial (historia incompleta del broker).
+    """
+    conn = get_db()
+    try:
+        with conn:
+            broker_row = conn.execute(
+                "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, data.broker_name),
+            ).fetchone()
+            if not broker_row:
+                raise HTTPException(404, f"Broker '{data.broker_name}' no encontrado")
+            currency = broker_row['currency']
+
+            # 1. Cash actual del broker
+            cash_pos = conn.execute(
+                "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+                (uid, data.broker_name),
+            ).fetchone()
+            current_cash = float(cash_pos['invested'] or 0) if cash_pos else 0.0
+            diff = round(data.target_cash - current_cash, 6)
+
+            if abs(diff) < 0.01:
+                return {"ok": True, "no_change": True, "current_cash": current_cash}
+
+            # 2. Update / create cash position con el target exacto
+            if cash_pos:
+                conn.execute(
+                    "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
+                    (data.target_cash, cash_pos['id'], uid),
+                )
+            else:
+                asset_name = 'ARS' if currency == 'ARS' else ('USD' if currency == 'USD' else 'USDT')
+                conn.execute(
+                    """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
+                       VALUES (?,?,?,1,?)""",
+                    (uid, data.broker_name, asset_name, data.target_cash),
+                )
+
+            # 3. Registrar diff en monthly_entries del mes más antiguo del broker
+            # (preserva cronología — el ajuste representa historia pre-CSV).
+            first = conn.execute(
+                """SELECT year, month FROM monthly_entries
+                   WHERE user_id=? AND broker=? ORDER BY year, month LIMIT 1""",
+                (uid, data.broker_name),
+            ).fetchone()
+            if first:
+                target_year, target_month = first['year'], first['month']
+            else:
+                # Sin historia previa — usar mes actual
+                now = datetime.utcnow()
+                target_year, target_month = now.year, now.month
+
+            direction = 'deposit' if diff > 0 else 'withdraw'
+            magnitude = abs(diff)
+            # Convertir a USD para monthly_entries (que vive en USD)
+            amount_usd = magnitude / data.tc_blue if currency == 'ARS' else magnitude
+
+            _update_monthly_flow(conn, uid, data.broker_name, target_year, target_month,
+                                 direction, amount_usd)
+            _update_monthly_flow(conn, uid, 'global', target_year, target_month,
+                                 direction, amount_usd)
+            _repair_monthly_chain(conn, uid, data.broker_name)
+            _repair_monthly_chain(conn, uid, 'global')
+
+        return {
+            "ok": True,
+            "broker": data.broker_name,
+            "previous_cash": current_cash,
+            "new_cash": data.target_cash,
+            "diff": diff,
+            "diff_direction": direction,
+            "recorded_in_period": f"{target_year}-{target_month:02d}",
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"Error al reconciliar cash: {ex}")
+    finally:
+        conn.close()
 
 
 @app.post("/api/cash/flow")
@@ -4817,6 +5027,20 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
                 )
             except _import_persister.PersistError as ex:
                 raise HTTPException(400, f"Error en fila {ex.row_index}: {ex.message}")
+
+            # Auto-recalc post-import: el persister es incremental (cada tx
+            # actualiza monthly_entries por separado vía _update_monthly_*).
+            # Si quedó drift residual de cycles previos (capital_inicio
+            # negativo, pnl_unrealized stale), corremos el recalc canónico
+            # para garantizar que los aggregates queden consistentes. Es
+            # idempotente — re-corre la SUM desde operations + import_normalized_tx.
+            try:
+                _recalc_pnl_realized_from_ops(conn, uid)
+            except Exception:
+                # No queremos hacer fallar el confirm si el recalc rompe — el
+                # batch ya está persistido. Loggeamos pero seguimos.
+                import traceback
+                traceback.print_exc()
 
         return {"ok": True, "batch_id": data.session_id,
                 "skipped_by_user": len(skip_set), **summary}

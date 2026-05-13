@@ -347,15 +347,26 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
     // Delta del mes:
     //   manual / partial  → capital_final − capital_inicio − flows netos
     //   derived           → solo pnl_realized (no tenemos capital tracking)
+    //
+    // % usa Modified Dietz como denominador: (startUsd + 0.5*flows).
+    // Esto evita dos modos de error del divisor `startUsd`:
+    //   • startUsd=0 con depósito mid-mes y ganancia → daba 0%, ahora da el %
+    //     real time-weighted.
+    //   • startUsd muy chico vs un depósito gigante → inflaba el % a cientos
+    //     (e.g. start=$1k, deposit=$50k, pnl=$2k → vieja fórmula daba 200%,
+    //     Modified Dietz da 2k/26k ≈ 7.7%, que refleja la exposure promedio).
     const flows = deposits - withdrawals
+    // Denominador: capital expuesto promedio durante el mes
+    // (asume flujos uniformes → peso 0.5).
+    const avgCapital = (startUsd || 0) + 0.5 * flows
     let deltaUsd, deltaPct
     if (source === 'manual') {
       deltaUsd = endUsd - startUsd - flows
-      deltaPct = startUsd > 0 ? (deltaUsd / startUsd) * 100 : 0
+      deltaPct = avgCapital > 0 ? (deltaUsd / avgCapital) * 100 : 0
     } else if (source === 'partial') {
       // Falta data — usamos pnl_realized + pnl_unrealized como proxy
       deltaUsd = pnlRealized + pnlUnrealized
-      deltaPct = startUsd > 0 ? (deltaUsd / startUsd) * 100 : 0
+      deltaPct = avgCapital > 0 ? (deltaUsd / avgCapital) * 100 : 0
     } else {
       // derived
       deltaUsd = pnlRealized
@@ -427,6 +438,18 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
   }
   const todayYear = new Date().getFullYear()
 
+  // Pre-cómputo: capital aportado acumulado al cierre de cada año.
+  // = Σ(deposits − withdrawals) desde el inicio de la historia hasta Dic de
+  // ese año. Sirve para mostrar la métrica alternativa "YTD sobre capital
+  // aportado total", más conservadora/intuitiva que el TWRR para usuarios
+  // retail. La métrica primaria sigue siendo TWRR (ver `ytdPct`).
+  const cumNetDepByYear = new Map()
+  let cumNetDep = 0
+  for (const m of months) {
+    cumNetDep += (m.deposits || 0) - (m.withdrawals || 0)
+    cumNetDepByYear.set(m.year, cumNetDep)   // sobreescribe → queda el último (Dic)
+  }
+
   // 9. Construir struct anual con summary del año
   const years = [...byYear.entries()]
     .sort((a, b) => b[0] - a[0])  // años descendentes (lista vertical: actual arriba)
@@ -465,12 +488,14 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
         const gap = liveValue - (newestWithCapital.endUsd || 0)
         if (Math.abs(gap) > 0.01) {
           // Mutamos el mes en su lugar dentro de `sorted` (es el mismo
-          // objeto). Recalculamos delta con el live como endUsd.
+          // objeto). Recalculamos delta con el live como endUsd y Modified
+          // Dietz (mismo divisor que el cómputo mensual de arriba).
           newestWithCapital.endUsd = liveValue
           const flows = (newestWithCapital.deposits || 0) - (newestWithCapital.withdrawals || 0)
           newestWithCapital.deltaUsd = liveValue - (newestWithCapital.startUsd || 0) - flows
-          newestWithCapital.deltaPct = (newestWithCapital.startUsd || 0) > 0
-            ? (newestWithCapital.deltaUsd / newestWithCapital.startUsd) * 100
+          const avgCap = (newestWithCapital.startUsd || 0) + 0.5 * flows
+          newestWithCapital.deltaPct = avgCap > 0
+            ? (newestWithCapital.deltaUsd / avgCap) * 100
             : 0
           newestWithCapital.status = statusFromPct(newestWithCapital.deltaPct)
           newestWithCapital.isLive = true
@@ -481,19 +506,48 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       // no tienen flow tracking porque no hay entry global)
       const flowsYear = sorted.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
 
-      // YTD del año:
-      //   • Si tenemos startUsd (manual) y endUsd (live o manual):
-      //     YTD = endUsd − startUsd − flowsYear  ← match exacto con Dashboard
-      //   • Sino, fallback a la suma de deltaUsd por mes (legacy)
+      // YTD del año.
+      //
+      // USD: dividir el resultado anual por el `startUsd` del primer mes era
+      // engañoso cuando el capital crecía mucho durante el año (e.g. start=$5k,
+      // deposits totales=$50k → cualquier ganancia se mostraba ÷ $5k inflando
+      // el % a cientos). Ahora computamos el % vía TWRR (Time-Weighted Return):
+      // chain-link de los rendimientos mensuales. Es la única forma correcta
+      // de agregar retornos a través de períodos donde la base cambia mucho
+      // por aportes/retiros.
+      //
+      //   ytdPct = (∏ (1 + deltaPct_mes / 100)) - 1) * 100
+      //
+      // El ytdUsd absoluto sigue siendo `endUsd - startUsd - flowsYear` (es
+      // lo que coincide con el Hero del Dashboard). El % no es ytdUsd/startUsd.
       let ytdUsd, ytdPct
       if (startUsd > 0 && endUsd > 0) {
         ytdUsd = endUsd - startUsd - flowsYear
-        ytdPct = (ytdUsd / startUsd) * 100
       } else {
         // Fallback: suma de deltaUsd por mes (incluye manual + partial + derived)
         ytdUsd = sorted.reduce((s, m) => s + m.deltaUsd, 0)
-        ytdPct = startUsd > 0 ? (ytdUsd / startUsd) * 100 : 0
       }
+      // TWRR chain-link sobre meses con % válido (manual/partial — los
+      // derived no tienen baseline por construcción, sus deltaPct=0).
+      const monthsForTwrr = sorted.filter(m => m.source !== 'derived' && m.deltaPct != null)
+      if (monthsForTwrr.length > 0) {
+        let cum = 1
+        for (const m of monthsForTwrr) {
+          cum *= 1 + (m.deltaPct || 0) / 100
+        }
+        ytdPct = (cum - 1) * 100
+      } else {
+        ytdPct = 0
+      }
+
+      // Métrica alternativa: YTD sobre capital aportado acumulado al cierre
+      // del año (más conservadora; útil para que el user no se confunda con
+      // un TWRR de +115% post-crash). Si el cap. aportado es 0 o negativo,
+      // queda null (no tiene sentido el ratio).
+      const cumNetDepEnd = cumNetDepByYear.get(year) || 0
+      const ytdPctOverContrib = cumNetDepEnd > 0
+        ? (ytdUsd / cumNetDepEnd) * 100
+        : null
 
       // Best / worst del año (solo entre meses con deltaPct válido — manual/partial)
       const withPct = sorted.filter(m => m.source !== 'derived')
@@ -508,6 +562,8 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
         year,
         ytdUsd,
         ytdPct,
+        ytdPctOverContrib,       // % alternativo: ytdUsd / capital aportado total al cierre
+        capContribAtYearEnd: cumNetDepEnd,
         startUsd,
         endUsd,
         endSource,

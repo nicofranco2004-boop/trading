@@ -259,6 +259,16 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
         currency = _norm_currency(d.get("moneda"))
         notes = (d.get("notas") or "").strip() or None
 
+        # asset_type: el parser puede pasar un hint explícito en data["asset_type"]
+        # (útil para Schwab donde "ETH" significa Grayscale Ethereum Mini ETF,
+        # no la crypto raw que la heurística genérica detectaría). Si no hay
+        # hint, caemos al guess_asset_type por símbolo.
+        asset_type_hint = (d.get("asset_type") or "").strip().upper()
+        if asset_type_hint in {"STOCK", "CEDEAR", "ETF", "CRYPTO", "FIAT", "BOND", "FUND", "OTHER"}:
+            asset_type = asset_type_hint
+        else:
+            asset_type = guess_asset_type(asset_raw)
+
         # Construcción específica por op_type
         tx = NormalizedTx(
             row_index=ridx,
@@ -266,7 +276,7 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             broker=broker,
             operation_type=op_type,
             asset_symbol=asset_raw,
-            asset_type=guess_asset_type(asset_raw),
+            asset_type=asset_type,
             quantity=quantity,
             unit_price=unit_price,
             gross_amount=gross_amount,

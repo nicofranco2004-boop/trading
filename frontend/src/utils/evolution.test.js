@@ -70,14 +70,19 @@ describe('USD: snapshots are sorted ascending regardless of input order', () => 
   })
 })
 
-describe('USD: legacy snapshot (net_deposited=0) falls back to total_invested', () => {
+describe('USD: TWRR — primer snapshot es baseline (0%), siguientes son chain-link', () => {
+  // Migración a TWRR: cada snapshot ya NO se computa independientemente como
+  // MWR (value-baseline)/baseline. El primero es 0% (referencia) y los
+  // siguientes son chain-link de period_returns (Modified Dietz).
   const snaps = [
     { date: '2025-01-01', total_value: 1000, total_invested: 800, net_deposited: 0 },
     { date: '2025-01-15', total_value: 880,  total_invested: 800, net_deposited: 0 },
   ]
   const r = buildEvolutionFromSnapshots(snaps, [], BENCH, TCB)
-  it('first point: (1000-800)/800 = 25%', () => expect(r.seriesUsd[0].total).toBe(25))
-  it('second point: (880-800)/800 = 10%', () => expect(r.seriesUsd[1].total).toBe(10))
+  it('first point: 0% baseline (TWRR)', () => expect(r.seriesUsd[0].total).toBe(0))
+  it('second point: (880-1000)/1000 = -12% (period return sin flujos)', () => {
+    expect(r.seriesUsd[1].total).toBe(-12)
+  })
 })
 
 describe('USD: zero baseline → 0% (no division by zero)', () => {
@@ -139,17 +144,25 @@ describe('Realized line: snapshot after gap month uses last known cumulative', (
 
 // ── ARS series uses historical FX of snapshot's month ─────────────────────────
 
-describe('ARS: each snapshot converted at its own historical FX', () => {
+describe('ARS: TWRR period return entre snapshots con FX por mes', () => {
   const snaps = [
     { date: '2025-01-15', total_value: 1000, net_deposited: 1000 },  // FX=1000 (Jan)
     { date: '2025-02-15', total_value: 1100, net_deposited: 1000 },  // FX=1100 (Feb)
   ]
   const r = buildEvolutionFromSnapshots(snaps, [], BENCH, TCB)
-  // Jan: valueArs=1000*1000=1M, baselineArs=1000*1000=1M → 0%
-  // Feb: valueArs=1100*1100=1.21M, baselineArs=1000*1100=1.1M → (1.21M-1.1M)/1.1M = 10%
-  // (note: the % per-point matches USD because value & baseline use SAME fx → fx cancels)
+  // Jan: baseline TWRR = 0%
+  // Feb (Modified Dietz):
+  //   prevValueArs=1000*1000=1M, prevBaselineArs=1000*1000=1M
+  //   valueArs=1100*1100=1.21M, baselineArs=1000*1100=1.1M
+  //   flowsArs=1.1M-1M=100k (sintético por el FX que sube — el cash subyacente
+  //                          no cambió, pero la base ARS sí)
+  //   pnlArs=(1.21M-1M)-100k=110k
+  //   avgArs=1M+50k=1.05M
+  //   r=110k/1.05M=10.48%
   it('Jan ARS: 0%', () => expect(r.seriesArs[0].total).toBe(0))
-  it('Feb ARS: 10% (fx cancels in pct calc)', () => expect(r.seriesArs[1].total).toBe(10))
+  it('Feb ARS: ~10.5% (Modified Dietz absorbe el flujo por FX)', () => {
+    expect(r.seriesArs[1].total).toBeCloseTo(10.48, 1)
+  })
 })
 
 describe('ARS realized: cumRealized × fx_at_snap / baselineArs', () => {

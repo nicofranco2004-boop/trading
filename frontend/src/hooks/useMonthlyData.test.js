@@ -20,7 +20,10 @@ describe('buildMonthlyReports', () => {
     const may = out.years[0].months[0]
     expect(may.source).toBe('manual')
     expect(may.deltaUsd).toBe(8200 - 7000 - 100)  // 1100
-    expect(may.deltaPct).toBeCloseTo((1100 / 7000) * 100, 1)
+    // Modified Dietz: divisor = startUsd + 0.5*flows = 7000 + 0.5*100 = 7050.
+    // Antes dividíamos por startUsd a secas, lo que inflaba el % en meses con
+    // depósitos grandes vs el capital de arranque.
+    expect(may.deltaPct).toBeCloseTo((1100 / 7050) * 100, 1)
   })
 
   it('detecta source=partial cuando entry tiene 0 en capital_inicio', () => {
@@ -209,7 +212,12 @@ describe('buildMonthlyReports', () => {
     expect(yr.endUsd).toBe(7200)
     // YTD = endUsd - startUsd - flows = 7200 - 5000 - 100 = 2100
     expect(yr.ytdUsd).toBe(2100)
-    expect(yr.ytdPct).toBeCloseTo((2100 / 5000) * 100, 1)
+    // ytdPct ahora es TWRR (chain-link de meses). Con 1 mes en el año, el TWRR
+    // anual coincide con el deltaPct mensual Modified Dietz:
+    //   avgCap = 5000 + 0.5*100 = 5050  →  2100 / 5050 ≈ 41.58%
+    // Antes dividíamos 2100 / 5000 (= 42%), pero inflar el % por flujos de
+    // mid-period es el bug que motivó esta migración.
+    expect(yr.ytdPct).toBeCloseTo((2100 / 5050) * 100, 1)
   })
 
   it('año pasado: usa último capital_final manual como endUsd, no snapshot live', () => {
@@ -530,5 +538,112 @@ describe('buildMonthlyReports', () => {
     expect(yr.flowsYear).toBe(300)
     // YTD = 6500 - 5000 - 300 = 1200 (rendimiento puro, sin contar aportes)
     expect(yr.ytdUsd).toBe(1200)
+  })
+
+  // ─── TWRR & Modified Dietz — anti-regresión del bug "+400% anual" ───────
+  describe('TWRR yearly aggregate', () => {
+    it('ytdPct anual NO se infla cuando hay depósitos grandes con capital chico', () => {
+      // Caso real del bug: arranque $5k, depósitos masivos durante el año,
+      // resultado modesto al final → la vieja fórmula daba %  >300% porque
+      // dividía por el startUsd inicial. Modified Dietz + TWRR lo arregla.
+      const todayYear = new Date().getFullYear()
+      const out = buildMonthlyReports(
+        [
+          { year: todayYear, month: 1, broker: 'global', capital_inicio: 5000,  capital_final: 6100,  deposits: 1000 },
+          { year: todayYear, month: 2, broker: 'global', capital_inicio: 6100,  capital_final: 16300, deposits: 10000 },
+          { year: todayYear, month: 3, broker: 'global', capital_inicio: 16300, capital_final: 31500, deposits: 15000 },
+        ],
+        [],
+      )
+      const yr = out.years[0]
+      // Sin aportes, el portfolio creció:
+      //   Jan: (6100-5000-1000) = 100 sobre avgCap=5500 → 1.82%
+      //   Feb: (16300-6100-10000) = 200 sobre avgCap=11100 → 1.80%
+      //   Mar: (31500-16300-15000) = 200 sobre avgCap=23800 → 0.84%
+      // TWRR chain-link ≈ 4.5% (no 400%).
+      expect(yr.ytdPct).toBeLessThan(10)
+      expect(yr.ytdPct).toBeGreaterThan(0)
+    })
+
+    it('mes con flows=0 mantiene el % equivalente al simple (sin Modified Dietz overhead)', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2025, month: 6, broker: 'global', capital_inicio: 10000, capital_final: 11000, deposits: 0, withdrawals: 0 }],
+        [],
+      )
+      // avgCap = 10000 + 0 = 10000; deltaPct = 1000/10000 = 10%
+      expect(out.years[0].months[0].deltaPct).toBeCloseTo(10, 2)
+    })
+
+    it('Modified Dietz: depósito mid-mes sobre capital chico no infla %', () => {
+      const out = buildMonthlyReports(
+        [{ year: 2025, month: 6, broker: 'global', capital_inicio: 1000, capital_final: 12200, deposits: 11000, withdrawals: 0 }],
+        [],
+      )
+      // deltaUsd = 12200 - 1000 - 11000 = 200
+      // avgCap   = 1000 + 0.5*11000 = 6500
+      // deltaPct = 200 / 6500 ≈ 3.08% (no 20% que daría la vieja fórmula)
+      expect(out.years[0].months[0].deltaPct).toBeCloseTo(200 / 6500 * 100, 1)
+    })
+  })
+
+  // ─── ytdPctOverContrib — métrica alternativa "sobre capital aportado" ────
+  describe('ytdPctOverContrib (% sobre capital aportado total)', () => {
+    it('se computa como ytdUsd / (Σ deposits − Σ withdrawals) al cierre del año', () => {
+      // Año único: arranque $5k, depósitos $10k, gain $1k. Cap aportado = $10k. Gain = $1k.
+      // ytdPctOverContrib = 1000 / 10000 = +10%
+      const out = buildMonthlyReports(
+        [
+          { year: 2025, month: 1, broker: 'global', capital_inicio: 5000, capital_final: 16000, deposits: 10000 },
+        ],
+        [],
+      )
+      const yr = out.years[0]
+      // ytdUsd = 16000 - 5000 - 10000 = 1000
+      expect(yr.ytdUsd).toBe(1000)
+      expect(yr.capContribAtYearEnd).toBe(10000)
+      expect(yr.ytdPctOverContrib).toBeCloseTo(10, 1)
+    })
+
+    it('acumula deposits/withdrawals de años anteriores en el denominador', () => {
+      // 2024: aporta $20k, sin gain. 2025: aporta $5k, gana $2k.
+      // Para 2025: cap aportado acumulado al cierre = $25k. ytdPctOverContrib = 2k/25k = 8%.
+      const out = buildMonthlyReports(
+        [
+          { year: 2024, month: 12, broker: 'global', capital_inicio: 0,     capital_final: 20000, deposits: 20000 },
+          { year: 2025, month: 12, broker: 'global', capital_inicio: 20000, capital_final: 27000, deposits: 5000 },
+        ],
+        [],
+      )
+      const yr2025 = out.years.find(y => y.year === 2025)
+      expect(yr2025.ytdUsd).toBe(2000)
+      expect(yr2025.capContribAtYearEnd).toBe(25000)
+      expect(yr2025.ytdPctOverContrib).toBeCloseTo(8, 1)
+    })
+
+    it('resta withdrawals correctamente del cap aportado acumulado', () => {
+      // 2024: aporta $30k. 2025: retira $10k, gana $1k.
+      // Cap aportado al cierre 2025 = $30k - $10k = $20k. ytdPctOverContrib = 1k/20k = 5%.
+      const out = buildMonthlyReports(
+        [
+          { year: 2024, month: 12, broker: 'global', capital_inicio: 0,     capital_final: 30000, deposits: 30000 },
+          { year: 2025, month: 12, broker: 'global', capital_inicio: 30000, capital_final: 21000, withdrawals: 10000 },
+        ],
+        [],
+      )
+      const yr2025 = out.years.find(y => y.year === 2025)
+      expect(yr2025.capContribAtYearEnd).toBe(20000)
+      expect(yr2025.ytdPctOverContrib).toBeCloseTo(5, 1)
+    })
+
+    it('es null si el capital aportado acumulado es 0 o negativo (no tiene sentido)', () => {
+      // Solo operaciones derived (sin entries) → no flows → cap = 0.
+      const out = buildMonthlyReports(
+        [],
+        [{ date: '2025-05-10', op_type: 'Venta', pnl_usd: 100 }],
+      )
+      const yr = out.years[0]
+      expect(yr.capContribAtYearEnd).toBe(0)
+      expect(yr.ytdPctOverContrib).toBeNull()
+    })
   })
 })

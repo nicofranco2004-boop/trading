@@ -599,6 +599,28 @@ class NormalizerTest(unittest.TestCase):
         self.assertEqual(txs[0].quantity, 10)
         self.assertEqual(txs[0].fees, 2)
 
+    def test_asset_type_hint_overrides_guess(self):
+        """Si el RawRow.data trae asset_type explícito, el normalizer lo usa
+        (en vez de guess_asset_type que clasificaría 'ETH' como CRYPTO)."""
+        rows = [RawRow(1, {
+            "fecha": "2024-03-15", "tipo": "COMPRA", "broker": "Schwab",
+            "activo": "ETH", "cantidad": "100", "precio": "25",
+            "moneda": "USD", "asset_type": "ETF",
+        })]
+        txs, errors = normalize_rows(rows)
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0].asset_type, "ETF")  # No CRYPTO
+
+    def test_asset_type_falls_back_to_guess_when_no_hint(self):
+        """Sin hint, ETH se clasifica como CRYPTO (comportamiento original)."""
+        rows = [RawRow(1, {
+            "fecha": "2024-03-15", "tipo": "COMPRA", "broker": "Binance",
+            "activo": "ETH", "cantidad": "0.5", "precio": "2500",
+            "moneda": "USDT",
+        })]
+        txs, errors = normalize_rows(rows)
+        self.assertEqual(txs[0].asset_type, "CRYPTO")
+
     def test_invalid_date_skips_row(self):
         rows = [RawRow(1, {"fecha": "bad", "tipo": "COMPRA", "broker": "IBKR"})]
         txs, errors = normalize_rows(rows)
@@ -754,13 +776,49 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(len(valid), 2)
         self.assertEqual(len(errors), 0)
 
-    def test_sell_without_stock_fails(self):
+    def test_sell_without_stock_passes_validation(self):
+        """Política history-as-truth: el CSV es historia, no se rechazan ventas
+        por falta de stock previo. El persister auto-sintetiza el seed lot al
+        precio de venta (P&L=0 sobre la porción faltante). El user puede usar
+        el wizard 'Estado inicial' para precisar cost basis si querés reflejar
+        la pérdida real."""
         rows = [RawRow(1, {"fecha": "2024-01-15", "tipo": "VENTA", "broker": "IBKR",
                             "activo": "TSLA", "cantidad": "100", "precio": "250", "moneda": "USD"})]
         txs, _ = normalize_rows(rows)
         valid, errors = validate(txs, user_brokers={"IBKR": {"currency": "USDT"}}, existing_positions={})
+        self.assertEqual(len(valid), 1)
+        self.assertFalse(any(e.code == "INSUFFICIENT_STOCK" for e in errors))
+
+    def test_buy_with_zero_price_accepted_for_stock_split(self):
+        """REGRESIÓN: Stock Split emite BUY sintético con price=0, monto=0.
+        Antes el validator lo rechazaba con MISSING_PRICE — ahora lo acepta
+        porque las cantidades están definidas (cost basis 0 es válido)."""
+        rows = [
+            RawRow(1, {"fecha": "2024-01-15", "tipo": "COMPRA", "broker": "Schwab",
+                       "activo": "XLK", "cantidad": "3", "precio": "289.28",
+                       "monto": "867.84", "moneda": "USD"}),
+            # Stock Split sintético: qty>0 pero price=0 / monto=0
+            RawRow(2, {"fecha": "2024-06-15", "tipo": "COMPRA", "broker": "Schwab",
+                       "activo": "XLK", "cantidad": "3", "precio": "0",
+                       "monto": "0", "moneda": "USD"}),
+            # Venta de las 6 — debería pasar (3 originales + 3 del split)
+            RawRow(3, {"fecha": "2024-12-15", "tipo": "VENTA", "broker": "Schwab",
+                       "activo": "XLK", "cantidad": "6", "precio": "150",
+                       "moneda": "USD"}),
+        ]
+        txs, _ = normalize_rows(rows)
+        valid, errors = validate(txs, user_brokers={"Schwab": {"currency": "USDT"}}, existing_positions={})
+        self.assertEqual(len(valid), 3, f"Errores: {[e.to_dict() for e in errors]}")
+        self.assertEqual(len(errors), 0)
+
+    def test_buy_with_no_price_and_no_amount_still_rejected(self):
+        """Pero si price Y monto están AMBOS undefined (None), sí rechazamos."""
+        rows = [RawRow(1, {"fecha": "2024-01-15", "tipo": "COMPRA", "broker": "IBKR",
+                           "activo": "AAPL", "cantidad": "10", "moneda": "USD"})]
+        txs, _ = normalize_rows(rows)
+        valid, errors = validate(txs, user_brokers={"IBKR": {"currency": "USDT"}}, existing_positions={})
         self.assertEqual(len(valid), 0)
-        self.assertTrue(any(e.code == "INSUFFICIENT_STOCK" for e in errors))
+        self.assertTrue(any(e.code == "MISSING_PRICE" for e in errors))
 
 
 class PipelineE2ETest(unittest.TestCase):
@@ -831,14 +889,16 @@ class PipelineE2ETest(unittest.TestCase):
                     file_name="generic_errors.csv", broker_hint="IBKR", parser_format="rendi_generic",
                 )
             # Con auto-create de brokers, el broker desconocido ya no es error.
-            # Errores que SÍ deben quedar: fecha inválida, op type desconocido, stock insuficiente.
-            # Filas válidas: la primera COMPRA + la del broker que antes era "desconocido"
-            # (ahora auto-creado) = 2.
-            self.assertEqual(payload["summary"]["valid_rows"], 2)
-            self.assertGreaterEqual(payload["summary"]["invalid_rows"], 3)
+            # Con política history-as-truth, las ventas sin stock previo TAMPOCO son
+            # error — se auto-sintetiza el seed lot al precio de venta.
+            # Errores que SÍ deben quedar: fecha inválida + op type desconocido.
+            # Filas válidas: COMPRA AAPL + VENTA TSLA (seed auto) + COMPRA NVDA (broker auto-creado) = 3.
+            self.assertEqual(payload["summary"]["valid_rows"], 3)
+            self.assertGreaterEqual(payload["summary"]["invalid_rows"], 2)
             self.assertTrue(any(e["code"] == "INVALID_DATE" for e in payload["errors"]))
             self.assertTrue(any(e["code"] == "UNKNOWN_OP_TYPE" for e in payload["errors"]))
-            self.assertTrue(any(e["code"] == "INSUFFICIENT_STOCK" for e in payload["errors"]))
+            # INSUFFICIENT_STOCK ya no es error — la fila pasa al persist.
+            self.assertFalse(any(e["code"] == "INSUFFICIENT_STOCK" for e in payload["errors"]))
             # El broker antes desconocido se auto-creó
             self.assertTrue(any(b["name"] == "BrokerInexistente" for b in payload["new_brokers_created"]))
         finally:
@@ -1629,7 +1689,10 @@ class SeedStateE2ETest(unittest.TestCase):
         conn.close()
 
     def test_partial_csv_triggers_seed_suggestions(self):
-        """Un CSV con SELL sin BUY previo debe disparar seed_suggestions."""
+        """Un CSV con SELL sin BUY previo:
+           - Pasa validación (history-as-truth: el persister auto-sintetiza seed).
+           - DEBE seguir mostrando seed_suggestions para que el user pueda precisar
+             cost basis manualmente si querés reflejar la pérdida real."""
         csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
 2025-11-15,VENTA,Binance,BTC,0.05,70000,3500,,,,USDT,vendi un poco
 """
@@ -1640,8 +1703,11 @@ class SeedStateE2ETest(unittest.TestCase):
                     conn, uid=self.uid, file_bytes=csv, file_name="partial.csv",
                     broker_hint="Binance", parser_format="rendi_generic",
                 )
-            self.assertEqual(payload["summary"]["valid_rows"], 0)
-            self.assertEqual(payload["summary"]["invalid_rows"], 1)
+            # La SELL ahora pasa — la política nueva permite ventas sin stock previo.
+            self.assertEqual(payload["summary"]["valid_rows"], 1)
+            self.assertEqual(payload["summary"]["invalid_rows"], 0)
+            # Pero el seed_suggestions sigue apareciendo (detección via simulación
+            # post-validación; sirve como sugerencia opt-in para precisar costos).
             sug = payload.get("seed_suggestions")
             self.assertIsNotNone(sug, f"esperaba seed_suggestions; payload: {payload.keys()}")
             self.assertTrue(sug["needed"])
@@ -2522,6 +2588,109 @@ class CashFlowDepositAllowsRecoverFromNegativeTest(unittest.TestCase):
         self.assertIn("insuficiente", res.text.lower())
 
 
+class ReconcileCashTest(unittest.TestCase):
+    """POST /api/brokers/reconcile-cash — ajusta el cash a un valor real
+    reportado por el broker externo y registra el diff como movimiento
+    sintético en el primer mes del broker.
+
+    Caso de uso: CSV parcial (Schwab desde 2021-09 pero cuenta abierta hace 10 años).
+    El cash computado del CSV no coincide con el real → el user lo reconcilia."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"reconcile-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Schwab", "USDT")
+        # Cash computado del CSV: $60,000 (incorrecto — falta historia)
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
+               VALUES (?,'Schwab','USDT',1,60000)""",
+            (self.uid,),
+        )
+        # Monthly entries simulando un import previo
+        for (y, m, dep) in [(2021, 9, 50000), (2022, 5, 10000), (2026, 5, 0)]:
+            conn.execute(
+                """INSERT INTO monthly_entries (user_id, broker, year, month,
+                       capital_inicio, capital_final, deposits, withdrawals,
+                       pnl_realized, pnl_unrealized)
+                   VALUES (?,?,?,?,?,?,?,0,0,0)""",
+                (self.uid, 'Schwab', y, m, 0, dep, dep),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries (user_id, broker, year, month,
+                       capital_inicio, capital_final, deposits, withdrawals,
+                       pnl_realized, pnl_unrealized)
+                   VALUES (?,'global',?,?,?,?,?,0,0,0)""",
+                (self.uid, y, m, 0, dep, dep),
+            )
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _post(self, target_cash):
+        return self.client.post(
+            "/api/brokers/reconcile-cash",
+            json={"broker_name": "Schwab", "target_cash": target_cash},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def test_target_smaller_than_current_records_withdrawal(self):
+        """CSV dice $60k pero broker real dice $2,300 → diff -$57,700 → WITHDRAW
+        sintético en el mes más antiguo (representa salidas pre-CSV no capturadas)."""
+        res = self._post(2300)
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["diff_direction"], "withdraw")
+        self.assertAlmostEqual(body["diff"], -57700, places=2)
+        self.assertEqual(body["recorded_in_period"], "2021-09")  # mes más antiguo
+        # Cash position quedó en target exacto
+        conn = main.get_db()
+        cash = conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker='Schwab' AND is_cash=1",
+            (self.uid,),
+        ).fetchone()["invested"]
+        conn.close()
+        self.assertAlmostEqual(cash, 2300, places=2)
+
+    def test_target_bigger_than_current_records_deposit(self):
+        """Cash real $80k > computado $60k → diff +$20k → DEPOSIT sintético
+        (representa cash pre-CSV que no estaba en el archivo)."""
+        res = self._post(80000)
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["diff_direction"], "deposit")
+        self.assertAlmostEqual(body["diff"], 20000, places=2)
+
+    def test_target_equal_to_current_is_noop(self):
+        """Si ya coincide, no genera movimientos."""
+        res = self._post(60000)
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json().get("no_change"))
+
+    def test_target_records_into_first_month_per_broker(self):
+        """El diff va al PRIMER mes del broker (no al mes actual), para
+        preservar cronología."""
+        res = self._post(2300)
+        body = res.json()
+        self.assertEqual(body["recorded_in_period"], "2021-09")
+        # Verificar que la withdrawal sumó al primer mes (no al último)
+        conn = main.get_db()
+        first_month_withdraw = conn.execute(
+            """SELECT withdrawals FROM monthly_entries
+               WHERE user_id=? AND broker='Schwab' AND year=2021 AND month=9""",
+            (self.uid,),
+        ).fetchone()["withdrawals"]
+        last_month_withdraw = conn.execute(
+            """SELECT withdrawals FROM monthly_entries
+               WHERE user_id=? AND broker='Schwab' AND year=2026 AND month=5""",
+            (self.uid,),
+        ).fetchone()["withdrawals"]
+        conn.close()
+        self.assertAlmostEqual(first_month_withdraw, 57700, places=2)
+        self.assertAlmostEqual(last_month_withdraw, 0, places=2)
+
+
 class RevertDepositAllowsNegativeCashTest(unittest.TestCase):
     """Revertir un DEPOSIT debe permitir saldo negativo resultante. Antes
     bloqueaba con 'No alcanza el cash en X para revertir el depósito',
@@ -2849,6 +3018,157 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         by_broker = {r["broker"]: r["pnl_realized"] for r in rows}
         self.assertAlmostEqual(by_broker["Cocos"], 25.20, places=2)
         self.assertAlmostEqual(by_broker["global"], 25.20, places=2)
+
+    def test_recalcs_deposits_and_withdrawals_from_imports(self):
+        """REGRESIÓN: tras revertir todos los batches, monthly_entries
+        quedaba con deposits/withdrawals huérfanos → Capital Aportado != 0.
+        Ahora el recalc los reconstruye desde import_normalized_tx confirmados,
+        zero-eando los que no tienen respaldo."""
+        conn = main.get_db()
+        with conn:
+            # Drift simulado: deposits/withdrawals huérfanos sin import_normalized_tx
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 831.58, 0, 0, 0, 0, 831.58)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'global', 831.58, 0, 0, 0, 0, 831.58)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        rows = conn.execute(
+            "SELECT broker, deposits, withdrawals, pnl_realized FROM monthly_entries WHERE user_id=? ORDER BY broker",
+            (self.uid,),
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            self.assertEqual(r["deposits"], 0.0,
+                f"{r['broker']}: deposits debería ser 0, quedó {r['deposits']}")
+            self.assertEqual(r["withdrawals"], 0.0)
+            self.assertEqual(r["pnl_realized"], 0.0)
+
+    def test_recalcs_preserves_deposits_from_confirmed_batch(self):
+        """Si hay un batch CONFIRMED con un DEPOSIT, el recalc lo preserva."""
+        import uuid, json
+        conn = main.get_db()
+        batch_id = str(uuid.uuid4())
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'x.csv', ?, 'Cocos', 'confirmed')""",
+                (batch_id, self.uid, batch_id),
+            )
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                   VALUES (?,?,?,'valid',NULL)""",
+                (batch_id, 1, json.dumps({})),
+            )
+            raw_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO import_normalized_tx
+                   (batch_id, raw_row_id, date, broker, operation_type, gross_amount, currency)
+                   VALUES (?, ?, '2025-05-15', 'Cocos', 'DEPOSIT', 100000, 'ARS')""",
+                (batch_id, raw_id),
+            )
+            # Pre-existente con drift (mock)
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 999999, 0, 0, 0, 0, 999999)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        row = conn.execute(
+            "SELECT deposits FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # 100000 ARS / 1415 tc_blue default = ~70.67 USD
+        self.assertAlmostEqual(row["deposits"], 70.67, delta=0.1)
+
+    def test_recalc_deletes_empty_rows_and_clears_baseline(self):
+        """REGRESIÓN: tras recalc, una fila con todo en 0 pero capital_inicio
+        residual de cycles previos seguía afectando netDeposited del dashboard.
+        Ahora se borran las filas vacías y se resetea capital_inicio del
+        primer mes a 0."""
+        conn = main.get_db()
+        with conn:
+            # Simular drift: capital_inicio residual sin nada que lo justifique
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 0, 0, 0, 0, 832.44, 832.44)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'global', 0, 0, 0, 0, 832.44, 832.44)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        rows = conn.execute(
+            "SELECT COUNT(*) AS c FROM monthly_entries WHERE user_id=?",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # Filas borradas porque deposits/withdrawals/pnl están en 0
+        self.assertEqual(rows["c"], 0,
+            "monthly_entries vacías deberían eliminarse para que el baseline "
+            "no quede inflado de cycles previos")
+
+    def test_recalc_resets_pnl_unrealized(self):
+        """REGRESIÓN: /reportes calculaba delta del mes como `pnl_realized +
+        pnl_unrealized`. Un pnl_unrealized stale (ej. -69650 de un cycle
+        previo) producía un loss falso aunque pnl_realized estuviera limpio."""
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2026, 5, 'Schwab', 100, 0, 50, -69650, 0, 100)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        row = conn.execute(
+            "SELECT pnl_unrealized FROM monthly_entries WHERE user_id=? AND broker='Schwab'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        if row is not None:  # podría haber sido borrado si quedó toda en 0
+            self.assertEqual(row["pnl_unrealized"], 0.0,
+                "pnl_unrealized debería resetearse a 0 (es live, no stored)")
+
+    def test_recalc_clears_snapshots_when_no_state(self):
+        """Si tras recalc no quedan positions/operations/monthly_entries, los
+        snapshots del dashboard también se limpian (sino el gráfico de
+        evolución mostraría valores de cycles previos)."""
+        conn = main.get_db()
+        with conn:
+            # Snapshot stale de un cycle anterior
+            conn.execute(
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+                   VALUES (?, '2025-05-15', 375000, 200000, 175000)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        snaps = conn.execute(
+            "SELECT COUNT(*) AS c FROM snapshots WHERE user_id=?",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(snaps["c"], 0)
 
     def test_endpoint_recalc_returns_count(self):
         from fastapi.testclient import TestClient
@@ -3369,6 +3689,182 @@ class UniversalUserScenariosTest(unittest.TestCase):
         for r in rows:
             self.assertEqual(r["pnl_realized"], 0.0,
                 f"{r['broker']}: drift no se limpió en revert ({r['pnl_realized']})")
+
+
+class SchwabParserTest(unittest.TestCase):
+    """Tests del parser de Charles Schwab (History → Export CSV)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from importing.parsers.schwab import SchwabParser
+        cls.parser = SchwabParser()
+        cls.fixture = _read_fixture("schwab_export.csv").decode("utf-8")
+
+    def test_can_handle_schwab_headers(self):
+        headers = ["Date", "Action", "Symbol", "Description", "Quantity",
+                   "Price", "Fees & Comm", "Amount"]
+        self.assertTrue(self.parser.can_handle(headers))
+
+    def test_can_handle_rejects_other_formats(self):
+        self.assertFalse(self.parser.can_handle(["fecha", "tipo", "broker"]))
+        self.assertFalse(self.parser.can_handle(["nroTicket", "fechaEjecucion"]))
+
+    def test_rejects_file_without_schwab_columns(self):
+        result = self.parser.parse("foo,bar,baz\n1,2,3\n")
+        self.assertEqual(len(result.parse_errors), 1)
+        self.assertEqual(result.parse_errors[0].code, "SCHWAB_HEADERS_MISMATCH")
+
+    def test_parses_buy_with_us_format(self):
+        result = self.parser.parse(self.fixture)
+        meta = next(r for r in result.raw_rows
+                    if r.data["activo"] == "META" and r.data["tipo"] == "COMPRA")
+        self.assertEqual(meta.data["fecha"], "2026-04-30")
+        self.assertEqual(meta.data["broker"], "Schwab")
+        self.assertEqual(meta.data["cantidad"], "16")
+        self.assertEqual(meta.data["precio"], "608.38")
+        self.assertEqual(meta.data["moneda"], "USD")
+        # 16 × 608.38 = 9734.08
+        self.assertAlmostEqual(float(meta.data["monto"]), 9734.08, places=2)
+
+    def test_parses_sell(self):
+        result = self.parser.parse(self.fixture)
+        ypf = next(r for r in result.raw_rows
+                   if r.data["activo"] == "YPF" and r.data["tipo"] == "VENTA")
+        self.assertEqual(ypf.data["cantidad"], "962")
+        self.assertEqual(ypf.data["precio"], "42.5801")
+        self.assertAlmostEqual(float(ypf.data["comisiones"]), 0.19, places=2)
+
+    def test_qty_with_thousand_separator(self):
+        """Schwab usa coma como separador de miles ('1,566') — debe parsear OK."""
+        result = self.parser.parse(self.fixture)
+        gbtc = next(r for r in result.raw_rows
+                    if r.data["activo"] == "GBTC" and r.data["tipo"] == "VENTA")
+        self.assertEqual(gbtc.data["cantidad"], "1566")
+
+    def test_date_with_as_of_uses_effective_date(self):
+        """'02/09/2026 as of 02/06/2026' debe usar 02/06/2026 (la efectiva)."""
+        result = self.parser.parse(self.fixture)
+        transfer = next(r for r in result.raw_rows
+                        if r.data["tipo"] == "DEPOSITO"
+                        and r.data["monto"] == "15000.00")
+        self.assertEqual(transfer.data["fecha"], "2026-02-06")
+
+    def test_dividend_preserves_symbol(self):
+        """A diferencia de Cocos, Schwab dice qué stock pagó el dividendo."""
+        result = self.parser.parse(self.fixture)
+        nvda_div = next(r for r in result.raw_rows
+                        if r.data["tipo"] == "DIVIDENDO" and r.data["activo"] == "NVDA")
+        self.assertAlmostEqual(float(nvda_div.data["monto"]), 1.57, places=2)
+        self.assertEqual(nvda_div.data["moneda"], "USD")
+
+    def test_special_qual_div_mapped_to_dividend(self):
+        result = self.parser.parse(self.fixture)
+        bma_div = next(r for r in result.raw_rows
+                       if r.data["tipo"] == "DIVIDENDO" and r.data["activo"] == "BMA")
+        self.assertAlmostEqual(float(bma_div.data["monto"]), 120.40, places=2)
+
+    def test_nra_tax_adj_mapped_to_fee(self):
+        result = self.parser.parse(self.fixture)
+        fees = [r for r in result.raw_rows if r.data["tipo"] == "FEE"]
+        # 2 fees: NRA Tax Adj NVDA + ADR Mgmt Fee PAM
+        self.assertEqual(len(fees), 2)
+        nra = next(r for r in fees if abs(float(r.data["monto"]) - 0.47) < 0.01)
+        self.assertEqual(nra.data["moneda"], "USD")
+
+    def test_moneylink_positive_is_deposit(self):
+        result = self.parser.parse(self.fixture)
+        deps = [r for r in result.raw_rows if r.data["tipo"] == "DEPOSITO"]
+        self.assertGreaterEqual(len(deps), 2)  # MoneyLink + Wire Received
+
+    def test_moneylink_negative_is_withdraw(self):
+        result = self.parser.parse(self.fixture)
+        wd = next(r for r in result.raw_rows
+                  if r.data["tipo"] == "RETIRO" and r.data["monto"] == "77000.00")
+        self.assertEqual(wd.data["fecha"], "2025-12-24")
+
+    def test_wire_received_is_deposit(self):
+        result = self.parser.parse(self.fixture)
+        wire = next(r for r in result.raw_rows
+                    if r.data["tipo"] == "DEPOSITO" and r.data["monto"] == "15000.00"
+                    and "WIRED" in r.data["notas"].upper())
+        self.assertEqual(wire.data["fecha"], "2024-01-22")
+
+    def test_credit_interest_is_interes(self):
+        result = self.parser.parse(self.fixture)
+        intereses = [r for r in result.raw_rows if r.data["tipo"] == "INTERES"]
+        self.assertGreaterEqual(len(intereses), 1)
+
+    def test_stock_split_emits_synthetic_buy_with_zero_price(self):
+        """Stock Split se convierte en BUY sintético: qty=split_shares, price=0.
+        El cost basis no cambia (lot extra a $0), pero la posición ahora tiene
+        las shares correctas para que ventas posteriores no fallen."""
+        result = self.parser.parse(self.fixture)
+        xlk_split = next((r for r in result.raw_rows
+                          if r.data["activo"] == "XLK"
+                          and r.data["tipo"] == "COMPRA"
+                          and r.data["precio"] == "0"), None)
+        self.assertIsNotNone(xlk_split,
+            "Stock Split debe emitir un BUY sintético con price=0")
+        self.assertEqual(xlk_split.data["cantidad"], "3")
+        self.assertEqual(xlk_split.data["monto"], "0")  # no afecta cash
+        self.assertIn("Stock Split", xlk_split.data["notas"])
+
+    def test_grayscale_eth_tagged_as_etf_not_crypto(self):
+        """Para Schwab, 'ETH' es Grayscale Ethereum Mini Trust (ETF), no la
+        crypto raw. El parser pasa asset_type=ETF para que la heurística
+        del normalizer no lo marque como CRYPTO."""
+        # Test with a custom row, since fixture doesn't have ETH (only ETHE)
+        csv = (
+            '"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"\n'
+            '"10/25/2024","Sell","ETH","GRAYSCALE ETHEREUM MINI","6521","$2.3854","$1.51","$15553.68"\n'
+        )
+        result = self.parser.parse(csv)
+        eth = result.raw_rows[0]
+        self.assertEqual(eth.data["asset_type"], "ETF")
+
+    def test_known_etf_tickers_tagged(self):
+        """GBTC, ETHE, XLK también van como ETF."""
+        result = self.parser.parse(self.fixture)
+        gbtc = next(r for r in result.raw_rows if r.data["activo"] == "GBTC")
+        self.assertEqual(gbtc.data.get("asset_type"), "ETF")
+
+    def test_regular_stock_no_etf_tag(self):
+        """Stocks normales (META, AAPL) no llevan el hint — fallback al guess."""
+        result = self.parser.parse(self.fixture)
+        meta = next(r for r in result.raw_rows if r.data["activo"] == "META")
+        self.assertEqual(meta.data.get("asset_type"), "")
+
+    def test_expired_warrants_skipped_silently(self):
+        """Corporate actions sin cash impact: no errores, no rows."""
+        result = self.parser.parse(self.fixture)
+        warrants = [r for r in result.raw_rows if r.data["activo"] == "399RGT026"]
+        self.assertEqual(warrants, [])
+        # No deben aparecer en parse_errors tampoco
+        warrants_err = [e for e in result.parse_errors
+                        if "399RGT026" in (e.message or "")]
+        self.assertEqual(warrants_err, [])
+
+    def test_internal_transfer_journaled_shares_skipped(self):
+        """Migraciones TDA→Schwab no se importan como BUY/SELL."""
+        result = self.parser.parse(self.fixture)
+        # Las filas con "TDA TRAN" en notas no deberían convertirse en BUYs
+        tda_buys = [r for r in result.raw_rows
+                    if r.data["tipo"] == "COMPRA"
+                    and "TDA TRAN" in r.data["notas"]]
+        self.assertEqual(tda_buys, [])
+
+    def test_qual_div_reinvest_is_dividend(self):
+        result = self.parser.parse(self.fixture)
+        reinv = next((r for r in result.raw_rows
+                      if r.data["tipo"] == "DIVIDENDO"
+                      and abs(float(r.data["monto"]) - 41.28) < 0.01), None)
+        self.assertIsNotNone(reinv)
+
+    def test_template_csv_is_self_parseable(self):
+        t = self.parser.template_csv()
+        result = self.parser.parse(t)
+        # No errores fatales y al menos algunas filas válidas
+        self.assertGreater(len(result.raw_rows), 0)
 
 
 class CocosVisibleInDropdownTest(unittest.TestCase):
