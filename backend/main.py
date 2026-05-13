@@ -2439,6 +2439,87 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     return result
 
 
+# ─── Historical prices (mini-chart en AssetQuickView) ───────────────────────
+# Cache simple in-memory keyed por (symbol, period). yfinance fetchea las
+# series históricas — para periods chicos (1mo) es rápido. TTL 1h porque
+# las velas diarias no cambian dentro del día.
+
+_history_cache: dict = {}  # key → (timestamp, data)
+_HISTORY_TTL_S = 3600  # 1 hora
+
+_HISTORY_PERIODS = {
+    "1w":  ("7d",   "1d"),    # 7 días, vela diaria
+    "1m":  ("1mo",  "1d"),    # 30 días, vela diaria
+    "3m":  ("3mo",  "1d"),    # 90 días, vela diaria
+    "1y":  ("1y",   "1wk"),   # 1 año, vela semanal (52 puntos)
+}
+
+
+@app.get("/api/prices/history")
+def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_current_user)):
+    """Devuelve serie histórica de close-prices para mini-chart.
+
+    Params:
+      symbol — ticker (formato igual que /api/prices: AAPL, BTC, BMA.BA, etc.)
+      period — '1w' | '1m' | '3m' | '1y' (default '1m')
+
+    Response:
+      {
+        symbol: str,
+        period: str,
+        points: [{date: 'YYYY-MM-DD', close: float}, ...]
+      }
+    """
+    sym = symbol.strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {symbol}")
+    if period not in _HISTORY_PERIODS:
+        raise HTTPException(400, f"period inválido. Usa: {list(_HISTORY_PERIODS.keys())}")
+
+    cache_key = f"{sym}:{period}"
+    now = time.time()
+    cached = _history_cache.get(cache_key)
+    if cached and (now - cached[0]) < _HISTORY_TTL_S:
+        return cached[1]
+
+    # Resolver el símbolo igual que /api/prices: bono AR via data912, sino yfinance
+    yf_period, interval = _HISTORY_PERIODS[period]
+    yf_sym = sym
+    if sym in CRYPTO_YF:
+        yf_sym = CRYPTO_YF[sym]
+    elif sym.endswith(".BA"):
+        yf_sym = sym  # yfinance entiende el .BA directo
+    elif not sym.endswith(".BA"):
+        # Para cripto sin sufijo (BTC, ETH) que no estén en CRYPTO_YF, probamos -USD
+        # solo si no es un ticker conocido US.
+        pass
+
+    points = []
+    try:
+        ticker = yf.Ticker(yf_sym)
+        hist = ticker.history(period=yf_period, interval=interval, auto_adjust=False)
+        if hist.empty and yf_sym == sym and not sym.endswith(".BA") and "-" not in sym:
+            # Retry con sufijo -USD para crypto desconocido
+            ticker = yf.Ticker(f"{sym}-USD")
+            hist = ticker.history(period=yf_period, interval=interval, auto_adjust=False)
+        if not hist.empty:
+            for idx, row in hist.iterrows():
+                close = row.get("Close")
+                if close is None or (hasattr(close, "__float__") and math.isnan(float(close))):
+                    continue
+                points.append({
+                    "date": idx.strftime("%Y-%m-%d"),
+                    "close": round(float(close), 4),
+                })
+    except Exception as ex:
+        # No raise — devolvemos series vacía, el frontend muestra "sin chart"
+        pass
+
+    result = {"symbol": sym, "period": period, "points": points}
+    _history_cache[cache_key] = (now, result)
+    return result
+
+
 # ─── Positions ───────────────────────────────────────────────────────────────
 
 class PositionIn(BaseModel):

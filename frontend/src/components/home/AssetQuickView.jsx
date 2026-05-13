@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react'
 import { X, TrendingUp, TrendingDown, ExternalLink, Star, Check } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
+import AssetMiniChart from './AssetMiniChart'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -121,9 +122,9 @@ export default function AssetQuickView({ symbol, onClose }) {
                 </div>
               </div>
 
-              {/* V2: aquí va el mini-chart 30d + explicación de movimiento */}
-              <div className="text-[11px] text-ink-3 leading-relaxed border-t border-line/40 pt-3">
-                Historial detallado, comentarios y análisis vienen en próximas versiones.
+              {/* Mini-chart histórico con selector de rango */}
+              <div className="border-t border-line/40 pt-3">
+                <AssetMiniChart symbol={symbol} />
               </div>
             </>
           )}
