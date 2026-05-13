@@ -345,13 +345,19 @@ def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     unit = float(tx.unit_price or 0)
     invested = float(tx.gross_amount) if tx.gross_amount is not None else (unit * qty)
     fees = float(tx.fees or 0)
+    # Persistimos la moneda nativa del lote (USD para Compra Dolar Mep, ARS
+    # para compras normales). Sin esto, el SELL no podía distinguir lots
+    # cross-currency y producía P&L absurdo.
+    lot_currency = (tx.currency or "").upper() or None
+    if lot_currency == "USDT":
+        lot_currency = "USD"
 
     cur = conn.execute(
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
-           invested, tc_compra, price_override, notes, entry_date, commissions)
-           VALUES (?,?,?,0,?,?,?,?,?,?,?,?)""",
+           invested, tc_compra, price_override, notes, entry_date, commissions, currency)
+           VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?)""",
         (uid, tx.broker, tx.asset_symbol, unit if unit > 0 else None, qty,
-         invested, None, None, tx.notes, tx.date, fees),
+         invested, None, None, tx.notes, tx.date, fees, lot_currency),
     )
     position_id = cur.lastrowid
     cost_total = invested + fees
@@ -410,6 +416,22 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         ratio = take / pos_qty if pos_qty > 0 else 0
         pos_buy_commissions = (p["commissions"] if "commissions" in p.keys() else 0) or 0
         base_invested = (p["invested"] or 0) + pos_buy_commissions
+
+        # Moneda nativa del lote — la guardamos en positions.currency desde
+        # el BUY. Si el lote es viejo (pre-migración) o no la trajo el parser,
+        # asumimos la moneda del broker para back-compat.
+        lot_currency = (p["currency"] if "currency" in p.keys() else None) or currency
+
+        # CROSS-CURRENCY: si el SELL es en otra moneda que el BUY, convertimos
+        # el invested del lote a la moneda del SELL al tc_blue actual. Sin esto,
+        # un lote comprado por USD 573 (Compra Dolar Mep) vs SELL en ARS daba
+        # P&L de +160000% por comparar USD invested contra ARS exit price.
+        if lot_currency != currency and tc_blue:
+            if lot_currency == "USD" and currency == "ARS":
+                base_invested = base_invested * tc_blue
+            elif lot_currency == "ARS" and currency == "USD":
+                base_invested = base_invested / tc_blue
+
         entry_invested = base_invested * ratio if base_invested else None
 
         chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0

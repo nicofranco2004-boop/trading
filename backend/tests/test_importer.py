@@ -2594,6 +2594,116 @@ class RevertDepositAllowsNegativeCashTest(unittest.TestCase):
         self.assertEqual(batch_row["status"], "reverted")
 
 
+class CrossCurrencyLotSellTest(unittest.TestCase):
+    """Cuando un BUY fue en USD (ej Cocos Compra Dolar Mep) y la SELL es en
+    ARS sobre el mismo broker, el persister debe convertir el invested del
+    lote a ARS al tc_blue actual antes de calcular P&L. Sin esto, comparaba
+    USD invested vs ARS exit price → P&L de +160,000%."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"xc-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        # Cargar TC blue para que el persister haga las conversiones (key/value)
+        conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, 'tc_blue', '1415')",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_sell_in_ars_uses_usd_lot_cost_converted_to_ars(self):
+        """Replica el caso TSLA: 21 lots comprados en USD a 27.32, vendidos
+        en ARS a 44760. El P&L razonable es ~+15% (no +160000%)."""
+        from importing.persister import persist_batch
+        from importing.schema import NormalizedTx, OP_BUY, OP_SELL
+        import uuid, json
+
+        txs = [
+            # BUY 21 TSLA via MEP en USD: invested = 21 × 27.32 = 573.72 USD
+            NormalizedTx(row_index=1, date="2025-11-13", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="TSLA",
+                         quantity=21, unit_price=27.32, gross_amount=573.72,
+                         currency="USD", settlement_currency="USD"),
+            # SELL 21 TSLA en ARS a 44760/share (~6 semanas después)
+            NormalizedTx(row_index=2, date="2026-01-06", broker="Cocos",
+                         operation_type=OP_SELL, asset_symbol="TSLA",
+                         quantity=21, unit_price=44760, gross_amount=939960,
+                         currency="ARS", settlement_currency="ARS"),
+        ]
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            for tx in txs:
+                cur = conn.execute(
+                    """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                       VALUES (?,?,?,'valid',NULL)""",
+                    (batch_id, tx.row_index, json.dumps({})),
+                )
+                raw_row_ids[tx.row_index] = cur.lastrowid
+        persist_batch(conn, uid=self.uid, batch_id=batch_id, txs=txs,
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+
+        # Verificar que la operación SELL quedó con P&L razonable, no inflado
+        op = conn.execute(
+            "SELECT pnl_usd, pnl_pct FROM operations WHERE user_id=? AND asset='TSLA' AND op_type='Venta'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(op)
+        # P&L esperado en USD: ~+90 (= 21 × (44760 - 27.32 × 1415) / 1415)
+        # = (939960 - 811684.8) / 1415 ≈ +90.65 USD
+        self.assertAlmostEqual(op["pnl_usd"], 90.65, delta=1.0,
+            msg=f"P&L USD: {op['pnl_usd']} (esperado ~90)")
+        # P&L pct razonable (no >100000%)
+        self.assertLess(abs(op["pnl_pct"]), 50,
+            msg=f"P&L pct: {op['pnl_pct']}% (esperado < 50%, no miles)")
+
+    def test_position_stores_currency_from_tx(self):
+        """La posición creada por un BUY USD debe quedar con currency='USD'."""
+        from importing.persister import persist_batch
+        from importing.schema import NormalizedTx, OP_BUY
+        import uuid, json
+
+        txs = [
+            NormalizedTx(row_index=1, date="2025-11-13", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="AAPL",
+                         quantity=10, unit_price=20, gross_amount=200,
+                         currency="USD", settlement_currency="USD"),
+        ]
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                   VALUES (?,?,?,'valid',NULL)""",
+                (batch_id, 1, json.dumps({})),
+            )
+            raw_row_ids[1] = cur.lastrowid
+        persist_batch(conn, uid=self.uid, batch_id=batch_id, txs=txs,
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+        pos = conn.execute(
+            "SELECT currency FROM positions WHERE user_id=? AND asset='AAPL'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(pos["currency"], "USD")
+
+
 class CocosVisibleInDropdownTest(unittest.TestCase):
     """Cocos ya tiene export oficial (Actividad → Movimientos), así que debe
     aparecer en el dropdown agrupado del wizard."""

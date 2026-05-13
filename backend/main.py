@@ -218,6 +218,14 @@ def init_db():
     cols = _table_cols(conn, 'positions')
     if cols and 'commissions' not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN commissions REAL DEFAULT 0")
+    # Migración: columna currency — moneda en que está expresado `invested`.
+    # Sin esto, el persister no podía saber si una posición fue comprada en
+    # USD (Compra Dolar Mep en Cocos) vs ARS, generando P&L cross-currency
+    # absurdo en SELLs posteriores. Default NULL = back-compat (asume ARS o
+    # USDT según el broker, igual que antes).
+    cols = _table_cols(conn, 'positions')
+    if cols and 'currency' not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN currency TEXT")
     conn.commit()
 
     # monthly_entries
