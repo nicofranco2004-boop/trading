@@ -5314,6 +5314,116 @@ def _stop_scheduler():
 
 # ─── Admin endpoints ────────────────────────────────────────────────────────
 
+# ─── Reports: timeline + per-period ──────────────────────────────────────────
+# Nueva sección "/reportes" rediseñada — timeline narrativa con insights.
+# Backend: pure functions en `backend/reporting/`.
+
+from reporting.builder import build_period_report
+from reporting.detectors import run_detectors
+from reporting.schema import report_to_dict
+from reporting.timeline import build_timeline, _compute_user_historical_win_rate, _compute_avg_trades_per_month, _fetch_positions_for_concentration
+
+
+def _latest_snapshot_value(conn, uid: int) -> Optional[float]:
+    row = conn.execute(
+        "SELECT total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
+        (uid,),
+    ).fetchone()
+    return float(row["total_value"]) if row and row["total_value"] is not None else None
+
+
+def _user_tc_blue(conn, uid: int) -> float:
+    row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
+    ).fetchone()
+    try:
+        v = float(row["value"]) if row else 1415.0
+        return v if v > 0 else 1415.0
+    except (TypeError, ValueError):
+        return 1415.0
+
+
+@app.get("/api/reports/timeline")
+def reports_timeline(
+    broker: str = "global",
+    months: int = 12,
+    uid: int = Depends(get_current_user),
+):
+    """Timeline cronológica condensada — últimos N meses, con semanas anidadas.
+
+    Cada PeriodReport viene con:
+    - métricas (start/end value, delta_pct TWRR, realized, etc.)
+    - headline narrativo (1-2 oraciones generadas)
+    - insights (chips con evidencia)
+    - highlights (best/worst op del período)
+    - drivers (atribución por activo)
+
+    El frontend renderiza con jerarquía: mes en curso expandido, meses pasados
+    colapsados (header + delta). Click expande para ver semanas + insights.
+    """
+    if months < 1 or months > 36:
+        raise HTTPException(400, "months debe estar entre 1 y 36")
+    conn = get_db()
+    try:
+        bench_data = {
+            "inflation_ar": _fetch_inflation_ar(),
+            "sp500": _fetch_sp500_monthly(),
+        }
+        live_value = _latest_snapshot_value(conn, uid)
+        tc_blue = _user_tc_blue(conn, uid)
+        timeline = build_timeline(
+            conn, uid, broker_filter=broker, months=months,
+            bench=bench_data, live_value=live_value,
+            prices={}, tc_blue=tc_blue,
+        )
+        return {
+            "broker": broker,
+            "months_requested": months,
+            "reports": [report_to_dict(r) for r in timeline],
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/reports/period/{period_type}/{period_key}")
+def reports_period_detail(
+    period_type: str, period_key: str,
+    broker: str = "global",
+    uid: int = Depends(get_current_user),
+):
+    """Detalle de un período específico — útil para deep-link o expandir un
+    week/day sin pegarle a la timeline completa."""
+    if period_type not in ("day", "week", "month"):
+        raise HTTPException(400, "period_type inválido")
+    conn = get_db()
+    try:
+        bench_data = {
+            "inflation_ar": _fetch_inflation_ar(),
+            "sp500": _fetch_sp500_monthly(),
+        }
+        live_value = _latest_snapshot_value(conn, uid)
+        tc_blue = _user_tc_blue(conn, uid)
+        try:
+            report = build_period_report(
+                conn, uid, period_type, period_key,
+                broker_filter=broker, bench=bench_data, live_value=live_value,
+            )
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+
+        # Detectores con contexto completo
+        positions = _fetch_positions_for_concentration(conn, uid, broker, {}, tc_blue)
+        report.insights = run_detectors(
+            report,
+            positions=positions,
+            avg_trades_per_period=_compute_avg_trades_per_month(conn, uid),
+            historical_win_rate=_compute_user_historical_win_rate(conn, uid),
+        )
+        return report_to_dict(report)
+    finally:
+        conn.close()
+
+
 @app.post("/api/admin/snapshots/run-now")
 def admin_run_snapshot(uid: int = Depends(get_admin_user)):
     """Triggea el job manualmente — útil para testing y para forzar un
