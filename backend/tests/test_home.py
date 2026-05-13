@@ -226,5 +226,72 @@ class WatchlistTest(unittest.TestCase):
         self.assertIn("AAPL", symbols)
 
 
+# ─── Price history endpoint (mini-chart) ────────────────────────────────────
+
+class PriceHistoryEndpointTest(unittest.TestCase):
+    """Tests del shape/validación del endpoint /api/prices/history. NO testeamos
+    el resultado de yfinance (es flaky en CI). Solo validamos params + shape."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+        conn = main.get_db()
+        self.uid = _new_user(conn)
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        self.headers = {"Authorization": f"Bearer {self.token}"}
+
+    def test_invalid_symbol_rejected(self):
+        r = self.client.get(
+            "/api/prices/history?symbol=FOO%20BAR&period=1m",
+            headers=self.headers,
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_invalid_period_rejected(self):
+        r = self.client.get(
+            "/api/prices/history?symbol=AAPL&period=2y",
+            headers=self.headers,
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_valid_periods_accepted(self):
+        for period in ["1w", "1m", "3m", "1y"]:
+            r = self.client.get(
+                f"/api/prices/history?symbol=AAPL&period={period}",
+                headers=self.headers,
+            )
+            self.assertEqual(r.status_code, 200, f"period={period}: {r.text}")
+            body = r.json()
+            self.assertEqual(body["symbol"], "AAPL")
+            self.assertEqual(body["period"], period)
+            self.assertIsInstance(body["points"], list)
+            # No validamos cantidad ni valores — yfinance puede fallar en CI.
+
+    def test_symbol_normalized_uppercase(self):
+        r = self.client.get(
+            "/api/prices/history?symbol=aapl&period=1m",
+            headers=self.headers,
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["symbol"], "AAPL")
+
+    def test_response_shape_when_points_exist(self):
+        # Si yfinance devuelve algo, los points deben tener {date, close}.
+        r = self.client.get(
+            "/api/prices/history?symbol=AAPL&period=1m",
+            headers=self.headers,
+        )
+        self.assertEqual(r.status_code, 200)
+        points = r.json()["points"]
+        for p in points[:3]:  # sample los primeros 3 si existen
+            self.assertIn("date", p)
+            self.assertIn("close", p)
+            # date formato YYYY-MM-DD
+            self.assertRegex(p["date"], r"^\d{4}-\d{2}-\d{2}$")
+            self.assertIsInstance(p["close"], (int, float))
+
+
 if __name__ == "__main__":
     unittest.main()
