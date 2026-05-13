@@ -4,12 +4,18 @@ Reglas:
 - Broker debe existir entre los del usuario.
 - Por op_type se exigen los campos correspondientes.
 - Cantidades positivas (excepto fees que pueden ser 0).
-- En SELL: chequea que haya stock suficiente al momento de la operación,
-  considerando compras *previas* del mismo CSV (orden cronológico) y la
-  posición actual del usuario.
+
+Política "history-as-truth": el CSV registra operaciones que YA pasaron en el
+mundo real. Si la simulación de stock queda corta (vendiste más de lo que el
+CSV pudo comprar), es señal de que falta data previa — NO de que la venta sea
+inválida. La venta se acepta y el persister auto-sintetiza un seed lot al
+precio de venta (P&L=0 sobre la porción faltante).
+
+Mismo patrón que el cash overdraft: las compras sin cash suficiente quedan con
+saldo negativo (warning), no se rechazan. El CSV es ground truth.
 
 La validación NO toca la base; solo lee el estado actual del usuario para
-los chequeos que lo requieren (broker existe, stock disponible).
+los chequeos que lo requieren (broker existe).
 """
 from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
@@ -140,23 +146,21 @@ def validate(
                 row_errs.append(RowError(ridx, "monto", "MISSING_AMOUNT",
                                          "El PnL de futuros necesita un 'monto' (positivo o negativo)."))
 
-        # Validación cruzada para SELL: hay stock suficiente?
-        if op == OP_SELL and not row_errs:
-            key = (tx.broker, tx.asset_symbol or "")
-            available = sim_qty.get(key, 0.0)
-            if (tx.quantity or 0) > available + 1e-9:
-                row_errs.append(RowError(
-                    ridx, "cantidad", "INSUFFICIENT_STOCK",
-                    f"No hay suficiente stock de {tx.asset_symbol} en {tx.broker} para esta venta. "
-                    f"Disponible al {tx.date}: {available:g}, querés vender: {tx.quantity:g}. "
-                    f"Si tu CSV no incluye las compras previas, cargá el estado inicial al ver la vista previa.",
-                ))
+        # NOTA: ya NO rechazamos SELLs con stock insuficiente. Política mismo
+        # patrón que el overdraft de cash: el CSV registra historia (un Venta
+        # que pasó realmente), y si no encontramos las compras previas es
+        # porque al usuario le falta data anterior, no porque la venta sea
+        # inválida. El persister auto-sintetiza un seed lot al precio de venta
+        # para la porción faltante (P&L=0 sobre esa parte, no inventa
+        # ganancia/pérdida ficticia). El preview informa via cash_sim/preview
+        # si lo querés mostrar como warning.
 
         if row_errs:
             errors.extend(row_errs)
             continue
 
-        # Update simulación de stock
+        # Update simulación de stock (puede quedar negativa — eso es señal de
+        # data faltante, no de invalidez de la venta).
         if op == OP_BUY:
             key = (tx.broker, tx.asset_symbol or "")
             sim_qty[key] = sim_qty.get(key, 0.0) + (tx.quantity or 0)

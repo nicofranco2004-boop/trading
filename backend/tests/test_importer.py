@@ -776,13 +776,18 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(len(valid), 2)
         self.assertEqual(len(errors), 0)
 
-    def test_sell_without_stock_fails(self):
+    def test_sell_without_stock_passes_validation(self):
+        """Política history-as-truth: el CSV es historia, no se rechazan ventas
+        por falta de stock previo. El persister auto-sintetiza el seed lot al
+        precio de venta (P&L=0 sobre la porción faltante). El user puede usar
+        el wizard 'Estado inicial' para precisar cost basis si querés reflejar
+        la pérdida real."""
         rows = [RawRow(1, {"fecha": "2024-01-15", "tipo": "VENTA", "broker": "IBKR",
                             "activo": "TSLA", "cantidad": "100", "precio": "250", "moneda": "USD"})]
         txs, _ = normalize_rows(rows)
         valid, errors = validate(txs, user_brokers={"IBKR": {"currency": "USDT"}}, existing_positions={})
-        self.assertEqual(len(valid), 0)
-        self.assertTrue(any(e.code == "INSUFFICIENT_STOCK" for e in errors))
+        self.assertEqual(len(valid), 1)
+        self.assertFalse(any(e.code == "INSUFFICIENT_STOCK" for e in errors))
 
     def test_buy_with_zero_price_accepted_for_stock_split(self):
         """REGRESIÓN: Stock Split emite BUY sintético con price=0, monto=0.
@@ -884,14 +889,16 @@ class PipelineE2ETest(unittest.TestCase):
                     file_name="generic_errors.csv", broker_hint="IBKR", parser_format="rendi_generic",
                 )
             # Con auto-create de brokers, el broker desconocido ya no es error.
-            # Errores que SÍ deben quedar: fecha inválida, op type desconocido, stock insuficiente.
-            # Filas válidas: la primera COMPRA + la del broker que antes era "desconocido"
-            # (ahora auto-creado) = 2.
-            self.assertEqual(payload["summary"]["valid_rows"], 2)
-            self.assertGreaterEqual(payload["summary"]["invalid_rows"], 3)
+            # Con política history-as-truth, las ventas sin stock previo TAMPOCO son
+            # error — se auto-sintetiza el seed lot al precio de venta.
+            # Errores que SÍ deben quedar: fecha inválida + op type desconocido.
+            # Filas válidas: COMPRA AAPL + VENTA TSLA (seed auto) + COMPRA NVDA (broker auto-creado) = 3.
+            self.assertEqual(payload["summary"]["valid_rows"], 3)
+            self.assertGreaterEqual(payload["summary"]["invalid_rows"], 2)
             self.assertTrue(any(e["code"] == "INVALID_DATE" for e in payload["errors"]))
             self.assertTrue(any(e["code"] == "UNKNOWN_OP_TYPE" for e in payload["errors"]))
-            self.assertTrue(any(e["code"] == "INSUFFICIENT_STOCK" for e in payload["errors"]))
+            # INSUFFICIENT_STOCK ya no es error — la fila pasa al persist.
+            self.assertFalse(any(e["code"] == "INSUFFICIENT_STOCK" for e in payload["errors"]))
             # El broker antes desconocido se auto-creó
             self.assertTrue(any(b["name"] == "BrokerInexistente" for b in payload["new_brokers_created"]))
         finally:
@@ -1682,7 +1689,10 @@ class SeedStateE2ETest(unittest.TestCase):
         conn.close()
 
     def test_partial_csv_triggers_seed_suggestions(self):
-        """Un CSV con SELL sin BUY previo debe disparar seed_suggestions."""
+        """Un CSV con SELL sin BUY previo:
+           - Pasa validación (history-as-truth: el persister auto-sintetiza seed).
+           - DEBE seguir mostrando seed_suggestions para que el user pueda precisar
+             cost basis manualmente si querés reflejar la pérdida real."""
         csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
 2025-11-15,VENTA,Binance,BTC,0.05,70000,3500,,,,USDT,vendi un poco
 """
@@ -1693,8 +1703,11 @@ class SeedStateE2ETest(unittest.TestCase):
                     conn, uid=self.uid, file_bytes=csv, file_name="partial.csv",
                     broker_hint="Binance", parser_format="rendi_generic",
                 )
-            self.assertEqual(payload["summary"]["valid_rows"], 0)
-            self.assertEqual(payload["summary"]["invalid_rows"], 1)
+            # La SELL ahora pasa — la política nueva permite ventas sin stock previo.
+            self.assertEqual(payload["summary"]["valid_rows"], 1)
+            self.assertEqual(payload["summary"]["invalid_rows"], 0)
+            # Pero el seed_suggestions sigue apareciendo (detección via simulación
+            # post-validación; sirve como sugerencia opt-in para precisar costos).
             sug = payload.get("seed_suggestions")
             self.assertIsNotNone(sug, f"esperaba seed_suggestions; payload: {payload.keys()}")
             self.assertTrue(sug["needed"])
@@ -2573,6 +2586,109 @@ class CashFlowDepositAllowsRecoverFromNegativeTest(unittest.TestCase):
         res = self._post_cashflow("withdraw", 10000)
         self.assertEqual(res.status_code, 400)
         self.assertIn("insuficiente", res.text.lower())
+
+
+class ReconcileCashTest(unittest.TestCase):
+    """POST /api/brokers/reconcile-cash — ajusta el cash a un valor real
+    reportado por el broker externo y registra el diff como movimiento
+    sintético en el primer mes del broker.
+
+    Caso de uso: CSV parcial (Schwab desde 2021-09 pero cuenta abierta hace 10 años).
+    El cash computado del CSV no coincide con el real → el user lo reconcilia."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"reconcile-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Schwab", "USDT")
+        # Cash computado del CSV: $60,000 (incorrecto — falta historia)
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
+               VALUES (?,'Schwab','USDT',1,60000)""",
+            (self.uid,),
+        )
+        # Monthly entries simulando un import previo
+        for (y, m, dep) in [(2021, 9, 50000), (2022, 5, 10000), (2026, 5, 0)]:
+            conn.execute(
+                """INSERT INTO monthly_entries (user_id, broker, year, month,
+                       capital_inicio, capital_final, deposits, withdrawals,
+                       pnl_realized, pnl_unrealized)
+                   VALUES (?,?,?,?,?,?,?,0,0,0)""",
+                (self.uid, 'Schwab', y, m, 0, dep, dep),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries (user_id, broker, year, month,
+                       capital_inicio, capital_final, deposits, withdrawals,
+                       pnl_realized, pnl_unrealized)
+                   VALUES (?,'global',?,?,?,?,?,0,0,0)""",
+                (self.uid, y, m, 0, dep, dep),
+            )
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _post(self, target_cash):
+        return self.client.post(
+            "/api/brokers/reconcile-cash",
+            json={"broker_name": "Schwab", "target_cash": target_cash},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def test_target_smaller_than_current_records_withdrawal(self):
+        """CSV dice $60k pero broker real dice $2,300 → diff -$57,700 → WITHDRAW
+        sintético en el mes más antiguo (representa salidas pre-CSV no capturadas)."""
+        res = self._post(2300)
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["diff_direction"], "withdraw")
+        self.assertAlmostEqual(body["diff"], -57700, places=2)
+        self.assertEqual(body["recorded_in_period"], "2021-09")  # mes más antiguo
+        # Cash position quedó en target exacto
+        conn = main.get_db()
+        cash = conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker='Schwab' AND is_cash=1",
+            (self.uid,),
+        ).fetchone()["invested"]
+        conn.close()
+        self.assertAlmostEqual(cash, 2300, places=2)
+
+    def test_target_bigger_than_current_records_deposit(self):
+        """Cash real $80k > computado $60k → diff +$20k → DEPOSIT sintético
+        (representa cash pre-CSV que no estaba en el archivo)."""
+        res = self._post(80000)
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["diff_direction"], "deposit")
+        self.assertAlmostEqual(body["diff"], 20000, places=2)
+
+    def test_target_equal_to_current_is_noop(self):
+        """Si ya coincide, no genera movimientos."""
+        res = self._post(60000)
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json().get("no_change"))
+
+    def test_target_records_into_first_month_per_broker(self):
+        """El diff va al PRIMER mes del broker (no al mes actual), para
+        preservar cronología."""
+        res = self._post(2300)
+        body = res.json()
+        self.assertEqual(body["recorded_in_period"], "2021-09")
+        # Verificar que la withdrawal sumó al primer mes (no al último)
+        conn = main.get_db()
+        first_month_withdraw = conn.execute(
+            """SELECT withdrawals FROM monthly_entries
+               WHERE user_id=? AND broker='Schwab' AND year=2021 AND month=9""",
+            (self.uid,),
+        ).fetchone()["withdrawals"]
+        last_month_withdraw = conn.execute(
+            """SELECT withdrawals FROM monthly_entries
+               WHERE user_id=? AND broker='Schwab' AND year=2026 AND month=5""",
+            (self.uid,),
+        ).fetchone()["withdrawals"]
+        conn.close()
+        self.assertAlmostEqual(first_month_withdraw, 57700, places=2)
+        self.assertAlmostEqual(last_month_withdraw, 0, places=2)
 
 
 class RevertDepositAllowsNegativeCashTest(unittest.TestCase):

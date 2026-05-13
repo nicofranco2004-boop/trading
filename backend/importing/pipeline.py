@@ -492,23 +492,52 @@ def run_preview(
         ]
 
     # Seed suggestions: si el CSV referencia activos sin posición previa
-    # (errores INSUFFICIENT_STOCK) o tiene overdrafts sobre cash que no fue
-    # depositado antes en el archivo, ofrecemos al usuario cargar un "estado
-    # inicial". El seed se aplica al confirmar y resuelve esos casos.
-    err_insufficient_indices = {e.row_index for e in val_errors
-                                  if e.code == "INSUFFICIENT_STOCK"}
+    # (sells que consumen stock no presente en el archivo) o tiene overdrafts
+    # sobre cash que no fue depositado antes, ofrecemos al usuario cargar un
+    # "estado inicial". El seed se aplica al confirmar y precisa cost basis
+    # real para esas posiciones (sin seed, el persister auto-sintetiza al
+    # precio de venta → P&L = 0 sobre la porción faltante).
+    #
+    # Detección de stock shortfall: ya no viene del validator (que ahora
+    # acepta todos los sells — history-as-truth). Re-simulamos acá usando
+    # `valid_txs` + `existing_pos` y registramos filas que dejarían stock
+    # negativo. Solo se usa para alimentar las sugerencias; no bloquea.
+    err_insufficient_indices: set = set()
+    if valid_txs:
+        from .schema import OP_BUY as _OP_BUY, OP_SELL as _OP_SELL
+        sim_qty: Dict[Tuple[str, str], float] = dict(existing_pos)
+        sorted_for_sim = sorted(valid_txs, key=lambda t: (
+            t.date, 0 if t.operation_type == _OP_BUY else 1, t.row_index,
+        ))
+        for tx in sorted_for_sim:
+            if tx.operation_type == _OP_BUY:
+                k = (tx.broker, tx.asset_symbol or "")
+                sim_qty[k] = sim_qty.get(k, 0.0) + (tx.quantity or 0)
+            elif tx.operation_type == _OP_SELL:
+                k = (tx.broker, tx.asset_symbol or "")
+                avail = sim_qty.get(k, 0.0)
+                if (tx.quantity or 0) > avail + 1e-9:
+                    err_insufficient_indices.add(tx.row_index)
+                sim_qty[k] = sim_qty.get(k, 0.0) - (tx.quantity or 0)
+
+    # build_suggestions detecta el caso vía `val_errors` con code INSUFFICIENT_STOCK,
+    # pero ya no los emitimos. Fabricamos un RowError shim para no tocar la API
+    # del seed module (que es estable y la usan otros tests).
+    from .schema import RowError as _RowError
+    shim_errors = list(val_errors) + [
+        _RowError(ridx, "cantidad", "INSUFFICIENT_STOCK", "")
+        for ridx in err_insufficient_indices
+    ]
     cash_warnings_obj = sim.warnings if valid_txs else []
     seed_suggestions = _seed.build_suggestions(
         valid_txs=valid_txs,
-        val_errors=val_errors,
+        val_errors=shim_errors,
         cash_warnings=cash_warnings_obj,
         user_brokers=user_brokers,
         existing_positions=existing_pos,
         all_normalized=normalized,
     )
     if seed_suggestions:
-        # Enriquecer con broker+asset+qty desde las normalized originales
-        # (las INSUFFICIENT_STOCK están filtradas de valid_txs)
         seed_suggestions = _seed.enrich_with_sell_assets(
             seed_suggestions,
             all_normalized=normalized,
@@ -793,6 +822,11 @@ def parser_options_grouped() -> List[Dict[str, Any]]:
     """
     grouped: Dict[str, Dict[str, Any]] = {}
     for p in list_parsers():
+        # Solo incluimos parsers soportados — los que están en desarrollo no
+        # aparecen ni como "próximamente". Si volvemos a habilitar uno, flipear
+        # is_supported a True en la clase del parser y aparece solo.
+        if not p.is_supported:
+            continue
         if p.platform not in grouped:
             grouped[p.platform] = {
                 "platform": p.platform,
@@ -804,11 +838,6 @@ def parser_options_grouped() -> List[Dict[str, Any]]:
             "label": p.export_label or p.display_name,
             "supported": p.is_supported,
         })
-    # Filtrar plataformas sin ningún export soportado — sino el dropdown
-    # muestra "Cocos Capital (sin export oficial)" como una opción que solo
-    # confunde al usuario.
-    grouped = {k: v for k, v in grouped.items()
-                if any(e["supported"] for e in v["exports"])}
     # Orden: generic primero, después binance, después el resto
     order = {"generic": 0, "binance": 1, "balanz": 2, "cocos": 3}
     return sorted(grouped.values(), key=lambda g: order.get(g["platform"], 99))

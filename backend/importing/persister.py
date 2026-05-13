@@ -400,9 +400,37 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     ).fetchall()
     total_avail = sum((p["quantity"] or 0) for p in positions)
     qty_to_sell = float(tx.quantity or 0)
+
+    # Política: si el CSV vende más de lo disponible, asumimos que existe stock
+    # previo que el CSV no incluye (history-as-truth). Auto-creamos un seed lot
+    # al precio de venta para la porción faltante — P&L = 0 sobre ese chunk
+    # (no inventamos ganancia ni pérdida ficticia). Si el user quiere reflejar
+    # la pérdida real, puede usar el wizard de "Estado inicial" antes de
+    # confirmar para precisar el cost basis.
     if qty_to_sell > total_avail + 1e-9:
-        raise PersistError(tx.row_index,
-            f"Stock insuficiente al vender {tx.asset_symbol} en {tx.broker} (disponible: {total_avail:g}).")
+        missing_qty = qty_to_sell - total_avail
+        seed_price = float(tx.unit_price or 0)
+        seed_invested = missing_qty * seed_price
+        # entry_date: la misma fecha de la venta (FIFO lo ordena por entry_date,
+        # luego por id — queda al final entre lotes con la misma fecha).
+        # NOTA: la tabla `positions` no tiene asset_type; lo omitimos.
+        conn.execute(
+            """INSERT INTO positions
+                  (user_id, broker, asset, quantity, invested,
+                   buy_price, commissions, entry_date, is_cash, currency)
+               VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, ?)""",
+            (uid, tx.broker, tx.asset_symbol,
+             missing_qty, round(seed_invested, 6),
+             seed_price, tx.date, (tx.currency or "USD").upper()),
+        )
+        # Re-leer positions para que el FIFO encuentre el seed lot
+        positions = conn.execute(
+            """SELECT * FROM positions
+               WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
+               ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
+            (uid, tx.broker, tx.asset_symbol),
+        ).fetchall()
+        total_avail = sum((p["quantity"] or 0) for p in positions)
 
     exit_price = float(tx.unit_price or 0)
     sell_commissions = float(tx.fees or 0)
