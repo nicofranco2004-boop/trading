@@ -2903,6 +2903,81 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         self.assertAlmostEqual(by_broker["Cocos"], 25.20, places=2)
         self.assertAlmostEqual(by_broker["global"], 25.20, places=2)
 
+    def test_recalcs_deposits_and_withdrawals_from_imports(self):
+        """REGRESIÓN: tras revertir todos los batches, monthly_entries
+        quedaba con deposits/withdrawals huérfanos → Capital Aportado != 0.
+        Ahora el recalc los reconstruye desde import_normalized_tx confirmados,
+        zero-eando los que no tienen respaldo."""
+        conn = main.get_db()
+        with conn:
+            # Drift simulado: deposits/withdrawals huérfanos sin import_normalized_tx
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 831.58, 0, 0, 0, 0, 831.58)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'global', 831.58, 0, 0, 0, 0, 831.58)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        rows = conn.execute(
+            "SELECT broker, deposits, withdrawals, pnl_realized FROM monthly_entries WHERE user_id=? ORDER BY broker",
+            (self.uid,),
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            self.assertEqual(r["deposits"], 0.0,
+                f"{r['broker']}: deposits debería ser 0, quedó {r['deposits']}")
+            self.assertEqual(r["withdrawals"], 0.0)
+            self.assertEqual(r["pnl_realized"], 0.0)
+
+    def test_recalcs_preserves_deposits_from_confirmed_batch(self):
+        """Si hay un batch CONFIRMED con un DEPOSIT, el recalc lo preserva."""
+        import uuid, json
+        conn = main.get_db()
+        batch_id = str(uuid.uuid4())
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'x.csv', ?, 'Cocos', 'confirmed')""",
+                (batch_id, self.uid, batch_id),
+            )
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                   VALUES (?,?,?,'valid',NULL)""",
+                (batch_id, 1, json.dumps({})),
+            )
+            raw_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO import_normalized_tx
+                   (batch_id, raw_row_id, date, broker, operation_type, gross_amount, currency)
+                   VALUES (?, ?, '2025-05-15', 'Cocos', 'DEPOSIT', 100000, 'ARS')""",
+                (batch_id, raw_id),
+            )
+            # Pre-existente con drift (mock)
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 999999, 0, 0, 0, 0, 999999)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        row = conn.execute(
+            "SELECT deposits FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # 100000 ARS / 1415 tc_blue default = ~70.67 USD
+        self.assertAlmostEqual(row["deposits"], 70.67, delta=0.1)
+
     def test_endpoint_recalc_returns_count(self):
         from fastapi.testclient import TestClient
         client = TestClient(main.app)

@@ -89,9 +89,9 @@ export default function Imports() {
     setInfo(null)
     try {
       const data = await api.post('/imports/recalc-pnl', {})
-      setInfo(`P&L Realizado recalculado desde operations (${data.rows_updated} entradas mensuales actualizadas).`)
+      setInfo(`Aggregates mensuales recalculados desde las operaciones e imports confirmados (${data.rows_updated} entradas actualizadas).`)
     } catch (ex) {
-      setError(ex.message || 'No pudimos recalcular el P&L.')
+      setError(ex.message || 'No pudimos recalcular los aggregates.')
     } finally {
       setRecalculating(false)
     }
@@ -107,13 +107,13 @@ export default function Imports() {
             <button
               onClick={doRecalcPnl}
               disabled={recalculating}
-              title="Recalcula P&L Realizado desde operations. Útil si el dashboard quedó con drift de imports/reverts viejos."
+              title="Recalcula P&L, deposits y withdrawals mensuales desde las operations e imports confirmados. Útil si el dashboard quedó con drift de cycles import/revert."
               className="inline-flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition disabled:opacity-50"
             >
               {recalculating
                 ? <Loader2 size={14} className="animate-spin" />
                 : <RotateCcw size={14} />}
-              Recalcular P&L
+              Recalcular aggregates
             </button>
             <Link
               to="/operaciones"

@@ -2561,19 +2561,24 @@ class CashFlowIn(BaseModel):
 
 
 def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
-    """Recalcula `monthly_entries.pnl_realized` desde la tabla `operations`.
+    """Recalcula `monthly_entries.pnl_realized`, `deposits` y `withdrawals`
+    desde las fuentes (operations + import_normalized_tx confirmados).
 
-    Self-healing del drift que pueden generar cycles de import/revert con bugs
-    cross-currency: el revert deshace operations correctamente, pero si el
-    persist agregó pnl_realized con un cálculo viejo y el revert lo deshizo
-    con el cálculo nuevo, queda diferencia acumulada.
+    Self-healing de drift acumulado por cycles import/revert/reimport con
+    cálculos cambiantes entre versiones. Cada fila queda con:
+      pnl_realized = SUM(operations.pnl_usd)
+      deposits     = SUM(monto USD de DEPOSITs en batches confirmed)
+      withdrawals  = SUM(monto USD de WITHDRAWs en batches confirmed)
 
-    Para cada (broker, year, month) en monthly_entries:
-      pnl_realized[broker, y, m] = SUM(operations.pnl_usd WHERE broker, y, m)
-      pnl_realized[global, y, m] = SUM(operations.pnl_usd WHERE y, m)
+    Para broker='global', suma cross-broker.
 
-    Re-repara la cadena de capital_final tras actualizar.
-    Idempotente. Devuelve la cantidad de rows actualizados.
+    Re-repara la cadena de capital_final.
+
+    CAVEAT: si el user hizo cash flows MANUALES (desde /api/cash/flow, no
+    desde un import), esos se zero-ean — son raros, el user los puede
+    re-hacer si fueran necesarios.
+
+    Idempotente. Devuelve cantidad de rows actualizados.
     """
     rows = conn.execute(
         "SELECT DISTINCT broker, year, month FROM monthly_entries WHERE user_id=?",
@@ -2581,36 +2586,78 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     ).fetchall()
     updates = 0
     brokers_touched: set = set()
+    # TC blue para convertir DEPOSITs/WITHDRAWs en ARS a USD-equivalente
+    # (consistente con _persist_cash_in/out)
+    tc_blue_row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
+    ).fetchone()
+    try:
+        tc_blue = float(tc_blue_row["value"]) if tc_blue_row else 1415.0
+        if tc_blue <= 0:
+            tc_blue = 1415.0
+    except (TypeError, ValueError):
+        tc_blue = 1415.0
+
     for r in rows:
         broker, y, m = r["broker"], r["year"], r["month"]
         year_str = f"{y:04d}"
         month_str = f"{m:02d}"
-        if broker == "global":
-            row = conn.execute(
-                """SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations
-                   WHERE user_id=?
-                     AND strftime('%Y', date)=?
-                     AND strftime('%m', date)=?""",
-                (uid, year_str, month_str),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                """SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations
-                   WHERE user_id=? AND broker=?
-                     AND strftime('%Y', date)=?
-                     AND strftime('%m', date)=?""",
-                (uid, broker, year_str, month_str),
-            ).fetchone()
-        new_pnl = round(float(row["s"] or 0), 4)
+        broker_filter_sql = "" if broker == "global" else " AND o.broker = ?"
+        broker_filter_args = () if broker == "global" else (broker,)
+
+        # 1) pnl_realized desde operations
+        pnl_row = conn.execute(
+            f"""SELECT COALESCE(SUM(o.pnl_usd), 0) AS s FROM operations o
+                WHERE o.user_id=?
+                  AND strftime('%Y', o.date)=?
+                  AND strftime('%m', o.date)=?
+                  {broker_filter_sql}""",
+            (uid, year_str, month_str, *broker_filter_args),
+        ).fetchone()
+        new_pnl = round(float(pnl_row["s"] or 0), 4)
+
+        # 2) deposits + withdrawals desde import_normalized_tx (solo batches
+        #    confirmed). Convierte ARS a USD para tracking en USD-base.
+        tx_broker_filter = "" if broker == "global" else " AND n.broker = ?"
+        tx_broker_args = () if broker == "global" else (broker,)
+        flow_row = conn.execute(
+            f"""SELECT n.operation_type AS op,
+                       COALESCE(SUM(n.gross_amount), 0) AS s,
+                       n.currency AS cur
+                FROM import_normalized_tx n
+                JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
+                  AND strftime('%Y', n.date)=?
+                  AND strftime('%m', n.date)=?
+                  {tx_broker_filter}
+                GROUP BY n.operation_type, n.currency""",
+            (uid, year_str, month_str, *tx_broker_args),
+        ).fetchall()
+        new_deposits = 0.0
+        new_withdrawals = 0.0
+        for f in flow_row:
+            amt = float(f["s"] or 0)
+            cur_norm = (f["cur"] or "").upper()
+            # Convertir ARS a USD para el aggregate USD
+            amt_usd = amt / tc_blue if cur_norm == "ARS" else amt
+            if f["op"] == "DEPOSIT":
+                new_deposits += amt_usd
+            else:
+                new_withdrawals += amt_usd
+        new_deposits = round(new_deposits, 4)
+        new_withdrawals = round(new_withdrawals, 4)
+
         conn.execute(
-            """UPDATE monthly_entries SET pnl_realized=?
+            """UPDATE monthly_entries
+               SET pnl_realized=?, deposits=?, withdrawals=?
                WHERE user_id=? AND broker=? AND year=? AND month=?""",
-            (new_pnl, uid, broker, y, m),
+            (new_pnl, new_deposits, new_withdrawals, uid, broker, y, m),
         )
         updates += 1
         brokers_touched.add(broker)
 
-    # Re-reparar capital_final chain con los nuevos pnl_realized
+    # Re-reparar capital_final chain con los nuevos valores
     for b in brokers_touched:
         _repair_monthly_chain(conn, uid, b)
     return updates
