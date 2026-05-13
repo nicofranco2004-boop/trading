@@ -271,9 +271,13 @@ describe('unrealized_dominates', () => {
 })
 
 describe('fees_drag', () => {
-  it('dispara cuando comisiones >0.5% del portfolio', () => {
+  it('dispara cuando comisiones >0.5% del portfolio (USD broker)', () => {
     const out = fire('fees_drag', {
-      positions: [{ commissions: 100 }, { commissions: 50 }],
+      positions: [
+        { commissions: 100, broker: 'IBKR' },
+        { commissions: 50, broker: 'IBKR' },
+      ],
+      brokers: [{ name: 'IBKR', currency: 'USDT' }],
       totalPortfolio: 10000,
     })
     expect(out).toMatch(/USD 150/)
@@ -282,9 +286,46 @@ describe('fees_drag', () => {
 
   it('no dispara si las comisiones son bajas', () => {
     expect(fire('fees_drag', {
-      positions: [{ commissions: 5 }],
+      positions: [{ commissions: 5, broker: 'IBKR' }],
+      brokers: [{ name: 'IBKR', currency: 'USDT' }],
       totalPortfolio: 10000,
     })).toBe(null)
+  })
+
+  it('REGRESIÓN: para broker ARS convierte comisiones ARS→USD con TC blue', () => {
+    // 41,809 ARS de comisiones / 1415 = ~29.55 USD (no 41,809)
+    // sobre portfolio de 5,757 USD = 0.51% (no 726%)
+    const out = fire('fees_drag', {
+      positions: [{ commissions: 41809, broker: 'Cocos' }],
+      brokers: [{ name: 'Cocos', currency: 'ARS' }],
+      tcBlue: 1415,
+      totalPortfolio: 5757,
+    })
+    expect(out).toMatch(/USD 30/)              // 41809/1415 ≈ 29.55, fmtUsd redondea
+    expect(out).not.toMatch(/USD 41/)
+    expect(out).not.toMatch(/726/)             // % no debe ser absurdo
+    expect(out).toMatch(/0\.5%/)               // ~0.51% del portfolio
+  })
+
+  it('mezcla ARS+USD brokers convierte solo los ARS', () => {
+    // 50000 ARS (=35.3 USD) + 30 USD = 65.3 USD ≈ 0.65% de 10000
+    const out = fire('fees_drag', {
+      positions: [
+        { commissions: 50000, broker: 'Cocos' },  // ARS
+        { commissions: 30, broker: 'IBKR' },      // USD
+      ],
+      brokers: [
+        { name: 'Cocos', currency: 'ARS' },
+        { name: 'IBKR', currency: 'USDT' },
+      ],
+      tcBlue: 1415,
+      totalPortfolio: 10000,
+    })
+    // No debe ser USD 50,030 (la suma cruda sin conversión)
+    expect(out).not.toMatch(/USD 50,030/)
+    expect(out).not.toMatch(/USD 50030/)
+    // Sí debe ser un número razonable (~65 USD)
+    expect(out).toMatch(/USD 6[0-9]/)
   })
 })
 

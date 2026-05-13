@@ -530,13 +530,26 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'fees_drag',
     category: 'Performance',
     severity: 'warn',
-    generate: ({ positions, totalPortfolio }) => {
+    generate: ({ positions, totalPortfolio, brokers, tcBlue }) => {
       if (!positions || !totalPortfolio) return null
-      const totalCommissions = positions.reduce((s, p) => s + (p.commissions || 0), 0)
-      if (totalCommissions <= 0) return null
-      const share = (totalCommissions / totalPortfolio) * 100
+      // FIX: las comisiones están en la moneda nativa del broker (ARS para
+      // brokers AR, USD para resto). Antes las sumábamos sin convertir y
+      // comparábamos contra totalPortfolio (USD) → un user con ARS 41k de
+      // fees veía "USD 41,809 (726% del portfolio)" — unidad mixta.
+      const arsBrokers = new Set(
+        (brokers || []).filter(b => b.currency === 'ARS').map(b => b.name)
+      )
+      const tc = tcBlue || 1415
+      const totalCommissionsUsd = positions.reduce((s, p) => {
+        const comm = p.commissions || 0
+        if (!comm) return s
+        // ARS broker → comm en pesos → dividir por TC
+        return s + (arsBrokers.has(p.broker) ? comm / tc : comm)
+      }, 0)
+      if (totalCommissionsUsd <= 0) return null
+      const share = (totalCommissionsUsd / totalPortfolio) * 100
       if (share < 0.5) return null
-      return `Las comisiones acumuladas suman **${fmtUsd(totalCommissions)}** (**${share.toFixed(1)}%** del portfolio). Cada operación adicional come tu rendimiento — vale la pena chequear si el broker está cobrando comisiones competitivas.`
+      return `Las comisiones acumuladas suman **${fmtUsd(totalCommissionsUsd)}** (**${share.toFixed(1)}%** del portfolio). Cada operación adicional come tu rendimiento — vale la pena chequear si el broker está cobrando comisiones competitivas.`
     },
   },
 
