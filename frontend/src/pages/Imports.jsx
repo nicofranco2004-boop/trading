@@ -34,18 +34,29 @@ export default function Imports() {
     }
   }
 
-  async function doRevert(batch) {
+  async function doRevert(batch, { force = false } = {}) {
     setReverting(batch.id)
     setError(null)
     setInfo(null)
     try {
-      await api.post(`/imports/${batch.id}/revert`, {})
+      const url = force
+        ? `/imports/${batch.id}/revert?nuclear=1`
+        : `/imports/${batch.id}/revert`
+      await api.post(url, {})
       setInfo(`Importación del ${fmtDate(batch.created_at)} revertida correctamente.`)
       setConfirmRevert(null)
       await load()
     } catch (ex) {
-      setError(ex.message || 'No se pudo revertir.')
-      setConfirmRevert(null)
+      // Si el revert safe falló por ventas/conversiones, lo dejamos disponible
+      // como "Forzar revert" en el mismo modal (sin cerrarlo).
+      const msg = ex.message || 'No se pudo revertir.'
+      const isSellFxBlock = /ventas|conversiones|fifo/i.test(msg)
+      if (!force && isSellFxBlock) {
+        setError(msg + ' Podés forzar el revert desde el botón "Forzar revert".')
+      } else {
+        setError(msg)
+        setConfirmRevert(null)
+      }
     } finally {
       setReverting(null)
     }
@@ -242,15 +253,31 @@ export default function Imports() {
             <div className="flex items-start gap-2 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
               <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
               <span>
-                Si este import incluye ventas o conversiones de moneda, la reversa va a fallar — tenés que deshacer esas operaciones manualmente desde sus páginas correspondientes antes de revertir.
+                Si este import incluye ventas o conversiones de moneda, la reversa normal va a fallar. Usá <strong>Forzar revert</strong> para revertir todo de una (incluye ventas/conversiones — modo nuclear).
               </span>
             </div>
+            {error && (
+              <div className="flex items-start gap-2 px-3 py-2 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-700 dark:text-red-400">
+                <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
             <div className="flex justify-end gap-2 pt-2">
               <button
-                onClick={() => setConfirmRevert(null)}
+                onClick={() => { setConfirmRevert(null); setError(null) }}
                 className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
               >
                 Cancelar
+              </button>
+              <button
+                onClick={() => doRevert(confirmRevert, { force: true })}
+                disabled={reverting === confirmRevert.id}
+                className="px-4 py-2 text-sm bg-amber-600 hover:bg-amber-700 text-white rounded-md font-semibold transition disabled:opacity-50 inline-flex items-center gap-1.5"
+                title="Revierte también ventas y conversiones (modo nuclear)"
+              >
+                {reverting === confirmRevert.id && <Loader2 size={12} className="animate-spin" />}
+                <AlertTriangle size={12} />
+                Forzar revert
               </button>
               <button
                 onClick={() => doRevert(confirmRevert)}
