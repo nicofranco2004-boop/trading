@@ -123,16 +123,13 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     api.get('/imports/mappings').then(setSavedTemplates).catch(() => setSavedTemplates([]))
   }, [])
 
-  // Cocos típicamente tiene operaciones MEP (Compra/Venta Dolar Mep) que
-  // figuran como USD en el CSV. Si el user las importa al broker ARS sin
-  // currency routing, los lots USD se mezclan con los ARS y el P&L de las
-  // SELLs cross-currency da números absurdos (+161000% / -99%).
-  // Default seguro: cuando el parser es Cocos, pre-marcar "hay operaciones
-  // en USD" para que el routing al sub-broker USD se aplique automáticamente.
-  // El user puede desmarcarlo si no le interesa el split.
-  useEffect(() => {
-    if (format === 'cocos') setHasUsdOps(true)
-  }, [format])
+  // Nota: anteriormente forzábamos hasUsdOps=true para Cocos, pero rompe
+  // SELLs que mezclan lots ARS+USD del mismo CEDEAR (el CEDEAR es fungible
+  // pero el routing separa los lots en dos sub-brokers, y un Venta de 35
+  // TSLA en ARS no podía consumir los 21 lots USD del sibling). El P&L
+  // cross-currency ya se maneja correctamente en el persister via la
+  // columna positions.currency, así que no hace falta routing forzado.
+  // El user puede activarlo manualmente si prefiere ver el cash separado.
 
   async function saveTemplate(name) {
     if (!name?.trim()) return
