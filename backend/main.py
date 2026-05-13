@@ -2648,9 +2648,15 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         new_deposits = round(new_deposits, 4)
         new_withdrawals = round(new_withdrawals, 4)
 
+        # También reseteamos pnl_unrealized: es un live snapshot que se
+        # recalcula desde positions actuales (via /sync-unrealized en el
+        # dashboard). Si quedó un valor stale de cycles previos, ensucia
+        # el "delta del mes" en /reportes — fórmula `partial`: deltaUsd =
+        # pnl_realized + pnl_unrealized, así un -$69k phantom rompe el view.
         conn.execute(
             """UPDATE monthly_entries
-               SET pnl_realized=?, deposits=?, withdrawals=?
+               SET pnl_realized=?, pnl_unrealized=0,
+                   deposits=?, withdrawals=?
                WHERE user_id=? AND broker=? AND year=? AND month=?""",
             (new_pnl, new_deposits, new_withdrawals, uid, broker, y, m),
         )

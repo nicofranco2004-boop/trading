@@ -3011,6 +3011,29 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
             "monthly_entries vacías deberían eliminarse para que el baseline "
             "no quede inflado de cycles previos")
 
+    def test_recalc_resets_pnl_unrealized(self):
+        """REGRESIÓN: /reportes calculaba delta del mes como `pnl_realized +
+        pnl_unrealized`. Un pnl_unrealized stale (ej. -69650 de un cycle
+        previo) producía un loss falso aunque pnl_realized estuviera limpio."""
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2026, 5, 'Schwab', 100, 0, 50, -69650, 0, 100)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        row = conn.execute(
+            "SELECT pnl_unrealized FROM monthly_entries WHERE user_id=? AND broker='Schwab'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        if row is not None:  # podría haber sido borrado si quedó toda en 0
+            self.assertEqual(row["pnl_unrealized"], 0.0,
+                "pnl_unrealized debería resetearse a 0 (es live, no stored)")
+
     def test_recalc_clears_snapshots_when_no_state(self):
         """Si tras recalc no quedan positions/operations/monthly_entries, los
         snapshots del dashboard también se limpian (sino el gráfico de
