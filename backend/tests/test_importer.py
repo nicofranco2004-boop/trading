@@ -3176,6 +3176,201 @@ class MultiFilePreviewE2ETest(unittest.TestCase):
         self.assertEqual(res.json()["source_file_count"], 1)
 
 
+class UniversalUserScenariosTest(unittest.TestCase):
+    """Verifica que el feature funcione para múltiples casos de user, no solo
+    para el caso particular del que reportó (Cocos + multi-año).
+
+    Cubre: new user limpio, multi-user isolation, parser distinto,
+    multi-file con N=1 (back-compat), recalc en DB vacía."""
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        conn = main.get_db()
+        # Limpiar TODO para empezar desde cero
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions",
+                  "monthly_entries", "brokers", "users"):
+            conn.execute(f"DELETE FROM {t}")
+        conn.commit()
+        conn.close()
+
+    def _token(self, uid):
+        return main.create_token(uid)
+
+    def test_new_user_recalc_pnl_empty_db_safe(self):
+        """User recién creado, sin imports ni operations: recalc no debe romper."""
+        conn = main.get_db()
+        uid = _new_user(conn, email="newbie@rendi.test")
+        conn.commit()
+        conn.close()
+        res = self.client.post(
+            "/api/imports/recalc-pnl",
+            headers={"Authorization": f"Bearer {self._token(uid)}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(res.json()["recalculated"])
+
+    def test_recalc_isolation_between_users(self):
+        """Recalc del user A no debe tocar monthly_entries del user B."""
+        conn = main.get_db()
+        a = _new_user(conn, email="user_a@rendi.test")
+        b = _new_user(conn, email="user_b@rendi.test")
+        _add_broker(conn, a, "Cocos", "ARS")
+        _add_broker(conn, b, "Cocos", "ARS")
+        # B tiene drift en pnl_realized (sin operations)
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 0, 0, -5000, 0, 0, -5000)""",
+                (b,),
+            )
+        conn.close()
+
+        # A corre recalc → no debe tocar a B
+        self.client.post(
+            "/api/imports/recalc-pnl",
+            headers={"Authorization": f"Bearer {self._token(a)}"},
+        )
+        conn = main.get_db()
+        b_pnl = conn.execute(
+            "SELECT pnl_realized FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (b,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(b_pnl["pnl_realized"], -5000,
+            "Recalc de user A no debería tocar al user B")
+
+    def test_inspect_chunked_cap_enforced(self):
+        """/inspect debe rechazar archivos sobre el cap antes de leerlos completos."""
+        import io
+        conn = main.get_db()
+        uid = _new_user(conn, email="big_inspect@rendi.test")
+        conn.commit()
+        conn.close()
+        # Archivo > 5MB
+        big = b"a,b\n" + b"1,2\n" * 1_400_000
+        res = self.client.post(
+            "/api/imports/inspect",
+            files={"file": ("big.csv", io.BytesIO(big), "text/csv")},
+            headers={"Authorization": f"Bearer {self._token(uid)}"},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("excede", res.json()["detail"].lower())
+        self.assertIn("MB", res.json()["detail"])
+
+    def test_inspect_size_error_message_uses_correct_mb_value(self):
+        """El mensaje de error debe reflejar el cap REAL (5MB), no hardcoded "1 MB"."""
+        # Test del helper interno (sin endpoint)
+        from importing.pipeline import inspect, MAX_FILE_BYTES
+        # Pasar más bytes del cap
+        big = b"a,b\n" + b"x,y\n" * (MAX_FILE_BYTES // 4 + 100)
+        result = inspect(big)
+        self.assertIn("error", result)
+        # El mensaje debe contener el MB real
+        expected_mb = MAX_FILE_BYTES // 1_000_000
+        self.assertIn(str(expected_mb), result["error"])
+
+    def test_multi_file_n1_backwards_compat_with_generic_parser(self):
+        """Multi-file con N=1 usando rendi_generic (no parser específico).
+        Verifica que el endpoint preview + el flow inspect funcionen con files."""
+        import io
+        conn = main.get_db()
+        uid = _new_user(conn, email="generic@rendi.test")
+        _add_broker(conn, uid, "MiBroker", "ARS")
+        conn.commit()
+        conn.close()
+
+        csv = (
+            "fecha,tipo,broker,activo,cantidad,precio,monto,moneda\n"
+            "2025-01-15,COMPRA,MiBroker,GGAL,100,500,50000,ARS\n"
+            "2025-02-15,DEPOSITO,MiBroker,,,,200000,ARS\n"
+        ).encode("utf-8")
+        token = self._token(uid)
+        # Multi-file con files=[csv]: debe procesar como single file
+        res = self.client.post(
+            "/api/imports/preview",
+            files=[("files", ("ops.csv", io.BytesIO(csv), "text/csv"))],
+            data={"format": "rendi_generic", "broker": "MiBroker"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["source_file_count"], 1)
+        self.assertGreaterEqual(body["summary"]["valid_rows"], 2)
+
+    def test_revert_recalcs_pnl_automatically(self):
+        """Tras revert nuclear, el pnl_realized debe auto-recalcularse."""
+        from importing.persister import persist_batch, revert_batch
+        from importing.schema import NormalizedTx, OP_BUY, OP_SELL
+        import uuid, json
+        conn = main.get_db()
+        uid = _new_user(conn, email="revert_recalc@rendi.test")
+        _add_broker(conn, uid, "Cocos", "ARS")
+
+        # Inflar pnl_realized previo (drift simulado de cycle anterior)
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 0, 0, -9999, 0, 0, -9999)""",
+                (uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'global', 0, 0, -9999, 0, 0, -9999)""",
+                (uid,),
+            )
+
+        # Persist un batch trivial
+        batch_id = str(uuid.uuid4())
+        tx = NormalizedTx(row_index=1, date="2025-05-15", broker="Cocos",
+                          operation_type=OP_BUY, asset_symbol="GGAL",
+                          quantity=10, unit_price=500, gross_amount=5000,
+                          currency="ARS", settlement_currency="ARS")
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'x.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, uid, batch_id),
+            )
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                   VALUES (?,?,?,'valid',NULL)""",
+                (batch_id, 1, json.dumps({})),
+            )
+            raw_row_ids[1] = cur.lastrowid
+        persist_batch(conn, uid=uid, batch_id=batch_id, txs=[tx],
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+        conn.execute("UPDATE import_batches SET status='confirmed' WHERE id=?", (batch_id,))
+        conn.commit()
+
+        # Revert con nuclear → debe disparar el auto-recalc
+        with conn:
+            revert_batch(conn, uid=uid, batch_id=batch_id, helpers=main, nuclear=True)
+
+        # Después del revert: pnl_realized debería estar en 0 (no -9999) porque
+        # no hay operations matching y el recalc auto-corrió.
+        rows = conn.execute(
+            "SELECT broker, pnl_realized FROM monthly_entries WHERE user_id=?",
+            (uid,),
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            self.assertEqual(r["pnl_realized"], 0.0,
+                f"{r['broker']}: drift no se limpió en revert ({r['pnl_realized']})")
+
+
 class CocosVisibleInDropdownTest(unittest.TestCase):
     """Cocos ya tiene export oficial (Actividad → Movimientos), así que debe
     aparecer en el dropdown agrupado del wizard."""

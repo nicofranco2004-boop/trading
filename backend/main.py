@@ -4655,7 +4655,24 @@ async def import_inspect(
     """Lee headers y primeras filas del CSV. Devuelve también un mapping
     sugerido (auto-detect) y la lista de campos internos de Rendi para
     armar el wizard de mapeo de columnas."""
-    contents = await file.read()
+    # Lectura chunked + cap progresivo (consistente con /preview): evita
+    # OOM si un client manda un archivo de cientos de MB. Cap es el mismo
+    # MAX_FILE_BYTES del pipeline.
+    cap = _import_pipeline.MAX_FILE_BYTES
+    chunks: List[bytes] = []
+    total = 0
+    while total <= cap:
+        chunk = await file.read(min(64 * 1024, cap - total + 1))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > cap:
+            raise HTTPException(
+                400,
+                f"El archivo excede el límite de {cap // 1_000_000} MB.",
+            )
+    contents = b"".join(chunks)
     payload = _import_pipeline.inspect(contents)
     if payload.get("error"):
         raise HTTPException(400, payload["error"])

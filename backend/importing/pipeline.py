@@ -117,7 +117,7 @@ def inspect(file_bytes: bytes) -> Dict[str, Any]:
     """Lee headers + primeras filas del CSV. Sin auth contra DB. Devuelve
     metadata para que el frontend muestre el wizard de mapeo de columnas."""
     if len(file_bytes) > MAX_FILE_BYTES:
-        return {"error": "El archivo excede el límite de 1 MB."}
+        return {"error": f"El archivo excede el límite de {MAX_FILE_BYTES // 1_000_000} MB."}
     try:
         content = file_bytes.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -226,7 +226,7 @@ def run_preview(
     """Ejecuta el pipeline hasta preview. Persiste el batch (status='preview')
     y devuelve el preview + session_id (== batch_id)."""
     if len(file_bytes) > MAX_FILE_BYTES:
-        return {"error": "El archivo excede el límite de 1 MB."}
+        return {"error": f"El archivo excede el límite de {MAX_FILE_BYTES // 1_000_000} MB."}
 
     cleanup_stale_previews(conn)
 
