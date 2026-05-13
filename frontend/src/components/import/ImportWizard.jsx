@@ -1681,70 +1681,210 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
 }
 
 
-function DoneStep({ result }) {
-  const skipped = result.skipped_rows || []
-  const cashHealth = result.cash_health || []
-  const negativeCash = cashHealth.filter(c => (c.balance || 0) < -0.01)
-  const hasIssues = skipped.length > 0 || negativeCash.length > 0
+// ────────────────────────────────────────────────────────────────────────────
+// Card de reconciliación de cash por broker — el corazón de la UX post-import.
+// Muestra:
+//   • Lo que Rendi calculó del CSV (referencia).
+//   • Input grande para que el user escriba lo que dice el broker hoy.
+//   • Diff en vivo mientras escribe (verde si suma, ámbar si resta).
+//   • Estado "✓ Confirmado" después de aplicar.
+// ────────────────────────────────────────────────────────────────────────────
+function CashReconcileCard({ c, onApplied }) {
+  const [value, setValue] = useState('')           // string para no perder edits parciales
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const [applied, setApplied] = useState(null)     // { previous, target, diff } cuando ya se aplicó
 
-  function fmtCash(c) {
-    const sign = c.balance < 0 ? '-' : ''
-    const abs = Math.abs(c.balance)
-    const num = abs.toLocaleString('es-AR', { maximumFractionDigits: 2 })
-    return `${sign}${c.currency} ${num}`
+  const currencySymbol = c.currency === 'ARS' ? '$' : 'US$'
+  const computedFmt = formatMoney(c.balance, c.currency)
+
+  // Diff preview en vivo mientras el user escribe
+  const target = value === '' ? null : Number(value)
+  const validTarget = target !== null && Number.isFinite(target)
+  const diff = validTarget ? target - c.balance : null
+  const diffAbs = diff !== null ? Math.abs(diff) : 0
+  const diffSig = diff !== null && Math.abs(diff) >= 0.01
+
+  async function apply() {
+    if (!validTarget) { setErr('Tipeá el cash en números'); return }
+    setBusy(true); setErr(null)
+    try {
+      await api.post('/brokers/reconcile-cash', {
+        broker_name: c.broker, target_cash: target,
+      })
+      setApplied({ previous: c.balance, target, diff })
+      onApplied?.(target)
+    } catch (ex) {
+      setErr(ex.message || 'Error al reconciliar')
+    } finally {
+      setBusy(false)
+    }
   }
 
+  // Estado: ya fue aplicado → mostrar resumen verde
+  if (applied) {
+    return (
+      <div className="rounded-lg border border-rendi-pos/30 bg-rendi-pos/5 p-3 space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-rendi-pos">
+            <CheckCircle2 size={14} />
+            <span className="text-xs font-semibold">{c.broker}</span>
+          </div>
+          <span className="text-sm font-mono text-slate-900 dark:text-slate-100">
+            {formatMoney(applied.target, c.currency)}
+          </span>
+        </div>
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 pl-6">
+          Ajustado. Diferencia de {formatMoney(applied.diff, c.currency, true)} registrada como
+          {' '}{applied.diff < 0 ? 'retiro' : 'aporte'} pre-CSV.
+        </p>
+      </div>
+    )
+  }
+
+  // Heurística para color del balance computado: negativo claramente "raro"
+  const isNegative = c.balance < -0.01
   return (
-    <div className="py-2 space-y-4">
+    <div className={`rounded-lg border p-3 space-y-2.5 ${
+      isNegative
+        ? 'border-rendi-warn/40 bg-rendi-warn/5'
+        : 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/30'
+    }`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{c.broker}</span>
+          {isNegative && (
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30">
+              negativo
+            </span>
+          )}
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Calculado del CSV</div>
+          <div className={`text-sm font-mono ${isNegative ? 'text-rendi-warn' : 'text-slate-700 dark:text-slate-300'}`}>
+            {computedFmt}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-stretch gap-2">
+        <div className="flex-1">
+          <label className="block text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+            ¿Qué cash muestra tu app de {c.broker}?
+          </label>
+          <div className="relative">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-500 dark:text-slate-400 pointer-events-none">
+              {currencySymbol}
+            </span>
+            <input
+              type="number" step="0.01" value={value}
+              onChange={e => { setValue(e.target.value); setErr(null) }}
+              onKeyDown={e => { if (e.key === 'Enter' && validTarget) apply() }}
+              disabled={busy}
+              placeholder="0.00"
+              className="w-full pl-9 pr-2 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-md tabular text-slate-900 dark:text-slate-100 focus:outline-none focus:border-rendi-accent disabled:opacity-50"
+            />
+          </div>
+        </div>
+        <button
+          onClick={apply}
+          disabled={busy || !validTarget || !diffSig}
+          className="px-4 mt-[18px] text-sm font-semibold rounded-md bg-rendi-accent text-white hover:bg-rendi-accent/90 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+        >
+          {busy && <Loader2 size={14} className="animate-spin" />}
+          Confirmar
+        </button>
+      </div>
+
+      {/* Diff preview live */}
+      {validTarget && diffSig && (
+        <div className={`text-[11px] leading-relaxed px-2 py-1.5 rounded border ${
+          diff < 0
+            ? 'bg-amber-500/5 border-amber-500/20 text-amber-700 dark:text-amber-400'
+            : 'bg-emerald-500/5 border-emerald-500/20 text-emerald-700 dark:text-emerald-400'
+        }`}>
+          {diff < 0 ? '↓' : '↑'} Diferencia de <strong>{formatMoney(diffAbs, c.currency)}</strong>.
+          Se registra como {diff < 0 ? 'retiro' : 'aporte'} pre-CSV en el primer mes del broker
+          (representa {diff < 0 ? 'salidas que el CSV no capturó' : 'cash que ya estaba antes de que arranque el archivo'}).
+        </div>
+      )}
+      {validTarget && !diffSig && (
+        <div className="text-[11px] text-slate-500 dark:text-slate-400 px-2">
+          Ya coincide — no hay ajuste necesario.
+        </div>
+      )}
+      {err && <p className="text-[11px] text-rendi-neg px-2">{err}</p>}
+    </div>
+  )
+}
+
+// Helper: formatea montos con prefijo de moneda. signed=true muestra ± explícito.
+function formatMoney(amount, currency, signed = false) {
+  const abs = Math.abs(amount)
+  const num = abs.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const sym = currency === 'ARS' ? '$' : 'US$'
+  const sign = signed ? (amount < 0 ? '−' : '+') : (amount < 0 ? '−' : '')
+  return `${sign}${sym}${num}`
+}
+
+function DoneStep({ result }) {
+  const skipped = result.skipped_rows || []
+  const initialCashHealth = result.cash_health || []
+  const [cashHealth, setCashHealth] = useState(initialCashHealth)
+  const negativeCash = cashHealth.filter(c => (c.balance || 0) < -0.01)
+  const hasIssues = skipped.length > 0 || negativeCash.length > 0
+  const needsReconcile = cashHealth.length > 0
+
+  return (
+    <div className="py-2 space-y-5">
+      {/* Hero: success header */}
       <div className="text-center space-y-2">
         <CheckCircle2 size={36} className={`mx-auto ${hasIssues ? 'text-rendi-warn' : 'text-rendi-pos'}`} />
         <h3 className="font-semibold text-slate-900 dark:text-slate-100">
           {hasIssues ? 'Importación completada con observaciones' : 'Importación completada'}
         </h3>
-        <div className="text-sm text-slate-600 dark:text-slate-300 space-y-1">
-          <p>{result.positions_created || 0} posiciones nuevas</p>
-          <p>{result.operations_created || 0} operaciones cerradas</p>
-          <p>{result.cash_movements || 0} movimientos de cash</p>
-          <p>{result.conversions || 0} conversiones de moneda</p>
+        <div className="flex justify-center gap-3 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
+          {(result.positions_created || 0) > 0 && (
+            <span><strong className="text-slate-700 dark:text-slate-200 tabular">{result.positions_created}</strong> posiciones</span>
+          )}
+          {(result.operations_created || 0) > 0 && (
+            <span><strong className="text-slate-700 dark:text-slate-200 tabular">{result.operations_created}</strong> operaciones</span>
+          )}
+          {(result.cash_movements || 0) > 0 && (
+            <span><strong className="text-slate-700 dark:text-slate-200 tabular">{result.cash_movements}</strong> movs. cash</span>
+          )}
+          {(result.conversions || 0) > 0 && (
+            <span><strong className="text-slate-700 dark:text-slate-200 tabular">{result.conversions}</strong> conversiones</span>
+          )}
         </div>
       </div>
 
-      {cashHealth.length > 0 && (
-        <div className={`px-3 py-2 rounded-md border text-xs ${
-          negativeCash.length > 0
-            ? 'bg-amber-500/10 border-amber-500/30'
-            : 'bg-slate-50 dark:bg-slate-900/40 border-slate-200 dark:border-slate-700'
-        }`}>
-          <div className={`font-medium mb-1 ${
-            negativeCash.length > 0
-              ? 'text-amber-700 dark:text-amber-400'
-              : 'text-slate-700 dark:text-slate-200'
-          }`}>
-            Saldo final de cash
+      {/* Cash reconcile — main UX */}
+      {needsReconcile && (
+        <div className="space-y-3">
+          <div className="flex items-start gap-2 px-1">
+            <div className="flex-1">
+              <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Confirmá el cash con tu broker
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                Abrí la app de cada broker y comparalo. Si no coincide,
+                {' '}<strong>tipeá el saldo real</strong> y la diferencia se registra como aporte/retiro
+                pre-CSV. Si ya coincide, podés saltarlo.
+              </p>
+            </div>
           </div>
-          {negativeCash.length > 0 && (
-            <p className="text-amber-700/80 dark:text-amber-400/80 mb-2">
-              Hay brokers con saldo negativo. Esto suele pasar si el CSV no incluye todos los aportes anteriores. Las posiciones se importaron igual — desde Posiciones podés cargar el cash que faltaba con un par de clicks.
-            </p>
-          )}
-          <ul className="space-y-1 mb-2">
+          <div className="space-y-2">
             {cashHealth.map((c, i) => (
-              <li key={i} className="flex justify-between gap-2">
-                <span className="text-slate-600 dark:text-slate-300">{c.broker}</span>
-                <span className={`tabular font-medium ${
-                  c.balance < 0 ? 'text-amber-700 dark:text-amber-400' : 'text-slate-700 dark:text-slate-200'
-                }`}>{fmtCash(c)}</span>
-              </li>
+              <CashReconcileCard
+                key={`${c.broker}-${c.asset}`}
+                c={c}
+                onApplied={(newBalance) => {
+                  setCashHealth(prev => prev.map((x, j) => j === i ? { ...x, balance: newBalance } : x))
+                }}
+              />
             ))}
-          </ul>
-          {negativeCash.length > 0 && (
-            <a
-              href="/posiciones"
-              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-500 hover:bg-amber-600 text-white transition"
-            >
-              Ajustar cash en Posiciones →
-            </a>
-          )}
+          </div>
         </div>
       )}
 

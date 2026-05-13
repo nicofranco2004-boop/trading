@@ -101,7 +101,9 @@ def _resolve_columns(headers: List[str]) -> Dict[str, Optional[str]]:
 class BalanzParser(Parser):
     format_id = "balanz"
     display_name = "Balanz (beta)"
-    is_supported = True
+    # TEMP: oculto en la UI hasta estabilizar. Cuando se rehabilite, flipear a
+    # True y validar con export reciente de Balanz.
+    is_supported = False
     platform = "balanz"
     platform_label = "Balanz (beta)"
     export_label = ""

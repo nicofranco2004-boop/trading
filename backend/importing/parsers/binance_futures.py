@@ -74,7 +74,9 @@ def _fix_date(s: str) -> str:
 class BinanceFuturesTradeHistoryParser(Parser):
     format_id = "binance_futures_trade_history"
     display_name = "Binance Futures Trade History"
-    is_supported = True
+    # TEMP: oculto en la UI hasta estabilizar futures. Cuando se rehabilite,
+    # flipear a True.
+    is_supported = False
     platform = "binance"
     platform_label = "Binance"
     export_label = "Futures → Trade History"

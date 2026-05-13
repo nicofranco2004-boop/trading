@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { Upload, RotateCcw, AlertTriangle, CheckCircle2, Trash2, FileText, ChevronLeft, Loader2, Edit3 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
@@ -16,6 +15,7 @@ export default function Imports() {
   const [confirmRevert, setConfirmRevert] = useState(null) // batch object pendiente de confirmación
   const [confirmRedo, setConfirmRedo] = useState(null)     // batch object pendiente de "rehacer"
   const [redoPreview, setRedoPreview] = useState(null)     // {preview, original_batch_id} → abre wizard
+  const [showWizard, setShowWizard] = useState(false)      // wizard de import nuevo (no redo)
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
 
@@ -115,12 +115,12 @@ export default function Imports() {
                 : <RotateCcw size={14} />}
               Recalcular aggregates
             </button>
-            <Link
-              to="/operaciones"
-              className="inline-flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition"
+            <button
+              onClick={() => setShowWizard(true)}
+              className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white px-3 py-2 rounded-md font-semibold transition"
             >
               <Upload size={14} /> Nueva importación
-            </Link>
+            </button>
           </div>
         }
       />
@@ -145,14 +145,14 @@ export default function Imports() {
           <EmptyState
             icon={<FileText size={20} />}
             title="Todavía no importaste ningún archivo"
-            description="Cuando importes un CSV desde Operaciones, Posiciones o el Dashboard, va a quedar registrado acá para que puedas revisarlo o revertirlo."
+            description="Cargá un CSV de tu broker (Cocos, Binance, Schwab o el template genérico). Acá vas a poder revertir o rehacer cada lote después."
             action={
-              <Link
-                to="/operaciones"
-                className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-md font-medium transition"
+              <button
+                onClick={() => setShowWizard(true)}
+                className="inline-flex items-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-3 py-2 rounded-md font-semibold transition"
               >
                 <Upload size={14} /> Importar CSV
-              </Link>
+              </button>
             }
           />
         ) : (
@@ -263,6 +263,13 @@ export default function Imports() {
           redoBanner={true}
           onClose={() => { setRedoPreview(null); load() }}
           onConfirmed={() => { setRedoPreview(null); load() }}
+        />
+      )}
+
+      {showWizard && (
+        <ImportWizard
+          onClose={() => { setShowWizard(false); load() }}
+          onConfirmed={() => { load() }}
         />
       )}
 
