@@ -1623,17 +1623,97 @@ NEWS_TICKER_TTL = 30 * 60   # 30 min
 NEWS_MARKET_TTL = 60 * 60   # 60 min
 
 # Queries macro precanned para el feed "Mercado".
-# Mix USA + AR — categorías que mencionó el user en el plan original.
+# Mix USA + AR — apuntamos a market+macro relevantes para un inversor (acciones,
+# bonos, tasas, inflación, FX). Cada query incluye un anchor financiero
+# explícito para reducir basura en el resultado de Google News (en vez de
+# "Federal Reserve" → "Federal Reserve interest rates": filtra mejor).
 MARKET_NEWS_QUERIES = [
-    ("S&P 500", "market", "en"),
-    ("Federal Reserve FED", "macro", "en"),
-    ("US inflation CPI", "macro", "en"),
-    ("Nasdaq", "market", "en"),
-    ("Merval Argentina", "market", "es"),
-    ("BCRA Argentina", "macro", "es"),
+    # ── USA: acciones e índices
+    ("S&P 500 stocks today", "market", "en"),
+    ("Nasdaq stock market", "market", "en"),
+    # ── USA: tasas y bonos
+    ("Federal Reserve interest rates", "macro", "en"),
+    ("US Treasury yields", "macro", "en"),
+    # ── USA: inflación
+    ("US CPI inflation", "macro", "en"),
+    # ── AR: mercado local
+    ("Merval acciones Argentina", "market", "es"),
+    ("bonos argentinos soberanos", "market", "es"),
+    # ── AR: macro relevante para inversor
     ("inflación Argentina INDEC", "macro", "es"),
-    ("dolar blue MEP", "macro", "es"),
+    ("dolar blue MEP CCL Argentina", "macro", "es"),
+    ("BCRA tasa interés Argentina", "macro", "es"),
 ]
+
+# Whitelist de keywords para filtrar noticias market/macro irrelevantes.
+# Si el title+summary de una noticia NO contiene al menos uno de estos
+# términos, la descartamos antes de persistirla.
+#
+# Filosofía: mantener el filtro inclusivo (mejor falso positivo que falso
+# negativo). Cubrir EN+ES porque Google News mezcla idiomas a veces.
+#
+# Sólo se aplica a categorías "market" y "macro". Las noticias de "portfolio"
+# ya están filtradas por el ticker en la query, no necesitan otro filtro.
+MARKET_RELEVANCE_KEYWORDS = frozenset({
+    # ── Activos / instrumentos
+    'stock', 'stocks', 'share', 'shares', 'equity', 'equities', 'etf', 'etfs',
+    'bond', 'bonds', 'yield', 'yields', 'treasury', 'treasuries', 'note', 'notes',
+    'cedear', 'cedears', 'adr', 'adrs',
+    'acción', 'acciones', 'accion', 'bono', 'bonos',
+    'letra', 'letras', 'lecap', 'lecaps', 'soberano', 'soberanos',
+    'plazo fijo', 'fondo común', 'fci',
+
+    # ── Mercados / índices
+    'market', 'markets', 'mercado', 'mercados', 'wall street',
+    'nyse', 'nasdaq', 's&p', 'sp500', 'dow jones', 'dow',
+    'russell', 'merval', 'bovespa', 'msci',
+    'index', 'indices', 'índice', 'índices',
+    'rally', 'sell-off', 'selloff', 'bull market', 'bear market',
+    'volatility', 'volatilidad',
+
+    # ── Tasas / bancos centrales
+    'rate', 'rates', 'tasa', 'tasas', 'interest rate',
+    'fed', 'federal reserve', 'fomc', 'powell', 'ecb', 'boe', 'boj',
+    'bcra', 'banco central', 'central bank',
+
+    # ── Macro relevante
+    'inflation', 'cpi', 'ppi', 'inflación', 'inflacion', 'ipc', 'indec',
+    'gdp', 'pbi', 'pib', 'recession', 'recesión',
+    'jobs report', 'nfp', 'unemployment', 'jobless', 'empleo', 'desempleo',
+    'pmi', 'ism', 'retail sales',
+
+    # ── FX
+    'dollar', 'dólar', 'dolar', 'blue', 'mep', 'ccl', 'contado con liqui',
+    'peso', 'euro', 'fx', 'forex', 'currency', 'currencies', 'divisa', 'divisas',
+
+    # ── Corporate / earnings
+    'earnings', 'revenue', 'profit', 'guidance', 'beat', 'miss',
+    'ipo', 'merger', 'acquisition', 'm&a', 'buyback', 'dividend',
+    'ganancias', 'ingresos', 'utilidades', 'ebitda',
+    'fusión', 'adquisición',
+
+    # ── Investor / trading
+    'investor', 'investors', 'inversor', 'inversores', 'inversionistas',
+    'trader', 'traders', 'analyst', 'analysts', 'analistas',
+    'portfolio', 'cartera', 'hedge fund', 'mutual fund',
+
+    # ── Bonds / debt (soberano + corporate)
+    'debt', 'deuda', 'default', 'restructuring', 'reestructuración', 'swap',
+    'imf', 'fmi', 'world bank', 'banco mundial',
+})
+
+
+def _is_market_relevant(item):
+    """True si title+summary contiene al menos una keyword market-relevante.
+
+    Falla abierto: si no hay title, lo dejamos pasar (raro pero defensivo).
+    """
+    title = (item.get('title') or '').lower()
+    summary = (item.get('summary') or '').lower()
+    if not title:
+        return True
+    haystack = title + ' ' + summary
+    return any(kw in haystack for kw in MARKET_RELEVANCE_KEYWORDS)
 
 
 def _fetch_google_news_rss(query: str, lang: str = "en", limit: int = 15):
@@ -1706,8 +1786,20 @@ def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int =
 
     Devuelve la cantidad de filas nuevas insertadas (los items ya conocidos se
     saltean por el UNIQUE(source, external_id) + INSERT OR IGNORE).
+
+    Para categorías market/macro, aplicamos un filtro de relevancia (whitelist
+    de keywords financieras) — Google News con queries genéricas tipo "BCRA
+    Argentina" devuelve mucha basura política/general que no le sirve a un
+    inversor. Las noticias de portfolio (ticker-específicas) no se filtran.
     """
     items = _fetch_google_news_rss(query, lang=lang, limit=limit)
+    if not items:
+        return 0
+    # Filtro de relevancia — sólo market/macro. La DB acumula histórico, así
+    # que aunque cada refresh quede con menos items pasan, el endpoint sigue
+    # devolviendo los últimos N por published_at DESC.
+    if category in ('market', 'macro'):
+        items = [it for it in items if _is_market_relevant(it)]
     if not items:
         return 0
     iso_now = datetime.utcnow().isoformat() + "Z"

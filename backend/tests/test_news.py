@@ -115,6 +115,64 @@ class RssParserTest(unittest.TestCase):
         self.assertEqual(len(items), 1)
 
 
+class MarketRelevanceFilterTest(unittest.TestCase):
+    """El filtro de relevancia para market/macro."""
+
+    def test_passes_clear_market_news(self):
+        cases = [
+            "Apple stock soars on earnings beat",
+            "Federal Reserve holds interest rates steady",
+            "S&P 500 closes at record high",
+            "El Merval subió 4% en la jornada",
+            "Inflación de mayo: el IPC fue de 4.2%",
+            "El dólar blue cerró a $1.500",
+            "Bonos argentinos suben tras reunión con el FMI",
+            "BCRA bajó la tasa de interés 5 puntos",
+            "Nvidia earnings beat expectations on AI demand",
+        ]
+        for title in cases:
+            self.assertTrue(
+                main._is_market_relevant({'title': title, 'summary': None}),
+                f"Falsamente rechazada: {title!r}",
+            )
+
+    def test_rejects_clearly_irrelevant_news(self):
+        cases = [
+            "Conocé los mejores destinos turísticos para julio",
+            "Receta: cómo hacer milanesas crocantes",
+            "Lionel Messi marcó un golazo ante Brasil",
+            "Argentina: paro nacional de transportes para mañana",
+            "Pronóstico: lluvias intensas en el AMBA",
+            "Famous singer announces new world tour",
+            "Recipe: 5-minute pasta dishes you can make tonight",
+            "Local school district approves new curriculum",
+        ]
+        for title in cases:
+            self.assertFalse(
+                main._is_market_relevant({'title': title, 'summary': None}),
+                f"Falsamente aceptada: {title!r}",
+            )
+
+    def test_passes_when_summary_has_keyword_but_title_doesnt(self):
+        """Si el summary tiene la keyword, alcanza para que pase."""
+        item = {
+            'title': 'Reunión de funcionarios en Washington',
+            'summary': 'Funcionarios del Tesoro y representantes del FMI debatieron sobre la deuda externa.',
+        }
+        self.assertTrue(main._is_market_relevant(item))
+
+    def test_passes_empty_title_defensive(self):
+        """Sin title, dejamos pasar (defensivo — raro en RSS bien-formado)."""
+        self.assertTrue(main._is_market_relevant({'title': '', 'summary': None}))
+        self.assertTrue(main._is_market_relevant({}))
+
+    def test_case_insensitive(self):
+        """Capitalización del title no debe afectar match."""
+        self.assertTrue(main._is_market_relevant({'title': 'STOCKS RALLY', 'summary': None}))
+        self.assertTrue(main._is_market_relevant({'title': 'Stocks Rally', 'summary': None}))
+        self.assertTrue(main._is_market_relevant({'title': 'stocks rally', 'summary': None}))
+
+
 class FetcherTest(unittest.TestCase):
     """Fetcher HTTP — mockeado."""
 
@@ -306,6 +364,69 @@ class PortfolioNewsEndpointTest(unittest.TestCase):
     def test_unauthorized_without_token(self):
         res = self.client.get("/api/news/portfolio")
         self.assertIn(res.status_code, (401, 403))
+
+
+class RefreshNewsQueryFilterTest(unittest.TestCase):
+    """Verifica que _refresh_news_query aplica el filtro market/macro pero
+    no filtra noticias de portfolio (que ya están limitadas por ticker)."""
+
+    def setUp(self):
+        conn = main.get_db()
+        with conn:
+            conn.execute("DELETE FROM news")
+        conn.close()
+        main._news_fetched_at.clear()
+
+    def _make_items(self, *titles):
+        return [
+            {
+                'external_id': f'id-{i}',
+                'title': t,
+                'summary': None,
+                'url': f'http://example.com/{i}',
+                'published_at': '2026-05-12T10:00:00Z',
+            }
+            for i, t in enumerate(titles)
+        ]
+
+    def test_market_category_filters_irrelevant(self):
+        items = self._make_items(
+            "Federal Reserve holds interest rates",       # relevante
+            "Receta de milanesas paso a paso",            # NO relevante
+            "S&P 500 closes at record high",              # relevante
+        )
+        with patch('main._fetch_google_news_rss', return_value=items):
+            inserted = main._refresh_news_query(main.get_db(), "Fed", "en", "market")
+        # 2 relevantes deberían haber pasado, 1 descartada
+        self.assertEqual(inserted, 2)
+        conn = main.get_db()
+        rows = conn.execute("SELECT title FROM news ORDER BY external_id").fetchall()
+        conn.close()
+        titles = [r['title'] for r in rows]
+        self.assertIn("Federal Reserve holds interest rates", titles)
+        self.assertIn("S&P 500 closes at record high", titles)
+        self.assertNotIn("Receta de milanesas paso a paso", titles)
+
+    def test_macro_category_also_filters(self):
+        items = self._make_items(
+            "Inflación de abril: el IPC subió 3.5%",
+            "Lluvias intensas afectan a Buenos Aires",
+        )
+        with patch('main._fetch_google_news_rss', return_value=items):
+            inserted = main._refresh_news_query(main.get_db(), "IPC", "es", "macro")
+        self.assertEqual(inserted, 1)
+
+    def test_portfolio_category_does_not_filter(self):
+        """Las noticias de portfolio ya vienen filtradas por ticker — no aplicamos
+        el filtro genérico de keywords."""
+        items = self._make_items(
+            "AAPL announces new iPhone in fall event",   # sin keywords financieras
+            "Apple reports record quarterly earnings",    # con keyword
+        )
+        with patch('main._fetch_google_news_rss', return_value=items):
+            inserted = main._refresh_news_query(main.get_db(), "AAPL stock", "en", "portfolio")
+        # Ambas deben entrar (filtro no aplica a portfolio)
+        self.assertEqual(inserted, 2)
 
 
 class EnsureNewsBatchParallelTest(unittest.TestCase):
