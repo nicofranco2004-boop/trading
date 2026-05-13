@@ -936,15 +936,19 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
             ).fetchone()
             broker_currency = broker_row["currency"] if broker_row else ""
             amount_usd = (amount / tc_blue) if (row_currency == "ARS" or broker_currency == "ARS") else amount
-            # Revertir el cash movement (en moneda nativa del broker)
+            # Revertir el cash movement (en moneda nativa del broker).
+            # Aceptamos saldo negativo resultante — consistente con la policy
+            # del módulo ("se permiten balances negativos — señal visible de
+            # overdraft / margen") y con los otros revert paths (BUY, WITHDRAW,
+            # DIVIDEND) que no validan. Antes este check bloqueaba reverts
+            # legítimos cuando ya se había gastado parte del depósito en BUYs
+            # que se revertirán después en este mismo loop.
             cash = conn.execute(
                 "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, tx["broker"]),
             ).fetchone()
             if cash:
                 new_inv = (cash["invested"] or 0) - amount
-                if new_inv < 0:
-                    raise PersistError(0, f"No alcanza el cash en {tx['broker']} para revertir el depósito.")
                 conn.execute(
                     "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
                     (new_inv, cash["id"], uid),

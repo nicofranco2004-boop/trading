@@ -2522,6 +2522,78 @@ class CashFlowDepositAllowsRecoverFromNegativeTest(unittest.TestCase):
         self.assertIn("insuficiente", res.text.lower())
 
 
+class RevertDepositAllowsNegativeCashTest(unittest.TestCase):
+    """Revertir un DEPOSIT debe permitir saldo negativo resultante. Antes
+    bloqueaba con 'No alcanza el cash en X para revertir el depósito',
+    impidiendo revert nuclear de imports donde ya se había gastado parte
+    del cash en BUYs que se revertirán después en el mismo loop."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"revert-dep-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+
+    def test_nuclear_revert_with_overdraft_succeeds(self):
+        """Persiste deposit + buy, luego revierte (nuclear). Aunque el revert
+        del deposit pase el cash a negativo temporal, debe completarse OK."""
+        from importing.persister import persist_batch, revert_batch
+        from importing.schema import NormalizedTx, OP_BUY, OP_DEPOSIT
+        import uuid, json
+
+        # Import: deposit 100k + buy 80k → cash final 20k
+        txs = [
+            NormalizedTx(row_index=1, date="2025-01-01", broker="Cocos",
+                         operation_type=OP_DEPOSIT, gross_amount=100000,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=2, date="2025-01-02", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="BMA",
+                         quantity=10, unit_price=8000, gross_amount=80000,
+                         currency="ARS", settlement_currency="ARS"),
+        ]
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            for tx in txs:
+                cur = conn.execute(
+                    """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                       VALUES (?,?,?,'valid',NULL)""",
+                    (batch_id, tx.row_index, json.dumps({})),
+                )
+                raw_row_ids[tx.row_index] = cur.lastrowid
+        persist_batch(conn, uid=self.uid, batch_id=batch_id, txs=txs,
+                      raw_row_ids_by_index=raw_row_ids, helpers=main)
+
+        # Simulamos un retiro externo que deja cash en 5k (debajo de los 100k del deposit)
+        conn.execute(
+            "UPDATE positions SET invested = 5000 WHERE user_id=? AND is_cash=1",
+            (self.uid,),
+        )
+        conn.execute(
+            "UPDATE import_batches SET status='confirmed' WHERE id=?", (batch_id,),
+        )
+        conn.commit()
+
+        # Revertir en nuclear: debe completarse sin "No alcanza el cash"
+        with conn:
+            result = revert_batch(conn, uid=self.uid, batch_id=batch_id,
+                                   helpers=main, nuclear=True)
+        # El batch quedó marcado como reverted
+        batch_row = conn.execute(
+            "SELECT status FROM import_batches WHERE id=?", (batch_id,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(batch_row["status"], "reverted")
+
+
 class CocosVisibleInDropdownTest(unittest.TestCase):
     """Cocos ya tiene export oficial (Actividad → Movimientos), así que debe
     aparecer en el dropdown agrupado del wizard."""
