@@ -173,6 +173,211 @@ class MarketRelevanceFilterTest(unittest.TestCase):
         self.assertTrue(main._is_market_relevant({'title': 'stocks rally', 'summary': None}))
 
 
+class TagNewsItemTest(unittest.TestCase):
+    """Tagging por keywords. Cada item recibe 0-N tags estables."""
+
+    def test_earnings_tag(self):
+        cases = [
+            "Apple reports record Q3 earnings beat, raises guidance",
+            "Nvidia: revenue jumps 50% in latest quarterly report",
+            "Mercadolibre reporta resultados trimestrales: beneficios crecen 20%",
+        ]
+        for t in cases:
+            tags = main._tag_news_item({'title': t, 'summary': ''})
+            self.assertIn('earnings', tags, f"Faltó earnings en {t!r}")
+
+    def test_m_and_a_tag(self):
+        cases = [
+            "Microsoft acquires AI startup Inflection in $1B deal",
+            "Pfizer announces merger with biotech rival",
+            "YPF: anunció la adquisición de un campo en Vaca Muerta",
+        ]
+        for t in cases:
+            tags = main._tag_news_item({'title': t, 'summary': ''})
+            self.assertIn('m_and_a', tags, f"Faltó m_and_a en {t!r}")
+
+    def test_rates_tag(self):
+        cases = [
+            "Federal Reserve holds interest rates steady",
+            "FOMC minutes signal possible rate cut in September",
+            "El BCRA bajó la tasa de interés 200 puntos básicos",
+        ]
+        for t in cases:
+            tags = main._tag_news_item({'title': t, 'summary': ''})
+            self.assertIn('rates', tags, f"Faltó rates en {t!r}")
+
+    def test_inflation_tag(self):
+        cases = [
+            "US CPI inflation comes in at 2.4% in May",
+            "INDEC: la inflación de mayo fue del 4.2%",
+            "El IPC se desaceleró por tercer mes consecutivo",
+        ]
+        for t in cases:
+            tags = main._tag_news_item({'title': t, 'summary': ''})
+            self.assertIn('inflation', tags, f"Faltó inflation en {t!r}")
+
+    def test_forex_tag(self):
+        cases = [
+            "El dólar blue cerró a $1.500",
+            "Dollar weakens against yen on Fed pivot",
+            "Brecha entre el dólar MEP y el oficial se acorta",
+        ]
+        for t in cases:
+            tags = main._tag_news_item({'title': t, 'summary': ''})
+            self.assertIn('forex', tags, f"Faltó forex en {t!r}")
+
+    def test_dividend_tag(self):
+        cases = [
+            "Coca-Cola raises quarterly dividend by 5%",
+            "Telecom Argentina aprueba pago de dividendos",
+        ]
+        for t in cases:
+            tags = main._tag_news_item({'title': t, 'summary': ''})
+            self.assertIn('dividend', tags, f"Faltó dividend en {t!r}")
+
+    def test_debt_tag(self):
+        cases = [
+            "Argentina alcanza acuerdo de staff level con el FMI",
+            "Bonos soberanos suben tras canje de deuda",
+            "Country at risk of default on sovereign bond payments",
+        ]
+        for t in cases:
+            tags = main._tag_news_item({'title': t, 'summary': ''})
+            self.assertIn('debt', tags, f"Faltó debt en {t!r}")
+
+    def test_multiple_tags_possible(self):
+        """Una noticia puede recibir varios tags si matchea varias categorías."""
+        item = {
+            'title': "Apple reports record earnings, announces buyback and increases dividend",
+            'summary': '',
+        }
+        tags = main._tag_news_item(item)
+        self.assertIn('earnings', tags)
+        self.assertIn('dividend', tags)
+
+    def test_no_tags_for_off_topic(self):
+        """Artículos sin keywords financieras → sin tags."""
+        items = [
+            {'title': "Lluvias intensas en el AMBA", 'summary': ''},
+            {'title': "Famous singer cancels world tour", 'summary': ''},
+        ]
+        for item in items:
+            tags = main._tag_news_item(item)
+            self.assertEqual(tags, [], f"No esperaba tags en {item['title']!r}, vinieron {tags}")
+
+    def test_uses_summary_when_title_lacks_keyword(self):
+        item = {
+            'title': "Reunión clave en Washington",
+            'summary': "Powell anunció que la Fed mantiene las tasas de interés.",
+        }
+        tags = main._tag_news_item(item)
+        self.assertIn('rates', tags)
+
+    def test_empty_title_returns_empty_tags(self):
+        self.assertEqual(main._tag_news_item({'title': ''}), [])
+        self.assertEqual(main._tag_news_item({}), [])
+
+
+class InvestingFetcherTest(unittest.TestCase):
+    """Fetcher de Investing.com — mockeado. El parser es compartido con
+    Google News (parse_rss_feed), así que sólo testeamos los hooks HTTP."""
+
+    def test_returns_empty_on_http_error(self):
+        with patch('main.requests.get') as mock_get:
+            mock_get.return_value.status_code = 500
+            items = main._fetch_investing_rss("https://www.investing.com/rss/news_25.rss")
+        self.assertEqual(items, [])
+
+    def test_returns_empty_on_exception(self):
+        with patch('main.requests.get', side_effect=Exception('network')):
+            items = main._fetch_investing_rss("https://www.investing.com/rss/news_25.rss")
+        self.assertEqual(items, [])
+
+    def test_parses_rss_feed_response(self):
+        """Si el fetcher recibe XML válido, devuelve items normalizados."""
+        with patch('main.requests.get') as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.content = SAMPLE_RSS_XML
+            items = main._fetch_investing_rss("https://www.investing.com/rss/news_25.rss")
+        # SAMPLE_RSS_XML tiene 2 items con link válido
+        self.assertEqual(len(items), 2)
+        self.assertIn('tradingview.com', items[0]['url'])
+
+    def test_strips_html_from_summary(self):
+        """Investing.com inyecta tags HTML en el summary — el parser los limpia."""
+        xml = b"""<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title>Test news</title>
+              <link>http://example.com/x</link>
+              <guid>x</guid>
+              <pubDate>Tue, 28 Apr 2026 17:00:22 GMT</pubDate>
+              <description>&lt;p&gt;Stocks &lt;b&gt;rallied&lt;/b&gt; on Fed news&lt;/p&gt;</description>
+            </item>
+          </channel>
+        </rss>"""
+        items = main._parse_rss_feed(xml)
+        self.assertEqual(len(items), 1)
+        # HTML tags removidos
+        self.assertNotIn('<p>', items[0]['summary'])
+        self.assertNotIn('<b>', items[0]['summary'])
+        self.assertIn('Stocks rallied', items[0]['summary'])
+
+
+class BatchParallelMixedSourcesTest(unittest.TestCase):
+    """El batch parallel acepta 3-tuplas (legacy Google News) y 4-tuplas
+    (multi-source con kind explícito)."""
+
+    def setUp(self):
+        main._news_fetched_at.clear()
+
+    def test_accepts_3_tuple_as_google_news(self):
+        """Tuplas de 3 elementos se tratan como Google News (back-compat)."""
+        with patch('main._refresh_news_query') as mock_gn, \
+             patch('main._refresh_investing_feed') as mock_inv:
+            main._ensure_news_batch_parallel(
+                [("S&P 500", "en", "market")],
+                ttl_seconds=60,
+            )
+        mock_gn.assert_called_once()
+        mock_inv.assert_not_called()
+
+    def test_routes_investing_kind_to_investing_refresher(self):
+        with patch('main._refresh_news_query') as mock_gn, \
+             patch('main._refresh_investing_feed') as mock_inv:
+            main._ensure_news_batch_parallel(
+                [("investing", "https://www.investing.com/rss/news_25.rss", "en", "market")],
+                ttl_seconds=60,
+            )
+        mock_gn.assert_not_called()
+        mock_inv.assert_called_once()
+
+    def test_handles_mixed_specs(self):
+        """3-tuplas y 4-tuplas mezclados en un solo batch."""
+        with patch('main._refresh_news_query') as mock_gn, \
+             patch('main._refresh_investing_feed') as mock_inv:
+            main._ensure_news_batch_parallel(
+                [
+                    ("S&P 500", "en", "market"),                                    # legacy GN
+                    ("google_news", "Nasdaq", "en", "market"),                      # explicit GN
+                    ("investing", "https://www.investing.com/rss/news_25.rss",
+                     "en", "market"),                                                # investing
+                ],
+                ttl_seconds=60,
+            )
+        self.assertEqual(mock_gn.call_count, 2)
+        self.assertEqual(mock_inv.call_count, 1)
+
+    def test_investing_cache_key_independent_from_google(self):
+        """Las keys de cache son distintas → no colisionan aunque coincida el cat."""
+        gn_key = main._cache_key_for('google_news', 'market', 'S&P 500')
+        inv_key = main._cache_key_for('investing', 'market', 'https://x.com')
+        self.assertNotEqual(gn_key, inv_key)
+        self.assertTrue(inv_key.startswith('investing:'))
+        self.assertFalse(gn_key.startswith('investing:'))
+
+
 class FetcherTest(unittest.TestCase):
     """Fetcher HTTP — mockeado."""
 
@@ -212,10 +417,14 @@ class MarketNewsEndpointTest(unittest.TestCase):
         main._news_fetched_at.clear()
         with conn:
             conn.execute("DELETE FROM news")
-        # Marcar todos los queries macro como ya fetcheados (evita fetch real en tests)
+        # Marcar todos los feeds como ya fetcheados → evita HTTP real en tests.
+        # Google News queries (formato legacy "cat:query")
         for q, _, _ in main.MARKET_NEWS_QUERIES:
             main._news_fetched_at[f"market:{q}"] = main.time.time()
             main._news_fetched_at[f"macro:{q}"] = main.time.time()
+        # Investing.com feeds (formato "investing:cat:url")
+        for url, cat, _ in main.INVESTING_FEEDS:
+            main._news_fetched_at[f"investing:{cat}:{url}"] = main.time.time()
         conn.commit()
         conn.close()
         self.token = main.create_token(self.uid)
@@ -263,6 +472,15 @@ class MarketNewsEndpointTest(unittest.TestCase):
         for limit in (-1, 0, 200):
             res = self._get(f"/api/news/market?limit={limit}")
             self.assertEqual(res.status_code, 422, f"limit={limit}")
+
+    def test_market_news_returns_tags_array(self):
+        """El endpoint devuelve `tags` como array (vacío si no hay)."""
+        self._seed_news('Powell pivots on rates', 'http://x/p1', external_id='tag1')
+        res = self._get("/api/news/market?limit=10")
+        body = res.json()
+        for n in body['news']:
+            self.assertIn('tags', n)
+            self.assertIsInstance(n['tags'], list)
 
     def test_market_news_dedup_by_external_id(self):
         """Insertar 2 veces el mismo (source, external_id) sólo persiste una vez."""
@@ -427,6 +645,22 @@ class RefreshNewsQueryFilterTest(unittest.TestCase):
             inserted = main._refresh_news_query(main.get_db(), "AAPL stock", "en", "portfolio")
         # Ambas deben entrar (filtro no aplica a portfolio)
         self.assertEqual(inserted, 2)
+
+    def test_tags_persisted_to_db_on_insert(self):
+        """El tagging corre en _persist_news_items — tags quedan en la columna."""
+        items = self._make_items(
+            "Federal Reserve cuts interest rates by 25bps",
+            "Apple announces $90B share buyback program",
+        )
+        with patch('main._fetch_google_news_rss', return_value=items):
+            main._refresh_news_query(main.get_db(), "Fed", "en", "macro")
+        conn = main.get_db()
+        rows = conn.execute("SELECT title, tags FROM news ORDER BY title").fetchall()
+        conn.close()
+        # Buscar la noticia de Fed → debe tener tag 'rates'
+        fed_row = next(r for r in rows if 'Federal Reserve' in r['title'])
+        self.assertIsNotNone(fed_row['tags'])
+        self.assertIn('rates', fed_row['tags'])
 
 
 class EnsureNewsBatchParallelTest(unittest.TestCase):

@@ -13,10 +13,11 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Newspaper, ExternalLink, AlertCircle } from 'lucide-react'
+import { Newspaper, ExternalLink, AlertCircle, Tag } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
+import NewsTagBadge, { newsTagLabel } from '../components/NewsTagBadge'
 import { api } from '../utils/api'
 
 const TABS = [
@@ -53,6 +54,7 @@ export default function News({ embedded = false }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [tickerFilter, setTickerFilter] = useState(null)  // null = sin filtro
+  const [tagFilter, setTagFilter] = useState(null)        // null = sin filtro
 
   useEffect(() => {
     loadAll()
@@ -83,9 +85,25 @@ export default function News({ embedded = false }) {
 
   const rawNews = tab === 'portfolio' ? portfolioNews : marketNews
   const visibleNews = useMemo(() => {
-    if (tab !== 'portfolio' || !tickerFilter) return rawNews
-    return rawNews.filter(n => n.ticker === tickerFilter)
-  }, [rawNews, tab, tickerFilter])
+    let list = rawNews
+    if (tab === 'portfolio' && tickerFilter) {
+      list = list.filter(n => n.ticker === tickerFilter)
+    }
+    if (tagFilter) {
+      list = list.filter(n => Array.isArray(n.tags) && n.tags.includes(tagFilter))
+    }
+    return list
+  }, [rawNews, tab, tickerFilter, tagFilter])
+
+  // Tags presentes en el feed actual con conteo (para el filtro de chips)
+  const availableTags = useMemo(() => {
+    const counts = new Map()
+    for (const n of rawNews) {
+      if (!Array.isArray(n.tags)) continue
+      for (const t of n.tags) counts.set(t, (counts.get(t) || 0) + 1)
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])
+  }, [rawNews])
 
   // Lista de tickers presentes en las noticias del portfolio (para chips)
   const portfolioTickers = useMemo(() => {
@@ -123,7 +141,7 @@ export default function News({ embedded = false }) {
               key={t.value}
               role="tab"
               aria-selected={active}
-              onClick={() => { setTab(t.value); setTickerFilter(null) }}
+              onClick={() => { setTab(t.value); setTickerFilter(null); setTagFilter(null) }}
               className={`text-xs px-3 py-1.5 rounded-full border transition ${
                 active
                   ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
@@ -150,8 +168,8 @@ export default function News({ embedded = false }) {
 
       {/* Chips de filtro por ticker — sólo "Para ti" */}
       {tab === 'portfolio' && portfolioTickers.length > 1 && (
-        <div className="flex items-center gap-1.5 mb-4 overflow-x-auto -mx-1 px-1 pb-1">
-          <span className="label-mono shrink-0 pr-1">Filtrar</span>
+        <div className="flex items-center gap-1.5 mb-3 overflow-x-auto -mx-1 px-1 pb-1">
+          <span className="label-mono shrink-0 pr-1">Ticker</span>
           <TickerChip
             label="Todos"
             count={portfolioNews.length}
@@ -165,6 +183,29 @@ export default function News({ embedded = false }) {
               count={count}
               active={tickerFilter === t}
               onClick={() => setTickerFilter(t === tickerFilter ? null : t)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Chips de filtro por TAG — aplica a ambos tabs */}
+      {availableTags.length > 0 && (
+        <div className="flex items-center gap-1.5 mb-4 overflow-x-auto -mx-1 px-1 pb-1">
+          <Tag size={11} strokeWidth={1.75} className="text-ink-3 shrink-0" />
+          <span className="label-mono shrink-0 pr-1">Tipo</span>
+          <TickerChip
+            label="Todos"
+            count={rawNews.length}
+            active={!tagFilter}
+            onClick={() => setTagFilter(null)}
+          />
+          {availableTags.map(([t, count]) => (
+            <TickerChip
+              key={t}
+              label={newsTagLabel(t)}
+              count={count}
+              active={tagFilter === t}
+              onClick={() => setTagFilter(t === tagFilter ? null : t)}
             />
           ))}
         </div>
@@ -191,7 +232,7 @@ export default function News({ embedded = false }) {
       )}
 
       {!loading && visibleNews.length > 0 && (
-        <NewsGrid news={visibleNews} tab={tab} />
+        <NewsGrid news={visibleNews} tab={tab} onTagClick={setTagFilter} />
       )}
 
       <p className="mt-6 text-[10px] text-ink-3 font-mono leading-snug tracking-wider uppercase">
@@ -203,18 +244,18 @@ export default function News({ embedded = false }) {
 
 // ─── Grid layout ────────────────────────────────────────────────────────────
 
-function NewsGrid({ news, tab }) {
+function NewsGrid({ news, tab, onTagClick }) {
   if (news.length === 0) return null
   // Primera noticia = "featured" (más prominente). Las demás van en grid.
   const [featured, ...rest] = news
 
   return (
     <div className="space-y-3">
-      <NewsFeatured news={featured} tab={tab} />
+      <NewsFeatured news={featured} tab={tab} onTagClick={onTagClick} />
       {rest.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {rest.map(n => (
-            <NewsTile key={n.url} news={n} tab={tab} />
+            <NewsTile key={n.url} news={n} tab={tab} onTagClick={onTagClick} />
           ))}
         </div>
       )}
@@ -222,8 +263,8 @@ function NewsGrid({ news, tab }) {
   )
 }
 
-function NewsFeatured({ news, tab }) {
-  const { title, summary, url, published_at, ticker } = news
+function NewsFeatured({ news, tab, onTagClick }) {
+  const { title, summary, url, published_at, ticker, tags } = news
   const { cleanTitle, sourceName } = splitTitleSource(title)
   return (
     <a
@@ -264,6 +305,13 @@ function NewsFeatured({ news, tab }) {
               {summary}
             </p>
           )}
+          {Array.isArray(tags) && tags.length > 0 && (
+            <div className="flex items-center gap-1 mt-2.5 flex-wrap">
+              {tags.slice(0, 3).map(t => (
+                <NewsTagBadge key={t} tag={t} size="lg" onClick={onTagClick} />
+              ))}
+            </div>
+          )}
         </div>
 
         <ExternalLink size={14} strokeWidth={1.5} className="text-ink-3 shrink-0 mt-1 self-start hidden sm:block" />
@@ -272,8 +320,8 @@ function NewsFeatured({ news, tab }) {
   )
 }
 
-function NewsTile({ news, tab }) {
-  const { title, summary, url, published_at, ticker } = news
+function NewsTile({ news, tab, onTagClick }) {
+  const { title, summary, url, published_at, ticker, tags } = news
   const { cleanTitle, sourceName } = splitTitleSource(title)
 
   return (
@@ -305,6 +353,13 @@ function NewsTile({ news, tab }) {
           {summary}
         </p>
       )}
+      {Array.isArray(tags) && tags.length > 0 && (
+        <div className="flex items-center gap-1 mt-2 flex-wrap">
+          {tags.slice(0, 2).map(t => (
+            <NewsTagBadge key={t} tag={t} onClick={onTagClick} />
+          ))}
+        </div>
+      )}
       <ExternalLink
         size={11}
         strokeWidth={1.5}
@@ -333,9 +388,9 @@ function KpiCell({ label, value, sub, tone = 'neutral' }) {
     tone === 'accent' ? 'text-rendi-accent' :
                         'text-ink-0'
   return (
-    <div className="px-4 py-3">
+    <div className="px-3 sm:px-4 py-3 min-w-0">
       <p className="label-mono">{label}</p>
-      <p className={`data-hero ${valueColor} mt-1`}>{value}</p>
+      <p className={`data-hero ${valueColor} mt-1 truncate`}>{value}</p>
       {sub && <p className="mt-0.5 text-[11px] font-mono text-ink-3 truncate">{sub}</p>}
     </div>
   )

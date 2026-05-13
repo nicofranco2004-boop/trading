@@ -225,7 +225,7 @@ export default function Events({ embedded = false }) {
         })}
       </div>
 
-      {/* KPI Strip — 3 celdas con divisores. */}
+      {/* KPI Strip — 3 celdas con divisores. Padding más chico en mobile. */}
       <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-3 divide-x divide-line">
         <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} />
       </div>
@@ -257,9 +257,7 @@ export default function Events({ embedded = false }) {
         <TimelineStrip events={visibleEvents} windowDays={windowDays} />
       )}
 
-      {loading && (
-        <p className="text-sm text-ink-2 font-mono py-8 text-center">Cargando eventos…</p>
-      )}
+      {loading && <EventTableSkeleton />}
       {error && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-sm bg-rendi-warn/10 text-rendi-warn text-sm">
           <AlertCircle size={14} /> {error}
@@ -363,9 +361,9 @@ function KpiCell({ label, value, sub, tone = 'neutral' }) {
     tone === 'warn'   ? 'text-rendi-warn' :
                         'text-ink-0'
   return (
-    <div className="px-4 py-3">
+    <div className="px-3 sm:px-4 py-3 min-w-0">
       <p className="label-mono">{label}</p>
-      <p className={`data-hero ${valueColor} mt-1`}>{value}</p>
+      <p className={`data-hero ${valueColor} mt-1 truncate`}>{value}</p>
       {sub && <p className="mt-0.5 text-[11px] font-mono text-ink-3 truncate">{sub}</p>}
     </div>
   )
@@ -512,6 +510,37 @@ function formatBucketLabel(date, bucketSize) {
 
 // ─── Event Table ────────────────────────────────────────────────────────────
 
+function EventTableSkeleton() {
+  return (
+    <div className="bg-bg-1 border border-line rounded overflow-hidden">
+      <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
+        <div className="label-mono">Fecha</div>
+        <div className="label-mono">Activo</div>
+        <div className="label-mono">Tipo</div>
+        <div className="label-mono">Detalle</div>
+        <div className="label-mono text-right">Monto</div>
+        <div className="label-mono text-right">Impact</div>
+      </div>
+      <ul className="divide-y divide-line/40">
+        {[1,2,3,4,5,6,7].map(i => (
+          <li key={i} className="grid grid-cols-[64px_1fr] md:grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-3 items-center animate-pulse">
+            <div className="h-4 w-12 bg-bg-3 rounded" />
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-sm bg-bg-3" />
+              <div className="h-4 w-20 bg-bg-3 rounded" />
+            </div>
+            <div className="hidden md:block h-4 w-16 bg-bg-3 rounded" />
+            <div className="hidden md:block h-3 w-3/4 bg-bg-3/60 rounded" />
+            <div className="hidden md:block h-4 w-16 bg-bg-3 rounded ml-auto" />
+            <div className="hidden md:block h-3 w-8 bg-bg-3/60 rounded ml-auto" />
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+
 function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd }) {
   // Pre-ordenamos por fecha
   const sorted = useMemo(
@@ -556,10 +585,17 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
     : null
 
   const daysToEvent = daysUntil(eventDate)
+  // dateTone con guard explícito para null/NaN (eventDate inválido).
   const dateTone =
-    daysToEvent === 0 ? 'text-rendi-accent' :
-    daysToEvent <= 1  ? 'text-ink-0' :
-                        'text-ink-2'
+    daysToEvent == null    ? 'text-ink-3' :
+    daysToEvent === 0      ? 'text-rendi-accent' :
+    daysToEvent <= 1       ? 'text-ink-0' :
+                             'text-ink-2'
+  const countdownLabel =
+    daysToEvent == null    ? '—' :
+    daysToEvent === 0      ? 'HOY' :
+    daysToEvent === 1      ? 'MAÑANA' :
+                             `+${daysToEvent}D`
 
   const amountNode = renderAmount(event)
   const detailNode = renderDetail(event)
@@ -569,7 +605,7 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
       {/* Fecha — countdown + fecha corta abajo */}
       <div className="flex flex-col">
         <span className={`text-xs font-mono font-semibold uppercase tracking-wider ${dateTone}`}>
-          {daysToEvent === 0 ? 'HOY' : daysToEvent === 1 ? 'MAÑANA' : `+${daysToEvent}D`}
+          {countdownLabel}
         </span>
         <span className="text-[10px] font-mono text-ink-3 mt-0.5">
           {shortDate(eventDate)}
