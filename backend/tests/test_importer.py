@@ -3371,6 +3371,153 @@ class UniversalUserScenariosTest(unittest.TestCase):
                 f"{r['broker']}: drift no se limpió en revert ({r['pnl_realized']})")
 
 
+class SchwabParserTest(unittest.TestCase):
+    """Tests del parser de Charles Schwab (History → Export CSV)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from importing.parsers.schwab import SchwabParser
+        cls.parser = SchwabParser()
+        cls.fixture = _read_fixture("schwab_export.csv").decode("utf-8")
+
+    def test_can_handle_schwab_headers(self):
+        headers = ["Date", "Action", "Symbol", "Description", "Quantity",
+                   "Price", "Fees & Comm", "Amount"]
+        self.assertTrue(self.parser.can_handle(headers))
+
+    def test_can_handle_rejects_other_formats(self):
+        self.assertFalse(self.parser.can_handle(["fecha", "tipo", "broker"]))
+        self.assertFalse(self.parser.can_handle(["nroTicket", "fechaEjecucion"]))
+
+    def test_rejects_file_without_schwab_columns(self):
+        result = self.parser.parse("foo,bar,baz\n1,2,3\n")
+        self.assertEqual(len(result.parse_errors), 1)
+        self.assertEqual(result.parse_errors[0].code, "SCHWAB_HEADERS_MISMATCH")
+
+    def test_parses_buy_with_us_format(self):
+        result = self.parser.parse(self.fixture)
+        meta = next(r for r in result.raw_rows
+                    if r.data["activo"] == "META" and r.data["tipo"] == "COMPRA")
+        self.assertEqual(meta.data["fecha"], "2026-04-30")
+        self.assertEqual(meta.data["broker"], "Schwab")
+        self.assertEqual(meta.data["cantidad"], "16")
+        self.assertEqual(meta.data["precio"], "608.38")
+        self.assertEqual(meta.data["moneda"], "USD")
+        # 16 × 608.38 = 9734.08
+        self.assertAlmostEqual(float(meta.data["monto"]), 9734.08, places=2)
+
+    def test_parses_sell(self):
+        result = self.parser.parse(self.fixture)
+        ypf = next(r for r in result.raw_rows
+                   if r.data["activo"] == "YPF" and r.data["tipo"] == "VENTA")
+        self.assertEqual(ypf.data["cantidad"], "962")
+        self.assertEqual(ypf.data["precio"], "42.5801")
+        self.assertAlmostEqual(float(ypf.data["comisiones"]), 0.19, places=2)
+
+    def test_qty_with_thousand_separator(self):
+        """Schwab usa coma como separador de miles ('1,566') — debe parsear OK."""
+        result = self.parser.parse(self.fixture)
+        gbtc = next(r for r in result.raw_rows
+                    if r.data["activo"] == "GBTC" and r.data["tipo"] == "VENTA")
+        self.assertEqual(gbtc.data["cantidad"], "1566")
+
+    def test_date_with_as_of_uses_effective_date(self):
+        """'02/09/2026 as of 02/06/2026' debe usar 02/06/2026 (la efectiva)."""
+        result = self.parser.parse(self.fixture)
+        transfer = next(r for r in result.raw_rows
+                        if r.data["tipo"] == "DEPOSITO"
+                        and r.data["monto"] == "15000.00")
+        self.assertEqual(transfer.data["fecha"], "2026-02-06")
+
+    def test_dividend_preserves_symbol(self):
+        """A diferencia de Cocos, Schwab dice qué stock pagó el dividendo."""
+        result = self.parser.parse(self.fixture)
+        nvda_div = next(r for r in result.raw_rows
+                        if r.data["tipo"] == "DIVIDENDO" and r.data["activo"] == "NVDA")
+        self.assertAlmostEqual(float(nvda_div.data["monto"]), 1.57, places=2)
+        self.assertEqual(nvda_div.data["moneda"], "USD")
+
+    def test_special_qual_div_mapped_to_dividend(self):
+        result = self.parser.parse(self.fixture)
+        bma_div = next(r for r in result.raw_rows
+                       if r.data["tipo"] == "DIVIDENDO" and r.data["activo"] == "BMA")
+        self.assertAlmostEqual(float(bma_div.data["monto"]), 120.40, places=2)
+
+    def test_nra_tax_adj_mapped_to_fee(self):
+        result = self.parser.parse(self.fixture)
+        fees = [r for r in result.raw_rows if r.data["tipo"] == "FEE"]
+        # 2 fees: NRA Tax Adj NVDA + ADR Mgmt Fee PAM
+        self.assertEqual(len(fees), 2)
+        nra = next(r for r in fees if abs(float(r.data["monto"]) - 0.47) < 0.01)
+        self.assertEqual(nra.data["moneda"], "USD")
+
+    def test_moneylink_positive_is_deposit(self):
+        result = self.parser.parse(self.fixture)
+        deps = [r for r in result.raw_rows if r.data["tipo"] == "DEPOSITO"]
+        self.assertGreaterEqual(len(deps), 2)  # MoneyLink + Wire Received
+
+    def test_moneylink_negative_is_withdraw(self):
+        result = self.parser.parse(self.fixture)
+        wd = next(r for r in result.raw_rows
+                  if r.data["tipo"] == "RETIRO" and r.data["monto"] == "77000.00")
+        self.assertEqual(wd.data["fecha"], "2025-12-24")
+
+    def test_wire_received_is_deposit(self):
+        result = self.parser.parse(self.fixture)
+        wire = next(r for r in result.raw_rows
+                    if r.data["tipo"] == "DEPOSITO" and r.data["monto"] == "15000.00"
+                    and "WIRED" in r.data["notas"].upper())
+        self.assertEqual(wire.data["fecha"], "2024-01-22")
+
+    def test_credit_interest_is_interes(self):
+        result = self.parser.parse(self.fixture)
+        intereses = [r for r in result.raw_rows if r.data["tipo"] == "INTERES"]
+        self.assertGreaterEqual(len(intereses), 1)
+
+    def test_stock_split_emits_warning(self):
+        """Stock Split → skip pero emite warning visible al user."""
+        result = self.parser.parse(self.fixture)
+        split_warnings = [e for e in result.parse_errors
+                          if e.code == "SCHWAB_SPLIT_WARNING"]
+        self.assertEqual(len(split_warnings), 1)
+        self.assertIn("Stock Split", split_warnings[0].message)
+        # La fila NO debe aparecer en raw_rows
+        splits_in_rows = [r for r in result.raw_rows if r.data["activo"] == "XLK"]
+        self.assertEqual(splits_in_rows, [])
+
+    def test_expired_warrants_skipped_silently(self):
+        """Corporate actions sin cash impact: no errores, no rows."""
+        result = self.parser.parse(self.fixture)
+        warrants = [r for r in result.raw_rows if r.data["activo"] == "399RGT026"]
+        self.assertEqual(warrants, [])
+        # No deben aparecer en parse_errors tampoco
+        warrants_err = [e for e in result.parse_errors
+                        if "399RGT026" in (e.message or "")]
+        self.assertEqual(warrants_err, [])
+
+    def test_internal_transfer_journaled_shares_skipped(self):
+        """Migraciones TDA→Schwab no se importan como BUY/SELL."""
+        result = self.parser.parse(self.fixture)
+        # Las filas con "TDA TRAN" en notas no deberían convertirse en BUYs
+        tda_buys = [r for r in result.raw_rows
+                    if r.data["tipo"] == "COMPRA"
+                    and "TDA TRAN" in r.data["notas"]]
+        self.assertEqual(tda_buys, [])
+
+    def test_qual_div_reinvest_is_dividend(self):
+        result = self.parser.parse(self.fixture)
+        reinv = next((r for r in result.raw_rows
+                      if r.data["tipo"] == "DIVIDENDO"
+                      and abs(float(r.data["monto"]) - 41.28) < 0.01), None)
+        self.assertIsNotNone(reinv)
+
+    def test_template_csv_is_self_parseable(self):
+        t = self.parser.template_csv()
+        result = self.parser.parse(t)
+        # No errores fatales y al menos algunas filas válidas
+        self.assertGreater(len(result.raw_rows), 0)
+
+
 class CocosVisibleInDropdownTest(unittest.TestCase):
     """Cocos ya tiene export oficial (Actividad → Movimientos), así que debe
     aparecer en el dropdown agrupado del wizard."""

@@ -8,6 +8,7 @@ from .binance_futures import BinanceFuturesTradeHistoryParser
 from .binance_transaction import BinanceTransactionHistoryParser
 from .cocos import CocosParser
 from .balanz import BalanzParser
+from .schwab import SchwabParser
 
 
 _PARSERS: List[Parser] = [
@@ -17,6 +18,7 @@ _PARSERS: List[Parser] = [
     BinanceTransactionHistoryParser(),
     CocosParser(),
     BalanzParser(),
+    SchwabParser(),
 ]
 
 
