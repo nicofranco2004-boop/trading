@@ -2782,7 +2782,11 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_current_user)):
 
             if cash_pos:
                 new_invested = (cash_pos['invested'] or 0) + sign * data.amount
-                if new_invested < 0:
+                # Solo bloqueamos cuando es un WITHDRAW que dejaría negativo.
+                # Para DEPOSIT permitimos siempre (incluso si el resultado sigue
+                # negativo porque la deuda era mayor al depósito — la idea es
+                # ir reduciendo el overdraft progresivamente).
+                if data.direction == 'withdraw' and new_invested < 0:
                     raise HTTPException(
                         400,
                         f"Saldo insuficiente. Disponible: {cash_pos['invested'] or 0:.2f} {currency}"

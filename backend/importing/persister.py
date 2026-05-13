@@ -106,8 +106,17 @@ def persist_batch(
             txs = list(seed_txs) + list(txs)
 
     # Orden cronológico determinístico — el seed (1 día antes) cae naturalmente
-    # primero en este sort.
-    sorted_txs = sorted(txs, key=lambda t: (t.date, t.row_index))
+    # primero en este sort. Dentro del mismo día, BUYs van antes que SELLs:
+    # evita "stock insuficiente" cuando el CSV tiene una venta intra-día antes
+    # que su compra correspondiente (típico en Cocos "Venta Trading" + "Compra
+    # Trading" mismo día). El neto en posición/cash es idéntico — solo cambia
+    # el orden de ejecución.
+    _BUY_FIRST_KEY = {OP_BUY: 0}  # BUY = 0, todo lo demás (SELL/etc) = 1
+    sorted_txs = sorted(txs, key=lambda t: (
+        t.date,
+        _BUY_FIRST_KEY.get(t.operation_type, 1),
+        t.row_index,
+    ))
 
     # Currency routing: por cada broker ARS mencionado en las txs que tenga al
     # menos una fila con moneda USD/USDT, auto-creamos su sub-broker USD y

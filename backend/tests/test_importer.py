@@ -2374,6 +2374,154 @@ class DividendInterestAsGainTest(unittest.TestCase):
             conn.close()
 
 
+class IntradayTradingOrderTest(unittest.TestCase):
+    """Cuando hay BUY y SELL del mismo día y el SELL precede al BUY en el CSV
+    (típico en 'Compra Trading' + 'Venta Trading' de Cocos), el persister
+    debe procesar BUYs primero para no fallar con 'stock insuficiente'."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"intraday-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+
+    def _persist_sample(self, txs):
+        """Helper: persiste una lista de NormalizedTx + asserta no errores."""
+        from importing.persister import persist_batch
+        import uuid, json
+        batch_id = str(uuid.uuid4())
+        conn = main.get_db()
+        raw_row_ids = {}
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'test.csv', ?, 'Cocos', 'preview')""",
+                (batch_id, self.uid, batch_id),
+            )
+            # raw_rows necesarias para FK desde import_normalized_tx
+            for tx in txs:
+                cur = conn.execute(
+                    """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                       VALUES (?,?,?,'valid',NULL)""",
+                    (batch_id, tx.row_index, json.dumps({"_test": "x"})),
+                )
+                raw_row_ids[tx.row_index] = cur.lastrowid
+        result = persist_batch(
+            conn,
+            uid=self.uid,
+            batch_id=batch_id,
+            txs=txs,
+            raw_row_ids_by_index=raw_row_ids,
+            helpers=main,
+        )
+        conn.close()
+        return batch_id, result
+
+    def test_intraday_sell_before_buy_does_not_skip(self):
+        """Replica el caso BMA del CSV real:
+          1. BUY 50 (jun)
+          2. SELL 91 trading (sep, row_index 2 — antes que el BUY trading)
+          3. BUY 91 trading (sep, row_index 3)
+          4. SELL 50 (sep, row_index 4)
+        Sin fix: SELL 91 falla porque solo hay 50 → resulta en 91 abiertas.
+        Con fix: BUYs procesados primero → net = 0.
+        """
+        from importing.schema import NormalizedTx, OP_BUY, OP_SELL
+        txs = [
+            NormalizedTx(row_index=1, date="2025-06-23", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="BMA",
+                         quantity=50, unit_price=8140, gross_amount=407000,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=2, date="2025-09-08", broker="Cocos",
+                         operation_type=OP_SELL, asset_symbol="BMA",
+                         quantity=91, unit_price=6590, gross_amount=599690,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=3, date="2025-09-08", broker="Cocos",
+                         operation_type=OP_BUY, asset_symbol="BMA",
+                         quantity=91, unit_price=6610, gross_amount=601510,
+                         currency="ARS", settlement_currency="ARS"),
+            NormalizedTx(row_index=4, date="2025-09-08", broker="Cocos",
+                         operation_type=OP_SELL, asset_symbol="BMA",
+                         quantity=50, unit_price=6590, gross_amount=329500,
+                         currency="ARS", settlement_currency="ARS"),
+        ]
+        batch_id, result = self._persist_sample(txs)
+        # Ninguna fila debe skipearse
+        self.assertEqual(result.get("skipped", []), [],
+            f"Filas skipeadas inesperadamente: {result.get('skipped')}")
+
+        # La posición BMA debería estar cerrada (qty 0 o no existir)
+        conn = main.get_db()
+        rows = conn.execute(
+            "SELECT quantity FROM positions WHERE user_id=? AND asset=? AND is_cash=0",
+            (self.uid, "BMA"),
+        ).fetchall()
+        conn.close()
+        net_qty = sum(r["quantity"] or 0 for r in rows)
+        self.assertEqual(net_qty, 0,
+            f"BMA debería estar cerrada (qty=0), quedó {net_qty}")
+
+
+class CashFlowDepositAllowsRecoverFromNegativeTest(unittest.TestCase):
+    """Un depósito debe permitir reducir un saldo negativo (incluso si después
+    sigue siendo negativo). Antes el check `new_invested < 0` bloqueaba
+    depósitos cuando la deuda era mayor al depósito — el user no podía
+    recuperarse del overdraft sin depositar todo de una."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"cashflow-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        # Crear cash position con saldo NEGATIVO (overdraft)
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
+               VALUES (?,'Cocos','ARS',1,?)""",
+            (self.uid, -204447),
+        )
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _post_cashflow(self, direction, amount):
+        return self.client.post(
+            "/api/cash/flow",
+            json={"broker_name": "Cocos", "direction": direction, "amount": amount},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def test_deposit_smaller_than_overdraft_allowed(self):
+        """Depositar 100k sobre saldo -204k → debe ir a -104k (no fallar)."""
+        res = self._post_cashflow("deposit", 100000)
+        self.assertEqual(res.status_code, 200, f"body: {res.text}")
+        conn = main.get_db()
+        balance = conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND is_cash=1",
+            (self.uid,),
+        ).fetchone()["invested"]
+        conn.close()
+        self.assertEqual(balance, -104447)
+
+    def test_deposit_equal_to_overdraft_allowed(self):
+        """Depositar exactamente el overdraft lleva a 0."""
+        res = self._post_cashflow("deposit", 204447)
+        self.assertEqual(res.status_code, 200, f"body: {res.text}")
+
+    def test_deposit_larger_than_overdraft_allowed(self):
+        """Depositar más del overdraft deja saldo positivo."""
+        res = self._post_cashflow("deposit", 300000)
+        self.assertEqual(res.status_code, 200, f"body: {res.text}")
+
+    def test_withdraw_from_negative_still_blocked(self):
+        """Pero un withdrawal sobre saldo negativo SÍ debe seguir bloqueado."""
+        res = self._post_cashflow("withdraw", 10000)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("insuficiente", res.text.lower())
+
+
 class CocosVisibleInDropdownTest(unittest.TestCase):
     """Cocos ya tiene export oficial (Actividad → Movimientos), así que debe
     aparecer en el dropdown agrupado del wizard."""
