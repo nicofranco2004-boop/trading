@@ -6,6 +6,7 @@ from pydantic import BaseModel, field_validator, Field
 from typing import Optional
 import sqlite3, os, secrets, time, hashlib, hmac, json
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 import requests
 import logging
@@ -112,7 +113,7 @@ def _table_cols(conn, table: str) -> set:
     # Table name is always hardcoded in callers — never user-supplied
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
-               'import_mappings'}
+               'import_mappings', 'news'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -357,6 +358,40 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_bond_indices_date ON bond_indices_daily(date);
     """)
+
+    # ─── news (Noticias del mercado y portfolio) ───────────────────────────
+    # Cache de noticias financieras del mercado + tagged por ticker.
+    # Compartido cross-user — las noticias son data pública. La personalización
+    # se hace en query time (filtrar a tickers del user).
+    #
+    # Source primaria: Google News RSS — sin auth, sin quota. Patrón
+    # `query → items`, donde el query es "AAPL stock" o "BCRA Argentina"
+    # según el contexto.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS news (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,            -- 'google_news_rss' | 'investing_com' | ...
+            external_id TEXT NOT NULL,       -- guid del feed — para dedup
+            title TEXT NOT NULL,
+            summary TEXT,                    -- description del RSS (opcional)
+            url TEXT NOT NULL,
+            image_url TEXT,
+            published_at TEXT NOT NULL,      -- ISO datetime
+            tickers TEXT,                    -- JSON array: '["AAPL","NVDA"]'
+            category TEXT,                   -- 'market' | 'portfolio' | 'macro'
+            query_source TEXT,               -- el query que la trajo (para debug + dedup soft)
+            tags TEXT,                       -- CSV: 'earnings,m_and_a,regulatory,…'
+            fetched_at TEXT NOT NULL,
+            UNIQUE(source, external_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_news_category ON news(category);
+    """)
+    # news — migración: agregar columna `tags` si existía la tabla pero sin ella
+    news_cols = _table_cols(conn, 'news')
+    if news_cols and 'tags' not in news_cols:
+        conn.execute("ALTER TABLE news ADD COLUMN tags TEXT")
+        conn.commit()
 
     # ─── financial_events (Eventos financieros) ────────────────────────────
     # Cache de eventos por ticker: earnings, ex-dividend, payment date, etc.
@@ -1573,6 +1608,610 @@ def get_portfolio_events(
         return {'events': events, 'refreshed_tickers': refreshed}
     finally:
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PR #3 — Noticias (Google News RSS)
+# ═══════════════════════════════════════════════════════════════════════════
+# Source: Google News RSS — sin auth, sin quota declarada. Queries por ticker
+# o macro topic. Parsing con xml.etree (stdlib).
+#
+# Estrategia de cache:
+#   • Persistente: tabla `news`, dedup por (source, external_id).
+#   • TTL in-memory por query: 30 min para tickers del user, 60 min macro.
+#   • Fetch lazy al endpoint, idempotente (no refetch si stale<TTL).
+#
+# Queries macro hardcoded — cubren el bloque "Noticias generales del mercado"
+# del plan original.
+
+_news_fetched_at = {}  # { query: timestamp }
+NEWS_TICKER_TTL = 30 * 60   # 30 min
+NEWS_MARKET_TTL = 60 * 60   # 60 min
+
+# Queries macro precanned para el feed "Mercado".
+# Mix USA + AR — apuntamos a market+macro relevantes para un inversor (acciones,
+# bonos, tasas, inflación, FX). Cada query incluye un anchor financiero
+# explícito para reducir basura en el resultado de Google News (en vez de
+# "Federal Reserve" → "Federal Reserve interest rates": filtra mejor).
+MARKET_NEWS_QUERIES = [
+    # ── USA: acciones e índices
+    ("S&P 500 stocks today", "market", "en"),
+    ("Nasdaq stock market", "market", "en"),
+    # ── USA: tasas y bonos
+    ("Federal Reserve interest rates", "macro", "en"),
+    ("US Treasury yields", "macro", "en"),
+    # ── USA: inflación
+    ("US CPI inflation", "macro", "en"),
+    # ── AR: mercado local
+    ("Merval acciones Argentina", "market", "es"),
+    ("bonos argentinos soberanos", "market", "es"),
+    # ── AR: macro relevante para inversor
+    ("inflación Argentina INDEC", "macro", "es"),
+    ("dolar blue MEP CCL Argentina", "macro", "es"),
+    ("BCRA tasa interés Argentina", "macro", "es"),
+]
+
+
+# Feeds RSS de Investing.com — complemento de Google News con cobertura más
+# profunda de acciones, mercados e indicadores macro. RSS 2.0 estándar, no
+# requiere auth. Si alguno no responde el fetcher lo skipea silenciosamente.
+#
+# Codes documentados:
+#   news_25  → Stock market (acciones)
+#   news_285 → Economic indicators (macro)
+INVESTING_FEEDS = [
+    # (url, category, lang)
+    ("https://www.investing.com/rss/news_25.rss",  "market", "en"),
+    ("https://www.investing.com/rss/news_285.rss", "macro",  "en"),
+    ("https://es.investing.com/rss/news_25.rss",   "market", "es"),
+    ("https://es.investing.com/rss/news_285.rss",  "macro",  "es"),
+]
+
+# Whitelist de keywords para filtrar noticias market/macro irrelevantes.
+# Si el title+summary de una noticia NO contiene al menos uno de estos
+# términos, la descartamos antes de persistirla.
+#
+# Filosofía: mantener el filtro inclusivo (mejor falso positivo que falso
+# negativo). Cubrir EN+ES porque Google News mezcla idiomas a veces.
+#
+# Sólo se aplica a categorías "market" y "macro". Las noticias de "portfolio"
+# ya están filtradas por el ticker en la query, no necesitan otro filtro.
+MARKET_RELEVANCE_KEYWORDS = frozenset({
+    # ── Activos / instrumentos
+    'stock', 'stocks', 'share', 'shares', 'equity', 'equities', 'etf', 'etfs',
+    'bond', 'bonds', 'yield', 'yields', 'treasury', 'treasuries', 'note', 'notes',
+    'cedear', 'cedears', 'adr', 'adrs',
+    'acción', 'acciones', 'accion', 'bono', 'bonos',
+    'letra', 'letras', 'lecap', 'lecaps', 'soberano', 'soberanos',
+    'plazo fijo', 'fondo común', 'fci',
+
+    # ── Mercados / índices
+    'market', 'markets', 'mercado', 'mercados', 'wall street',
+    'nyse', 'nasdaq', 's&p', 'sp500', 'dow jones', 'dow',
+    'russell', 'merval', 'bovespa', 'msci',
+    'index', 'indices', 'índice', 'índices',
+    'rally', 'sell-off', 'selloff', 'bull market', 'bear market',
+    'volatility', 'volatilidad',
+
+    # ── Tasas / bancos centrales
+    'rate', 'rates', 'tasa', 'tasas', 'interest rate',
+    'fed', 'federal reserve', 'fomc', 'powell', 'ecb', 'boe', 'boj',
+    'bcra', 'banco central', 'central bank',
+
+    # ── Macro relevante
+    'inflation', 'cpi', 'ppi', 'inflación', 'inflacion', 'ipc', 'indec',
+    'gdp', 'pbi', 'pib', 'recession', 'recesión',
+    'jobs report', 'nfp', 'unemployment', 'jobless', 'empleo', 'desempleo',
+    'pmi', 'ism', 'retail sales',
+
+    # ── FX
+    'dollar', 'dólar', 'dolar', 'blue', 'mep', 'ccl', 'contado con liqui',
+    'peso', 'euro', 'fx', 'forex', 'currency', 'currencies', 'divisa', 'divisas',
+
+    # ── Corporate / earnings
+    'earnings', 'revenue', 'profit', 'guidance', 'beat', 'miss',
+    'ipo', 'merger', 'acquisition', 'm&a', 'buyback', 'dividend',
+    'ganancias', 'ingresos', 'utilidades', 'ebitda',
+    'fusión', 'adquisición',
+
+    # ── Investor / trading
+    'investor', 'investors', 'inversor', 'inversores', 'inversionistas',
+    'trader', 'traders', 'analyst', 'analysts', 'analistas',
+    'portfolio', 'cartera', 'hedge fund', 'mutual fund',
+
+    # ── Bonds / debt (soberano + corporate)
+    'debt', 'deuda', 'default', 'restructuring', 'reestructuración', 'swap',
+    'imf', 'fmi', 'world bank', 'banco mundial',
+})
+
+
+def _is_market_relevant(item):
+    """True si title+summary contiene al menos una keyword market-relevante.
+
+    Falla abierto: si no hay title, lo dejamos pasar (raro pero defensivo).
+    """
+    title = (item.get('title') or '').lower()
+    summary = (item.get('summary') or '').lower()
+    if not title:
+        return True
+    haystack = title + ' ' + summary
+    return any(kw in haystack for kw in MARKET_RELEVANCE_KEYWORDS)
+
+
+# ─── News tagging ─────────────────────────────────────────────────────────────
+#
+# Cada noticia recibe 0-N tags por keyword-match. Permite filtrar el feed por
+# "tipo" en el frontend (earnings, M&A, regulación, tasas, etc.) sin necesidad
+# de un clasificador ML.
+#
+# Filosofía: keyword-match permisivo. Una noticia puede tener varios tags
+# (ej: "Apple sube tras earnings y anuncio de buyback" → earnings + dividend).
+# Si no matchea ningún tag, queda sin etiquetas (tag-less en el feed).
+#
+# Tags estables (no cambiar los IDs — quedan en DB):
+#   earnings    — resultados, EPS, guidance, beat/miss
+#   m_and_a     — fusiones, adquisiciones, OPAs
+#   rates       — Fed, FOMC, BCRA, tasas, política monetaria
+#   inflation   — CPI, IPC, INDEC, inflación
+#   forex       — dólar, peso, FX, blue/MEP/CCL
+#   dividend    — dividendos, payout, reparto
+#   regulatory  — SEC, demandas, multas, antitrust, CNV
+#   debt        — default, deuda soberana, FMI, restructuring
+
+NEWS_TAG_KEYWORDS = {
+    'earnings': [
+        # English
+        'earnings', 'eps', 'revenue', 'beat estimates', 'beat expectations',
+        'missed estimates', 'guidance', 'outlook', 'quarterly', 'q1 ', 'q2 ',
+        'q3 ', 'q4 ', 'reported', 'profit',
+        # Spanish
+        'resultados', 'ganancias', 'beneficios', 'utilidades', 'ingresos',
+        'trimestre', 'trimestral', 'reportó', 'reporta', 'reportar',
+    ],
+    'm_and_a': [
+        # English
+        'merger', 'acquisition', 'acquire', 'acquired', 'buyout', 'takeover',
+        'm&a', 'deal close', 'tender offer',
+        # Spanish
+        'fusión', 'fusion', 'fusiona', 'adquisición', 'adquisicion', 'adquiere',
+        'absorbió', 'compró', 'oferta pública', 'opa ', 'opa.',
+    ],
+    'rates': [
+        # English
+        'fed ', 'federal reserve', 'fomc', 'rate hike', 'rate cut', 'rate decision',
+        'interest rate', 'powell', 'monetary policy',
+        # Spanish
+        'bcra', 'banco central', 'política monetaria', 'politica monetaria',
+        'tasa de interés', 'tasa de interes', 'tasa de referencia',
+        'sube la tasa', 'baja la tasa',
+    ],
+    'inflation': [
+        # English
+        'inflation', 'cpi', 'ppi', 'core inflation', 'price index',
+        # Spanish
+        'inflación', 'inflacion', 'ipc', 'indec', 'índice de precios',
+        'indice de precios',
+    ],
+    'forex': [
+        # English
+        'dollar', 'fx ', 'forex', 'currency', 'exchange rate',
+        # Spanish
+        'dólar', 'dolar', 'blue', 'mep', 'ccl', 'contado con liqui',
+        'peso ', ' peso', 'cotización', 'cotizacion', 'cepo cambiario',
+        'tipo de cambio',
+    ],
+    'dividend': [
+        # English
+        'dividend', 'payout', 'distribution',
+        # Spanish
+        'dividendo', 'dividendos', 'reparto',
+    ],
+    'regulatory': [
+        # English
+        ' sec ', 'lawsuit', 'investigation', 'fine ', 'penalty', 'antitrust',
+        'regulator', 'ruling', 'court',
+        # Spanish
+        'demanda', 'investigación', 'investigacion', 'multa', 'sanción',
+        'tribunal', 'cnv ', 'cnv.', 'denuncia',
+    ],
+    'debt': [
+        # English
+        'default', 'restructuring', 'imf', 'sovereign bond', 'sovereign debt',
+        # Spanish
+        'default', 'reestructuración', 'reestructuracion', 'fmi',
+        'bonos soberanos', 'deuda soberana', 'staff level', 'desembolso',
+    ],
+}
+
+
+def _tag_news_item(item):
+    """Asigna 0-N tags a una noticia por keyword matching sobre title+summary.
+
+    Devuelve lista de strings (tag IDs estables — ver NEWS_TAG_KEYWORDS).
+    Orden estable según orden de definición en NEWS_TAG_KEYWORDS.
+    """
+    title = (item.get('title') or '').lower()
+    summary = (item.get('summary') or '').lower()
+    if not title:
+        return []
+    haystack = ' ' + title + ' ' + summary + ' '
+    tags = []
+    for tag_id, kws in NEWS_TAG_KEYWORDS.items():
+        for kw in kws:
+            if kw in haystack:
+                tags.append(tag_id)
+                break  # un match por tag — no contamos múltiples
+    return tags
+
+
+def _fetch_google_news_rss(query: str, lang: str = "en", limit: int = 15):
+    """Trae items del Google News RSS para un query dado.
+
+    Devuelve lista de dicts con: external_id, title, summary, url,
+    published_at (ISO), source_label.
+    Falla gracefully con [] si HTTP no-200 o parseo falla.
+    """
+    # gl/ceid por idioma — para AR usamos es-419, para US en-US.
+    if lang == "es":
+        params = {"q": query, "hl": "es-419", "gl": "AR", "ceid": "AR:es-419"}
+    else:
+        params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
+    try:
+        from urllib.parse import urlencode
+        url = "https://news.google.com/rss/search?" + urlencode(params)
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; RendiBot/1.0; +https://rendi.app/bot)", "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
+        if r.status_code != 200:
+            return []
+        return _parse_google_news_rss(r.content, limit=limit)
+    except Exception:
+        return []
+
+
+def _parse_rss_feed(xml_bytes: bytes, limit: int = 15):
+    """Parser genérico de RSS 2.0 → lista de items normalizados.
+
+    Soporta tanto Google News (con tag `<source>`) como Investing.com (sin él).
+    El shape común que devuelve permite que el resto del pipeline trate ambas
+    fuentes igual.
+
+    Usa `defusedxml` cuando está disponible para protegernos de XML bombs
+    (billion laughs / quadratic blowup). Fallback a `xml.etree` si no está
+    instalado (dev local sin pip install).
+    """
+    # Try defusedxml first (production-safe), fall back to stdlib
+    try:
+        from defusedxml.ElementTree import fromstring as _fromstring
+        from xml.etree.ElementTree import ParseError
+    except ImportError:
+        from xml.etree.ElementTree import fromstring as _fromstring, ParseError
+    items = []
+    try:
+        root = _fromstring(xml_bytes)
+        for item in root.findall('.//item')[:limit]:
+            guid = item.findtext('guid') or item.findtext('link') or ''
+            title = (item.findtext('title') or '').strip()
+            link = (item.findtext('link') or '').strip()
+            pub = (item.findtext('pubDate') or '').strip()
+            desc = (item.findtext('description') or '').strip()
+            source_elem = item.find('source')
+            source_label = source_elem.text if source_elem is not None else None
+            if not title or not link:
+                continue
+            published_iso = _rfc822_to_iso(pub) or datetime.utcnow().isoformat() + "Z"
+            items.append({
+                'external_id': guid[:200],
+                'title': title[:500],
+                'summary': _strip_html(desc)[:1000] if desc else None,
+                'url': link,
+                'published_at': published_iso,
+                'source_label': source_label,
+            })
+    except (ParseError, Exception):
+        # ParseError + defusedxml.EntitiesForbidden / DTDForbidden — todos seguros.
+        pass
+    return items
+
+
+# Alias para back-compat con tests del PR original de Google News
+_parse_google_news_rss = _parse_rss_feed
+
+
+def _strip_html(text):
+    """Saca tags HTML simples + decodifica entidades del summary (Investing.com
+    inyecta `<p>`, `<b>`, y entidades como `&amp;` / `&#39;`)."""
+    if not text:
+        return text
+    import re, html
+    return html.unescape(re.sub(r'<[^>]+>', '', text)).strip()
+
+
+def _fetch_investing_rss(url: str, limit: int = 15):
+    """Fetcher para Investing.com RSS. Cualquier URL del dominio investing.com
+    sirve — el feed sigue RSS 2.0 estándar.
+
+    Falla gracefully con [] si HTTP no-200 o parseo falla.
+    """
+    try:
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; RendiBot/1.0; +https://rendi.app/bot)", "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
+        if r.status_code != 200:
+            return []
+        return _parse_rss_feed(r.content, limit=limit)
+    except Exception:
+        return []
+
+
+def _rfc822_to_iso(s: str):
+    """Convierte 'Tue, 28 Apr 2026 17:00:22 GMT' → ISO. None si falla."""
+    if not s:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(s)
+        return dt.isoformat()
+    except Exception:
+        return None
+
+
+def _persist_news_items(conn, items, source_id: str, category: str, query_source: str):
+    """Path común para insertar items pre-fetcheados a la tabla news.
+
+    Aplica tagging por keywords y filtro de relevancia (sólo market/macro).
+    Devuelve la cantidad de filas nuevas insertadas (los items conocidos por
+    UNIQUE(source, external_id) son skippeados via INSERT OR IGNORE).
+    """
+    if not items:
+        return 0
+    # Filtro de relevancia — sólo market/macro. La DB acumula histórico, así
+    # que aunque cada refresh quede con menos items, el endpoint sigue
+    # devolviendo los últimos N por published_at DESC.
+    if category in ('market', 'macro'):
+        items = [it for it in items if _is_market_relevant(it)]
+    if not items:
+        return 0
+    iso_now = datetime.utcnow().isoformat() + "Z"
+    inserted = 0
+    with conn:
+        for it in items:
+            try:
+                tags = _tag_news_item(it)
+                tags_csv = ','.join(tags) if tags else None
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO news
+                       (source, external_id, title, summary, url, image_url,
+                        published_at, tickers, category, query_source, tags, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)""",
+                    (source_id, it['external_id'], it['title'], it['summary'],
+                     it['url'], it['published_at'], category, query_source,
+                     tags_csv, iso_now),
+                )
+                # rowcount es el delta del execute (0 si IGNORE saltó por dedup).
+                inserted += cur.rowcount if cur.rowcount > 0 else 0
+            except Exception as e:
+                # No silenciamos del todo — un INSERT que falla repetidamente
+                # señaliza un bug de schema / constraint violation que conviene
+                # ver en logs (sin tumbar el batch).
+                logging.getLogger(__name__).warning(
+                    "persist news item failed (source=%s, ext_id=%s): %s",
+                    source_id, it.get('external_id'), e,
+                )
+    return inserted
+
+
+def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int = 15):
+    """Refresca el cache de Google News para un query dado. Idempotente.
+
+    Delega a _persist_news_items con source='google_news_rss'.
+    """
+    items = _fetch_google_news_rss(query, lang=lang, limit=limit)
+    return _persist_news_items(conn, items, 'google_news_rss', category, query)
+
+
+def _refresh_investing_feed(conn, url: str, category: str, limit: int = 15):
+    """Refresca el cache desde un feed RSS de Investing.com.
+
+    Delega a _persist_news_items con source='investing_com'. Como query_source
+    usamos la URL del feed (sirve para debug + dedup soft).
+    """
+    items = _fetch_investing_rss(url, limit=limit)
+    return _persist_news_items(conn, items, 'investing_com', category, url)
+
+
+def _ensure_news_for_query(conn, query: str, lang: str, category: str, ttl_seconds: int):
+    """Refresh idempotente: sólo fetcha si TTL expiró."""
+    now = time.time()
+    cache_key = f"{category}:{query}"
+    if now - _news_fetched_at.get(cache_key, 0) < ttl_seconds:
+        return
+    _refresh_news_query(conn, query, lang, category)
+    _news_fetched_at[cache_key] = now
+
+
+def _cache_key_for(kind: str, category: str, identifier: str) -> str:
+    """Key estable para _news_fetched_at. Formato distinto por source para no
+    colisionar (Google News usa 'cat:query', Investing usa 'investing:cat:url').
+    """
+    if kind == 'google_news':
+        return f"{category}:{identifier}"  # formato legacy — no romper tests
+    return f"{kind}:{category}:{identifier}"
+
+
+def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8):
+    """Versión paralelizada: fetcha múltiples feeds en threads concurrentes.
+
+    `specs`: iterable de:
+       • 3-tuplas (query, lang, category) — Google News (legacy, back-compat)
+       • 4-tuplas (kind, identifier, lang_or_None, category) — multi-source
+         con `kind ∈ {'google_news', 'investing'}`.
+
+    Cada worker:
+      • Hace HTTP al source correspondiente (I/O-bound).
+      • Persiste a DB en su propia conexión (sqlite3 no comparte cursors entre
+        threads).
+      • Captura su propio timestamp DESPUÉS del fetch para que el TTL refleje
+        cuándo se obtuvo la data, no cuándo arrancó el batch.
+
+    Errores individuales se aíslan + se loguean: una falla no rompe el resto.
+    """
+    now = time.time()
+
+    # Normalizamos a 4-tuplas (kind, identifier, lang, category).
+    normalized = []
+    for s in specs:
+        if len(s) == 3:
+            q, lang, cat = s
+            normalized.append(('google_news', q, lang, cat))
+        elif len(s) == 4:
+            normalized.append(tuple(s))
+        # else: spec malformado — ignorar silenciosamente
+
+    # Filtrar lo que está fresh — no spawneamos threads para esos.
+    stale = [
+        spec for spec in normalized
+        if now - _news_fetched_at.get(_cache_key_for(spec[0], spec[3], spec[1]), 0) >= ttl_seconds
+    ]
+    if not stale:
+        return
+
+    def _worker(spec):
+        kind, identifier, lang, cat = spec
+        local_conn = get_db()
+        try:
+            if kind == 'google_news':
+                _refresh_news_query(local_conn, identifier, lang, cat)
+            elif kind == 'investing':
+                _refresh_investing_feed(local_conn, identifier, cat)
+            else:
+                return  # source desconocido — skip
+            _news_fetched_at[_cache_key_for(kind, cat, identifier)] = time.time()
+        finally:
+            local_conn.close()
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_worker, spec) for spec in stale]
+        for fut in as_completed(futures):
+            try:
+                fut.result()
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "news batch worker failed: %s", e
+                )
+
+
+@app.get("/api/news/market")
+def get_market_news(
+    limit: int = 20,
+    uid: int = Depends(get_current_user),
+):
+    """Feed general del mercado — noticias macro y de índices populares.
+
+    Combina queries hardcoded de USA + AR (FED, S&P, inflación, Merval, BCRA, etc.).
+    """
+    if limit <= 0 or limit > 100:
+        raise HTTPException(422, "limit debe estar entre 1 y 100")
+
+    # Refresh paralelo — Google News + Investing.com en un mismo pool. Mix de
+    # 3-tuplas (legacy Google News) + 4-tuplas (multi-source). Wall time ~1s
+    # vs serial >5s.
+    try:
+        specs = (
+            [(q, lang, cat) for q, cat, lang in MARKET_NEWS_QUERIES] +
+            [('investing', url, lang, cat) for url, cat, lang in INVESTING_FEEDS]
+        )
+        _ensure_news_batch_parallel(specs, NEWS_MARKET_TTL)
+    except Exception:
+        pass
+
+    conn = get_db()
+    try:
+        # Devolver últimas N noticias de categoría market/macro con tags.
+        rows = conn.execute(
+            """SELECT title, summary, url, published_at, query_source,
+                      category, source, tags
+               FROM news
+               WHERE category IN ('market', 'macro')
+               ORDER BY published_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return {'news': [_news_row_to_dict(r) for r in rows], 'count': len(rows)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/news/portfolio")
+def get_portfolio_news(
+    limit: int = 15,
+    uid: int = Depends(get_current_user),
+):
+    """Noticias relevantes a los tickers en el portfolio del user.
+
+    Para cada ticker, query "{TICKER} stock" en Google News (con idioma según
+    si es AR o US). Excluye crypto y cash. Cache TTL 30 min por ticker.
+    """
+    if limit <= 0 or limit > 100:
+        raise HTTPException(422, "limit debe estar entre 1 y 100")
+
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT DISTINCT asset FROM positions
+               WHERE user_id=? AND is_cash=0 AND asset NOT IN ('USDT','USD','ARS')""",
+            (uid,),
+        ).fetchall()
+        all_tickers = [r['asset'] for r in rows]
+        # Filtrar crypto (no relevante para news en este endpoint)
+        tickers = [t for t in all_tickers if t not in CRYPTO_SYMBOLS]
+        if not tickers:
+            return {'news': [], 'count': 0}
+
+        # Build queries batch (cap a 20 para no martillar Google) + paralelo
+        queries_batch = []
+        for ticker in tickers[:20]:
+            is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
+            lang = "es" if is_ar else "en"
+            query = f"{ticker} {'acciones' if is_ar else 'stock'}"
+            queries_batch.append((query, lang, 'portfolio'))
+        try:
+            _ensure_news_batch_parallel(queries_batch, NEWS_TICKER_TTL)
+        except Exception:
+            pass
+
+        # Devolver noticias del portfolio matcheando query_source con cualquiera
+        # de los tickers (que es el "{TICKER} stock"/"acciones" que sembramos).
+        like_clauses = ' OR '.join(['query_source LIKE ?'] * len(tickers))
+        like_params = [f'{t} %' for t in tickers]
+        rows = conn.execute(
+            f"""SELECT title, summary, url, published_at, query_source,
+                       category, source, tags
+                FROM news
+                WHERE category = 'portfolio'
+                  AND ({like_clauses})
+                ORDER BY published_at DESC
+                LIMIT ?""",
+            (*like_params, limit),
+        ).fetchall()
+
+        # Extraer el ticker del query_source y parsear tags.
+        result = []
+        for r in rows:
+            d = _news_row_to_dict(r)
+            # query_source es "AAPL stock" o "GGAL acciones"
+            d['ticker'] = d.get('query_source', '').split(' ', 1)[0] if d.get('query_source') else None
+            result.append(d)
+        return {'news': result, 'count': len(result)}
+    finally:
+        conn.close()
+
+
+def _news_row_to_dict(row):
+    """Convierte un sqlite3.Row de la tabla `news` a dict listo para el cliente.
+
+    Parsea `tags` (CSV en DB → array en JSON). Si no hay tags, devuelve [].
+    """
+    d = dict(row)
+    raw_tags = d.pop('tags', None)
+    d['tags'] = [t for t in (raw_tags or '').split(',') if t] if raw_tags else []
+    return d
 
 
 # ─── Prices ──────────────────────────────────────────────────────────────────

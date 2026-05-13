@@ -13,7 +13,7 @@ import Admin from './pages/Admin'
 import Goals from './pages/Goals'
 import Imports from './pages/Imports'
 import MonthlyReports from './pages/MonthlyReports'
-import Events from './pages/Events'
+import Novedades from './pages/Novedades'
 
 function Layout() {
   const { user } = useAuth()
@@ -35,7 +35,12 @@ function Layout() {
         <Route path="/insights" element={<Insights />} />
         <Route path="/mensual" element={<Monthly />} />
         <Route path="/reportes" element={<MonthlyReports />} />
-        <Route path="/eventos" element={<Events />} />
+        <Route path="/novedades" element={<Novedades />} />
+        {/* Redirects para back-compat con bookmarks/links viejos. Antes
+            estas rutas montaban las páginas standalone; ahora reenvían al
+            hub para mantener una sola UI consistente. */}
+        <Route path="/eventos"  element={<Navigate to="/novedades?tab=eventos"  replace />} />
+        <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />
         <Route path="/operaciones" element={<Operations />} />
         <Route path="/config" element={<Config />} />
         <Route path="/objetivos" element={<Goals />} />

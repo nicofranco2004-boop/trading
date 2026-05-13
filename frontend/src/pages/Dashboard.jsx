@@ -4,6 +4,7 @@ import { TrendingUp, TrendingDown, Wallet, PiggyBank, Activity, CircleDollarSign
 import StatCard from '../components/StatCard'
 import MonthlyTeaser from '../components/MonthlyTeaser'
 import UpcomingEventsCard from '../components/UpcomingEventsCard'
+import TopNewsCard from '../components/TopNewsCard'
 import PageHeader from '../components/PageHeader'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
@@ -556,10 +557,12 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Próximos eventos del portfolio (cupones, earnings, dividendos).
-          Sólo se renderea si hay eventos en el próximo mes — silencioso si no. */}
-      <div className="mb-6">
+      {/* Próximos eventos del portfolio + noticias recientes.
+          Cada card se renderea sólo si tiene contenido — el dashboard no
+          se inunda con cards vacías. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         <UpcomingEventsCard positions={positions} />
+        <TopNewsCard />
       </div>
 
       <MonthlyTeaser />
