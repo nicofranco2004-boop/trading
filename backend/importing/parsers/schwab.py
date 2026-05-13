@@ -91,12 +91,21 @@ _OP_SKIP_SILENT = {
     "journaled shares",
 }
 
-# Skipeados con warning visible para que el user ajuste manualmente.
-_OP_SKIP_WARN = {
-    "stock split":
-        "Stock Split — Rendi no ajusta cantidades automáticamente. "
-        "Ajustá la qty del activo manualmente desde /posiciones después "
-        "del import.",
+# Tickers de Schwab que SON ETFs aunque su símbolo coincida con una crypto
+# (Grayscale tiene productos con tickers "ETH", "BTC" que la heurística
+# genérica del normalizer clasificaría como CRYPTO). Para Schwab, estos son
+# trusts/ETFs cotizando en OTC/exchange tradicional — no crypto raw.
+_KNOWN_ETF_TICKERS = {
+    "ETH",   # Grayscale Ethereum Mini Trust
+    "ETHE",  # Grayscale Ethereum Trust
+    "GBTC",  # Grayscale Bitcoin Trust ETF
+    "BITO",  # ProShares Bitcoin Strategy ETF
+    "XLK",   # State Street Tech Select Sector SPDR
+    "SPY",   # SPDR S&P 500
+    "QQQ",   # Invesco QQQ
+    "VOO",   # Vanguard S&P 500
+    "VTI",   # Vanguard Total Stock Market
+    "IVV",   # iShares Core S&P 500
 }
 
 
@@ -211,14 +220,6 @@ class SchwabParser(Parser):
             if action_raw in _OP_SKIP_SILENT:
                 continue
 
-            # Skip con warning visible — stock split, etc.
-            if action_raw in _OP_SKIP_WARN:
-                result.parse_errors.append(RowError(
-                    idx, "Action", "SCHWAB_SPLIT_WARNING",
-                    _OP_SKIP_WARN[action_raw],
-                ))
-                continue
-
             fecha = _parse_date(G(row, "date"))
             symbol = G(row, "symbol").upper()
             description = G(row, "description")
@@ -226,6 +227,40 @@ class SchwabParser(Parser):
             price_raw = _clean_money(G(row, "price"))
             fees_raw = _clean_money(G(row, "feescomm"))
             amount_raw = _clean_money(G(row, "amount"))
+
+            # ───── Stock Split: BUY sintético con price=0 ─────────────────
+            # Schwab emite una row "Stock Split" cuando un papel del user
+            # split-ea (ej.: XLK split 1→2 le dió 3 shares extra). Rendi no
+            # tiene un op_type "ADJUST_QTY", así que lo modelamos como un
+            # BUY de qty=split_shares con price=0 / monto=0.
+            #
+            # Math: si el user tenía 3 XLK a $289.28 (cost basis $867.84) y
+            # split-ea para tener 6 XLK, el cost basis total NO cambia
+            # ($867.84 = 6 × $144.64 prorrateado). Con BUY price=0:
+            #   Lot 1: 3 × $289.28 = $867.84
+            #   Lot 2 (split): 3 × $0 = $0
+            #   Total: 6 shares por $867.84 → average $144.64 ✓
+            # Al vender, FIFO da P&L correcto (en agregado, no por lot).
+            if action_raw == "stock split":
+                if not symbol or not qty_raw:
+                    continue
+                data = {
+                    "fecha":      fecha or "",
+                    "tipo":       "COMPRA",
+                    "broker":     "Schwab",
+                    "activo":     symbol,
+                    "cantidad":   qty_raw,
+                    "precio":     "0",
+                    "monto":      "0",
+                    "monto_usd":  "",
+                    "tc":         "",
+                    "comisiones": "0",
+                    "moneda":     "USD",
+                    "notas":      f"Stock Split — {qty_raw} acciones agregadas (cost basis $0 — el avg se ajusta automáticamente vía FIFO)",
+                    "asset_type": "ETF" if symbol in _KNOWN_ETF_TICKERS else "",
+                }
+                result.raw_rows.append(RawRow(row_index=idx, data=data))
+                continue
 
             # MoneyLink Transfer: dirección depende del signo del Amount
             if action_raw == "moneylink transfer":
@@ -244,15 +279,11 @@ class SchwabParser(Parser):
 
             # Computar campos del RawRow
             if tipo_rendi in ("COMPRA", "VENTA"):
-                # Buy: amount negativo, lo abs-eamos. Sell: amount positivo.
-                # Schwab nos da el monto NETO (Amount = qty*price - fees para
-                # buys, qty*price + fees para sells — verificar). Por
-                # consistencia con Rendi (que separa monto bruto + fees),
-                # usamos qty*price como monto bruto y fees aparte.
-                # Si price está vacío (Schwab no lo trae en algunos casos),
-                # fallback a abs(amount).
                 qty = qty_raw
                 precio = price_raw
+                # Bruto = qty × price (Schwab Amount es NETO con fees ya
+                # restados/sumados); preferimos bruto para alinear con
+                # convención Rendi de fees separados.
                 if qty_raw and price_raw:
                     try:
                         monto_calc = float(qty_raw) * float(price_raw)
@@ -263,21 +294,25 @@ class SchwabParser(Parser):
                     monto = _abs_str(amount_raw)
                 fees = _abs_str(fees_raw) if fees_raw else "0"
             else:
-                # Cash flows / dividends / interest / fees: monto = abs(amount)
+                # Cash flows / dividends / interest / fees
                 qty = ""
                 precio = ""
                 monto = _abs_str(amount_raw)
                 fees = "0"
 
             # Activo: preservamos symbol para BUY/SELL/DIVIDENDO. Para cash
-            # flows va vacío (no aplica un activo a un wire/deposit).
+            # flows va vacío.
             if tipo_rendi in ("COMPRA", "VENTA", "DIVIDENDO"):
                 activo = symbol
             else:
                 activo = ""
 
-            # Notas: incluimos description si aporta info (típico Schwab:
-            # "Tfr CITIBANK NA", "SCHWAB1 INT MM/DD-MM/DD", security name).
+            # Hint de asset_type: para Grayscale (ETH, ETHE, GBTC) y ETFs
+            # populares en Schwab, marcamos como ETF para que la heurística
+            # genérica no los clasifique como CRYPTO (ETH es Grayscale Mini
+            # Trust, no la crypto raw).
+            asset_type_hint = "ETF" if activo in _KNOWN_ETF_TICKERS else ""
+
             notas = description[:200] if description else ""
 
             data = {
@@ -293,6 +328,7 @@ class SchwabParser(Parser):
                 "comisiones": fees,
                 "moneda":     "USD",
                 "notas":      notas,
+                "asset_type": asset_type_hint,
             }
             result.raw_rows.append(RawRow(row_index=idx, data=data))
 

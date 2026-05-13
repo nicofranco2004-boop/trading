@@ -599,6 +599,28 @@ class NormalizerTest(unittest.TestCase):
         self.assertEqual(txs[0].quantity, 10)
         self.assertEqual(txs[0].fees, 2)
 
+    def test_asset_type_hint_overrides_guess(self):
+        """Si el RawRow.data trae asset_type explícito, el normalizer lo usa
+        (en vez de guess_asset_type que clasificaría 'ETH' como CRYPTO)."""
+        rows = [RawRow(1, {
+            "fecha": "2024-03-15", "tipo": "COMPRA", "broker": "Schwab",
+            "activo": "ETH", "cantidad": "100", "precio": "25",
+            "moneda": "USD", "asset_type": "ETF",
+        })]
+        txs, errors = normalize_rows(rows)
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0].asset_type, "ETF")  # No CRYPTO
+
+    def test_asset_type_falls_back_to_guess_when_no_hint(self):
+        """Sin hint, ETH se clasifica como CRYPTO (comportamiento original)."""
+        rows = [RawRow(1, {
+            "fecha": "2024-03-15", "tipo": "COMPRA", "broker": "Binance",
+            "activo": "ETH", "cantidad": "0.5", "precio": "2500",
+            "moneda": "USDT",
+        })]
+        txs, errors = normalize_rows(rows)
+        self.assertEqual(txs[0].asset_type, "CRYPTO")
+
     def test_invalid_date_skips_row(self):
         rows = [RawRow(1, {"fecha": "bad", "tipo": "COMPRA", "broker": "IBKR"})]
         txs, errors = normalize_rows(rows)
@@ -3474,16 +3496,45 @@ class SchwabParserTest(unittest.TestCase):
         intereses = [r for r in result.raw_rows if r.data["tipo"] == "INTERES"]
         self.assertGreaterEqual(len(intereses), 1)
 
-    def test_stock_split_emits_warning(self):
-        """Stock Split → skip pero emite warning visible al user."""
+    def test_stock_split_emits_synthetic_buy_with_zero_price(self):
+        """Stock Split se convierte en BUY sintético: qty=split_shares, price=0.
+        El cost basis no cambia (lot extra a $0), pero la posición ahora tiene
+        las shares correctas para que ventas posteriores no fallen."""
         result = self.parser.parse(self.fixture)
-        split_warnings = [e for e in result.parse_errors
-                          if e.code == "SCHWAB_SPLIT_WARNING"]
-        self.assertEqual(len(split_warnings), 1)
-        self.assertIn("Stock Split", split_warnings[0].message)
-        # La fila NO debe aparecer en raw_rows
-        splits_in_rows = [r for r in result.raw_rows if r.data["activo"] == "XLK"]
-        self.assertEqual(splits_in_rows, [])
+        xlk_split = next((r for r in result.raw_rows
+                          if r.data["activo"] == "XLK"
+                          and r.data["tipo"] == "COMPRA"
+                          and r.data["precio"] == "0"), None)
+        self.assertIsNotNone(xlk_split,
+            "Stock Split debe emitir un BUY sintético con price=0")
+        self.assertEqual(xlk_split.data["cantidad"], "3")
+        self.assertEqual(xlk_split.data["monto"], "0")  # no afecta cash
+        self.assertIn("Stock Split", xlk_split.data["notas"])
+
+    def test_grayscale_eth_tagged_as_etf_not_crypto(self):
+        """Para Schwab, 'ETH' es Grayscale Ethereum Mini Trust (ETF), no la
+        crypto raw. El parser pasa asset_type=ETF para que la heurística
+        del normalizer no lo marque como CRYPTO."""
+        # Test with a custom row, since fixture doesn't have ETH (only ETHE)
+        csv = (
+            '"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"\n'
+            '"10/25/2024","Sell","ETH","GRAYSCALE ETHEREUM MINI","6521","$2.3854","$1.51","$15553.68"\n'
+        )
+        result = self.parser.parse(csv)
+        eth = result.raw_rows[0]
+        self.assertEqual(eth.data["asset_type"], "ETF")
+
+    def test_known_etf_tickers_tagged(self):
+        """GBTC, ETHE, XLK también van como ETF."""
+        result = self.parser.parse(self.fixture)
+        gbtc = next(r for r in result.raw_rows if r.data["activo"] == "GBTC")
+        self.assertEqual(gbtc.data.get("asset_type"), "ETF")
+
+    def test_regular_stock_no_etf_tag(self):
+        """Stocks normales (META, AAPL) no llevan el hint — fallback al guess."""
+        result = self.parser.parse(self.fixture)
+        meta = next(r for r in result.raw_rows if r.data["activo"] == "META")
+        self.assertEqual(meta.data.get("asset_type"), "")
 
     def test_expired_warrants_skipped_silently(self):
         """Corporate actions sin cash impact: no errores, no rows."""
