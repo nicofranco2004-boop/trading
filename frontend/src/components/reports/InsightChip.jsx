@@ -1,11 +1,12 @@
 // InsightChip — chip narrativo con popover de evidencia al hover/click.
 //
-// Diseño: minimalista, una línea visible (severity dot + title). Al hover/tap
-// se expande mostrando body + evidencia. La evidencia tiene shape libre — la
-// renderizamos en JSON crudo por default; cards específicos pueden override.
+// Diseño: minimalista, una línea visible (severity dot + title). Al click se
+// expande mostrando body + evidencia visual rica (mini chart / bars / pills),
+// renderizada por `InsightEvidence` según el `code` del insight.
 
 import { useState } from 'react'
 import { AlertTriangle, TrendingUp, Info, X } from 'lucide-react'
+import InsightEvidence from './InsightEvidence'
 
 const SEVERITY_STYLE = {
   warning:  { border: 'border-rendi-warn/30', bg: 'bg-rendi-warn/[0.06]', text: 'text-rendi-warn', icon: AlertTriangle },
@@ -31,16 +32,11 @@ export default function InsightChip({ insight }) {
       </button>
 
       {open && (
-        <div className="px-3 pb-2.5 pt-1 text-xs leading-relaxed text-ink-2 border-t border-line/50">
-          <p className="mb-2">{insight.body}</p>
-          {insight.evidence && Object.keys(insight.evidence).length > 0 && (
-            <details className="text-[10px] text-ink-3">
-              <summary className="cursor-pointer hover:text-ink-2">Ver datos</summary>
-              <pre className="mt-1 px-2 py-1 rounded bg-bg-3 overflow-x-auto font-mono">
-                {JSON.stringify(insight.evidence, null, 2)}
-              </pre>
-            </details>
-          )}
+        <div className="px-3 pb-3 pt-1 text-xs leading-relaxed text-ink-2 border-t border-line/50 space-y-2">
+          <p>{insight.body}</p>
+          <div className="pt-1">
+            <InsightEvidence insight={insight} />
+          </div>
           <button
             onClick={() => setOpen(false)}
             className="absolute top-1.5 right-1.5 text-ink-3 hover:text-ink-1"

@@ -64,6 +64,53 @@ class ParsePeriodBoundsTest(unittest.TestCase):
         self.assertEqual(builder.period_label("week", "2026-W19", "2026-05-04"), "Semana 19")
 
 
+# ─── Concordancia de género en headlines ─────────────────────────────────────
+
+class HeadlineGenderTest(unittest.TestCase):
+    """`semana` es femenino → adjetivos van en femenino. `mes/día` masculino."""
+
+    def _make_metrics(self, delta_pct, delta_usd=1000):
+        return builder.PeriodMetrics(
+            start_value=10000, end_value=11000, delta_usd=delta_usd, delta_pct=delta_pct,
+            delta_pct_over_contrib=5.0, realized_pnl=1000, unrealized_pnl=0,
+            deposits=0, withdrawals=0, trades_count=0, win_count=0, loss_count=0,
+            win_rate=None, vs_sp500_pct=None, vs_inflation_pct=None,
+        )
+
+    def test_week_negative_says_dificil(self):
+        # "difícil" es invariable en español — sirve para fem y masc
+        m = self._make_metrics(-5.0)
+        h, _ = builder.generate_headline(m, [], "week")
+        self.assertIn("Semana difícil", h)
+
+    def test_week_positive_says_solida_feminine(self):
+        m = self._make_metrics(5.0)
+        h, _ = builder.generate_headline(m, [], "week")
+        self.assertIn("Semana sólida", h, f"Got: {h}")
+        self.assertNotIn("Semana sólido", h)
+
+    def test_week_mixed_says_mixta_feminine(self):
+        m = self._make_metrics(1.0)  # entre -3 y +3, no flat
+        h, _ = builder.generate_headline(m, [], "week")
+        self.assertIn("Semana mixta", h, f"Got: {h}")
+        self.assertNotIn("Semana mixto", h)
+
+    def test_month_keeps_masculine(self):
+        m = self._make_metrics(5.0)
+        h, _ = builder.generate_headline(m, [], "month")
+        self.assertIn("Mes sólido", h)
+
+    def test_month_mixed_masculine(self):
+        m = self._make_metrics(1.0)
+        h, _ = builder.generate_headline(m, [], "month")
+        self.assertIn("Mes mixto", h)
+
+    def test_day_keeps_masculine(self):
+        m = self._make_metrics(5.0)
+        h, _ = builder.generate_headline(m, [], "day")
+        self.assertIn("Día sólido", h)
+
+
 # ─── Builder: métricas core ─────────────────────────────────────────────────
 
 class BuilderMetricsTest(unittest.TestCase):
@@ -225,6 +272,72 @@ class DetectorsTest(unittest.TestCase):
         i = detectors.detect_vs_benchmark(_stub_report(metrics=m))
         self.assertIsNotNone(i)
         self.assertEqual(i.code, "BEAT_BENCHMARK")
+
+    # ─── Detectores nuevos de Phase 2 ────────────────────────────────────────
+
+    def test_large_cash_drag_triggers_above_30pct(self):
+        positions = [
+            {"asset": "USDT", "value_usd": 4000, "is_cash": True},
+            {"asset": "BTC",  "value_usd": 6000, "is_cash": False},
+        ]
+        i = detectors.detect_large_cash_drag(_stub_report(), positions)
+        self.assertIsNotNone(i)
+        self.assertEqual(i.code, "LARGE_CASH_DRAG")
+
+    def test_large_cash_drag_silent_below_threshold(self):
+        positions = [
+            {"asset": "USDT", "value_usd": 1500, "is_cash": True},   # 15%
+            {"asset": "BTC",  "value_usd": 8500, "is_cash": False},
+        ]
+        self.assertIsNone(detectors.detect_large_cash_drag(_stub_report(), positions))
+
+    def test_streak_positive_three_months(self):
+        r = _stub_report(metrics=_stub_metrics(delta_pct=2.5))
+        i = detectors.detect_streak(r, prior_deltas=[3.0, 1.5])  # 2 anteriores + actual = 3
+        self.assertIsNotNone(i)
+        self.assertEqual(i.code, "STREAK_POSITIVE")
+
+    def test_streak_breaks_on_sign_change(self):
+        r = _stub_report(metrics=_stub_metrics(delta_pct=2.5))
+        # último anterior fue negativo → corta la racha; solo el actual cuenta
+        i = detectors.detect_streak(r, prior_deltas=[3.0, 2.0, -1.5])
+        self.assertIsNone(i)
+
+    def test_realized_vs_unrealized_gap_triggers(self):
+        m = _stub_metrics(realized_pnl=3000, unrealized_pnl=-2500)
+        i = detectors.detect_realized_vs_unrealized_gap(_stub_report(metrics=m))
+        self.assertIsNotNone(i)
+        self.assertEqual(i.code, "REALIZED_VS_UNREALIZED_GAP")
+
+    def test_reversal_triggers_sign_flip(self):
+        m = _stub_metrics(delta_pct=-4.0)  # actual negativo
+        i = detectors.detect_reversal(_stub_report(metrics=m), prior_delta=5.0)
+        self.assertIsNotNone(i)
+        self.assertEqual(i.code, "REVERSAL")
+
+    def test_reversal_silent_same_sign(self):
+        m = _stub_metrics(delta_pct=4.0)
+        self.assertIsNone(
+            detectors.detect_reversal(_stub_report(metrics=m), prior_delta=3.0)
+        )
+
+    def test_dividend_heavy_triggers(self):
+        ops = [
+            {"op_type": "Dividendo", "pnl_usd": 600, "asset": "VOO"},
+            {"op_type": "Venta",     "pnl_usd": 400, "asset": "AAPL"},
+        ]
+        m = _stub_metrics(realized_pnl=1000)
+        i = detectors.detect_dividend_heavy(_stub_report(metrics=m), ops)
+        self.assertIsNotNone(i)
+        self.assertEqual(i.code, "DIVIDEND_HEAVY")
+
+    def test_dividend_heavy_silent_when_minor(self):
+        ops = [
+            {"op_type": "Dividendo", "pnl_usd": 50, "asset": "VOO"},
+            {"op_type": "Venta",     "pnl_usd": 950, "asset": "AAPL"},
+        ]
+        m = _stub_metrics(realized_pnl=1000)
+        self.assertIsNone(detectors.detect_dividend_heavy(_stub_report(metrics=m), ops))
 
     def test_consistency_triggers_when_all_weeks_positive(self):
         weeks = [

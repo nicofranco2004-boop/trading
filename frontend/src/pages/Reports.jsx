@@ -18,6 +18,7 @@ import { Loader2, FileText, AlertTriangle } from 'lucide-react'
 import useReportsTimeline from '../hooks/useReportsTimeline'
 import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
+import YearlyHighlights from '../components/reports/YearlyHighlights'
 
 export default function Reports() {
   const [broker, setBroker] = useState('global')
@@ -98,6 +99,11 @@ function YearGroup({ year, months, isCurrentYear }) {
           </span>
         </div>
       </header>
+
+      {/* Highlights del año — visibles solo si hay ≥3 meses relevantes */}
+      {months.filter(m => m.is_relevant).length >= 3 && (
+        <YearlyHighlights months={months} />
+      )}
 
       <div className="space-y-3">
         {months.map(m => (

@@ -161,9 +161,13 @@ def build_timeline(
                                                     prices or {}, tc_blue)
 
     month_keys = _months_back(months)
-    out: List[PeriodReport] = []
+    # Procesamos los meses del más viejo al más nuevo para que podamos pasar
+    # `prior_monthly_deltas` ascendiente a los detectores STREAK/REVERSAL.
+    month_keys_asc = list(reversed(month_keys))
+    out_asc: List[PeriodReport] = []
+    prior_deltas: List[float] = []
 
-    for mk in month_keys:
+    for mk in month_keys_asc:
         y, m = (int(x) for x in mk.split("-"))
         # 1. Construir reporte del mes
         month_rpt = build_period_report(
@@ -171,7 +175,13 @@ def build_timeline(
             broker_filter=broker_filter, bench=bench, live_value=live_value,
         )
 
-        # 2. Construir reportes de las semanas dentro del mes
+        # 2. Operaciones del mes — para DIVIDEND_HEAVY y otros
+        from .builder import fetch_operations_in_range
+        month_ops = fetch_operations_in_range(
+            conn, uid, month_rpt.period_start, month_rpt.period_end, broker_filter,
+        )
+
+        # 3. Construir reportes de las semanas dentro del mes
         weeks = _weeks_in_month(y, m)
         children: List[PeriodReport] = []
         for wk in weeks:
@@ -180,7 +190,7 @@ def build_timeline(
                 broker_filter=broker_filter, bench=bench,
                 live_value=live_value if wrpt_is_current_check(wk) else None,
             )
-            # Detectores en semanas: solo los simples (no concentration, etc.)
+            # Detectores en semanas: contexto reducido (no STREAK, no aggregate-level)
             wrpt.insights = run_detectors(
                 wrpt, positions=[], avg_trades_per_period=0,
                 historical_win_rate=historical_wr,
@@ -188,15 +198,20 @@ def build_timeline(
             children.append(wrpt)
         month_rpt.children = children
 
-        # 3. Detectores del mes — ahora con children disponibles (para consistency)
+        # 4. Detectores del mes con contexto completo
         month_rpt.insights = run_detectors(
             month_rpt, positions=positions,
             avg_trades_per_period=avg_trades,
             historical_win_rate=historical_wr,
+            prior_monthly_deltas=list(prior_deltas),
+            period_operations=month_ops,
         )
 
-        out.append(month_rpt)
-    return out
+        out_asc.append(month_rpt)
+        prior_deltas.append(month_rpt.metrics.delta_pct)
+
+    # Devolver descendente (más reciente primero) — convención del frontend
+    return list(reversed(out_asc))
 
 
 def wrpt_is_current_check(week_key: str) -> bool:

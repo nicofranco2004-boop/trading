@@ -372,21 +372,47 @@ def compute_highlights(ops: List[Dict[str, Any]]) -> List[Highlight]:
 
 # ─── Headline auto-generada ─────────────────────────────────────────────────
 
+# Tabla de sustantivo + género por tipo de período. Necesaria para que los
+# adjetivos del headline concuerden correctamente en español (semana = fem,
+# mes/día = masc). "difícil" es invariable y "período" es masc (fallback).
+_PERIOD_WORD = {
+    "month": ("Mes", "m"),
+    "week":  ("Semana", "f"),
+    "day":   ("Día", "m"),
+}
+
+# Adjetivos: forma masculina → forma femenina. Si no aparece, se asume invariable.
+_ADJ_FEMININE = {
+    "sólido":  "sólida",
+    "mixto":   "mixta",
+    "tranquilo": "tranquila",
+    # "difícil" es invariable → no entra acá
+}
+
+
+def _conjugate(adj_masc: str, gender: str) -> str:
+    """Devuelve el adjetivo concordado al género del sustantivo."""
+    if gender == "f":
+        return _ADJ_FEMININE.get(adj_masc, adj_masc)
+    return adj_masc
+
+
 def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
                      period_type: str) -> Tuple[str, Optional[str]]:
     """Genera headline + subheadline narrativos basados en la data.
 
     Reglas determinísticas (no LLM). Cada caso es un detector simple.
+    Concuerda el género del adjetivo con el sustantivo del período.
     """
     delta = metrics.delta_pct
     abs_usd = abs(metrics.delta_usd)
-    period_word = {"month": "Mes", "week": "Semana", "day": "Día"}.get(period_type, "Período")
+    period_word, gender = _PERIOD_WORD.get(period_type, ("Período", "m"))
 
-    # Caso 1: período flat
+    # Caso 1: período flat — frase invariable
     if abs(delta) < 0.5 and abs_usd < 100:
         return (f"{period_word} sin grandes movimientos.", None)
 
-    # Caso 2: período negativo significativo
+    # Caso 2: período negativo significativo — "difícil" es invariable
     if delta < -3:
         sub = None
         if drivers:
@@ -395,18 +421,18 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
                 sub = f"{top_neg.asset} fue el principal responsable de la caída."
         return (f"{period_word} difícil — {delta:.1f}%.", sub)
 
-    # Caso 3: período positivo significativo
+    # Caso 3: período positivo significativo — "sólido/sólida"
     if delta > 3:
         sub = None
         if drivers:
             top_pos = next((d for d in drivers if d.pnl_usd > 0), None)
             if top_pos and top_pos.contribution_pct >= 30:
                 sub = f"{top_pos.asset} explicó el {top_pos.contribution_pct:.0f}% del rendimiento."
-        return (f"{period_word} sólido — +{delta:.1f}%.", sub)
+        return (f"{period_word} {_conjugate('sólido', gender)} — +{delta:.1f}%.", sub)
 
-    # Default: período mixto
+    # Default: período mixto — "mixto/mixta"
     sign = "+" if delta >= 0 else ""
-    return (f"{period_word} mixto — {sign}{delta:.1f}%.", None)
+    return (f"{period_word} {_conjugate('mixto', gender)} — {sign}{delta:.1f}%.", None)
 
 
 # ─── Punto de entrada principal ──────────────────────────────────────────────
