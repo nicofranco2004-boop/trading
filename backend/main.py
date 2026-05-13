@@ -2560,6 +2560,62 @@ class CashFlowIn(BaseModel):
         return v.strip()
 
 
+def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
+    """Recalcula `monthly_entries.pnl_realized` desde la tabla `operations`.
+
+    Self-healing del drift que pueden generar cycles de import/revert con bugs
+    cross-currency: el revert deshace operations correctamente, pero si el
+    persist agregó pnl_realized con un cálculo viejo y el revert lo deshizo
+    con el cálculo nuevo, queda diferencia acumulada.
+
+    Para cada (broker, year, month) en monthly_entries:
+      pnl_realized[broker, y, m] = SUM(operations.pnl_usd WHERE broker, y, m)
+      pnl_realized[global, y, m] = SUM(operations.pnl_usd WHERE y, m)
+
+    Re-repara la cadena de capital_final tras actualizar.
+    Idempotente. Devuelve la cantidad de rows actualizados.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT broker, year, month FROM monthly_entries WHERE user_id=?",
+        (uid,),
+    ).fetchall()
+    updates = 0
+    brokers_touched: set = set()
+    for r in rows:
+        broker, y, m = r["broker"], r["year"], r["month"]
+        year_str = f"{y:04d}"
+        month_str = f"{m:02d}"
+        if broker == "global":
+            row = conn.execute(
+                """SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations
+                   WHERE user_id=?
+                     AND strftime('%Y', date)=?
+                     AND strftime('%m', date)=?""",
+                (uid, year_str, month_str),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations
+                   WHERE user_id=? AND broker=?
+                     AND strftime('%Y', date)=?
+                     AND strftime('%m', date)=?""",
+                (uid, broker, year_str, month_str),
+            ).fetchone()
+        new_pnl = round(float(row["s"] or 0), 4)
+        conn.execute(
+            """UPDATE monthly_entries SET pnl_realized=?
+               WHERE user_id=? AND broker=? AND year=? AND month=?""",
+            (new_pnl, uid, broker, y, m),
+        )
+        updates += 1
+        brokers_touched.add(broker)
+
+    # Re-reparar capital_final chain con los nuevos pnl_realized
+    for b in brokers_touched:
+        _repair_monthly_chain(conn, uid, b)
+    return updates
+
+
 def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
     """Phase 8 — repara la cadena de monthly_entries para (uid, broker).
 
@@ -4560,6 +4616,7 @@ _import_helpers._update_monthly_pnl_realized = _update_monthly_pnl_realized
 _import_helpers._update_monthly_flow = _update_monthly_flow
 _import_helpers._repair_monthly_chain = _repair_monthly_chain
 _import_helpers._ensure_usd_sibling = _ensure_usd_sibling
+_import_helpers._recalc_pnl_realized_from_ops = _recalc_pnl_realized_from_ops
 
 
 @app.get("/api/imports/template")
@@ -4841,6 +4898,28 @@ def import_mappings_delete(mid: int, uid: int = Depends(get_current_user)):
         with conn:
             conn.execute("DELETE FROM import_mappings WHERE id=? AND user_id=?", (mid, uid))
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/imports/recalc-pnl")
+def import_recalc_pnl(uid: int = Depends(get_current_user)):
+    """Recalcula `monthly_entries.pnl_realized` desde la tabla `operations`.
+
+    Útil cuando cycles previos de import/revert con bugs dejaron drift en el
+    P&L acumulado. Después de correr esto, el dashboard refleja exactamente
+    la suma de pnl_usd de las operations actuales.
+
+    Idempotente. No borra operations ni positions — sólo recalcula los
+    aggregates mensuales. Es seguro de correr en cualquier momento.
+    """
+    conn = get_db()
+    try:
+        with conn:
+            updates = _recalc_pnl_realized_from_ops(conn, uid)
+        return {"recalculated": True, "rows_updated": updates}
+    except Exception as ex:
+        raise HTTPException(500, f"Error al recalcular P&L: {ex}")
     finally:
         conn.close()
 

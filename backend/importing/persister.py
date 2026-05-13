@@ -1139,6 +1139,14 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
         helpers._repair_monthly_chain(conn, uid, b)
     helpers._repair_monthly_chain(conn, uid, "global")
 
+    # Self-heal: recalcular pnl_realized desde operations. Sin esto, cycles
+    # de import/revert con bugs cross-currency dejaban drift acumulado en
+    # monthly_entries (operations se borraban correctamente, pero el resto
+    # del pnl_realized inflado quedaba como huérfano).
+    recalc_fn = getattr(helpers, "_recalc_pnl_realized_from_ops", None)
+    if recalc_fn:
+        recalc_fn(conn, uid)
+
     conn.execute(
         "UPDATE import_batches SET status='reverted', reverted_at=datetime('now') WHERE id=? AND user_id=?",
         (batch_id, uid),

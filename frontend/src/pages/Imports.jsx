@@ -82,18 +82,46 @@ export default function Imports() {
     }
   }
 
+  const [recalculating, setRecalculating] = useState(false)
+  async function doRecalcPnl() {
+    setRecalculating(true)
+    setError(null)
+    setInfo(null)
+    try {
+      const data = await api.post('/imports/recalc-pnl', {})
+      setInfo(`P&L Realizado recalculado desde operations (${data.rows_updated} entradas mensuales actualizadas).`)
+    } catch (ex) {
+      setError(ex.message || 'No pudimos recalcular el P&L.')
+    } finally {
+      setRecalculating(false)
+    }
+  }
+
   return (
     <div className="page-shell">
       <PageHeader
         title="Importaciones"
         subtitle="Historial de archivos CSV importados. Podés revertir un lote (BUY/aportes) o usar 'Editar y rehacer' para revertir y reabrir el wizard con los mismos datos para ajustar lo que haga falta."
         action={
-          <Link
-            to="/operaciones"
-            className="inline-flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition"
-          >
-            <Upload size={14} /> Nueva importación
-          </Link>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={doRecalcPnl}
+              disabled={recalculating}
+              title="Recalcula P&L Realizado desde operations. Útil si el dashboard quedó con drift de imports/reverts viejos."
+              className="inline-flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition disabled:opacity-50"
+            >
+              {recalculating
+                ? <Loader2 size={14} className="animate-spin" />
+                : <RotateCcw size={14} />}
+              Recalcular P&L
+            </button>
+            <Link
+              to="/operaciones"
+              className="inline-flex items-center gap-1.5 text-sm border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-md font-medium transition"
+            >
+              <Upload size={14} /> Nueva importación
+            </Link>
+          </div>
         }
       />
 

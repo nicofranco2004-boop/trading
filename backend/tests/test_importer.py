@@ -2759,6 +2759,121 @@ class CrossCurrencyLotSellTest(unittest.TestCase):
         self.assertEqual(pos["currency"], "USD")
 
 
+class RecalcPnlFromOpsTest(unittest.TestCase):
+    """Verifica que _recalc_pnl_realized_from_ops repara drift en
+    monthly_entries.pnl_realized desde la tabla operations."""
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"recalc-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+
+    def test_recalcs_from_operations_zeroing_orphan_pnl(self):
+        """monthly_entries.pnl_realized inflado y SIN operations matching →
+        se zero-ea tras el recalc."""
+        conn = main.get_db()
+        with conn:
+            # Inflar pnl_realized con drift artificial — simula bug viejo
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 10, 'Cocos', 0, 0, -9890.92, 0, 0, -9890.92)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 10, 'global', 0, 0, -9890.92, 0, 0, -9890.92)""",
+                (self.uid,),
+            )
+        # No hay operations → recalc debe poner pnl_realized en 0
+        with conn:
+            updates = main._recalc_pnl_realized_from_ops(conn, self.uid)
+        rows = conn.execute(
+            "SELECT broker, pnl_realized FROM monthly_entries WHERE user_id=?",
+            (self.uid,),
+        ).fetchall()
+        conn.close()
+        self.assertGreaterEqual(updates, 2)
+        for r in rows:
+            self.assertEqual(r["pnl_realized"], 0.0,
+                f"{r['broker']}: pnl_realized={r['pnl_realized']} (esperado 0)")
+
+    def test_recalcs_to_sum_of_existing_operations(self):
+        """Con operations reales, monthly_entries.pnl_realized debe quedar
+        igual a SUM(operations.pnl_usd) para ese (broker, year, month)."""
+        conn = main.get_db()
+        with conn:
+            # Seed: 2 operations en Oct 2025 para Cocos
+            conn.execute(
+                """INSERT INTO operations
+                   (user_id, date, broker, asset, op_type, pnl_usd)
+                   VALUES (?, '2025-10-15', 'Cocos', 'AAPL', 'Venta', 50.50)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO operations
+                   (user_id, date, broker, asset, op_type, pnl_usd)
+                   VALUES (?, '2025-10-20', 'Cocos', 'TSLA', 'Venta', -25.30)""",
+                (self.uid,),
+            )
+            # Pre-existente con drift
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 10, 'Cocos', 0, 0, 9999.99, 0, 0, 0)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 10, 'global', 0, 0, -8888.88, 0, 0, 0)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        rows = conn.execute(
+            "SELECT broker, pnl_realized FROM monthly_entries WHERE user_id=? ORDER BY broker",
+            (self.uid,),
+        ).fetchall()
+        conn.close()
+        # Cocos: 50.50 + (-25.30) = 25.20
+        # global: igual (suma cross-broker)
+        by_broker = {r["broker"]: r["pnl_realized"] for r in rows}
+        self.assertAlmostEqual(by_broker["Cocos"], 25.20, places=2)
+        self.assertAlmostEqual(by_broker["global"], 25.20, places=2)
+
+    def test_endpoint_recalc_returns_count(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(main.app)
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 1, 'Cocos', 0, 0, -1000, 0, 0, -1000)""",
+                (self.uid,),
+            )
+        conn.close()
+        token = main.create_token(self.uid)
+        res = client.post(
+            "/api/imports/recalc-pnl",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertTrue(body["recalculated"])
+        self.assertGreaterEqual(body["rows_updated"], 1)
+
+
 class CombineCsvFilesTest(unittest.TestCase):
     """Unit tests del helper combine_csv_files (multi-file upload)."""
 
