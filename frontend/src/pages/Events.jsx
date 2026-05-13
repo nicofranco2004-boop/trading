@@ -1,15 +1,20 @@
 // Events — calendario de eventos financieros con tabs "Para ti" / "Popular".
 // ════════════════════════════════════════════════════════════════════════════
-// Dos vistas:
+// Diseño fintech denso (no foro):
 //
-//   • Para ti: eventos del PORTFOLIO del user. Stocks/ETFs via backend yfinance,
-//     bonos via bondSchedule.js. Cada item muestra "impact %" = porcentaje del
-//     portfolio que representa esa posición (la diferenciación de Rendi).
+//   ┌───────────────────────────────────────────────────────────────┐
+//   │ KPI strip (4 celdas) — próximo, total, cupones, confirmados   │
+//   ├───────────────────────────────────────────────────────────────┤
+//   │ Controles: ventana | filtro tipo                              │
+//   ├───────────────────────────────────────────────────────────────┤
+//   │ Timeline strip — barras por día, altura = #eventos            │
+//   ├───────────────────────────────────────────────────────────────┤
+//   │ Tabla densa — DÍA | ACTIVO | TIPO | DETALLE | MONTO | IMPACT  │
+//   └───────────────────────────────────────────────────────────────┘
 //
-//   • Popular: eventos del MERCADO en general — earnings de magnificent 7 +
-//     ADRs argentinas + macro events (FOMC, CPI, NFP, INDEC). El user puede
-//     ver lo que mueve el mercado aunque no tenga esos activos. Si tiene
-//     alguno, badge "👁 En tu cartera".
+// Dos vistas (sub-tabs):
+//   • Para ti: eventos del PORTFOLIO. Impact % = porcentaje del portfolio.
+//   • Popular: eventos del MERCADO. Earnings populares + macro.
 
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -20,27 +25,26 @@ import AssetLogo from '../components/AssetLogo'
 import EventBadge from '../components/EventBadge'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
-import { fmtUsd, fmtArs, pct } from '../utils/format'
+import { pct } from '../utils/format'
 import {
   upcomingBondEvents,
   normalizeBackendEvents,
   mergeEvents,
-  groupEventsByDate,
   formatRelativeDate,
   countryFlag,
   isMacroEvent,
 } from '../utils/upcomingEvents'
 
 const WINDOW_OPTIONS = [
-  { value: 30,  label: '30 días' },
-  { value: 90,  label: '90 días' },
-  { value: 180, label: '6 meses' },
-  { value: 365, label: '1 año' },
+  { value: 30,  label: '30D' },
+  { value: 90,  label: '90D' },
+  { value: 180, label: '6M' },
+  { value: 365, label: '1Y' },
 ]
 
 const FILTER_OPTIONS = [
   { value: 'all',       label: 'Todos' },
-  { value: 'macro',     label: 'Económicos' },
+  { value: 'macro',     label: 'Macro' },
   { value: 'earnings',  label: 'Earnings' },
   { value: 'dividends', label: 'Dividendos' },
   { value: 'bonds',     label: 'Bonos' },
@@ -50,6 +54,7 @@ const TABS = [
   { value: 'portfolio', label: 'Para ti', desc: 'Eventos de los activos de tu portfolio' },
   { value: 'popular',   label: 'Populares', desc: 'Eventos del mercado y empresas top' },
 ]
+const TAB_VALUES = TABS.map(t => t.value)
 
 function matchesFilter(event, filter) {
   if (filter === 'all') return true
@@ -60,20 +65,13 @@ function matchesFilter(event, filter) {
   return true
 }
 
-const TAB_VALUES = TABS.map(t => t.value)
-
-// Si `embedded=true`, el componente se renderea sin PageHeader (para usar
-// dentro de un container que ya provee el header — ej: pages/Novedades.jsx).
-// En modo embedded el sub-tab se persiste en URL via ?sub=portfolio|popular
-// para que la sección Novedades sea deep-linkable.
+// Si `embedded=true`, sin PageHeader y el sub-tab se persiste en URL (?sub=…).
 export default function Events({ embedded = false }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const urlSub = searchParams.get('sub')
   const initialTab = embedded && TAB_VALUES.includes(urlSub) ? urlSub : 'portfolio'
   const [tab, setTabState] = useState(initialTab)
 
-  // Cuando estamos embebidos, el sub-tab queda en URL. Sincronizamos en ambas
-  // direcciones: clicks → URL, y back/forward → state local.
   useEffect(() => {
     if (!embedded) return
     const s = searchParams.get('sub')
@@ -124,7 +122,6 @@ export default function Events({ embedded = false }) {
       setDolar(dol)
       setPortfolioEvents(portEv?.events || [])
       setPopularEvents(popEv?.events || [])
-      // Precios para impact% (solo necesario en tab "Para ti")
       const symList = collectPriceSymbols(pos || [], bkrs || [])
       if (symList.length > 0) {
         try {
@@ -139,7 +136,7 @@ export default function Events({ embedded = false }) {
     }
   }
 
-  // Computar el valor total del portfolio en USD (para impact %)
+  // Valor total del portfolio en USD (para impact %)
   const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
   const portfolioTotalUsd = useMemo(() => {
     return brokers.reduce((sum, broker) => {
@@ -149,7 +146,7 @@ export default function Events({ embedded = false }) {
     }, 0)
   }, [positions, brokers, prices, tcBlue])
 
-  // Cálculo de impact %: valor USD de la posición / valor total del portfolio
+  // Valor USD por ticker
   const tickerValueUsd = useMemo(() => {
     const map = new Map()
     for (const broker of brokers) {
@@ -169,21 +166,28 @@ export default function Events({ embedded = false }) {
     return new Set(positions.filter(p => !p.is_cash).map(p => p.asset))
   }, [positions])
 
-  // Eventos según tab seleccionada
+  // Eventos según tab + filter
   const visibleEvents = useMemo(() => {
     if (tab === 'portfolio') {
       const bonds = upcomingBondEvents(positions, { windowDays })
       const stocks = normalizeBackendEvents(portfolioEvents)
-      return mergeEvents(bonds, stocks)
-        .filter(e => matchesFilter(e, filter))
+      return mergeEvents(bonds, stocks).filter(e => matchesFilter(e, filter))
     }
-    // tab === 'popular'
     return normalizeBackendEvents(popularEvents)
       .map(e => ({ ...e, inPortfolio: userTickerSet.has(e.ticker) }))
       .filter(e => matchesFilter(e, filter))
   }, [tab, positions, portfolioEvents, popularEvents, filter, windowDays, userTickerSet])
 
-  const byDate = useMemo(() => groupEventsByDate(visibleEvents), [visibleEvents])
+  // KPI metrics — calculadas del set de eventos sin filtro (más estable)
+  const kpiEvents = useMemo(() => {
+    if (tab === 'portfolio') {
+      const bonds = upcomingBondEvents(positions, { windowDays })
+      const stocks = normalizeBackendEvents(portfolioEvents)
+      return mergeEvents(bonds, stocks)
+    }
+    return normalizeBackendEvents(popularEvents)
+      .map(e => ({ ...e, inPortfolio: userTickerSet.has(e.ticker) }))
+  }, [tab, positions, portfolioEvents, popularEvents, windowDays, userTickerSet])
 
   const containerClass = embedded ? '' : 'page-shell-wide'
   return (
@@ -195,12 +199,11 @@ export default function Events({ embedded = false }) {
         />
       )}
 
-      {/* Sub-tabs Para ti / Popular — pills para diferenciarlos del nivel
-          superior (Novedades usa border-b prominent). */}
+      {/* Sub-tabs Para ti / Popular — pills. */}
       <div
         role="tablist"
         aria-label="Tipo de eventos"
-        className="flex items-center gap-1.5 mb-3 flex-wrap"
+        className="flex items-center gap-1.5 mb-4 flex-wrap"
       >
         {TABS.map(t => {
           const active = tab === t.value
@@ -222,50 +225,41 @@ export default function Events({ embedded = false }) {
         })}
       </div>
 
-      {/* Subtítulo dinámico de la tab activa */}
-      <p className="text-xs text-ink-2 mb-4">
-        {TABS.find(t => t.value === tab)?.desc}
-      </p>
-
-      {/* Controles: ventana + filtro */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <div className="flex items-center gap-2">
-          <Calendar size={14} strokeWidth={1.75} className="text-ink-2" />
-          <span className="text-xs text-ink-2 font-mono">Ventana:</span>
-          {WINDOW_OPTIONS.map(opt => (
-            <button
-              key={opt.value}
-              onClick={() => setWindowDays(opt.value)}
-              className={`text-xs px-2.5 py-1 rounded-sm border transition ${
-                windowDays === opt.value
-                  ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40'
-                  : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Filter size={14} strokeWidth={1.75} className="text-ink-2" />
-          <span className="text-xs text-ink-2 font-mono">Tipo:</span>
-          {FILTER_OPTIONS.map(opt => (
-            <button
-              key={opt.value}
-              onClick={() => setFilter(opt.value)}
-              className={`text-xs px-2.5 py-1 rounded-sm border transition ${
-                filter === opt.value
-                  ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40'
-                  : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+      {/* KPI Strip — el primer vistazo. Sin caja externa: 4 celdas con divisores. */}
+      <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
+        <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} portfolioTotalUsd={portfolioTotalUsd} tickerValueUsd={tickerValueUsd} />
       </div>
 
-      {loading && <p className="text-sm text-ink-2 font-mono">Cargando eventos…</p>}
+      {/* Controles: ventana + filtro — compactos, una sola línea cuando hay espacio. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3 mb-4 px-1">
+        <ControlGroup icon={<Calendar size={12} strokeWidth={1.75} />} label="Ventana">
+          {WINDOW_OPTIONS.map(opt => (
+            <ControlPill
+              key={opt.value}
+              active={windowDays === opt.value}
+              onClick={() => setWindowDays(opt.value)}
+            >{opt.label}</ControlPill>
+          ))}
+        </ControlGroup>
+        <ControlGroup icon={<Filter size={12} strokeWidth={1.75} />} label="Tipo">
+          {FILTER_OPTIONS.map(opt => (
+            <ControlPill
+              key={opt.value}
+              active={filter === opt.value}
+              onClick={() => setFilter(opt.value)}
+            >{opt.label}</ControlPill>
+          ))}
+        </ControlGroup>
+      </div>
+
+      {/* Timeline strip — mini-viz de eventos por día en la ventana. */}
+      {!loading && kpiEvents.length > 0 && (
+        <TimelineStrip events={visibleEvents} windowDays={windowDays} />
+      )}
+
+      {loading && (
+        <p className="text-sm text-ink-2 font-mono py-8 text-center">Cargando eventos…</p>
+      )}
       {error && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-sm bg-rendi-warn/10 text-rendi-warn text-sm">
           <AlertCircle size={14} /> {error}
@@ -281,43 +275,284 @@ export default function Events({ embedded = false }) {
         />
       )}
 
+      {/* Tabla densa — la lista principal. */}
       {!loading && visibleEvents.length > 0 && (
-        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden">
-          {[...byDate.entries()].map(([date, events]) => (
-            <DateGroup
-              key={date}
-              date={date}
-              events={events}
-              tab={tab}
-              tickerValueUsd={tickerValueUsd}
-              portfolioTotalUsd={portfolioTotalUsd}
-            />
-          ))}
-        </div>
+        <EventTable
+          events={visibleEvents}
+          tab={tab}
+          tickerValueUsd={tickerValueUsd}
+          portfolioTotalUsd={portfolioTotalUsd}
+        />
       )}
 
       <p className="mt-6 text-[10px] text-ink-3 font-mono leading-snug">
         {tab === 'portfolio'
-          ? 'Eventos de bonos desde el cronograma teórico (bondSchedule). Earnings y dividendos via yfinance — fechas pueden cambiar hasta confirmación oficial.'
-          : 'Eventos macro hardcoded del calendario oficial (Fed, BLS, INDEC). Earnings via yfinance — fechas estimadas hasta confirmación de la empresa.'}
+          ? 'Bonos: cronograma teórico (bondSchedule). Earnings/dividendos via yfinance — fechas estimadas hasta confirmación oficial.'
+          : 'Macro: calendario oficial (Fed, BLS, INDEC). Earnings via yfinance — estimadas hasta confirmación.'}
       </p>
     </div>
   )
 }
 
-function DateGroup({ date, events, tab, tickerValueUsd, portfolioTotalUsd }) {
-  const relativeLabel = formatRelativeDate(date)
+// ─── KPI Strip ──────────────────────────────────────────────────────────────
+
+function KpiStripCells({ events, tab, windowDays, portfolioTotalUsd, tickerValueUsd }) {
+  const sorted = useMemo(
+    () => [...events].sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || '')),
+    [events]
+  )
+  const next = sorted[0]
+  const total = events.length
+  const confirmedCount = events.filter(e => e.confirmed).length
+  const confirmedPct = total > 0 ? confirmedCount / total : 0
+
+  // Suma de cobranzas esperadas en USD (sólo bonos del portfolio, ya en USD).
+  // Para amortizing-coupon bonds, details.total puede ser una mezcla de moneda
+  // — simplificamos sumando lo USD-denominated.
+  const totalUsd = useMemo(() => {
+    if (tab !== 'portfolio') return null
+    return events.reduce((sum, e) => {
+      if (!e.eventType?.startsWith('bond_')) return sum
+      const t = e.details?.total
+      const cur = e.details?.currency || 'USD'
+      if (typeof t !== 'number') return sum
+      // Sólo sumamos lo USD-direct (los ARS los reportamos aparte). Esto es
+      // conservador: si el bono es CER/ARS lo dejamos fuera del KPI USD.
+      if (cur === 'USD') return sum + t
+      return sum
+    }, 0)
+  }, [events, tab])
+
+  const inPortfolioCount = tab === 'popular'
+    ? events.filter(e => e.inPortfolio).length
+    : null
+
+  // Determinar countdown del próximo evento.
+  const daysToNext = next ? daysUntil(next.eventDate) : null
+  const nextLabel = daysToNext == null
+    ? '—'
+    : daysToNext === 0 ? 'HOY'
+    : daysToNext === 1 ? 'MAÑANA'
+    : `EN ${daysToNext}D`
+
+  const nextSubLabel = next
+    ? (isMacroEvent(next) ? (next.details?.title || 'macro') : next.ticker)
+    : 'sin eventos próximos'
+
   return (
-    <div>
-      <div className="sticky top-0 z-10 px-4 py-2 border-b border-slate-200 dark:border-line bg-slate-50/95 dark:bg-bg-2/95 backdrop-blur-sm flex items-baseline justify-between">
-        <span className="text-sm font-semibold text-ink-0">{relativeLabel}</span>
-        <span className="text-[10px] text-ink-3 font-mono">
-          {events.length} {events.length === 1 ? 'evento' : 'eventos'}
-        </span>
+    <>
+      <KpiCell
+        label="Próximo"
+        value={nextLabel}
+        sub={nextSubLabel}
+        tone={daysToNext === 0 || daysToNext === 1 ? 'accent' : 'neutral'}
+      />
+      <KpiCell
+        label={`Total ${windowDays}D`}
+        value={total}
+        sub={total === 1 ? 'evento' : 'eventos'}
+      />
+      {tab === 'portfolio' ? (
+        <KpiCell
+          label="A cobrar"
+          value={totalUsd > 0 ? `$${formatCompact(totalUsd)}` : '—'}
+          sub="bonos USD"
+          tone={totalUsd > 0 ? 'pos' : 'neutral'}
+        />
+      ) : (
+        <KpiCell
+          label="En tu cartera"
+          value={inPortfolioCount}
+          sub={`de ${total}`}
+          tone={inPortfolioCount > 0 ? 'accent' : 'neutral'}
+        />
+      )}
+      <KpiCell
+        label="Confirmados"
+        value={`${Math.round(confirmedPct * 100)}%`}
+        sub={`${confirmedCount}/${total}`}
+      />
+    </>
+  )
+}
+
+function KpiCell({ label, value, sub, tone = 'neutral' }) {
+  const valueColor =
+    tone === 'pos'    ? 'text-rendi-pos' :
+    tone === 'accent' ? 'text-rendi-accent' :
+    tone === 'warn'   ? 'text-rendi-warn' :
+                        'text-ink-0'
+  return (
+    <div className="px-4 py-3">
+      <p className="label-mono">{label}</p>
+      <p className={`data-hero ${valueColor} mt-1`}>{value}</p>
+      {sub && <p className="mt-0.5 text-[11px] font-mono text-ink-3 truncate">{sub}</p>}
+    </div>
+  )
+}
+
+// ─── Controls ───────────────────────────────────────────────────────────────
+
+function ControlGroup({ icon, label, children }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-ink-3">{icon}</span>
+      <span className="label-mono">{label}</span>
+      <div className="flex items-center gap-1">{children}</div>
+    </div>
+  )
+}
+
+function ControlPill({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-[11px] font-mono px-2 py-1 rounded-sm border transition ${
+        active
+          ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40'
+          : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3 hover:text-ink-1'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+// ─── Timeline strip ─────────────────────────────────────────────────────────
+//
+// Visualización fintech: barras verticales una por día. Altura proporcional
+// a #eventos. Color: rendi-accent (bonos/portfolio), purple (earnings),
+// blue (dividendos), green/warn (macro). Hover muestra detalle.
+
+function TimelineStrip({ events, windowDays }) {
+  const buckets = useMemo(() => buildDayBuckets(events, windowDays), [events, windowDays])
+  const maxCount = Math.max(1, ...buckets.map(b => b.total))
+  if (buckets.every(b => b.total === 0)) return null
+
+  return (
+    <div className="bg-bg-1 border border-line rounded mb-4 p-3 sm:p-4">
+      <div className="flex items-center justify-between mb-2">
+        <p className="label-mono">Distribución</p>
+        <p className="text-[10px] font-mono text-ink-3 tracking-wider uppercase">
+          {windowDays} días · {events.length} {events.length === 1 ? 'evento' : 'eventos'}
+        </p>
       </div>
-      <ul className="divide-y divide-slate-100 dark:divide-line/40">
-        {events.map((ev, i) => (
-          <EventItem
+      <div className="relative">
+        <div className="flex items-end gap-[2px] h-12 sm:h-14">
+          {buckets.map(b => {
+            const h = b.total > 0 ? Math.max(8, (b.total / maxCount) * 100) : 4
+            // Color del segmento más dominante de ese día
+            const tone = b.total === 0
+              ? 'bg-line/40'
+              : dominantTone(b)
+            return (
+              <div
+                key={b.iso}
+                title={`${b.label} · ${b.total} ${b.total === 1 ? 'evento' : 'eventos'}`}
+                className="flex-1 min-w-[3px] relative group"
+              >
+                <div
+                  className={`w-full rounded-sm ${tone} transition-opacity opacity-80 group-hover:opacity-100`}
+                  style={{ height: `${h}%` }}
+                />
+              </div>
+            )
+          })}
+        </div>
+        {/* Etiquetas de inicio / mitad / fin */}
+        <div className="flex justify-between mt-1 text-[9px] font-mono text-ink-3 tracking-wider uppercase">
+          <span>Hoy</span>
+          <span>+{Math.round(windowDays / 2)}d</span>
+          <span>+{windowDays}d</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function buildDayBuckets(events, windowDays) {
+  // Resolución adaptativa — si windowDays > 90, agrupamos por semanas para
+  // que la barra no se vea como una línea uniforme.
+  const bucketSize = windowDays <= 30 ? 1 : windowDays <= 90 ? 2 : 7
+  const numBuckets = Math.ceil(windowDays / bucketSize)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const buckets = Array.from({ length: numBuckets }, (_, i) => {
+    const start = new Date(today.getTime() + i * bucketSize * 86400000)
+    return {
+      iso: start.toISOString().slice(0, 10),
+      label: formatBucketLabel(start, bucketSize),
+      total: 0,
+      bonds: 0,
+      earnings: 0,
+      dividends: 0,
+      macro: 0,
+    }
+  })
+
+  for (const ev of events) {
+    if (!ev.eventDate) continue
+    const d = new Date(ev.eventDate + 'T00:00:00')
+    const diff = Math.floor((d.getTime() - today.getTime()) / 86400000)
+    if (diff < 0 || diff >= windowDays) continue
+    const idx = Math.floor(diff / bucketSize)
+    if (idx >= numBuckets) continue
+    const b = buckets[idx]
+    b.total += 1
+    if (ev.eventType?.startsWith('bond_')) b.bonds += 1
+    else if (ev.eventType === 'earnings') b.earnings += 1
+    else if (ev.eventType === 'ex_dividend' || ev.eventType === 'payment_date') b.dividends += 1
+    else if (ev.eventType === 'macro') b.macro += 1
+  }
+
+  return buckets
+}
+
+function dominantTone(bucket) {
+  // Pick highest-count category for the visual tone.
+  const cats = [
+    { n: bucket.bonds,     cls: 'bg-amber-500/70  dark:bg-amber-400/70' },
+    { n: bucket.earnings,  cls: 'bg-purple-500/70 dark:bg-purple-400/70' },
+    { n: bucket.dividends, cls: 'bg-blue-500/70   dark:bg-blue-400/70' },
+    { n: bucket.macro,     cls: 'bg-rendi-pos/70' },
+  ]
+  cats.sort((a, b) => b.n - a.n)
+  return cats[0].n > 0 ? cats[0].cls : 'bg-ink-3/30'
+}
+
+function formatBucketLabel(date, bucketSize) {
+  if (bucketSize === 1) {
+    return formatRelativeDate(date.toISOString().slice(0, 10))
+  }
+  const end = new Date(date.getTime() + (bucketSize - 1) * 86400000)
+  const fmt = (d) => d.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' }).replace('.', '')
+  return `${fmt(date)} → ${fmt(end)}`
+}
+
+// ─── Event Table ────────────────────────────────────────────────────────────
+
+function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd }) {
+  // Pre-ordenamos por fecha
+  const sorted = useMemo(
+    () => [...events].sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || '')),
+    [events]
+  )
+
+  return (
+    <div className="bg-bg-1 border border-line rounded overflow-hidden">
+      {/* Header — pinned, label-mono columns */}
+      <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
+        <div className="label-mono">Fecha</div>
+        <div className="label-mono">Activo</div>
+        <div className="label-mono">Tipo</div>
+        <div className="label-mono">Detalle</div>
+        <div className="label-mono text-right">Monto</div>
+        <div className="label-mono text-right">{tab === 'portfolio' ? 'Impact' : 'Cartera'}</div>
+      </div>
+      <ul className="divide-y divide-line/40">
+        {sorted.map((ev, i) => (
+          <EventRow
             key={`${ev.ticker}:${ev.eventType}:${ev.eventDate}:${i}`}
             event={ev}
             tab={tab}
@@ -330,131 +565,192 @@ function DateGroup({ date, events, tab, tickerValueUsd, portfolioTotalUsd }) {
   )
 }
 
-function EventItem({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
-  const { ticker, broker, eventType, confirmed, inPortfolio, details } = event
+function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
+  const { ticker, eventType, eventDate, confirmed, inPortfolio, details } = event
   const isMacro = isMacroEvent(event)
   const country = details?.country
   const macroTitle = details?.title
 
-  // Impact %: valor del ticker / valor total del portfolio
   const impactPct = (tab === 'portfolio' && tickerValueUsd && portfolioTotalUsd > 0)
     ? (tickerValueUsd.get(ticker) || 0) / portfolioTotalUsd
     : null
 
+  const daysToEvent = daysUntil(eventDate)
+  const dateTone =
+    daysToEvent === 0 ? 'text-rendi-accent' :
+    daysToEvent <= 1  ? 'text-ink-0' :
+                        'text-ink-2'
+
+  const amountNode = renderAmount(event)
+  const detailNode = renderDetail(event)
+
   return (
-    <li className="px-4 py-3 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-bg-2/40">
-      {/* Logo: bandera para macro, AssetLogo para tickers */}
-      {isMacro ? (
-        <div className="w-8 h-8 rounded-full bg-bg-3 border border-line flex items-center justify-center text-lg flex-shrink-0">
-          {countryFlag(country)}
-        </div>
-      ) : (
-        <AssetLogo asset={ticker} size={32} />
-      )}
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap mb-0.5">
-          <span className="font-semibold text-ink-0 text-sm tabular">
-            {isMacro ? macroTitle || ticker : ticker}
-          </span>
-          {broker && (
-            <span className="text-[10px] font-mono text-ink-2">· {broker}</span>
-          )}
-          <EventBadge eventType={eventType} />
-          {tab === 'popular' && inPortfolio && (
-            <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/40 inline-flex items-center gap-1">
-              <Eye size={9} strokeWidth={1.75} />
-              EN TU CARTERA
-            </span>
-          )}
-        </div>
-        <EventDetails event={event} />
-        {/* Impact % en "Para ti" — la diferenciación de Rendi vs Delta */}
-        {tab === 'portfolio' && impactPct != null && impactPct > 0.0001 && (
-          <p className="text-[10px] text-rendi-accent font-mono mt-0.5">
-            {pct(impactPct)} de tu cartera
-          </p>
+    <li className="grid grid-cols-[64px_1fr] md:grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-3 items-center hover:bg-bg-2/40 transition-colors">
+      {/* Fecha — countdown + fecha corta abajo */}
+      <div className="flex flex-col">
+        <span className={`text-xs font-mono font-semibold uppercase tracking-wider ${dateTone}`}>
+          {daysToEvent === 0 ? 'HOY' : daysToEvent === 1 ? 'MAÑANA' : `+${daysToEvent}D`}
+        </span>
+        <span className="text-[10px] font-mono text-ink-3 mt-0.5">
+          {shortDate(eventDate)}
+        </span>
+      </div>
+
+      {/* Activo: logo + ticker — en mobile ocupa el resto del row */}
+      <div className="flex items-center gap-2.5 min-w-0">
+        {isMacro ? (
+          <div className="w-7 h-7 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-base flex-shrink-0">
+            {countryFlag(country)}
+          </div>
+        ) : (
+          <AssetLogo asset={ticker} size={28} />
         )}
-        {!confirmed && (
-          <p className="text-[10px] text-ink-3 font-mono mt-0.5 opacity-70">
-            · estimado
-          </p>
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="font-semibold text-ink-0 text-sm tabular truncate">
+              {isMacro ? macroTitle || ticker : ticker}
+            </span>
+            {tab === 'popular' && inPortfolio && (
+              <span title="En tu cartera" className="text-rendi-accent shrink-0">
+                <Eye size={11} strokeWidth={2} />
+              </span>
+            )}
+          </div>
+          {/* En mobile mostramos tipo + detalle aquí, en desktop van en columnas */}
+          <div className="md:hidden flex items-center gap-2 mt-0.5 text-[11px] text-ink-2 font-mono">
+            <EventBadge eventType={eventType} />
+            <span className="truncate">{detailNode}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Tipo — solo desktop */}
+      <div className="hidden md:flex items-center">
+        <EventBadge eventType={eventType} />
+      </div>
+
+      {/* Detalle — solo desktop */}
+      <div className="hidden md:block text-[12px] text-ink-2 font-mono leading-snug truncate">
+        {detailNode}
+        {!confirmed && <span className="ml-1 text-ink-3 opacity-70">· est.</span>}
+      </div>
+
+      {/* Monto — siempre, alineado derecha en desktop */}
+      <div className="hidden md:block text-right text-sm font-mono tabular">
+        {amountNode}
+      </div>
+
+      {/* Impact / Cartera — sólo desktop, sólo si aplica */}
+      <div className="hidden md:block text-right text-xs font-mono">
+        {tab === 'portfolio' && impactPct != null && impactPct > 0.0001 ? (
+          <span className="text-rendi-accent">{pct(impactPct)}</span>
+        ) : tab === 'popular' && inPortfolio ? (
+          <span className="text-rendi-accent text-[10px] tracking-wider uppercase">SÍ</span>
+        ) : (
+          <span className="text-ink-3">—</span>
+        )}
+      </div>
+
+      {/* Mobile: monto + impact en una fila pegada al ticker */}
+      <div className="md:hidden col-start-2 -mt-1 flex items-center justify-end gap-2 text-xs font-mono tabular">
+        {amountNode}
+        {tab === 'portfolio' && impactPct != null && impactPct > 0.0001 && (
+          <span className="text-rendi-accent">· {pct(impactPct)}</span>
         )}
       </div>
     </li>
   )
 }
 
-function EventDetails({ event }) {
+function renderDetail(event) {
   const { eventType, details } = event
   if (eventType === 'macro') {
+    return `${details?.country || ''} · ${macroCategoryLabel(details?.category)}`
+  }
+  if (eventType === 'earnings') {
+    return details?.eps_estimate != null
+      ? `EPS est. $${details.eps_estimate}`
+      : 'Resultados trimestrales'
+  }
+  if (eventType === 'ex_dividend') {
+    return details?.dividend_per_share != null
+      ? `Div $${details.dividend_per_share}/acción`
+      : 'Fecha ex-dividendo'
+  }
+  if (eventType?.startsWith('bond_')) {
+    const cur = details?.currency || 'USD'
+    if (details?.coupon > 0 && details?.amort > 0) {
+      return `Cupón ${cur} ${details.coupon.toFixed(2)} + amort ${cur} ${details.amort.toFixed(2)}`
+    }
+    if (details?.coupon > 0) return `Cupón ${cur} ${details.coupon.toFixed(2)}`
+    if (details?.amort > 0)  return `${eventType === 'bond_maturity' ? 'Vencimiento' : 'Amortización'} ${cur} ${details.amort.toFixed(2)}`
+  }
+  return ''
+}
+
+function renderAmount(event) {
+  const { eventType, details } = event
+  if (eventType?.startsWith('bond_') && typeof details?.total === 'number') {
+    const cur = details.currency || 'USD'
     return (
-      <p className="text-[11px] text-ink-2 font-mono">
-        {details?.country} · {macroCategoryLabel(details?.category)}
-      </p>
+      <span className="text-rendi-pos">
+        +{cur} {formatCompact(details.total)}
+      </span>
+    )
+  }
+  if (eventType === 'ex_dividend' && details?.dividend_per_share != null) {
+    return (
+      <span className="text-rendi-pos">+${details.dividend_per_share}/acc</span>
     )
   }
   if (eventType === 'earnings') {
-    return (
-      <p className="text-[11px] text-ink-2 font-mono">
-        {details?.eps_estimate != null
-          ? <>EPS estimado: <span className="text-ink-0 font-semibold">${details.eps_estimate}</span></>
-          : 'Reporta resultados trimestrales.'}
-      </p>
-    )
+    return <span className="text-ink-3">—</span>
   }
-  if (eventType === 'ex_dividend') {
-    return (
-      <p className="text-[11px] text-ink-2 font-mono">
-        {details?.dividend_per_share != null
-          ? <>Dividendo: <span className="text-rendi-pos font-semibold">${details.dividend_per_share}/acción</span></>
-          : 'Fecha ex-dividendo'}
-      </p>
-    )
+  if (eventType === 'macro') {
+    return <span className="text-ink-3">—</span>
   }
-  if (eventType?.startsWith('bond_')) {
-    const currency = details?.currency || 'USD'
-    if (details?.coupon > 0 && details?.amort > 0) {
-      return (
-        <p className="text-[11px] text-ink-2 font-mono">
-          Cupón <span className="text-rendi-pos">{currency} {details.coupon.toFixed(2)}</span>
-          {' + amort '}
-          <span className="text-rendi-accent">{currency} {details.amort.toFixed(2)}</span>
-          {' = '}
-          <span className="text-ink-0 font-semibold">{currency} {details.total.toFixed(2)}</span>
-        </p>
-      )
-    }
-    if (details?.coupon > 0) {
-      return (
-        <p className="text-[11px] text-ink-2 font-mono">
-          Cupón: <span className="text-rendi-pos font-semibold">{currency} {details.coupon.toFixed(2)}</span>
-        </p>
-      )
-    }
-    if (details?.amort > 0) {
-      const isMaturity = eventType === 'bond_maturity'
-      return (
-        <p className="text-[11px] text-ink-2 font-mono">
-          {isMaturity ? 'Pago final' : 'Amortización'}: <span className="text-rendi-accent font-semibold">{currency} {details.amort.toFixed(2)}</span>
-        </p>
-      )
-    }
-  }
-  return null
+  return <span className="text-ink-3">—</span>
 }
 
-// Helpers locales
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function daysUntil(iso) {
+  if (!iso) return null
+  const d = new Date(iso + 'T00:00:00')
+  const t = new Date()
+  t.setHours(0, 0, 0, 0)
+  return Math.round((d.getTime() - t.getTime()) / 86400000)
+}
+
+function shortDate(iso) {
+  if (!iso) return ''
+  try {
+    const d = new Date(iso + 'T00:00:00')
+    return d.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' }).replace('.', '')
+  } catch {
+    return iso
+  }
+}
+
 function macroCategoryLabel(c) {
   switch (c) {
     case 'fed_rate':   return 'Política monetaria'
     case 'cpi':        return 'Inflación'
     case 'employment': return 'Empleo'
     case 'gdp':        return 'PBI'
-    default:           return c || 'Evento macro'
+    default:           return c || 'Macro'
   }
 }
 
-// Construir lista de symbols para /prices (igual que Positions.jsx)
+// Formato compacto para amounts: 1234.56 → "1,234.56" / 1234567 → "1.23M"
+function formatCompact(n) {
+  if (n == null || isNaN(n)) return '—'
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M'
+  if (abs >= 10_000)    return (n / 1_000).toFixed(1) + 'K'
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
 function collectPriceSymbols(positions, brokers) {
   const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
   const usdtBrokers = new Set(brokers.filter(b => b.currency !== 'ARS').map(b => b.name))

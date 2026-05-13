@@ -1,17 +1,17 @@
 // News — feed de noticias del mercado + personalizado al portfolio.
 // ════════════════════════════════════════════════════════════════════════════
-// Dos vistas (tabs):
+// Diseño fintech (no foro):
 //
+//   • KPI strip arriba: total noticias, tickers cubiertos, source spread, último.
+//   • Featured "hero" — la noticia más reciente, con tratamiento prominente.
+//   • Grid de tiles compactos (2-3 cols) — no lista vertical.
+//   • Chips de filtro por ticker (sólo en tab "Para ti").
+//
+// Dos vistas:
 //   • Para ti: noticias de los tickers en el portfolio del user.
-//     Source: Google News RSS por ticker, fetcheado server-side.
-//
-//   • Mercado: noticias macro y de índices populares (S&P, FED, Merval, BCRA).
-//     Source: Google News RSS por queries hardcoded.
-//
-// Diseño minimal: lista, no feed infinito. ~15-20 noticias por tab.
-// Click → abre la noticia original en tab nueva.
+//   • Mercado: noticias macro y de índices populares.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Newspaper, ExternalLink, AlertCircle } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
@@ -21,14 +21,12 @@ import { api } from '../utils/api'
 
 const TABS = [
   { value: 'portfolio', label: 'Para ti',  desc: 'Noticias de los activos de tu cartera' },
-  { value: 'market',    label: 'Mercado', desc: 'Noticias macro y de índices populares' },
+  { value: 'market',    label: 'Mercado', desc: 'Macro, índices y bancos centrales' },
 ]
 
 const LIMIT = 25
 const TAB_VALUES = TABS.map(t => t.value)
 
-// `embedded=true` oculta el PageHeader interno (uso desde Novedades.jsx) y
-// persiste el sub-tab en URL via ?sub=portfolio|market para deep-linking.
 export default function News({ embedded = false }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const urlSub = searchParams.get('sub')
@@ -54,6 +52,7 @@ export default function News({ embedded = false }) {
   const [marketNews, setMarketNews] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [tickerFilter, setTickerFilter] = useState(null)  // null = sin filtro
 
   useEffect(() => {
     loadAll()
@@ -82,7 +81,24 @@ export default function News({ embedded = false }) {
     }
   }
 
-  const visibleNews = tab === 'portfolio' ? portfolioNews : marketNews
+  const rawNews = tab === 'portfolio' ? portfolioNews : marketNews
+  const visibleNews = useMemo(() => {
+    if (tab !== 'portfolio' || !tickerFilter) return rawNews
+    return rawNews.filter(n => n.ticker === tickerFilter)
+  }, [rawNews, tab, tickerFilter])
+
+  // Lista de tickers presentes en las noticias del portfolio (para chips)
+  const portfolioTickers = useMemo(() => {
+    const counts = new Map()
+    for (const n of portfolioNews) {
+      if (!n.ticker) continue
+      counts.set(n.ticker, (counts.get(n.ticker) || 0) + 1)
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])
+  }, [portfolioNews])
+
+  // KPIs
+  const kpi = useMemo(() => computeKpis(rawNews, tab), [rawNews, tab])
 
   const containerClass = embedded ? '' : 'page-shell-wide'
   return (
@@ -94,11 +110,11 @@ export default function News({ embedded = false }) {
         />
       )}
 
-      {/* Sub-tabs Para ti / Mercado — pills (ver Events.jsx para racional). */}
+      {/* Sub-tabs Para ti / Mercado — pills. */}
       <div
         role="tablist"
         aria-label="Origen de noticias"
-        className="flex items-center gap-1.5 mb-3 flex-wrap"
+        className="flex items-center gap-1.5 mb-4 flex-wrap"
       >
         {TABS.map(t => {
           const active = tab === t.value
@@ -107,7 +123,7 @@ export default function News({ embedded = false }) {
               key={t.value}
               role="tab"
               aria-selected={active}
-              onClick={() => setTab(t.value)}
+              onClick={() => { setTab(t.value); setTickerFilter(null) }}
               className={`text-xs px-3 py-1.5 rounded-full border transition ${
                 active
                   ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
@@ -120,11 +136,45 @@ export default function News({ embedded = false }) {
         })}
       </div>
 
-      <p className="text-xs text-ink-2 mb-4">
-        {TABS.find(t => t.value === tab)?.desc}
-      </p>
+      {/* KPI strip */}
+      <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
+        <KpiCell label="Noticias" value={kpi.total} sub={tab === 'portfolio' ? 'tu cartera' : 'mercado'} />
+        <KpiCell
+          label={tab === 'portfolio' ? 'Tickers' : 'Fuentes'}
+          value={tab === 'portfolio' ? kpi.uniqueTickers : kpi.uniqueSources}
+          sub={tab === 'portfolio' ? 'con noticias' : 'distintas'}
+        />
+        <KpiCell label="Hoy" value={kpi.todayCount} sub="< 24h" tone={kpi.todayCount > 0 ? 'accent' : 'neutral'} />
+        <KpiCell label="Última" value={kpi.lastRelative} sub={kpi.lastSource || '—'} />
+      </div>
 
-      {loading && <p className="text-sm text-ink-2 font-mono">Cargando noticias…</p>}
+      {/* Chips de filtro por ticker — sólo "Para ti" */}
+      {tab === 'portfolio' && portfolioTickers.length > 1 && (
+        <div className="flex items-center gap-1.5 mb-4 overflow-x-auto -mx-1 px-1 pb-1">
+          <span className="label-mono shrink-0 pr-1">Filtrar</span>
+          <TickerChip
+            label="Todos"
+            count={portfolioNews.length}
+            active={!tickerFilter}
+            onClick={() => setTickerFilter(null)}
+          />
+          {portfolioTickers.slice(0, 12).map(([t, count]) => (
+            <TickerChip
+              key={t}
+              label={t}
+              count={count}
+              active={tickerFilter === t}
+              onClick={() => setTickerFilter(t === tickerFilter ? null : t)}
+            />
+          ))}
+        </div>
+      )}
+
+      {loading && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {[1,2,3,4,5,6].map(i => <NewsTileSkeleton key={i} />)}
+        </div>
+      )}
       {error && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-sm bg-rendi-warn/10 text-rendi-warn text-sm">
           <AlertCircle size={14} /> {error}
@@ -135,88 +185,230 @@ export default function News({ embedded = false }) {
           icon={<Newspaper size={32} />}
           title="Sin noticias por ahora"
           subtitle={tab === 'portfolio'
-            ? 'No hay noticias recientes de los activos de tu cartera. Cargá posiciones o probá la pestaña "Mercado".'
+            ? 'No hay noticias recientes de los activos de tu cartera.'
             : 'No se pudieron traer noticias macro. Reintentá más tarde.'}
         />
       )}
 
       {!loading && visibleNews.length > 0 && (
-        <ul className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden divide-y divide-slate-100 dark:divide-line/40">
-          {visibleNews.map(n => (
-            <NewsItem key={n.url} news={n} tab={tab} />
-          ))}
-        </ul>
+        <NewsGrid news={visibleNews} tab={tab} />
       )}
 
-      <p className="mt-6 text-[10px] text-ink-3 font-mono leading-snug">
-        Fuente: Google News RSS. Click sobre la noticia para abrir el artículo en su sitio original.
+      <p className="mt-6 text-[10px] text-ink-3 font-mono leading-snug tracking-wider uppercase">
+        Fuente · Google News RSS · click para abrir el artículo original
       </p>
     </div>
   )
 }
 
-function NewsItem({ news, tab }) {
-  const { title, summary, url, published_at, ticker, query_source, source } = news
-  // Sacar el nombre del medio del título — Google News pone " - <Medio>" al final.
-  const lastDashIdx = title.lastIndexOf(' - ')
-  const cleanTitle = lastDashIdx > 0 ? title.slice(0, lastDashIdx) : title
-  const sourceName = lastDashIdx > 0 ? title.slice(lastDashIdx + 3) : null
+// ─── Grid layout ────────────────────────────────────────────────────────────
+
+function NewsGrid({ news, tab }) {
+  if (news.length === 0) return null
+  // Primera noticia = "featured" (más prominente). Las demás van en grid.
+  const [featured, ...rest] = news
 
   return (
-    <li>
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="block px-4 py-3 hover:bg-slate-50 dark:hover:bg-bg-2/40 transition"
-      >
-        <div className="flex items-start gap-3">
-          {tab === 'portfolio' && ticker && (
-            <div className="shrink-0 mt-0.5">
-              <AssetLogo asset={ticker} size={32} />
-            </div>
-          )}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-2 flex-wrap mb-1">
-              {tab === 'portfolio' && ticker && (
-                <span className="text-xs font-semibold text-ink-0 font-mono">{ticker}</span>
-              )}
-              {sourceName && (
-                <span className="text-[10px] text-ink-3 font-mono">
-                  · {sourceName}
-                </span>
-              )}
-              <span className="text-[10px] text-ink-3 font-mono">
-                · {formatNewsDate(published_at)}
-              </span>
-            </div>
-            <p className="text-sm text-ink-0 leading-snug">{cleanTitle}</p>
-            {summary && (
-              <p className="text-[11px] text-ink-2 mt-1 leading-snug line-clamp-2">
-                {summary}
-              </p>
-            )}
-          </div>
-          <ExternalLink size={14} strokeWidth={1.5} className="text-ink-3 shrink-0 mt-1" />
+    <div className="space-y-3">
+      <NewsFeatured news={featured} tab={tab} />
+      {rest.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {rest.map(n => (
+            <NewsTile key={n.url} news={n} tab={tab} />
+          ))}
         </div>
-      </a>
-    </li>
+      )}
+    </div>
   )
 }
 
-// Fecha relativa simple para noticias: "hace 2h" / "hace 3d" / "12 may"
+function NewsFeatured({ news, tab }) {
+  const { title, summary, url, published_at, ticker } = news
+  const { cleanTitle, sourceName } = splitTitleSource(title)
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group block bg-bg-1 border border-line rounded p-4 sm:p-5 hover:border-rendi-accent/40 transition"
+    >
+      <div className="flex flex-col sm:flex-row gap-4 sm:gap-5">
+        {/* Side accent — un panel vertical color rendi-accent que distingue la featured */}
+        <div className="hidden sm:flex flex-col items-center w-1 self-stretch">
+          <span className="block w-[2px] flex-1 bg-rendi-accent/60 rounded-full" />
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-rendi-accent">
+              Destacada
+            </span>
+            {tab === 'portfolio' && ticker && (
+              <span className="flex items-center gap-1.5">
+                <AssetLogo asset={ticker} size={18} />
+                <span className="text-[11px] font-mono font-semibold text-ink-0">{ticker}</span>
+              </span>
+            )}
+            {sourceName && (
+              <span className="text-[10px] font-mono text-ink-3">· {sourceName}</span>
+            )}
+            <span className="text-[10px] font-mono text-ink-3">
+              · {formatNewsDate(published_at)}
+            </span>
+          </div>
+          <h3 className="text-base sm:text-lg text-ink-0 font-medium leading-snug group-hover:text-rendi-accent transition-colors">
+            {cleanTitle}
+          </h3>
+          {summary && (
+            <p className="text-[12px] text-ink-2 mt-2 leading-snug line-clamp-2">
+              {summary}
+            </p>
+          )}
+        </div>
+
+        <ExternalLink size={14} strokeWidth={1.5} className="text-ink-3 shrink-0 mt-1 self-start hidden sm:block" />
+      </div>
+    </a>
+  )
+}
+
+function NewsTile({ news, tab }) {
+  const { title, summary, url, published_at, ticker } = news
+  const { cleanTitle, sourceName } = splitTitleSource(title)
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group block bg-bg-1 border border-line rounded p-3.5 hover:border-rendi-accent/40 transition relative"
+    >
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        {tab === 'portfolio' && ticker && (
+          <span className="flex items-center gap-1">
+            <AssetLogo asset={ticker} size={16} />
+            <span className="text-[10px] font-mono font-semibold text-ink-0">{ticker}</span>
+          </span>
+        )}
+        {sourceName && (
+          <span className="text-[9px] font-mono text-ink-3 truncate">{sourceName}</span>
+        )}
+        <span className="ml-auto text-[9px] font-mono text-ink-3 tracking-wider uppercase">
+          {formatNewsDate(published_at)}
+        </span>
+      </div>
+      <p className="text-sm text-ink-0 leading-snug font-medium line-clamp-3 group-hover:text-rendi-accent transition-colors min-h-[60px]">
+        {cleanTitle}
+      </p>
+      {summary && (
+        <p className="text-[11px] text-ink-2 mt-2 leading-snug line-clamp-2">
+          {summary}
+        </p>
+      )}
+      <ExternalLink
+        size={11}
+        strokeWidth={1.5}
+        className="text-ink-3 absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity"
+      />
+    </a>
+  )
+}
+
+function NewsTileSkeleton() {
+  return (
+    <div className="bg-bg-1 border border-line rounded p-3.5 animate-pulse">
+      <div className="h-3 w-20 bg-bg-3 rounded mb-3" />
+      <div className="h-4 w-full bg-bg-3 rounded mb-2" />
+      <div className="h-4 w-3/4 bg-bg-3 rounded mb-3" />
+      <div className="h-3 w-full bg-bg-3/60 rounded" />
+    </div>
+  )
+}
+
+// ─── KPI strip ──────────────────────────────────────────────────────────────
+
+function KpiCell({ label, value, sub, tone = 'neutral' }) {
+  const valueColor =
+    tone === 'pos'    ? 'text-rendi-pos' :
+    tone === 'accent' ? 'text-rendi-accent' :
+                        'text-ink-0'
+  return (
+    <div className="px-4 py-3">
+      <p className="label-mono">{label}</p>
+      <p className={`data-hero ${valueColor} mt-1`}>{value}</p>
+      {sub && <p className="mt-0.5 text-[11px] font-mono text-ink-3 truncate">{sub}</p>}
+    </div>
+  )
+}
+
+function computeKpis(news, tab) {
+  const total = news.length
+  const tickers = new Set()
+  const sources = new Set()
+  let todayCount = 0
+  const now = Date.now()
+  for (const n of news) {
+    if (n.ticker) tickers.add(n.ticker)
+    const { sourceName } = splitTitleSource(n.title || '')
+    if (sourceName) sources.add(sourceName)
+    if (n.published_at) {
+      const d = new Date(n.published_at)
+      if (now - d.getTime() < 24 * 3600 * 1000) todayCount += 1
+    }
+  }
+  const last = news[0]
+  const lastRelative = last ? formatNewsDate(last.published_at) : '—'
+  const { sourceName: lastSource } = last ? splitTitleSource(last.title || '') : { sourceName: '' }
+  return {
+    total,
+    uniqueTickers: tab === 'portfolio' ? tickers.size : 0,
+    uniqueSources: sources.size,
+    todayCount,
+    lastRelative,
+    lastSource,
+  }
+}
+
+// ─── Chips de ticker ────────────────────────────────────────────────────────
+
+function TickerChip({ label, count, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`shrink-0 inline-flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded-full border transition ${
+        active
+          ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
+          : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3 hover:text-ink-1'
+      }`}
+    >
+      <span>{label}</span>
+      <span className={active ? 'text-rendi-accent/70' : 'text-ink-3'}>{count}</span>
+    </button>
+  )
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function splitTitleSource(title) {
+  // Google News añade " - <Medio>" al final de cada título.
+  if (!title) return { cleanTitle: '', sourceName: null }
+  const idx = title.lastIndexOf(' - ')
+  if (idx <= 0) return { cleanTitle: title, sourceName: null }
+  return { cleanTitle: title.slice(0, idx), sourceName: title.slice(idx + 3) }
+}
+
 function formatNewsDate(iso) {
   if (!iso) return ''
   try {
     const d = new Date(iso)
     const diffMs = Date.now() - d.getTime()
     const diffMin = Math.round(diffMs / 60000)
-    if (diffMin < 60) return `hace ${diffMin}m`
+    if (diffMin < 60) return `${diffMin}m`
     const diffHr = Math.round(diffMin / 60)
-    if (diffHr < 24) return `hace ${diffHr}h`
+    if (diffHr < 24) return `${diffHr}h`
     const diffDays = Math.round(diffHr / 24)
-    if (diffDays < 7) return `hace ${diffDays}d`
-    return d.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' })
+    if (diffDays < 7) return `${diffDays}d`
+    return d.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' }).replace('.', '')
   } catch {
     return iso
   }

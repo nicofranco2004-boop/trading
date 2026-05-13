@@ -1,19 +1,14 @@
 // Novedades — hub unificado de Eventos + Noticias.
 // ════════════════════════════════════════════════════════════════════════════
-// Reúne en una sola página los dos bloques de "qué pasa en el mercado y en
-// tu cartera". Reduce la complejidad del navbar (en lugar de 2 items, 1).
+// Reúne los dos bloques de "qué pasa en el mercado y en tu cartera". Reduce
+// la complejidad del navbar (en lugar de 2 items, 1).
 //
-// Implementación: usa los componentes <Events embedded /> y <News embedded />
-// existentes — cada uno se renderea sin PageHeader interno y queda dentro
-// de un único container con tabs de nivel superior.
-//
-// Las rutas /eventos y /noticias siguen funcionando, pero ahora redirigen
-// a /novedades?tab=… (ver App.jsx).
+// Diseño: PageHeader con live-dot. Tabs outer prominentes con icono. Cada
+// sección hija (Events/News) maneja su propio KPI strip + sub-tabs en URL.
 //
 // URL state:
-//   • ?tab=eventos|noticias  → sección activa (controlada por este componente)
-//   • ?sub=…                 → sub-tab dentro de cada sección (la maneja
-//                              el componente hijo via prop `embedded`).
+//   • ?tab=eventos|noticias  → sección activa (este componente)
+//   • ?sub=…                 → sub-tab dentro de la sección (componente hijo)
 
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -38,8 +33,7 @@ export default function Novedades() {
   const [searchParams, setSearchParams] = useSearchParams()
   const section = readSection(searchParams)
 
-  // Si llegamos a /novedades sin ?tab=, normalizamos la URL una vez para que
-  // los share-links y el back-button siempre tengan estado explícito.
+  // Normalizamos URL una vez si llegamos sin ?tab=
   useEffect(() => {
     if (!searchParams.get('tab')) {
       const next = new URLSearchParams(searchParams)
@@ -50,11 +44,9 @@ export default function Novedades() {
   }, [])
 
   function selectSection(value) {
-    // Al cambiar de sección reseteamos ?sub para que no quede un sub-tab
-    // de otra sección (ej: ?sub=market que sólo aplica a Noticias).
     const next = new URLSearchParams(searchParams)
     next.set('tab', value)
-    next.delete('sub')
+    next.delete('sub')  // reset sub-tab al cambiar de sección
     setSearchParams(next, { replace: true })
   }
 
@@ -62,16 +54,16 @@ export default function Novedades() {
     <div className="page-shell-wide">
       <PageHeader
         title="Novedades"
-        subtitle="Eventos financieros y noticias del mercado, en un solo lugar."
+        subtitle="Eventos financieros y noticias del mercado — todo en un solo lugar."
+        meta="Live · Google News + yfinance"
       />
 
-      {/* Tabs de nivel superior: outer tabs ─ visualmente más prominentes
-          (icon + texto, semibold, padding amplio). Los sub-tabs internos
-          de Events/News usan pills para evitar confusión jerárquica. */}
+      {/* Tabs outer — section selector con border-b prominente. Más grandes
+          que los sub-tabs internos (pills) para establecer jerarquía clara. */}
       <div
         role="tablist"
         aria-label="Secciones de Novedades"
-        className="flex items-center gap-1 mb-2 border-b border-slate-200 dark:border-line"
+        className="flex items-center gap-1 mb-5 border-b border-line"
       >
         {SECTIONS.map(s => {
           const Icon = s.icon
@@ -84,27 +76,28 @@ export default function Novedades() {
               aria-controls={`novedades-panel-${s.value}`}
               id={`novedades-tab-${s.value}`}
               onClick={() => selectSection(s.value)}
-              className={`flex items-center gap-2 px-4 py-2.5 text-[15px] font-semibold border-b-2 -mb-px transition ${
+              className={`group flex items-center gap-2 px-4 py-3 text-[15px] font-semibold border-b-2 -mb-px transition-colors ${
                 active
                   ? 'border-rendi-accent text-ink-0'
                   : 'border-transparent text-ink-2 hover:text-ink-0'
               }`}
             >
-              <Icon size={15} strokeWidth={1.75} />
+              <Icon
+                size={15}
+                strokeWidth={1.75}
+                className={active ? 'text-rendi-accent' : 'text-ink-3 group-hover:text-ink-1 transition-colors'}
+              />
               {s.label}
             </button>
           )
         })}
       </div>
 
-      {/* Contenido según sección — montamos sólo el panel activo para no
-          fetchear ambas APIs al entrar. Los hijos manejan su propio sub-tab
-          en URL (?sub=…) cuando embedded=true. */}
+      {/* Panel activo — montamos sólo uno para no fetchear ambas APIs al entrar. */}
       <div
         role="tabpanel"
         id={`novedades-panel-${section}`}
         aria-labelledby={`novedades-tab-${section}`}
-        className="mt-4"
       >
         {section === 'eventos'  && <Events  embedded />}
         {section === 'noticias' && <News    embedded />}
