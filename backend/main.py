@@ -5640,13 +5640,15 @@ def home_personal(uid: int = Depends(get_current_user)):
     """
     conn = get_db()
     try:
-        # Holdings del user → símbolos para fetchear quotes
+        # Holdings del user → símbolos para fetchear quotes.
+        # Bumeamos el cap a 100 (antes 30) para no recortar arbitrariamente
+        # portfolios diversificados — el _fetch_batch_quotes es un solo download.
         rows = conn.execute(
             """SELECT DISTINCT asset FROM positions
                 WHERE user_id = ? AND is_cash = 0
                   AND quantity > 0
                   AND asset NOT LIKE '%-%'  -- excluir cash-like duplicates
-                LIMIT 30""",
+                LIMIT 100""",
             (uid,),
         ).fetchall()
         symbols = [r["asset"] for r in rows if r["asset"]]

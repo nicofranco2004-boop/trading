@@ -114,9 +114,10 @@ class BriefingTest(unittest.TestCase):
         )
         self.assertEqual(cards, [])
 
-    def test_cap_total_at_4_cards(self):
-        # 3 holdings moviéndose fuerte + 2 earnings → debería capear a 4
-        for asset in ["ETH", "SOL", "DOGE"]:
+    def test_cap_total_at_8_cards(self):
+        # Cap actual = 8 (grid de 4 cols × 2 filas). Generamos suficientes
+        # movers + eventos para asegurar el cap.
+        for asset in ["ETH", "SOL", "DOGE", "ADA", "AVAX", "BNB", "XRP"]:
             self.conn.execute(
                 """INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested)
                    VALUES (?, 'Binance', ?, 0, 1, 100)""",
@@ -129,16 +130,20 @@ class BriefingTest(unittest.TestCase):
             self.conn, self.uid,
             all_quotes={
                 "BTC":  {"price": 80000, "change_pct": 5.0},
-                "ETH":  {"price": 3000, "change_pct": 4.0},
-                "SOL":  {"price": 100,  "change_pct": 3.0},
-                "DOGE": {"price": 0.3,  "change_pct": 6.0},
+                "ETH":  {"price": 3000,  "change_pct": 4.0},
+                "SOL":  {"price": 100,   "change_pct": 3.0},
+                "DOGE": {"price": 0.3,   "change_pct": 6.0},
+                "ADA":  {"price": 1,     "change_pct": 7.0},
+                "AVAX": {"price": 30,    "change_pct": 8.0},
+                "BNB":  {"price": 500,   "change_pct": 9.0},
+                "XRP":  {"price": 0.5,   "change_pct": 2.5},
             },
             portfolio_events=[
                 {"event_type": "earnings", "ticker": "BTC", "event_date": future},
                 {"event_type": "earnings", "ticker": "ETH", "event_date": future},
             ],
         )
-        self.assertLessEqual(len(cards), 4)
+        self.assertLessEqual(len(cards), 8)
 
 
 # ─── Market registry ─────────────────────────────────────────────────────────
