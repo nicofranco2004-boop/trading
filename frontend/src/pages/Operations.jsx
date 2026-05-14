@@ -225,8 +225,7 @@ export default function Operations() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-line text-[10px] font-mono uppercase tracking-label text-ink-3">
-                <th className="text-left px-4 py-2.5 font-medium w-[8px]"></th>
-                <th className="text-left px-3 py-2.5 font-medium">Fecha</th>
+                <th className="text-left px-4 py-2.5 font-medium">Fecha</th>
                 <th className="text-left px-3 py-2.5 font-medium">Broker</th>
                 <th className="text-left px-3 py-2.5 font-medium">Activo</th>
                 <th className="text-left px-3 py-2.5 font-medium">Tipo</th>
@@ -236,6 +235,7 @@ export default function Operations() {
                 <th className="text-right px-3 py-2.5 font-medium">P&L USD</th>
                 <th className="text-right px-3 py-2.5 font-medium">P&L %</th>
                 <th className="px-3 py-2.5 w-[60px]"></th>
+                <th className="px-3 py-2.5 w-[28px] text-center font-medium"></th>
               </tr>
             </thead>
             <tbody>
@@ -265,12 +265,7 @@ export default function Operations() {
                 const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
                 return (
                   <tr key={op.id} className="border-b border-line/30 hover:bg-bg-2/40 transition-colors">
-                    <td className="pl-3 pr-1 py-2 align-middle">
-                      {ArrowIcon
-                        ? <ArrowIcon size={14} strokeWidth={2} className={arrowColor} aria-label={isWin ? 'Ganancia' : 'Pérdida'} />
-                        : <span className="text-ink-3 text-xs">—</span>}
-                    </td>
-                    <td className="px-3 py-2 text-xs font-mono tabular text-ink-2">{op.date}</td>
+                    <td className="px-4 py-2 text-xs font-mono tabular text-ink-2">{op.date}</td>
                     <td className="px-3 py-2 text-xs text-ink-2">{op.broker}</td>
                     <td className="px-3 py-2 text-sm font-medium text-ink-0">{op.asset}</td>
                     <td className="px-3 py-2 text-[11px] font-mono uppercase tracking-caps text-ink-3">{prettyOpType(op.op_type)}</td>
@@ -292,6 +287,11 @@ export default function Operations() {
                           <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
                         </button>
                       </div>
+                    </td>
+                    <td className="pr-4 pl-1 py-2 align-middle text-right">
+                      {ArrowIcon
+                        ? <ArrowIcon size={16} strokeWidth={2.25} className={`inline-block ${arrowColor}`} aria-label={isWin ? 'Ganancia' : 'Pérdida'} />
+                        : <span className="text-ink-3 text-xs">—</span>}
                     </td>
                   </tr>
                 )
