@@ -351,6 +351,43 @@ class HomeBiasTest(unittest.TestCase):
         # Total ~5214, AR ~1414 (27%), INTL ~3800 (73%) → "positive" (20-50%) o "low"
         self.assertIn(result["severity"], ("positive", "low"))
 
+    def test_cedears_count_as_international(self):
+        """Bug fix: un CEDEAR (AAPL.BA en Cocos) es exposición económica
+        INTERNACIONAL, no AR. El wrapper es AR pero el subyacente es Apple."""
+        positions = [
+            # Solo CEDEARs en Cocos — antes daba 100% AR, ahora debe dar 100% INTL
+            {"broker": "Cocos", "asset": "AAPL.BA", "is_cash": 0, "quantity": 100, "invested": 1000000},
+            {"broker": "Cocos", "asset": "NVDA.BA", "is_cash": 0, "quantity": 50, "invested": 800000},
+            {"broker": "Cocos", "asset": "MSFT.BA", "is_cash": 0, "quantity": 30, "invested": 500000},
+        ]
+        result = detect_home_bias(positions)
+        # ar_pct debería ser 0 (todo es CEDEAR internacional) → severity medium
+        # (porque <5% en AR también es flagged como "casi sin exposición AR")
+        self.assertLess(result["evidence"]["ar_pct"], 5)
+        self.assertGreater(result["evidence"]["intl_pct"], 95)
+
+    def test_ar_bonds_count_as_ar(self):
+        """Bonos AR (AL30, GD30) son exposición AR real (riesgo país)."""
+        positions = [
+            {"broker": "Cocos", "asset": "AL30", "is_cash": 0, "quantity": 100, "invested": 5000000},
+            {"broker": "Cocos", "asset": "GD30", "is_cash": 0, "quantity": 100, "invested": 5000000},
+        ]
+        result = detect_home_bias(positions)
+        self.assertGreater(result["evidence"]["ar_pct"], 95)
+
+    def test_cedears_with_prices_use_current_value(self):
+        """Cuando hay precio actual, el valor USD debe ser price × qty / tc_blue,
+        no invested. Esto fixea el bug donde el total daba muy bajo."""
+        positions = [
+            {"broker": "Cocos", "asset": "AAPL.BA", "is_cash": 0, "quantity": 100, "buy_price": 18800, "invested": 1880000},
+        ]
+        # Precio actual subió: 22400 → valor = 22400 × 100 / 1415 = ~1583 USD
+        prices = {"AAPL.BA": 22400}
+        result = detect_home_bias(positions, prices)
+        # Debe usar el precio actual (más alto que invested al blue)
+        # invested USD = 1880000/1415 = 1329; current USD = 22400*100/1415 = 1583
+        self.assertGreater(result["evidence"]["intl_value_usd"], 1400)
+
 
 # ─── Detector 8: Cash drag ───────────────────────────────────────────────────
 

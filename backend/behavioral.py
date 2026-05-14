@@ -73,6 +73,133 @@ def _position_size_usd(op: Dict[str, Any]) -> float:
     return float(ep) * float(qty)
 
 
+# ─── Helpers de valuación + clasificación geográfica ─────────────────────────
+
+# Brokers AR-resident — la moneda nativa de las posiciones está en ARS.
+_AR_BROKER_HINTS = ("cocos", "iol", "bull", "balanz", "naranja", "pppi", "invertironline")
+
+# Prefijos de bonos soberanos AR. Pattern: 2 letras + dígito al menos.
+_AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX")
+
+# Acciones AR del Merval/panel local (NO CEDEARs). Lista curada — si aparece
+# un ticker AR poco común, cae al fallback más abajo.
+_AR_LOCAL_STOCKS = frozenset({
+    "GGAL", "YPFD", "BMA", "PAMP", "TEN", "CRES", "COME", "ALUA", "ERAR",
+    "MIRG", "CEPU", "EDN", "TGSU2", "TGNO4", "BBAR", "TRAN", "SUPV", "BYMA",
+    "VALO", "TXAR", "LOMA", "AGRO", "HARG", "CVH",
+})
+
+
+def _is_ars_broker(broker: Optional[str]) -> bool:
+    if not broker:
+        return False
+    b = broker.lower()
+    return any(h in b for h in _AR_BROKER_HINTS)
+
+
+def _is_ar_bond(asset: str) -> bool:
+    """True si el ticker matchea un bono soberano AR conocido."""
+    if not asset:
+        return False
+    a = asset.upper()
+    # PARY / DICY son nombres específicos
+    if a in ("PARY", "DICY"):
+        return True
+    # Pattern típico: 2-3 letras + dígito (AL30, GD35, TX26, TZX26, AE38, etc.)
+    for pref in _AR_BOND_PREFIXES:
+        if a.startswith(pref):
+            rest = a[len(pref):]
+            if rest and rest[0].isdigit():
+                return True
+    return False
+
+
+def _is_cedear(asset: str) -> bool:
+    """CEDEAR = ticker .BA que NO es un bono ni una acción AR local."""
+    if not asset:
+        return False
+    a = asset.upper()
+    if not a.endswith(".BA"):
+        return False
+    # Bonos AR a veces se exportan con .BA — primero filtrar esos
+    base = a[:-3]
+    if _is_ar_bond(base):
+        return False
+    if base in _AR_LOCAL_STOCKS:
+        return False
+    return True
+
+
+def _is_ar_economic_exposure(asset: str, broker: Optional[str] = None) -> bool:
+    """Exposición económica AR — distinto de "registrado en broker AR".
+
+    Un CEDEAR (AAPL.BA en Cocos) está REGISTRADO en un broker AR pero la
+    exposición económica es a Apple, no a Argentina. Para análisis de
+    home bias / riesgo país, lo que importa es la exposición económica.
+
+    Lo único que cuenta como AR:
+    - Bonos soberanos AR (AL30, GD30, etc.)
+    - Acciones del Merval locales (GGAL, YPFD, etc.)
+    - Cash ARS en cualquier broker (es exposición a peso)
+    """
+    if not asset:
+        # Sin asset clarificable — si está en broker AR, asumimos cash ARS
+        return _is_ars_broker(broker)
+    a = asset.upper()
+    if a == "ARS":
+        return True
+    if _is_ar_bond(a):
+        return True
+    if a in _AR_LOCAL_STOCKS:
+        return True
+    if _is_cedear(a):
+        # CEDEAR es internacional aunque esté en Cocos
+        return False
+    # Para CEDEARs registrados sin .BA (raro pero posible), si está en broker AR
+    # y NO es bono/acción AR conocida, probablemente es algo internacional.
+    # Default: NO es AR.
+    return False
+
+
+def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = None,
+                         tc_blue: float = 1415.0) -> float:
+    """Valor USD-equivalente de una position. Maneja:
+    - Cash (usa invested directo)
+    - Posiciones con precio actual disponible (price × quantity)
+    - Fallback a invested si no hay precio
+    - Conversión ARS → USD para brokers AR
+    """
+    if not p:
+        return 0.0
+    asset = (p.get("asset") or "").upper()
+    broker = p.get("broker") or ""
+    is_ars = _is_ars_broker(broker)
+    qty = p.get("quantity") or 0
+    invested_native = p.get("invested") or 0
+
+    # Cash ARS — convertir directo
+    if p.get("is_cash"):
+        if is_ars or asset == "ARS":
+            return float(invested_native) / tc_blue if tc_blue > 0 else 0.0
+        return float(invested_native)
+
+    # Para no-cash: preferimos precio actual × quantity
+    value_native = 0.0
+    if prices and qty:
+        price = prices.get(asset)
+        if price is None and not asset.endswith(".BA"):
+            price = prices.get(asset + ".BA")
+        if price and price > 0:
+            value_native = float(price) * float(qty)
+    if value_native <= 0:
+        value_native = float(invested_native)
+
+    # Conversión ARS → USD para brokers AR
+    if is_ars and tc_blue > 0:
+        return value_native / tc_blue
+    return value_native
+
+
 # ─── Detector 1: Disposition Effect ──────────────────────────────────────────
 
 
@@ -573,23 +700,9 @@ def detect_concentration(positions: List[Dict[str, Any]], prices: Optional[Dict[
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        # Si tengo prices, uso precio actual × quantity. Sino, uso invested.
-        price = (prices or {}).get(asset)
-        if price is None:
-            price = (prices or {}).get(asset + ".BA")
-        qty = p.get("quantity") or 0
-        if price is not None and qty:
-            value_native = price * qty
-        else:
-            value_native = p.get("invested") or 0
-        # Si el broker es ARS, convertir a USD al blue.
-        # Detección simple: si el invested original parece estar en pesos
-        # (>10000 sin precio en USD razonable), asumimos ARS.
-        broker = (p.get("broker") or "").lower()
-        if "cocos" in broker or "iol" in broker or "bull" in broker or "balanz" in broker:
-            value_usd = value_native / tc_blue
-        else:
-            value_usd = value_native
+        value_usd = _position_value_usd(p, prices, tc_blue)
+        if value_usd <= 0:
+            continue
         by_asset[asset] = by_asset.get(asset, 0) + value_usd
 
     if not by_asset:
@@ -662,44 +775,44 @@ def detect_concentration(positions: List[Dict[str, Any]], prices: Optional[Dict[
 
 def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str, float]] = None,
                       tc_blue: float = 1415.0) -> Dict[str, Any]:
-    """Home bias: tendencia a sobre-exponerse a activos del país propio.
-    Para retail AR, >65% en assets locales (CEDEARs, bonos AR, acciones AR)
-    es home bias clásico. <10% también es señal: bajo nivel de protección
-    en moneda local.
+    """Home bias: exposición económica a Argentina vs internacional.
+
+    CRÍTICO: usamos exposición ECONÓMICA, no nominal por broker. Un CEDEAR
+    (AAPL.BA en Cocos) está registrado en un broker AR pero la exposición
+    económica es a Apple. Cuenta como INTERNACIONAL.
+
+    Lo que cuenta como AR:
+    - Bonos soberanos AR (AL30, GD30, TX26, etc.)
+    - Acciones del Merval locales (GGAL, YPFD, BMA, PAMP, etc.)
+    - Cash ARS
+
+    Lo que cuenta como internacional:
+    - CEDEARs (AAPL.BA, NVDA.BA — el subyacente es US)
+    - Acciones / bonos / ETFs / crypto en brokers no-AR
     """
     if not positions:
         return _not_enough_data("home_bias", "No tenés posiciones para analizar.")
-
-    def is_ar_asset(p):
-        asset = (p.get("asset") or "").upper()
-        broker = (p.get("broker") or "").lower()
-        # Heurística: brokers AR + sufijo .BA + bonos AR conocidos
-        if "cocos" in broker or "iol" in broker or "bull" in broker or "balanz" in broker:
-            return True
-        if asset.endswith(".BA"):
-            return True
-        ar_bonds_prefix = ("AL", "GD", "AE", "TX", "TZ", "PAR", "DIC")
-        if any(asset.startswith(p) for p in ar_bonds_prefix) and len(asset) <= 5:
-            return True
-        return False
 
     ar_value = 0
     intl_value = 0
     for p in positions:
         if p.get("is_cash"):
+            # Cash ARS = AR; cash USD/USDT = internacional
+            value_usd = _position_value_usd(p, prices, tc_blue)
+            asset = (p.get("asset") or "").upper()
+            broker = p.get("broker") or ""
+            if asset == "ARS" or (_is_ars_broker(broker) and asset != "USD"):
+                ar_value += value_usd
+            else:
+                intl_value += value_usd
             continue
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        price = (prices or {}).get(asset) or (prices or {}).get(asset + ".BA")
-        qty = p.get("quantity") or 0
-        value_native = price * qty if (price and qty) else (p.get("invested") or 0)
-        broker = (p.get("broker") or "").lower()
-        if "cocos" in broker or "iol" in broker or "bull" in broker or "balanz" in broker:
-            value_usd = value_native / tc_blue
-        else:
-            value_usd = value_native
-        if is_ar_asset(p):
+        value_usd = _position_value_usd(p, prices, tc_blue)
+        if value_usd <= 0:
+            continue
+        if _is_ar_economic_exposure(asset, p.get("broker")):
             ar_value += value_usd
         else:
             intl_value += value_usd
@@ -764,7 +877,8 @@ def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str,
 # ─── Detector 8: Cash drag ───────────────────────────────────────────────────
 
 
-def detect_cash_drag(positions: List[Dict[str, Any]], tc_blue: float = 1415.0) -> Dict[str, Any]:
+def detect_cash_drag(positions: List[Dict[str, Any]], tc_blue: float = 1415.0,
+                      prices: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     """% del portfolio en cash. Cash en USD es razonable defensivo, pero
     cash ARS es destructivo dada la inflación. Tratamos los dos.
     """
@@ -775,12 +889,11 @@ def detect_cash_drag(positions: List[Dict[str, Any]], tc_blue: float = 1415.0) -
     cash_ars_usd_equiv = 0
     invested_usd = 0
     for p in positions:
-        broker = (p.get("broker") or "").lower()
-        is_ars_broker = any(s in broker for s in ("cocos", "iol", "bull", "balanz"))
-        invested_native = p.get("invested") or 0
-        value_usd = (invested_native / tc_blue) if is_ars_broker else invested_native
+        value_usd = _position_value_usd(p, prices, tc_blue)
         if p.get("is_cash"):
-            if is_ars_broker:
+            asset = (p.get("asset") or "").upper()
+            broker = p.get("broker") or ""
+            if asset == "ARS" or (_is_ars_broker(broker) and asset != "USD"):
                 cash_ars_usd_equiv += value_usd
             else:
                 cash_usd += value_usd
@@ -1077,11 +1190,7 @@ def detect_recency_bias(positions: List[Dict[str, Any]],
         current_price = prices.get(asset) or prices.get(asset + ".BA")
         if current_price is None or current_price <= 0:
             continue
-        # Invested al blue para comparar todo en USD
-        broker = (p.get("broker") or "").lower()
-        is_ars = any(s in broker for s in ("cocos", "iol", "bull", "balanz"))
-        invested_native = p.get("invested") or 0
-        invested_usd = invested_native / tc_blue if is_ars else invested_native
+        invested_usd = _position_value_usd(p, prices, tc_blue)
         if invested_usd <= 0:
             continue
         total_invested += invested_usd
@@ -1236,12 +1345,7 @@ def detect_sector_concentration(positions: List[Dict[str, Any]],
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        price = (prices or {}).get(asset) or (prices or {}).get(asset + ".BA")
-        qty = p.get("quantity") or 0
-        value_native = price * qty if (price and qty) else (p.get("invested") or 0)
-        broker = (p.get("broker") or "").lower()
-        is_ars = any(s in broker for s in ("cocos", "iol", "bull", "balanz"))
-        value_usd = value_native / tc_blue if is_ars else value_native
+        value_usd = _position_value_usd(p, prices, tc_blue)
         if value_usd <= 0:
             continue
         sector = _sector_for(asset)
