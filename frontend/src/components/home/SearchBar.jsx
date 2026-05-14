@@ -273,14 +273,22 @@ export default function SearchBar() {
     setQ('')
   }
 
-  async function addToWatchlist(symbol) {
-    if (!symbol || watchlist.includes(symbol)) return
+  // Toggle: si ya está → DELETE; si no → POST. El backend es idempotente en
+  // ambos lados, así que duplicar clicks no es problema.
+  async function toggleWatchlist(symbol) {
+    if (!symbol) return
+    const isIn = watchlist.includes(symbol)
     setAddingSymbol(symbol)
     try {
-      await api.post('/watchlist', { symbol })
-      setWatchlist(prev => [...prev, symbol])
+      if (isIn) {
+        await api.delete(`/watchlist/${encodeURIComponent(symbol)}`)
+        setWatchlist(prev => prev.filter(s => s !== symbol))
+      } else {
+        await api.post('/watchlist', { symbol })
+        setWatchlist(prev => [...prev, symbol])
+      }
     } catch {
-      // silent fail; backend ya es idempotente
+      // silent fail
     } finally {
       setAddingSymbol(null)
     }
@@ -300,7 +308,7 @@ export default function SearchBar() {
       if (!target) return
       // En holdings → abre ficha. En suggested → agrega a watchlist.
       if (target.fromUser) pick(target.symbol)
-      else addToWatchlist(target.symbol)
+      else toggleWatchlist(target.symbol)
     }
   }
 
@@ -412,10 +420,9 @@ export default function SearchBar() {
                             active={cursor === idx}
                             onPick={pick}
                             onHover={() => setCursor(idx)}
-                            actionLabel={inWatchlist ? 'EN WATCHLIST' : '+ WATCHLIST'}
-                            actionDisabled={inWatchlist || addingSymbol === t.symbol}
-                            actionDone={inWatchlist}
-                            onAction={() => addToWatchlist(t.symbol)}
+                            inWatchlist={inWatchlist}
+                            actionDisabled={addingSymbol === t.symbol}
+                            onAction={() => toggleWatchlist(t.symbol)}
                           />
                         )
                       })}
@@ -471,12 +478,12 @@ function Shortcut({ icon, text, label }) {
   )
 }
 
-function ResultRow({ ticker, active, highlight, onPick, onHover, actionLabel, actionDisabled, actionDone, onAction }) {
+function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = false, actionDisabled = false, onAction }) {
   const initial = (ticker.symbol || '?').slice(0, 1)
   return (
     <div
       onMouseEnter={onHover}
-      className={`relative flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors ${
+      className={`relative flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors group ${
         active ? 'bg-bg-2' : 'hover:bg-bg-2/60'
       } ${highlight ? 'border-l-2 border-rendi-pos' : 'border-l-2 border-transparent'}`}
       onClick={() => onPick(ticker.symbol)}
@@ -515,19 +522,43 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, actionLabel, ac
           Ver posición
         </button>
       ) : onAction ? (
-        <button
-          onClick={(e) => { e.stopPropagation(); if (!actionDisabled) onAction() }}
+        <WatchlistToggleButton
+          inWatchlist={inWatchlist}
           disabled={actionDisabled}
-          className={`flex-shrink-0 text-[10px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border transition-colors inline-flex items-center gap-1 ${
-            actionDone
-              ? 'border-rendi-pos/30 bg-rendi-pos/10 text-rendi-pos cursor-default'
-              : 'border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3'
-          }`}
-        >
-          {actionDone ? <Check size={9} strokeWidth={2.25} /> : <Plus size={9} strokeWidth={2.25} />}
-          {actionLabel}
-        </button>
+          onClick={(e) => { e.stopPropagation(); if (!actionDisabled) onAction() }}
+        />
       ) : null}
     </div>
+  )
+}
+
+// Botón con toggle visual: si NO está en watchlist muestra "+ WATCHLIST",
+// si está muestra "✓ EN WATCHLIST" verde y en hover cambia a "× QUITAR" rojo
+// para indicar que el click va a removerlo.
+function WatchlistToggleButton({ inWatchlist, disabled, onClick }) {
+  if (!inWatchlist) {
+    return (
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        className="flex-shrink-0 text-[10px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1"
+      >
+        <Plus size={9} strokeWidth={2.25} />
+        + Watchlist
+      </button>
+    )
+  }
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title="Quitar de watchlist"
+      className="flex-shrink-0 text-[10px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border border-rendi-pos/30 bg-rendi-pos/10 text-rendi-pos hover:border-rendi-neg/40 hover:bg-rendi-neg/10 hover:text-rendi-neg disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1"
+    >
+      <Check size={9} strokeWidth={2.25} className="group-hover:hidden inline-block" />
+      <X size={9} strokeWidth={2.25} className="hidden group-hover:inline-block" />
+      <span className="group-hover:hidden">En watchlist</span>
+      <span className="hidden group-hover:inline">Quitar</span>
+    </button>
   )
 }
