@@ -140,47 +140,47 @@ export default function Goals() {
       />
 
       {/* CAGR card */}
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5">
+      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
         <div className="flex items-center gap-1.5 mb-2">
-          <TrendingUp size={16} className="text-slate-400" />
-          <h2 className="font-semibold text-slate-800 dark:text-slate-200">Rendimiento histórico (CAGR)</h2>
+          <TrendingUp size={16} className="text-ink-3" />
+          <h2 className="font-semibold text-ink-0">Rendimiento histórico (CAGR)</h2>
           <InfoTooltip>
-            <p className="font-semibold text-slate-800 dark:text-slate-100">¿Qué es el CAGR?</p>
+            <p className="font-semibold text-ink-0">¿Qué es el CAGR?</p>
             <p>
               <span className="font-medium">Compound Annual Growth Rate</span> · expresa tu rendimiento como una <span className="font-medium">tasa anual constante</span>.
             </p>
-            <p className="text-slate-500 dark:text-slate-400">
+            <p className="text-ink-3">
               Permite comparar tu performance contra otras inversiones en la misma unidad (% por año): plazos fijos, S&P 500, inflación INDEC, FCIs.
             </p>
-            <p className="text-slate-500 dark:text-slate-400">
+            <p className="text-ink-3">
               Es distinto al <span className="font-medium">retorno total acumulado</span> que ves en el Dashboard, que muestra la ganancia desde el inicio sin anualizar.
             </p>
-            <p className="text-slate-500 dark:text-slate-400">
+            <p className="text-ink-3">
               Calculado con <span className="font-medium">TWR (Time-Weighted Return)</span>: neutraliza el efecto de tus aportes y retiros — refleja únicamente la performance del mercado sobre tu capital.
             </p>
           </InfoTooltip>
         </div>
         {cagr?.cagr != null ? (
-          <p className="text-sm text-slate-600 dark:text-slate-300">
+          <p className="text-sm text-ink-2">
             Basado en {cagr.months} {cagr.months === 1 ? 'mes' : 'meses'} cargados:
             <span className={`ml-2 text-2xl font-bold ${cagr.cagr >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
               {cagr.cagr >= 0 ? '+' : ''}{cagr.cagr.toFixed(2)}%
             </span>
-            <span className="text-xs text-slate-400 ml-2">anualizado (TWR)</span>
+            <span className="text-xs text-ink-3 ml-2">anualizado (TWR)</span>
           </p>
         ) : (
-          <p className="text-sm text-slate-500 dark:text-slate-400">
+          <p className="text-sm text-ink-3">
             {cagr?.reason || 'Cargá al menos 2 meses en el Resumen Mensual para calcular tu CAGR real.'}
           </p>
         )}
-        <p className="text-xs text-slate-400 dark:text-slate-500 mt-2">
-          Capital actual estimado · <span className="font-medium text-slate-700 dark:text-slate-200">{fmtUsd(currentValue)}</span>
+        <p className="text-xs text-ink-3 mt-2">
+          Capital actual estimado · <span className="font-medium text-ink-1">{fmtUsd(currentValue)}</span>
         </p>
       </div>
 
       {/* Goals list */}
       {goals.length === 0 ? (
-        <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl">
+        <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl">
           <EmptyState
             icon={<Target size={20} />}
             title="Sin objetivos definidos"
@@ -254,35 +254,35 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
   const reached = currentValue >= target
 
   return (
-    <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5">
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
       <div className="flex items-start justify-between mb-4">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-lg">
+            <h3 className="font-semibold text-ink-0 text-lg">
               {goal.label || `$${usd(target)}`}
             </h3>
             {reached && <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-semibold"><CheckCircle2 size={12} /> Alcanzado</span>}
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          <p className="text-xs text-ink-3 mt-1">
             <DollarSign size={11} className="inline -mt-0.5" /> ${usd(target)} ·
             <Calendar size={11} className="inline -mt-0.5 ml-2" /> {goal.target_date} ({monthsLeft} {monthsLeft === 1 ? 'mes' : 'meses'}) ·
             <TrendingUp size={11} className="inline -mt-0.5 ml-2" /> {goal.expected_return_pct}% anual
           </p>
         </div>
         <div className="flex gap-1">
-          <button onClick={onEdit} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 p-1" title="Editar objetivo" aria-label={`Editar objetivo ${goal.name || ''}`}><Pencil size={14} aria-hidden="true" /></button>
-          <button onClick={onDelete} className="text-slate-400 hover:text-rendi-neg p-1" title="Eliminar objetivo" aria-label={`Eliminar objetivo ${goal.name || ''}`}><Trash2 size={14} aria-hidden="true" /></button>
+          <button onClick={onEdit} className="text-ink-3 hover:text-ink-1 dark:hover:text-ink-0 p-1" title="Editar objetivo" aria-label={`Editar objetivo ${goal.name || ''}`}><Pencil size={14} aria-hidden="true" /></button>
+          <button onClick={onDelete} className="text-ink-3 hover:text-rendi-neg p-1" title="Eliminar objetivo" aria-label={`Eliminar objetivo ${goal.name || ''}`}><Trash2 size={14} aria-hidden="true" /></button>
         </div>
       </div>
 
       {/* Progress bar */}
       <div className="mb-4">
-        <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
+        <div className="flex justify-between text-xs text-ink-3 mb-1">
           <span>${usd(currentValue)}</span>
           <span className="font-medium">{progressPct.toFixed(1)}%</span>
           <span>${usd(target)}</span>
         </div>
-        <div className="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+        <div className="h-2 bg-bg-2 dark:bg-bg-2 rounded-full overflow-hidden">
           <div
             className={`h-full rounded-full transition-[width] duration-300 ease-out motion-reduce:transition-none ${reached ? 'bg-rendi-pos' : 'bg-rendi-accent'}`}
             style={{ width: `${progressPct}%` }}
@@ -293,7 +293,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
       {/* Cómo llegar — escenarios principales */}
       {!reached && monthsLeft > 0 && (
         <>
-          <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mt-2 mb-2">Cómo llegar</p>
+          <p className="text-xs uppercase tracking-wider font-semibold text-ink-3 mt-2 mb-2">Cómo llegar</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
             <Scenario
               title="Con aportes mensuales"
@@ -314,7 +314,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
           </div>
 
           {/* Escenarios alternativos — Conservador / Histórico / Agresivo */}
-          <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mt-2 mb-2">Escenarios alternativos</p>
+          <p className="text-xs uppercase tracking-wider font-semibold text-ink-3 mt-2 mb-2">Escenarios alternativos</p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {buildAltScenarios({ currentValue, target, monthsLeft, userCagr }).map(s => (
               <AltScenarioCard key={s.id} scenario={s} />
@@ -326,7 +326,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
       {/* Chart trayectoria */}
       {!reached && trajectory.length > 1 && (
         <div className="mt-5">
-          <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Proyección mes a mes con un aporte mensual de <span className="font-medium text-slate-700 dark:text-slate-200">{monthly != null ? fmtUsd(monthly) : 'USD 0'}</span> al {goal.expected_return_pct}% anual.</p>
+          <p className="text-xs text-ink-3 mb-2">Proyección mes a mes con un aporte mensual de <span className="font-medium text-ink-1">{monthly != null ? fmtUsd(monthly) : 'USD 0'}</span> al {goal.expected_return_pct}% anual.</p>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={trajectory} margin={{ top: 5, right: 10, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="#334155" strokeOpacity={0.3} vertical={false} />
@@ -363,24 +363,24 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
 
 function Scenario({ title, value, sub, warn }) {
   return (
-    <div className={`rounded-lg p-3 border ${warn ? 'border-amber-500/40 bg-amber-500/5' : 'border-slate-200 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-700/20'}`}>
-      <p className="text-xs text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-1">
+    <div className={`rounded-lg p-3 border ${warn ? 'border-amber-500/40 bg-amber-500/5' : 'border-line/60 bg-bg-2 dark:bg-bg-2/20'}`}>
+      <p className="text-xs text-ink-3 mb-1 flex items-center gap-1">
         {warn && <AlertTriangle size={11} className="text-amber-500" />}
         {title}
       </p>
-      <p className="text-lg font-bold text-slate-900 dark:text-slate-100">{value}</p>
-      <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">{sub}</p>
+      <p className="text-lg font-bold text-ink-0">{value}</p>
+      <p className="text-xs text-ink-3 mt-0.5">{sub}</p>
     </div>
   )
 }
 
 function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200'
+  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0'
 
   return (
     <div className="space-y-4">
       <div>
-        <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Etiqueta (opcional)</label>
+        <label className="block text-xs text-ink-3 mb-1">Etiqueta (opcional)</label>
         <input
           value={form.label}
           onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
@@ -390,7 +390,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Objetivo (USD)</label>
+          <label className="block text-xs text-ink-3 mb-1">Objetivo (USD)</label>
           <input
             type="number"
             value={form.target_usd}
@@ -400,7 +400,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
           />
         </div>
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Fecha objetivo</label>
+          <label className="block text-xs text-ink-3 mb-1">Fecha objetivo</label>
           <DateInput
             value={form.target_date}
             min={today()}
@@ -409,7 +409,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
         </div>
       </div>
       <div>
-        <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">Rendimiento esperado anual (%)</label>
+        <label className="block text-xs text-ink-3 mb-2">Rendimiento esperado anual (%)</label>
         <div className="flex gap-2 mb-3 flex-wrap">
           {cagr != null && (
             <button
@@ -418,7 +418,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
               className={`text-xs px-3 py-1.5 rounded-md border ${
                 Math.abs(form.expected_return_pct - cagr) < 0.01
                   ? 'border-rendi-accent bg-rendi-accent/15 text-rendi-accent'
-                  : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                  : 'border-line-2 text-ink-2 hover:bg-bg-2 dark:hover:bg-bg-2/50'
               }`}
             >
               Tu CAGR ({cagr.toFixed(1)}%)
@@ -432,7 +432,7 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
               className={`text-xs px-3 py-1.5 rounded-md border ${
                 +form.expected_return_pct === p.pct
                   ? 'border-rendi-accent bg-rendi-accent/15 text-rendi-accent'
-                  : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                  : 'border-line-2 text-ink-2 hover:bg-bg-2 dark:hover:bg-bg-2/50'
               }`}
               title={p.hint}
             >
@@ -455,13 +455,13 @@ function GoalForm({ form, setForm, cagr, onSave, onCancel }) {
             step={0.1}
             value={form.expected_return_pct}
             onChange={e => setForm(f => ({ ...f, expected_return_pct: e.target.value }))}
-            className="w-20 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-2 py-1 text-sm text-slate-900 dark:text-slate-200 text-center"
+            className="w-20 bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-2 py-1 text-sm text-ink-0 text-center"
           />
-          <span className="text-sm text-slate-500">%</span>
+          <span className="text-sm text-ink-3">%</span>
         </div>
       </div>
       <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onCancel} className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">Cancelar</button>
+        <button onClick={onCancel} className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0 dark:hover:text-ink-0">Cancelar</button>
         <button onClick={onSave} className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-md font-medium">Guardar</button>
       </div>
     </div>
@@ -502,24 +502,24 @@ function AltScenarioCard({ scenario }) {
   // Single alt-scenario card — assumes annual return + how-to-get-there.
   const { label, rate, hint, monthly, projected } = scenario
   return (
-    <div className="rounded-lg border border-slate-200 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900/30 p-3">
+    <div className="rounded-lg border border-line/60 bg-bg-2 dark:bg-bg-1/30 p-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{label}</span>
-        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700/60 text-slate-600 dark:text-slate-300">
+        <span className="text-xs font-semibold text-ink-1">{label}</span>
+        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-bg-2 dark:bg-bg-2/60 text-ink-2">
           {rate}% anual
         </span>
       </div>
-      <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-2 leading-snug">{hint}</p>
+      <p className="text-[11px] text-ink-3 mb-2 leading-snug">{hint}</p>
       <div className="space-y-1 tabular">
         <div className="flex items-baseline justify-between text-xs">
-          <span className="text-slate-500 dark:text-slate-400">Aportar</span>
-          <span className="font-semibold text-slate-900 dark:text-slate-100">
+          <span className="text-ink-3">Aportar</span>
+          <span className="font-semibold text-ink-0">
             {monthly != null ? `${fmtUsd(monthly)} / mes` : '—'}
           </span>
         </div>
         <div className="flex items-baseline justify-between text-xs">
-          <span className="text-slate-500 dark:text-slate-400">Sin aportar</span>
-          <span className="font-semibold text-slate-700 dark:text-slate-200">{fmtUsd(projected)}</span>
+          <span className="text-ink-3">Sin aportar</span>
+          <span className="font-semibold text-ink-1">{fmtUsd(projected)}</span>
         </div>
       </div>
     </div>

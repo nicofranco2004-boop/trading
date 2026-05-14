@@ -27,8 +27,8 @@ export default function TopNewsCard() {
   if (!loaded || news.length === 0) return null
 
   return (
-    <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-200 dark:border-line bg-slate-50/40 dark:bg-bg-2/40 flex items-center justify-between">
+    <div className="bg-white dark:bg-bg-1 border border-line rounded overflow-hidden">
+      <div className="px-4 py-3 border-b border-line bg-bg-2/40 dark:bg-bg-2/40 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Newspaper size={14} strokeWidth={1.75} className="text-rendi-accent" />
           <span className="text-sm font-semibold text-ink-0">Lo que pasó hoy en tu cartera</span>
@@ -40,7 +40,7 @@ export default function TopNewsCard() {
           Ver todas <ArrowRight size={11} strokeWidth={1.75} />
         </Link>
       </div>
-      <ul className="divide-y divide-slate-100 dark:divide-line/40">
+      <ul className="divide-y divide-line/50 dark:divide-line/40">
         {news.map(n => <NewsRow key={n.url} news={n} />)}
       </ul>
     </div>
@@ -59,7 +59,7 @@ function NewsRow({ news }) {
         href={url}
         target="_blank"
         rel="noopener noreferrer"
-        className="block px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-bg-2/40 transition"
+        className="block px-4 py-2.5 hover:bg-bg-2 dark:hover:bg-bg-2/40 transition"
       >
         <div className="flex items-start gap-3">
           {ticker && <AssetLogo asset={ticker} size={28} />}

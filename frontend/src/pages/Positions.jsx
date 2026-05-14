@@ -1910,7 +1910,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
           <div className="bg-bg-2 px-3 py-1.5 text-[10px] font-semibold text-ink-3 uppercase tracking-wide">
             Lotes · orden de cierre FIFO
           </div>
-          <div className="max-h-32 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-700">
+          <div className="max-h-32 overflow-y-auto divide-y divide-line dark:divide-line">
             {lots.map((p, i) => {
               const preview = fifoPreview.find(f => f.lot_id === p.id)
               return (

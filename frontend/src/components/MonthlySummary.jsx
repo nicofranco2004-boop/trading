@@ -332,9 +332,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   }, { deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, ret: 0, retCompound: 1 })
   const totalRetPct = totals.retCompound - 1
 
-  const thClass = 'px-4 py-2 text-left text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider'
+  const thClass = 'px-4 py-2 text-left text-[11px] text-ink-3 font-semibold uppercase tracking-wider'
   const tdClass = 'px-4 py-2 text-sm'
-  const inputClass = 'w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-sm px-3 py-2 text-sm text-slate-900 dark:text-ink-1 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
+  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   return (
     <div>
@@ -344,7 +344,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         <div className="mb-5 flex items-center justify-between gap-4 px-4 py-3 bg-rendi-warn/10 border border-rendi-warn/30 rounded">
           <div className="flex items-center gap-3">
             <CalendarClock size={18} strokeWidth={1.5} className="text-rendi-warn flex-shrink-0" />
-            <p className="text-sm text-slate-700 dark:text-ink-1">
+            <p className="text-sm text-ink-1">
               Estamos en <span className="font-semibold">{MONTHS[todayMonth - 1]} {todayYear}</span> —
               el último mes registrado es <span className="font-semibold">{MONTHS[lastEntry.month - 1]} {lastEntry.year}</span>.
             </p>
@@ -370,21 +370,21 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
       <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
-          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-200">Resumen Mensual</h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+          <h2 className="text-base font-semibold text-ink-0">Resumen Mensual</h2>
+          <p className="text-xs text-ink-3 mt-0.5">
             {viewMode === 'simple'
               ? 'Resultado mensual sintetizado en una vista.'
               : 'Detalle completo de flujos, P&L y capital al cierre de cada período.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="inline-flex bg-slate-200/70 dark:bg-slate-800/60 p-0.5 rounded-md">
+          <div className="inline-flex bg-bg-2 dark:bg-bg-2/60 p-0.5 rounded-md">
             <button
               onClick={() => setViewMode('simple')}
               className={`px-2.5 py-1 text-[11px] font-semibold rounded transition ${
                 viewMode === 'simple'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                  : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
               title="Vista simple"
             >Simple</button>
@@ -392,8 +392,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
               onClick={() => setViewMode('advanced')}
               className={`px-2.5 py-1 text-[11px] font-semibold rounded transition ${
                 viewMode === 'advanced'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                  : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
               title="Vista detallada"
             >Detalle</button>
@@ -408,15 +408,15 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-5 bg-slate-200/70 dark:bg-slate-800/50 p-1 rounded-lg w-fit flex-wrap">
+      <div className="flex gap-1 mb-5 bg-bg-2 dark:bg-bg-2/50 p-1 rounded-lg w-fit flex-wrap">
         {tabs.map(b => (
           <button
             key={b}
             onClick={() => setTab(b)}
             className={`px-4 py-1.5 text-sm rounded-md font-medium transition-colors capitalize ${
               tab === b
-                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
             }`}
           >
             {b === 'global' ? 'Global (USD)' : brokers.find(x => x.name === b)?.currency === 'ARS' ? `${b} (ARS)` : b}
@@ -426,8 +426,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
       <Card padding="none">
         {hiddenCount > 0 && (
-          <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-slate-200/70 dark:border-slate-700/40 bg-slate-50 dark:bg-slate-800/40">
-            <span className="text-xs text-slate-500 dark:text-slate-400">
+          <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-line/70 dark:border-line/40 bg-bg-2 dark:bg-bg-2/40">
+            <span className="text-xs text-ink-3">
               Mostrando los últimos {RECENT_MONTHS_DEFAULT} meses · {hiddenCount} más en el historial
             </span>
             <button
@@ -439,10 +439,10 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           </div>
         )}
         {showAll && allTabData.length > RECENT_MONTHS_DEFAULT && (
-          <div className="flex items-center justify-end px-4 py-2 border-b border-slate-200/70 dark:border-slate-700/40 bg-slate-50 dark:bg-slate-800/40">
+          <div className="flex items-center justify-end px-4 py-2 border-b border-line/70 dark:border-line/40 bg-bg-2 dark:bg-bg-2/40">
             <button
               onClick={() => setShowAll(false)}
-              className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+              className="inline-flex items-center gap-1 text-xs font-medium text-ink-3 hover:text-ink-0 dark:hover:text-ink-0"
             >
               <EyeOff size={12} /> Mostrar solo recientes
             </button>
@@ -451,7 +451,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-700/50">
+              <tr className="border-b border-line/50">
                 <th className={thClass}>Mes</th>
                 {viewMode === 'simple' ? (
                   <>
@@ -501,18 +501,18 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 return (
                   <tr
                     key={m.id}
-                    className={`border-b border-slate-100 dark:border-line/40 hover:bg-slate-50 dark:hover:bg-bg-2 ${
-                      isCurrent ? 'bg-slate-50 dark:bg-bg-2/50' : ''
+                    className={`border-b border-line/50 dark:border-line/40 hover:bg-bg-2 dark:hover:bg-bg-2 ${
+                      isCurrent ? 'bg-bg-2 dark:bg-bg-2/50' : ''
                     }`}
                   >
-                    <td className={`${tdClass} font-medium text-slate-800 dark:text-ink-1`}>
+                    <td className={`${tdClass} font-medium text-ink-0`}>
                       <div className="flex items-center gap-2">
                         {isCurrent ? (
                           <span className="inline-flex items-center text-[9px] font-mono font-semibold uppercase tracking-[0.18em] bg-bg-3 text-ink-1 px-1.5 py-0.5 rounded-sm border border-line">
                             En curso
                           </span>
                         ) : (
-                          <Lock size={10} strokeWidth={1.5} className="text-slate-300 dark:text-ink-3 flex-shrink-0" />
+                          <Lock size={10} strokeWidth={1.5} className="text-ink-1 flex-shrink-0" />
                         )}
                         {MONTHS[m.month - 1]} {m.year}
                       </div>
@@ -528,7 +528,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                               En curso
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold uppercase tracking-[0.15em] px-2 py-0.5 rounded-sm bg-slate-200 dark:bg-bg-2 text-slate-500 dark:text-ink-3 border border-slate-300/50 dark:border-line">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold uppercase tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-2 dark:bg-bg-2 text-ink-3 border border-line/50 dark:border-line">
                               <Lock size={9} /> Cerrado
                             </span>
                           )}
@@ -536,23 +536,23 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                       </>
                     ) : (
                       <>
-                        <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{fmtMoney(m.deposits, m.year, m.month)}</td>
-                        <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{fmtMoney(m.withdrawals, m.year, m.month)}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.deposits, m.year, m.month)}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.withdrawals, m.year, m.month)}</td>
                         <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoney(net, m.year, m.month)}</td>
                         <td className={`${tdClass} tabular ${colorClass(m.pnl_realized)}`}>{fmtMoney(m.pnl_realized, m.year, m.month)}</td>
                         <td className={`${tdClass} tabular ${isCurrent ? colorClass(m.pnl_unrealized) : ''}`}>{isCurrent ? fmtMoney(m.pnl_unrealized, m.year, m.month) : fmtMoney(0, m.year, m.month)}</td>
-                        <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{fmtMoney(m.capital_inicio, m.year, m.month)}</td>
-                        <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{fmtMoney(m.capital_final, m.year, m.month)}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.capital_inicio, m.year, m.month)}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.capital_final, m.year, m.month)}</td>
                         <td className={`${tdClass} font-medium tabular ${colorClass(ret)}`}>{fmtMoney(ret, m.year, m.month)}</td>
                         <td className={`${tdClass} font-medium tabular ${colorClass(retPct)}`}>{pctSigned(retPct)}</td>
                       </>
                     )}
                     <td className={tdClass}>
                       <div className="flex items-center gap-2">
-                        <button onClick={() => openEdit(m)} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" title="Editar">
+                        <button onClick={() => openEdit(m)} className="text-ink-3 hover:text-ink-1 dark:hover:text-ink-0" title="Editar">
                           <Pencil size={13} />
                         </button>
-                        <button onClick={() => del(m.id)} className="text-slate-400 hover:text-red-500" title="Eliminar">
+                        <button onClick={() => del(m.id)} className="text-ink-3 hover:text-red-500" title="Eliminar">
                           <Trash2 size={13} />
                         </button>
                         {isCurrent && (
@@ -572,8 +572,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             </tbody>
             {tabData.length > 0 && (
               <tfoot>
-                <tr className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/20">
-                  <td className="px-4 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total</td>
+                <tr className="border-t border-line-2 bg-bg-2 dark:bg-bg-2/20">
+                  <td className="px-4 py-2 text-xs font-semibold text-ink-3 uppercase tracking-wider">Total</td>
                   {viewMode === 'simple' ? (
                     <>
                       <td className={`px-4 py-2 text-xs font-semibold tabular ${colorClass(totals.ret)}`}>{fmtMoneyDirect(totals.ret)}</td>
@@ -584,8 +584,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                     </>
                   ) : (
                     <>
-                      <td className="px-4 py-2 text-xs text-slate-600 dark:text-slate-300 tabular">{fmtMoneyDirect(totals.deposits)}</td>
-                      <td className="px-4 py-2 text-xs text-slate-600 dark:text-slate-300 tabular">{fmtMoneyDirect(totals.withdrawals)}</td>
+                      <td className="px-4 py-2 text-xs text-ink-2 tabular">{fmtMoneyDirect(totals.deposits)}</td>
+                      <td className="px-4 py-2 text-xs text-ink-2 tabular">{fmtMoneyDirect(totals.withdrawals)}</td>
                       <td className={`px-4 py-2 text-xs tabular ${colorClass(totals.deposits - totals.withdrawals)}`}>{fmtMoneyDirect(totals.deposits - totals.withdrawals)}</td>
                       <td className={`px-4 py-2 text-xs tabular ${colorClass(totals.pnl_realized)}`}>{fmtMoneyDirect(totals.pnl_realized)}</td>
                       <td className={`px-4 py-2 text-xs tabular ${colorClass(totals.pnl_unrealized)}`}>{fmtMoneyDirect(totals.pnl_unrealized)}</td>
@@ -618,7 +618,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           <div className="space-y-4">
 
             {modal === 'next' && (
-              <div className="flex items-start gap-2 bg-bg-2 border border-line rounded px-3 py-2.5 text-sm text-slate-700 dark:text-ink-1">
+              <div className="flex items-start gap-2 bg-bg-2 border border-line rounded px-3 py-2.5 text-sm text-ink-1">
                 <ChevronRight size={15} strokeWidth={1.5} className="text-ink-2 mt-0.5 flex-shrink-0" />
                 <span>
                   Capital inicial heredado del cierre de {MONTHS[form.month - 2 < 0 ? 11 : form.month - 2]} ·
@@ -631,19 +631,19 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             {modal === 'add' && (
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Año</label>
+                  <label className="block text-xs text-ink-3 mb-1">Año</label>
                   <input type="number" value={form.year}
                     onChange={e => setField('year', +e.target.value)}
                     className={inputClass} />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Mes</label>
+                  <label className="block text-xs text-ink-3 mb-1">Mes</label>
                   <select value={form.month} onChange={e => setField('month', +e.target.value)} className={inputClass}>
                     {MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Broker</label>
+                  <label className="block text-xs text-ink-3 mb-1">Broker</label>
                   <select value={form.broker} onChange={e => setField('broker', e.target.value)} className={inputClass}>
                     <option value="global">Global</option>
                     {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
@@ -653,7 +653,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             )}
 
             <div>
-              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Capital Inicio (USD)</label>
+              <label className="block text-xs text-ink-3 mb-1">Capital Inicio (USD)</label>
               <input type="number" step="any" value={form.capital_inicio}
                 onChange={e => setField('capital_inicio', +e.target.value)}
                 className={inputClass}
@@ -669,7 +669,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 ['P&L No Realizado', 'pnl_unrealized'],
               ].map(([label, key]) => (
                 <div key={key}>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">{label}</label>
+                  <label className="block text-xs text-ink-3 mb-1">{label}</label>
                   <input type="number" step="any" value={form[key]}
                     onChange={e => setField(key, +e.target.value)}
                     className={inputClass} />
@@ -679,8 +679,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-xs text-slate-500 dark:text-slate-400">Capital Final (USD)</label>
-                <label className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500 cursor-pointer select-none">
+                <label className="text-xs text-ink-3">Capital Final (USD)</label>
+                <label className="flex items-center gap-1.5 text-xs text-ink-3 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={autoCalc}
@@ -698,17 +698,17 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 value={form.capital_final}
                 onChange={e => setField('capital_final', +e.target.value)}
                 readOnly={autoCalc}
-                className={`${inputClass} ${autoCalc ? 'opacity-70 cursor-default bg-slate-100 dark:bg-slate-800' : ''}`}
+                className={`${inputClass} ${autoCalc ? 'opacity-70 cursor-default bg-bg-2 dark:bg-bg-2' : ''}`}
               />
               {autoCalc && (
-                <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
-                  = Inicio + Depósitos − Retiros + P&L = <span className="font-medium text-slate-600 dark:text-slate-300">${usd(form.capital_final)}</span>
+                <p className="text-[11px] text-ink-3 mt-1">
+                  = Inicio + Depósitos − Retiros + P&L = <span className="font-medium text-ink-2">${usd(form.capital_final)}</span>
                 </p>
               )}
             </div>
 
             <div className="flex justify-end gap-2 pt-1">
-              <button onClick={() => setModal(null)} className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">
+              <button onClick={() => setModal(null)} className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0 dark:hover:text-ink-0">
                 Cancelar
               </button>
               <button
@@ -758,12 +758,12 @@ function ConciliationBanner({ live, entries }) {
   const significantDrift = drift != null && (Math.abs(drift) > 0.5 || Math.abs(driftPct) > 0.05)
 
   return (
-    <div className="mb-5 bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-4">
+    <div className="mb-5 bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-4">
       <div className="flex items-center gap-2 mb-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-3">
           Conciliación
         </h3>
-        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+        <span className="text-[10px] text-ink-3">
           Te ayuda a entender qué número es qué.
         </span>
       </div>
@@ -773,34 +773,34 @@ function ConciliationBanner({ live, entries }) {
             <span className="live-dot" aria-hidden />
             Valor actual (live)
           </div>
-          <p className="text-lg font-medium text-slate-900 dark:text-ink-0 mt-1 num">
+          <p className="text-lg font-medium text-ink-0 mt-1 num">
             ${usd(live)}
           </p>
-          <p className="text-[10px] text-slate-500 dark:text-ink-3 mt-0.5 leading-tight">
+          <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             Coincide con el Dashboard. Calculado con precios actuales de mercado.
           </p>
         </div>
 
-        <div className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200/70 dark:border-slate-700/40 rounded-lg p-3">
-          <div className="text-[10px] uppercase font-semibold tracking-wider text-slate-500 dark:text-slate-400">
+        <div className="bg-bg-2 dark:bg-bg-1/40 border border-line/70 dark:border-line/40 rounded-lg p-3">
+          <div className="text-[10px] uppercase font-semibold tracking-wider text-ink-3">
             Mes en curso · cap. final
           </div>
-          <p className={`text-lg font-bold mt-1 tabular ${significantDrift ? 'text-amber-600 dark:text-amber-400' : 'text-slate-900 dark:text-white'}`}>
+          <p className={`text-lg font-bold mt-1 tabular ${significantDrift ? 'text-amber-600 dark:text-amber-400' : 'text-ink-0 dark:text-white'}`}>
             {currentCapFinal != null ? `$${usd(currentCapFinal)}` : '—'}
           </p>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">
+          <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             {current ? `${MONTHS[current.month - 1]} ${current.year} · ver fila marcada "EN CURSO".` : '—'}
           </p>
         </div>
 
-        <div className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200/70 dark:border-slate-700/40 rounded-lg p-3">
-          <div className="text-[10px] uppercase font-semibold tracking-wider text-slate-500 dark:text-slate-400">
+        <div className="bg-bg-2 dark:bg-bg-1/40 border border-line/70 dark:border-line/40 rounded-lg p-3">
+          <div className="text-[10px] uppercase font-semibold tracking-wider text-ink-3">
             Último mes cerrado
           </div>
-          <p className="text-lg font-bold text-slate-900 dark:text-white mt-1 tabular">
+          <p className="text-lg font-bold text-ink-0 dark:text-white mt-1 tabular">
             {lastClosed ? `$${usd(lastClosed.capital_final || 0)}` : '—'}
           </p>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">
+          <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             {lastClosed
               ? `${MONTHS[lastClosed.month - 1]} ${lastClosed.year} · snapshot al cierre, no se modifica.`
               : 'Cerrá un mes para visualizarlo aquí.'}
@@ -814,7 +814,7 @@ function ConciliationBanner({ live, entries }) {
           <div className="leading-snug">
             Diferencia de <span className="font-semibold tabular">${usd(Math.abs(drift))}</span>
             {' '}entre el valor actual y el capital final del mes en curso. Causas habituales:
-            <ul className="mt-1 ml-3 list-disc list-inside text-slate-600 dark:text-slate-300">
+            <ul className="mt-1 ml-3 list-disc list-inside text-ink-2">
               <li>Variación del dólar blue con cash ARS en cartera: el equivalente en USD cambia sin operaciones.</li>
               <li>Sincronización pendiente: el capital final se actualiza al ingresar al Dashboard o al Resumen Mensual.</li>
             </ul>

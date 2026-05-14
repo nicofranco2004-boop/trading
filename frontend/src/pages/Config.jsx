@@ -79,8 +79,8 @@ export default function Config() {
     }
   }
 
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-slate-900 dark:text-slate-200 text-sm'
-  const selectClass = 'bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-slate-900 dark:text-slate-200 text-sm'
+  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-ink-0 text-sm'
+  const selectClass = 'bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-ink-0 text-sm'
 
   const fetchedAt = dolar?.fetched_at ? new Date(dolar.fetched_at) : null
 
@@ -89,38 +89,38 @@ export default function Config() {
       <PageHeader title="Configuración" subtitle="Gestioná tus brokers, tipos de cambio y datos de cuenta." />
 
       {/* Tipos de cambio (auto) */}
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
+      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold text-slate-800 dark:text-slate-200">Tipos de cambio</h2>
+          <h2 className="font-semibold text-ink-0">Tipos de cambio</h2>
           <button
             type="button"
             onClick={loadDolar}
-            className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700/40"
+            className="flex items-center gap-1 text-xs text-ink-3 hover:text-ink-0 dark:hover:text-ink-0 px-2 py-1 rounded-md hover:bg-bg-2 dark:hover:bg-bg-2/40"
             title="Actualizar cotización"
           >
             <RefreshCw size={12} /> Actualizar
           </button>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <div className="bg-slate-50 dark:bg-slate-700/40 rounded-lg px-4 py-3">
-            <div className="text-xs text-slate-500 dark:text-slate-400">TC Blue (ARS/USD)</div>
-            <div className="text-2xl font-bold text-slate-900 dark:text-slate-100">{dolar?.blue?.venta ?? '—'}</div>
-            <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">Compra {dolar?.blue?.compra ?? '—'}</div>
+          <div className="bg-bg-2 dark:bg-bg-2/40 rounded-lg px-4 py-3">
+            <div className="text-xs text-ink-3">TC Blue (ARS/USD)</div>
+            <div className="text-2xl font-bold text-ink-0">{dolar?.blue?.venta ?? '—'}</div>
+            <div className="text-xs text-ink-3 mt-1">Compra {dolar?.blue?.compra ?? '—'}</div>
           </div>
-          <div className="bg-slate-50 dark:bg-slate-700/40 rounded-lg px-4 py-3">
-            <div className="text-xs text-slate-500 dark:text-slate-400">TC MEP (ARS/USD)</div>
-            <div className="text-2xl font-bold text-slate-900 dark:text-slate-100">{dolar?.mep?.venta ?? '—'}</div>
-            <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">Compra {dolar?.mep?.compra ?? '—'}</div>
+          <div className="bg-bg-2 dark:bg-bg-2/40 rounded-lg px-4 py-3">
+            <div className="text-xs text-ink-3">TC MEP (ARS/USD)</div>
+            <div className="text-2xl font-bold text-ink-0">{dolar?.mep?.venta ?? '—'}</div>
+            <div className="text-xs text-ink-3 mt-1">Compra {dolar?.mep?.compra ?? '—'}</div>
           </div>
         </div>
-        <p className="text-xs text-slate-400 dark:text-slate-500 mt-3">
+        <p className="text-xs text-ink-3 mt-3">
           Fuente: dolarapi.com · Actualización automática cada 10 minutos{fetchedAt ? ` · Última actualización ${fetchedAt.toLocaleTimeString()}` : ''}
         </p>
       </div>
 
       {/* Brokers */}
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
-        <h2 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Brokers</h2>
+      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-6">
+        <h2 className="font-semibold text-ink-0 mb-4">Brokers</h2>
 
         {brokers.length > 0 && (
           <div className="space-y-2 mb-4">
@@ -131,7 +131,7 @@ export default function Config() {
                     <input
                       value={editingBroker.name}
                       onChange={e => setEditingBroker(eb => ({ ...eb, name: e.target.value }))}
-                      className="flex-1 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm text-slate-900 dark:text-slate-200"
+                      className="flex-1 bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-1.5 text-sm text-ink-0"
                     />
                     <select
                       value={editingBroker.currency}
@@ -143,12 +143,12 @@ export default function Config() {
                       <option value="ARS">ARS</option>
                     </select>
                     <button type="submit" className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-md">OK</button>
-                    <button type="button" onClick={() => setEditingBroker(null)} className="text-xs text-slate-400 px-2 py-1.5">✕</button>
+                    <button type="button" onClick={() => setEditingBroker(null)} className="text-xs text-ink-3 px-2 py-1.5">✕</button>
                   </form>
                 ) : (
-                  <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-700/40 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between bg-bg-2 dark:bg-bg-2/40 rounded-lg px-3 py-2">
                     <div>
-                      <span className="text-slate-800 dark:text-slate-200 text-sm font-medium">{b.name}</span>
+                      <span className="text-ink-0 text-sm font-medium">{b.name}</span>
                       <span className={`ml-2 text-xs px-1.5 py-0.5 rounded font-medium ${
                         b.currency === 'ARS'
                           ? 'bg-violet-500/20 text-violet-600 dark:text-violet-400'
@@ -158,10 +158,10 @@ export default function Config() {
                       }`}>{b.currency}</span>
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={() => setEditingBroker({ ...b })} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" title="Editar broker" aria-label={`Editar broker ${b.name}`}>
+                      <button onClick={() => setEditingBroker({ ...b })} className="text-ink-3 hover:text-ink-1 dark:hover:text-ink-0" title="Editar broker" aria-label={`Editar broker ${b.name}`}>
                         <Pencil size={13} aria-hidden="true" />
                       </button>
-                      <button onClick={() => deleteBroker(b.id)} className="text-slate-400 hover:text-rendi-neg" title="Eliminar broker" aria-label={`Eliminar broker ${b.name}`}>
+                      <button onClick={() => deleteBroker(b.id)} className="text-ink-3 hover:text-rendi-neg" title="Eliminar broker" aria-label={`Eliminar broker ${b.name}`}>
                         <Trash2 size={13} aria-hidden="true" />
                       </button>
                     </div>
@@ -174,7 +174,7 @@ export default function Config() {
 
         <form onSubmit={addBroker} className="flex gap-2 items-end">
           <div className="flex-1">
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nombre del broker</label>
+            <label className="block text-xs text-ink-3 mb-1">Nombre del broker</label>
             <input
               value={newBroker.name}
               onChange={e => setNewBroker(b => ({ ...b, name: e.target.value }))}
@@ -183,7 +183,7 @@ export default function Config() {
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Moneda</label>
+            <label className="block text-xs text-ink-3 mb-1">Moneda</label>
             <select
               value={newBroker.currency}
               onChange={e => setNewBroker(b => ({ ...b, currency: e.target.value }))}
@@ -201,7 +201,7 @@ export default function Config() {
             <Plus size={14} /> Agregar
           </button>
         </form>
-        <p className="text-xs text-slate-400 dark:text-slate-500 mt-3 leading-relaxed">
+        <p className="text-xs text-ink-3 mt-3 leading-relaxed">
           <span className="text-blue-600 dark:text-blue-400 font-medium">USDT</span> · exchanges crypto (Binance) ·
           <span className="text-rendi-pos font-medium ml-1">USD</span> · brokers tradicionales en dólares (Interactive Brokers, Schwab) ·
           <span className="text-violet-600 dark:text-violet-400 font-medium ml-1">ARS</span> · brokers en pesos, convertidos a USD según el blue (Cocos, IOL).
@@ -209,9 +209,9 @@ export default function Config() {
       </div>
 
       {/* Importar datos */}
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
-        <h2 className="font-semibold text-slate-800 dark:text-slate-200 mb-1">Importar datos</h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-6">
+        <h2 className="font-semibold text-ink-0 mb-1">Importar datos</h2>
+        <p className="text-xs text-ink-3 mb-4">
           Subí un CSV con tu historial de operaciones para reconstruir el portfolio sin cargar todo a mano. Soporta exports de cualquier broker — vas a poder mapear las columnas y previsualizar antes de confirmar.
         </p>
         <div className="flex items-center gap-2 flex-wrap">
@@ -224,7 +224,7 @@ export default function Config() {
           </button>
           <Link
             to="/imports"
-            className="inline-flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 transition"
+            className="inline-flex items-center gap-1.5 text-sm text-ink-2 hover:text-ink-0 dark:hover:text-ink-1 px-3 py-2 rounded-md border border-line hover:border-line dark:hover:border-line-2 transition"
           >
             <History size={14} /> Ver historial de importaciones
           </Link>
@@ -232,33 +232,33 @@ export default function Config() {
       </div>
 
       {/* Cuenta */}
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-6">
+      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-6">
         <div className="flex items-center gap-2 mb-4">
-          <Lock size={16} className="text-slate-400" />
-          <h2 className="font-semibold text-slate-800 dark:text-slate-200">Cuenta</h2>
+          <Lock size={16} className="text-ink-3" />
+          <h2 className="font-semibold text-ink-0">Cuenta</h2>
         </div>
         {user && (
-          <div className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-            Sesión: <span className="text-slate-700 dark:text-slate-200 font-medium">{user.email || user.name}</span>
+          <div className="text-sm text-ink-3 mb-4">
+            Sesión: <span className="text-ink-1 font-medium">{user.email || user.name}</span>
             {user.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold uppercase tracking-wide">admin</span>}
           </div>
         )}
         <form onSubmit={changePassword} className="space-y-3">
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Contraseña actual</label>
+            <label className="block text-xs text-ink-3 mb-1">Contraseña actual</label>
             <input type="password" autoComplete="current-password" value={pwForm.current}
               onChange={e => setPwForm(f => ({ ...f, current: e.target.value }))}
               className={inputClass} required />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nueva contraseña</label>
+              <label className="block text-xs text-ink-3 mb-1">Nueva contraseña</label>
               <input type="password" autoComplete="new-password" value={pwForm.next}
                 onChange={e => setPwForm(f => ({ ...f, next: e.target.value }))}
                 className={inputClass} minLength={10} required />
             </div>
             <div>
-              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Confirmar</label>
+              <label className="block text-xs text-ink-3 mb-1">Confirmar</label>
               <input type="password" autoComplete="new-password" value={pwForm.confirm}
                 onChange={e => setPwForm(f => ({ ...f, confirm: e.target.value }))}
                 className={inputClass} minLength={10} required />
@@ -266,7 +266,7 @@ export default function Config() {
           </div>
           {pwState.error && <p className="text-red-500 text-xs">{pwState.error}</p>}
           {pwState.success && <p className="text-emerald-600 dark:text-emerald-400 text-xs">{pwState.success}</p>}
-          <p className="text-xs text-slate-400 dark:text-slate-500">Mínimo 10 caracteres. Al actualizarla, se cierran las sesiones activas en otros dispositivos.</p>
+          <p className="text-xs text-ink-3">Mínimo 10 caracteres. Al actualizarla, se cierran las sesiones activas en otros dispositivos.</p>
           <button type="submit" disabled={pwState.loading}
             className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-md">
             {pwState.loading ? 'Guardando…' : 'Cambiar contraseña'}

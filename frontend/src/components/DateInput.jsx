@@ -101,44 +101,44 @@ export default function DateInput({ value, onChange, min, max, className = '', p
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md pl-9 pr-3 py-2 text-sm text-left text-slate-900 dark:text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition cursor-pointer relative hover:border-slate-400 dark:hover:border-line-2"
+        className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md pl-9 pr-3 py-2 text-sm text-left text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition cursor-pointer relative hover:border-ink-3"
       >
         <Calendar
           size={14}
           className={`absolute left-3 top-1/2 -translate-y-1/2 transition ${
-            open ? 'text-rendi-accent' : 'text-slate-400 dark:text-ink-3'
+            open ? 'text-rendi-accent' : 'text-ink-3'
           }`}
         />
         {value ? (
           <span className="font-mono">{fmtDisplay(value)}</span>
         ) : (
-          <span className="text-slate-400 dark:text-slate-500">{placeholder}</span>
+          <span className="text-ink-3">{placeholder}</span>
         )}
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-2xl p-3 w-[280px]">
+        <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-2xl p-3 w-[280px]">
           {/* Header */}
           <div className="flex items-center justify-between mb-3">
             <button
               type="button"
               onClick={() => navMonth(-1)}
-              className="p-1.5 rounded-md text-slate-500 dark:text-ink-2 hover:bg-slate-100 dark:hover:bg-bg-3 hover:text-slate-900 dark:hover:text-ink-0 transition"
+              className="p-1.5 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0 transition"
             >
               <ChevronLeft size={16} />
             </button>
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-sm text-slate-900 dark:text-white">
+              <span className="font-semibold text-sm text-ink-0 dark:text-white">
                 {MONTHS[viewMonth]}
               </span>
-              <span className="text-sm text-slate-500 dark:text-slate-400 font-mono">
+              <span className="text-sm text-ink-3 font-mono">
                 {viewYear}
               </span>
             </div>
             <button
               type="button"
               onClick={() => navMonth(1)}
-              className="p-1.5 rounded-md text-slate-500 dark:text-ink-2 hover:bg-slate-100 dark:hover:bg-bg-3 hover:text-slate-900 dark:hover:text-ink-0 transition"
+              className="p-1.5 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0 transition"
             >
               <ChevronRight size={16} />
             </button>
@@ -147,7 +147,7 @@ export default function DateInput({ value, onChange, min, max, className = '', p
           {/* Días de la semana */}
           <div className="grid grid-cols-7 gap-1 mb-1">
             {DAYS.map((d, i) => (
-              <div key={i} className="text-[10px] font-bold text-slate-400 dark:text-slate-500 text-center py-1 uppercase tracking-wider">
+              <div key={i} className="text-[10px] font-bold text-ink-3 text-center py-1 uppercase tracking-wider">
                 {d}
               </div>
             ))}
@@ -168,11 +168,11 @@ export default function DateInput({ value, onChange, min, max, className = '', p
                   className={`
                     h-8 w-8 rounded-md text-xs font-medium transition relative
                     ${disabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}
-                    ${c.otherMonth ? 'text-slate-300 dark:text-slate-600' : 'text-slate-700 dark:text-slate-300'}
+                    ${c.otherMonth ? 'text-ink-1' : 'text-ink-1'}
                     ${isSelected
                       ? 'bg-rendi-accent text-white font-bold shadow-md shadow-rendi-accent/40'
                       : !disabled && !isSelected
-                        ? 'hover:bg-slate-100 dark:hover:bg-bg-3 hover:text-slate-900 dark:hover:text-ink-0'
+                        ? 'hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0'
                         : ''
                     }
                     ${isToday && !isSelected ? 'ring-1 ring-rendi-accent/40 text-rendi-accent' : ''}
@@ -185,7 +185,7 @@ export default function DateInput({ value, onChange, min, max, className = '', p
           </div>
 
           {/* Footer con accesos rápidos */}
-          <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+          <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-line">
             <button
               type="button"
               onClick={() => pickDay(new Date())}
@@ -197,7 +197,7 @@ export default function DateInput({ value, onChange, min, max, className = '', p
               <button
                 type="button"
                 onClick={() => { onChange(''); setOpen(false) }}
-                className="text-xs px-2 py-1 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                className="text-xs px-2 py-1 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-2 transition"
               >
                 Limpiar
               </button>

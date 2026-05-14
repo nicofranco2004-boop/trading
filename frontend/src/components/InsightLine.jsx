@@ -8,7 +8,7 @@ const TONE_CLASS = {
   positive: 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/[0.06] border-emerald-500/20',
   negative: 'text-red-600 dark:text-red-400 bg-red-500/[0.06] border-red-500/20',
   warning:  'text-amber-600 dark:text-amber-400 bg-amber-500/[0.06] border-amber-500/20',
-  neutral:  'text-slate-600 dark:text-slate-300 bg-slate-500/[0.06] border-slate-500/20',
+  neutral:  'text-ink-2 bg-bg-20/[0.06] border-line-2/20',
 }
 
 export default function InsightLine({ tone = 'neutral', icon, children, className = '' }) {

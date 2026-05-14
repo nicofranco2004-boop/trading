@@ -93,14 +93,14 @@ function ToastItem({ toast, onDismiss }) {
     <div
       role="status"
       aria-live="polite"
-      className={`pointer-events-auto flex items-start gap-3 px-4 py-3 rounded bg-white dark:bg-bg-1 border border-slate-200 dark:border-line border-l-4 ${accent} shadow-lg dark:shadow-2xl animate-[slide-in_0.2s_ease-out] motion-reduce:animate-none`}
+      className={`pointer-events-auto flex items-start gap-3 px-4 py-3 rounded bg-white dark:bg-bg-1 border border-line border-l-4 ${accent} shadow-lg dark:shadow-2xl animate-[slide-in_0.2s_ease-out] motion-reduce:animate-none`}
       style={{
         // Inline keyframes para no tocar tailwind config
         animationFillMode: 'both',
       }}
     >
       <Icon size={16} strokeWidth={1.75} className="flex-shrink-0 mt-0.5" aria-hidden="true" />
-      <p className="flex-1 min-w-0 text-sm leading-snug text-slate-800 dark:text-ink-1">
+      <p className="flex-1 min-w-0 text-sm leading-snug text-ink-0">
         {toast.message}
       </p>
       <button

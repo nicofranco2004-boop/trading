@@ -1,7 +1,7 @@
 // Panel — átomo de superficie unificado (V2).
 // ═══════════════════════════════════════════════════════════════════════════
 // Reemplaza Card. Filosofía v2:
-//   • bg-bg-1 (charcoal cold) en lugar de bg-white/bg-slate-800
+//   • bg-bg-1 (charcoal cold) en lugar de bg-white/bg-bg-2
 //   • Borde más sutil (line, no slate-200/800)
 //   • Radius default = rounded (6px, no 10px)
 //   • Sin shadows, sin backdrop-blur, sin gradient

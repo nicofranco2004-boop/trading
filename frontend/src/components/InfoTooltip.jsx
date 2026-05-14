@@ -10,7 +10,7 @@ import { HelpCircle } from 'lucide-react'
  * Usage:
  *   <InfoTooltip>
  *     <p>Drawdown = caída desde el máximo histórico.</p>
- *     <p className="text-slate-400">Fórmula: (valor − HWM) / HWM</p>
+ *     <p className="text-ink-3">Fórmula: (valor − HWM) / HWM</p>
  *   </InfoTooltip>
  */
 export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right' }) {
@@ -40,8 +40,8 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
         onClick={() => setOpen(o => !o)}
         className={`inline-flex items-center justify-center rounded-full transition ${
           open
-            ? 'text-slate-700 dark:text-slate-200'
-            : 'text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
+            ? 'text-ink-1'
+            : 'text-ink-3 hover:text-ink-2 dark:hover:text-ink-1'
         }`}
         title={label}
         aria-label={label}
@@ -50,7 +50,7 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
       </button>
       {open && (
         <div
-          className={`absolute z-30 top-full mt-1 w-64 px-3 py-2.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-lg text-xs leading-relaxed text-slate-700 dark:text-slate-200 space-y-1.5 ${align === 'right' ? 'right-0' : 'left-0'}`}
+          className={`absolute z-30 top-full mt-1 w-64 px-3 py-2.5 rounded-lg bg-bg-2 dark:bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${align === 'right' ? 'right-0' : 'left-0'}`}
           role="tooltip"
         >
           {children}

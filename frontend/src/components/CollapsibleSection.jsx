@@ -20,22 +20,22 @@ export default function CollapsibleSection({
   const [open, setOpen] = useState(defaultOpen)
 
   return (
-    <section className="border-t border-slate-200/60 dark:border-slate-700/40 pt-6">
+    <section className="border-t border-line/60 dark:border-line/40 pt-6">
       <button
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center justify-between gap-3 text-left group"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <h2 className="section-title group-hover:text-slate-900 dark:group-hover:text-slate-100 transition-colors">
+          <h2 className="section-title group-hover:text-ink-0 dark:group-hover:text-ink-1 transition-colors">
             {title}
           </h2>
           {badge != null && (
-            <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700/60 text-slate-600 dark:text-slate-300">
+            <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-bg-2 dark:bg-bg-2/60 text-ink-2">
               {badge}
             </span>
           )}
         </div>
-        <span className="flex-shrink-0 text-slate-500 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-100 transition-colors">
+        <span className="flex-shrink-0 text-ink-3 group-hover:text-ink-0 dark:group-hover:text-ink-1 transition-colors">
           {open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
         </span>
       </button>

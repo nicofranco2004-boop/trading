@@ -77,7 +77,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected }) {
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded-t-2xl sm:rounded w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col"
+        className="bg-white dark:bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         <FlowHeader
@@ -105,7 +105,7 @@ function FlowHeader({ step, category, onBack, onClose }) {
     : 'Buscá por ticker o nombre. Después cargás precio y cantidad.'
 
   return (
-    <div className="flex items-start gap-3 px-5 py-4 border-b border-slate-200 dark:border-line flex-shrink-0">
+    <div className="flex items-start gap-3 px-5 py-4 border-b border-line flex-shrink-0">
       {onBack && (
         <button
           onClick={onBack}
@@ -144,7 +144,7 @@ function Step1AssetType({ onPick }) {
             <button
               key={cat.id}
               onClick={() => onPick(cat)}
-              className="text-left bg-slate-50/40 dark:bg-bg-2/40 border border-slate-200 dark:border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
             >
               <div className="flex items-start gap-3">
                 <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
@@ -190,7 +190,7 @@ function Step2TickerPicker({ category, onPick }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Search bar — sticky top */}
-      <div className="px-5 py-3 border-b border-slate-200 dark:border-line bg-slate-50/40 dark:bg-bg-2/30 flex-shrink-0">
+      <div className="px-5 py-3 border-b border-line bg-bg-2/40 dark:bg-bg-2/30 flex-shrink-0">
         <div className="relative">
           <Search size={14} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" aria-hidden="true" />
           <input
@@ -201,7 +201,7 @@ function Step2TickerPicker({ category, onPick }) {
             placeholder={`Buscar por ticker o nombre…`}
             autoComplete="off"
             spellCheck="false"
-            className="w-full bg-white dark:bg-bg-1 border border-slate-300 dark:border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
+            className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
           />
         </div>
         <p className="text-xs text-ink-3 font-mono mt-2">
@@ -216,12 +216,12 @@ function Step2TickerPicker({ category, onPick }) {
             Sin resultados para <span className="font-mono">"{query}"</span>
           </div>
         ) : (
-          <ul className="divide-y divide-slate-100 dark:divide-line/40">
+          <ul className="divide-y divide-line/50 dark:divide-line/40">
             {filtered.map(t => (
               <li key={t.s}>
                 <button
                   onClick={() => onPick(t)}
-                  className="w-full flex items-center gap-3 px-5 py-3 hover:bg-slate-50 dark:hover:bg-bg-2/40 transition-colors text-left focus:outline-none focus:bg-slate-50 dark:focus:bg-bg-2/40"
+                  className="w-full flex items-center gap-3 px-5 py-3 hover:bg-bg-2 dark:hover:bg-bg-2/40 transition-colors text-left focus:outline-none focus:bg-bg-2 dark:focus:bg-bg-2/40"
                 >
                   <AssetLogo asset={t.s} size={32} />
                   <div className="min-w-0 flex-1">

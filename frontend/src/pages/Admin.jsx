@@ -72,11 +72,11 @@ export default function Admin() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Shield size={22} className="text-rendi-accent" />
-          <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">Panel de administración</h1>
+          <h1 className="text-xl font-bold text-ink-0">Panel de administración</h1>
         </div>
         <button
           onClick={load}
-          className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700/40"
+          className="flex items-center gap-1 text-xs text-ink-3 hover:text-ink-0 dark:hover:text-ink-0 px-2 py-1 rounded-md hover:bg-bg-2 dark:hover:bg-bg-2/40"
         >
           <RefreshCw size={12} /> Actualizar
         </button>
@@ -98,10 +98,10 @@ export default function Admin() {
             <StatCard label="Operaciones" value={stats.operations_total} sub={`${stats.monthly_total} registros mensuales`} />
           </div>
 
-          <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl p-5">
+          <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
             <div className="flex items-center gap-2 mb-3">
-              <Activity size={16} className="text-slate-400" />
-              <h2 className="font-semibold text-slate-800 dark:text-slate-200">Estado del sistema</h2>
+              <Activity size={16} className="text-ink-3" />
+              <h2 className="font-semibold text-ink-0">Estado del sistema</h2>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
               <Row label="Registro público">
@@ -109,7 +109,7 @@ export default function Admin() {
                   {stats.registration_open ? 'Habilitado · cualquier usuario puede registrarse' : 'Deshabilitado · solo el admin crea cuentas'}
                 </span>
               </Row>
-              <Row label="Snapshots almacenados"><Database size={12} className="inline text-slate-400" /> {stats.snapshots_total}</Row>
+              <Row label="Snapshots almacenados"><Database size={12} className="inline text-ink-3" /> {stats.snapshots_total}</Row>
               <Row label="Tasa de actividad">
                 {stats.users_total > 0 ? `${((stats.active_last_7d / stats.users_total) * 100).toFixed(0)}%` : '—'}
               </Row>
@@ -118,35 +118,35 @@ export default function Admin() {
         </>
       )}
 
-      <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-700/50 flex items-center gap-2">
-          <Users size={16} className="text-slate-400" />
-          <h2 className="font-semibold text-slate-800 dark:text-slate-200">Usuarios ({users.length})</h2>
+      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-line/50 flex items-center gap-2">
+          <Users size={16} className="text-ink-3" />
+          <h2 className="font-semibold text-ink-0">Usuarios ({users.length})</h2>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-700/50">
+              <tr className="border-b border-line/50">
                 {['ID', 'Email', 'Nombre', 'Registro', 'Último login', 'Pos', 'Ops', 'Mes', ''].map(h => (
-                  <th key={h} className="px-3 py-2 text-left text-xs text-slate-400 dark:text-slate-500 font-medium">{h}</th>
+                  <th key={h} className="px-3 py-2 text-left text-xs text-ink-3 font-medium">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {users.map(u => (
-                <tr key={u.id} className="border-b border-slate-100 dark:border-slate-700/30 hover:bg-slate-50 dark:hover:bg-slate-700/20">
-                  <td className="px-3 py-2 text-slate-500 dark:text-slate-400 font-mono text-xs">{u.id}</td>
-                  <td className="px-3 py-2 font-medium text-slate-800 dark:text-slate-200">
+                <tr key={u.id} className="border-b border-line/50 dark:border-line/30 hover:bg-bg-2 dark:hover:bg-bg-2/20">
+                  <td className="px-3 py-2 text-ink-3 font-mono text-xs">{u.id}</td>
+                  <td className="px-3 py-2 font-medium text-ink-0">
                     {u.email}
                     {u.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold uppercase tracking-wide">admin</span>}
                     {!u.approved && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
                   </td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{u.name || '—'}</td>
-                  <td className="px-3 py-2 text-slate-500 dark:text-slate-400 text-xs">{u.created_at?.slice(0, 16) || '—'}</td>
-                  <td className="px-3 py-2 text-slate-500 dark:text-slate-400 text-xs">{u.last_login_at?.slice(0, 16) || '—'}</td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{u.positions_count}</td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{u.operations_count}</td>
-                  <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{u.monthly_count}</td>
+                  <td className="px-3 py-2 text-ink-2">{u.name || '—'}</td>
+                  <td className="px-3 py-2 text-ink-3 text-xs">{u.created_at?.slice(0, 16) || '—'}</td>
+                  <td className="px-3 py-2 text-ink-3 text-xs">{u.last_login_at?.slice(0, 16) || '—'}</td>
+                  <td className="px-3 py-2 text-ink-2">{u.positions_count}</td>
+                  <td className="px-3 py-2 text-ink-2">{u.operations_count}</td>
+                  <td className="px-3 py-2 text-ink-2">{u.monthly_count}</td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
                       {!u.approved && !u.is_admin && (
@@ -161,7 +161,7 @@ export default function Admin() {
                       {!u.is_admin && (
                         <button
                           onClick={() => deleteUser(u)}
-                          className="text-slate-400 hover:text-red-500"
+                          className="text-ink-3 hover:text-red-500"
                           title="Eliminar usuario y todos sus datos"
                         >
                           <Trash2 size={13} />
@@ -174,7 +174,7 @@ export default function Admin() {
             </tbody>
           </table>
         </div>
-        <p className="text-xs text-slate-400 dark:text-slate-500 px-5 py-3 border-t border-slate-200 dark:border-slate-700/50">
+        <p className="text-xs text-ink-3 px-5 py-3 border-t border-line/50">
           Eliminar una cuenta también borra sus posiciones, operaciones, snapshots y brokers. Las cuentas de administrador no se pueden eliminar desde este panel.
         </p>
       </div>
@@ -185,8 +185,8 @@ export default function Admin() {
 function Row({ label, children }) {
   return (
     <div>
-      <p className="text-xs text-slate-400 dark:text-slate-500 mb-0.5">{label}</p>
-      <p className="text-slate-700 dark:text-slate-300">{children}</p>
+      <p className="text-xs text-ink-3 mb-0.5">{label}</p>
+      <p className="text-ink-1">{children}</p>
     </div>
   )
 }
