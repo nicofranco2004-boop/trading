@@ -150,6 +150,11 @@ const OPERATIONS = (() => {
 //   capital_inicio[t] = capital_final[t-1]
 //   pnl_total = pnl_realized + pnl_unrealized  → vuelve al cap_final
 //   capital_final[t] = capital_inicio[t] + deposits − withdrawals + pnl_total
+// Pesos relativos por broker (suman ~1.0). Determinan cuánto del global
+// corresponde a cada broker — el chart ARS de Insights filtra por broker
+// específico, así que sin entries por broker el chart ARS queda vacío.
+const BROKER_WEIGHTS = { Schwab: 0.51, Cocos: 0.06, Binance: 0.43 }
+
 const MONTHLY = (() => {
   const out = []
   const start = new Date('2024-04-01')
@@ -170,6 +175,8 @@ const MONTHLY = (() => {
     const pnlUnrealized = Math.round(pnlTotal - pnlRealized)
     const capFinal = capInicio + deposit - withdrawal + pnlTotal
     valuation = capFinal
+
+    // Entry global (agregado de todos los brokers)
     out.push({
       broker: 'global',
       year: y,
@@ -181,6 +188,22 @@ const MONTHLY = (() => {
       pnl_realized: pnlRealized,
       pnl_unrealized: pnlUnrealized,
     })
+
+    // Entries por broker — proporcionales al peso. Insights los necesita
+    // para el chart ARS (filtra por broker.currency === 'ARS').
+    for (const [brokerName, weight] of Object.entries(BROKER_WEIGHTS)) {
+      out.push({
+        broker: brokerName,
+        year: y,
+        month: m,
+        capital_inicio: Math.round(capInicio * weight),
+        capital_final: Math.round(capFinal * weight),
+        deposits: Math.round(deposit * weight),
+        withdrawals: 0,
+        pnl_realized: Math.round(pnlRealized * weight),
+        pnl_unrealized: Math.round(pnlUnrealized * weight),
+      })
+    }
     start.setMonth(start.getMonth() + 1)
   }
   return out
@@ -189,6 +212,89 @@ const MONTHLY = (() => {
 const MONTHLY_LAST_VALUATION = MONTHLY.length
   ? MONTHLY[MONTHLY.length - 1].capital_final
   : 18500
+
+// ─── Reports timeline derivada de MONTHLY ───────────────────────────────────
+// El backend devuelve PeriodReport por mes con metrics + headline. Acá
+// armamos algo equivalente para que /reportes muestre la timeline visual
+// (KPI strip, calendar heatmap, monthly table) sin "Not authenticated".
+
+const MONTH_NAMES_ES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+                        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
+
+const REPORTS_TIMELINE = (() => {
+  // Solo los globals — el frontend agrupa por año
+  const globals = MONTHLY.filter(m => m.broker === 'global')
+  if (globals.length === 0) return []
+
+  const today = new Date()
+  const currentYear = today.getFullYear()
+  const currentMonth = today.getMonth() + 1
+
+  return globals.map((m, idx) => {
+    const prev = idx > 0 ? globals[idx - 1] : null
+    const baseValue = m.capital_inicio || 1
+    const net = (m.deposits || 0) - (m.withdrawals || 0)
+    const pnlTotal = (m.capital_final || 0) - baseValue - net
+    const delta_pct = baseValue > 0 ? (pnlTotal / baseValue) * 100 : 0
+    const isCurrent = m.year === currentYear && m.month === currentMonth
+    const isRelevant = Math.abs(pnlTotal) > 50 || Math.abs(net) > 50
+    // Trades por mes: 2-8 (correlaciona con noise)
+    const trades = 2 + Math.floor(Math.random() * 7)
+    const winRate = 50 + (delta_pct > 0 ? 15 : -10) + Math.random() * 10
+    const vsSp = delta_pct - (1.2 + (Math.random() - 0.5) * 2)  // benchmark ~1.2% mean
+
+    let headline = 'Mes con movimiento moderado.'
+    if (delta_pct > 5) headline = 'Mes sólido — rally generalizado del mercado.'
+    else if (delta_pct > 2) headline = 'Buen rendimiento, por encima del benchmark.'
+    else if (delta_pct < -3) headline = 'Mes difícil — corrección del mercado afectó la cartera.'
+    else if (delta_pct < 0) headline = 'Mes ligeramente negativo, sin caídas relevantes.'
+
+    return {
+      period_key: `${m.year}-${String(m.month).padStart(2, '0')}`,
+      period_label: `${MONTH_NAMES_ES[m.month - 1]} ${m.year}`,
+      period_end: new Date(m.year, m.month, 0).toISOString().slice(0, 10),
+      is_current: isCurrent,
+      is_relevant: isRelevant || isCurrent,
+      metrics: {
+        start_value: m.capital_inicio,
+        end_value: m.capital_final,
+        delta_pct: +delta_pct.toFixed(2),
+        delta_usd: Math.round(pnlTotal),
+        realized_pnl: m.pnl_realized,
+        unrealized_pnl: m.pnl_unrealized,
+        deposits: m.deposits,
+        withdrawals: m.withdrawals,
+        trades_count: trades,
+        win_rate: +winRate.toFixed(0),
+        vs_sp500_pct: +vsSp.toFixed(1),
+        vs_inflation_pct: +(delta_pct - 5).toFixed(1),
+      },
+      headline,
+      subheadline: null,
+      highlights: [],
+      insights: [],
+      children: [],
+    }
+  }).reverse()  // descendente — mes en curso primero
+})()
+
+// CAGR sintético del demo. Lo computamos sobre los globals usando misma
+// fórmula que el backend (TWR mensual + media geométrica anualizada).
+const DEMO_CAGR = (() => {
+  const globals = MONTHLY.filter(m => m.broker === 'global')
+  if (globals.length < 2) return { cagr: null, months: globals.length }
+  const factors = globals.map(m => {
+    const ci = m.capital_inicio || 0
+    const cf = m.capital_final || 0
+    const net = (m.deposits || 0) - (m.withdrawals || 0)
+    if (ci <= 0) return 1
+    return 1 + Math.max(-0.95, (cf - ci - net) / ci)
+  })
+  const prod = factors.reduce((a, b) => a * b, 1)
+  const monthsCount = factors.length
+  const cagr = Math.pow(prod, 12 / monthsCount) - 1
+  return { cagr: +(cagr * 100).toFixed(2), months: monthsCount }
+})()
 
 // Snapshots semanales DERIVADOS del MONTHLY para que ambos cuenten la misma
 // historia. Interpolamos linealmente entre capital_inicio y capital_final
@@ -510,7 +616,14 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/prices/history') {
       return buildPriceHistory(query)
     }
-    // Endpoints menos críticos — array vacío para no romper
+    // Reports timeline (Reportes page)
+    if (basePath === '/reports/timeline') {
+      return { reports: REPORTS_TIMELINE, total: REPORTS_TIMELINE.length }
+    }
+    // Goals + CAGR (Objetivos page)
+    if (basePath === '/goals') return []
+    if (basePath === '/goals/cagr') return DEMO_CAGR
+    // Insights endpoints opcionales — devuelven shape vacío para no romper
     if (basePath.startsWith('/insights')) return {}
     if (basePath.startsWith('/goals'))    return []
     return null
