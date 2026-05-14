@@ -32,7 +32,10 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [range, setRange] = useState('1M')
+  const [currency, setCurrency] = useState(() => localStorage.getItem('rendi_dashboard_currency') || 'USD')
   const latestRef = useRef({})
+
+  useEffect(() => { localStorage.setItem('rendi_dashboard_currency', currency) }, [currency])
 
   useEffect(() => {
     loadAll()
@@ -245,12 +248,46 @@ export default function Dashboard() {
 
   const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 
+  // Helper: convierte USD → moneda activa para mostrar.
+  // Para ARS multiplica por tcBlue actual (snapshot). No es histórico — los
+  // valores de snapshot se ven al FX de hoy. Lo aclaramos en el hero.
+  const fmt = (usdValue) => {
+    if (usdValue == null) return '—'
+    return currency === 'ARS'
+      ? fmtArs(usdValue * tcBlue)
+      : fmtUsd(usdValue)
+  }
+  const sign = (v) => v == null ? '' : (v >= 0 ? '+' : '−')
+  const fmtSigned = (usdValue) => {
+    if (usdValue == null) return '—'
+    return currency === 'ARS'
+      ? `${sign(usdValue)}ARS ${ars(Math.abs(usdValue * tcBlue))}`
+      : `${sign(usdValue)}USD ${usd(Math.abs(usdValue))}`
+  }
+
   return (
     <div className="page-shell">
       <PageHeader
         eyebrow="Dashboard"
         title="Estado del portfolio"
         meta={meta}
+        action={
+          <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
+            {['USD', 'ARS'].map(c => (
+              <button
+                key={c}
+                onClick={() => setCurrency(c)}
+                className={`px-3 py-1 text-xs font-mono uppercase tracking-caps rounded-sm transition-colors ${
+                  currency === c
+                    ? 'bg-bg-3 text-ink-0'
+                    : 'text-ink-2 hover:text-ink-0'
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+        }
       />
 
       {positions.filter(p => !p.is_cash).length === 0 && !loading && (
@@ -290,13 +327,17 @@ export default function Dashboard() {
       <div className="mb-6 sm:mb-8">
         <StatCard
           tone="hero"
-          label="Valor actual"
-          value={fmtUsd(portfolioTotal)}
+          label={currency === 'ARS' ? 'Valor actual · ARS' : 'Valor actual · USD'}
+          value={fmt(portfolioTotal)}
           tooltip={
             <>
               <p className="font-semibold text-ink-0">Valor de mercado de tu portfolio</p>
               <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
-              <p className="text-ink-3">Para brokers ARS, la conversión a USD se hace al blue actual.</p>
+              <p className="text-ink-3">
+                {currency === 'ARS'
+                  ? `Conversión USD → ARS al blue actual (${tcBlue}). Los valores históricos no se reconvierten.`
+                  : 'Para brokers ARS, la conversión a USD se hace al blue actual.'}
+              </p>
             </>
           }
           sub={
@@ -306,14 +347,16 @@ export default function Dashboard() {
               </span>
               <span className={`inline-flex items-center gap-1 font-semibold ${totalReturnUsd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                 {totalReturnUsd >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
-                USD {usd(Math.abs(totalReturnUsd))}
+                {fmtSigned(totalReturnUsd).replace(/^[+−]/, '')}
               </span>
               <span className={`tabular ${totalReturnUsd >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                 ({pctSigned(totalReturnPct)})
               </span>
             </span>
           }
-          hint={`≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre los ${fmtUsd(netDeposited)} de capital aportado`}
+          hint={currency === 'ARS'
+            ? `≈ ${fmtUsd(portfolioTotal)} al blue ${tcBlue} · sobre ${fmtArs(netDeposited * tcBlue)} de capital aportado`
+            : `≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre ${fmtUsd(netDeposited)} de capital aportado`}
         />
       </div>
 
@@ -333,24 +376,24 @@ export default function Dashboard() {
         <KpiCell
           first
           label="Capital aportado"
-          value={fmtUsd(netDeposited)}
+          value={fmt(netDeposited)}
           sub="depósitos netos"
         />
         <KpiCell
           label="Resultado total"
-          value={fmtUsd(totalReturnUsd)}
+          value={fmt(totalReturnUsd)}
           tone={totalReturnUsd >= 0 ? 'pos' : 'neg'}
           sub={`${pctSigned(totalReturnPct)} desde el inicio`}
         />
         <KpiCell
           label="P&L realizado"
-          value={fmtUsd(realizedPnl)}
+          value={fmt(realizedPnl)}
           tone={realizedPnl >= 0 ? 'pos' : 'neg'}
           sub="operaciones cerradas"
         />
         <KpiCell
           label="P&L no realizado"
-          value={fmtUsd(totalPnl)}
+          value={fmt(totalPnl)}
           tone={totalPnl >= 0 ? 'pos' : 'neg'}
           sub={`${pctSigned(totalPct)} sobre costo`}
         />
@@ -477,8 +520,17 @@ export default function Dashboard() {
       {/* ── Composición + Top holdings ─────────────────────────────────────── */}
       {positionsForInsight.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-4 mb-8">
-          <AssetBreakdownBar positions={positionsForInsight} totalValue={totalValue} />
-          <TopHoldingsPanel positions={positionsForInsight} />
+          <AssetBreakdownBar
+            positions={positionsForInsight}
+            totalValue={totalValue}
+            currency={currency}
+            tcBlue={tcBlue}
+          />
+          <TopHoldingsPanel
+            positions={positionsForInsight}
+            currency={currency}
+            tcBlue={tcBlue}
+          />
         </div>
       )}
 
@@ -567,7 +619,8 @@ function KpiCell({ label, value, sub, tone, first }) {
 
 const ASSET_COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#8B7DFF', '#5A6478']
 
-function AssetBreakdownBar({ positions, totalValue }) {
+function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcBlue = 1 }) {
+  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcBlue) : fmtUsd(v)
   const items = useMemo(() => {
     // Consolidar por asset (sumar value_usd)
     const byAsset = new Map()
@@ -624,7 +677,7 @@ function AssetBreakdownBar({ positions, totalValue }) {
               <span className="text-ink-1 truncate">{it.asset}</span>
             </div>
             <div className="flex items-baseline gap-2 flex-shrink-0">
-              <span className="text-ink-3 tabular text-[11px]">{fmtUsd(it.value)}</span>
+              <span className="text-ink-3 tabular text-[11px]">{fmt(it.value)}</span>
               <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">{it.pct.toFixed(1)}%</span>
             </div>
           </div>
@@ -637,7 +690,15 @@ function AssetBreakdownBar({ positions, totalValue }) {
 // ─── Top holdings panel ──────────────────────────────────────────────────────
 // Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy.
 
-function TopHoldingsPanel({ positions }) {
+function TopHoldingsPanel({ positions, currency = 'USD', tcBlue = 1 }) {
+  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcBlue) : fmtUsd(v)
+  const fmtSigned = (v) => {
+    if (v == null) return ''
+    const s = v >= 0 ? '+' : '−'
+    return currency === 'ARS'
+      ? `${s}${ars(Math.abs(v * tcBlue))}`
+      : `${s}${usd(Math.abs(v))}`
+  }
   const top = useMemo(() => {
     // Consolidar y rankear por value_usd
     const byAsset = new Map()
@@ -671,7 +732,7 @@ function TopHoldingsPanel({ positions }) {
               <AssetLogo asset={h.asset} size={28} className="flex-shrink-0" />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium text-ink-0 truncate">{h.asset}</div>
-                <div className="text-[11px] text-ink-3 tabular">{fmtUsd(h.value_usd)}</div>
+                <div className="text-[11px] text-ink-3 tabular">{fmt(h.value_usd)}</div>
               </div>
               <LazySparkline symbol={(h.asset || '').toUpperCase()} variant="row" />
               <div className="text-right min-w-[60px]">
@@ -679,7 +740,7 @@ function TopHoldingsPanel({ positions }) {
                   {h.pnl_pct != null ? pctSigned(h.pnl_pct) : '—'}
                 </div>
                 <div className={`text-[10px] tabular ${positive ? 'text-rendi-pos/70' : 'text-rendi-neg/70'}`}>
-                  {h.pnl_usd != null ? `${h.pnl_usd >= 0 ? '+' : '−'}${usd(Math.abs(h.pnl_usd))}` : ''}
+                  {fmtSigned(h.pnl_usd)}
                 </div>
               </div>
             </div>
