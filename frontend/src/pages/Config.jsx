@@ -15,7 +15,6 @@ import { useAuth } from '../contexts/AuthContext'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
-import Eyebrow from '../components/Eyebrow'
 import ImportWizard from '../components/import/ImportWizard'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
@@ -46,18 +45,20 @@ function memberSince(createdAt) {
 
 // ─── FX KPI cell ─────────────────────────────────────────────────────────────
 
-function FxCell({ first, label, value, compra, venta, source, accent }) {
+function FxCell({ first, label, sub, value, compra, venta }) {
   return (
     <div className={`px-4 py-3 flex-1 min-w-[160px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 leading-none flex items-center gap-1.5">
-        <span className={`inline-block w-1.5 h-1.5 rounded-full ${accent === 'cyan' ? 'bg-data-cyan' : 'bg-rendi-pos'}`} aria-hidden="true" />
-        {label}
+      <div className="text-xs text-ink-3 leading-none flex items-baseline gap-1.5">
+        <span className="text-ink-2">{label}</span>
+        {sub && <span className="text-[10px] text-ink-3">{sub}</span>}
       </div>
       <div className="mt-2 font-medium tabular num leading-none text-2xl tracking-tight text-ink-0">
         {value != null ? fmtArs(value) : '—'}
       </div>
-      <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none truncate uppercase tracking-caps">
-        {compra != null && venta != null ? `compra ${fmtArs(compra)} · venta ${fmtArs(venta)}` : (source || '—')}
+      <div className="text-[11px] text-ink-3 mt-1.5 leading-none truncate">
+        {compra != null && venta != null
+          ? <>Compra <span className="font-mono tabular">{fmtArs(compra)}</span> · Venta <span className="font-mono tabular">{fmtArs(venta)}</span></>
+          : '—'}
       </div>
     </div>
   )
@@ -67,8 +68,8 @@ function FxCell({ first, label, value, compra, venta, source, accent }) {
 
 function MetaRow({ label, children, last }) {
   return (
-    <div className={`flex items-baseline gap-3 px-4 py-2.5 ${last ? '' : 'border-b border-line/40'}`}>
-      <span className="text-[10px] font-mono uppercase tracking-label text-ink-3 min-w-[120px]">{label}</span>
+    <div className={`flex items-baseline gap-3 px-4 py-2.5 ${last ? '' : 'border-b border-line/30'}`}>
+      <span className="text-xs text-ink-3 min-w-[140px]">{label}</span>
       <span className="text-sm text-ink-1 flex-1 truncate">{children}</span>
     </div>
   )
@@ -160,83 +161,83 @@ export default function Config() {
   }
 
   const fetchedAt = dolar?.fetched_at ? new Date(dolar.fetched_at) : null
-  const labelClass = 'block text-[10px] font-mono uppercase tracking-label text-ink-3 mb-1'
-  const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2 font-mono'
-  const selectClass = 'bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-sm text-ink-0 focus:outline-none focus:border-ink-2 font-mono'
+  const labelClass = 'block text-xs text-ink-3 mb-1'
+  const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2'
+  const selectClass = 'bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:border-ink-2'
 
   return (
     <div className="page-shell-wide">
       <PageHeader
-        eyebrow="Configuración / Workspace"
-        title="Settings"
-        meta={fetchedAt ? `FX sync · ${fmtTime(fetchedAt)}` : null}
+        title="Configuración"
+        subtitle="Gestioná tus brokers, tipos de cambio y datos de cuenta."
       />
 
-      {/* ── KPI strip · FX rates ─────────────────────────────────────────── */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap mb-2">
-        <FxCell
-          first
-          label="TC Blue · ARS/USD"
-          value={dolar?.blue?.venta}
-          compra={dolar?.blue?.compra}
-          venta={dolar?.blue?.venta}
-        />
-        <FxCell
-          label="TC MEP · ARS/USD"
-          value={dolar?.mep?.venta}
-          compra={dolar?.mep?.compra}
-          venta={dolar?.mep?.venta}
-        />
-        <FxCell
-          label="TC CCL · ARS/USD"
-          value={dolar?.ccl?.venta}
-          compra={dolar?.ccl?.compra}
-          venta={dolar?.ccl?.venta}
-        />
-        <FxCell
-          label="TC Cripto · ARS/USDT"
-          value={dolar?.cripto?.venta}
-          compra={dolar?.cripto?.compra}
-          venta={dolar?.cripto?.venta}
-          source="crypto · Binance"
-          accent="cyan"
-        />
-      </div>
-
-      <div className="flex items-center gap-3 mb-6 text-[10px] font-mono uppercase tracking-caps text-ink-3">
-        <span>Fuente · dolarapi.com</span>
-        <span>·</span>
-        <span>refresh cada 10min</span>
-        <span>·</span>
-        <span>última sync <span className="text-ink-2">{fmtTime(fetchedAt)}</span></span>
-        <button
-          type="button"
-          onClick={loadDolar}
-          className="ml-auto inline-flex items-center gap-1 text-data-cyan hover:text-ink-0 transition-colors"
-          title="Actualizar cotización"
-        >
-          <RefreshCw size={11} strokeWidth={1.75} />
-          Forzar actualización
-        </button>
-      </div>
+      {/* ── FX rates ─────────────────────────────────────────────────────── */}
+      <section className="mb-6">
+        <div className="flex items-baseline justify-between mb-2 gap-3 flex-wrap">
+          <h2 className="text-sm font-medium text-ink-1">Tipos de cambio</h2>
+          <span className="text-xs text-ink-3 inline-flex items-center gap-3">
+            <span>dolarapi.com · sync {fmtTime(fetchedAt)}</span>
+            <button
+              type="button"
+              onClick={loadDolar}
+              className="inline-flex items-center gap-1 text-ink-3 hover:text-ink-0 transition-colors"
+              title="Actualizar cotización"
+            >
+              <RefreshCw size={11} strokeWidth={1.75} />
+              Actualizar
+            </button>
+          </span>
+        </div>
+        <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+          <FxCell
+            first
+            label="Blue"
+            sub="ARS/USD"
+            value={dolar?.blue?.venta}
+            compra={dolar?.blue?.compra}
+            venta={dolar?.blue?.venta}
+          />
+          <FxCell
+            label="MEP"
+            sub="ARS/USD"
+            value={dolar?.mep?.venta}
+            compra={dolar?.mep?.compra}
+            venta={dolar?.mep?.venta}
+          />
+          <FxCell
+            label="CCL"
+            sub="ARS/USD"
+            value={dolar?.ccl?.venta}
+            compra={dolar?.ccl?.compra}
+            venta={dolar?.ccl?.venta}
+          />
+          <FxCell
+            label="Cripto"
+            sub="ARS/USDT"
+            value={dolar?.cripto?.venta}
+            compra={dolar?.cripto?.compra}
+            venta={dolar?.cripto?.venta}
+          />
+        </div>
+      </section>
 
       {/* ── Grid: Brokers | Workspace info ───────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4 mb-4">
         {/* Brokers conectados */}
         <Panel padding="none">
-          <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
-              <Eyebrow>Brokers conectados</Eyebrow>
-              <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 ml-1">
-                / {brokers.length} {brokers.length === 1 ? 'activo' : 'activos'}
-              </span>
+          <header className="flex items-center justify-between px-4 py-3 border-b border-line">
+            <div>
+              <h2 className="text-sm font-medium text-ink-0">Brokers</h2>
+              <p className="text-xs text-ink-3 mt-0.5">
+                {brokers.length} {brokers.length === 1 ? 'broker conectado' : 'brokers conectados'}
+              </p>
             </div>
             <button
               onClick={() => setShowAddBroker(true)}
-              className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-caps bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-2 py-1 rounded-sm transition-colors"
+              className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"
             >
-              <Plus size={10} strokeWidth={2.25} /> Conectar
+              <Plus size={12} strokeWidth={2} /> Agregar broker
             </button>
           </header>
 
@@ -247,10 +248,10 @@ export default function Config() {
           ) : (
             <table className="w-full">
               <thead>
-                <tr className="border-b border-line/60 text-[10px] font-mono uppercase tracking-label text-ink-3">
+                <tr className="border-b border-line/60 text-xs text-ink-3">
                   <th className="text-left px-4 py-2 font-medium">Broker</th>
                   <th className="text-left px-3 py-2 font-medium">Moneda</th>
-                  <th className="text-left px-3 py-2 font-medium">Status</th>
+                  <th className="text-left px-3 py-2 font-medium">Estado</th>
                   <th className="px-3 py-2 w-[60px]"></th>
                 </tr>
               </thead>
@@ -281,11 +282,11 @@ export default function Config() {
                               <option value="ARS">ARS</option>
                             </select>
                           </div>
-                          <div className="flex gap-1">
-                            <button type="submit" className="text-[10px] font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 px-2 py-1.5 rounded-sm transition-colors">
+                          <div className="flex gap-2">
+                            <button type="submit" className="text-xs bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 px-3 py-2 rounded-sm transition-colors">
                               Guardar
                             </button>
-                            <button type="button" onClick={() => setEditingBroker(null)} className="text-[10px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-2 py-1.5 transition-colors">
+                            <button type="button" onClick={() => setEditingBroker(null)} className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors">
                               Cancelar
                             </button>
                           </div>
@@ -342,11 +343,11 @@ export default function Config() {
                             <option value="ARS">ARS</option>
                           </select>
                         </div>
-                        <div className="flex gap-1">
-                          <button type="submit" className="text-[10px] font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 px-2.5 py-1.5 rounded-sm transition-colors">
-                            <Plus size={10} strokeWidth={2.25} className="inline mr-1" /> Agregar
+                        <div className="flex gap-2">
+                          <button type="submit" className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 px-3 py-2 rounded-sm transition-colors">
+                            <Plus size={12} strokeWidth={2} /> Agregar
                           </button>
-                          <button type="button" onClick={() => setShowAddBroker(false)} className="text-[10px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-2 py-1.5 transition-colors">
+                          <button type="button" onClick={() => setShowAddBroker(false)} className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors">
                             Cancelar
                           </button>
                         </div>
@@ -358,51 +359,42 @@ export default function Config() {
             </table>
           )}
 
-          <div className="px-4 py-2.5 border-t border-line flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-mono uppercase tracking-caps text-ink-3">
-            <span><b className="text-data-cyan">USDT</b> · exchanges crypto (Binance)</span>
-            <span><b className="text-ink-2">USD</b> · brokers en dólares (IBKR, Schwab)</span>
-            <span><b className="text-ink-2">ARS</b> · brokers en pesos · convertidos al blue (Cocos, IOL)</span>
+          <div className="px-4 py-3 border-t border-line text-xs text-ink-3 leading-relaxed">
+            <span className="text-data-cyan font-medium">USDT</span> exchanges crypto (Binance) ·{' '}
+            <span className="text-ink-2 font-medium">USD</span> brokers en dólares (IBKR, Schwab) ·{' '}
+            <span className="text-ink-2 font-medium">ARS</span> brokers en pesos, convertidos al blue (Cocos, IOL).
           </div>
         </Panel>
 
         {/* Workspace info */}
         <Panel padding="none">
-          <header className="flex items-center gap-2 px-4 py-2.5 border-b border-line">
-            <span
-              className="inline-block w-1.5 h-1.5 rounded-full bg-data-cyan"
-              style={{ boxShadow: '0 0 6px rgba(70,198,224,0.6)' }}
-              aria-hidden="true"
-            />
-            <Eyebrow>Datos del workspace</Eyebrow>
+          <header className="px-4 py-3 border-b border-line">
+            <h2 className="text-sm font-medium text-ink-0">Cuenta</h2>
+            <p className="text-xs text-ink-3 mt-0.5">Datos de tu workspace</p>
           </header>
           <div>
-            <MetaRow label="Usuario">
+            <MetaRow label="Email">
               <span className="font-medium text-ink-0">{user?.email || user?.name || '—'}</span>
               {user?.is_admin && (
                 <Pill tone="info" className="ml-2">Admin</Pill>
               )}
             </MetaRow>
             <MetaRow label="Workspace">
-              <span className="font-medium text-ink-0">
+              <span className="text-ink-1">
                 {user?.email ? user.email.split('@')[0] : (user?.name || '—')}
-              </span>
-              <span className="text-[10px] font-mono text-ink-3 ml-2">· personal</span>
-            </MetaRow>
-            <MetaRow label="Brokers">
-              <span className="font-mono tabular">
-                {brokers.length} {brokers.length === 1 ? 'conectado' : 'conectados'}
+                <span className="text-ink-3 ml-1.5">· personal</span>
               </span>
             </MetaRow>
             <MetaRow label="Plan">
               <Pill tone="signal">Free</Pill>
             </MetaRow>
-            <MetaRow label="Miembro desde">
-              <span className="font-mono tabular text-xs">{memberSince(user?.created_at)}</span>
-            </MetaRow>
-            <MetaRow label="ID instancia" last>
-              <span className="font-mono tabular text-[11px] text-ink-3">
-                rnd-{user?.id || '—'}
+            <MetaRow label="Brokers">
+              <span className="tabular">
+                {brokers.length} {brokers.length === 1 ? 'conectado' : 'conectados'}
               </span>
+            </MetaRow>
+            <MetaRow label="Miembro desde" last>
+              <span className="tabular text-xs">{memberSince(user?.created_at)}</span>
             </MetaRow>
           </div>
         </Panel>
@@ -412,29 +404,25 @@ export default function Config() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Datos / Importaciones */}
         <Panel padding="none">
-          <header className="flex items-center gap-2 px-4 py-2.5 border-b border-line">
-            <span
-              className="inline-block w-1.5 h-1.5 rounded-full bg-data-cyan"
-              style={{ boxShadow: '0 0 6px rgba(70,198,224,0.6)' }}
-              aria-hidden="true"
-            />
-            <Eyebrow>Datos / Importaciones</Eyebrow>
+          <header className="px-4 py-3 border-b border-line">
+            <h2 className="text-sm font-medium text-ink-0">Importar datos</h2>
+            <p className="text-xs text-ink-3 mt-0.5">Subí un CSV con tu historial</p>
           </header>
           <div className="p-4 space-y-3">
-            <p className="text-xs text-ink-2 leading-relaxed">
-              Subí un CSV con tu historial de operaciones para reconstruir el portfolio sin cargar todo a mano. Soporta exports de cualquier broker — vas a poder mapear las columnas y previsualizar antes de confirmar.
+            <p className="text-sm text-ink-2 leading-relaxed">
+              Reconstruí el portfolio sin cargar todo a mano. Soporta exports de cualquier broker — vas a poder mapear las columnas y previsualizar antes de confirmar.
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setShowImport(true)}
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-2.5 py-1.5 rounded-sm transition-colors"
+                className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"
               >
                 <Upload size={12} strokeWidth={2} /> Importar CSV
               </button>
               <Link
                 to="/imports"
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 border border-line bg-bg-2 hover:bg-bg-3 px-2.5 py-1.5 rounded-sm transition-colors"
+                className="inline-flex items-center gap-1.5 text-xs text-ink-2 hover:text-ink-0 border border-line bg-bg-2 hover:bg-bg-3 px-3 py-1.5 rounded-sm transition-colors"
               >
                 <History size={12} strokeWidth={1.75} /> Ver historial
               </Link>
@@ -444,14 +432,12 @@ export default function Config() {
 
         {/* Cambiar contraseña */}
         <Panel padding="none">
-          <header className="flex items-center gap-2 px-4 py-2.5 border-b border-line">
-            <span
-              className="inline-block w-1.5 h-1.5 rounded-full bg-data-cyan"
-              style={{ boxShadow: '0 0 6px rgba(70,198,224,0.6)' }}
-              aria-hidden="true"
-            />
-            <Eyebrow>Cambiar contraseña</Eyebrow>
-            <KeyRound size={11} strokeWidth={1.75} className="text-ink-3" aria-hidden="true" />
+          <header className="flex items-center gap-2 px-4 py-3 border-b border-line">
+            <KeyRound size={14} strokeWidth={1.75} className="text-ink-3" aria-hidden="true" />
+            <div>
+              <h2 className="text-sm font-medium text-ink-0">Contraseña</h2>
+              <p className="text-xs text-ink-3 mt-0.5">Cambiala periódicamente</p>
+            </div>
           </header>
           <form onSubmit={changePassword} className="p-4 space-y-3">
             <div>
@@ -492,29 +478,29 @@ export default function Config() {
                 />
               </div>
             </div>
-            <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
-              Mínimo 10 caracteres · al actualizar se cierran las sesiones activas en otros dispositivos.
+            <p className="text-xs text-ink-3">
+              Mínimo 10 caracteres. Al actualizarla se cierran las sesiones activas en otros dispositivos.
             </p>
             {pwState.error && (
-              <p className="text-[11px] font-mono text-rendi-neg">{pwState.error}</p>
+              <p className="text-xs text-rendi-neg">{pwState.error}</p>
             )}
             {pwState.success && (
-              <p className="text-[11px] font-mono text-rendi-pos">{pwState.success}</p>
+              <p className="text-xs text-rendi-pos">{pwState.success}</p>
             )}
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => { setPwForm({ current: '', next: '', confirm: '' }); setPwState({ loading: false, error: '', success: '' }) }}
-                className="text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-3 py-1.5 transition-colors"
+                className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
                 disabled={pwState.loading}
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
               >
-                <Lock size={11} strokeWidth={1.75} />
+                <Lock size={12} strokeWidth={1.75} />
                 {pwState.loading ? 'Guardando…' : 'Cambiar contraseña'}
               </button>
             </div>
