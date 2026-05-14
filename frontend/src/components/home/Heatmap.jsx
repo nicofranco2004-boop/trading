@@ -38,20 +38,43 @@ function fmtPct(p) {
   return `${sign}${p.toFixed(1)}%`
 }
 
+// Tickers crypto del backend vienen como `BTC-USD`, `ETH-USD`. El endpoint
+// /api/prices/history valida con regex `[A-Z0-9]{1,10}(\.BA)?` y rechaza `-`.
+// Limpiamos al abrir AssetQuickView así el modal puede pedir el chart.
+function cleanSymbol(symbol) {
+  if (!symbol) return symbol
+  const m = symbol.match(/^([A-Z0-9]+)-(USD|USDT|USDC)$/)
+  return m ? m[1] : symbol
+}
+
+// Versión chica del ticker para celdas que no entran: AAPL → AAPL, NVDA → NVDA,
+// BTC-USD → BTC, AAPL.BA → AAPL.
+function shortSymbol(symbol) {
+  if (!symbol) return ''
+  const clean = cleanSymbol(symbol)
+  return clean.length > 6 ? clean.slice(0, 5) : clean
+}
+
 // ─── Squarified-ish layout ───────────────────────────────────────────────────
 // Layout simple: dividimos el área en filas, cada fila proporcional a un grupo
 // de blocks. Para V1 usamos un algoritmo greedy: tomamos los más grandes en una
 // fila hasta que el aspect ratio se vuelve mejor en una nueva.
-// El resultado es aproximado pero visualmente decente para ~50 bloques.
+//
+// Compresión de pesos: usamos sqrt(market_cap) para que cripto y Merval
+// (donde 1-2 nombres dominan) no aplaste el resto en celdas invisibles.
+// Con market_cap raw, BTC vs AVAX es ratio ~120:1; con sqrt queda ~11:1.
+
+function weightOf(b) {
+  return Math.sqrt(Math.max(b.market_cap, 1))
+}
 
 function squarify(blocks, width, height) {
-  // Total para normalizar
-  const total = blocks.reduce((s, b) => s + Math.max(b.market_cap, 1), 0)
+  const total = blocks.reduce((s, b) => s + weightOf(b), 0)
   if (total === 0) return []
   const totalArea = width * height
   const items = blocks.map(b => ({
     ...b,
-    area: (Math.max(b.market_cap, 1) / total) * totalArea,
+    area: (weightOf(b) / total) * totalArea,
   }))
   // Ordenar desc
   items.sort((a, b) => b.area - a.area)
@@ -199,42 +222,59 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
           preserveAspectRatio="none"
           className="absolute inset-0 w-full h-full"
         >
-          {laid.map(b => (
-            <g key={b.symbol} onClick={() => setSelected(b)} style={{ cursor: 'pointer' }}>
-              <rect
-                x={b.x} y={b.y} width={b.w} height={b.h}
-                fill={colorForChange(b.change_pct)}
-                stroke="#07090C"
-                strokeWidth="1"
-              />
-              {b.w > 50 && b.h > 28 && (
-                <>
+          {laid.map(b => {
+            // Texto si la celda es razonable. Para celdas muy chicas mostramos
+            // solo el ticker truncado en una sola línea, sin %.
+            const isLargeEnough = b.w > 38 && b.h > 22
+            const isMediumPlus  = b.w > 60 && b.h > 36
+            const showPct       = b.w > 50 && b.h > 42
+            const displaySymbol = b.w < 55 ? shortSymbol(b.symbol) : b.symbol
+            // FontSize: escalado por dimensión menor para que entre siempre.
+            const baseSize = Math.min(b.w / Math.max(displaySymbol.length, 4) * 1.4, b.h / 2.4)
+            const symFontSize = Math.max(9, Math.min(baseSize, 22))
+            const pctFontSize = Math.max(8, Math.min(symFontSize * 0.62, 12))
+            const yOffset = showPct ? -symFontSize * 0.25 : 0
+            return (
+              <g
+                key={b.symbol}
+                onClick={() => setSelected({ ...b, symbol: cleanSymbol(b.symbol) })}
+                style={{ cursor: 'pointer' }}
+              >
+                <rect
+                  x={b.x} y={b.y} width={b.w} height={b.h}
+                  fill={colorForChange(b.change_pct)}
+                  stroke="#07090C"
+                  strokeWidth="1"
+                />
+                {isLargeEnough && (
                   <text
-                    x={b.x + b.w / 2} y={b.y + b.h / 2 - 4}
+                    x={b.x + b.w / 2}
+                    y={b.y + b.h / 2 + yOffset + symFontSize * 0.35}
                     textAnchor="middle"
                     fill="white"
-                    fontSize={Math.min(b.w / 4, b.h / 3, 22)}
+                    fontSize={symFontSize}
                     fontWeight="600"
                     style={{ pointerEvents: 'none', userSelect: 'none' }}
                   >
-                    {b.symbol}
+                    {displaySymbol}
                   </text>
-                  {b.h > 50 && (
-                    <text
-                      x={b.x + b.w / 2} y={b.y + b.h / 2 + 14}
-                      textAnchor="middle"
-                      fill="rgba(255,255,255,0.85)"
-                      fontSize={Math.min(b.w / 7, 12)}
-                      fontFamily="monospace"
-                      style={{ pointerEvents: 'none', userSelect: 'none' }}
-                    >
-                      {fmtPct(b.change_pct)}
-                    </text>
-                  )}
-                </>
-              )}
-            </g>
-          ))}
+                )}
+                {isMediumPlus && showPct && (
+                  <text
+                    x={b.x + b.w / 2}
+                    y={b.y + b.h / 2 + symFontSize * 0.85}
+                    textAnchor="middle"
+                    fill="rgba(255,255,255,0.85)"
+                    fontSize={pctFontSize}
+                    fontFamily="monospace"
+                    style={{ pointerEvents: 'none', userSelect: 'none' }}
+                  >
+                    {fmtPct(b.change_pct)}
+                  </text>
+                )}
+              </g>
+            )
+          })}
         </svg>
       </div>
       )}
