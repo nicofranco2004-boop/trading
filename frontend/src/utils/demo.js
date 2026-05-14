@@ -141,30 +141,36 @@ const OPERATIONS = (() => {
   return ops.map((o, i) => ({ id: 1000 + i, ...o, commissions: 0 }))
 })()
 
-// Snapshots mensuales (para chart de evolución del Dashboard)
+// Snapshots semanales (para chart de evolución del Dashboard / Insights).
+// Generamos desde abr 2024 hasta hoy con tendencia alcista + noise.
+// Aportes ESPORÁDICOS (cada ~6 semanas) para que el net_deposited no crezca
+// más rápido que total_value, lo cual rompía el TWR y daba drawdown -100%.
 const SNAPSHOTS = (() => {
-  // Generamos snapshots desde abr 2024 hasta hoy con tendencia alcista + ruido.
   const out = []
-  const startValue = 18000
-  const startCapital = 17500
-  let value = startValue
-  let capital = startCapital
+  let value = 18000          // valor de mercado inicial
+  let capital = 17500        // capital aportado inicial (lo que pusiste)
+  // Drift semanal: 1.5% mensual → ~0.345% semanal
+  const weeklyDrift = 0.00345
+  const weeklyNoise = 0.018   // ±1.8% semana — variabilidad realista
   const start = new Date('2024-04-01')
   const today = new Date()
+  let weeksElapsed = 0
   while (start <= today) {
-    // Evolución mensual: +1.5% mean, ±3% noise
-    const driftMonthly = 0.015
-    const noise = (Math.random() - 0.5) * 0.06
-    value = value * (1 + driftMonthly + noise)
-    // Aporta US$ 400 cada 2 meses
-    if (start.getMonth() % 2 === 0) capital += 400
+    // Camino aleatorio con drift positivo
+    value = value * (1 + weeklyDrift + (Math.random() - 0.5) * 2 * weeklyNoise)
+    // Aporte de US$ 600 cada ~6 semanas (no cada semana — bug previo)
+    if (weeksElapsed > 0 && weeksElapsed % 6 === 0) capital += 600
+    // total_invested ≈ cost basis: lo "real puesto" en los activos abiertos
+    // (un poquito menos que capital porque hay cash sin invertir).
+    const invested = capital * 0.92
     out.push({
       date: start.toISOString().slice(0, 10),
       total_value: Math.round(value * 100) / 100,
-      total_invested: Math.round((capital * 0.95) * 100) / 100,
+      total_invested: Math.round(invested * 100) / 100,
       net_deposited: Math.round(capital * 100) / 100,
     })
-    start.setDate(start.getDate() + 7) // semana a semana
+    start.setDate(start.getDate() + 7)
+    weeksElapsed++
   }
   return out.sort((a, b) => b.date.localeCompare(a.date))
 })()
@@ -212,6 +218,33 @@ const PRICES = {
   PLTR: 24.85, COIN: 215.30,
 }
 
+// Benchmarks mensuales para Insights chart (S&P / Inflación AR / Dólar Blue)
+const BENCHMARKS = (() => {
+  const out = { sp500: {}, inflation_ar: {}, dolar_blue: {} }
+  const start = new Date('2023-01-01')
+  const today = new Date()
+  // S&P: arranca en 4700, crece ~10% anual con noise
+  let sp = 4700
+  // Blue: arranca en 850, sube a 1415 hoy (drift fuerte)
+  let blue = 850
+  while (start <= today) {
+    const key = start.toISOString().slice(0, 7)
+    // S&P month-end close: +1% mean, ±2.5% noise
+    sp = sp * (1 + 0.009 + (Math.random() - 0.5) * 0.05)
+    out.sp500[key] = Math.round(sp * 100) / 100
+    // Inflación AR mensual % (alta al inicio, desacelerando — realista AR)
+    const monthsSince = (start.getFullYear() - 2023) * 12 + start.getMonth()
+    const baseInflation = Math.max(2.5, 12 - monthsSince * 0.25)
+    out.inflation_ar[key] = Math.round((baseInflation + (Math.random() - 0.5) * 1.5) * 100) / 100
+    // Dólar blue tendencial
+    const driftBlue = 0.025 - monthsSince * 0.0008  // se desacelera
+    blue = blue * (1 + driftBlue + (Math.random() - 0.5) * 0.04)
+    out.dolar_blue[key] = Math.round(blue)
+    start.setMonth(start.getMonth() + 1)
+  }
+  return { ...out, fetched_at: new Date().toISOString() }
+})()
+
 const DOLAR = {
   blue:   { compra: 1395, venta: 1415 },
   mep:    { compra: 1420, venta: 1424 },
@@ -220,10 +253,167 @@ const DOLAR = {
   fetched_at: new Date().toISOString(),
 }
 
-const NEWS_MARKET = []  // dejamos vacío — la página se renderiza ok
-const NEWS_PORTFOLIO = []
-const EVENTS_PORTFOLIO = []
-const EVENTS_POPULAR = []
+// Strip de índices del Home — shape exacta del backend get_indices_strip()
+const INDICES_STRIP = [
+  { symbol: 'SPX',  label: 'S&P 500',    kind: 'equity', price: 5840.50, change_pct: 0.42 },
+  { symbol: 'IXIC', label: 'NASDAQ 100', kind: 'equity', price: 18925.30, change_pct: 1.28 },
+  { symbol: 'MERV', label: 'Merval',     kind: 'equity', price: 2150420, change_pct: -0.85 },
+  { symbol: 'BTC',  label: 'Bitcoin',    kind: 'crypto', price: 81595, change_pct: 2.7 },
+  { symbol: 'ETH',  label: 'Ethereum',   kind: 'crypto', price: 3320, change_pct: 1.7 },
+  { symbol: 'GOLD', label: 'Oro',        kind: 'commodity', price: 2748.20, change_pct: 0.15 },
+]
+
+// Movers — top gainers + losers por mercado
+const MOVERS = {
+  sp500: {
+    gainers: [
+      { symbol: 'AVGO', label: 'Broadcom',           price: 198.40, change_pct: 5.5 },
+      { symbol: 'NVDA', label: 'NVIDIA',             price: 178.50, change_pct: 4.4 },
+      { symbol: 'ORCL', label: 'Oracle',             price: 178.40, change_pct: 3.1 },
+      { symbol: 'CSCO', label: 'Cisco',              price: 56.40,  change_pct: 13.4 },
+      { symbol: 'ACN',  label: 'Accenture',          price: 348.40, change_pct: 2.7 },
+    ],
+    losers: [
+      { symbol: 'QCOM', label: 'Qualcomm',           price: 165.40, change_pct: -6.1 },
+      { symbol: 'INTC', label: 'Intel',              price: 32.20,  change_pct: -3.6 },
+      { symbol: 'TSLA', label: 'Tesla',              price: 248.10, change_pct: -2.1 },
+      { symbol: 'AMZN', label: 'Amazon',             price: 215.30, change_pct: -1.1 },
+      { symbol: 'LLY',  label: 'Eli Lilly',          price: 758.20, change_pct: -0.8 },
+    ],
+  },
+  merval: {
+    gainers: [
+      { symbol: 'BBAR.BA', label: 'BBVA Argentina',  price: 12400, change_pct: 2.2 },
+      { symbol: 'SUPV.BA', label: 'Supervielle',     price: 1820,  change_pct: 1.9 },
+      { symbol: 'VALO.BA', label: 'Valores',         price: 320,   change_pct: 1.7 },
+      { symbol: 'LOMA.BA', label: 'Loma Negra',      price: 4820,  change_pct: 1.6 },
+      { symbol: 'YPFD.BA', label: 'YPF',             price: 31200, change_pct: 1.2 },
+    ],
+    losers: [
+      { symbol: 'AGRO.BA', label: 'Agrometal',       price: 1240,  change_pct: -4.0 },
+      { symbol: 'HARG.BA', label: 'Holcim Argentina',price: 1820,  change_pct: -2.6 },
+      { symbol: 'BYMA.BA', label: 'BYMA',            price: 248,   change_pct: -2.2 },
+      { symbol: 'TXAR.BA', label: 'Ternium',         price: 1240,  change_pct: -1.7 },
+      { symbol: 'TRAN.BA', label: 'Transener',       price: 1820,  change_pct: -0.7 },
+    ],
+  },
+  crypto: {
+    gainers: [
+      { symbol: 'XRP-USD',   label: 'XRP',           price: 0.62, change_pct: 5.7 },
+      { symbol: 'ADA-USD',   label: 'Cardano',       price: 0.51, change_pct: 3.2 },
+      { symbol: 'DOGE-USD',  label: 'Dogecoin',      price: 0.14, change_pct: 2.9 },
+      { symbol: 'BTC-USD',   label: 'Bitcoin',       price: 81595, change_pct: 2.7 },
+      { symbol: 'AVAX-USD',  label: 'Avalanche',     price: 32.40, change_pct: 2.5 },
+    ],
+    losers: [
+      { symbol: 'MATIC-USD', label: 'Polygon',       price: 0.42, change_pct: -1.5 },
+      { symbol: 'BCH-USD',   label: 'Bitcoin Cash',  price: 412,  change_pct: 0.4 },
+      { symbol: 'LTC-USD',   label: 'Litecoin',      price: 92.40, change_pct: 0.5 },
+      { symbol: 'ATOM-USD',  label: 'Cosmos',        price: 4.80, change_pct: 1.2 },
+      { symbol: 'BNB-USD',   label: 'BNB',           price: 615,  change_pct: 1.3 },
+    ],
+  },
+}
+
+// Noticias del mercado — mock con shape del backend
+const NEWS_MARKET = [
+  {
+    title: 'La Reserva Federal mantiene tasas en 4.25-4.50% y modera expectativas de recortes',
+    summary: 'Powell confirmó una pausa en el ciclo de baja de tasas y enfatizó que aún no hay evidencia suficiente para una flexibilización rápida.',
+    url: 'https://example.com/news/fed-hold',
+    published_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    query_source: 'Federal Reserve interest rates',
+    category: 'macro',
+    source: 'reuters_es',
+    tags: ['fed', 'tasas', 'usa', 'macro'],
+  },
+  {
+    title: 'NVIDIA cierra arriba 4.4% en una rotación favorable hacia semiconductores',
+    summary: 'El sector tech lideró la jornada con Broadcom +5.5% y NVIDIA +4.4%, impulsado por reporte trimestral de TSMC.',
+    url: 'https://example.com/news/nvda-rally',
+    published_at: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+    query_source: 'S&P 500 stocks today',
+    category: 'market',
+    source: 'investing_com',
+    tags: ['nvda', 'semiconductores', 'mercado'],
+  },
+  {
+    title: 'Inflación argentina de abril en 2.8%: continúa la desaceleración mensual',
+    summary: 'El INDEC reportó que la inflación se desaceleró al 2.8% mensual en abril, marcando la cifra más baja en 14 meses.',
+    url: 'https://example.com/news/indec-cpi',
+    published_at: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+    query_source: 'inflación Argentina INDEC',
+    category: 'macro',
+    source: 'investing_com',
+    tags: ['inflacion', 'indec', 'argentina'],
+  },
+  {
+    title: 'El Merval cae 0.85% afectado por toma de ganancias en bancos',
+    summary: 'GGAL retrocedió pese al buen reporte mientras los inversores rotan hacia bonos soberanos en USD.',
+    url: 'https://example.com/news/merval-bancos',
+    published_at: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
+    query_source: 'Merval acciones Argentina',
+    category: 'market',
+    source: 'investing_com',
+    tags: ['merval', 'argentina', 'bancos'],
+  },
+  {
+    title: 'Bitcoin supera los US$81.000 con flujos institucionales fuertes',
+    summary: 'El precio del Bitcoin escaló otro 2.7% en las últimas 24h en medio de récord de inflows a ETFs spot.',
+    url: 'https://example.com/news/btc-81k',
+    published_at: new Date(Date.now() - 14 * 60 * 60 * 1000).toISOString(),
+    query_source: 'BTC bitcoin price',
+    category: 'market',
+    source: 'investing_com',
+    tags: ['btc', 'crypto', 'etf'],
+  },
+]
+
+// Noticias del portfolio — relevantes para tickers del fixture
+const NEWS_PORTFOLIO = [
+  {
+    title: 'NVIDIA: 8 razones detrás del repunte del 4.4% en la última jornada',
+    summary: 'Analistas destacan demanda sostenida en data centers y guidance trimestral robusto.',
+    url: 'https://example.com/news/nvda-analyst',
+    published_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    query_source: 'NVDA acciones',
+    category: 'portfolio',
+    source: 'reuters_es',
+    tags: ['nvda'],
+  },
+  {
+    title: 'GGAL reporta resultados Q1 por encima de lo esperado',
+    summary: 'Galicia anunció utilidades por 158 mil millones y mejora la guía para el resto del año.',
+    url: 'https://example.com/news/ggal-q1',
+    published_at: new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString(),
+    query_source: 'GGAL acciones',
+    category: 'portfolio',
+    source: 'investing_com',
+    tags: ['ggal'],
+  },
+]
+
+// Eventos — earnings + dividendos + macro
+const _todayPlus = (days) => {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+const EVENTS_PORTFOLIO = [
+  { ticker: 'NVDA', event_type: 'earnings',    event_date: _todayPlus(5),  confirmed: 1, details: { title: 'NVDA · Reporte Q1 2026' } },
+  { ticker: 'AAPL', event_type: 'ex_dividend', event_date: _todayPlus(2),  confirmed: 1, details: { amount: 0.25 } },
+  { ticker: 'MSFT', event_type: 'earnings',    event_date: _todayPlus(12), confirmed: 1, details: { title: 'MSFT · Reporte Q3 FY26' } },
+  { ticker: 'TSLA', event_type: 'earnings',    event_date: _todayPlus(9),  confirmed: 0, details: { title: 'TSLA · Earnings (estimado)' } },
+]
+
+const EVENTS_POPULAR = [
+  { ticker: '',     event_type: 'macro',       event_date: _todayPlus(3),  confirmed: 1, details: { title: 'FOMC · Decisión de tasas Fed' } },
+  { ticker: '',     event_type: 'macro',       event_date: _todayPlus(7),  confirmed: 1, details: { title: 'INDEC · IPC abril Argentina' } },
+  { ticker: 'NVDA', event_type: 'earnings',    event_date: _todayPlus(5),  confirmed: 1, details: { title: 'NVDA · Reporte trimestral' } },
+  { ticker: 'AAPL', event_type: 'ex_dividend', event_date: _todayPlus(2),  confirmed: 1, details: { amount: 0.25 } },
+  { ticker: 'GGAL', event_type: 'earnings',    event_date: _todayPlus(14), confirmed: 0, details: { title: 'GGAL · Resultados Q1 (estimado)' } },
+]
 
 // ─── Mock handler para api.js ────────────────────────────────────────────────
 // Recibe (method, path) y devuelve la respuesta. null = no hay mock → la
@@ -245,12 +435,14 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/monthly')     return MONTHLY
     if (basePath === '/snapshots')   return SNAPSHOTS
     if (basePath === '/watchlist') {
+      // Shape: { items: [...] } — coincide con el backend real.
       // Si el user nunca tocó la watchlist, devolvemos la base. Una vez que la
       // tocó (agregó o quitó algo), el overlay reemplaza a la base entera.
-      if (overlay.watchlist != null) return overlay.watchlist
-      return WATCHLIST_BASE
+      const items = overlay.watchlist != null ? overlay.watchlist : WATCHLIST_BASE
+      return { items }
     }
     if (basePath === '/dolar')       return DOLAR
+    if (basePath === '/benchmarks')  return BENCHMARKS
     if (basePath === '/imports')     return []
     if (basePath === '/config')      return { tc_mep: 1424, tc_blue: 1415 }
     if (basePath === '/home/personal') {
@@ -264,10 +456,15 @@ export function handleDemoRequest(method, path, body) {
       const market = (query || '').match(/market=([^&]+)/)?.[1] || 'sp500'
       return { blocks: buildHeatmapBlocks(market) }
     }
-    if (basePath === '/events/portfolio') return EVENTS_PORTFOLIO
+    if (basePath === '/home/indices') return { items: INDICES_STRIP }
+    if (basePath.startsWith('/home/movers')) {
+      const market = (query || '').match(/market=([^&]+)/)?.[1] || 'sp500'
+      return MOVERS[market] || { gainers: [], losers: [] }
+    }
+    if (basePath === '/events/portfolio') return { events: EVENTS_PORTFOLIO }
     if (basePath === '/events/popular')   return { events: EVENTS_POPULAR }
-    if (basePath === '/news/portfolio')   return { news: NEWS_PORTFOLIO, count: 0 }
-    if (basePath === '/news/market')      return { news: NEWS_MARKET, count: 0 }
+    if (basePath === '/news/portfolio')   return { news: NEWS_PORTFOLIO, count: NEWS_PORTFOLIO.length }
+    if (basePath === '/news/market')      return { news: NEWS_MARKET, count: NEWS_MARKET.length }
     if (basePath === '/prices') {
       // Devolver subset de PRICES según query symbols=A,B,C
       const symbols = (query || '').match(/symbols=([^&]+)/)?.[1]?.split(',') || []
