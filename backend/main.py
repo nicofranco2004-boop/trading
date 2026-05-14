@@ -4335,21 +4335,20 @@ def get_operations(uid: int = Depends(get_current_user)):
 
 @app.get("/api/behavioral/insights")
 def behavioral_insights(uid: int = Depends(get_current_user)):
-    """Detecta sesgos comportamentales sobre el historial de operations
-    del usuario. Sprint 3-4 del plan post-auditoría.
+    """Detecta sesgos comportamentales sobre el historial del usuario.
+    Sprint 3 + 3.1 + 3.2 del plan post-auditoría. 10 detectores en total.
 
     Detectores:
-      - disposition_effect: vender ganadoras temprano, aguantar perdedoras
-      - overtrade: trades por año vs capital invertido
-      - loss_aversion: tamaño de losers vs winners
-      - averaging_down: compras del mismo ticker a precios decrecientes
-
-    Response shape (uniforme):
-      {
-        cards: [<detector output> × 4],
-        summary: { total_detected, total_high, total_medium, total_positive, total_cards },
-        generated_at: ISO timestamp,
-      }
+      Sprint 3 (4):
+        - disposition_effect, overtrade, loss_aversion, averaging_down
+      Sprint 3.1 (3):
+        - concentration: top holdings como % del portfolio
+        - inflation_loss: pérdida de cash ARS por inflación INDEC
+        - counterfactual: rendimiento si NO hubieras cerrado tus ventas
+      Sprint 3.2 (3):
+        - winrate_payoff: win rate × payoff ratio (expectancy)
+        - home_bias: % portfolio en activos AR
+        - cash_drag: % portfolio en cash (con énfasis ARS)
     """
     from behavioral import build_behavioral_insights
     conn = get_db()
@@ -4360,9 +4359,30 @@ def behavioral_insights(uid: int = Depends(get_current_user)):
         positions = [dict(r) for r in conn.execute(
             "SELECT * FROM positions WHERE user_id=?", (uid,)
         ).fetchall()]
+        # Precios actuales: del cache de quotes del Home (mismo dataset que
+        # usa el Dashboard). Sin fallar si no hay batch fetch a mano.
+        symbols = list(set([p["asset"] for p in positions if p.get("asset") and not p.get("is_cash")]))
+        prices = {}
+        if symbols:
+            try:
+                quotes = _fetch_batch_quotes(symbols)
+                prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price") is not None}
+            except Exception:
+                prices = {}
+        # Inflación AR del bench cache (12 últimos meses)
+        inflation_monthly = {}
+        try:
+            global _bench_cache
+            if _bench_cache.get("data"):
+                inflation_monthly = _bench_cache["data"].get("inflation_ar") or {}
+            else:
+                inflation_monthly = _fetch_inflation_ar()
+        except Exception:
+            inflation_monthly = {}
+        tc_blue = _user_tc_blue(conn, uid)
     finally:
         conn.close()
-    return build_behavioral_insights(ops, positions)
+    return build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue)
 
 
 @app.post("/api/operations")

@@ -17,6 +17,12 @@ from behavioral import (
     detect_overtrade,
     detect_loss_aversion,
     detect_averaging_down,
+    detect_concentration,
+    detect_home_bias,
+    detect_cash_drag,
+    detect_inflation_loss,
+    detect_counterfactual,
+    detect_winrate_payoff,
     build_behavioral_insights,
 )
 
@@ -252,28 +258,214 @@ class AveragingDownTest(unittest.TestCase):
         self.assertEqual(result["evidence"]["total_instances"], 0)
 
 
+# ─── Detector 5: Win rate + payoff ───────────────────────────────────────────
+
+
+class WinratePayoffTest(unittest.TestCase):
+
+    def test_high_winrate_low_payoff_flagged(self):
+        # 7 wins de $20 cada uno, 3 losses de $200 cada uno
+        # win_rate 70%, avg_win 20, avg_loss 200, payoff 0.1, expectancy = 0.7*20 - 0.3*200 = -46
+        ops = []
+        for i in range(7):
+            ops.append(_op(f"WIN{i}", "2024-01-01", "2024-01-15", 100, 102, 10))  # +20
+        for i in range(3):
+            ops.append(_op(f"LOS{i}", "2024-01-01", "2024-01-15", 100, 80, 10))   # -200
+        result = detect_winrate_payoff(ops)
+        self.assertEqual(result["severity"], "high")
+        self.assertTrue(result["detected"])
+        self.assertLess(result["evidence"]["expectancy_usd"], 0)
+
+    def test_balanced_winrate_and_payoff_positive(self):
+        # 50% win rate con payoff 2× → expectancy positivo
+        ops = []
+        for i in range(5):
+            ops.append(_op(f"WIN{i}", "2024-01-01", "2024-01-15", 100, 120, 10))  # +200
+        for i in range(5):
+            ops.append(_op(f"LOS{i}", "2024-01-01", "2024-01-15", 100, 90, 10))   # -100
+        result = detect_winrate_payoff(ops)
+        self.assertIn(result["severity"], ("positive", "low"))
+        self.assertGreater(result["evidence"]["expectancy_usd"], 0)
+        self.assertGreater(result["evidence"]["payoff_ratio"], 1.5)
+
+    def test_insufficient_data(self):
+        result = detect_winrate_payoff([_op("X", "2024-01-01", "2024-01-15", 100, 110, 10)])
+        self.assertTrue(result.get("insufficient_data"))
+
+
+# ─── Detector 6: Concentration ───────────────────────────────────────────────
+
+
+class ConcentrationTest(unittest.TestCase):
+
+    def test_single_asset_dominance_high(self):
+        positions = [
+            {"broker": "Schwab", "asset": "NVDA", "is_cash": 0, "quantity": 100, "invested": 50000},
+            {"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "quantity": 50, "invested": 5000},
+        ]
+        prices = {"NVDA": 500, "AAPL": 100}  # NVDA = 50000, AAPL = 5000 → NVDA 90.9%
+        result = detect_concentration(positions, prices)
+        self.assertEqual(result["severity"], "high")
+        self.assertGreater(result["evidence"]["top1_pct"], 80)
+        self.assertEqual(result["evidence"]["top_asset"], "NVDA")
+
+    def test_diversified_positive(self):
+        positions = [
+            {"broker": "Schwab", "asset": f"ASSET{i}", "is_cash": 0, "quantity": 10, "invested": 1000}
+            for i in range(15)
+        ]
+        prices = {f"ASSET{i}": 100 for i in range(15)}
+        result = detect_concentration(positions, prices)
+        self.assertEqual(result["severity"], "positive")
+        self.assertLess(result["evidence"]["top1_pct"], 15)
+
+    def test_no_positions_insufficient(self):
+        result = detect_concentration([])
+        self.assertTrue(result.get("insufficient_data"))
+
+
+# ─── Detector 7: Home bias ───────────────────────────────────────────────────
+
+
+class HomeBiasTest(unittest.TestCase):
+
+    def test_strong_home_bias_high(self):
+        # 95% en Cocos AR + 5% en Schwab US
+        positions = [
+            {"broker": "Cocos", "asset": "GGAL", "is_cash": 0, "quantity": 100, "invested": 5000000},  # ~3535 USD al blue
+            {"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "quantity": 1, "invested": 200},
+        ]
+        result = detect_home_bias(positions)
+        self.assertEqual(result["severity"], "high")
+        self.assertGreater(result["evidence"]["ar_pct"], 80)
+
+    def test_balanced_positive(self):
+        positions = [
+            {"broker": "Cocos", "asset": "GGAL", "is_cash": 0, "quantity": 100, "invested": 2000000},  # ~1414 USD
+            {"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "quantity": 10, "invested": 1800},
+            {"broker": "Schwab", "asset": "MSFT", "is_cash": 0, "quantity": 5, "invested": 2000},
+        ]
+        result = detect_home_bias(positions)
+        # Total ~5214, AR ~1414 (27%), INTL ~3800 (73%) → "positive" (20-50%) o "low"
+        self.assertIn(result["severity"], ("positive", "low"))
+
+
+# ─── Detector 8: Cash drag ───────────────────────────────────────────────────
+
+
+class CashDragTest(unittest.TestCase):
+
+    def test_high_cash_pct_flagged(self):
+        positions = [
+            {"broker": "Schwab", "asset": "USD", "is_cash": 1, "invested": 10000},
+            {"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "invested": 5000},
+        ]
+        result = detect_cash_drag(positions)
+        self.assertEqual(result["severity"], "high")
+        self.assertGreater(result["evidence"]["cash_pct"], 50)
+
+    def test_ars_cash_specifically_flagged(self):
+        # 20% cash pero TODO en ARS → high por el monto en ARS
+        positions = [
+            {"broker": "Cocos", "asset": "ARS", "is_cash": 1, "invested": 3000000},  # ~2120 USD
+            {"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "invested": 10000},
+        ]
+        result = detect_cash_drag(positions)
+        self.assertEqual(result["severity"], "high")
+        self.assertGreater(result["evidence"]["cash_ars_pct"], 15)
+
+    def test_low_cash_positive(self):
+        positions = [
+            {"broker": "Schwab", "asset": "USD", "is_cash": 1, "invested": 500},
+            {"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "invested": 10000},
+        ]
+        result = detect_cash_drag(positions)
+        # 4.7% en cash → low (sin cushion)
+        self.assertEqual(result["severity"], "low")
+
+
+# ─── Detector 9: Inflation loss ──────────────────────────────────────────────
+
+
+class InflationLossTest(unittest.TestCase):
+
+    def test_inflation_loss_with_ars_cash_high(self):
+        positions = [
+            {"broker": "Cocos", "asset": "ARS", "is_cash": 1, "invested": 5000000},
+        ]
+        # Inflación 100% acumulada en 12 meses
+        inflation = {f"2024-{m:02d}": 6.0 for m in range(1, 13)}  # ~100% cum
+        result = detect_inflation_loss(positions, inflation)
+        self.assertEqual(result["severity"], "high")
+        self.assertGreater(result["evidence"]["loss_usd"], 500)
+
+    def test_no_ars_cash_no_loss(self):
+        positions = [
+            {"broker": "Schwab", "asset": "USD", "is_cash": 1, "invested": 5000},
+        ]
+        result = detect_inflation_loss(positions, {})
+        self.assertFalse(result["detected"])
+        self.assertEqual(result["evidence"]["cash_ars_pesos"], 0)
+
+
+# ─── Detector 10: Counterfactual ─────────────────────────────────────────────
+
+
+class CounterfactualTest(unittest.TestCase):
+
+    def test_would_have_been_better_holding(self):
+        # Vendiste NVDA a $120 (entry $100, qty 10) → +200
+        # Hoy NVDA vale $180 → hubieras tenido +800. Delta = +600
+        ops = [
+            _op("NVDA", "2024-01-01", "2024-02-01", 100, 120, 10),
+            _op("AAPL", "2024-01-01", "2024-02-01", 100, 110, 10),
+            _op("MSFT", "2024-01-01", "2024-02-01", 100, 115, 10),
+        ]
+        prices = {"NVDA": 180, "AAPL": 130, "MSFT": 140}
+        result = detect_counterfactual(ops, prices)
+        self.assertEqual(result["severity"], "high")
+        self.assertGreater(result["evidence"]["delta_total_usd"], 1000)
+
+    def test_selling_was_smart_positive(self):
+        # Vendiste a $120, hoy vale $50 → cerrar a tiempo fue acierto
+        ops = [
+            _op("CRASH", "2024-01-01", "2024-02-01", 100, 120, 10),
+            _op("AAPL", "2024-01-01", "2024-02-01", 100, 110, 10),
+            _op("MSFT", "2024-01-01", "2024-02-01", 100, 115, 10),
+        ]
+        prices = {"CRASH": 50, "AAPL": 100, "MSFT": 100}
+        result = detect_counterfactual(ops, prices)
+        self.assertEqual(result["severity"], "positive")
+        self.assertLess(result["evidence"]["delta_total_usd"], -300)
+
+    def test_no_prices_insufficient(self):
+        ops = [_op("AAPL", "2024-01-01", "2024-02-01", 100, 110, 10)] * 5
+        result = detect_counterfactual(ops, None)
+        self.assertTrue(result.get("insufficient_data"))
+
+
 # ─── Orchestrator ────────────────────────────────────────────────────────────
 
 
 class BuildBehavioralInsightsTest(unittest.TestCase):
 
-    def test_returns_four_cards(self):
+    def test_returns_ten_cards(self):
         result = build_behavioral_insights([], [])
-        self.assertEqual(len(result["cards"]), 4)
+        self.assertEqual(len(result["cards"]), 10)
 
     def test_summary_counts_correctly(self):
-        # Caso donde dos detectores van a flag y dos no por insuficiente data
+        # Disposition effect fuerte + concentración alta
         ops = []
-        # Disposition effect fuerte
         for i in range(4):
             ops.append(_op(f"WIN{i}", "2024-01-01", "2024-01-10", 100, 110, 10))
             ops.append(_op(f"LOS{i}", "2024-01-01", "2024-06-01", 100, 90, 50))
-        result = build_behavioral_insights(ops, [{"asset": "AAPL", "invested": 5000, "is_cash": 0}])
+        positions = [{"broker": "Schwab", "asset": "NVDA", "is_cash": 0, "quantity": 100, "invested": 50000}]
+        result = build_behavioral_insights(ops, positions, prices={"NVDA": 500})
 
-        self.assertEqual(result["summary"]["total_cards"], 4)
-        # Al menos disposition_effect debería estar detected como high
+        self.assertEqual(result["summary"]["total_cards"], 10)
         codes_detected = [c["code"] for c in result["cards"] if c.get("detected")]
         self.assertIn("disposition_effect", codes_detected)
+        self.assertIn("concentration", codes_detected)
 
     def test_empty_inputs_dont_crash(self):
         result = build_behavioral_insights([], [])

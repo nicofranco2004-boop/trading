@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom'
 import {
   Brain, Activity, TrendingDown, RefreshCw, Repeat, Info, AlertTriangle,
   CheckCircle2, ChevronRight, ArrowRight, X, BookOpen,
+  PieChart, Globe2, Wallet, Flame, Rewind, Target,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
@@ -21,10 +22,19 @@ import { track } from '../utils/track'
 
 // Mapeo code → icono + tono visual.
 const CARD_META = {
+  // Sprint 3
   disposition_effect: { Icon: TrendingDown, label: 'Disposition effect' },
   overtrade:          { Icon: Repeat,        label: 'Frecuencia de trades' },
   loss_aversion:      { Icon: Activity,      label: 'Loss aversion' },
   averaging_down:     { Icon: RefreshCw,     label: 'Promedio a la baja' },
+  // Sprint 3.1
+  concentration:      { Icon: PieChart,      label: 'Concentración' },
+  inflation_loss:     { Icon: Flame,         label: 'Pérdida por inflación' },
+  counterfactual:     { Icon: Rewind,        label: 'Tu yo de hace meses' },
+  // Sprint 3.2
+  winrate_payoff:     { Icon: Target,        label: 'Win rate · Payoff' },
+  home_bias:          { Icon: Globe2,        label: 'Home bias' },
+  cash_drag:          { Icon: Wallet,        label: 'Cash drag' },
 }
 
 const SEVERITY_TONE = {
@@ -353,6 +363,112 @@ function ModalEvidence({ card }) {
           )}
         </div>
       )
+
+    // ── Sprint 3.1 ──
+    case 'concentration':
+      return (
+        <div className="space-y-3">
+          <EvidenceRow label="Activo más grande" value={ev.top_asset} />
+          <EvidenceRow label="Top 1" value={`${ev.top1_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Top 3" value={`${ev.top3_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Top 5" value={`${ev.top5_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Activos totales" value={ev.total_assets} mono />
+          {ev.top_5?.length > 0 && (
+            <div className="border-t border-line/40 pt-2 space-y-1">
+              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">Composición</div>
+              {ev.top_5.map((a, i) => (
+                <div key={i} className="flex items-center justify-between text-xs">
+                  <span className="text-ink-1 font-mono">{a.asset}</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-ink-3 tabular text-[11px]">US$ {a.value_usd.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                    <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">{a.pct}%</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )
+
+    case 'inflation_loss':
+      return (
+        <div className="space-y-2">
+          <EvidenceRow label="Cash en pesos" value={`ARS ${ev.cash_ars_pesos?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Inflación 12M acumulada" value={`${ev.inflation_cum_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Pérdida en pesos" value={`ARS ${ev.loss_pesos?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Pérdida en USD (al blue)" value={`US$ ${ev.loss_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+        </div>
+      )
+
+    case 'counterfactual':
+      return (
+        <div className="space-y-3">
+          <EvidenceRow label="P&L realizado" value={`US$ ${ev.realized_total_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="P&L si no hubieras vendido" value={`US$ ${ev.hypothetical_total_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Diferencia" value={`${ev.delta_total_usd >= 0 ? '+' : '−'}US$ ${Math.abs(ev.delta_total_usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Trades analizados" value={ev.trades_analyzed} mono />
+          {ev.top_misses?.length > 0 && (
+            <div className="border-t border-line/40 pt-2 space-y-1">
+              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">Top diferencias</div>
+              {ev.top_misses.map((m, i) => (
+                <div key={i} className="flex items-center justify-between text-xs">
+                  <span className="text-ink-1 font-mono">{m.asset}</span>
+                  <span className="text-[11px] text-ink-3 tabular">
+                    US$ {m.exit_price} → {m.current_price}
+                  </span>
+                  <span className={`font-mono tabular ${m.delta_usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                    {m.delta_usd >= 0 ? '+' : '−'}${Math.abs(m.delta_usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )
+
+    // ── Sprint 3.2 ──
+    case 'winrate_payoff':
+      return (
+        <div className="space-y-2">
+          <EvidenceRow label="Win rate" value={`${ev.win_rate_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Ganadoras" value={ev.winners_count} count={`avg US$ ${ev.avg_win_usd?.toFixed(0)}`} />
+          <EvidenceRow label="Perdedoras" value={ev.losers_count} count={`avg US$ ${ev.avg_loss_usd?.toFixed(0)}`} />
+          <EvidenceRow label="Payoff ratio" value={ev.payoff_ratio != null ? `${ev.payoff_ratio.toFixed(2)}×` : '∞'} mono />
+          <EvidenceRow label="Expectancy" value={`${ev.expectancy_usd >= 0 ? '+' : ''}US$ ${ev.expectancy_usd?.toFixed(2)} por op`} mono />
+        </div>
+      )
+
+    case 'home_bias':
+      return (
+        <div className="space-y-3">
+          <EvidenceRow label="Argentina" value={`${ev.ar_pct?.toFixed(1)}%`} count={`US$ ${ev.ar_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
+          <EvidenceRow label="Internacional" value={`${ev.intl_pct?.toFixed(1)}%`} count={`US$ ${ev.intl_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
+          <EvidenceRow label="Total portfolio" value={`US$ ${ev.total_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          {/* Barra visual de mix AR / INTL */}
+          <div className="pt-1">
+            <div className="flex h-2 rounded-sm overflow-hidden bg-bg-2">
+              <div className="bg-data-cyan" style={{ width: `${ev.ar_pct}%` }} title={`AR ${ev.ar_pct}%`} />
+              <div className="bg-data-blue" style={{ width: `${ev.intl_pct}%` }} title={`INTL ${ev.intl_pct}%`} />
+            </div>
+            <div className="flex justify-between text-[10px] font-mono text-ink-3 mt-1">
+              <span>🇦🇷 AR</span>
+              <span>🌎 Internacional</span>
+            </div>
+          </div>
+        </div>
+      )
+
+    case 'cash_drag':
+      return (
+        <div className="space-y-2">
+          <EvidenceRow label="Cash total" value={`${ev.cash_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Cash USD" value={`US$ ${ev.cash_usd_amount?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Cash ARS (en USD)" value={`US$ ${ev.cash_ars_usd_equiv?.toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${ev.cash_ars_pct?.toFixed(1)}%)`} mono />
+          <EvidenceRow label="Invertido" value={`US$ ${ev.invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Total portfolio" value={`US$ ${ev.total_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+        </div>
+      )
+
     default:
       return null
   }

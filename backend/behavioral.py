@@ -465,6 +465,582 @@ def detect_averaging_down(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+# ─── Detector 5: Win rate vs Payoff ratio ────────────────────────────────────
+
+
+def detect_winrate_payoff(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Win rate solo es engañoso: 70% wins con payoff 0.3 (gano $30, pierdo $100)
+    es PEOR que 40% wins con payoff 2.5. La métrica honesta es la combinación.
+
+    Expectancy = (win_rate × avg_win) − (loss_rate × avg_loss)
+    Si expectancy < 0 → estás perdiendo plata en agregado, aunque tengas
+    win_rate alto.
+    """
+    trades = [o for o in ops if _is_trade(o)]
+    winners = [o for o in trades if (o.get("pnl_usd") or 0) > 0]
+    losers = [o for o in trades if (o.get("pnl_usd") or 0) < 0]
+
+    if len(winners) + len(losers) < 5:
+        return _not_enough_data("winrate_payoff", "Necesitás al menos 5 operaciones cerradas para medir win rate.")
+
+    total = len(winners) + len(losers)
+    win_rate = len(winners) / total * 100
+    avg_win = sum(o["pnl_usd"] for o in winners) / len(winners) if winners else 0
+    avg_loss = abs(sum(o["pnl_usd"] for o in losers) / len(losers)) if losers else 0
+    payoff = avg_win / avg_loss if avg_loss > 0 else float("inf")
+    expectancy = (win_rate / 100) * avg_win - ((100 - win_rate) / 100) * avg_loss
+
+    # Combinación win_rate × payoff define la severidad
+    if expectancy < 0:
+        severity = "high"
+        title = "Tu estrategia pierde plata en agregado"
+        one_liner = (
+            f"Win rate {win_rate:.0f}% con payoff {payoff:.2f}× resulta en expectancy "
+            f"negativo ({expectancy:+.2f} USD/op). Aunque ganás más veces que perdés, "
+            "el tamaño de las pérdidas se come las ganancias."
+        )
+    elif win_rate >= 60 and payoff < 0.7:
+        severity = "medium"
+        title = "Win rate alto pero pérdidas grandes"
+        one_liner = (
+            f"Ganás el {win_rate:.0f}% de las veces pero tu payoff es {payoff:.2f}× — "
+            "las pocas pérdidas se llevan gran parte de las ganancias."
+        )
+    elif win_rate < 40 and payoff < 1.5:
+        severity = "medium"
+        title = "Win rate bajo sin compensación"
+        one_liner = (
+            f"Ganás solo el {win_rate:.0f}% de las veces y el payoff es {payoff:.2f}×. "
+            "Para que funcione un win rate bajo, el payoff debería ser ≥2×."
+        )
+    elif expectancy > 0 and payoff >= 1.5:
+        severity = "positive"
+        title = "Combinación win rate + payoff sólida"
+        one_liner = (
+            f"Win rate {win_rate:.0f}% con payoff {payoff:.2f}× = expectancy "
+            f"{expectancy:+.2f} USD por operación. Funciona."
+        )
+    else:
+        severity = "low"
+        title = "Win rate y payoff equilibrados"
+        one_liner = (
+            f"Ganás el {win_rate:.0f}% con payoff {payoff:.2f}×. Expectancy "
+            f"{expectancy:+.2f} USD/op — positivo pero ajustado."
+        )
+
+    return {
+        "code": "winrate_payoff",
+        "title": title,
+        "severity": severity,
+        "detected": severity in ("high", "medium"),
+        "score": round(min(100, max(0, -expectancy / max(avg_loss, 1) * 100 if expectancy < 0 else 0)), 1),
+        "value_label": f"{win_rate:.0f}% · payoff {payoff:.2f}×",
+        "one_liner": one_liner,
+        "evidence": {
+            "win_rate_pct": round(win_rate, 1),
+            "winners_count": len(winners),
+            "losers_count": len(losers),
+            "total_trades": total,
+            "avg_win_usd": round(avg_win, 2),
+            "avg_loss_usd": round(avg_loss, 2),
+            "payoff_ratio": round(payoff, 2) if payoff != float("inf") else None,
+            "expectancy_usd": round(expectancy, 2),
+        },
+        "references": [
+            "Van Tharp (1998) — Trade Your Way to Financial Freedom (expectancy formula).",
+        ],
+    }
+
+
+# ─── Detector 6: Concentration ───────────────────────────────────────────────
+
+
+def detect_concentration(positions: List[Dict[str, Any]], prices: Optional[Dict[str, float]] = None,
+                          tc_blue: float = 1415.0) -> Dict[str, Any]:
+    """Concentración del portfolio: top 1 / top 3 holdings como % del total.
+    Top 1 > 40% → high. Top 1 > 25% o Top 3 > 70% → medium.
+
+    Convierte valores ARS al blue para comparar con USD.
+    """
+    if not positions:
+        return _not_enough_data("concentration", "No tenés posiciones para analizar.")
+
+    # Valor en USD por asset (consolidar entre brokers)
+    by_asset: Dict[str, float] = {}
+    for p in positions:
+        if p.get("is_cash"):
+            continue
+        asset = (p.get("asset") or "").upper()
+        if not asset:
+            continue
+        # Si tengo prices, uso precio actual × quantity. Sino, uso invested.
+        price = (prices or {}).get(asset)
+        if price is None:
+            price = (prices or {}).get(asset + ".BA")
+        qty = p.get("quantity") or 0
+        if price is not None and qty:
+            value_native = price * qty
+        else:
+            value_native = p.get("invested") or 0
+        # Si el broker es ARS, convertir a USD al blue.
+        # Detección simple: si el invested original parece estar en pesos
+        # (>10000 sin precio en USD razonable), asumimos ARS.
+        broker = (p.get("broker") or "").lower()
+        if "cocos" in broker or "iol" in broker or "bull" in broker or "balanz" in broker:
+            value_usd = value_native / tc_blue
+        else:
+            value_usd = value_native
+        by_asset[asset] = by_asset.get(asset, 0) + value_usd
+
+    if not by_asset:
+        return _not_enough_data("concentration", "No pudimos valuar tus posiciones.")
+
+    total = sum(by_asset.values())
+    if total <= 0:
+        return _not_enough_data("concentration", "Valor del portfolio es cero.")
+
+    sorted_assets = sorted(by_asset.items(), key=lambda x: -x[1])
+    top1_asset, top1_value = sorted_assets[0]
+    top1_pct = (top1_value / total) * 100
+    top3_pct = (sum(v for _, v in sorted_assets[:3]) / total) * 100
+    top5_pct = (sum(v for _, v in sorted_assets[:5]) / total) * 100
+
+    if top1_pct >= 40:
+        severity = "high"
+        title = f"Concentración alta en {top1_asset}"
+        one_liner = (
+            f"{top1_asset} representa el {top1_pct:.0f}% de tu portfolio. "
+            "Una caída fuerte de ese activo te lastima desproporcionadamente."
+        )
+    elif top1_pct >= 25 or top3_pct >= 70:
+        severity = "medium"
+        title = f"{top1_asset} pesa fuerte en tu cartera"
+        one_liner = (
+            f"Top 1 = {top1_pct:.0f}%, Top 3 = {top3_pct:.0f}%. "
+            "El portfolio depende mucho de pocos activos."
+        )
+    elif top1_pct < 15 and top3_pct < 40:
+        severity = "positive"
+        title = "Portfolio bien diversificado"
+        one_liner = (
+            f"Tu activo más grande ({top1_asset}) representa {top1_pct:.1f}% — "
+            "concentración baja, riesgo individual contenido."
+        )
+    else:
+        severity = "low"
+        title = "Concentración moderada"
+        one_liner = f"Top 1 = {top1_pct:.0f}%, Top 3 = {top3_pct:.0f}%. Diversificación razonable."
+
+    return {
+        "code": "concentration",
+        "title": title,
+        "severity": severity,
+        "detected": severity in ("high", "medium"),
+        "score": round(min(100, top1_pct * 2), 1),
+        "value_label": f"Top 1: {top1_pct:.0f}%",
+        "one_liner": one_liner,
+        "evidence": {
+            "top_asset": top1_asset,
+            "top1_pct": round(top1_pct, 1),
+            "top3_pct": round(top3_pct, 1),
+            "top5_pct": round(top5_pct, 1),
+            "total_assets": len(by_asset),
+            "total_value_usd": round(total, 2),
+            "top_5": [
+                {"asset": a, "value_usd": round(v, 2), "pct": round(v / total * 100, 1)}
+                for a, v in sorted_assets[:5]
+            ],
+        },
+        "references": [
+            "Markowitz (1952) — Portfolio selection.",
+        ],
+    }
+
+
+# ─── Detector 7: Home Bias ───────────────────────────────────────────────────
+
+
+def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str, float]] = None,
+                      tc_blue: float = 1415.0) -> Dict[str, Any]:
+    """Home bias: tendencia a sobre-exponerse a activos del país propio.
+    Para retail AR, >65% en assets locales (CEDEARs, bonos AR, acciones AR)
+    es home bias clásico. <10% también es señal: bajo nivel de protección
+    en moneda local.
+    """
+    if not positions:
+        return _not_enough_data("home_bias", "No tenés posiciones para analizar.")
+
+    def is_ar_asset(p):
+        asset = (p.get("asset") or "").upper()
+        broker = (p.get("broker") or "").lower()
+        # Heurística: brokers AR + sufijo .BA + bonos AR conocidos
+        if "cocos" in broker or "iol" in broker or "bull" in broker or "balanz" in broker:
+            return True
+        if asset.endswith(".BA"):
+            return True
+        ar_bonds_prefix = ("AL", "GD", "AE", "TX", "TZ", "PAR", "DIC")
+        if any(asset.startswith(p) for p in ar_bonds_prefix) and len(asset) <= 5:
+            return True
+        return False
+
+    ar_value = 0
+    intl_value = 0
+    for p in positions:
+        if p.get("is_cash"):
+            continue
+        asset = (p.get("asset") or "").upper()
+        if not asset:
+            continue
+        price = (prices or {}).get(asset) or (prices or {}).get(asset + ".BA")
+        qty = p.get("quantity") or 0
+        value_native = price * qty if (price and qty) else (p.get("invested") or 0)
+        broker = (p.get("broker") or "").lower()
+        if "cocos" in broker or "iol" in broker or "bull" in broker or "balanz" in broker:
+            value_usd = value_native / tc_blue
+        else:
+            value_usd = value_native
+        if is_ar_asset(p):
+            ar_value += value_usd
+        else:
+            intl_value += value_usd
+
+    total = ar_value + intl_value
+    if total <= 0:
+        return _not_enough_data("home_bias", "No pudimos valuar tus posiciones.")
+
+    ar_pct = (ar_value / total) * 100
+
+    if ar_pct >= 80:
+        severity = "high"
+        title = "Home bias fuerte hacia Argentina"
+        one_liner = (
+            f"{ar_pct:.0f}% de tu portfolio está en activos AR. "
+            "Riesgo país concentrado — una crisis local te golpea casi todo el patrimonio."
+        )
+    elif ar_pct >= 65:
+        severity = "medium"
+        title = "Sobre-exposición a Argentina"
+        one_liner = (
+            f"{ar_pct:.0f}% en activos AR. "
+            "El riesgo país está concentrado — diversificar a USD/internacional reduce drawdown."
+        )
+    elif ar_pct < 5 and total > 1000:
+        severity = "medium"
+        title = "Casi sin exposición a Argentina"
+        one_liner = (
+            f"Solo el {ar_pct:.1f}% en AR. Si tu vida es en pesos (gastos, salario), "
+            "podés sumar algo de exposición ARS/CEDEARs para hedge natural."
+        )
+    elif 20 <= ar_pct <= 50:
+        severity = "positive"
+        title = "Balance AR/internacional saludable"
+        one_liner = f"{ar_pct:.0f}% AR + {100 - ar_pct:.0f}% internacional — diversificación geográfica equilibrada."
+    else:
+        severity = "low"
+        title = "Balance moderado AR/internacional"
+        one_liner = f"{ar_pct:.0f}% AR + {100 - ar_pct:.0f}% internacional."
+
+    return {
+        "code": "home_bias",
+        "title": title,
+        "severity": severity,
+        "detected": severity in ("high", "medium"),
+        "score": round(abs(ar_pct - 35) * 1.5, 1),  # óptimo ~35%
+        "value_label": f"{ar_pct:.0f}% AR",
+        "one_liner": one_liner,
+        "evidence": {
+            "ar_pct": round(ar_pct, 1),
+            "intl_pct": round(100 - ar_pct, 1),
+            "ar_value_usd": round(ar_value, 2),
+            "intl_value_usd": round(intl_value, 2),
+            "total_value_usd": round(total, 2),
+        },
+        "references": [
+            "French & Poterba (1991) — Investor diversification and international equity markets.",
+        ],
+    }
+
+
+# ─── Detector 8: Cash drag ───────────────────────────────────────────────────
+
+
+def detect_cash_drag(positions: List[Dict[str, Any]], tc_blue: float = 1415.0) -> Dict[str, Any]:
+    """% del portfolio en cash. Cash en USD es razonable defensivo, pero
+    cash ARS es destructivo dada la inflación. Tratamos los dos.
+    """
+    if not positions:
+        return _not_enough_data("cash_drag", "No tenés posiciones para analizar.")
+
+    cash_usd = 0
+    cash_ars_usd_equiv = 0
+    invested_usd = 0
+    for p in positions:
+        broker = (p.get("broker") or "").lower()
+        is_ars_broker = any(s in broker for s in ("cocos", "iol", "bull", "balanz"))
+        invested_native = p.get("invested") or 0
+        value_usd = (invested_native / tc_blue) if is_ars_broker else invested_native
+        if p.get("is_cash"):
+            if is_ars_broker:
+                cash_ars_usd_equiv += value_usd
+            else:
+                cash_usd += value_usd
+        else:
+            invested_usd += value_usd
+
+    total = cash_usd + cash_ars_usd_equiv + invested_usd
+    if total <= 0:
+        return _not_enough_data("cash_drag", "Portfolio sin valor.")
+
+    cash_total = cash_usd + cash_ars_usd_equiv
+    cash_pct = (cash_total / total) * 100
+    cash_ars_pct = (cash_ars_usd_equiv / total) * 100
+
+    if cash_pct >= 30 or cash_ars_pct >= 15:
+        severity = "high"
+        title = "Demasiado cash sin invertir"
+        if cash_ars_pct >= 15:
+            one_liner = (
+                f"{cash_ars_pct:.0f}% de tu portfolio está en cash ARS. "
+                "Con inflación del ~3% mensual, ese capital pierde poder de compra todos los días."
+            )
+        else:
+            one_liner = (
+                f"{cash_pct:.0f}% de tu portfolio está en cash. "
+                "Pierde el costo de oportunidad del mercado: si esperás un crash, asignate plazo."
+            )
+    elif cash_pct >= 20:
+        severity = "medium"
+        title = "Cash relevante esperando entrar"
+        one_liner = (
+            f"Tenés {cash_pct:.0f}% en cash. Si es estratégico para entrar en una corrección, "
+            "OK. Si lleva >3 meses esperando, considerá DCA gradual."
+        )
+    elif cash_pct < 5:
+        severity = "low"
+        title = "Sin cushion de cash"
+        one_liner = (
+            f"Solo {cash_pct:.1f}% en cash. Aprovechás todo el capital pero te quedás sin "
+            "dry powder para aprovechar caídas."
+        )
+    else:
+        severity = "positive"
+        title = "Nivel de cash equilibrado"
+        one_liner = f"{cash_pct:.0f}% en cash — cushion razonable para liquidez sin perder oportunidad."
+
+    return {
+        "code": "cash_drag",
+        "title": title,
+        "severity": severity,
+        "detected": severity in ("high", "medium"),
+        "score": round(min(100, abs(cash_pct - 10) * 3), 1),
+        "value_label": f"{cash_pct:.0f}% en cash",
+        "one_liner": one_liner,
+        "evidence": {
+            "cash_pct": round(cash_pct, 1),
+            "cash_ars_pct": round(cash_ars_pct, 1),
+            "cash_usd_amount": round(cash_usd, 2),
+            "cash_ars_usd_equiv": round(cash_ars_usd_equiv, 2),
+            "invested_usd": round(invested_usd, 2),
+            "total_usd": round(total, 2),
+        },
+        "references": [
+            "Cash drag literature — Vanguard research on optimal cash allocation.",
+        ],
+    }
+
+
+# ─── Detector 9: Pérdida por inflación AR ────────────────────────────────────
+
+
+def detect_inflation_loss(positions: List[Dict[str, Any]], inflation_monthly: Optional[Dict[str, float]] = None,
+                           tc_blue: float = 1415.0) -> Dict[str, Any]:
+    """Cuánto poder de compra perdiste por mantener cash en ARS.
+
+    Args:
+        positions: posiciones del user
+        inflation_monthly: dict { 'YYYY-MM': pct } con inflación mensual AR del último año
+    """
+    if not positions:
+        return _not_enough_data("inflation_loss", "No tenés posiciones.")
+
+    # Cash ARS total (en ARS)
+    cash_ars_pesos = 0
+    for p in positions:
+        if not p.get("is_cash"):
+            continue
+        broker = (p.get("broker") or "").lower()
+        is_ars = any(s in broker for s in ("cocos", "iol", "bull", "balanz"))
+        if is_ars:
+            cash_ars_pesos += p.get("invested") or 0
+
+    if cash_ars_pesos <= 0:
+        return {
+            "code": "inflation_loss",
+            "title": "Sin cash ARS afectado por inflación",
+            "severity": "positive",
+            "detected": False,
+            "score": 0,
+            "value_label": "—",
+            "one_liner": "No tenés cash en pesos en tus brokers — la inflación AR no te está erosionando capital ocioso.",
+            "evidence": {"cash_ars_pesos": 0, "inflation_cum_pct": 0, "loss_pesos": 0, "loss_usd": 0},
+            "references": ["INDEC — Índice de Precios al Consumidor."],
+        }
+
+    # Inflación acumulada últimos 12 meses (multiplicativa)
+    if not inflation_monthly:
+        # Fallback: estimación conservadora 60% anual si no hay benchmark
+        inflation_cum_pct = 60.0
+    else:
+        keys = sorted(inflation_monthly.keys(), reverse=True)[:12]
+        cum = 1
+        for k in keys:
+            val = inflation_monthly.get(k)
+            if val is not None:
+                cum *= 1 + val / 100
+        inflation_cum_pct = (cum - 1) * 100
+
+    # Pérdida de poder de compra: cash_ars × (inflación / (1 + inflación))
+    loss_pesos = cash_ars_pesos * (inflation_cum_pct / (100 + inflation_cum_pct))
+    loss_usd = loss_pesos / tc_blue
+
+    if loss_usd >= 500 or inflation_cum_pct >= 100:
+        severity = "high"
+        title = "Pérdida grande por inflación"
+        one_liner = (
+            f"Tu cash en pesos perdió ~US$ {loss_usd:,.0f} de poder de compra en los últimos 12 meses "
+            f"(inflación acumulada {inflation_cum_pct:.0f}%). Invertir aunque sea en MEP o Lecaps lo hubiera evitado."
+        )
+    elif loss_usd >= 100:
+        severity = "medium"
+        title = "Inflación erosionando tu cash ARS"
+        one_liner = (
+            f"Perdiste ~US$ {loss_usd:,.0f} en poder de compra. "
+            "Considerá MEP, Lecaps en pesos o CEDEARs para hedge."
+        )
+    else:
+        severity = "low"
+        title = "Impacto bajo de inflación"
+        one_liner = f"Tu cash ARS es chico — pérdida estimada US$ {loss_usd:,.0f}."
+
+    return {
+        "code": "inflation_loss",
+        "title": title,
+        "severity": severity,
+        "detected": severity in ("high", "medium"),
+        "score": round(min(100, loss_usd / 50), 1),
+        "value_label": f"−US$ {loss_usd:,.0f}",
+        "one_liner": one_liner,
+        "evidence": {
+            "cash_ars_pesos": round(cash_ars_pesos, 2),
+            "inflation_cum_pct": round(inflation_cum_pct, 1),
+            "loss_pesos": round(loss_pesos, 2),
+            "loss_usd": round(loss_usd, 2),
+        },
+        "references": [
+            "INDEC — Índice de Precios al Consumidor (IPC).",
+        ],
+    }
+
+
+# ─── Detector 10: Tu yo de hace X meses (no-trade counterfactual) ────────────
+
+
+def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+    """Pregunta: ¿qué hubiera pasado si NO hubieras cerrado tus posiciones?
+
+    Para cada venta cerrada (op_type ≠ Compra/Dividendo), comparamos:
+    - PnL realizado en USD (el que registraste al vender)
+    - PnL hipotético: precio actual del asset × quantity vendido − costo
+
+    Si los precios subieron desde tu venta, hubieras ganado más. Si bajaron,
+    bien hiciste. Suma de diferencias = "lo que perdiste por tradear".
+
+    Requiere precios actuales (prices dict).
+    """
+    trades = [o for o in ops if _is_trade(o)]
+    if len(trades) < 3 or not prices:
+        return _not_enough_data("counterfactual", "Necesitás al menos 3 trades cerrados + precios actuales.")
+
+    realized_total = 0
+    hypothetical_total = 0
+    breakdown = []
+    for o in trades:
+        asset = (o.get("asset") or "").upper()
+        if not asset:
+            continue
+        qty = o.get("quantity") or 0
+        exit_price = o.get("exit_price") or 0
+        entry_price = o.get("entry_price") or 0
+        cur_price = prices.get(asset) or prices.get(asset + ".BA")
+        if cur_price is None or qty == 0:
+            continue
+        realized = (exit_price - entry_price) * qty
+        hypothetical = (cur_price - entry_price) * qty
+        delta = hypothetical - realized
+        realized_total += realized
+        hypothetical_total += hypothetical
+        breakdown.append({
+            "asset": asset,
+            "exit_price": exit_price,
+            "current_price": cur_price,
+            "delta_usd": round(delta, 2),
+            "exit_date": o.get("date"),
+        })
+
+    if not breakdown:
+        return _not_enough_data("counterfactual", "No pudimos cruzar tus ventas con precios actuales.")
+
+    delta_total = hypothetical_total - realized_total
+
+    if delta_total > 1000:
+        severity = "high"
+        title = "Hubieras ganado más NO vendiendo"
+        one_liner = (
+            f"Si no hubieras cerrado tus ventas anteriores, hoy tendrías ~US$ {delta_total:,.0f} más. "
+            "Vender ganadoras temprano costó plata real."
+        )
+    elif delta_total > 300:
+        severity = "medium"
+        title = "Vender temprano te costó algo de upside"
+        one_liner = (
+            f"Hubieras hecho ~US$ {delta_total:,.0f} más si mantenías. "
+            "No siempre pasa, pero es interesante mirar el patrón."
+        )
+    elif delta_total < -300:
+        severity = "positive"
+        title = "Vender fue acertado"
+        one_liner = (
+            f"Hubieras perdido ~US$ {abs(delta_total):,.0f} más si mantenías. "
+            "Cerrar a tiempo fue buena decisión."
+        )
+    else:
+        severity = "low"
+        title = "Tus ventas fueron neutrales"
+        one_liner = f"La diferencia con haber mantenido es de apenas US$ {delta_total:,.0f}."
+
+    # Ordenar breakdown por delta absoluto
+    breakdown.sort(key=lambda x: -abs(x["delta_usd"]))
+    return {
+        "code": "counterfactual",
+        "title": title,
+        "severity": severity,
+        "detected": severity in ("high", "medium"),
+        "score": round(min(100, abs(delta_total) / 100), 1),
+        "value_label": f"{'+' if delta_total >= 0 else '−'}US$ {abs(delta_total):,.0f}",
+        "one_liner": one_liner,
+        "evidence": {
+            "realized_total_usd": round(realized_total, 2),
+            "hypothetical_total_usd": round(hypothetical_total, 2),
+            "delta_total_usd": round(delta_total, 2),
+            "trades_analyzed": len(breakdown),
+            "top_misses": breakdown[:5],  # cap
+        },
+        "references": [
+            "Kahneman (2011) — Thinking, Fast and Slow (counterfactual thinking).",
+        ],
+    }
+
+
 # ─── Orchestrator ────────────────────────────────────────────────────────────
 
 
@@ -488,32 +1064,42 @@ def _not_enough_data(code: str, reason: str) -> Dict[str, Any]:
 def build_behavioral_insights(
     operations: List[Dict[str, Any]],
     positions: Optional[List[Dict[str, Any]]] = None,
+    prices: Optional[Dict[str, float]] = None,
+    inflation_monthly: Optional[Dict[str, float]] = None,
+    tc_blue: float = 1415.0,
 ) -> Dict[str, Any]:
-    """Orchestrator — corre los 4 detectores y devuelve un payload uniforme.
+    """Orchestrator — corre los 10 detectores y devuelve un payload uniforme.
 
     Args:
         operations: lista de operations crudas del user (todas las cerradas).
-        positions: lista de positions activas (para overtrade ratio si está disponible).
+        positions: lista de positions activas.
+        prices: dict { 'TICKER': precio_actual } para concentration / counterfactual.
+        inflation_monthly: dict { 'YYYY-MM': pct } de inflación AR mensual.
+        tc_blue: cotización del dólar para convertir valores ARS.
 
     Returns:
         {
-            cards: [<detector output>, ...]  # siempre las 4, aunque algunas
-                                              # tengan insufficient_data=True
-            summary: {
-                total_detected: int,
-                total_high: int,
-                total_medium: int,
-                total_positive: int,
-            },
+            cards: [<detector output>, ...]  # siempre las 10, algunas con insufficient_data
+            summary: { total_detected, total_high, total_medium, total_positive, total_cards },
             generated_at: ISO timestamp,
         }
     """
     ops = operations or []
+    pos = positions or []
     cards = [
+        # Sprint 3 — los 4 originales
         detect_disposition_effect(ops),
-        detect_overtrade(ops, positions),
+        detect_overtrade(ops, pos),
         detect_loss_aversion(ops),
         detect_averaging_down(ops),
+        # Sprint 3.1
+        detect_concentration(pos, prices, tc_blue),
+        detect_inflation_loss(pos, inflation_monthly, tc_blue),
+        detect_counterfactual(ops, prices),
+        # Sprint 3.2
+        detect_winrate_payoff(ops),
+        detect_home_bias(pos, prices, tc_blue),
+        detect_cash_drag(pos, tc_blue),
     ]
 
     high = sum(1 for c in cards if c["severity"] == "high")
