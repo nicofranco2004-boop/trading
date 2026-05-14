@@ -1666,14 +1666,15 @@ NEWS_MARKET_TTL = 60 * 60   # 60 min
 # explícito para reducir basura en el resultado de Google News (en vez de
 # "Federal Reserve" → "Federal Reserve interest rates": filtra mejor).
 MARKET_NEWS_QUERIES = [
-    # ── USA: acciones e índices
-    ("S&P 500 stocks today", "market", "en"),
-    ("Nasdaq stock market", "market", "en"),
+    # ── USA: acciones e índices (en español — Google News indexa cobertura
+    #    en español de Reuters/Bloomberg/CNN Español/El País Economía)
+    ("S&P 500 acciones Wall Street", "market", "es"),
+    ("Nasdaq tecnológicas mercado", "market", "es"),
     # ── USA: tasas y bonos
-    ("Federal Reserve interest rates", "macro", "en"),
-    ("US Treasury yields", "macro", "en"),
+    ("Reserva Federal tasas Estados Unidos", "macro", "es"),
+    ("rendimientos bonos Treasury EEUU", "macro", "es"),
     # ── USA: inflación
-    ("US CPI inflation", "macro", "en"),
+    ("inflación Estados Unidos IPC", "macro", "es"),
     # ── AR: mercado local
     ("Merval acciones Argentina", "market", "es"),
     ("bonos argentinos soberanos", "market", "es"),
@@ -1691,13 +1692,18 @@ MARKET_NEWS_QUERIES = [
 # Codes documentados:
 #   news_25  → Stock market (acciones)
 #   news_285 → Economic indicators (macro)
-INVESTING_FEEDS = [
+RSS_FEEDS = [
     # (url, category, lang)
-    ("https://www.investing.com/rss/news_25.rss",  "market", "en"),
-    ("https://www.investing.com/rss/news_285.rss", "macro",  "en"),
-    ("https://es.investing.com/rss/news_25.rss",   "market", "es"),
-    ("https://es.investing.com/rss/news_285.rss",  "macro",  "es"),
+    # Feeds en español. Investing.com en castellano + Yahoo Finanzas (LatAm
+    # y España). El fetcher RSS es genérico — cualquier URL RSS 2.0 sirve.
+    ("https://es.investing.com/rss/news_25.rss",            "market", "es"),
+    ("https://es.investing.com/rss/news_285.rss",           "macro",  "es"),
+    ("https://es-us.finanzas.yahoo.com/news/rssindex",      "market", "es"),
+    ("https://es.finance.yahoo.com/news/rssindex",          "market", "es"),
 ]
+
+# Alias retro-compatible — algunos call-sites todavía pueden importarlo.
+INVESTING_FEEDS = RSS_FEEDS
 
 # Whitelist de keywords para filtrar noticias market/macro irrelevantes.
 # Si el title+summary de una noticia NO contiene al menos uno de estos
@@ -2038,14 +2044,35 @@ def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int =
     return _persist_news_items(conn, items, 'google_news_rss', category, query)
 
 
-def _refresh_investing_feed(conn, url: str, category: str, limit: int = 15):
-    """Refresca el cache desde un feed RSS de Investing.com.
+def _source_id_from_url(url: str) -> str:
+    """Deriva un source_id estable a partir del hostname del feed.
 
-    Delega a _persist_news_items con source='investing_com'. Como query_source
-    usamos la URL del feed (sirve para debug + dedup soft).
+    'https://es.investing.com/rss/...' → 'investing_com'
+    'https://es-us.finanzas.yahoo.com/...' → 'yahoo_finanzas'
+    'https://es.finance.yahoo.com/...' → 'yahoo_finanzas'
+    """
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or '').lower()
+        if 'yahoo' in host:
+            return 'yahoo_finanzas'
+        if 'investing' in host:
+            return 'investing_com'
+        return host.replace('.', '_') or 'rss'
+    except Exception:
+        return 'rss'
+
+
+def _refresh_investing_feed(conn, url: str, category: str, limit: int = 15):
+    """Refresca el cache desde un feed RSS arbitrario (Investing, Yahoo, etc.).
+
+    El nombre histórico quedó como 'investing' por back-compat — el fetcher
+    es RSS 2.0 estándar y sirve para cualquier feed. El source_id se
+    deriva del hostname.
     """
     items = _fetch_investing_rss(url, limit=limit)
-    return _persist_news_items(conn, items, 'investing_com', category, url)
+    source_id = _source_id_from_url(url)
+    return _persist_news_items(conn, items, source_id, category, url)
 
 
 def _ensure_news_for_query(conn, query: str, lang: str, category: str, ttl_seconds: int):
@@ -2147,7 +2174,7 @@ def get_market_news(
     try:
         specs = (
             [(q, lang, cat) for q, cat, lang in MARKET_NEWS_QUERIES] +
-            [('investing', url, lang, cat) for url, cat, lang in INVESTING_FEEDS]
+            [('investing', url, lang, cat) for url, cat, lang in RSS_FEEDS]
         )
         _ensure_news_batch_parallel(specs, NEWS_MARKET_TTL)
     except Exception:
@@ -2196,13 +2223,13 @@ def get_portfolio_news(
         if not tickers:
             return {'news': [], 'count': 0}
 
-        # Build queries batch (cap a 20 para no martillar Google) + paralelo
+        # Build queries batch (cap a 20 para no martillar Google) + paralelo.
+        # Forzamos lang=es para todos los tickers — incluso US. Google News
+        # indexa cobertura en español de Reuters/Bloomberg/CNN Español para
+        # AAPL/NVDA/etc. Si queda flojo para un ticker específico, revertimos.
         queries_batch = []
         for ticker in tickers[:20]:
-            is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
-            lang = "es" if is_ar else "en"
-            query = f"{ticker} {'acciones' if is_ar else 'stock'}"
-            queries_batch.append((query, lang, 'portfolio'))
+            queries_batch.append((f"{ticker} acciones", "es", 'portfolio'))
         try:
             _ensure_news_batch_parallel(queries_batch, NEWS_TICKER_TTL)
         except Exception:
