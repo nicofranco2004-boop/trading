@@ -516,6 +516,48 @@ class RecencyBiasTest(unittest.TestCase):
         result = detect_recency_bias(positions, None)
         self.assertTrue(result.get("insufficient_data"))
 
+    def test_cedear_uses_ars_price_not_us(self):
+        """Bug fix: para CEDEAR (META en Cocos), comparar buy_price ARS con
+        precio ARS del CEDEAR (no con la acción US en USD)."""
+        positions = [
+            {
+                "broker": "Cocos",
+                "asset": "META",  # CEDEAR exportado sin .BA por algunos brokers
+                "is_cash": 0,
+                "buy_price": 38300,  # ARS
+                "quantity": 5,
+                "invested": 191500,  # ARS
+            },
+        ]
+        # prices tiene tanto el .BA (ARS, sube +20%) como el US (618 USD).
+        # El detector debe usar el precio AR, no el US.
+        prices = {"META.BA": 45960, "META": 618}
+        result = detect_recency_bias(positions, prices)
+        # buy 38300 vs current 45960 → ratio 0.83 → NO flagged
+        self.assertEqual(result["evidence"]["flagged_count"], 0)
+        self.assertEqual(result["severity"], "positive")
+
+    def test_cedear_without_ba_price_skipped(self):
+        """Si no hay precio del .BA, skipear la posición en lugar de usar el
+        precio US que daría comparación absurda."""
+        positions = [
+            {
+                "broker": "Cocos",
+                "asset": "META",
+                "is_cash": 0,
+                "buy_price": 38300,
+                "quantity": 5,
+                "invested": 191500,
+            },
+        ]
+        # Solo está el precio US — el detector debe ignorar esta posición
+        prices = {"META": 618}
+        result = detect_recency_bias(positions, prices)
+        # No detected — todas las posiciones fueron skipeadas por falta de
+        # precio en la moneda correcta. Severidad neutral (insuficiente data)
+        # o positiva (sin instancias).
+        self.assertFalse(result.get("detected", False))
+
 
 # ─── Detector 12: Sector concentration ───────────────────────────────────────
 

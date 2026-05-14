@@ -161,6 +161,37 @@ def _is_ar_economic_exposure(asset: str, broker: Optional[str] = None) -> bool:
     return False
 
 
+def _resolve_price(asset: str, broker: Optional[str], prices: Optional[Dict[str, float]]) -> Optional[float]:
+    """Resuelve el precio actual del activo en la MONEDA NATIVA del broker.
+
+    CRÍTICO: para brokers AR (Cocos/IOL/etc) los tickers normalmente son
+    CEDEARs que cotizan en ARS. El precio del ticker US (ej. META US$ 618)
+    NO es comparable con el buy_price del CEDEAR (en ARS, ej. $38.300).
+
+    Heurística:
+    - Broker AR + asset con .BA → prices[asset]  (ARS)
+    - Broker AR + asset sin .BA → prices[asset + '.BA']  (ARS — siempre buscamos AR)
+    - Broker no-AR + asset → prices[asset]  (USD)
+
+    Devuelve None si no hay precio coherente con la moneda del broker.
+    No hace fallback cruzado para evitar mezclar monedas.
+    """
+    if not prices or not asset:
+        return None
+    a = asset.upper()
+    is_ars = _is_ars_broker(broker)
+    if is_ars:
+        # Broker AR: el precio que buscamos está en ARS. CEDEARs siempre con .BA.
+        if a.endswith(".BA"):
+            return prices.get(a)
+        # Ticker sin .BA en broker AR — probablemente CEDEAR exportado sin sufijo.
+        # Buscamos el .BA. NO usamos prices[a] sin sufijo porque sería el ticker
+        # US en USD (mezcla de monedas → comparaciones absurdas).
+        return prices.get(a + ".BA")
+    # Broker no-AR (Schwab/IBKR/Binance): precio en USD directo.
+    return prices.get(a)
+
+
 def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = None,
                          tc_blue: float = 1415.0) -> float:
     """Valor USD-equivalente de una position. Maneja:
@@ -183,12 +214,10 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
             return float(invested_native) / tc_blue if tc_blue > 0 else 0.0
         return float(invested_native)
 
-    # Para no-cash: preferimos precio actual × quantity
+    # Para no-cash: preferimos precio actual × quantity (en la moneda nativa)
     value_native = 0.0
-    if prices and qty:
-        price = prices.get(asset)
-        if price is None and not asset.endswith(".BA"):
-            price = prices.get(asset + ".BA")
+    if qty:
+        price = _resolve_price(asset, broker, prices)
         if price and price > 0:
             value_native = float(price) * float(qty)
     if value_native <= 0:
@@ -1187,14 +1216,17 @@ def detect_recency_bias(positions: List[Dict[str, Any]],
         buy_price = p.get("buy_price")
         if buy_price is None or buy_price <= 0:
             continue
-        current_price = prices.get(asset) or prices.get(asset + ".BA")
+        # CRÍTICO: el precio actual tiene que ser en la MISMA moneda que
+        # buy_price. _resolve_price() garantiza eso (busca .BA si el broker
+        # es AR, evita mezclar US$ con AR$ que daba "drawdown -98%" absurdos).
+        current_price = _resolve_price(asset, p.get("broker"), prices)
         if current_price is None or current_price <= 0:
             continue
         invested_usd = _position_value_usd(p, prices, tc_blue)
         if invested_usd <= 0:
             continue
         total_invested += invested_usd
-        # Pattern: buy_price >= 1.30 × current_price
+        # Pattern: buy_price >= 1.30 × current_price (en la misma moneda)
         ratio = buy_price / current_price
         if ratio >= 1.30:
             chase_pumps_invested += invested_usd
