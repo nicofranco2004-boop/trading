@@ -1,13 +1,10 @@
-// AICoach — chat con IA contextualizado al portfolio (V2).
-// ═══════════════════════════════════════════════════════════════════════════
-// Visual: panel violet + gradient sutil (estilo audit "Coach IA").
-// Mensajes assistant en mono con prefix `>` (terminal feel).
-// Mensajes user con accent blue. Chips de preguntas sugeridas debajo.
-
 import { useState, useRef, useEffect } from 'react'
-import { Send, AlertCircle, RotateCcw, Sparkles } from 'lucide-react'
+import { Sparkles, Send, AlertCircle, RotateCcw } from 'lucide-react'
 import { api } from '../utils/api'
 
+// Preguntas por defecto — se usan si el caller no pasa `suggested` o si la
+// generación dinámica no produjo lo suficiente. Insights las reemplaza por
+// preguntas data-driven basadas en el snapshot real.
 const DEFAULT_SUGGESTED = [
   '¿Cómo está mi portfolio en general?',
   '¿Qué riesgos detectás en mi cartera?',
@@ -24,6 +21,7 @@ export default function AICoach({ snapshot, suggested }) {
   const scrollRef = useRef(null)
   const inputRef = useRef(null)
 
+  // Auto-scroll al final cuando llegan mensajes nuevos
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -42,10 +40,14 @@ export default function AICoach({ snapshot, suggested }) {
     setError(null)
 
     try {
-      const res = await api.post('/ai/chat', { messages: newMessages, snapshot })
+      const res = await api.post('/ai/chat', {
+        messages: newMessages,
+        snapshot,
+      })
       setMessages(m => [...m, { role: 'assistant', content: res.reply }])
     } catch (e) {
       setError(e.message || 'No pudimos completar la consulta. Intentalo nuevamente.')
+      // Sacar el último user msg si falló, para que pueda reintentarlo
       setMessages(m => m.slice(0, -1))
       setInput(content)
     } finally {
@@ -68,52 +70,43 @@ export default function AICoach({ snapshot, suggested }) {
   }
 
   return (
-    <div
-      className="rounded border border-data-violet/30 overflow-hidden flex flex-col"
-      style={{ background: 'linear-gradient(180deg, rgba(139,125,255,0.05), rgba(139,125,255,0.01) 40%, transparent)' }}
-    >
+    <div className="bg-white dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-data-violet/20 bg-bg-1/40">
-        <div className="flex items-center gap-2.5">
-          <span
-            className="inline-block w-2 h-2 rounded-full bg-data-violet"
-            style={{ boxShadow: '0 0 8px rgba(139,125,255,0.85)' }}
-            aria-hidden="true"
-          />
-          <Sparkles size={13} strokeWidth={1.75} className="text-data-violet" aria-hidden="true" />
-          <h2 className="text-sm font-medium text-ink-0 leading-none">Coach IA</h2>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none">
-            / contexto sobre tu portfolio
-          </span>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200/70 dark:border-slate-700/40">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 rounded-sm bg-bg-3 border border-line">
+            <Sparkles size={16} strokeWidth={1.5} className="text-rendi-accent" />
+          </div>
+          <div>
+            <h2 className="font-semibold text-slate-800 dark:text-slate-200">Coach IA</h2>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Asistente con contexto sobre tu portfolio</p>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] font-mono text-data-violet uppercase tracking-caps">RND-AI · Haiku</span>
-          {messages.length > 0 && (
-            <button
-              onClick={reset}
-              className="text-[10px] text-ink-3 hover:text-ink-0 inline-flex items-center gap-1 font-mono uppercase tracking-caps"
-              title="Empezar de nuevo"
-              aria-label="Empezar conversación de nuevo"
-            >
-              <RotateCcw size={10} strokeWidth={1.75} /> Nuevo
-            </button>
-          )}
-        </div>
+        {messages.length > 0 && (
+          <button
+            onClick={reset}
+            className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center gap-1"
+            title="Empezar de nuevo"
+            aria-label="Empezar conversación de nuevo"
+          >
+            <RotateCcw size={12} /> Nuevo
+          </button>
+        )}
       </div>
 
       {/* Mensajes */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 max-h-[420px] min-h-[180px]">
         {messages.length === 0 && !loading && (
-          <div className="py-2">
-            <p className="text-sm text-ink-1 mb-3 font-mono">
-              <span className="text-data-violet">{'>'}</span> Tengo contexto completo sobre tu portfolio. ¿Qué te gustaría analizar?
+          <div className="text-center py-4">
+            <p className="text-sm text-slate-600 dark:text-slate-300 mb-3">
+              Tengo contexto completo sobre tu portfolio. ¿Qué te gustaría analizar?
             </p>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-2 justify-center">
               {SUGGESTED.map(q => (
                 <button
                   key={q}
                   onClick={() => send(q)}
-                  className="text-xs px-2.5 py-1 bg-bg-2 hover:bg-bg-3 border border-line hover:border-data-violet/40 text-ink-1 rounded-sm transition-colors"
+                  className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-bg-2 dark:hover:bg-bg-3 border border-slate-200 dark:border-line text-slate-700 dark:text-ink-1 rounded-full transition"
                 >
                   {q}
                 </button>
@@ -123,64 +116,65 @@ export default function AICoach({ snapshot, suggested }) {
         )}
 
         {messages.map((m, i) => (
-          <div key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
-            {m.role === 'user' ? (
-              <div className="max-w-[85%] bg-data-blue/10 border border-data-blue/30 text-ink-0 rounded-sm px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap">
-                {m.content}
-              </div>
-            ) : (
-              <div className="font-mono text-[13px] text-ink-1 leading-relaxed whitespace-pre-wrap">
-                <span className="text-data-violet select-none">{'> '}</span>{m.content}
-              </div>
-            )}
+          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div
+              className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                m.role === 'user'
+                  ? 'bg-rendi-accent/15 border border-rendi-accent/30 text-slate-800 dark:text-ink-0 rounded-br-sm font-medium'
+                  : 'bg-slate-100 dark:bg-bg-2 text-slate-800 dark:text-ink-1 rounded-bl-sm'
+              }`}
+            >
+              {m.content}
+            </div>
           </div>
         ))}
 
         {loading && (
-          <div className="font-mono text-sm text-ink-2">
-            <span className="text-data-violet select-none">{'> '}</span>
-            <span className="inline-flex gap-1 align-middle">
-              <span className="w-1 h-1 bg-data-violet rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1 h-1 bg-data-violet rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1 h-1 bg-data-violet rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-            </span>
+          <div className="flex justify-start">
+            <div className="bg-slate-100 dark:bg-slate-700/50 rounded-2xl rounded-bl-sm px-4 py-2.5">
+              <div className="flex gap-1.5">
+                <span className="w-1.5 h-1.5 bg-slate-400 dark:bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 bg-slate-400 dark:bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 bg-slate-400 dark:bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+            </div>
           </div>
         )}
 
         {error && (
-          <div className="flex items-start gap-2 p-2.5 border border-rendi-neg/30 bg-rendi-neg/[0.06] rounded-sm text-xs text-rendi-neg">
-            <AlertCircle size={13} strokeWidth={1.75} className="flex-shrink-0 mt-0.5" />
-            <span className="break-all font-mono">{error}</span>
+          <div className="flex items-start gap-2 p-2.5 bg-red-500/10 border border-red-500/30 rounded-md text-xs text-red-600 dark:text-red-400">
+            <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+            <span className="break-all">{error}</span>
           </div>
         )}
       </div>
 
       {/* Input */}
-      <div className="border-t border-data-violet/20 px-3 py-2.5 bg-bg-1/40">
+      <div className="border-t border-slate-200/70 dark:border-slate-700/40 px-3 py-2.5">
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Escribí tu consulta…"
+            placeholder="Escribí tu consulta..."
             rows={1}
             disabled={loading}
-            className="flex-1 resize-none bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-data-violet/60 disabled:opacity-50 max-h-32 font-mono"
-            style={{ minHeight: '36px' }}
+            className="flex-1 resize-none bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-ink-0 placeholder-slate-400 dark:placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 disabled:opacity-50 max-h-32"
+            style={{ minHeight: '38px' }}
           />
           <button
             onClick={() => send()}
             disabled={loading || !input.trim()}
-            className="flex-shrink-0 bg-data-violet hover:bg-data-violet/85 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-sm p-2 transition-colors"
+            className="flex-shrink-0 bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg p-2 transition"
             title="Enviar (Enter)"
             aria-label="Enviar mensaje"
           >
-            <Send size={14} strokeWidth={1.75} />
+            <Send size={16} />
           </button>
         </div>
-        <p className="text-[10px] font-mono text-ink-3 mt-1.5 text-center uppercase tracking-caps">
-          Claude Haiku · Observaciones orientativas — no es asesoramiento financiero
+        <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-1.5 text-center">
+          Claude Haiku · Observaciones de carácter orientativo. No constituyen asesoramiento financiero.
         </p>
       </div>
     </div>

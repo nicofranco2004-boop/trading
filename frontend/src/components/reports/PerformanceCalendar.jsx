@@ -1,54 +1,49 @@
-// PerformanceCalendar — overview visual arriba de la timeline (V2).
+// PerformanceCalendar — overview visual fuerte de Reportes (V2).
 // ═══════════════════════════════════════════════════════════════════════════
 // Dos piezas:
-//   1) KPI strip 12M (acumulado realizado, meses positivos, mejor/peor mes,
-//      trades).
-//   2) Calendario de performance: heatmap por año con 12 cuadraditos (ENE-DIC),
-//      colores 9-pasos basados en delta_pct mensual, suma anual a la derecha.
+//   1) KPI strip 12M (acumulado realizado, meses positivos, mejor/peor, trades)
+//   2) Calendario heatmap por año — bandas con 12 cuadrados (ENE-DIC)
+//      coloreados según delta_pct mensual. Escala 7 pasos + neutro + sin datos.
 //
-// Mantiene la narrativa de MonthCard intacta — se usa como vista resumen
-// arriba, antes de la timeline.
-
-import Eyebrow from '../Eyebrow'
+// Visual: tipografía mono operativa, celdas con altura generosa, colores
+// con buen contraste sobre bg-bg-1.
 
 const MONTH_SHORT = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC']
 
-// Extrae month_number (1-12) desde period_key "YYYY-MM"
 function monthNum(period_key) {
   if (!period_key) return null
   const m = period_key.match(/-(\d{1,2})/)
   return m ? parseInt(m[1], 10) : null
 }
 
-// ─── Color bins ──────────────────────────────────────────────────────────────
-// Escala 9-pasos cold + signal. Para Tailwind usamos style inline (los hex
-// no calzan en arbitrary values sin perder claridad).
+// ─── Color bins (7 niveles + neutro + sin datos) ─────────────────────────────
+// Colores con buen contraste sobre bg-bg-1. Texto adapta al fondo.
 function colorForCell(pct, hasData) {
   if (!hasData) {
-    return { bg: 'transparent', border: '1px solid rgba(255,255,255,0.04)', label: 'text-ink-3', value: 'text-ink-3' }
+    return {
+      bg: 'transparent',
+      border: '1px dashed rgba(255,255,255,0.06)',
+      label: '#5A6478',
+      value: '#5A6478',
+    }
   }
-  if (pct == null || pct === 0) {
-    return { bg: '#1B2230', border: 'none', label: 'text-ink-2', value: 'text-ink-1' }
+  if (pct == null || Math.abs(pct) < 0.5) {
+    return { bg: '#1B2230', border: 'none', label: '#9CA3B5', value: '#C3CAD8' }
   }
-  if (pct > 0) {
-    if (pct >= 10)  return { bg: '#21D07A', border: 'none', label: 'text-[#06160E]', value: 'text-[#06160E]' }
-    if (pct >= 5)   return { bg: '#14A560', border: 'none', label: 'text-ink-0',     value: 'text-ink-0' }
-    if (pct >= 2)   return { bg: '#0F5C36', border: 'none', label: 'text-ink-0',     value: 'text-ink-0' }
-    if (pct >= 0.5) return { bg: '#0B4127', border: 'none', label: 'text-ink-1',     value: 'text-rendi-pos' }
-    return { bg: '#06160E', border: 'none', label: 'text-ink-2', value: 'text-rendi-pos' }
-  }
-  const abs = Math.abs(pct)
-  if (abs >= 10)  return { bg: '#FF5360', border: 'none', label: 'text-[#1F0A0C]', value: 'text-[#1F0A0C]' }
-  if (abs >= 5)   return { bg: '#C8333E', border: 'none', label: 'text-ink-0',     value: 'text-ink-0' }
-  if (abs >= 2)   return { bg: '#8E2B33', border: 'none', label: 'text-ink-0',     value: 'text-ink-0' }
-  if (abs >= 0.5) return { bg: '#5E1F25', border: 'none', label: 'text-ink-1',     value: 'text-rendi-neg' }
-  return { bg: '#1F0A0C', border: 'none', label: 'text-ink-2', value: 'text-rendi-neg' }
+  if (pct >= 5)    return { bg: '#21D07A', border: 'none', label: '#06160E', value: '#06160E' }
+  if (pct >= 2)    return { bg: '#14A560', border: 'none', label: '#E6EAF2', value: '#E6EAF2' }
+  if (pct > 0)     return { bg: '#0F5C36', border: 'none', label: '#C3CAD8', value: '#5FE19D' }
+  if (pct <= -5)   return { bg: '#FF5360', border: 'none', label: '#1F0A0C', value: '#1F0A0C' }
+  if (pct <= -2)   return { bg: '#C8333E', border: 'none', label: '#E6EAF2', value: '#E6EAF2' }
+  return            { bg: '#8E2B33', border: 'none', label: '#C3CAD8', value: '#FFB1B7' }
 }
 
-function fmtPctShort(p) {
+function fmtPctValue(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(p >= 10 || p <= -10 ? 1 : 2)}`
+  // Compacto: enteros para >=10, 1 decimal para <10
+  const abs = Math.abs(p)
+  return `${sign}${abs >= 10 ? p.toFixed(0) : p.toFixed(2)}`
 }
 
 function fmtUsdSigned(v) {
@@ -57,12 +52,11 @@ function fmtUsdSigned(v) {
   return `${sign}US$${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
 }
 
-// ─── KPI strip (12 meses más recientes) ──────────────────────────────────────
+// ─── KPI strip data ──────────────────────────────────────────────────────────
 function computeKpis(yearGroups) {
   const allMonths = yearGroups
     .flatMap(g => g.months)
     .filter(m => m.is_relevant && m.metrics)
-  // Tomar los 12 más recientes ordenados desc por period_key
   const sorted = [...allMonths].sort((a, b) => (a.period_key < b.period_key ? 1 : -1))
   const last12 = sorted.slice(0, 12)
   if (last12.length === 0) return null
@@ -70,7 +64,6 @@ function computeKpis(yearGroups) {
   const realizedSum = last12.reduce((s, m) => s + (m.metrics.realized_pnl || 0), 0)
   const trades = last12.reduce((s, m) => s + (m.metrics.trades_count || 0), 0)
   const positiveCount = last12.filter(m => (m.metrics.delta_pct || 0) > 0).length
-  const totalCount = last12.length
 
   let best = null, worst = null
   for (const m of last12) {
@@ -78,23 +71,25 @@ function computeKpis(yearGroups) {
     if (!best  || m.metrics.delta_pct > best.metrics.delta_pct)  best  = m
     if (!worst || m.metrics.delta_pct < worst.metrics.delta_pct) worst = m
   }
-  return { realizedSum, trades, positiveCount, totalCount, best, worst }
+  return { realizedSum, trades, positiveCount, totalCount: last12.length, best, worst }
 }
 
-function KpiCell({ label, value, sub, tone, hero }) {
+function KpiCell({ label, value, sub, tone, first }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
     tone === 'neg' ? 'text-rendi-neg' :
     'text-ink-0'
   return (
-    <div className="px-3 py-2.5 border-r border-line/40 last:border-r-0 flex-1 min-w-[120px]">
-      <div className="text-[9px] font-mono uppercase tracking-label text-ink-3 leading-none">{label}</div>
-      <div className={`mt-1.5 font-medium tabular num leading-none ${hero ? 'text-2xl tracking-tight' : 'text-lg'} ${valueColor}`}>
+    <div className={`px-4 py-3 flex-1 min-w-[140px] ${first ? '' : 'border-l border-line/50'}`}>
+      <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 leading-none">
+        {label}
+      </div>
+      <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>
         {value}
       </div>
-      {sub && (
-        <div className="text-[10px] font-mono text-ink-3 mt-1 leading-none truncate">{sub}</div>
-      )}
+      <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none truncate uppercase tracking-caps">
+        {sub}
+      </div>
     </div>
   )
 }
@@ -104,32 +99,36 @@ export default function PerformanceCalendar({ yearGroups }) {
   if (!kpis) return null
 
   return (
-    <section className="mb-6">
+    <section className="mb-6 space-y-3">
       {/* ── KPI strip ── */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap mb-4">
+      <div className="border border-line rounded bg-bg-1 flex flex-wrap">
         <KpiCell
+          first
           label="P&L Realizado · 12M"
           value={fmtUsdSigned(kpis.realizedSum)}
           tone={kpis.realizedSum >= 0 ? 'pos' : 'neg'}
-          sub={`${kpis.totalCount} ${kpis.totalCount === 1 ? 'mes' : 'meses'} con actividad`}
-          hero
+          sub={`${kpis.totalCount} ${kpis.totalCount === 1 ? 'mes activo' : 'meses activos'}`}
         />
         <KpiCell
-          label="Meses positivos"
+          label="Win rate mensual"
           value={`${kpis.positiveCount}/${kpis.totalCount}`}
-          sub={kpis.totalCount > 0 ? `${Math.round((kpis.positiveCount / kpis.totalCount) * 100)}% win rate` : '—'}
+          sub={
+            kpis.totalCount > 0
+              ? `${Math.round((kpis.positiveCount / kpis.totalCount) * 100)}% positivos`
+              : '—'
+          }
         />
         <KpiCell
           label="Mejor mes"
-          value={kpis.best ? `${fmtPctShort(kpis.best.metrics.delta_pct)}%` : '—'}
+          value={kpis.best ? `${fmtPctValue(kpis.best.metrics.delta_pct)}%` : '—'}
           tone="pos"
-          sub={kpis.best ? kpis.best.period_label : undefined}
+          sub={kpis.best ? kpis.best.period_label : ''}
         />
         <KpiCell
           label="Peor mes"
-          value={kpis.worst ? `${fmtPctShort(kpis.worst.metrics.delta_pct)}%` : '—'}
+          value={kpis.worst ? `${fmtPctValue(kpis.worst.metrics.delta_pct)}%` : '—'}
           tone={kpis.worst && kpis.worst.metrics.delta_pct < 0 ? 'neg' : undefined}
-          sub={kpis.worst ? kpis.worst.period_label : undefined}
+          sub={kpis.worst ? kpis.worst.period_label : ''}
         />
         <KpiCell
           label="Trades · 12M"
@@ -140,18 +139,22 @@ export default function PerformanceCalendar({ yearGroups }) {
 
       {/* ── Calendar heatmap ── */}
       <div className="border border-line rounded bg-bg-1 overflow-hidden">
-        <header className="flex items-center justify-between px-3 py-2 border-b border-line/60">
+        <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
           <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
-            <Eyebrow>Calendario de performance</Eyebrow>
-            <span className="text-[10px] font-mono text-ink-3 ml-1">/ TWR mensual</span>
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
+            <span className="text-[11px] font-mono uppercase tracking-label text-ink-0">
+              Calendario de performance
+            </span>
+            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 ml-1">
+              / TWR mensual
+            </span>
           </div>
           <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
             {yearGroups.length} {yearGroups.length === 1 ? 'año' : 'años'} cargados
           </span>
         </header>
 
-        <div className="px-3 py-3 space-y-3">
+        <div className="px-4 py-5 space-y-5">
           {yearGroups.map(({ year, months }) => {
             const cells = Array.from({ length: 12 }, (_, idx) => {
               const m = months.find(mm => monthNum(mm.period_key) === idx + 1)
@@ -159,9 +162,11 @@ export default function PerformanceCalendar({ yearGroups }) {
             })
             const yearDeltaSum = months.reduce((s, m) => s + (m.metrics?.delta_pct || 0), 0)
             return (
-              <div key={year} className="flex items-center gap-3">
-                <div className="font-mono text-[11px] tracking-label text-ink-3 min-w-[44px]">{year}</div>
-                <div className="grid grid-cols-12 gap-1 flex-1">
+              <div key={year} className="flex items-center gap-4">
+                <div className="font-mono text-[12px] tracking-label text-ink-3 min-w-[52px] tabular">
+                  {year}
+                </div>
+                <div className="grid grid-cols-12 gap-1.5 flex-1">
                   {cells.map(({ idx, month }) => {
                     const pct = month?.metrics?.delta_pct
                     const hasData = !!month && month.is_relevant && pct != null
@@ -170,28 +175,37 @@ export default function PerformanceCalendar({ yearGroups }) {
                     return (
                       <div
                         key={idx}
-                        title={month ? `${month.period_label}: ${fmtPctShort(pct)}%` : `${MONTH_SHORT[idx]}: sin datos`}
-                        className="aspect-[1.3/1] p-1.5 flex flex-col justify-between rounded-[2px]"
+                        title={month ? `${month.period_label}: ${fmtPctValue(pct)}%` : `${MONTH_SHORT[idx]}: sin datos`}
+                        className="aspect-[1.4/1] min-h-[56px] p-2 flex flex-col justify-between"
                         style={{
                           background: c.bg,
                           border: c.border,
-                          outline: isCurrent ? '1.5px solid rgb(33,208,122)' : undefined,
+                          outline: isCurrent ? '1.5px solid #21D07A' : undefined,
                           outlineOffset: isCurrent ? '-2px' : undefined,
+                          borderRadius: '3px',
                         }}
                       >
-                        <span className={`font-mono text-[9px] tracking-label leading-none ${c.label}`}>
+                        <span
+                          className="font-mono text-[10px] tracking-label leading-none"
+                          style={{ color: c.label }}
+                        >
                           {MONTH_SHORT[idx]}
                         </span>
-                        <span className={`font-mono text-[11px] font-semibold leading-none tabular ${c.value}`}>
-                          {hasData ? fmtPctShort(pct) : '—'}
+                        <span
+                          className="font-mono text-[13px] font-semibold leading-none tabular"
+                          style={{ color: c.value }}
+                        >
+                          {hasData ? fmtPctValue(pct) : '—'}
                         </span>
                       </div>
                     )
                   })}
                 </div>
-                <div className={`font-mono text-[11px] min-w-[70px] text-right tabular ${
-                  yearDeltaSum >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
-                }`}>
+                <div
+                  className={`font-mono text-[12px] min-w-[80px] text-right tabular font-medium ${
+                    yearDeltaSum >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+                  }`}
+                >
                   {yearDeltaSum >= 0 ? '+' : ''}{yearDeltaSum.toFixed(2)}%
                 </div>
               </div>
@@ -199,17 +213,17 @@ export default function PerformanceCalendar({ yearGroups }) {
           })}
 
           {/* Legend */}
-          <div className="flex items-center gap-1.5 pt-2 border-t border-line/40 text-[10px] font-mono text-ink-3">
-            <span className="mr-1">−5%</span>
-            {['#1F0A0C', '#5E1F25', '#8E2B33', '#C8333E', '#FF5360'].map((c, i) => (
-              <span key={i} className="inline-block w-4 h-2" style={{ background: c }} />
-            ))}
-            <span className="inline-block w-4 h-2 mx-0.5" style={{ background: '#1B2230' }} />
-            {['#21D07A', '#14A560', '#0F5C36', '#0B4127', '#06160E'].map((c, i) => (
-              <span key={i} className="inline-block w-4 h-2" style={{ background: c }} />
-            ))}
-            <span className="ml-1">+5%</span>
-            <span className="ml-auto uppercase tracking-caps">Rendimiento mensual · TWR</span>
+          <div className="flex items-center gap-1 pt-3 border-t border-line/50 text-[10px] font-mono text-ink-3">
+            <span className="mr-2 uppercase tracking-caps">−5%</span>
+            <span className="inline-block w-5 h-2.5" style={{ background: '#FF5360' }} />
+            <span className="inline-block w-5 h-2.5" style={{ background: '#C8333E' }} />
+            <span className="inline-block w-5 h-2.5" style={{ background: '#8E2B33' }} />
+            <span className="inline-block w-5 h-2.5 mx-1" style={{ background: '#1B2230' }} />
+            <span className="inline-block w-5 h-2.5" style={{ background: '#0F5C36' }} />
+            <span className="inline-block w-5 h-2.5" style={{ background: '#14A560' }} />
+            <span className="inline-block w-5 h-2.5" style={{ background: '#21D07A' }} />
+            <span className="ml-2 uppercase tracking-caps">+5%</span>
+            <span className="ml-auto uppercase tracking-caps">Rendimiento mensual</span>
           </div>
         </div>
       </div>
