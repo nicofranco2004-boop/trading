@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, Calendar } from 'lucide-react'
+import { ArrowRight, Calendar, Landmark, BarChart3, Coins, Banknote, CalendarClock } from 'lucide-react'
 import { api } from '../../utils/api'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
@@ -25,12 +25,14 @@ function daysUntil(iso) {
   return Math.round((target - today) / 86400000)
 }
 
+// Color por tipo: usamos accents fríos del sistema de tokens, NO emojis.
 const TYPE_ICON = {
-  macro: '🏛️',
-  earnings: '📊',
-  ex_dividend: '💰',
-  payment_date: '💵',
+  macro:        { Icon: Landmark,      className: 'text-data-blue' },
+  earnings:     { Icon: BarChart3,     className: 'text-data-cyan' },
+  ex_dividend:  { Icon: Coins,         className: 'text-rendi-warn' },
+  payment_date: { Icon: Banknote,      className: 'text-rendi-pos' },
 }
+const FALLBACK_ICON = { Icon: CalendarClock, className: 'text-ink-3' }
 
 const TYPE_LABEL = {
   macro: 'Macro',
@@ -83,10 +85,11 @@ export default function EventsPreview() {
           {events.map((e, i) => {
             const du = daysUntil(e.event_date)
             const when = du === 0 ? 'hoy' : du === 1 ? 'mañana' : du > 0 ? `en ${du}d` : fmtDate(e.event_date)
+            const { Icon, className: iconClass } = TYPE_ICON[e.event_type] || FALLBACK_ICON
             return (
               <DataRow key={i} density="default">
-                <span className="text-base leading-none flex-shrink-0" aria-hidden="true">
-                  {TYPE_ICON[e.event_type] || '📅'}
+                <span className="flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-sm bg-bg-2" aria-hidden="true">
+                  <Icon size={13} strokeWidth={1.75} className={iconClass} />
                 </span>
                 <DataRow.Cell>
                   <div className="min-w-0 flex-1">
