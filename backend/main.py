@@ -988,8 +988,16 @@ def get_dolar(uid: int = Depends(get_current_user)):
         return _dolar_cache["data"]
     blue = _fetch_dolar("blue")
     mep = _fetch_dolar("bolsa")
-    data = {"blue": blue, "mep": mep, "fetched_at": datetime.utcnow().isoformat() + "Z"}
-    if blue or mep:
+    ccl = _fetch_dolar("contadoconliqui")
+    cripto = _fetch_dolar("cripto")
+    data = {
+        "blue": blue,
+        "mep": mep,
+        "ccl": ccl,
+        "cripto": cripto,
+        "fetched_at": datetime.utcnow().isoformat() + "Z",
+    }
+    if blue or mep or ccl or cripto:
         _dolar_cache["data"] = data
         _dolar_cache["ts"] = now
     return data
