@@ -24,6 +24,7 @@ import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
+import LazySparkline from '../components/LazySparkline'
 
 const REFRESH_MS = 90_000
 
@@ -543,9 +544,9 @@ export default function Positions() {
   // sticky top-0 + bg matched al thead row para que al scrollear la tabla
   // (especialmente en mobile o brokers con muchas posiciones) el header
   // quede pegado arriba — convención fintech standard (Robinhood, Stripe).
-  const thClass = 'px-3 py-2.5 text-left label-mono whitespace-nowrap sticky top-0 z-10 bg-slate-50/95 dark:bg-bg-2/95 backdrop-blur-sm'
+  const thClass = 'px-3 py-2.5 text-left label-mono whitespace-nowrap sticky top-0 z-10 bg-bg-2/95 backdrop-blur-sm'
   const tdClass = 'px-3 py-2.5 text-sm whitespace-nowrap'
-  const inputClass = 'w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2 text-sm text-slate-900 dark:text-ink-0'
+  const inputClass = 'w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0'
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
 
@@ -597,8 +598,8 @@ export default function Positions() {
   if (brokers.length === 0) {
     return (
       <div className="page-shell-wide">
-        <PageHeader title="Posiciones activas" subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado." />
-        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded">
+        <PageHeader eyebrow="Posiciones / Activas" title="Tu portfolio en vivo" />
+        <div className="bg-bg-1 border border-line rounded">
           <EmptyState
             title="Sin brokers configurados"
             description="Configurá tu primer broker desde la sección Config para comenzar a registrar posiciones."
@@ -613,8 +614,8 @@ export default function Positions() {
   return (
     <div className="page-shell-wide">
       <PageHeader
-        title="Posiciones activas"
-        subtitle="Posiciones abiertas en cada broker, con valoración a precios de mercado."
+        eyebrow="Posiciones / Activas"
+        title="Tu portfolio en vivo"
         meta={meta}
       />
 
@@ -700,7 +701,7 @@ export default function Positions() {
         const headerPnlUsd = r.pnlUsd
         const headerPnlPct = r.invested > 0 ? r.pnlUsd / r.invested : 0
         const Header = (
-          <div className="flex flex-col gap-3 px-4 sm:px-5 py-4 border-b border-slate-200 dark:border-line">
+          <div className="flex flex-col gap-3 px-4 sm:px-5 py-4 border-b border-line">
             <div className="flex items-start justify-between flex-wrap gap-3">
               <div className="min-w-0">
                 <p className="eyebrow mb-1 flex items-center gap-2">
@@ -732,13 +733,13 @@ export default function Positions() {
                 )}
                 <button
                   onClick={() => toggleDetail(broker.name)}
-                  className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-slate-100 dark:hover:bg-bg-2 transition"
+                  className="flex items-center gap-1 text-[11px] text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition"
                   title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar tipo de cambio, conversiones y detalles adicionales'}
                 >
                   {showDetail ? <ChevronUp size={12} strokeWidth={1.5} /> : <ChevronDown size={12} strokeWidth={1.5} />}
                   {showDetail ? 'Ocultar detalle' : 'Detalle'}
                 </button>
-                <button onClick={() => openAdd(broker.name)} className="flex items-center gap-1 text-xs bg-bg-2 hover:bg-bg-3 border border-line text-slate-700 dark:text-ink-1 px-2.5 py-1.5 rounded-sm transition">
+                <button onClick={() => openAdd(broker.name)} className="flex items-center gap-1 text-xs bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 px-2.5 py-1.5 rounded-sm transition">
                   <Plus size={12} strokeWidth={1.5} /> Agregar
                 </button>
               </div>
@@ -746,7 +747,7 @@ export default function Positions() {
             <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-xs sm:text-sm tabular">
               <span>
                 <span className="label-mono mr-1.5">Valor</span>
-                <span className="font-semibold text-slate-900 dark:text-ink-0">
+                <span className="font-semibold text-ink-0">
                   {isARS ? fmtArs(r.valueArs) : fmtUsd(r.value)}
                 </span>
               </span>
@@ -766,13 +767,14 @@ export default function Positions() {
         // ── ARS broker ─────────────────────────────────────────────────────
         if (isARS) {
           return (
-            <div key={broker.id} className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden mb-6">
+            <div key={broker.id} className="bg-bg-1 border border-line rounded overflow-hidden mb-6">
               {Header}
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-slate-100 dark:border-line bg-slate-50/40 dark:bg-bg-2/40">
+                    <tr className="border-b border-line/50 bg-bg-2/40">
                       <th className={thClass}>Activo</th>
+                      <th className={thClass}>30D</th>
                       <th className={thClass}>Cantidad</th>
                       <th className={thClass}>Precio prom.</th>
                       <th className={thClass}>Precio actual</th>
@@ -811,18 +813,18 @@ export default function Positions() {
                       const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       const expanded = isBond && expandedBonds.has(bondKey)
-                      const arsColSpan = showDetail ? 12 : 9
+                      const arsColSpan = showDetail ? 13 : 10
                       const pnlTooltip = (isBond && pnlContrib !== 0)
                         ? `P&L = mark-to-market (${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlContrib))} de ganancia realizada (cupones + parte de ganancia de amorts). Cash total cobrado: ARS ${ars(cobranzasCash)}.`
                         : undefined
                       return (
                         <Fragment key={p.id}>
-                        <tr className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
+                        <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''}`}>
                           <td className={`${tdClass}`}>
                             <div className="flex items-center gap-2.5 min-w-0">
                               <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
                               <div className="min-w-0">
-                                <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5 flex-wrap">
+                                <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
                                   {p.asset}
                                   {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                   {isBond && (
@@ -861,13 +863,20 @@ export default function Positions() {
                               </div>
                             </div>
                           </td>
-                          <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{p.quantity ?? '—'}</td>
-                          <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—'}</td>
-                          <td className={`${tdClass} text-slate-700 dark:text-slate-200 tabular`}>{c.priceArs != null ? `ARS ${ars(c.priceArs)}` : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
-                          <td className={`${tdClass} text-slate-700 dark:text-slate-200 tabular`}>{fmtArs(p.invested)}</td>
-                          {showDetail && <td className={`${tdClass} text-slate-500 dark:text-slate-400 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
-                          {showDetail && <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{c.invUsd != null ? fmtUsd(c.invUsd) : '—'}</td>}
-                          <td className={`${tdClass} text-slate-900 dark:text-slate-100 font-medium tabular`}>{c.valueArs != null ? fmtArs(c.valueArs) : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
+                          <td className={`${tdClass}`}>
+                            {p.is_cash ? (
+                              <span className="text-ink-3 text-xs">—</span>
+                            ) : (
+                              <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
+                            )}
+                          </td>
+                          <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                          <td className={`${tdClass} text-ink-2 tabular`}>{avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—'}</td>
+                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? `ARS ${ars(c.priceArs)}` : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                          <td className={`${tdClass} text-ink-1 tabular`}>{fmtArs(p.invested)}</td>
+                          {showDetail && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
+                          {showDetail && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? fmtUsd(c.invUsd) : '—'}</td>}
+                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.valueArs != null ? fmtArs(c.valueArs) : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                           <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlArs)} ${pnlBg}`} title={pnlTooltip}>
                             {adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—'}
                             {isBond && pnlContrib !== 0 && (
@@ -899,13 +908,13 @@ export default function Positions() {
                     })}
                   </tbody>
                   <tfoot>
-                    <tr className="border-t-2 border-slate-300 dark:border-line-2 bg-slate-50 dark:bg-bg-2/40">
+                    <tr className="border-t-2 border-line-2 bg-bg-2/40">
                       {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
-                      <td colSpan={4} className="px-3 py-2.5 text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">TOTAL</td>
-                      <td className="px-3 py-2.5 text-xs font-bold text-slate-800 dark:text-slate-200 tabular">{fmtArs(r.invArs)}</td>
-                      {showDetail && <td className="px-3 py-2.5 text-xs text-slate-400 dark:text-slate-500">—</td>}
-                      {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-slate-800 dark:text-slate-200 tabular">{fmtUsd(r.invested)}</td>}
-                      <td className="px-3 py-2.5 text-xs font-bold text-slate-900 dark:text-slate-100 tabular">{fmtArs(r.valueArs)}</td>
+                      <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2 uppercase tracking-wider">TOTAL</td>
+                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtArs(r.invArs)}</td>
+                      {showDetail && <td className="px-3 py-2.5 text-xs text-ink-3">—</td>}
+                      {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtUsd(r.invested)}</td>}
+                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtArs(r.valueArs)}</td>
                       <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlArs)}`}>{r.pnlArs >= 0 ? '+' : '-'}ARS {ars(Math.abs(r.pnlArs))}</td>
                       {showDetail && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{r.pnlUsd >= 0 ? '+' : '-'}USD {usd(Math.abs(r.pnlUsd))}</td>}
                       <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
@@ -922,13 +931,14 @@ export default function Positions() {
 
         // ── USD broker ─────────────────────────────────────────────────────
         return (
-          <div key={broker.id} className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden mb-6">
+          <div key={broker.id} className="bg-bg-1 border border-line rounded overflow-hidden mb-6">
             {Header}
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-slate-100 dark:border-slate-700/30">
+                  <tr className="border-b border-line/30">
                     <th className={thClass}>Activo</th>
+                    <th className={thClass}>30D</th>
                     <th className={thClass}>Cantidad</th>
                     <th className={thClass}>Precio prom.</th>
                     <th className={thClass}>Precio actual</th>
@@ -964,12 +974,12 @@ export default function Positions() {
                       : undefined
                     return (
                       <Fragment key={p.id}>
-                      <tr className={`border-b border-slate-100 dark:border-line/50 hover:bg-slate-50 dark:hover:bg-bg-2/40 ${p.is_cash ? 'bg-slate-50/60 dark:bg-bg-2/30' : ''}`}>
+                      <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''}`}>
                         <td className={`${tdClass}`}>
                           <div className="flex items-center gap-2.5 min-w-0">
                             <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
                             <div className="min-w-0">
-                              <div className="font-semibold text-slate-800 dark:text-ink-0 flex items-center gap-1.5 flex-wrap">
+                              <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
                                 {p.asset}
                                 {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                 {isBond && (
@@ -1000,11 +1010,18 @@ export default function Positions() {
                             </div>
                           </div>
                         </td>
-                        <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{p.quantity ?? '—'}</td>
-                        <td className={`${tdClass} text-slate-600 dark:text-slate-300 tabular`}>{avgPrice != null ? fmtUsd(avgPrice) : '—'}</td>
-                        <td className={`${tdClass} text-slate-700 dark:text-slate-200 tabular`}>{c.price != null ? fmtUsd(c.price) : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
-                        <td className={`${tdClass} text-slate-700 dark:text-slate-200 tabular`}>{fmtUsd(p.invested)}</td>
-                        <td className={`${tdClass} text-slate-900 dark:text-slate-100 font-medium tabular`}>{c.value != null ? fmtUsd(c.value) : <span title="Cargando precio" className="text-slate-400">—</span>}</td>
+                        <td className={`${tdClass}`}>
+                          {p.is_cash ? (
+                            <span className="text-ink-3 text-xs">—</span>
+                          ) : (
+                            <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
+                          )}
+                        </td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? fmtUsd(avgPrice) : '—'}</td>
+                        <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? fmtUsd(c.price) : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                        <td className={`${tdClass} text-ink-1 tabular`}>{fmtUsd(p.invested)}</td>
+                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.value != null ? fmtUsd(c.value) : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(adjPnl)} ${pnlBg}`} title={pnlTooltip}>
                           {adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—'}
                           {isBond && pnlContrib !== 0 && (
@@ -1019,7 +1036,7 @@ export default function Positions() {
                       {expanded && (
                         <BondDetailRow
                           p={p}
-                          colSpan={9}
+                          colSpan={10}
                           summary={bondSummary}
                           isARS={false}
                           currentPrice={c.price}
@@ -1035,11 +1052,11 @@ export default function Positions() {
                   })}
                 </tbody>
                 <tfoot>
-                  <tr className="border-t-2 border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/30">
+                  <tr className="border-t-2 border-line-2 bg-bg-2/30">
                     {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
-                    <td colSpan={4} className="px-3 py-2.5 text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">TOTAL</td>
-                    <td className="px-3 py-2.5 text-xs font-bold text-slate-800 dark:text-slate-200 tabular">{fmtUsd(r.invested)}</td>
-                    <td className="px-3 py-2.5 text-xs font-bold text-slate-900 dark:text-slate-100 tabular">{fmtUsd(r.value)}</td>
+                    <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2 uppercase tracking-wider">TOTAL</td>
+                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtUsd(r.invested)}</td>
+                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtUsd(r.value)}</td>
                     <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{r.pnlUsd >= 0 ? '+' : '-'}USD {usd(Math.abs(r.pnlUsd))}</td>
                     <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
                       {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
@@ -1082,20 +1099,20 @@ export default function Positions() {
           onClose={() => setModal(null)}
         >
           <div className="space-y-4">
-            <p className="text-sm text-slate-600 dark:text-slate-300">
+            <p className="text-sm text-ink-2">
               {cashFlowForm.direction === 'deposit'
                 ? `Ingresá el monto a depositar. Se acreditará al cash del broker y se registrará como aporte del mes en curso.`
                 : `Ingresá el monto a retirar. Se debitará del cash del broker y se registrará como retiro del mes en curso.`}
             </p>
             {cashFlowForm.direction === 'withdraw' && (
-              <p className="text-xs text-slate-400 dark:text-slate-500">
-                Disponible: <span className="font-medium text-slate-600 dark:text-slate-300">
+              <p className="text-xs text-ink-3">
+                Disponible: <span className="font-medium text-ink-2">
                   {cashFlowForm.currency === 'ARS' ? ars(cashFlowForm.available) : `$${usd(cashFlowForm.available)}`} {cashFlowForm.currency}
                 </span>
               </p>
             )}
             <div>
-              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
+              <label className="block text-xs text-ink-3 mb-1">
                 Monto ({cashFlowForm.currency})
               </label>
               <input
@@ -1109,9 +1126,9 @@ export default function Positions() {
               />
             </div>
             {cashFlowForm.currency === 'ARS' && (
-              <p className="text-xs text-slate-400 dark:text-slate-500">
+              <p className="text-xs text-ink-3">
                 Equivalente en USD al blue actual ({tcBlue}):
-                <span className="font-medium text-slate-600 dark:text-slate-300 ml-1">
+                <span className="font-medium text-ink-2 ml-1">
                   ${usd((+cashFlowForm.amount || 0) / tcBlue)}
                 </span>
                 {' '}· valor que se utilizará en el resumen global.
@@ -1120,7 +1137,7 @@ export default function Positions() {
             <div className="flex justify-end gap-2 pt-1">
               <button
                 onClick={() => setModal(null)}
-                className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0"
               >
                 Cancelar
               </button>
@@ -1212,7 +1229,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
     setForm(next)
   }
 
-  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
+  const inputCls = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   const title = isArsToUsd
     ? `Comprar USD desde ${form.from_broker}`
@@ -1221,22 +1238,22 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
   return (
     <Modal title={title} onClose={onClose}>
       <div className="space-y-4">
-        <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+        <p className="text-xs text-ink-3 leading-relaxed">
           {isArsToUsd
             ? 'Se debitan los pesos del broker y se acreditan los dólares en un sub-broker USD asociado. Si es la primera vez, el sub-broker se crea automáticamente.'
             : 'Se debitan los dólares del sub-broker USD y se acreditan los pesos en el broker padre.'}
         </p>
 
-        <div className="bg-slate-50 dark:bg-slate-900/40 rounded-lg px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
-          Disponible: <span className="font-semibold text-slate-700 dark:text-slate-200 tabular">
+        <div className="bg-bg-2/40 rounded-lg px-3 py-2 text-xs text-ink-3">
+          Disponible: <span className="font-semibold text-ink-1 tabular">
             {form.available?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isArsToUsd ? 'ARS' : 'USD'}
           </span>
         </div>
 
         {/* Tipo de operación */}
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1.5">Tipo</label>
-          <div className="flex gap-1 bg-slate-100 dark:bg-slate-900/60 rounded-md p-1">
+          <label className="block text-xs text-ink-3 mb-1.5">Tipo</label>
+          <div className="flex gap-1 bg-bg-2/60 rounded-md p-1">
             {['MEP', 'CCL', 'USDT', 'Otro'].map(k => (
               <button
                 key={k}
@@ -1244,8 +1261,8 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
                 onClick={() => setForm(f => ({ ...f, kind: k }))}
                 className={`flex-1 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
                   form.kind === k
-                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    ? 'bg-bg-2 text-ink-0 shadow-sm'
+                    : 'text-ink-3 hover:text-ink-0'
                 }`}
               >
                 {k}
@@ -1257,7 +1274,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
         {/* Montos */}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <label className="block text-xs text-ink-3 mb-1">
               {isArsToUsd ? 'Monto ARS a convertir' : 'ARS a recibir'}
             </label>
             <input
@@ -1271,7 +1288,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <label className="block text-xs text-ink-3 mb-1">
               {isArsToUsd ? 'USD a recibir' : 'Monto USD a convertir'}
             </label>
             <input
@@ -1288,7 +1305,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
 
         {/* Tipo de cambio */}
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Tipo de cambio (ARS por USD)</label>
+          <label className="block text-xs text-ink-3 mb-1">Tipo de cambio (ARS por USD)</label>
           <input
             type="number"
             step="any"
@@ -1298,7 +1315,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
             placeholder={String(tcBlue || 1500)}
           />
           {tcNum > 0 && tcBlue > 0 && (
-            <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+            <p className="text-[10px] text-ink-3 mt-1">
               Blue actual: {tcBlue} · {Math.abs((tcNum - tcBlue) / tcBlue * 100).toFixed(1)}% {tcNum > tcBlue ? 'por encima' : 'por debajo'}
             </p>
           )}
@@ -1306,7 +1323,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
 
         {/* Fecha */}
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Fecha</label>
+          <label className="block text-xs text-ink-3 mb-1">Fecha</label>
           <DateInput
             value={form.date}
             onChange={v => setForm(f => ({ ...f, date: v }))}
@@ -1367,7 +1384,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
         })()}
 
         <div className="flex justify-end gap-2 pt-1">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0">
             Cancelar
           </button>
           <button
@@ -1896,32 +1913,32 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
   const totalPnl = fifoPreview.reduce((s, x) => s + x.pnl_usd, 0)
   const exceeds = qtyNum > totalQty + 1e-9
 
-  const inputCls = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
+  const inputCls = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   return (
     <Modal title={`Vender ${form.asset} en ${form.broker}`} onClose={onClose}>
       <div className="space-y-3">
         {/* Resumen del activo */}
-        <div className="bg-slate-50 dark:bg-slate-900/50 rounded-lg p-3 grid grid-cols-3 gap-3 text-xs">
+        <div className="bg-bg-2/50 rounded-lg p-3 grid grid-cols-3 gap-3 text-xs">
           <div>
-            <div className="text-slate-400 dark:text-slate-500">Total disponible</div>
-            <div className="font-mono font-semibold text-slate-900 dark:text-white">{totalQty.toLocaleString('en-US', { maximumFractionDigits: 8 })}</div>
+            <div className="text-ink-3">Total disponible</div>
+            <div className="font-mono font-semibold text-ink-0 dark:text-white">{totalQty.toLocaleString('en-US', { maximumFractionDigits: 8 })}</div>
           </div>
           <div>
-            <div className="text-slate-400 dark:text-slate-500">Lotes ({lots.length})</div>
-            <div className="font-mono font-semibold text-slate-900 dark:text-white">FIFO</div>
+            <div className="text-ink-3">Lotes ({lots.length})</div>
+            <div className="font-mono font-semibold text-ink-0 dark:text-white">FIFO</div>
           </div>
           <div>
-            <div className="text-slate-400 dark:text-slate-500">Precio compra prom.</div>
-            <div className="font-mono font-semibold text-slate-900 dark:text-white">
+            <div className="text-ink-3">Precio compra prom.</div>
+            <div className="font-mono font-semibold text-ink-0 dark:text-white">
               {avgBuy != null ? (isARS ? `$${ars(avgBuy)}` : `$${usd(avgBuy)}`) : '—'}
             </div>
           </div>
         </div>
 
         {/* Lotes FIFO */}
-        <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
-          <div className="bg-slate-100 dark:bg-slate-800 px-3 py-1.5 text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+        <div className="border border-line rounded-lg overflow-hidden">
+          <div className="bg-bg-2 px-3 py-1.5 text-[10px] font-semibold text-ink-3 uppercase tracking-wide">
             Lotes · orden de cierre FIFO
           </div>
           <div className="max-h-32 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-700">
@@ -1930,10 +1947,10 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
               return (
                 <div key={p.id} className="px-3 py-1.5 flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2">
-                    <span className="text-slate-400 dark:text-slate-500 font-mono">#{i + 1}</span>
-                    <span className="text-slate-700 dark:text-slate-300">{p.entry_date || 'sin fecha'}</span>
-                    <span className="text-slate-400 dark:text-slate-500">·</span>
-                    <span className="font-mono text-slate-900 dark:text-white">{p.quantity}</span>
+                    <span className="text-ink-3 font-mono">#{i + 1}</span>
+                    <span className="text-ink-1">{p.entry_date || 'sin fecha'}</span>
+                    <span className="text-ink-3">·</span>
+                    <span className="font-mono text-ink-0 dark:text-white">{p.quantity}</span>
                   </div>
                   {preview && (
                     <div className="flex items-center gap-2">
@@ -1960,7 +1977,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
 
         {/* Precio de venta */}
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
+          <label className="block text-xs text-ink-3 mb-1">
             Precio de venta {isARS ? '(ARS)' : '(USD)'}
           </label>
           <input
@@ -1970,18 +1987,18 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
             onChange={e => setForm(f => ({ ...f, exit_price: e.target.value }))}
             className={inputCls}
           />
-          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+          <p className="text-[10px] text-ink-3 mt-1">
             Se autocompleta con el precio actual de mercado. Ajustá si la venta se realizó a otro precio.
           </p>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Fecha de venta</label>
+            <label className="block text-xs text-ink-3 mb-1">Fecha de venta</label>
             <DateInput value={form.date} onChange={v => setForm(f => ({ ...f, date: v }))} />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <label className="block text-xs text-ink-3 mb-1">
               Comisiones {isARS ? '(ARS)' : '(USD)'}
             </label>
             <input
@@ -1997,7 +2014,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
 
         {isARS && (
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">TC Venta</label>
+            <label className="block text-xs text-ink-3 mb-1">TC Venta</label>
             <input
               type="number"
               step="any"
@@ -2010,23 +2027,23 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
 
         {/* Net cash recibido = (qty × precio) − comisiones */}
         {qtyNum > 0 && priceNum > 0 && (
-          <div className="bg-slate-50 dark:bg-slate-900/50 rounded-md px-3 py-2 text-xs">
+          <div className="bg-bg-2/50 rounded-md px-3 py-2 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-slate-500 dark:text-slate-400">Bruto</span>
-              <span className="font-mono text-slate-700 dark:text-slate-200">
+              <span className="text-ink-3">Bruto</span>
+              <span className="font-mono text-ink-1">
                 {(qtyNum * priceNum).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
               </span>
             </div>
             {(+form.commissions || 0) > 0 && (
               <div className="flex items-center justify-between mt-1">
-                <span className="text-slate-500 dark:text-slate-400">Comisiones</span>
+                <span className="text-ink-3">Comisiones</span>
                 <span className="font-mono text-red-500 dark:text-red-400">
                   −{(+form.commissions).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
                 </span>
               </div>
             )}
-            <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-700/50 mt-1.5 pt-1.5">
-              <span className="text-slate-600 dark:text-slate-300 font-medium">Neto recibido</span>
+            <div className="flex items-center justify-between border-t border-line/50 mt-1.5 pt-1.5">
+              <span className="text-ink-2 font-medium">Neto recibido</span>
               <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
                 {(qtyNum * priceNum - (+form.commissions || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
               </span>
@@ -2041,7 +2058,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
         )}
 
         <div className="flex justify-end gap-2 pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0">
             Cancelar
           </button>
           <button
@@ -2060,7 +2077,7 @@ function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
 function Field({ label, value, onChange, hint, type = 'text', autoFocus = false, inputRef, placeholder = '0', step }) {
   return (
     <div>
-      <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">{label}</label>
+      <label className="block text-xs text-ink-3 mb-1">{label}</label>
       <input
         ref={inputRef}
         type={type}
@@ -2068,10 +2085,10 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
         autoFocus={autoFocus}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
+        className="w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
         placeholder={placeholder}
       />
-      {hint && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{hint}</p>}
+      {hint && <p className="text-xs text-ink-3 mt-1">{hint}</p>}
     </div>
   )
 }
@@ -2091,7 +2108,7 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
   const isARS = selectedBrokerCurrency === 'ARS'
   const [lastEdited, setLastEdited] = useState('invested') // 'invested' | 'quantity'
   const [pricesFetched, setPricesFetched] = useState(false)
-  const inputClass = 'w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
+  const inputClass = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
 
   // Si el asset viene preseteado desde el AddPositionFlow (no por TickerSearch
   // interno), hacemos el auto-fetch de precio igual. Solo al montar / cuando
@@ -2233,7 +2250,7 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
         )}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Broker</label>
+            <label className="block text-xs text-ink-3 mb-1">Broker</label>
             <select
               value={form.broker}
               onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
@@ -2243,13 +2260,13 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
             </select>
           </div>
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Activo</label>
+            <label className="block text-xs text-ink-3 mb-1">Activo</label>
             {/* En modo 'add' el asset viene preseleccionado desde el flow
                 (AddPositionFlow → step 2). Mostramos un display con logo +
                 botón 'Cambiar' que vuelve al flow. En modo 'edit' o si no
                 hay asset (fallback), mantenemos el TickerSearch. */}
             {mode === 'add' && form.asset && onChangeAsset ? (
-              <div className="flex items-center gap-2.5 bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2">
+              <div className="flex items-center gap-2.5 bg-bg-2 border border-line rounded-md px-3 py-2">
                 <AssetLogo asset={form.asset} size={28} />
                 <span className="font-semibold text-ink-0 text-sm tabular flex-1">{form.asset}</span>
                 <button
@@ -2270,7 +2287,7 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
+        <label className="flex items-center gap-2 text-sm text-ink-1 cursor-pointer">
           <input type="checkbox" checked={form.is_cash} onChange={e => setForm(f => ({ ...f, is_cash: e.target.checked }))} />
           Es cash
         </label>
@@ -2341,18 +2358,18 @@ function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrenc
         )}
 
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Fecha de entrada</label>
+          <label className="block text-xs text-ink-3 mb-1">Fecha de entrada</label>
           <DateInput
             value={form.entry_date}
             onChange={v => setForm(f => ({ ...f, entry_date: v }))}
           />
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Por defecto se completa con la fecha de hoy. Ajustala para posiciones históricas.</p>
+          <p className="text-xs text-ink-3 mt-1">Por defecto se completa con la fecha de hoy. Ajustala para posiciones históricas.</p>
         </div>
 
         <Field label="Notas (opcional)" value={form.notes} onChange={v => setForm(f => ({ ...f, notes: v }))} placeholder="" />
 
         <div className="flex justify-end gap-2 pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">Cancelar</button>
+          <button onClick={onClose} className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0">Cancelar</button>
           <button onClick={onSave} className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition">Guardar</button>
         </div>
       </div>
@@ -2381,9 +2398,9 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <label className="text-xs text-slate-500 dark:text-slate-400">Cantidad a vender</label>
-        <span className="text-xs text-slate-400 dark:text-slate-500">
-          Disp. <span className="font-mono text-slate-700 dark:text-slate-300">{totalQty.toLocaleString('en-US', { maximumFractionDigits: 8 })}</span>
+        <label className="text-xs text-ink-3">Cantidad a vender</label>
+        <span className="text-xs text-ink-3">
+          Disp. <span className="font-mono text-ink-1">{totalQty.toLocaleString('en-US', { maximumFractionDigits: 8 })}</span>
         </span>
       </div>
 
@@ -2396,13 +2413,13 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
             value={quantity}
             onChange={e => setQty(e.target.value)}
             placeholder="0"
-            className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md pl-3 pr-14 py-2 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+            className="w-full bg-bg-2 border border-line-2 rounded-md pl-3 pr-14 py-2 text-sm font-mono text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
           />
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 dark:text-slate-500 font-medium pointer-events-none">
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-ink-3 font-medium pointer-events-none">
             {asset}
           </span>
         </div>
-        <div className="w-20 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-2 flex items-center justify-center">
+        <div className="w-20 bg-bg-2 border border-line-2 rounded-md px-2 flex items-center justify-center">
           <span className="font-mono text-sm font-semibold text-rendi-accent">{pct.toFixed(0)}%</span>
         </div>
       </div>
@@ -2429,7 +2446,7 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
               className={`text-[10px] font-medium px-1.5 py-0.5 rounded transition ${
                 Math.abs(pct - p) < 1
                   ? 'text-rendi-accent'
-                  : 'text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                  : 'text-ink-3 hover:text-ink-1'
               }`}
             >
               {p === 100 ? 'MAX' : `${p}%`}
@@ -2439,16 +2456,16 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
       </div>
 
       {/* USD equivalente + P&L */}
-      <div className="mt-3 px-3 py-2 bg-slate-50 dark:bg-slate-900/50 rounded-md space-y-1.5">
+      <div className="mt-3 px-3 py-2 bg-bg-2/50 rounded-md space-y-1.5">
         <div className="flex items-center justify-between">
-          <span className="text-xs text-slate-500 dark:text-slate-400">Equivalente</span>
-          <span className="font-mono text-sm font-semibold text-slate-900 dark:text-white">
+          <span className="text-xs text-ink-3">Equivalente</span>
+          <span className="font-mono text-sm font-semibold text-ink-0 dark:text-white">
             ≈ ${usdEq.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
           </span>
         </div>
         {pnlUsd != null && (
-          <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-700/50 pt-1.5">
-            <span className="text-xs text-slate-500 dark:text-slate-400">Profit estimado</span>
+          <div className="flex items-center justify-between border-t border-line/50 pt-1.5">
+            <span className="text-xs text-ink-3">Profit estimado</span>
             <span className={`font-mono text-sm font-semibold ${pnlUsd >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>
               {pnlUsd >= 0 ? '+' : ''}${Math.abs(pnlUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
             </span>
