@@ -1,7 +1,10 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect, useRef } from 'react'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import Sidebar from './components/Sidebar'
+import DemoBanner from './components/DemoBanner'
+import { trackRoute } from './utils/track'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Positions from './pages/Positions'
@@ -16,6 +19,20 @@ import Reports from './pages/Reports'
 import Novedades from './pages/Novedades'
 import Home from './pages/Home'
 
+function RouteTracker() {
+  // Trackea cambios de ruta automáticamente. Vive adentro del <BrowserRouter>
+  // implícito de App.jsx (asume que react-router-dom está montado por encima).
+  const location = useLocation()
+  const prev = useRef(location.pathname)
+  useEffect(() => {
+    if (prev.current !== location.pathname) {
+      trackRoute(prev.current, location.pathname)
+      prev.current = location.pathname
+    }
+  }, [location.pathname])
+  return null
+}
+
 function Layout() {
   const { user } = useAuth()
 
@@ -29,6 +46,7 @@ function Layout() {
 
   return (
     <>
+      <RouteTracker />
       <Sidebar />
       {/* main content shifteado dinámicamente por --sidebar-w
           (la sidebar setea esta CSS var según expandida/colapsada) */}
@@ -36,6 +54,7 @@ function Layout() {
         className="min-h-screen transition-[margin] duration-200 ease-out"
         style={{ marginLeft: 'var(--sidebar-w, 220px)' }}
       >
+        <DemoBanner />
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/dashboard" element={<Dashboard />} />
