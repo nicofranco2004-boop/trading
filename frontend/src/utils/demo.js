@@ -4,18 +4,58 @@
 // intercepta las llamadas al backend devolviendo fixtures hardcodeadas.
 //
 // Cero backend writes. Cero DB. Vive en memoria del browser durante la sesión.
-// Al hacer "Salir del demo" se limpia el localStorage y vuelve al login.
 //
-// Lo que está stubbeado:
-//   /positions /brokers /operations /monthly /snapshots /watchlist
-//   /dolar /imports /home/personal /home/heatmap?market=...
-//   /events/portfolio /events/popular /news/portfolio /news/market
-//   /prices /prices/history (sparkline mock)
+// El demo soporta MODIFICACIONES limitadas para que el user pueda probar el
+// flow exploratorio:
+//   ✓ Agregar / quitar de watchlist          → persiste en overlay localStorage
+//   ✓ Agregar posición manual                → persiste en overlay localStorage
+//   ✗ Vender / editar / eliminar posición    → bloqueado con mensaje (signup CTA)
+//   ✗ Importar CSV / operations manual       → bloqueado con mensaje
 //
-// Lo que NO está stubbeado (devuelve 200 con array vacío para no romper):
-//   AI chat, admin endpoints.
+// El overlay vive en localStorage del browser del visitante demo:
+// el user A no ve los cambios del user B (cada device tiene su propio overlay).
+// Al hacer "Salir del demo" se limpia el overlay y la próxima vez arranca limpio.
 
 const DEMO_FLAG_KEY = 'rendi_demo_mode'
+const DEMO_OVERLAY_KEY = 'rendi_demo_overlay'
+
+// ─── Overlay helpers ─────────────────────────────────────────────────────────
+// Estructura del overlay:
+//   {
+//     watchlist: [{ symbol, asset_type, added_at }],
+//     positions: [{ ...positionLike, id: number sintético >= 9000 }],
+//   }
+
+const EMPTY_OVERLAY = { watchlist: null, positions: [] }
+
+export function getDemoOverlay() {
+  if (typeof window === 'undefined') return EMPTY_OVERLAY
+  try {
+    const raw = localStorage.getItem(DEMO_OVERLAY_KEY)
+    if (!raw) return EMPTY_OVERLAY
+    const parsed = JSON.parse(raw)
+    return {
+      watchlist: Array.isArray(parsed.watchlist) ? parsed.watchlist : null,
+      positions: Array.isArray(parsed.positions) ? parsed.positions : [],
+    }
+  } catch {
+    return EMPTY_OVERLAY
+  }
+}
+
+function saveDemoOverlay(overlay) {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(DEMO_OVERLAY_KEY, JSON.stringify(overlay))
+  } catch {
+    // Cuota llena o disabled — silencioso
+  }
+}
+
+function clearDemoOverlay() {
+  if (typeof window === 'undefined') return
+  localStorage.removeItem(DEMO_OVERLAY_KEY)
+}
 
 export function isDemoMode() {
   if (typeof window === 'undefined') return false
@@ -25,6 +65,8 @@ export function isDemoMode() {
 export function enableDemoMode() {
   if (typeof window === 'undefined') return
   localStorage.setItem(DEMO_FLAG_KEY, '1')
+  // Limpiamos cualquier overlay residual al activar — siempre arranca limpio.
+  clearDemoOverlay()
 }
 
 export function disableDemoMode() {
@@ -32,6 +74,15 @@ export function disableDemoMode() {
   localStorage.removeItem(DEMO_FLAG_KEY)
   localStorage.removeItem('rendi_token')
   localStorage.removeItem('rendi_user')
+  clearDemoOverlay()
+}
+
+// ─── Error helper para acciones bloqueadas ───────────────────────────────────
+// Para que api.js detecte y lance Error con mensaje custom.
+const BLOCKED_MSG = 'En modo demo no podés guardar este cambio. Creá una cuenta gratis para usar tu portfolio real.'
+
+function blocked() {
+  return { __demoBlocked: true, message: BLOCKED_MSG }
 }
 
 // ─── Fixture: portfolio simulado de ~18 meses ────────────────────────────────
@@ -39,7 +90,9 @@ export function disableDemoMode() {
 // Binance crypto. Total ≈ US$ 28.000 al blue actual.
 
 const BROKERS = [
-  { id: 1, name: 'Schwab',  currency: 'USDT' },  // tratamos USD nativo como USDT acá
+  // Schwab e IBKR son brokers de acciones US → USD (no USDT).
+  // USDT es exclusivo de exchanges cripto (Binance, etc).
+  { id: 1, name: 'Schwab',  currency: 'USD'  },
   { id: 2, name: 'Cocos',   currency: 'ARS'  },
   { id: 3, name: 'Binance', currency: 'USDT' },
 ]
@@ -51,7 +104,7 @@ const POSITIONS = [
   { id: 103, broker: 'Schwab',  asset: 'MSFT',  is_cash: 0, buy_price: 410.10, quantity: 8,   invested: 3280.80,  tc_compra: null, price_override: null, entry_date: '2024-11-04', commissions: 0 },
   { id: 104, broker: 'Schwab',  asset: 'TSLA',  is_cash: 0, buy_price: 215.30, quantity: 12,  invested: 2583.60,  tc_compra: null, price_override: null, entry_date: '2024-09-18', commissions: 0 },
   { id: 105, broker: 'Schwab',  asset: 'SPY',   is_cash: 0, buy_price: 528.40, quantity: 6,   invested: 3170.40,  tc_compra: null, price_override: null, entry_date: '2024-06-15', commissions: 0 },
-  { id: 199, broker: 'Schwab',  asset: 'USDT',  is_cash: 1, buy_price: null,   quantity: 1250, invested: 1250.00, tc_compra: null, price_override: null, entry_date: null,         commissions: 0 },
+  { id: 199, broker: 'Schwab',  asset: 'USD',   is_cash: 1, buy_price: null,   quantity: 1250, invested: 1250.00, tc_compra: null, price_override: null, entry_date: null,         commissions: 0 },
 
   // ── Cocos ARS (acciones AR + CEDEARs) ──
   { id: 201, broker: 'Cocos',   asset: 'GGAL',     is_cash: 0, buy_price: 4250,  quantity: 200, invested: 850000,  tc_compra: 1050, price_override: null, entry_date: '2024-04-10', commissions: 0 },
@@ -138,8 +191,8 @@ const MONTHLY = (() => {
   return out
 })()
 
-// Watchlist demo
-const WATCHLIST = [
+// Watchlist demo base (estado inicial — el overlay puede agregar/quitar)
+const WATCHLIST_BASE = [
   { symbol: 'AVGO', asset_type: 'stock', added_at: '2025-03-20', price: 168.40, change_pct: 1.2 },
   { symbol: 'PLTR', asset_type: 'stock', added_at: '2025-04-08', price: 24.85,  change_pct: -2.1 },
   { symbol: 'COIN', asset_type: 'stock', added_at: '2025-05-01', price: 215.30, change_pct: 4.5 },
@@ -178,15 +231,24 @@ const EVENTS_POPULAR = []
 export function handleDemoRequest(method, path, body) {
   // Normalizar query string fuera del match base
   const [basePath, query] = path.split('?')
+  const overlay = getDemoOverlay()
 
   // ── GET endpoints ──────────────────────────────────────────────────────────
   if (method === 'GET') {
-    if (basePath === '/positions')   return POSITIONS
+    if (basePath === '/positions') {
+      // Fixture + posiciones agregadas por el user en demo
+      return [...POSITIONS, ...overlay.positions]
+    }
     if (basePath === '/brokers')     return BROKERS
     if (basePath === '/operations')  return OPERATIONS
     if (basePath === '/monthly')     return MONTHLY
     if (basePath === '/snapshots')   return SNAPSHOTS
-    if (basePath === '/watchlist')   return WATCHLIST
+    if (basePath === '/watchlist') {
+      // Si el user nunca tocó la watchlist, devolvemos la base. Una vez que la
+      // tocó (agregó o quitó algo), el overlay reemplaza a la base entera.
+      if (overlay.watchlist != null) return overlay.watchlist
+      return WATCHLIST_BASE
+    }
     if (basePath === '/dolar')       return DOLAR
     if (basePath === '/imports')     return []
     if (basePath === '/config')      return { tc_mep: 1424, tc_blue: 1415 }
@@ -224,21 +286,85 @@ export function handleDemoRequest(method, path, body) {
   }
 
   // ── POST / PUT / DELETE ────────────────────────────────────────────────────
-  // En demo mode no persistimos. Devolvemos 200 con echo del body si aplica.
-  if (method === 'POST' || method === 'PUT' || method === 'DELETE') {
-    if (basePath === '/watchlist' || basePath.startsWith('/watchlist/')) return { ok: true }
-    if (basePath === '/snapshots') return { ok: true }
-    if (basePath.startsWith('/positions')) return body || { ok: true }
-    if (basePath.startsWith('/operations')) return body || { ok: true }
-    if (basePath === '/ai/chat') {
-      return {
-        reply: 'Estás en modo demo. Para usar el coach con tu data real, creá una cuenta y subí tu CSV.',
-      }
+  // El demo soporta dos acciones con persistencia local (overlay):
+  //   - watchlist (agregar/quitar)
+  //   - posiciones (agregar manual)
+  // El resto devuelve { __demoBlocked: true } para que api.js lance un Error
+  // con mensaje claro y el componente lo muestre como toast/error inline.
+
+  // ── Snapshots: silenciar (no falla pero tampoco persistimos)
+  if (method === 'POST' && basePath === '/snapshots') return { ok: true }
+
+  // ── Watchlist: agregar / quitar con persistencia
+  if (method === 'POST' && basePath === '/watchlist' && body?.symbol) {
+    const symbol = String(body.symbol).toUpperCase()
+    // Punto de partida: si el user nunca tocó la watchlist, arrancamos del base
+    const current = overlay.watchlist ?? [...WATCHLIST_BASE]
+    if (!current.some(w => (w.symbol || '').toUpperCase() === symbol)) {
+      current.push({
+        symbol,
+        asset_type: 'stock',
+        added_at: new Date().toISOString().slice(0, 10),
+        price: PRICES[symbol] || null,
+        change_pct: null,
+      })
+      saveDemoOverlay({ ...overlay, watchlist: current })
     }
+    return { ok: true, symbol }
+  }
+  if (method === 'DELETE' && basePath.startsWith('/watchlist/')) {
+    const symbol = decodeURIComponent(basePath.slice('/watchlist/'.length)).toUpperCase()
+    const current = overlay.watchlist ?? [...WATCHLIST_BASE]
+    const next = current.filter(w => (w.symbol || '').toUpperCase() !== symbol)
+    saveDemoOverlay({ ...overlay, watchlist: next })
     return { ok: true }
   }
 
-  return null
+  // ── Agregar posición manual: persiste
+  if (method === 'POST' && basePath === '/positions' && body) {
+    // ID sintético >= 9000 para no colisionar con la fixture
+    const id = 9000 + overlay.positions.length
+    const entry_date = body.entry_date || new Date().toISOString().slice(0, 10)
+    const newPosition = {
+      id,
+      broker: body.broker,
+      asset: body.asset,
+      is_cash: body.is_cash ? 1 : 0,
+      buy_price: body.buy_price != null ? Number(body.buy_price) : null,
+      quantity: body.quantity != null ? Number(body.quantity) : null,
+      invested: body.invested != null ? Number(body.invested) : null,
+      tc_compra: body.tc_compra != null ? Number(body.tc_compra) : null,
+      price_override: body.price_override != null ? Number(body.price_override) : null,
+      notes: body.notes || null,
+      entry_date,
+      commissions: body.commissions != null ? Number(body.commissions) : 0,
+      __demo: true,
+    }
+    saveDemoOverlay({
+      ...overlay,
+      positions: [...overlay.positions, newPosition],
+    })
+    return newPosition
+  }
+
+  // ── Bloqueadas: editar / eliminar / vender posición, op manual, importar
+  if (method === 'PUT' && basePath.startsWith('/positions/')) return blocked()
+  if (method === 'DELETE' && basePath.startsWith('/positions/')) return blocked()
+  if (basePath === '/positions/sell') return blocked()
+  if (basePath.startsWith('/operations')) return blocked()
+  if (basePath.startsWith('/imports')) return blocked()
+  if (basePath.startsWith('/brokers')) return blocked()
+  if (basePath.startsWith('/auth/change-password')) return blocked()
+
+  // ── AI chat: respuesta hardcodeada explicando el demo
+  if (basePath === '/ai/chat') {
+    return {
+      reply: 'Estás en modo demo. Para usar el coach con tu portfolio real, creá una cuenta gratis y subí tu CSV.',
+    }
+  }
+
+  // Default: 200 ok silencioso para no romper handlers no mapeados
+  return { ok: true }
 }
 
 // ─── Heatmap mock builder ────────────────────────────────────────────────────

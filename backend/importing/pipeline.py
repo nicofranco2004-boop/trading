@@ -305,14 +305,40 @@ def run_preview(
             pending[key] = {"first_name": tx.broker.strip(), "rows": []}
         pending[key]["rows"].append(tx)
 
+    # Sets para distinguir brokers crypto-native (USDT) vs tradicionales (USD).
+    # Cuando un broker se auto-crea, miramos el nombre + la moneda de las filas:
+    #   • Brokers cripto típicos → USDT
+    #   • Brokers tradicionales con filas USD → USD (no USDT)
+    #   • Brokers AR → ARS
+    CRYPTO_BROKERS = frozenset({
+        'binance', 'coinbase', 'kraken', 'bybit', 'kucoin', 'bitget',
+        'okx', 'huobi', 'gemini', 'crypto.com', 'lemon', 'ripio', 'buenbit',
+        'satoshitango', 'fiwind',
+    })
     for key, info in pending.items():
         rows_for_broker = info["rows"]
         broker_name = info["first_name"]
+        broker_lower = broker_name.lower()
         usd_count = sum(1 for t in rows_for_broker
-                        if (t.currency or "").upper() in ("USD", "USDT"))
+                        if (t.currency or "").upper() == "USD")
+        usdt_count = sum(1 for t in rows_for_broker
+                         if (t.currency or "").upper() == "USDT")
         ars_count = sum(1 for t in rows_for_broker
                         if (t.currency or "").upper() == "ARS")
-        inferred = "USDT" if usd_count > ars_count else "ARS"
+        # Prioridad de inferencia:
+        #   1. Nombre conocido cripto → USDT (aunque tenga filas USD: en
+        #      Binance "USD" suele venir como USDT igual)
+        #   2. Mayoría USDT → USDT (datos explícitos)
+        #   3. Mayoría ARS → ARS
+        #   4. Cualquier otro caso (mayoría USD o mix) → USD
+        if broker_lower in CRYPTO_BROKERS:
+            inferred = "USDT"
+        elif usdt_count > usd_count and usdt_count > ars_count:
+            inferred = "USDT"
+        elif ars_count > usd_count and ars_count > usdt_count:
+            inferred = "ARS"
+        else:
+            inferred = "USD"
         cur = conn.execute(
             "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
             (uid, broker_name, inferred),

@@ -1517,19 +1517,20 @@ class CurrencyRoutingTest(unittest.TestCase):
                     broker_hint=None, parser_format="rendi_generic",
                 )
             self.assertEqual(payload["summary"]["valid_rows"], 3)
-            # Schwab debió crearse como USDT (todas sus filas son USD)
+            # Schwab debió crearse como USD — es un broker tradicional con
+            # filas en USD (no es crypto-native, no debería quedar USDT).
             new = {b["name"]: b for b in payload["new_brokers_created"]}
             self.assertIn("Schwab", new)
-            self.assertEqual(new["Schwab"]["currency"], "USDT")
+            self.assertEqual(new["Schwab"]["currency"], "USD")
             self.assertEqual(new["Schwab"]["rows"], 2)
             self.assertNotIn("Cocos capital", new, "Cocos ya existía, no debió crearse")
 
-            # En la DB debe estar Schwab
+            # En la DB debe estar Schwab con currency USD
             schwab = conn.execute(
                 "SELECT * FROM brokers WHERE user_id=? AND name='Schwab'", (self.uid,),
             ).fetchone()
             self.assertIsNotNone(schwab)
-            self.assertEqual(schwab["currency"], "USDT")
+            self.assertEqual(schwab["currency"], "USD")
         finally:
             conn.close()
 

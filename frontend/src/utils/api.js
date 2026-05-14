@@ -7,14 +7,22 @@ function getToken() {
 async function req(method, path, body) {
   // ── Demo mode interceptor ────────────────────────────────────────────────
   // Si el user está en modo demo, devolvemos fixtures hardcodeadas en lugar
-  // de pegarle al backend. handleDemoRequest devuelve null si el endpoint no
-  // tiene mock (no debería pasar en pantallas core) — en ese caso seguimos
-  // al fetch real.
+  // de pegarle al backend. handleDemoRequest devuelve:
+  //   - null → no hay mock → seguir al fetch real (defensa)
+  //   - { __demoBlocked: true, message } → la acción no está soportada en
+  //     demo (ej. vender una posición). Lanzamos Error con mensaje claro
+  //     para que el componente lo muestre como error inline.
+  //   - cualquier otro objeto → respuesta normal.
   if (isDemoMode()) {
     const mock = handleDemoRequest(method, path, body)
     if (mock !== null) {
-      // Simulamos un mini-delay para evitar UI parpadeante "demasiado rápida"
+      // Mini-delay para evitar UI parpadeante "demasiado rápida"
       await new Promise(r => setTimeout(r, 80))
+      if (mock && mock.__demoBlocked) {
+        const err = new Error(mock.message || 'Acción no disponible en modo demo.')
+        err.demoBlocked = true
+        throw err
+      }
       return mock
     }
   }
@@ -50,6 +58,13 @@ async function req(method, path, body) {
 }
 
 async function upload(path, formData) {
+  // En demo mode no soportamos imports (el wizard de CSV requiere parsing
+  // server-side). Throw inmediato con mensaje claro.
+  if (isDemoMode()) {
+    const err = new Error('En modo demo no podés importar archivos. Creá una cuenta gratis para subir tu CSV.')
+    err.demoBlocked = true
+    throw err
+  }
   // No setear Content-Type — el browser agrega multipart/form-data con su boundary.
   const headers = {}
   const token = getToken()

@@ -668,6 +668,15 @@ def get_admin_user(uid: int = Depends(get_current_user)) -> int:
 
 ARS_BROKER_NAMES = {'cocos', 'iol', 'bull', 'balanz', 'lemon', 'naranja', 'pppi', 'invertironline'}
 
+# Sets de brokers cripto vs tradicionales — usado para inferir currency al
+# auto-crear un broker desde un import o desde la migración del admin.
+# Lemon aparece en ambos sets a propósito (Lemon Cash maneja ARS y crypto):
+# acá lo dejamos en ARS para fidelidad histórica; si en algún momento Lemon
+# tiene un parser propio cripto, ese parser hardcodea el nombre.
+CRYPTO_BROKER_NAMES = {'binance', 'coinbase', 'kraken', 'bybit', 'kucoin',
+                       'bitget', 'okx', 'huobi', 'gemini', 'crypto.com',
+                       'ripio', 'buenbit', 'satoshitango', 'fiwind'}
+
 MAX_STR = 100   # max length for names/assets
 MAX_NOTES = 500
 
@@ -736,7 +745,15 @@ def register(data: RegisterIn, request: Request):
                 ).fetchall()
             ]
             for bname in existing_brokers:
-                currency = 'ARS' if bname.lower() in ARS_BROKER_NAMES else 'USDT'
+                bname_lower = bname.lower()
+                # Inferencia: ARS para brokers AR conocidos, USDT para crypto-
+                # native, USD por default para el resto (Schwab, IBKR, etc.).
+                if bname_lower in ARS_BROKER_NAMES:
+                    currency = 'ARS'
+                elif bname_lower in CRYPTO_BROKER_NAMES:
+                    currency = 'USDT'
+                else:
+                    currency = 'USD'
                 conn.execute(
                     "INSERT OR IGNORE INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                     (uid, bname, currency),
