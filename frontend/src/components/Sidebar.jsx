@@ -20,11 +20,14 @@ import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 
 // Estructura: grupos lógicos para que con N=9 items la lista no se sienta plana.
+// Orden de Análisis: mercado general → específico tuyo (Home/Novedades primero
+// porque son contexto externo; Dashboard/Insights/Reportes son tu lente).
 const GROUPS = [
   {
     label: 'Análisis',
     items: [
       { to: '/',          label: 'Home',       icon: HomeIcon },
+      { to: '/novedades', label: 'Novedades',  icon: Bell },
       { to: '/dashboard', label: 'Dashboard',  icon: LayoutDashboard },
       { to: '/insights',  label: 'Insights',   icon: Compass },
       { to: '/reportes',  label: 'Reportes',   icon: BarChart3 },
@@ -41,7 +44,6 @@ const GROUPS = [
   {
     label: 'Personal',
     items: [
-      { to: '/novedades', label: 'Novedades', icon: Bell },
       { to: '/objetivos', label: 'Objetivos', icon: Target },
     ],
   },
