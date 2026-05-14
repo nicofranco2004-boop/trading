@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   Home as HomeIcon, LayoutDashboard, Briefcase, List, Settings, LogOut,
-  Sun, Moon, Compass, Shield, Target, BarChart3, Bell, Upload, Menu,
+  Sun, Moon, Compass, Shield, Target, BarChart3, Bell, Upload, Menu, Brain,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
@@ -33,8 +33,9 @@ const GROUPS = [
       { to: '/',          label: 'Home',       icon: HomeIcon },
       { to: '/novedades', label: 'Novedades',  icon: Bell },
       { to: '/dashboard', label: 'Dashboard',  icon: LayoutDashboard },
-      { to: '/insights',  label: 'Insights',   icon: Compass },
-      { to: '/reportes',  label: 'Reportes',   icon: BarChart3 },
+      { to: '/insights',       label: 'Insights',       icon: Compass },
+      { to: '/comportamiento', label: 'Comportamiento', icon: Brain },
+      { to: '/reportes',       label: 'Reportes',       icon: BarChart3 },
     ],
   },
   {

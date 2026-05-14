@@ -4333,6 +4333,38 @@ def get_operations(uid: int = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
+@app.get("/api/behavioral/insights")
+def behavioral_insights(uid: int = Depends(get_current_user)):
+    """Detecta sesgos comportamentales sobre el historial de operations
+    del usuario. Sprint 3-4 del plan post-auditoría.
+
+    Detectores:
+      - disposition_effect: vender ganadoras temprano, aguantar perdedoras
+      - overtrade: trades por año vs capital invertido
+      - loss_aversion: tamaño de losers vs winners
+      - averaging_down: compras del mismo ticker a precios decrecientes
+
+    Response shape (uniforme):
+      {
+        cards: [<detector output> × 4],
+        summary: { total_detected, total_high, total_medium, total_positive, total_cards },
+        generated_at: ISO timestamp,
+      }
+    """
+    from behavioral import build_behavioral_insights
+    conn = get_db()
+    try:
+        ops = [dict(r) for r in conn.execute(
+            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+        ).fetchall()]
+        positions = [dict(r) for r in conn.execute(
+            "SELECT * FROM positions WHERE user_id=?", (uid,)
+        ).fetchall()]
+    finally:
+        conn.close()
+    return build_behavioral_insights(ops, positions)
+
+
 @app.post("/api/operations")
 def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
     conn = get_db()

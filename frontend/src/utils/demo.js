@@ -278,6 +278,111 @@ const REPORTS_TIMELINE = (() => {
   }).reverse()  // descendente — mes en curso primero
 })()
 
+// ─── Behavioral insights mock (Sprint 3-4) ──────────────────────────────────
+// Hardcoded para mostrar el flow completo en demo: un sesgo high, otros
+// medium/positive/insufficient. Los detectores reales corren contra
+// operations en el backend; acá simulamos un payload coherente con OPERATIONS.
+
+const BEHAVIORAL_INSIGHTS = {
+  cards: [
+    {
+      code: 'disposition_effect',
+      title: 'Vendés ganadoras más rápido que perdedoras',
+      severity: 'medium',
+      detected: true,
+      score: 38,
+      value_label: '0.55× (winners/losers)',
+      one_liner: 'En promedio aguantás tus perdedoras 1.8× más tiempo que tus ganadoras. Vale la pena revisar criterios de salida.',
+      evidence: {
+        winners_count: 8,
+        losers_count: 6,
+        winners_avg_days: 32.5,
+        losers_avg_days: 58.7,
+        ratio: 0.55,
+        sample_winners: [
+          { asset: 'NVDA', days: 18, pnl: 220 },
+          { asset: 'GOOGL', days: 24, pnl: 136 },
+          { asset: 'AVGO', days: 28, pnl: 260 },
+        ],
+        sample_losers: [
+          { asset: 'AMD', days: 87, pnl: -240 },
+          { asset: 'TSLA', days: 72, pnl: -110 },
+          { asset: 'SOL', days: 65, pnl: -208 },
+        ],
+      },
+      references: [
+        'Shefrin & Statman (1985) — The disposition to sell winners too early and ride losers too long.',
+      ],
+    },
+    {
+      code: 'overtrade',
+      title: 'Frecuencia de trades razonable',
+      severity: 'positive',
+      detected: false,
+      score: 28,
+      value_label: '1.1× / año',
+      one_liner: 'Tu portfolio rota 1.1× por año. Estás en el rango del inversor a mediano plazo.',
+      evidence: {
+        total_trades: 14,
+        period_days: 412,
+        period_years: 1.13,
+        annual_ops: 12.4,
+        annual_turnover: 1.1,
+        total_notional: 22500,
+        capital_avg: 19200,
+      },
+      references: [
+        'Barber & Odean (2000) — Trading is hazardous to your wealth.',
+      ],
+    },
+    {
+      code: 'loss_aversion',
+      title: 'Tendencia a aguantar perdedoras grandes',
+      severity: 'medium',
+      detected: true,
+      score: 45,
+      value_label: 'losers 1.7× winners',
+      one_liner: 'Tus losers tienen tamaño promedio 1.7× tus winners. Vale revisar criterios de salida — un stop loss firme ayudaría.',
+      evidence: {
+        winners_count: 8,
+        losers_count: 6,
+        winners_avg_size_usd: 1450,
+        losers_avg_size_usd: 2465,
+        ratio: 1.7,
+      },
+      references: [
+        'Kahneman & Tversky (1979) — Prospect theory: an analysis of decision under risk.',
+      ],
+    },
+    {
+      code: 'averaging_down',
+      title: 'Sin promedios a la baja detectados',
+      severity: 'positive',
+      detected: false,
+      score: 0,
+      value_label: '0 instancias',
+      one_liner: 'No detectamos compras del mismo ticker a precios decrecientes en ventanas cortas.',
+      evidence: {
+        instances: [],
+        total_instances: 0,
+        avg_drop_pct: 0,
+        total_assets_checked: 12,
+      },
+      references: [
+        'Odean (1998) — Are investors reluctant to realize their losses?',
+      ],
+    },
+  ],
+  summary: {
+    total_detected: 2,
+    total_high: 0,
+    total_medium: 2,
+    total_positive: 2,
+    total_cards: 4,
+  },
+  generated_at: new Date().toISOString(),
+}
+
 // CAGR sintético del demo. Lo computamos sobre los globals usando misma
 // fórmula que el backend (TWR mensual + media geométrica anualizada).
 const DEMO_CAGR = (() => {
@@ -623,6 +728,8 @@ export function handleDemoRequest(method, path, body) {
     // Goals + CAGR (Objetivos page)
     if (basePath === '/goals') return []
     if (basePath === '/goals/cagr') return DEMO_CAGR
+    // Behavioral insights — sesgos comportamentales (Sprint 3-4)
+    if (basePath === '/behavioral/insights') return BEHAVIORAL_INSIGHTS
     // Insights endpoints opcionales — devuelven shape vacío para no romper
     if (basePath.startsWith('/insights')) return {}
     if (basePath.startsWith('/goals'))    return []
