@@ -10,9 +10,10 @@
 // Decisión: el user elige qué mes abrir. Por default nada está expandido.
 
 import { useState, useMemo, Fragment } from 'react'
+import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
-import { Loader2, FileText, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
+import { Loader2, FileText, AlertTriangle, ChevronDown, ChevronUp, ArrowRight } from 'lucide-react'
 import useReportsTimeline from '../hooks/useReportsTimeline'
 import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
@@ -90,7 +91,16 @@ export default function Reports() {
         <EmptyState
           icon={<FileText size={20} />}
           title="Todavía no hay reportes"
-          description="Importá un CSV o cargá un cierre mensual para que tu historia financiera empiece a poblarse acá."
+          description="El primer reporte se genera al cerrar tu primer mes con actividad. Si recién importaste tu CSV, esperá al cambio de mes — te avisamos cuando esté listo."
+          action={
+            <Link
+              to="/config"
+              className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-4 py-2 rounded-sm transition-colors"
+            >
+              Importar mi historial
+              <ArrowRight size={13} strokeWidth={1.75} />
+            </Link>
+          }
         />
       )}
 

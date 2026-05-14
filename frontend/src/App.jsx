@@ -18,6 +18,7 @@ import Imports from './pages/Imports'
 import Reports from './pages/Reports'
 import Novedades from './pages/Novedades'
 import Home from './pages/Home'
+import FirstInsight from './pages/FirstInsight'
 
 function RouteTracker() {
   // Trackea cambios de ruta automáticamente. Vive adentro del <BrowserRouter>
@@ -72,6 +73,7 @@ function Layout() {
           <Route path="/config" element={<Config />} />
           <Route path="/objetivos" element={<Goals />} />
           <Route path="/imports" element={<Imports />} />
+          <Route path="/bienvenida" element={<FirstInsight />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
