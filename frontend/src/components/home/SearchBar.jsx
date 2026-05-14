@@ -13,7 +13,16 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { Search, X, CornerDownLeft, ArrowUp, ArrowDown, Plus, Check } from 'lucide-react'
 import { api } from '../../utils/api'
+import AssetLogo from '../AssetLogo'
 import AssetQuickView from './AssetQuickView'
+
+// Normaliza el símbolo para resolver el logo: strip sufijo CEDEAR (.BA) para
+// reutilizar el logo de la US version; deja todo lo demás intacto.
+function logoSymbolFor(symbol) {
+  if (!symbol) return symbol
+  if (symbol.endsWith('.BA')) return symbol.slice(0, -3)
+  return symbol
+}
 
 // ─── Fallback estático: tickers populares + tipo + meta minimal ──────────────
 // `type` matchea las tabs de filtro: stock_us | cedear | bond | crypto | etf
@@ -479,7 +488,6 @@ function Shortcut({ icon, text, label }) {
 }
 
 function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = false, actionDisabled = false, onAction }) {
-  const initial = (ticker.symbol || '?').slice(0, 1)
   return (
     <div
       onMouseEnter={onHover}
@@ -488,10 +496,8 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
       } ${highlight ? 'border-l-2 border-rendi-pos' : 'border-l-2 border-transparent'}`}
       onClick={() => onPick(ticker.symbol)}
     >
-      {/* Avatar */}
-      <div className="w-7 h-7 flex-shrink-0 rounded-sm bg-bg-3 border border-line flex items-center justify-center">
-        <span className="text-[11px] font-mono text-ink-1">{initial}</span>
-      </div>
+      {/* Logo del activo (cae a iniciales con color hash si no hay archivo) */}
+      <AssetLogo asset={logoSymbolFor(ticker.symbol)} size={28} className="flex-shrink-0" />
 
       {/* Meta */}
       <div className="min-w-0 flex-1">
