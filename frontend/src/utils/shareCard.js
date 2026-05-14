@@ -43,11 +43,11 @@ const FONT_MONO = "'JetBrains Mono', ui-monospace, SFMono-Regular, monospace"
 // ── Render principal ──────────────────────────────────────────────────────
 
 export async function renderShareCard(spec) {
-  // Best-effort: esperar fuentes web a estar listas para que Canvas no use
-  // fallback antes de tiempo. No bloquea si falla.
-  if (typeof document !== 'undefined' && document.fonts?.ready) {
-    try { await document.fonts.ready } catch { /* ignore */ }
-  }
+  // Best-effort: precargar fuentes web para los tamaños que vamos a usar.
+  // CRÍTICO: document.fonts.ready puede no resolver nunca en algunos browsers,
+  // así que usamos Promise.race con timeout corto. Si no carga la fuente web,
+  // Canvas cae al fallback del sistema (system-ui) — preferimos eso a un hang.
+  await ensureFontsReady()
 
   const canvas = document.createElement('canvas')
   canvas.width = W
@@ -394,6 +394,24 @@ export function hexToRgba(hex, alpha) {
   const g = (n >> 8) & 255
   const b = n & 255
   return `rgba(${r},${g},${b},${alpha})`
+}
+
+// Precarga de fuentes para Canvas con timeout. Si en 700ms no resuelve,
+// seguimos con fallback de sistema — peor un PNG con system-ui que un hang.
+async function ensureFontsReady() {
+  if (typeof document === 'undefined' || !document.fonts) return
+  try {
+    const SIZES = [
+      `28px Geist`, `54px Geist`, `92px Geist`, `26px Geist`, `24px Geist`,
+      `12px "JetBrains Mono"`, `13px "JetBrains Mono"`, `14px "JetBrains Mono"`,
+    ]
+    const loads = SIZES.map((spec) => {
+      try { return document.fonts.load(spec) } catch { return Promise.resolve() }
+    })
+    const all = Promise.all(loads)
+    const timeout = new Promise((resolve) => setTimeout(resolve, 700))
+    await Promise.race([all, timeout])
+  } catch { /* ignore */ }
 }
 
 function dataURLToBlob(dataURL) {

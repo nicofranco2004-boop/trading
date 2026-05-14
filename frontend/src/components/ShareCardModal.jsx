@@ -3,19 +3,23 @@
 // Sprint 5: viralidad / Wrapped. Se invoca desde Behavioral.jsx (insights) y
 // desde MonthlySummary.jsx (resumen mensual). El render real ocurre en
 // utils/shareCard.js con Canvas 2D — este componente solo orquesta UI.
+//
+// Renderizamos el canvas a data: URL y lo mostramos como <img>. Eso evita
+// problemas de layout (canvas en flex-center colapsa altura en algunos
+// browsers) y deja un único árbol React fácil de testear.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { X, Download, Share2, Copy, Check, Loader2 } from 'lucide-react'
 import {
-  renderShareCard,
   shareCardToBlob,
+  shareCardToDataURL,
   downloadShareCard,
   tryNativeShare,
 } from '../utils/shareCard'
 import { track } from '../utils/track'
 
 export default function ShareCardModal({ spec, filename, source, onClose }) {
-  const canvasHolderRef = useRef(null)
+  const [dataUrl, setDataUrl] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [copied, setCopied] = useState(false)
@@ -28,32 +32,31 @@ export default function ShareCardModal({ spec, filename, source, onClose }) {
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Renderizar la card al montar
+  // Render una sola vez por montaje. El `spec` viene como prop estable desde
+  // el padre (que pasa la card o el mes específico) — si el caller pasa un
+  // objeto que cambia entre renders, daría re-render pero el useEffect aborta
+  // limpio con el cancelled flag.
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
-    renderShareCard(spec)
-      .then((canvas) => {
+    setDataUrl(null)
+    shareCardToDataURL(spec)
+      .then((url) => {
         if (cancelled) return
-        // Limpiar holder y insertar canvas escalado al preview
-        const holder = canvasHolderRef.current
-        if (!holder) return
-        holder.innerHTML = ''
-        canvas.style.width = '100%'
-        canvas.style.height = 'auto'
-        canvas.style.display = 'block'
-        canvas.style.borderRadius = '6px'
-        canvas.setAttribute('aria-label', 'Preview de tarjeta compartible')
-        holder.appendChild(canvas)
+        setDataUrl(url)
         track('share_card_generated', { source, kind: spec.kind })
       })
       .catch((ex) => {
-        if (!cancelled) setError(ex?.message || 'No pudimos generar la imagen.')
+        if (cancelled) return
+        setError(ex?.message || 'No pudimos generar la imagen.')
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [spec, source])
+    // Solo dependemos del source para evitar re-render por nueva referencia
+    // de `spec`. Si el caller cambia la card, debería re-montar el modal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source])
 
   async function handleDownload() {
     setBusy(true)
@@ -74,7 +77,6 @@ export default function ShareCardModal({ spec, filename, source, onClose }) {
       if (ok) {
         track('share_card_shared', { source, kind: spec.kind, channel: 'native' })
       } else {
-        // Fallback: descargar
         await handleDownload()
       }
     } catch (ex) {
@@ -87,7 +89,7 @@ export default function ShareCardModal({ spec, filename, source, onClose }) {
   async function handleCopyToClipboard() {
     setBusy(true)
     try {
-      if (!navigator.clipboard?.write) {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
         await handleDownload()
         return
       }
@@ -139,21 +141,30 @@ export default function ShareCardModal({ spec, filename, source, onClose }) {
         </header>
 
         <div className="p-4 space-y-3">
+          {/* Preview con aspect-ratio 4:5 para reservar espacio antes que cargue
+              la imagen. Evita el "salto" de layout y el flicker en negro. */}
           <div
-            ref={canvasHolderRef}
-            className="relative bg-bg-0 rounded overflow-hidden min-h-[280px] flex items-center justify-center"
+            className="relative bg-bg-0 rounded overflow-hidden border border-line/40"
+            style={{ aspectRatio: '1080 / 1350' }}
             aria-live="polite"
           >
             {loading && (
-              <div className="text-xs font-mono text-ink-3 flex items-center gap-2">
+              <div className="absolute inset-0 flex items-center justify-center text-xs font-mono text-ink-3 gap-2">
                 <Loader2 size={14} className="animate-spin" />
                 Generando…
               </div>
             )}
-            {error && (
-              <div className="text-xs text-rendi-neg px-4 py-6 text-center">
+            {error && !loading && (
+              <div className="absolute inset-0 flex items-center justify-center text-xs text-rendi-neg px-4 text-center">
                 {error}
               </div>
+            )}
+            {dataUrl && !loading && !error && (
+              <img
+                src={dataUrl}
+                alt="Preview de tu tarjeta compartible"
+                className="absolute inset-0 w-full h-full block"
+              />
             )}
           </div>
 
