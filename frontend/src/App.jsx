@@ -30,8 +30,12 @@ function Layout() {
   return (
     <>
       <Sidebar />
-      {/* main content shifteado por el ancho de la sidebar (220px) */}
-      <main className="ml-[220px] min-h-screen">
+      {/* main content shifteado dinámicamente por --sidebar-w
+          (la sidebar setea esta CSS var según expandida/colapsada) */}
+      <main
+        className="min-h-screen transition-[margin] duration-200 ease-out"
+        style={{ marginLeft: 'var(--sidebar-w, 220px)' }}
+      >
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/dashboard" element={<Dashboard />} />
