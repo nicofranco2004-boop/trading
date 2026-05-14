@@ -117,6 +117,7 @@ const POSITIONS = [
   { id: 301, broker: 'Binance', asset: 'BTC',  is_cash: 0, buy_price: 62500,  quantity: 0.085, invested: 5312.50, tc_compra: null, price_override: null, entry_date: '2024-07-22', commissions: 0 },
   { id: 302, broker: 'Binance', asset: 'ETH',  is_cash: 0, buy_price: 3120,   quantity: 1.2,   invested: 3744.00, tc_compra: null, price_override: null, entry_date: '2024-08-30', commissions: 0 },
   { id: 303, broker: 'Binance', asset: 'SOL',  is_cash: 0, buy_price: 165,    quantity: 14,    invested: 2310.00, tc_compra: null, price_override: null, entry_date: '2025-02-04', commissions: 0 },
+  { id: 399, broker: 'Binance', asset: 'USDT', is_cash: 1, buy_price: null,   quantity: 820,   invested: 820.00,  tc_compra: null, price_override: null, entry_date: null,         commissions: 0 },
 ]
 
 // Operaciones cerradas (para Operaciones page + win rate + profit factor)
