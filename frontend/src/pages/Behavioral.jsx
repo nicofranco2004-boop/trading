@@ -12,7 +12,7 @@ import { Link } from 'react-router-dom'
 import {
   Brain, Activity, TrendingDown, RefreshCw, Repeat, Info, AlertTriangle,
   CheckCircle2, ChevronRight, ArrowRight, X, BookOpen,
-  PieChart, Globe2, Wallet, Flame, Rewind, Target,
+  PieChart, Globe2, Wallet, Flame, Rewind, Target, Zap, Layers,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
@@ -35,6 +35,9 @@ const CARD_META = {
   winrate_payoff:     { Icon: Target,        label: 'Win rate · Payoff' },
   home_bias:          { Icon: Globe2,        label: 'Home bias' },
   cash_drag:          { Icon: Wallet,        label: 'Cash drag' },
+  // Sprint 3.3
+  recency_bias:       { Icon: Zap,           label: 'Chase the pump' },
+  sector_concentration: { Icon: Layers,      label: 'Concentración sectorial' },
 }
 
 const SEVERITY_TONE = {
@@ -466,6 +469,69 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Cash ARS (en USD)" value={`US$ ${ev.cash_ars_usd_equiv?.toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${ev.cash_ars_pct?.toFixed(1)}%)`} mono />
           <EvidenceRow label="Invertido" value={`US$ ${ev.invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           <EvidenceRow label="Total portfolio" value={`US$ ${ev.total_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+        </div>
+      )
+
+    // ── Sprint 3.3 ──
+    case 'recency_bias':
+      return (
+        <div className="space-y-3">
+          <EvidenceRow label="Invested afectado" value={`${ev.chase_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Monto chase pumps" value={`US$ ${ev.chase_pumps_invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Activos flagged" value={ev.flagged_count} count={`de ${ev.flagged_count > 0 ? ev.flagged_count : 0}`} />
+          {ev.flagged_assets?.length > 0 && (
+            <div className="border-t border-line/40 pt-2 space-y-2">
+              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Top compras altas</div>
+              {ev.flagged_assets.map((a, i) => (
+                <div key={i} className="text-xs border border-line/40 rounded-sm p-2 bg-bg-2/40">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-medium text-ink-0">{a.asset}</span>
+                    <span className="font-mono tabular text-rendi-neg">{a.drawdown_pct}%</span>
+                  </div>
+                  <div className="text-[11px] text-ink-3 tabular">
+                    Compraste a US$ {a.buy_price?.toLocaleString('es-AR', { maximumFractionDigits: 2 })} · hoy US$ {a.current_price?.toLocaleString('es-AR', { maximumFractionDigits: 2 })} · invested US$ {a.invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )
+
+    case 'sector_concentration':
+      return (
+        <div className="space-y-3">
+          <EvidenceRow label="Sector más grande" value={ev.top_sector} />
+          <EvidenceRow label="Top sector" value={`${ev.top1_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Top 3 sectores" value={`${ev.top3_pct?.toFixed(1)}%`} mono />
+          <EvidenceRow label="Sectores distintos" value={ev.total_sectors} mono />
+          {ev.breakdown?.length > 0 && (
+            <div className="border-t border-line/40 pt-2 space-y-1">
+              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">Distribución</div>
+              {/* Barra stacked */}
+              <div className="flex h-2 rounded-sm overflow-hidden bg-bg-2 mb-2">
+                {ev.breakdown.slice(0, 6).map((b, i) => {
+                  const COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#8B7DFF', '#5A6478']
+                  return (
+                    <div
+                      key={i}
+                      style={{ width: `${b.pct}%`, background: COLORS[i % COLORS.length] }}
+                      title={`${b.sector}: ${b.pct}%`}
+                    />
+                  )
+                })}
+              </div>
+              {ev.breakdown.slice(0, 8).map((b, i) => (
+                <div key={i} className="flex items-center justify-between text-xs">
+                  <span className="text-ink-1 truncate flex-1">{b.sector}</span>
+                  <div className="flex items-baseline gap-2 flex-shrink-0">
+                    <span className="text-ink-3 tabular text-[11px]">US$ {b.value_usd.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                    <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">{b.pct}%</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )
 

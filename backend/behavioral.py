@@ -1041,6 +1041,276 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
     }
 
 
+# ─── Detector 11: Recency bias (chase pumps) ─────────────────────────────────
+
+
+def detect_recency_bias(positions: List[Dict[str, Any]],
+                         prices: Optional[Dict[str, float]] = None,
+                         tc_blue: float = 1415.0) -> Dict[str, Any]:
+    """Variante pragmática del recency bias: detecta "chase the pump" usando
+    la relación entre buy_price y precio actual.
+
+    Si compraste a un precio >30% por encima del precio actual, hay una
+    chance alta de que hayas comprado después de una corrida (chasing
+    performance reciente). Sumamos % del invested actual donde aplica
+    el patrón.
+
+    Es heurístico: una posición puede estar drawdowneada por razones
+    estructurales (no por recency). Pero a nivel agregado, si gran parte
+    del portfolio compró alto, es señal valiosa.
+    """
+    if not positions or not prices:
+        return _not_enough_data("recency_bias", "Necesitamos posiciones + precios actuales para detectar este patrón.")
+
+    chase_pumps_invested = 0
+    total_invested = 0
+    flagged_assets = []
+    for p in positions:
+        if p.get("is_cash"):
+            continue
+        asset = (p.get("asset") or "").upper()
+        if not asset:
+            continue
+        buy_price = p.get("buy_price")
+        if buy_price is None or buy_price <= 0:
+            continue
+        current_price = prices.get(asset) or prices.get(asset + ".BA")
+        if current_price is None or current_price <= 0:
+            continue
+        # Invested al blue para comparar todo en USD
+        broker = (p.get("broker") or "").lower()
+        is_ars = any(s in broker for s in ("cocos", "iol", "bull", "balanz"))
+        invested_native = p.get("invested") or 0
+        invested_usd = invested_native / tc_blue if is_ars else invested_native
+        if invested_usd <= 0:
+            continue
+        total_invested += invested_usd
+        # Pattern: buy_price >= 1.30 × current_price
+        ratio = buy_price / current_price
+        if ratio >= 1.30:
+            chase_pumps_invested += invested_usd
+            flagged_assets.append({
+                "asset": asset,
+                "buy_price": buy_price,
+                "current_price": current_price,
+                "drawdown_pct": round((1 / ratio - 1) * 100, 1),
+                "invested_usd": round(invested_usd, 2),
+            })
+
+    if total_invested <= 0:
+        return _not_enough_data("recency_bias", "Falta data de precios o buy_price.")
+
+    chase_pct = (chase_pumps_invested / total_invested) * 100
+
+    if chase_pct >= 50:
+        severity = "high"
+        title = "Gran parte de tu portfolio compró alto"
+        one_liner = (
+            f"El {chase_pct:.0f}% de tu invested actual está en assets donde compraste >30% más caro "
+            "que el precio actual. Patrón clásico de chase the pump."
+        )
+    elif chase_pct >= 25:
+        severity = "medium"
+        title = "Algunos activos comprados después de una corrida"
+        one_liner = (
+            f"{chase_pct:.0f}% del invested está en posiciones que están >30% por debajo de tu compra. "
+            "Revisá si la tesis original sigue válida."
+        )
+    elif chase_pct > 5:
+        severity = "low"
+        title = "Pocas instancias de compras altas"
+        one_liner = f"{chase_pct:.0f}% del invested compró alto. Magnitud baja, no es patrón sistemático."
+    else:
+        severity = "positive"
+        title = "Sin patrón de compras tardías"
+        one_liner = "No detectamos compras significativas por encima del precio actual."
+
+    # Ordenar flagged por drawdown más profundo
+    flagged_assets.sort(key=lambda x: x["drawdown_pct"])
+    return {
+        "code": "recency_bias",
+        "title": title,
+        "severity": severity,
+        "detected": severity in ("high", "medium"),
+        "score": round(min(100, chase_pct * 1.5), 1),
+        "value_label": f"{chase_pct:.0f}% del invested",
+        "one_liner": one_liner,
+        "evidence": {
+            "chase_pct": round(chase_pct, 1),
+            "chase_pumps_invested_usd": round(chase_pumps_invested, 2),
+            "total_invested_usd": round(total_invested, 2),
+            "flagged_count": len(flagged_assets),
+            "flagged_assets": flagged_assets[:5],  # top 5 por drawdown
+        },
+        "references": [
+            "Barber & Odean (2008) — All that glitters: the effect of attention and news on individual investor behavior.",
+        ],
+    }
+
+
+# ─── Detector 12: Sector concentration ───────────────────────────────────────
+
+# Mapping ticker → sector. Cobertura: blue chips US + cripto top + acciones AR
+# + bonos AR. Tickers no mapeados caen en "Otros".
+_SECTOR_MAP = {
+    # Tech US
+    'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'GOOGL': 'Tech', 'GOOG': 'Tech',
+    'META': 'Tech', 'AMZN': 'Tech', 'TSLA': 'Tech', 'AMD': 'Tech', 'AVGO': 'Tech',
+    'NFLX': 'Tech', 'ORCL': 'Tech', 'ADBE': 'Tech', 'CRM': 'Tech', 'INTC': 'Tech',
+    'QCOM': 'Tech', 'CSCO': 'Tech', 'IBM': 'Tech', 'NOW': 'Tech', 'TSM': 'Tech',
+    'MU': 'Tech', 'PLTR': 'Tech', 'COIN': 'Tech', 'MELI': 'Tech', 'GLOB': 'Tech',
+    # Financials US
+    'JPM': 'Financials', 'V': 'Financials', 'MA': 'Financials', 'BAC': 'Financials',
+    'WFC': 'Financials', 'BLK': 'Financials', 'AXP': 'Financials', 'GS': 'Financials',
+    # Healthcare
+    'UNH': 'Healthcare', 'JNJ': 'Healthcare', 'LLY': 'Healthcare', 'PFE': 'Healthcare',
+    'MRK': 'Healthcare', 'ABBV': 'Healthcare', 'TMO': 'Healthcare', 'ABT': 'Healthcare',
+    # Consumer
+    'WMT': 'Consumer', 'COST': 'Consumer', 'KO': 'Consumer', 'PEP': 'Consumer',
+    'PG': 'Consumer', 'MCD': 'Consumer', 'PM': 'Consumer', 'NKE': 'Consumer',
+    # Energy
+    'XOM': 'Energy', 'CVX': 'Energy',
+    # ETFs / Diversified
+    'SPY': 'ETF / Diversified', 'VOO': 'ETF / Diversified', 'QQQ': 'ETF / Diversified',
+    'IVV': 'ETF / Diversified', 'VTI': 'ETF / Diversified', 'VEA': 'ETF / Diversified',
+    'VWO': 'ETF / Diversified', 'DIA': 'ETF / Diversified', 'IWM': 'ETF / Diversified',
+    'IEMG': 'ETF / Diversified', 'XLK': 'ETF / Diversified', 'XLF': 'ETF / Diversified',
+    'XLE': 'ETF / Diversified', 'ARKK': 'ETF / Diversified', 'AGG': 'ETF / Bonds',
+    'BND': 'ETF / Bonds', 'GLD': 'Commodities', 'SLV': 'Commodities',
+    # Crypto
+    'BTC': 'Crypto', 'ETH': 'Crypto', 'SOL': 'Crypto', 'BNB': 'Crypto',
+    'XRP': 'Crypto', 'ADA': 'Crypto', 'DOGE': 'Crypto', 'AVAX': 'Crypto',
+    'DOT': 'Crypto', 'MATIC': 'Crypto', 'LINK': 'Crypto', 'LTC': 'Crypto',
+    'BCH': 'Crypto', 'TRX': 'Crypto', 'USDT': 'Stablecoin', 'USDC': 'Stablecoin',
+    # Argentina — acciones locales
+    'GGAL': 'AR · Financials', 'BMA': 'AR · Financials', 'BBAR': 'AR · Financials',
+    'SUPV': 'AR · Financials', 'BYMA': 'AR · Financials', 'VALO': 'AR · Financials',
+    'YPFD': 'AR · Energy', 'PAMP': 'AR · Energy', 'CEPU': 'AR · Energy',
+    'EDN': 'AR · Energy', 'TGSU2': 'AR · Energy', 'TGNO4': 'AR · Energy',
+    'TRAN': 'AR · Energy',
+    'TEN': 'AR · Materials', 'ALUA': 'AR · Materials', 'ERAR': 'AR · Materials',
+    'TXAR': 'AR · Materials', 'LOMA': 'AR · Materials',
+    'CRES': 'AR · Consumer', 'COME': 'AR · Consumer', 'MIRG': 'AR · Consumer',
+    # Bonos AR
+    'AL29': 'AR · Bonos', 'AL30': 'AR · Bonos', 'AL35': 'AR · Bonos', 'AE38': 'AR · Bonos',
+    'AL41': 'AR · Bonos', 'GD29': 'AR · Bonos', 'GD30': 'AR · Bonos', 'GD35': 'AR · Bonos',
+    'GD38': 'AR · Bonos', 'GD41': 'AR · Bonos', 'GD46': 'AR · Bonos',
+    'TX26': 'AR · Bonos', 'TX28': 'AR · Bonos', 'TX31': 'AR · Bonos',
+    'TZX26': 'AR · Bonos', 'TZX28': 'AR · Bonos', 'DICY': 'AR · Bonos', 'PARY': 'AR · Bonos',
+}
+
+
+def _sector_for(asset: str) -> str:
+    """Resuelve el sector de un ticker. CEDEARs (.BA) usan el sector de la
+    contraparte US si está mapeada; sino caen en 'AR · CEDEAR'."""
+    if not asset:
+        return "Otros"
+    a = asset.upper()
+    if a in _SECTOR_MAP:
+        return _SECTOR_MAP[a]
+    # CEDEARs: stripear .BA y buscar
+    if a.endswith(".BA"):
+        base = a[:-3]
+        if base in _SECTOR_MAP:
+            # CEDEAR de un ticker US conocido → mismo sector pero con prefijo
+            return f"AR · CEDEAR ({_SECTOR_MAP[base]})"
+        return "AR · CEDEAR"
+    return "Otros"
+
+
+def detect_sector_concentration(positions: List[Dict[str, Any]],
+                                 prices: Optional[Dict[str, float]] = None,
+                                 tc_blue: float = 1415.0) -> Dict[str, Any]:
+    """Concentración por sector. Si un sector pesa >50% → high. >35% → medium.
+    <30% top sector → positive.
+    """
+    if not positions:
+        return _not_enough_data("sector_concentration", "No tenés posiciones para analizar.")
+
+    by_sector: Dict[str, float] = {}
+    unmapped = 0
+    total_assets = 0
+    for p in positions:
+        if p.get("is_cash"):
+            continue
+        asset = (p.get("asset") or "").upper()
+        if not asset:
+            continue
+        price = (prices or {}).get(asset) or (prices or {}).get(asset + ".BA")
+        qty = p.get("quantity") or 0
+        value_native = price * qty if (price and qty) else (p.get("invested") or 0)
+        broker = (p.get("broker") or "").lower()
+        is_ars = any(s in broker for s in ("cocos", "iol", "bull", "balanz"))
+        value_usd = value_native / tc_blue if is_ars else value_native
+        if value_usd <= 0:
+            continue
+        sector = _sector_for(asset)
+        if sector == "Otros":
+            unmapped += 1
+        by_sector[sector] = by_sector.get(sector, 0) + value_usd
+        total_assets += 1
+
+    total = sum(by_sector.values())
+    if total <= 0:
+        return _not_enough_data("sector_concentration", "No pudimos valuar tus posiciones.")
+
+    sorted_sectors = sorted(by_sector.items(), key=lambda x: -x[1])
+    top_sector, top_value = sorted_sectors[0]
+    top_pct = (top_value / total) * 100
+    top3_pct = (sum(v for _, v in sorted_sectors[:3]) / total) * 100
+
+    if top_pct >= 50:
+        severity = "high"
+        title = f"Concentración fuerte en {top_sector}"
+        one_liner = (
+            f"El sector {top_sector} representa el {top_pct:.0f}% de tu portfolio. "
+            "Un shock sectorial te afectaría desproporcionadamente."
+        )
+    elif top_pct >= 35:
+        severity = "medium"
+        title = f"{top_sector} pesa fuerte en tu portfolio"
+        one_liner = (
+            f"{top_sector} = {top_pct:.0f}% · Top 3 sectores = {top3_pct:.0f}%. "
+            "Diversificar entre sectores reduce el riesgo idiosincrático."
+        )
+    elif top_pct < 30:
+        severity = "positive"
+        title = "Diversificación sectorial saludable"
+        one_liner = (
+            f"El sector más grande ({top_sector}) representa {top_pct:.0f}% — "
+            "diversificación adecuada entre sectores."
+        )
+    else:
+        severity = "low"
+        title = "Diversificación sectorial moderada"
+        one_liner = f"Top sector {top_sector} = {top_pct:.0f}%. Distribución razonable."
+
+    return {
+        "code": "sector_concentration",
+        "title": title,
+        "severity": severity,
+        "detected": severity in ("high", "medium"),
+        "score": round(min(100, top_pct * 1.5), 1),
+        "value_label": f"{top_sector}: {top_pct:.0f}%",
+        "one_liner": one_liner,
+        "evidence": {
+            "top_sector": top_sector,
+            "top1_pct": round(top_pct, 1),
+            "top3_pct": round(top3_pct, 1),
+            "total_sectors": len(by_sector),
+            "total_value_usd": round(total, 2),
+            "unmapped_count": unmapped,
+            "breakdown": [
+                {"sector": s, "value_usd": round(v, 2), "pct": round(v / total * 100, 1)}
+                for s, v in sorted_sectors
+            ],
+        },
+        "references": [
+            "Markowitz (1952) — Portfolio selection. Sector-level diversification literature.",
+        ],
+    }
+
+
 # ─── Orchestrator ────────────────────────────────────────────────────────────
 
 
@@ -1100,6 +1370,9 @@ def build_behavioral_insights(
         detect_winrate_payoff(ops),
         detect_home_bias(pos, prices, tc_blue),
         detect_cash_drag(pos, tc_blue),
+        # Sprint 3.3
+        detect_recency_bias(pos, prices, tc_blue),
+        detect_sector_concentration(pos, prices, tc_blue),
     ]
 
     high = sum(1 for c in cards if c["severity"] == "high")

@@ -23,6 +23,8 @@ from behavioral import (
     detect_inflation_loss,
     detect_counterfactual,
     detect_winrate_payoff,
+    detect_recency_bias,
+    detect_sector_concentration,
     build_behavioral_insights,
 )
 
@@ -444,14 +446,89 @@ class CounterfactualTest(unittest.TestCase):
         self.assertTrue(result.get("insufficient_data"))
 
 
+# ─── Detector 11: Recency bias ───────────────────────────────────────────────
+
+
+class RecencyBiasTest(unittest.TestCase):
+
+    def test_high_chase_pump_flagged(self):
+        # 80% del invested compró >30% más caro que el precio actual
+        positions = [
+            {"broker": "Schwab", "asset": "TSLA", "is_cash": 0, "buy_price": 280, "invested": 8000},
+            {"broker": "Schwab", "asset": "PLTR", "is_cash": 0, "buy_price": 35,  "invested": 2000},
+        ]
+        prices = {"TSLA": 200, "PLTR": 28}  # ambos -28%/-20% desde la compra
+        result = detect_recency_bias(positions, prices)
+        # TSLA: 280/200 = 1.4 → flagged. PLTR: 35/28 = 1.25 → no flagged.
+        # Solo TSLA (8000 / 10000 = 80%) → high
+        self.assertEqual(result["severity"], "high")
+        self.assertGreater(result["evidence"]["chase_pct"], 70)
+
+    def test_no_chase_when_buy_close_to_current(self):
+        positions = [
+            {"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "buy_price": 190, "invested": 5000},
+            {"broker": "Schwab", "asset": "MSFT", "is_cash": 0, "buy_price": 430, "invested": 5000},
+        ]
+        prices = {"AAPL": 192, "MSFT": 438}
+        result = detect_recency_bias(positions, prices)
+        self.assertEqual(result["severity"], "positive")
+        self.assertLess(result["evidence"]["chase_pct"], 5)
+
+    def test_insufficient_data_without_prices(self):
+        positions = [{"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "buy_price": 190, "invested": 5000}]
+        result = detect_recency_bias(positions, None)
+        self.assertTrue(result.get("insufficient_data"))
+
+
+# ─── Detector 12: Sector concentration ───────────────────────────────────────
+
+
+class SectorConcentrationTest(unittest.TestCase):
+
+    def test_all_tech_flagged_high(self):
+        positions = [
+            {"broker": "Schwab", "asset": "NVDA", "is_cash": 0, "quantity": 10, "invested": 5000},
+            {"broker": "Schwab", "asset": "AAPL", "is_cash": 0, "quantity": 10, "invested": 5000},
+            {"broker": "Schwab", "asset": "MSFT", "is_cash": 0, "quantity": 10, "invested": 5000},
+        ]
+        prices = {"NVDA": 500, "AAPL": 500, "MSFT": 500}
+        result = detect_sector_concentration(positions, prices)
+        self.assertEqual(result["severity"], "high")
+        self.assertEqual(result["evidence"]["top_sector"], "Tech")
+        self.assertGreaterEqual(result["evidence"]["top1_pct"], 90)
+
+    def test_diversified_across_sectors_positive(self):
+        positions = [
+            {"broker": "Schwab", "asset": "NVDA", "is_cash": 0, "quantity": 5, "invested": 2500},  # Tech
+            {"broker": "Schwab", "asset": "JPM", "is_cash": 0,  "quantity": 5, "invested": 2500},  # Financials
+            {"broker": "Schwab", "asset": "LLY", "is_cash": 0,  "quantity": 5, "invested": 2500},  # Healthcare
+            {"broker": "Schwab", "asset": "XOM", "is_cash": 0,  "quantity": 5, "invested": 2500},  # Energy
+            {"broker": "Schwab", "asset": "KO", "is_cash": 0,   "quantity": 5, "invested": 2500},  # Consumer
+        ]
+        prices = {"NVDA": 500, "JPM": 500, "LLY": 500, "XOM": 500, "KO": 500}
+        result = detect_sector_concentration(positions, prices)
+        self.assertEqual(result["severity"], "positive")
+        self.assertLess(result["evidence"]["top1_pct"], 30)
+
+    def test_cedear_mapped_to_us_sector(self):
+        # AAPL.BA debería resolver al sector de AAPL (Tech)
+        positions = [
+            {"broker": "Cocos", "asset": "AAPL.BA", "is_cash": 0, "invested": 1000000},
+        ]
+        result = detect_sector_concentration(positions, {})
+        # Debería tener "CEDEAR (Tech)" en el breakdown
+        sectors = [b["sector"] for b in result["evidence"]["breakdown"]]
+        self.assertTrue(any("Tech" in s for s in sectors))
+
+
 # ─── Orchestrator ────────────────────────────────────────────────────────────
 
 
 class BuildBehavioralInsightsTest(unittest.TestCase):
 
-    def test_returns_ten_cards(self):
+    def test_returns_twelve_cards(self):
         result = build_behavioral_insights([], [])
-        self.assertEqual(len(result["cards"]), 10)
+        self.assertEqual(len(result["cards"]), 12)
 
     def test_summary_counts_correctly(self):
         # Disposition effect fuerte + concentración alta
@@ -462,7 +539,7 @@ class BuildBehavioralInsightsTest(unittest.TestCase):
         positions = [{"broker": "Schwab", "asset": "NVDA", "is_cash": 0, "quantity": 100, "invested": 50000}]
         result = build_behavioral_insights(ops, positions, prices={"NVDA": 500})
 
-        self.assertEqual(result["summary"]["total_cards"], 10)
+        self.assertEqual(result["summary"]["total_cards"], 12)
         codes_detected = [c["code"] for c in result["cards"] if c.get("detected")]
         self.assertIn("disposition_effect", codes_detected)
         self.assertIn("concentration", codes_detected)
