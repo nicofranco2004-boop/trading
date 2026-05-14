@@ -11,6 +11,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Search, X } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetQuickView from './AssetQuickView'
+import Pill from '../Pill'
 
 // Lista fallback de tickers populares para autocomplete cuando no hay match
 // en los holdings del user. Subset chico para no inflar el bundle.
@@ -139,9 +140,7 @@ export default function SearchBar() {
                         <div className="text-[10px] text-ink-3 truncate">{r.name}</div>
                       </div>
                       {r.fromUser && (
-                        <span className="text-[9px] uppercase tracking-wider text-rendi-pos bg-rendi-pos/10 border border-rendi-pos/20 px-1.5 py-0.5 rounded-sm flex-shrink-0">
-                          Tenés
-                        </span>
+                        <Pill tone="signal">Tenés</Pill>
                       )}
                     </button>
                   </li>

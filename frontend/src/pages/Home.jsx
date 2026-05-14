@@ -1,19 +1,14 @@
-// Home — la nueva landing de Rendi (V1).
+// Home — landing principal de Rendi (V2).
 // ════════════════════════════════════════════════════════════════════════════
-// Composición:
-//   1. SearchBar — buscar cualquier ticker (acciones US, CEDEARs, cripto)
-//   2. IndicesStrip — S&P, Nasdaq, Merval, BTC, dólar blue, oro
-//   3. Heatmap S&P 500 top 50 (snapshot mid-day + cierre)
-//   4. PersonalLayer — "Lo que te afecta" (holdings que se mueven, earnings próximos)
-//   5. MoversRail — top 5 ↑ / top 5 ↓ del día
-//   6. NewsPreview — 3 noticias destacadas + link a /novedades
-//   7. EventsPreview — 5 eventos económicos próximos + link a /novedades
-//
-// V1.5 agrega: Watchlist + Heatmap Merval/Cripto.
-// V2 agrega: real-time prices + explicación AI de movimientos.
-// V3 agrega: feed social / comentarios por ticker.
+// Composición v2 (más densa, menos editorial):
+//   1. Header compacto + SearchBar
+//   2. IndicesStrip (6 índices en grid horizontal)
+//   3. Heatmap (S&P / Merval / Cripto)
+//   4. PersonalLayer (si hay holdings)
+//   5. MoversRail (top gainers + losers)
+//   6. Watchlist
+//   7. News + Events (grid 2 col)
 
-import PageHeader from '../components/PageHeader'
 import IndicesStrip from '../components/home/IndicesStrip'
 import Heatmap from '../components/home/Heatmap'
 import MoversRail from '../components/home/MoversRail'
@@ -22,41 +17,45 @@ import NewsPreview from '../components/home/NewsPreview'
 import EventsPreview from '../components/home/EventsPreview'
 import SearchBar from '../components/home/SearchBar'
 import Watchlist from '../components/home/Watchlist'
+import Eyebrow from '../components/Eyebrow'
 
 export default function Home() {
   return (
     <div className="page-shell">
-      <PageHeader
-        title="Home"
-        subtitle="Lo que está pasando en el mercado, con un guiño a tu portfolio."
-        action={<SearchBar />}
-      />
+      {/* Header compacto — sin el PageHeader editorial gigante */}
+      <header className="flex items-center justify-between mb-6 gap-4 flex-wrap">
+        <div>
+          <Eyebrow>Inicio</Eyebrow>
+          <h1 className="display-heading mt-1">El mercado hoy</h1>
+        </div>
+        <SearchBar />
+      </header>
 
       <div className="space-y-6">
-        {/* 1. Strip de índices (S&P, Nasdaq, Merval, BTC, blue, oro) */}
+        {/* 1. Strip de índices */}
         <IndicesStrip />
 
-        {/* 2. Heatmap (tabs S&P / Merval / Cripto) — el visual hero */}
+        {/* 2. Heatmap — visual hero */}
         <section>
           <Heatmap defaultMarket="sp500" />
         </section>
 
-        {/* 3. Capa personalizada — solo si el user tiene portfolio */}
+        {/* 3. Lo que te afecta — condicional */}
         <PersonalLayer />
 
         {/* 4. Movers del día */}
         <section>
-          <h2 className="font-display text-sm uppercase tracking-wider text-ink-3 mb-2">
-            Movers del día
-          </h2>
-          <MoversRail market="sp500" />
+          <Eyebrow>Movers del día</Eyebrow>
+          <div className="mt-2">
+            <MoversRail market="sp500" />
+          </div>
         </section>
 
-        {/* 5. Watchlist — tickers que el user sigue (sin tenerlos) */}
+        {/* 5. Watchlist */}
         <Watchlist />
 
-        {/* 6. Noticias + eventos — preview, deep dive en /novedades */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* 6. Noticias + eventos */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <NewsPreview />
           <EventsPreview />
         </div>

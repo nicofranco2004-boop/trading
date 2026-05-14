@@ -28,8 +28,9 @@ export default function Reports() {
   return (
     <div className="page-shell">
       <PageHeader
-        title="Reportes"
-        subtitle="Tu historia financiera, contada como timeline. Lo reciente con detalle, lo histórico condensado."
+        eyebrow="Reportes"
+        title="Tu historia financiera"
+        subtitle="Timeline narrativa: lo reciente con detalle, lo histórico condensado."
         action={<BrokerSelector value={broker} onChange={setBroker} />}
       />
 

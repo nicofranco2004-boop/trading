@@ -46,7 +46,8 @@ import { useAuth } from '../contexts/AuthContext'
 const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 const monthName = (m) => MONTH_NAMES[(m - 1) % 12] || ''
 
-const PIE_COLORS = ['#4FFF78', '#10EFEC', '#FF46F6', '#f59e0b', '#ef4444', '#8b5cf6']
+// Paleta v2: signal + data accents. Cero neón.
+const PIE_COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#FF5360', '#8B7DFF']
 
 // Severity → badge styling para las tarjetas de Diagnóstico (audit pattern).
 // La severidad solo se codifica en el badge, no en todo el bloque, para
@@ -1118,18 +1119,19 @@ export default function Insights() {
   return (
     <div className="page-shell space-y-8">
       <PageHeader
+        eyebrow="Análisis"
         title="Insights"
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
-          <div className="inline-flex bg-slate-100 dark:bg-bg-2 border border-slate-200 dark:border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
+          <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
             {['USD', 'ARS'].map(c => (
               <button
                 key={c}
                 onClick={() => setCurrency(c)}
-                className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-[0.12em] transition-colors ${
+                className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-label transition-colors ${
                   currency === c
-                    ? 'bg-white dark:bg-bg-3 text-slate-900 dark:text-ink-0'
-                    : 'text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0'
+                    ? 'bg-bg-3 text-ink-0'
+                    : 'text-ink-2 hover:text-ink-0'
                 }`}
               >
                 {c}
@@ -1300,18 +1302,18 @@ export default function Insights() {
         ) : (
           <ResponsiveContainer width="100%" height={320}>
             <LineChart data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
-              <CartesianGrid stroke="#334155" strokeOpacity={0.3} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={30} />
-              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} />
-              <ReferenceLine y={0} stroke="#475569" strokeOpacity={0.5} strokeDasharray="3 3" />
+              <CartesianGrid stroke="#1B2230" strokeOpacity={0.6} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} minTickGap={30} />
+              <YAxis tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} />
+              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.6} strokeDasharray="2 4" />
               <Tooltip
-                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
-                labelStyle={{ color: '#f1f5f9' }}
+                contentStyle={{ background: '#0E1218', border: '1px solid #262E40', borderRadius: 6, fontSize: 12 }}
+                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'uppercase' }}
                 formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : '—', '']}
               />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
-              <Line type="monotone" dataKey={`${userName} P/L total`} stroke="#4FFF78" strokeWidth={2.8} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#10EFEC' : '#FF46F6'} strokeWidth={2} dot={false} />
+              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontFamily: 'JetBrains Mono' }} />
+              <Line type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2} dot={{ r: 2.5 }} />
+              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -1348,20 +1350,20 @@ export default function Insights() {
             <AreaChart data={drawdownSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%"  stopColor="#ef4444" stopOpacity={0} />
-                  <stop offset="100%" stopColor="#ef4444" stopOpacity={0.4} />
+                  <stop offset="0%"  stopColor="#FF5360" stopOpacity={0} />
+                  <stop offset="100%" stopColor="#FF5360" stopOpacity={0.35} />
                 </linearGradient>
               </defs>
-              <CartesianGrid stroke="#334155" strokeOpacity={0.25} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={28} />
-              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} />
-              <ReferenceLine y={0} stroke="#64748b" strokeOpacity={0.5} />
+              <CartesianGrid stroke="#1B2230" strokeOpacity={0.6} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} minTickGap={28} />
+              <YAxis tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} />
+              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.6} />
               <Tooltip
-                contentStyle={{ background: '#0F1614', border: '1px solid #1E2624', borderRadius: 10 }}
-                labelStyle={{ color: '#cbd5e1', fontSize: 11 }}
+                contentStyle={{ background: '#0E1218', border: '1px solid #262E40', borderRadius: 6, fontSize: 12 }}
+                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'uppercase' }}
                 formatter={(v) => [`${v.toFixed(2)}%`, 'Drawdown']}
               />
-              <Area type="monotone" dataKey="ddPct" stroke="#ef4444" strokeWidth={2} fill="url(#ddGrad)" dot={false} />
+              <Area type="monotone" dataKey="ddPct" stroke="#FF5360" strokeWidth={1.5} fill="url(#ddGrad)" dot={false} />
             </AreaChart>
           </ResponsiveContainer>
         )}

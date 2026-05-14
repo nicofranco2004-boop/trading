@@ -1,10 +1,13 @@
-// MoversRail — top gainers / top losers del día (S&P top 50).
-// Dos columnas lado a lado, mobile-friendly (stack vertical en mobile).
+// MoversRail — top gainers / top losers (V2).
+// Dos columnas con DataRow denso. Eyebrows uppercase mono. Sin cards anidadas.
 
 import { useEffect, useState } from 'react'
 import { TrendingUp, TrendingDown } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetQuickView from './AssetQuickView'
+import Panel from '../Panel'
+import Eyebrow from '../Eyebrow'
+import DataRow from '../DataRow'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -12,21 +15,34 @@ function fmtPct(p) {
   return `${sign}${p.toFixed(2)}%`
 }
 
-function Row({ item, onClick }) {
-  const pos = item.change_pct >= 0
+function MoverList({ items, tone, icon: Icon, label, onSelect }) {
   return (
-    <button
-      onClick={onClick}
-      className="w-full flex items-center justify-between gap-2 px-3 py-2 hover:bg-bg-3/40 transition-colors rounded-sm text-left"
-    >
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-ink-1 truncate">{item.symbol}</div>
-        <div className="text-[10px] text-ink-3 truncate">{item.name}</div>
+    <Panel padding="none" className="overflow-hidden">
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+        <Icon size={12} className={tone === 'pos' ? 'text-rendi-pos' : 'text-rendi-neg'} strokeWidth={1.75} aria-hidden="true" />
+        <Eyebrow tone={tone === 'pos' ? 'signal' : 'red'}>{label}</Eyebrow>
       </div>
-      <div className={`text-sm font-mono tabular ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-        {fmtPct(item.change_pct)}
+      <div className="divide-y divide-line/30">
+        {items.map(it => {
+          const pos = (it.change_pct ?? 0) >= 0
+          return (
+            <DataRow key={it.symbol} density="compact" hoverable onClick={() => onSelect(it)}>
+              <DataRow.Cell width={64} mono>
+                <span className="text-ink-0 text-[13px]">{it.symbol}</span>
+              </DataRow.Cell>
+              <DataRow.Cell muted className="text-[11px]">
+                {it.name}
+              </DataRow.Cell>
+              <DataRow.Cell align="right" width={70} mono tabular>
+                <span className={pos ? 'text-rendi-pos' : 'text-rendi-neg'}>
+                  {fmtPct(it.change_pct)}
+                </span>
+              </DataRow.Cell>
+            </DataRow>
+          )
+        })}
       </div>
-    </button>
+    </Panel>
   )
 }
 
@@ -48,8 +64,8 @@ export default function MoversRail({ market = "sp500" }) {
   if (loading) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="h-48 rounded-sm bg-bg-2 animate-pulse" />
-        <div className="h-48 rounded-sm bg-bg-2 animate-pulse" />
+        <div className="h-48 rounded bg-bg-1 border border-line animate-pulse" />
+        <div className="h-48 rounded bg-bg-1 border border-line animate-pulse" />
       </div>
     )
   }
@@ -58,28 +74,20 @@ export default function MoversRail({ market = "sp500" }) {
   return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="rounded-sm border border-line bg-bg-1 overflow-hidden">
-          <div className="px-3 py-2 border-b border-line/40 flex items-center gap-2">
-            <TrendingUp size={13} className="text-rendi-pos" strokeWidth={1.75} aria-hidden="true" />
-            <span className="text-xs uppercase tracking-wider text-ink-2">Más suben</span>
-          </div>
-          <div className="divide-y divide-line/30">
-            {(data.gainers || []).map(g => (
-              <Row key={g.symbol} item={g} onClick={() => setSelected(g)} />
-            ))}
-          </div>
-        </div>
-        <div className="rounded-sm border border-line bg-bg-1 overflow-hidden">
-          <div className="px-3 py-2 border-b border-line/40 flex items-center gap-2">
-            <TrendingDown size={13} className="text-rendi-neg" strokeWidth={1.75} aria-hidden="true" />
-            <span className="text-xs uppercase tracking-wider text-ink-2">Más bajan</span>
-          </div>
-          <div className="divide-y divide-line/30">
-            {(data.losers || []).map(l => (
-              <Row key={l.symbol} item={l} onClick={() => setSelected(l)} />
-            ))}
-          </div>
-        </div>
+        <MoverList
+          items={data.gainers || []}
+          tone="pos"
+          icon={TrendingUp}
+          label="Más suben"
+          onSelect={setSelected}
+        />
+        <MoverList
+          items={data.losers || []}
+          tone="neg"
+          icon={TrendingDown}
+          label="Más bajan"
+          onSelect={setSelected}
+        />
       </div>
       {selected && (
         <AssetQuickView symbol={selected.symbol} onClose={() => setSelected(null)} />

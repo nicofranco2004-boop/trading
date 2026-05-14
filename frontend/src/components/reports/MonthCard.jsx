@@ -25,10 +25,11 @@
 //   - Años pasados: colapsados (decisión del Page).
 
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, Calendar, BarChart2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, BarChart2 } from 'lucide-react'
 import InsightChip from './InsightChip'
 import HighlightsRail from './HighlightsRail'
 import WeekCard from './WeekCard'
+import Pill from '../Pill'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -73,11 +74,7 @@ export default function MonthCard({ month, defaultExpanded = false }) {
         <div className="flex items-baseline justify-between gap-4 mb-2">
           <div className="flex items-baseline gap-3 flex-wrap">
             <h3 className="font-display text-xl text-ink-0 tracking-tight">{month.period_label}</h3>
-            {month.is_current && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm">
-                <Calendar size={9} aria-hidden="true" /> En curso
-              </span>
-            )}
+            {month.is_current && <Pill tone="signal" dot>En curso</Pill>}
           </div>
           <div className="flex items-baseline gap-2 flex-shrink-0">
             <span className={`text-2xl font-semibold tabular ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
