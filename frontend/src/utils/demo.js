@@ -141,61 +141,94 @@ const OPERATIONS = (() => {
   return ops.map((o, i) => ({ id: 1000 + i, ...o, commissions: 0 }))
 })()
 
-// Snapshots semanales (para chart de evolución del Dashboard / Insights).
-// Generamos desde abr 2024 hasta hoy con tendencia alcista + noise.
-// Aportes ESPORÁDICOS (cada ~6 semanas) para que el net_deposited no crezca
-// más rápido que total_value, lo cual rompía el TWR y daba drawdown -100%.
-const SNAPSHOTS = (() => {
-  const out = []
-  let value = 18000          // valor de mercado inicial
-  let capital = 17500        // capital aportado inicial (lo que pusiste)
-  // Drift semanal: 1.5% mensual → ~0.345% semanal
-  const weeklyDrift = 0.00345
-  const weeklyNoise = 0.018   // ±1.8% semana — variabilidad realista
-  const start = new Date('2024-04-01')
-  const today = new Date()
-  let weeksElapsed = 0
-  while (start <= today) {
-    // Camino aleatorio con drift positivo
-    value = value * (1 + weeklyDrift + (Math.random() - 0.5) * 2 * weeklyNoise)
-    // Aporte de US$ 600 cada ~6 semanas (no cada semana — bug previo)
-    if (weeksElapsed > 0 && weeksElapsed % 6 === 0) capital += 600
-    // total_invested ≈ cost basis: lo "real puesto" en los activos abiertos
-    // (un poquito menos que capital porque hay cash sin invertir).
-    const invested = capital * 0.92
-    out.push({
-      date: start.toISOString().slice(0, 10),
-      total_value: Math.round(value * 100) / 100,
-      total_invested: Math.round(invested * 100) / 100,
-      net_deposited: Math.round(capital * 100) / 100,
-    })
-    start.setDate(start.getDate() + 7)
-    weeksElapsed++
-  }
-  return out.sort((a, b) => b.date.localeCompare(a.date))
-})()
-
-// Cierres mensuales (para Monthly Reports / Reports timeline)
+// Cierres mensuales (para Monthly Reports / Reports timeline / Insights chart).
+// CRÍTICO: tiene que incluir capital_final para que buildCumulativeReturnSeries
+// pueda computar el TWR correctamente. Sin este campo, monthlyReturn = -100% y
+// el drawdown queda atascado en -100% propagado por todos los meses.
+//
+// Modelo consistente entre meses:
+//   capital_inicio[t] = capital_final[t-1]
+//   pnl_total = pnl_realized + pnl_unrealized  → vuelve al cap_final
+//   capital_final[t] = capital_inicio[t] + deposits − withdrawals + pnl_total
 const MONTHLY = (() => {
   const out = []
   const start = new Date('2024-04-01')
   const today = new Date()
+  let valuation = 18500           // valor de mercado al inicio
   while (start < today) {
     const y = start.getFullYear()
     const m = start.getMonth() + 1
+    const capInicio = Math.round(valuation)
+    // Aporte esporádico: 35% de los meses con $400-800
+    const deposit = Math.random() > 0.65 ? Math.round(400 + Math.random() * 400) : 0
+    const withdrawal = 0
+    // Rendimiento del mes: 1.2% mean ± 3% noise. Realista para retail diversificado.
+    const monthReturn = 0.012 + (Math.random() - 0.5) * 0.06
+    const pnlTotal = capInicio * monthReturn
+    // Split realized / unrealized — la mayoría es unrealized (mark-to-market).
+    const pnlRealized = Math.round(pnlTotal * 0.2 + (Math.random() - 0.5) * 200)
+    const pnlUnrealized = Math.round(pnlTotal - pnlRealized)
+    const capFinal = capInicio + deposit - withdrawal + pnlTotal
+    valuation = capFinal
     out.push({
       broker: 'global',
       year: y,
       month: m,
-      capital_inicio: 17500 + (y - 2024) * 4800 + (m - 1) * 400,
-      deposits: Math.random() > 0.7 ? 400 : 0,
-      withdrawals: 0,
-      pnl_realized: Math.round((Math.random() - 0.3) * 1200),
-      pnl_unrealized: Math.round((Math.random() - 0.2) * 2400),
+      capital_inicio: capInicio,
+      capital_final: Math.round(capFinal),
+      deposits: deposit,
+      withdrawals: withdrawal,
+      pnl_realized: pnlRealized,
+      pnl_unrealized: pnlUnrealized,
     })
     start.setMonth(start.getMonth() + 1)
   }
   return out
+})()
+
+const MONTHLY_LAST_VALUATION = MONTHLY.length
+  ? MONTHLY[MONTHLY.length - 1].capital_final
+  : 18500
+
+// Snapshots semanales DERIVADOS del MONTHLY para que ambos cuenten la misma
+// historia. Interpolamos linealmente entre capital_inicio y capital_final
+// de cada mes para producir snapshots semanales coherentes.
+//
+// Esto evita la inconsistencia del bug previo donde snapshots y monthly se
+// generaban independientes y los flujos del TWR no cerraban.
+const SNAPSHOTS = (() => {
+  if (MONTHLY.length === 0) return []
+  const out = []
+  let cumDeposits = MONTHLY[0].capital_inicio
+  for (const m of MONTHLY) {
+    const capStart = m.capital_inicio
+    const capEnd = m.capital_final
+    // 4 snapshots por mes (~semanal). Interpolación lineal con noise.
+    for (let w = 0; w < 4; w++) {
+      const frac = w / 4
+      const valueT = capStart + (capEnd - capStart) * frac + (Math.random() - 0.5) * 200
+      const d = new Date(m.year, m.month - 1, 1 + w * 7)
+      out.push({
+        date: d.toISOString().slice(0, 10),
+        total_value: Math.round(valueT * 100) / 100,
+        total_invested: Math.round(cumDeposits * 0.95 * 100) / 100,
+        net_deposited: Math.round(cumDeposits * 100) / 100,
+      })
+      // Aporte llega aprox la semana 2 del mes
+      if (w === 1 && m.deposits) {
+        cumDeposits += m.deposits
+      }
+    }
+  }
+  // Snapshot del día actual con valuation final
+  const today = new Date()
+  out.push({
+    date: today.toISOString().slice(0, 10),
+    total_value: Math.round(MONTHLY_LAST_VALUATION * 100) / 100,
+    total_invested: Math.round(cumDeposits * 0.95 * 100) / 100,
+    net_deposited: Math.round(cumDeposits * 100) / 100,
+  })
+  return out.sort((a, b) => b.date.localeCompare(a.date))
 })()
 
 // Watchlist demo base (estado inicial — el overlay puede agregar/quitar)
