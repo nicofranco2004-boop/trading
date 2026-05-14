@@ -11,12 +11,14 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Brain, Activity, TrendingDown, RefreshCw, Repeat, Info, AlertTriangle,
-  CheckCircle2, ChevronRight, ArrowRight, X, BookOpen,
+  CheckCircle2, ChevronRight, ArrowRight, X, BookOpen, Share2,
   PieChart, Globe2, Wallet, Flame, Rewind, Target, Zap, Layers,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
+import ShareCardModal from '../components/ShareCardModal'
+import { specFromInsight } from '../utils/shareCard'
 import { api } from '../utils/api'
 import { track } from '../utils/track'
 
@@ -237,16 +239,20 @@ function BehavioralCard({ card, onClick }) {
 // ─── Modal de detalle ───────────────────────────────────────────────────────
 
 function BehavioralModal({ card, onClose }) {
-  // ESC para cerrar
+  const [shareOpen, setShareOpen] = useState(false)
+
+  // ESC para cerrar (no cierra el padre si el share está abierto)
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e) => { if (e.key === 'Escape' && !shareOpen) onClose() }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, shareOpen])
 
   const meta = CARD_META[card.code] || { Icon: Info, label: card.code }
   const tone = SEVERITY_TONE[card.severity] || SEVERITY_TONE.neutral
   const { Icon } = meta
+
+  const canShare = !card.insufficient_data && !!card.title
 
   return (
     <div
@@ -266,13 +272,29 @@ function BehavioralModal({ card, onClose }) {
             </div>
             <h2 className="text-lg font-medium text-ink-0 leading-tight">{card.title}</h2>
           </div>
-          <button
-            onClick={onClose}
-            className="text-ink-3 hover:text-ink-0 transition-colors p-1 flex-shrink-0"
-            aria-label="Cerrar"
-          >
-            <X size={16} strokeWidth={1.75} />
-          </button>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {canShare && (
+              <button
+                onClick={() => {
+                  track('share_card_opened', { source: 'behavioral', code: card.code })
+                  setShareOpen(true)
+                }}
+                className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 hover:bg-bg-2/60 transition-colors px-2 py-1 rounded-sm border border-line/60"
+                aria-label="Compartir esta tarjeta"
+                title="Compartir"
+              >
+                <Share2 size={12} strokeWidth={1.75} />
+                Compartir
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-ink-3 hover:text-ink-0 transition-colors p-1"
+              aria-label="Cerrar"
+            >
+              <X size={16} strokeWidth={1.75} />
+            </button>
+          </div>
         </header>
 
         <div className="px-5 py-4 space-y-4">
@@ -296,6 +318,15 @@ function BehavioralModal({ card, onClose }) {
           )}
         </div>
       </div>
+
+      {shareOpen && (
+        <ShareCardModal
+          spec={specFromInsight(card)}
+          filename={`rendi-${card.code}.png`}
+          source="behavioral"
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </div>
   )
 }

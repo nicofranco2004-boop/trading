@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, Pencil, Trash2, Lock, ChevronRight, CalendarClock, Eye, EyeOff } from 'lucide-react'
+import { Plus, Pencil, Trash2, Lock, ChevronRight, CalendarClock, Eye, EyeOff, Share2 } from 'lucide-react'
 import Modal from './Modal'
 import Card from './Card'
 import EmptyState from './EmptyState'
+import ShareCardModal from './ShareCardModal'
 import { usd, ars, pct, pctSigned, colorClass, MONTHS } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import { lookupHistoricalDolar } from '../utils/fx'
+import { specFromMonth } from '../utils/shareCard'
+import { track } from '../utils/track'
 
 const RECENT_MONTHS_DEFAULT = 6
 
@@ -59,6 +62,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // colapsar a "solo recientes" desde el toggle si prefiere.
   const [showAll, setShowAll] = useState(true)
   const [viewMode, setViewMode] = useState('simple') // 'simple' | 'advanced'
+  const [shareEntry, setShareEntry] = useState(null)
   // Live portfolio total (mismo cálculo que Dashboard) — para reconciliar
   // contra capital_final del mes en curso y dejar claro el delta.
   const [livePortfolioTotal, setLivePortfolioTotal] = useState(null)
@@ -549,6 +553,18 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                     )}
                     <td className={tdClass}>
                       <div className="flex items-center gap-2">
+                        {!isCurrent && retPct !== 0 && (
+                          <button
+                            onClick={() => {
+                              track('share_card_opened', { source: 'monthly', month: m.month, year: m.year })
+                              setShareEntry({ ...m, pnl_pct: retPct, net, month_label: `${MONTHS[m.month - 1]} ${m.year}` })
+                            }}
+                            className="text-ink-3 hover:text-rendi-pos transition-colors"
+                            title="Compartir resultado del mes"
+                          >
+                            <Share2 size={13} strokeWidth={1.75} />
+                          </button>
+                        )}
                         <button onClick={() => openEdit(m)} className="text-ink-3 hover:text-ink-1 dark:hover:text-ink-0" title="Editar">
                           <Pencil size={13} />
                         </button>
@@ -721,6 +737,15 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             </div>
           </div>
         </Modal>
+      )}
+
+      {shareEntry && (
+        <ShareCardModal
+          spec={specFromMonth(shareEntry)}
+          filename={`rendi-${shareEntry.year}-${String(shareEntry.month).padStart(2, '0')}.png`}
+          source="monthly"
+          onClose={() => setShareEntry(null)}
+        />
       )}
     </div>
   )
