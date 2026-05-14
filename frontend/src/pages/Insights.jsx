@@ -9,6 +9,7 @@ import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target
 import AICoach from '../components/AICoach'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
+import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
@@ -1149,6 +1150,26 @@ export default function Insights() {
           </span>
         </div>
       )}
+
+      {/* ── KPI strip overview (V2) ─────────────────────────────────────────── */}
+      {(() => {
+        const lastRow = chartData[chartData.length - 1] || {}
+        const cumulativeReturnPct = lastRow[`${userName} P/L total`] ?? null
+        const benchmarkReturnPct = lastRow[benchmarkKey] ?? null
+        const benchmarkLabel = currency === 'USD' ? 'S&P 500' : 'Inflación AR'
+        return (
+          <InsightsKpiStrip
+            diagnosis={diagnosis}
+            assetPieData={assetPieData}
+            drawdownTwrr={drawdownTwrr}
+            winRate={winRate}
+            cumulativeReturnPct={cumulativeReturnPct}
+            benchmarkReturnPct={benchmarkReturnPct}
+            benchmarkLabel={benchmarkLabel}
+            currency={currency}
+          />
+        )
+      })()}
 
       {/* ══════════════════════════════════════════════════════════════════════
           HERO — Diagnóstico como 3 tarjetas accionables (audit pattern).

@@ -19,6 +19,7 @@ import useReportsTimeline from '../hooks/useReportsTimeline'
 import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
 import YearlyHighlights from '../components/reports/YearlyHighlights'
+import PerformanceCalendar from '../components/reports/PerformanceCalendar'
 
 export default function Reports() {
   const [broker, setBroker] = useState('global')
@@ -57,16 +58,19 @@ export default function Reports() {
       )}
 
       {!loading && !error && hasAnyData && (
-        <div className="space-y-8">
-          {yearGroups.map(({ year, months }) => (
-            <YearGroup
-              key={year}
-              year={year}
-              months={months}
-              isCurrentYear={year === todayYear}
-            />
-          ))}
-        </div>
+        <>
+          <PerformanceCalendar yearGroups={yearGroups} />
+          <div className="space-y-8">
+            {yearGroups.map(({ year, months }) => (
+              <YearGroup
+                key={year}
+                year={year}
+                months={months}
+                isCurrentYear={year === todayYear}
+              />
+            ))}
+          </div>
+        </>
       )}
     </div>
   )
