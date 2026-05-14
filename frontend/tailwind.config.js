@@ -1,17 +1,18 @@
-// Sistema de design tokens — Rendi
+// Sistema de design tokens — Rendi V2
 // ═══════════════════════════════════════════════════════════════════════════
-// Basado en la auditoría visual de mayo 2026. La idea: un sistema cálido,
-// editorial y semánticamente estricto. Nada de azules ni verde decorativo.
+// Pivote de mayo 2026: de editorial cálido → operativo financiero.
+// Linear × Vercel × Stripe (cold neutrals, accents quirúrgicos, sin serif).
+// La identidad del PRODUCTO no cambia (no operás, no real-time obsession).
+// Solo el sistema visual.
 //
 // Reglas:
-// • Verde (rendi-pos) SOLO aparece en cifras positivas o CTAs principales.
-//   Nunca en logo permanente, nav decorativo, badges genéricos.
-// • Rojo (rendi-neg) SOLO en pérdidas reales.
-// • Ámbar (rendi-warn) SOLO para alertas accionables.
-// • Indigo (rendi-accent) para selección, links, identificadores.
-// • Spacing: solo 4·8·12·16·24·32·48·64·96·128. Nada ad-hoc.
-// • Radii: solo rounded-sm (4) / rounded (10) / rounded-lg (16).
-// • Sombras: en dark mode no se usan. Elevación = borde + cambio de fondo.
+// • Verde signal (rendi-pos #21D07A) solo en cifras positivas o estados live.
+// • Rojo financiero (rendi-neg #FF5360) solo en pérdidas reales — no naranja.
+// • Cyan / Blue / Violet / Amber: solo como tipos de dato secundarios. Nunca
+//   como acento decorativo.
+// • Spacing system: solo 4·8·12·16·24·32·48·64·96·128.
+// • Radii: solo rounded-sm (4) / rounded (6) / rounded-lg (8). Cero curvas grandes.
+// • Sombras: dark mode = sin sombras. Elevación = borde + cambio de fondo.
 
 export default {
   content: ['./index.html', './src/**/*.{js,jsx}'],
@@ -19,60 +20,94 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        // Display = Instrument Serif (italic en hero, regular en headings)
-        // Sans   = Manrope (UI body, headings, data hero tabular)
-        // Mono   = JetBrains Mono (labels uppercase, metadata, data secundaria)
-        display: ['Instrument Serif', 'Georgia', 'serif'],
-        sans: ['Manrope', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+        // Geist = sans-only para UI, headlines, números (con tabular-nums + ss01).
+        // JetBrains Mono = solo para meta técnica (timestamps, kbd, labels uppercase).
+        // CERO serif. El `display` queda apuntando a Geist para que componentes
+        // viejos que usan `font-display` no se rompan visualmente — ya no es serif.
+        sans:    ['Geist', 'system-ui', 'sans-serif'],
+        display: ['Geist', 'system-ui', 'sans-serif'],
+        mono:    ['JetBrains Mono', 'ui-monospace', 'monospace'],
       },
       colors: {
-        // ── Tokens nuevos (audit) ──────────────────────────────────────────
-        // Neutrales cálidos, no navy. 8 pasos del fondo al texto.
+        // ── Cold neutrals (9 pasos del ink al text-50) ─────────────────────
         bg: {
-          0: '#0A0B0E',  // fondo app
-          1: '#101218',  // surface, cards
-          2: '#161922',  // surface elevada / hover
-          3: '#1D2130',  // surface más elevada / active
+          0: '#07090C',  // ink — fondo de la app
+          1: '#0E1218',  // charcoal — surface base (Panel default)
+          2: '#141923',  // slate — surface elevada / hover
+          3: '#1B2230',  // gunmetal — surface más elevada / active
         },
         ink: {
-          0: '#F4F4F0',  // texto principal (off-white, casi papel)
-          1: '#CFD0C8',  // texto secundario
-          2: '#8B8D8A',  // texto terciario, captions
-          3: '#5A5C5B',  // texto deshabilitado, hints
+          0: '#E6EAF2',  // texto principal
+          1: '#C3CAD8',  // texto secundario (default)
+          2: '#9CA3B5',  // texto terciario, captions
+          3: '#5A6478',  // disabled, hints
         },
         line: {
-          DEFAULT: '#222636',  // bordes y dividers principales
-          2: '#2C3142',         // bordes elevados (modales, dropdowns)
+          DEFAULT: '#1B2230',  // bordes y dividers principales
+          2: '#262E40',         // bordes elevados (modales, dropdowns)
+          3: '#3A4256',         // bordes muy elevados (focus, selección)
         },
-        // Semánticos — solo 4. Cualquier otro color es ruido.
-        'rendi-pos':    '#6FE3A3',  // ganancia (refinado, menos neón que el verde original)
-        'rendi-neg':    '#F17A7A',  // pérdida
-        'rendi-warn':   '#E9B876',  // alertas accionables (sync pendiente, datos faltantes)
-        'rendi-accent': '#7D8CFF',  // selección, links, identificadores
 
-        // ── Aliases legacy (mantenidos para no romper componentes en uso) ──
-        // Migrar progresivamente a los tokens nuevos.
+        // ── Semánticos — nombres mantenidos, hexes cambiados ──────────────
+        'rendi-pos':    '#21D07A',  // signal verde terminal
+        'rendi-neg':    '#FF5360',  // red financiero sobrio
+        'rendi-warn':   '#E8B14A',  // amber para warnings
+        'rendi-accent': '#4E83FF',  // blue (para selección, links)
+
+        // ── Data accents (uso restringido) ────────────────────────────────
+        // Solo para tipos de dato secundarios (benchmarks, info chips).
+        // NUNCA como acento decorativo o de marca.
+        'data-cyan':    '#46C6E0',
+        'data-blue':    '#4E83FF',
+        'data-violet':  '#8B7DFF',
+        'data-amber':   '#E8B14A',
+
+        // ── Polarity scales (9 pasos cada uno — heatmaps + backgrounds tonales)
+        green: {
+          50:  '#CFF7DF',
+          100: '#9CEDC0',
+          200: '#5FE19D',
+          300: '#21D07A',  // = rendi-pos
+          400: '#14A560',
+          500: '#0F5C36',
+          600: '#0B4127',
+          700: '#072A18',
+          800: '#06160E',
+        },
+        red: {
+          50:  '#FFDADD',
+          100: '#FFB4BA',
+          200: '#FF8A93',
+          300: '#FF5360',  // = rendi-neg
+          400: '#C8333E',
+          500: '#8E2B33',
+          600: '#5E1F25',
+          700: '#3E1418',
+          800: '#1F0A0C',
+        },
+
+        // ── Aliases legacy (mantenidos para compatibilidad con componentes
+        // que importan `rendi.X` directo). Migrar progresivamente.
         rendi: {
-          green: '#6FE3A3',         // alias → rendi-pos (compatibilidad)
-          'green-dark': '#5DC68A',  // hover de rendi-pos
-          aqua: '#7D8CFF',          // alias → rendi-accent
-          pink: '#F17A7A',          // alias → rendi-neg
-          bg: '#0A0B0E',            // alias → bg-0
-          card: '#101218',          // alias → bg-1
-          muted: '#8B8D8A',         // alias → ink-2
+          green: '#21D07A',
+          'green-dark': '#14A560',
+          aqua: '#46C6E0',
+          pink: '#FF5360',
+          bg: '#07090C',
+          card: '#0E1218',
+          muted: '#9CA3B5',
         },
       },
       borderRadius: {
         // Solo 3 pasos. Nada de 12/20/24px.
         sm: '4px',    // badges, chips, inputs, controles chicos
-        DEFAULT: '10px',  // cards, modales chicos, dropdowns
-        lg: '16px',   // modales grandes, hero containers
+        DEFAULT: '6px',   // cards, modales chicos, dropdowns (v2: 6, no 10)
+        lg: '8px',    // modales grandes, hero containers (v2: 8, no 16)
       },
       letterSpacing: {
         // Para labels uppercase mono — el "specimen sheet" look
-        'label': '0.18em',
-        'caps': '0.12em',
+        'label': '0.12em',  // v2: más compacto (0.12, no 0.18)
+        'caps': '0.08em',
       },
     },
   },

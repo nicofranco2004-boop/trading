@@ -50,22 +50,22 @@ export default function Login() {
     }
   }
 
-  const inputClass = 'w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-ink-0 placeholder-slate-400 dark:placeholder-ink-3 focus:outline-none focus:border-rendi-accent focus:ring-2 focus:ring-rendi-accent/20 transition-colors'
+  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 dark:placeholder-ink-3 focus:outline-none focus:border-rendi-accent focus:ring-2 focus:ring-rendi-accent/20 transition-colors'
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="flex items-center justify-center gap-3 mb-8">
           <RendiLogo size={36} />
-          <span className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">rendi</span>
+          <span className="text-2xl font-bold text-ink-0 dark:text-white tracking-tight">rendi</span>
         </div>
 
-        <div className="bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/50 rounded-2xl p-6">
-          <div className="flex mb-6 bg-slate-100 dark:bg-slate-900/60 rounded-lg p-1">
+        <div className="bg-white dark:bg-bg-2/60 border border-line/50 rounded-2xl p-6">
+          <div className="flex mb-6 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">
             <button
               onClick={() => setMode('login')}
               className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                mode === 'login' ? 'bg-blue-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                mode === 'login' ? 'bg-blue-600 text-white' : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
             >
               Iniciar sesión
@@ -73,7 +73,7 @@ export default function Login() {
             <button
               onClick={() => setMode('register')}
               className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                mode === 'register' ? 'bg-blue-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                mode === 'register' ? 'bg-blue-600 text-white' : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
             >
               Registrarse
@@ -83,7 +83,7 @@ export default function Login() {
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             {mode === 'register' && (
               <div>
-                <label htmlFor="login-name" className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Nombre</label>
+                <label htmlFor="login-name" className="block text-xs text-ink-3 mb-1">Nombre</label>
                 <input
                   id="login-name"
                   type="text"
@@ -97,7 +97,7 @@ export default function Login() {
               </div>
             )}
             <div>
-              <label htmlFor="login-email" className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Email</label>
+              <label htmlFor="login-email" className="block text-xs text-ink-3 mb-1">Email</label>
               <input
                 id="login-email"
                 type="email"
@@ -112,7 +112,7 @@ export default function Login() {
               />
             </div>
             <div>
-              <label htmlFor="login-password" className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Contraseña</label>
+              <label htmlFor="login-password" className="block text-xs text-ink-3 mb-1">Contraseña</label>
               <input
                 id="login-password"
                 type="password"

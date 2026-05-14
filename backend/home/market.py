@@ -181,21 +181,51 @@ def _fetch_daily_quote(symbol: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+# Crypto tickers que yfinance espera con sufijo "-USD" (BTC, ETH, …).
+# Mantenemos la lista local para evitar dependencia circular con main.py.
+# El símbolo del user/holdings llega como "BTC" — lo mapeamos a "BTC-USD"
+# para el download y revertimos al construir la respuesta.
+_CRYPTO_TICKERS = {
+    'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT',
+    'MATIC', 'LINK', 'USDT', 'USDC', 'TRX', 'LTC', 'BCH', 'ETC', 'XLM',
+    'NEAR', 'ATOM', 'FIL', 'APT', 'ARB', 'OP', 'TON', 'HBAR', 'ICP',
+    'VET', 'ALGO', 'GRT', 'AAVE', 'UNI', 'MKR', 'SUSHI', 'COMP', 'CRV',
+    'SAND', 'MANA', 'AXS', 'SHIB', 'PEPE', 'SUI', 'SEI', 'TIA', 'INJ',
+    'WLD', 'ORDI', 'RUNE', 'STX', 'WBTC', 'STETH',
+}
+
+
+def _to_yf(sym: str) -> str:
+    """Convierte un símbolo de la app a su forma yfinance."""
+    s = (sym or "").upper()
+    if s in _CRYPTO_TICKERS:
+        return f"{s}-USD"
+    return s
+
+
 def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Versión batched — un solo download de yfinance para N símbolos."""
+    """Versión batched — un solo download de yfinance para N símbolos.
+
+    Mantiene un mapeo bidireccional para revertir el ticker yfinance al
+    símbolo original de la app (BTC-USD → BTC). Sin esto, los holdings de
+    cripto del user no resolvían quote y no aparecían en "Lo que te afecta".
+    """
     out: Dict[str, Dict[str, Any]] = {}
     if not symbols:
         return out
+    # Mapeo orig → yf, y reverse para encontrar el símbolo original al parsear.
+    yf_for: Dict[str, str] = {s: _to_yf(s) for s in symbols}
+    orig_for: Dict[str, str] = {v: k for k, v in yf_for.items()}
+    yf_symbols = list(orig_for.keys())
     try:
-        # group_by="ticker" devuelve un MultiIndex; period=5d para tener prev_close
         data = yf.download(
-            tickers=" ".join(symbols), period="5d",
+            tickers=" ".join(yf_symbols), period="5d",
             interval="1d", group_by="ticker", auto_adjust=False,
             progress=False, threads=True,
         )
-        for sym in symbols:
+        for yf_sym, orig_sym in orig_for.items():
             try:
-                sub = data[sym] if sym in data else None
+                sub = data[yf_sym] if yf_sym in data else None
                 if sub is None or sub.empty:
                     continue
                 closes = sub["Close"].dropna()
@@ -205,14 +235,14 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
                 last = float(closes.iloc[-1])
                 if prev <= 0:
                     continue
-                out[sym] = {
-                    "symbol": sym,
+                out[orig_sym] = {
+                    "symbol": orig_sym,
                     "price": round(last, 2),
                     "prev_close": round(prev, 2),
                     "change_pct": round(((last / prev) - 1) * 100, 2),
                 }
             except Exception as ex:
-                log.warning(f"_fetch_batch_quotes parsing {sym}: {ex}")
+                log.warning(f"_fetch_batch_quotes parsing {yf_sym} (orig {orig_sym}): {ex}")
     except Exception as ex:
         log.error(f"_fetch_batch_quotes batch download falló: {ex}")
     return out

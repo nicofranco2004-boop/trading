@@ -12,7 +12,7 @@
 export default function Skeleton({ className = '', ...rest }) {
   return (
     <div
-      className={`animate-pulse bg-slate-200 dark:bg-bg-2 rounded motion-reduce:animate-none ${className}`}
+      className={`animate-pulse bg-bg-2 dark:bg-bg-2 rounded motion-reduce:animate-none ${className}`}
       aria-hidden="true"
       {...rest}
     />

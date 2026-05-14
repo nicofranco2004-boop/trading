@@ -1,122 +1,115 @@
+/* Tipografía: Geist (sans, UI + headlines + números) + JetBrains Mono (meta técnica) */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /* ════════════════════════════════════════════════════════════════════════
-   Sistema visual — Rendi
+   Sistema visual — Rendi V2 (mayo 2026)
    ════════════════════════════════════════════════════════════════════════
-   Tokens definidos en tailwind.config.js. Acá viven utility classes y
-   estilos globales que no caben en Tailwind directo.
+   Pivote de editorial → operativo. Cold neutrals + Geist + JetBrains Mono.
+   Tokens en tailwind.config.js.
 
-   Convención de uso:
-   • bg-bg-0        → fondo de la app
-   • bg-bg-1        → surfaces (cards, panels)
-   • text-ink-0     → texto principal (casi papel)
-   • text-ink-2/3   → texto secundario/terciario
-   • text-rendi-pos → ganancia (verde refinado, NO decorativo)
-   • text-rendi-neg → pérdida
-   • font-display   → Instrument Serif (hero numbers, display headings)
-   • font-mono      → JetBrains Mono (labels uppercase, metadata)
+   Cambios clave vs V1:
+   • Surface: papel cálido → ink #07090C (cold)
+   • Type: Instrument Serif → Geist (sans, no más serif)
+   • Pos: verde refinado → signal #21D07A (terminal-vivo)
+   • Neg: pink → red financiero #FF5360
    ════════════════════════════════════════════════════════════════════════ */
 
 body {
-  font-family: 'Manrope', system-ui, sans-serif;
-  font-feature-settings: 'ss01', 'cv11';
+  font-family: 'Geist', system-ui, -apple-system, sans-serif;
+  font-feature-settings: 'tnum', 'ss01', 'cv11';
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   letter-spacing: -0.005em;
-  background: #0A0B0E;
-  color: #F4F4F0;
+  background: #07090C;
+  color: #E6EAF2;
 }
 
-/* Tabular nums por default en cifras monetarias */
+/* Tabular nums globalmente — todos los números alinean pixel-perfect.
+   Cualquier elemento financiero (precios, %, deltas) se beneficia. */
 .tabular,
 .font-mono,
-[class*='font-display'] {
+[class*='font-display'],
+[class*='font-sans'] {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Page shell ────────────────────────────────────────────────────────────
-   One consistent max-width + padding for every page. */
+/* ── Page shell — wrapper consistente para toda página ────────────────── */
 @layer components {
   .page-shell {
-    @apply pt-20 px-3 sm:px-6 pb-12 max-w-6xl mx-auto;
+    @apply pt-6 px-4 sm:px-6 pb-12 max-w-6xl mx-auto;
   }
   .page-shell-wide {
-    @apply pt-20 px-3 sm:px-6 pb-12 max-w-7xl mx-auto;
+    @apply pt-6 px-4 sm:px-6 pb-12 max-w-7xl mx-auto;
   }
 
-  /* Tabular numerics utility — usar en montos y data numérica */
+  /* Tabular numerics utility — usar en montos y data numérica densa */
   .num {
     font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.005em;
   }
 
-  /* Label uppercase mono — el patrón "specimen sheet" para etiquetas
-     de KPIs, secciones y metadata. Pequeño + uppercase + mono. */
+  /* Label uppercase mono — patrón "specimen sheet" para etiquetas de KPIs.
+     v2: tracking 0.12em (más compacto que 0.18 editorial), tamaño 10-11 px. */
   .label-mono {
-    @apply font-mono text-[10px] sm:text-[11px] uppercase tracking-[0.18em] text-ink-2 font-medium;
+    @apply font-mono text-[10px] sm:text-[11px] uppercase tracking-label text-ink-3 font-medium;
   }
 
-  /* Eyebrow — kicker pequeño arriba de un display heading.
-     Ej: "Posiciones activas" arriba de un h1 serif. */
+  /* Eyebrow — kicker pequeño arriba de un título o sección. */
   .eyebrow {
-    @apply font-mono text-[11px] uppercase tracking-[0.18em] text-ink-2 font-medium;
+    @apply font-mono text-[11px] uppercase tracking-label text-ink-3 font-medium;
   }
 
   /* Section title — usado por <Section> en Insights y otros. */
   .section-title {
-    @apply text-sm font-semibold uppercase tracking-[0.12em] text-ink-1;
+    @apply text-sm font-medium uppercase tracking-caps text-ink-1;
   }
   .section-subtitle {
-    @apply text-xs text-ink-2 mt-1;
+    @apply text-xs text-ink-3 mt-1;
   }
 
-  /* Hero number — Manrope tabular grande. Solo para 1 métrica por pantalla
-     (Valor actual del Dashboard, "Tu portfolio hoy" en Posiciones).
-     Probamos Instrument Serif italic — quedaba editorial/revista.
-     Manrope sans-serif tabular es la convención fintech moderna
-     (Linear, Wealthfront, Stripe, Robinhood). */
+  /* Hero number — Geist sans grande tabular. Para 1 métrica por pantalla.
+     v2: type weight 500 (no 600), tracking -0.025em (más compacto).
+     Sin serif italic — esa fase quedó atrás. */
   .hero-number {
-    @apply font-sans text-ink-0 font-medium;
-    font-size: clamp(44px, 6.5vw, 72px);
+    @apply font-sans text-ink-0 font-medium num;
+    font-size: clamp(40px, 5.5vw, 64px);
     line-height: 1;
-    letter-spacing: -0.035em;
-    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.025em;
     text-wrap: balance;
-    font-feature-settings: 'ss01', 'cv11', 'tnum';
   }
 
-  /* Display heading — Instrument Serif regular. Para headers de sección
-     decorativos (no hero). */
+  /* Display heading — Geist 500. Para headers de sección (no hero). */
   .display-heading {
-    @apply font-display text-ink-0;
-    font-size: clamp(28px, 4vw, 42px);
-    line-height: 1;
-    letter-spacing: -0.02em;
+    @apply font-sans text-ink-0 font-medium;
+    font-size: clamp(22px, 3vw, 32px);
+    line-height: 1.1;
+    letter-spacing: -0.015em;
   }
 
   /* Data hero — números grandes secundarios (KPI cells del strip).
-     Manrope tabular, NO mono. Más calmo, menos "Bloomberg". */
+     Más calmo que hero-number, más legible que body text. */
   .data-hero {
     @apply font-sans text-ink-0 num font-medium;
-    font-size: clamp(22px, 2.5vw, 28px);
-    letter-spacing: -0.02em;
+    font-size: clamp(18px, 2vw, 22px);
+    letter-spacing: -0.015em;
   }
 
   /* KPI cell sin caja — el contenedor padre aplica los divisores 1px (con
-     divide-x / divide-y), la celda solo aporta el padding interno.
-     Esto evita conflictos con grids 2x2 donde first-child no acierta. */
+     divide-x / divide-y), la celda solo aporta el padding interno. */
   .kpi-cell {
-    @apply px-4 sm:px-5 py-1;
+    @apply px-4 py-3;
   }
 }
 
-/* Scrollbar — neutralizado, ya no usa rendi-green decorativo */
+/* Scrollbar — neutro, sin acento de marca */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #0A0B0E; }
-::-webkit-scrollbar-thumb { background: #2C3142; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #5A5C5B; }
+::-webkit-scrollbar-track { background: #07090C; }
+::-webkit-scrollbar-thumb { background: #262E40; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3A4256; }
 
 /* Pretty date input — calendar indicator styling for dark mode */
 .date-input-pretty::-webkit-calendar-picker-indicator {
@@ -134,58 +127,49 @@ body {
 .dark .date-input-pretty::-webkit-datetime-edit-month-field,
 .dark .date-input-pretty::-webkit-datetime-edit-day-field,
 .dark .date-input-pretty::-webkit-datetime-edit-year-field {
-  color: #F4F4F0;
+  color: #E6EAF2;
 }
 .date-input-pretty::-webkit-datetime-edit-text,
 .date-input-pretty::-webkit-datetime-edit-month-field,
 .date-input-pretty::-webkit-datetime-edit-day-field,
 .date-input-pretty::-webkit-datetime-edit-year-field {
-  color: #0A0B0E;
+  color: #07090C;
 }
 
-/* Range slider con paleta nueva (rendi-pos refinado, no rendi-green neón) */
+/* Range slider — paleta v2 (signal #21D07A) */
 .rendi-range {
   -webkit-appearance: none;
   appearance: none;
-  height: 6px;
+  height: 4px;
   border-radius: 999px;
-  background: linear-gradient(to right, #6FE3A3 0%, #6FE3A3 var(--val, 0%), rgba(139, 141, 138, 0.25) var(--val, 0%), rgba(139, 141, 138, 0.25) 100%);
+  background: linear-gradient(to right, #21D07A 0%, #21D07A var(--val, 0%), rgba(38, 46, 64, 0.6) var(--val, 0%), rgba(38, 46, 64, 0.6) 100%);
   outline: none;
   cursor: pointer;
-}
-.dark .rendi-range {
-  background: linear-gradient(to right, #6FE3A3 0%, #6FE3A3 var(--val, 0%), rgba(44, 49, 66, 0.6) var(--val, 0%), rgba(44, 49, 66, 0.6) 100%);
 }
 .rendi-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: #6FE3A3;
-  border: 3px solid #fff;
-  box-shadow: 0 0 0 1px rgba(111, 227, 163, 0.5), 0 2px 6px rgba(111, 227, 163, 0.4);
+  background: #21D07A;
+  border: 2px solid #0E1218;
+  box-shadow: 0 0 0 1px rgba(33, 208, 122, 0.4);
   cursor: grab;
   transition: transform 0.1s ease;
-}
-.dark .rendi-range::-webkit-slider-thumb {
-  border-color: #101218;
 }
 .rendi-range::-webkit-slider-thumb:active {
   cursor: grabbing;
   transform: scale(1.15);
 }
 .rendi-range::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: #6FE3A3;
-  border: 3px solid #fff;
-  box-shadow: 0 0 0 1px rgba(111, 227, 163, 0.5), 0 2px 6px rgba(111, 227, 163, 0.4);
+  background: #21D07A;
+  border: 2px solid #0E1218;
+  box-shadow: 0 0 0 1px rgba(33, 208, 122, 0.4);
   cursor: grab;
-}
-.dark .rendi-range::-moz-range-thumb {
-  border-color: #101218;
 }
 
 /* Toast slide-in desde la derecha */
@@ -194,16 +178,18 @@ body {
   to   { transform: translateX(0);    opacity: 1; }
 }
 
-/* Live dot pulsante — para PageHeader meta y otros indicadores live */
+/* Live dot pulsante — solo para estados que justifiquen "alive"
+   (datos sync recientes, no para todo). v2 mantiene el patrón con el
+   verde signal más vivo. */
 @keyframes rendi-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(111, 227, 163, 0.4); }
-  50% { box-shadow: 0 0 0 4px rgba(111, 227, 163, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(33, 208, 122, 0.45); }
+  50% { box-shadow: 0 0 0 4px rgba(33, 208, 122, 0); }
 }
 .live-dot {
   display: inline-block;
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #6FE3A3;
+  background: #21D07A;
   animation: rendi-pulse 2s ease-in-out infinite;
 }

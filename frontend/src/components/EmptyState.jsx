@@ -5,15 +5,15 @@ export default function EmptyState({ icon, title, description, action, dense = f
   return (
     <div className={`text-center ${dense ? 'py-6' : 'py-10'}`}>
       {icon && (
-        <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-700/40 flex items-center justify-center text-slate-400 dark:text-slate-500">
+        <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-bg-2 dark:bg-bg-2/40 flex items-center justify-center text-ink-3">
           {icon}
         </div>
       )}
       {title && (
-        <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{title}</p>
+        <p className="text-sm font-medium text-ink-1">{title}</p>
       )}
       {description && (
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto leading-relaxed">{description}</p>
+        <p className="text-xs text-ink-3 mt-1 max-w-sm mx-auto leading-relaxed">{description}</p>
       )}
       {action && <div className="mt-4">{action}</div>}
     </div>

@@ -155,11 +155,11 @@ export default function BondCashflowModal({
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded-t-2xl sm:rounded w-full max-w-md shadow-2xl flex flex-col"
+        className="bg-white dark:bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-md shadow-2xl flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-200 dark:border-line">
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-line">
           <div className="flex items-center gap-3 min-w-0">
             <div className={`w-9 h-9 rounded-sm flex items-center justify-center flex-shrink-0 ${
               isCoupon ? 'bg-rendi-pos/15 text-rendi-pos' : 'bg-rendi-accent/15 text-rendi-accent'
@@ -181,7 +181,7 @@ export default function BondCashflowModal({
         </div>
 
         {/* Asset display */}
-        <div className="px-5 py-3 border-b border-slate-200 dark:border-line bg-slate-50/40 dark:bg-bg-2/30 flex items-center gap-3">
+        <div className="px-5 py-3 border-b border-line bg-bg-2/40 dark:bg-bg-2/30 flex items-center gap-3">
           <AssetLogo asset={asset} size={32} />
           <div className="min-w-0">
             <p className="font-semibold text-ink-0 text-sm tabular">{asset}</p>
@@ -219,7 +219,7 @@ export default function BondCashflowModal({
                 type="date"
                 value={date}
                 onChange={e => setDate(e.target.value)}
-                className="w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+                className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
                 required
               />
             </div>
@@ -232,7 +232,7 @@ export default function BondCashflowModal({
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
                 placeholder="0.00"
-                className="w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+                className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
                 autoFocus
                 required
               />
@@ -248,7 +248,7 @@ export default function BondCashflowModal({
               value={commissions}
               onChange={e => setCommissions(e.target.value)}
               placeholder="0.00"
-              className="w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+              className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
             />
             <p className="text-[10px] text-ink-3 mt-1">
               Se descuentan del monto neto que se acredita al cash.
@@ -317,7 +317,7 @@ export default function BondCashflowModal({
               value={notes}
               onChange={e => setNotes(e.target.value)}
               placeholder="Ej.: Cupón nominal USD 28, recibí 27.500 después de retención"
-              className="w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+              className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
             />
           </div>
 

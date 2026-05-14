@@ -988,8 +988,16 @@ def get_dolar(uid: int = Depends(get_current_user)):
         return _dolar_cache["data"]
     blue = _fetch_dolar("blue")
     mep = _fetch_dolar("bolsa")
-    data = {"blue": blue, "mep": mep, "fetched_at": datetime.utcnow().isoformat() + "Z"}
-    if blue or mep:
+    ccl = _fetch_dolar("contadoconliqui")
+    cripto = _fetch_dolar("cripto")
+    data = {
+        "blue": blue,
+        "mep": mep,
+        "ccl": ccl,
+        "cripto": cripto,
+        "fetched_at": datetime.utcnow().isoformat() + "Z",
+    }
+    if blue or mep or ccl or cripto:
         _dolar_cache["data"] = data
         _dolar_cache["ts"] = now
     return data
@@ -5640,13 +5648,15 @@ def home_personal(uid: int = Depends(get_current_user)):
     """
     conn = get_db()
     try:
-        # Holdings del user → símbolos para fetchear quotes
+        # Holdings del user → símbolos para fetchear quotes.
+        # Bumeamos el cap a 100 (antes 30) para no recortar arbitrariamente
+        # portfolios diversificados — el _fetch_batch_quotes es un solo download.
         rows = conn.execute(
             """SELECT DISTINCT asset FROM positions
                 WHERE user_id = ? AND is_cash = 0
                   AND quantity > 0
                   AND asset NOT LIKE '%-%'  -- excluir cash-like duplicates
-                LIMIT 30""",
+                LIMIT 100""",
             (uid,),
         ).fetchall()
         symbols = [r["asset"] for r in rows if r["asset"]]

@@ -9,6 +9,7 @@ import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target
 import AICoach from '../components/AICoach'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
+import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
@@ -46,7 +47,8 @@ import { useAuth } from '../contexts/AuthContext'
 const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 const monthName = (m) => MONTH_NAMES[(m - 1) % 12] || ''
 
-const PIE_COLORS = ['#4FFF78', '#10EFEC', '#FF46F6', '#f59e0b', '#ef4444', '#8b5cf6']
+// Paleta v2: signal + data accents. Cero neón.
+const PIE_COLORS = ['#21D07A', '#46C6E0', '#4E83FF', '#E8B14A', '#FF5360', '#8B7DFF']
 
 // Severity → badge styling para las tarjetas de Diagnóstico (audit pattern).
 // La severidad solo se codifica en el badge, no en todo el bloque, para
@@ -1118,18 +1120,19 @@ export default function Insights() {
   return (
     <div className="page-shell space-y-8">
       <PageHeader
+        eyebrow="Análisis"
         title="Insights"
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
-          <div className="inline-flex bg-slate-100 dark:bg-bg-2 border border-slate-200 dark:border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
+          <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
             {['USD', 'ARS'].map(c => (
               <button
                 key={c}
                 onClick={() => setCurrency(c)}
-                className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-[0.12em] transition-colors ${
+                className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-label transition-colors ${
                   currency === c
-                    ? 'bg-white dark:bg-bg-3 text-slate-900 dark:text-ink-0'
-                    : 'text-slate-500 dark:text-ink-2 hover:text-slate-900 dark:hover:text-ink-0'
+                    ? 'bg-bg-3 text-ink-0'
+                    : 'text-ink-2 hover:text-ink-0'
                 }`}
               >
                 {c}
@@ -1147,6 +1150,26 @@ export default function Insights() {
           </span>
         </div>
       )}
+
+      {/* ── KPI strip overview (V2) ─────────────────────────────────────────── */}
+      {(() => {
+        const lastRow = chartData[chartData.length - 1] || {}
+        const cumulativeReturnPct = lastRow[`${userName} P/L total`] ?? null
+        const benchmarkReturnPct = lastRow[benchmarkKey] ?? null
+        const benchmarkLabel = currency === 'USD' ? 'S&P 500' : 'Inflación AR'
+        return (
+          <InsightsKpiStrip
+            diagnosis={diagnosis}
+            assetPieData={assetPieData}
+            drawdownTwrr={drawdownTwrr}
+            winRate={winRate}
+            cumulativeReturnPct={cumulativeReturnPct}
+            benchmarkReturnPct={benchmarkReturnPct}
+            benchmarkLabel={benchmarkLabel}
+            currency={currency}
+          />
+        )
+      })()}
 
       {/* ══════════════════════════════════════════════════════════════════════
           HERO — Diagnóstico como 3 tarjetas accionables (audit pattern).
@@ -1186,15 +1209,15 @@ export default function Insights() {
       {/* ── Strip de exposición — cash + clases de activo ─────────────────── */}
       {(assetTypeBreakdown.length > 0 || cashRatio > 0) && (
         <section>
-          <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-4 sm:p-5">
+          <div className="bg-white dark:bg-bg-1 border border-line rounded p-4 sm:p-5">
             <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <p className="eyebrow">Exposición</p>
               <span className="text-xs text-ink-2">
-                Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-slate-700 dark:text-ink-1'}`}>{cashRatio.toFixed(1)}%</span>
+                Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1)}%</span>
               </span>
             </div>
             {assetTypeBreakdown.length > 0 && (
-              <div className="flex h-2 rounded-full overflow-hidden bg-slate-100 dark:bg-bg-2">
+              <div className="flex h-2 rounded-full overflow-hidden bg-bg-2 dark:bg-bg-2">
                 {assetTypeBreakdown.map((d, i) => (
                   <div
                     key={d.type}
@@ -1207,7 +1230,7 @@ export default function Insights() {
             {assetTypeBreakdown.length > 0 && (
               <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-[11px] font-mono">
                 {assetTypeBreakdown.map((d, i) => (
-                  <span key={d.type} className="flex items-center gap-1.5 text-slate-600 dark:text-ink-1">
+                  <span key={d.type} className="flex items-center gap-1.5 text-ink-2">
                     <span className="inline-block w-2 h-2 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
                     {d.type}: <span className="tabular font-medium">{d.sharePct.toFixed(0)}%</span>
                   </span>
@@ -1241,30 +1264,30 @@ export default function Insights() {
       >
 
       {/* Cumulative performance chart — la moneda viene del toggle global */}
-      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
+      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1.5">
-            <h2 className="font-semibold text-slate-800 dark:text-slate-200">
+            <h2 className="font-semibold text-ink-0">
               {currency === 'USD' ? 'Portfolio vs S&P 500 (USD)' : 'Portfolio vs Inflación (ARS)'}
             </h2>
             <InfoTooltip>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Time-Weighted Return (TWRR)</p>
+              <p className="font-semibold text-ink-0">Time-Weighted Return (TWRR)</p>
               <p>Rendimiento <strong>independiente del timing</strong> de tus aportes y retiros — mide solamente cómo performeó el capital invertido. Es la métrica estándar de la industria (la que usa el S&P 500 para reportar).</p>
-              <p className="text-slate-500 dark:text-slate-400">
+              <p className="text-ink-3">
                 Puede no coincidir con "Resultado total / Capital aportado" del Dashboard:
                 el Dashboard mide cuánto creció tu plata neta; el chart compone rendimientos mes a mes
                 — un crash temprano cuesta más en TWRR porque después tenés que recuperar desde una base chica.
               </p>
               {currency === 'USD'
-                ? <p className="text-slate-500 dark:text-slate-400">Ambas líneas arrancan en 0% al inicio del período seleccionado para comparación directa.</p>
-                : <p className="text-slate-500 dark:text-slate-400">Fijado a los últimos 12 meses. Períodos más extensos pierden comparabilidad por la hiperinflación previa.</p>
+                ? <p className="text-ink-3">Ambas líneas arrancan en 0% al inicio del período seleccionado para comparación directa.</p>
+                : <p className="text-ink-3">Fijado a los últimos 12 meses. Períodos más extensos pierden comparabilidad por la hiperinflación previa.</p>
               }
             </InfoTooltip>
           </div>
 
           {/* Range tabs — solo en USD; ARS es siempre 12 meses */}
           {currency === 'USD' && (
-            <div className="flex gap-1 bg-slate-100 dark:bg-slate-900/60 rounded-lg p-1">
+            <div className="flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">
               {[
                 { label: '1A', months: 12 },
                 { label: '2A', months: 24 },
@@ -1277,7 +1300,7 @@ export default function Insights() {
                   className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
                     chartRange === months
                       ? 'bg-blue-600 text-white'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
                   }`}
                 >
                   {label}
@@ -1286,32 +1309,32 @@ export default function Insights() {
             </div>
           )}
           {currency === 'ARS' && (
-            <span className="text-xs text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/60 px-2.5 py-1 rounded-lg">
+            <span className="text-xs text-ink-3 bg-bg-2 dark:bg-bg-1/60 px-2.5 py-1 rounded-lg">
               Últimos 12 meses
             </span>
           )}
         </div>
 
         {chartData.length === 0 ? (
-          <div className="text-center py-10 text-slate-400 dark:text-slate-500 text-sm mt-4">
+          <div className="text-center py-10 text-ink-3 text-sm mt-4">
             <Info size={20} className="mx-auto mb-2 opacity-50" />
             Cargá al menos un mes en Resumen Mensual para visualizar la evolución.
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={320}>
             <LineChart data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
-              <CartesianGrid stroke="#334155" strokeOpacity={0.3} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={30} />
-              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} />
-              <ReferenceLine y={0} stroke="#475569" strokeOpacity={0.5} strokeDasharray="3 3" />
+              <CartesianGrid stroke="#1B2230" strokeOpacity={0.6} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} minTickGap={30} />
+              <YAxis tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} />
+              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.6} strokeDasharray="2 4" />
               <Tooltip
-                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
-                labelStyle={{ color: '#f1f5f9' }}
+                contentStyle={{ background: '#0E1218', border: '1px solid #262E40', borderRadius: 6, fontSize: 12 }}
+                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'uppercase' }}
                 formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : '—', '']}
               />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
-              <Line type="monotone" dataKey={`${userName} P/L total`} stroke="#4FFF78" strokeWidth={2.8} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#10EFEC' : '#FF46F6'} strokeWidth={2} dot={false} />
+              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontFamily: 'JetBrains Mono' }} />
+              <Line type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2} dot={{ r: 2.5 }} />
+              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -1319,27 +1342,27 @@ export default function Insights() {
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
           y duración de las caídas sobre el rendimiento ajustado por flujos. */}
-      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5 mt-6">
+      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
-            <h2 className="font-semibold text-slate-800 dark:text-slate-200">Curva de drawdown</h2>
+            <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
             <InfoTooltip>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Cómo se calcula</p>
+              <p className="font-semibold text-ink-0">Cómo se calcula</p>
               <p>Distancia mensual respecto al máximo histórico (HWM) del rendimiento acumulado.</p>
               <p>0% indica que estás en máximos. -10% significa que caíste 10% desde el pico anterior.</p>
-              <p className="text-slate-500 dark:text-slate-400">Calculado sobre TWRR: los depósitos y retiros no afectan el drawdown.</p>
+              <p className="text-ink-3">Calculado sobre TWRR: los depósitos y retiros no afectan el drawdown.</p>
             </InfoTooltip>
           </div>
           {drawdownTwrr && (
             <div className="flex gap-3 text-xs">
-              <span className="text-slate-500 dark:text-slate-400">Actual: <span className={`font-semibold tabular ${drawdownTwrr.currentPct < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdownTwrr.currentPct.toFixed(1)}%</span></span>
-              <span className="text-slate-500 dark:text-slate-400">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdownTwrr.maxPct.toFixed(1)}%</span></span>
+              <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdownTwrr.currentPct < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{drawdownTwrr.currentPct.toFixed(1)}%</span></span>
+              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg">{drawdownTwrr.maxPct.toFixed(1)}%</span></span>
             </div>
           )}
         </div>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">Profundidad y duración de las caídas. El área negativa representa los períodos por debajo del máximo histórico.</p>
+        <p className="text-xs text-ink-3 mb-4">Profundidad y duración de las caídas. El área negativa representa los períodos por debajo del máximo histórico.</p>
         {drawdownSeries.length < 2 ? (
-          <div className="text-center py-10 text-slate-400 dark:text-slate-500 text-sm">
+          <div className="text-center py-10 text-ink-3 text-sm">
             <Activity size={20} className="mx-auto mb-2 opacity-50" />
             Se requieren al menos 2 meses de historial para construir la curva.
           </div>
@@ -1348,20 +1371,20 @@ export default function Insights() {
             <AreaChart data={drawdownSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%"  stopColor="#ef4444" stopOpacity={0} />
-                  <stop offset="100%" stopColor="#ef4444" stopOpacity={0.4} />
+                  <stop offset="0%"  stopColor="#FF5360" stopOpacity={0} />
+                  <stop offset="100%" stopColor="#FF5360" stopOpacity={0.35} />
                 </linearGradient>
               </defs>
-              <CartesianGrid stroke="#334155" strokeOpacity={0.25} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={28} />
-              <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} />
-              <ReferenceLine y={0} stroke="#64748b" strokeOpacity={0.5} />
+              <CartesianGrid stroke="#1B2230" strokeOpacity={0.6} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} minTickGap={28} />
+              <YAxis tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} />
+              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.6} />
               <Tooltip
-                contentStyle={{ background: '#0F1614', border: '1px solid #1E2624', borderRadius: 10 }}
-                labelStyle={{ color: '#cbd5e1', fontSize: 11 }}
+                contentStyle={{ background: '#0E1218', border: '1px solid #262E40', borderRadius: 6, fontSize: 12 }}
+                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'uppercase' }}
                 formatter={(v) => [`${v.toFixed(2)}%`, 'Drawdown']}
               />
-              <Area type="monotone" dataKey="ddPct" stroke="#ef4444" strokeWidth={2} fill="url(#ddGrad)" dot={false} />
+              <Area type="monotone" dataKey="ddPct" stroke="#FF5360" strokeWidth={1.5} fill="url(#ddGrad)" dot={false} />
             </AreaChart>
           </ResponsiveContainer>
         )}
@@ -1388,29 +1411,29 @@ export default function Insights() {
           accent={bestWorstOp != null && bestWorstOp.best.pnl_usd > 0}
           tooltip={
             <>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Cómo se calcula</p>
+              <p className="font-semibold text-ink-0">Cómo se calcula</p>
               <p>Operación individual cerrada con mayor P&L en USD.</p>
-              <p className="text-slate-500 dark:text-slate-400">Distinto al "mejor activo total": aquí importa la operación puntual, no el resultado agregado del activo.</p>
+              <p className="text-ink-3">Distinto al "mejor activo total": aquí importa la operación puntual, no el resultado agregado del activo.</p>
             </>
           }
         >
           {!bestWorstOp ? (
-            <p className="text-sm text-slate-400">Aún no hay operaciones cerradas.</p>
+            <p className="text-sm text-ink-3">Aún no hay operaciones cerradas.</p>
           ) : (
             <>
-              <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+              <p className="text-2xl font-bold text-ink-0">
                 {bestWorstOp.best.asset}
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              <p className="text-xs text-ink-3 mt-1">
                 <span className={`${colorClass(bestWorstOp.best.pnl_usd)} font-medium`}>
                   {amt(bestWorstOp.best.pnl_usd, { signed: true })}
                 </span>
                 {bestWorstOp.best.date && (
-                  <span className="text-slate-400 dark:text-slate-500"> · {bestWorstOp.best.date}</span>
+                  <span className="text-ink-3"> · {bestWorstOp.best.date}</span>
                 )}
               </p>
               {bestWorstOp.worst && bestWorstOp.worst.pnl_usd < 0 && (
-                <p className="text-xs text-slate-600 dark:text-slate-300 mt-3 leading-snug">
+                <p className="text-xs text-ink-2 mt-3 leading-snug">
                   Peor operación: <span className="font-semibold text-rendi-neg">{bestWorstOp.worst.asset}</span> con <span className={colorClass(bestWorstOp.worst.pnl_usd)}>{amt(bestWorstOp.worst.pnl_usd, { signed: true })}</span>.
                 </p>
               )}
@@ -1425,19 +1448,19 @@ export default function Insights() {
           accent={profitFactor != null && profitFactor.profitFactor >= 1}
           tooltip={
             <>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Cómo se calcula</p>
+              <p className="font-semibold text-ink-0">Cómo se calcula</p>
               <p><span className="font-medium">Win rate:</span> porcentaje de operaciones cerradas con P&L positivo.</p>
               <p><span className="font-medium">Profit factor:</span> ganancia bruta total dividida por pérdida bruta total.</p>
-              <p className="text-slate-500 dark:text-slate-400">Un win rate alto con ganancias pequeñas puede tener profit factor &lt; 1 (resultado neto negativo aunque aciertes más seguido). Las dos métricas se interpretan en conjunto.</p>
+              <p className="text-ink-3">Un win rate alto con ganancias pequeñas puede tener profit factor &lt; 1 (resultado neto negativo aunque aciertes más seguido). Las dos métricas se interpretan en conjunto.</p>
             </>
           }
         >
           {!winRate ? (
-            <p className="text-sm text-slate-400">Aún no hay operaciones cerradas.</p>
+            <p className="text-sm text-ink-3">Aún no hay operaciones cerradas.</p>
           ) : (
             <>
               <div className="flex items-baseline gap-3">
-                <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+                <p className="text-2xl font-bold text-ink-0">
                   {winRate.pct.toFixed(0)}%
                 </p>
                 {profitFactor && (
@@ -1451,12 +1474,12 @@ export default function Insights() {
                   </p>
                 )}
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              <p className="text-xs text-ink-3 mt-1">
                 <span className="text-emerald-500">{winRate.wins} ganadoras</span> ·
                 <span className="text-red-500"> {winRate.losses} perdedoras</span>
-                {winRate.ratio != null && <span className="text-slate-400 dark:text-slate-500"> · R/R {winRate.ratio.toFixed(2)}x</span>}
+                {winRate.ratio != null && <span className="text-ink-3"> · R/R {winRate.ratio.toFixed(2)}x</span>}
               </p>
-              <p className="text-xs text-slate-600 dark:text-slate-300 mt-3 leading-snug">
+              <p className="text-xs text-ink-2 mt-3 leading-snug">
                 {profitFactor && profitFactor.profitFactor < 1
                   ? `Profit factor < 1: con ${winRate.pct.toFixed(0)}% de aciertos, las pérdidas brutas superan a las ganancias. Resultado neto negativo.`
                   : profitFactor && profitFactor.profitFactor >= 2
@@ -1478,29 +1501,29 @@ export default function Insights() {
           accent={concentration != null && concentration.sharePct < 70}
           tooltip={
             <>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Cómo se calcula</p>
+              <p className="font-semibold text-ink-0">Cómo se calcula</p>
               <p>Porcentaje del portfolio concentrado en los 3 activos más grandes (excluyendo cash).</p>
-              <p className="text-slate-500 dark:text-slate-400">Cuanto más alto, mayor el riesgo idiosincrático: una caída en uno solo de esos activos impacta de forma directa.</p>
+              <p className="text-ink-3">Cuanto más alto, mayor el riesgo idiosincrático: una caída en uno solo de esos activos impacta de forma directa.</p>
             </>
           }
         >
           {!concentration ? (
-            <p className="text-sm text-slate-400">Aún no hay posiciones cargadas.</p>
+            <p className="text-sm text-ink-3">Aún no hay posiciones cargadas.</p>
           ) : (
             <>
-              <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+              <p className="text-2xl font-bold text-ink-0">
                 {concentration.sharePct.toFixed(0)}%
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              <p className="text-xs text-ink-3 mt-1">
                 {concentration.top3.map(t => t.asset).join(' · ')}
               </p>
               {gainConcentration && gainConcentration.sharePct >= 40 && (
-                <p className="text-xs text-slate-600 dark:text-slate-300 mt-3 leading-snug">
-                  El <span className="font-semibold text-slate-900 dark:text-white">{gainConcentration.sharePct.toFixed(0)}%</span> de tus ganancias proviene de <span className="font-semibold">{gainConcentration.topAsset}</span>. Sin esa posición, el rendimiento global cambia significativamente.
+                <p className="text-xs text-ink-2 mt-3 leading-snug">
+                  El <span className="font-semibold text-ink-0 dark:text-white">{gainConcentration.sharePct.toFixed(0)}%</span> de tus ganancias proviene de <span className="font-semibold">{gainConcentration.topAsset}</span>. Sin esa posición, el rendimiento global cambia significativamente.
                 </p>
               )}
               {(!gainConcentration || gainConcentration.sharePct < 40) && (
-                <p className="text-xs text-slate-600 dark:text-slate-300 mt-3 leading-snug">
+                <p className="text-xs text-ink-2 mt-3 leading-snug">
                   {concentration.sharePct >= 80
                     ? 'Concentración elevada. Una caída en cualquiera de estos activos impacta fuertemente al portfolio.'
                     : concentration.sharePct >= 60
@@ -1519,23 +1542,23 @@ export default function Insights() {
           accent={holdTime != null}
           tooltip={
             <>
-              <p className="font-semibold text-slate-800 dark:text-slate-100">Cómo se calcula</p>
+              <p className="font-semibold text-ink-0">Cómo se calcula</p>
               <p>Días promedio transcurridos entre la fecha de compra y la de venta de cada operación cerrada.</p>
-              <p className="text-slate-500 dark:text-slate-400">Solo se incluyen operaciones con ambas fechas registradas.</p>
+              <p className="text-ink-3">Solo se incluyen operaciones con ambas fechas registradas.</p>
             </>
           }
         >
           {!holdTime ? (
-            <p className="text-sm text-slate-400">Sin datos suficientes. Se requieren operaciones con fecha de entrada registrada.</p>
+            <p className="text-sm text-ink-3">Sin datos suficientes. Se requieren operaciones con fecha de entrada registrada.</p>
           ) : (
             <>
-              <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+              <p className="text-2xl font-bold text-ink-0">
                 {holdTime.avg.toFixed(0)} {holdTime.avg === 1 ? 'día' : 'días'}
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              <p className="text-xs text-ink-3 mt-1">
                 Sobre {holdTime.count} {holdTime.count === 1 ? 'operación' : 'operaciones'} cerradas
               </p>
-              <p className="text-xs text-slate-600 dark:text-slate-300 mt-3 leading-snug">
+              <p className="text-xs text-ink-2 mt-3 leading-snug">
                 {holdTime.avgWin != null && holdTime.avgLoss != null && (
                   <>Ganadoras: <span className="text-emerald-500 font-medium">{holdTime.avgWin.toFixed(0)}d</span> · Perdedoras: <span className="text-red-500 font-medium">{holdTime.avgLoss.toFixed(0)}d</span>. </>
                 )}
@@ -1586,24 +1609,24 @@ export default function Insights() {
       <Section title="Distribución" subtitle="Cómo se reparte tu capital entre brokers, activos y clases de instrumento.">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Pie chart por broker */}
-        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
+        <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-slate-800 dark:text-slate-200">Por broker</h2>
+            <h2 className="font-semibold text-ink-0">Por broker</h2>
             {brokerConcentration && (
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                Top: <span className="font-medium text-slate-700 dark:text-slate-200">{brokerConcentration.top.name}</span> ({brokerConcentration.top.sharePct.toFixed(0)}%)
+              <span className="text-xs text-ink-3">
+                Top: <span className="font-medium text-ink-1">{brokerConcentration.top.name}</span> ({brokerConcentration.top.sharePct.toFixed(0)}%)
               </span>
             )}
           </div>
           {pieData.length === 0 ? (
-            <p className="text-slate-400 dark:text-slate-500 text-sm text-center py-8">Aún no hay posiciones cargadas.</p>
+            <p className="text-ink-3 text-sm text-center py-8">Aún no hay posiciones cargadas.</p>
           ) : (
             <ResponsiveContainer width="100%" height={260}>
               <PieChart>
                 <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
                   {pieData.map((_, i) => <Cell key={`pie-d-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                 </Pie>
-                <Legend formatter={(v) => <span className="text-slate-600 dark:text-slate-300 text-xs">{v}</span>} iconType="circle" iconSize={8} />
+                <Legend formatter={(v) => <span className="text-ink-2 text-xs">{v}</span>} iconType="circle" iconSize={8} />
                 <Tooltip
                   contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
                   formatter={(v) => [`${amt(v)} (${((v / totalPortfolio) * 100).toFixed(1)}%)`, '']}
@@ -1613,10 +1636,10 @@ export default function Insights() {
           )}
         </div>
 
-        <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
-          <h2 className="font-semibold text-slate-800 dark:text-slate-200 mb-4">Por activo</h2>
+        <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+          <h2 className="font-semibold text-ink-0 mb-4">Por activo</h2>
           {assetPieData.length === 0 ? (
-            <p className="text-slate-400 dark:text-slate-500 text-sm text-center py-8">—</p>
+            <p className="text-ink-3 text-sm text-center py-8">—</p>
           ) : (
             <div className="space-y-3">
               {assetPieData.map((d, i) => {
@@ -1624,10 +1647,10 @@ export default function Insights() {
                 return (
                   <div key={d.name}>
                     <div className="flex justify-between text-sm mb-1">
-                      <span className="text-slate-700 dark:text-slate-300">{d.name}</span>
-                      <span className="text-slate-500 dark:text-slate-400 tabular">{amt(d.value)} · {p.toFixed(1)}%</span>
+                      <span className="text-ink-1">{d.name}</span>
+                      <span className="text-ink-3 tabular">{amt(d.value)} · {p.toFixed(1)}%</span>
                     </div>
-                    <div className="h-2 bg-slate-100 dark:bg-slate-700/40 rounded-full overflow-hidden">
+                    <div className="h-2 bg-bg-2 dark:bg-bg-2/40 rounded-full overflow-hidden">
                       <div className="h-full rounded-full" style={{ width: `${p}%`, background: PIE_COLORS[i % PIE_COLORS.length] }} />
                     </div>
                   </div>
@@ -1645,29 +1668,29 @@ export default function Insights() {
       </div>
 
       {/* Distribución por tipo de activo (cripto / acción / CEDEAR / cash) */}
-      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5 mt-6">
+      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
         <div className="flex items-center gap-1.5 mb-4">
-          <h2 className="font-semibold text-slate-800 dark:text-slate-200">Distribución por tipo de activo</h2>
+          <h2 className="font-semibold text-ink-0">Distribución por tipo de activo</h2>
           <InfoTooltip>
-            <p className="font-semibold text-slate-800 dark:text-slate-100">Cómo se calcula</p>
+            <p className="font-semibold text-ink-0">Cómo se calcula</p>
             <p>Clasificación automática por ticker y broker:</p>
-            <p className="text-slate-500 dark:text-slate-400">• Cripto: tickers conocidos (BTC, ETH, SOL, etc.).</p>
-            <p className="text-slate-500 dark:text-slate-400">• CEDEAR/Acciones AR: posiciones en brokers locales.</p>
-            <p className="text-slate-500 dark:text-slate-400">• Acciones/ETFs: posiciones en brokers USD que no son cripto.</p>
-            <p className="text-slate-500 dark:text-slate-400">• Cash: posiciones marcadas como efectivo.</p>
+            <p className="text-ink-3">• Cripto: tickers conocidos (BTC, ETH, SOL, etc.).</p>
+            <p className="text-ink-3">• CEDEAR/Acciones AR: posiciones en brokers locales.</p>
+            <p className="text-ink-3">• Acciones/ETFs: posiciones en brokers USD que no son cripto.</p>
+            <p className="text-ink-3">• Cash: posiciones marcadas como efectivo.</p>
           </InfoTooltip>
         </div>
         {assetTypeBreakdown.length === 0 ? (
-          <p className="text-slate-400 dark:text-slate-500 text-sm text-center py-6">—</p>
+          <p className="text-ink-3 text-sm text-center py-6">—</p>
         ) : (
           <div className="space-y-3">
             {assetTypeBreakdown.map((d, i) => (
               <div key={d.type}>
                 <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-700 dark:text-slate-300">{d.type}</span>
-                  <span className="text-slate-500 dark:text-slate-400 tabular">{amt(d.value)} · {d.sharePct.toFixed(1)}%</span>
+                  <span className="text-ink-1">{d.type}</span>
+                  <span className="text-ink-3 tabular">{amt(d.value)} · {d.sharePct.toFixed(1)}%</span>
                 </div>
-                <div className="h-2 bg-slate-100 dark:bg-slate-700/40 rounded-full overflow-hidden">
+                <div className="h-2 bg-bg-2 dark:bg-bg-2/40 rounded-full overflow-hidden">
                   <div className="h-full rounded-full" style={{ width: `${d.sharePct}%`, background: PIE_COLORS[i % PIE_COLORS.length] }} />
                 </div>
               </div>
@@ -1724,7 +1747,7 @@ export default function Insights() {
               />
               <InflationCard inflation={inflationCum} />
             </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-3 leading-snug px-1">
+            <p className="text-[11px] text-ink-3 mt-3 leading-snug px-1">
               <Info size={11} className="inline -mt-0.5 mr-1" />
               Benchmarks calculados replicando tus depósitos y retiros en las mismas fechas. Datos con periodicidad mensual — algunos meses utilizan el último valor disponible si falta el cierre oficial.
             </p>
@@ -1747,9 +1770,9 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
   // Verde si gano al benchmark, rojo si pierdo.
   if (disabled || benchmarkValue == null || delta == null) {
     return (
-      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
-        <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">{label}</p>
-        <p className="text-sm text-slate-400 dark:text-slate-500 mt-2">{disabledHint || 'Datos insuficientes para calcular.'}</p>
+      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+        <p className="text-xs uppercase tracking-wider font-semibold text-ink-3">{label}</p>
+        <p className="text-sm text-ink-3 mt-2">{disabledHint || 'Datos insuficientes para calcular.'}</p>
       </div>
     )
   }
@@ -1757,16 +1780,16 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
   const accentBorder = gano ? 'border-rendi-pos/40' : 'border-rendi-neg/40'
   const accentText = gano ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
-    <div className={`bg-white dark:bg-slate-800/60 border ${accentBorder} rounded-xl shadow-sm dark:shadow-none p-5`}>
-      <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">{label}</p>
+    <div className={`bg-white dark:bg-bg-2/60 border ${accentBorder} rounded-xl shadow-sm dark:shadow-none p-5`}>
+      <p className="text-xs uppercase tracking-wider font-semibold text-ink-3">{label}</p>
       <p className={`text-2xl font-bold tabular mt-2 ${accentText}`}>
         {gano ? '+' : '-'}{amt(Math.abs(delta.delta))}
       </p>
       <p className={`text-xs tabular mt-0.5 ${accentText}`}>
         {delta.pct >= 0 ? '+' : ''}{delta.pct.toFixed(1)}% {gano ? 'por encima' : 'por debajo'} del benchmark
       </p>
-      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-3 leading-snug">
-        {hint}: <span className="font-medium text-slate-700 dark:text-slate-200">{amt(benchmarkValue)}</span>
+      <p className="text-[11px] text-ink-3 mt-3 leading-snug">
+        {hint}: <span className="font-medium text-ink-1">{amt(benchmarkValue)}</span>
       </p>
     </div>
   )
@@ -1778,19 +1801,19 @@ function InflationCard({ inflation }) {
   // para mantener poder de compra.
   if (!inflation) {
     return (
-      <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
-        <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Inflación AR</p>
-        <p className="text-sm text-slate-400 dark:text-slate-500 mt-2">No hay datos de IPC suficientes para el período seleccionado.</p>
+      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+        <p className="text-xs uppercase tracking-wider font-semibold text-ink-3">Inflación AR</p>
+        <p className="text-sm text-ink-3 mt-2">No hay datos de IPC suficientes para el período seleccionado.</p>
       </div>
     )
   }
   return (
     <div className="bg-white dark:bg-bg-1 border border-rendi-warn/30 rounded p-5">
-      <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Inflación AR (período)</p>
+      <p className="text-xs uppercase tracking-wider font-semibold text-ink-3">Inflación AR (período)</p>
       <p className="text-2xl font-bold tabular mt-2 text-rendi-warn">
         +{inflation.cumPct.toFixed(1)}%
       </p>
-      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-3 leading-snug">
+      <p className="text-[11px] text-ink-3 mt-3 leading-snug">
 IPC acumulado en {inflation.monthsCounted} {inflation.monthsCounted === 1 ? 'mes' : 'meses'}. Rendimiento mínimo necesario en pesos para preservar el poder adquisitivo.
       </p>
     </div>
@@ -1814,28 +1837,28 @@ function PerformanceAttribution({ discipline, amt }) {
   const pnlPositive = pnl >= 0
 
   return (
-    <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5 mt-6">
+    <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
       <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
         <div className="flex items-center gap-1.5">
-          <h2 className="font-semibold text-slate-800 dark:text-slate-200">Atribución del crecimiento</h2>
+          <h2 className="font-semibold text-ink-0">Atribución del crecimiento</h2>
           <InfoTooltip>
-            <p className="font-semibold text-slate-800 dark:text-slate-100">Cómo se calcula</p>
+            <p className="font-semibold text-ink-0">Cómo se calcula</p>
             <p>El portfolio crece o decrece por dos vías: <span className="font-medium">aportes netos</span> (depósitos menos retiros) y <span className="font-medium">rendimiento del mercado</span> (P&L mensual).</p>
-            <p className="text-slate-500 dark:text-slate-400">Si el crecimiento proviene principalmente de aportes, no refleja gestión sino capital nuevo. La performance real es la rentabilidad generada sobre el capital ya invertido.</p>
+            <p className="text-ink-3">Si el crecimiento proviene principalmente de aportes, no refleja gestión sino capital nuevo. La performance real es la rentabilidad generada sobre el capital ya invertido.</p>
           </InfoTooltip>
         </div>
-        <span className="text-xs text-slate-500 dark:text-slate-400 tabular">
-          Total: <span className="font-semibold text-slate-700 dark:text-slate-200">{amt(total, { signed: true })}</span>
+        <span className="text-xs text-ink-3 tabular">
+          Total: <span className="font-semibold text-ink-1">{amt(total, { signed: true })}</span>
         </span>
       </div>
-      <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+      <p className="text-xs text-ink-3 mb-4">
         Qué porción del crecimiento proviene del rendimiento del mercado vs nuevos aportes.
       </p>
 
       {/* Stacked bar */}
-      <div className="h-3 bg-slate-100 dark:bg-slate-900/50 rounded-full overflow-hidden flex">
+      <div className="h-3 bg-bg-2 dark:bg-bg-1/50 rounded-full overflow-hidden flex">
         <div
-          className="h-full bg-slate-400/70 dark:bg-slate-500/70 transition-[width] duration-300 ease-out motion-reduce:transition-none"
+          className="h-full bg-ink-3/70 dark:bg-bg-20/70 transition-[width] duration-300 ease-out motion-reduce:transition-none"
           style={{ width: `${depShare}%` }}
           title="Aportes netos"
         />
@@ -1849,24 +1872,24 @@ function PerformanceAttribution({ discipline, amt }) {
       {/* Numeric breakdown */}
       <div className="grid grid-cols-2 gap-4 mt-4">
         <div className="flex items-start gap-2">
-          <span className="mt-1 inline-block w-2 h-2 rounded-full bg-slate-400 flex-shrink-0" />
+          <span className="mt-1 inline-block w-2 h-2 rounded-full bg-ink-3 flex-shrink-0" />
           <div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">Aportes netos</p>
-            <p className="text-lg font-semibold text-slate-700 dark:text-slate-200 tabular">{amt(deposits, { signed: true })}</p>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500">{depShare.toFixed(0)}% del cambio</p>
+            <p className="text-xs text-ink-3">Aportes netos</p>
+            <p className="text-lg font-semibold text-ink-1 tabular">{amt(deposits, { signed: true })}</p>
+            <p className="text-[11px] text-ink-3">{depShare.toFixed(0)}% del cambio</p>
           </div>
         </div>
         <div className="flex items-start gap-2">
           <span className={`mt-1 inline-block w-2 h-2 rounded-full flex-shrink-0 ${pnlPositive ? 'bg-emerald-500' : 'bg-red-500'}`} />
           <div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{pnlPositive ? 'Rendimiento del mercado' : 'Pérdida del mercado'}</p>
+            <p className="text-xs text-ink-3">{pnlPositive ? 'Rendimiento del mercado' : 'Pérdida del mercado'}</p>
             <p className={`text-lg font-semibold tabular ${pnlPositive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{amt(pnl, { signed: true })}</p>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500">{pnlShare.toFixed(0)}% del cambio</p>
+            <p className="text-[11px] text-ink-3">{pnlShare.toFixed(0)}% del cambio</p>
           </div>
         </div>
       </div>
 
-      <p className="text-xs text-slate-600 dark:text-slate-300 mt-4 leading-snug">
+      <p className="text-xs text-ink-2 mt-4 leading-snug">
         {pnlShare >= 60 && pnlPositive
           ? 'Más del 60% del crecimiento proviene del rendimiento del mercado. Indicador positivo de gestión.'
           : depShare >= 70
@@ -1886,13 +1909,13 @@ function ContribList({ tone, title, items, fmt }) {
   const isPos = tone === 'positive'
   const accentText = isPos ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
-    <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded p-5">
-      <div className="flex items-center gap-2 mb-3 text-slate-500 dark:text-slate-400">
+    <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+      <div className="flex items-center gap-2 mb-3 text-ink-3">
         {isPos ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
         <span className="text-xs font-semibold uppercase tracking-wider">{title}</span>
       </div>
       {items.length === 0 ? (
-        <p className="text-sm text-slate-400 dark:text-slate-500">Sin contribuciones significativas.</p>
+        <p className="text-sm text-ink-3">Sin contribuciones significativas.</p>
       ) : (
         <ul className="space-y-2">
           {items.map((it, i) => (
@@ -1900,7 +1923,7 @@ function ContribList({ tone, title, items, fmt }) {
               <div className="flex items-center gap-2.5 min-w-0">
                 <span className={`tabular text-xs font-semibold w-4 ${isPos ? 'text-rendi-pos/70' : 'text-rendi-neg/70'}`}>{i + 1}</span>
                 <AssetLogo asset={it.asset} size={24} />
-                <span className="font-semibold text-slate-800 dark:text-slate-200">{it.asset}</span>
+                <span className="font-semibold text-ink-0">{it.asset}</span>
               </div>
               <span className={`tabular font-bold ${accentText}`}>
                 {fmt ? fmt(it.pnl, { signed: true }) : (it.pnl >= 0 ? `+USD ${it.pnl.toFixed(2)}` : `-USD ${Math.abs(it.pnl).toFixed(2)}`)}
@@ -1922,19 +1945,19 @@ function CollapsibleCoach({ snapshot, suggested }) {
   return (
     <button
       onClick={() => setOpen(true)}
-      className="w-full text-left bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded px-5 py-4 hover:border-rendi-accent/40 hover:bg-rendi-accent/[0.02] dark:hover:bg-rendi-accent/[0.04] transition group"
+      className="w-full text-left bg-white dark:bg-bg-1 border border-line rounded px-5 py-4 hover:border-rendi-accent/40 hover:bg-rendi-accent/[0.02] dark:hover:bg-rendi-accent/[0.04] transition group"
     >
       <div className="flex items-center gap-3">
         <div className="p-2 rounded-lg bg-bg-3 border border-line text-rendi-accent flex-shrink-0">
           <Sparkles size={18} />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="font-semibold text-slate-800 dark:text-slate-200">Activar Coach IA</p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+          <p className="font-semibold text-ink-0">Activar Coach IA</p>
+          <p className="text-xs text-ink-3 mt-0.5">
             Conversá con un asistente que tiene contexto completo sobre tus números. Click para abrir.
           </p>
         </div>
-        <ChevronDown size={16} className="text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 flex-shrink-0" />
+        <ChevronDown size={16} className="text-ink-3 group-hover:text-ink-2 dark:group-hover:text-ink-1 flex-shrink-0" />
       </div>
     </button>
   )
@@ -1950,7 +1973,7 @@ function DiagnosticText({ text }) {
     <>
       {parts.map((part, i) => (
         i % 2 === 1
-          ? <strong key={i} className="font-semibold text-slate-900 dark:text-white">{part}</strong>
+          ? <strong key={i} className="font-semibold text-ink-0 dark:text-white">{part}</strong>
           : <span key={i}>{part}</span>
       ))}
     </>
@@ -1963,7 +1986,7 @@ function DiagnosticText({ text }) {
 function DiagnosisGrid({ items }) {
   if (!items || items.length === 0) return null
   return (
-    <div className="bg-slate-200 dark:bg-line border border-slate-200 dark:border-line rounded overflow-hidden">
+    <div className="bg-bg-2 dark:bg-line border border-line rounded overflow-hidden">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-px">
         {items.map(d => <DiagnosisCard key={d.id} d={d} />)}
       </div>
@@ -1985,11 +2008,11 @@ function DiagnosisCard({ d }) {
           {sev.label}
         </span>
       </div>
-      <p className="text-sm font-medium leading-snug text-slate-900 dark:text-ink-0 mb-2">
+      <p className="text-sm font-medium leading-snug text-ink-0 mb-2">
         <DiagnosticText text={title} />
       </p>
       {context && (
-        <p className="text-xs text-slate-600 dark:text-ink-2 leading-relaxed flex-1">
+        <p className="text-xs text-ink-2 leading-relaxed flex-1">
           <DiagnosticText text={context} />
         </p>
       )}
@@ -2032,7 +2055,7 @@ function AlertBanner({ level, category, title, text }) {
   const styles = {
     danger:  { wrap: 'bg-red-500/[0.06] border-red-500/25',     iconColor: 'text-rendi-neg',     titleColor: 'text-red-700 dark:text-red-300',     textColor: 'text-red-700/75 dark:text-red-300/80',     badge: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30',           Icon: AlertTriangle },
     warning: { wrap: 'bg-amber-500/[0.06] border-amber-500/25', iconColor: 'text-amber-500 dark:text-amber-400', titleColor: 'text-amber-700 dark:text-amber-300', textColor: 'text-amber-700/75 dark:text-amber-300/80', badge: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30',  Icon: AlertTriangle },
-    info:    { wrap: 'bg-slate-500/[0.06] border-slate-500/25', iconColor: 'text-slate-500 dark:text-slate-300', titleColor: 'text-slate-800 dark:text-slate-100', textColor: 'text-slate-600 dark:text-slate-300',     badge: 'bg-slate-500/15 text-slate-700 dark:text-slate-200 border-slate-500/30',  Icon: Info },
+    info:    { wrap: 'bg-bg-20/[0.06] border-line-2/25', iconColor: 'text-ink-3', titleColor: 'text-ink-0', textColor: 'text-ink-2',     badge: 'bg-bg-20/15 text-ink-1 border-line-2/30',  Icon: Info },
   }
   const s = styles[level] || styles.info
   const Icon = s.Icon
@@ -2055,9 +2078,9 @@ function AlertBanner({ level, category, title, text }) {
 function InsightCard({ icon, title, children, accent, tooltip }) {
   return (
     <div className={`bg-white dark:bg-bg-1 border rounded p-5 ${
-      accent ? 'border-rendi-accent/40 dark:border-rendi-accent/30' : 'border-slate-200/80 dark:border-line'
+      accent ? 'border-rendi-accent/40 dark:border-rendi-accent/30' : 'border-line/80 dark:border-line'
     }`}>
-      <div className="flex items-center gap-2 mb-3 text-slate-500 dark:text-slate-400">
+      <div className="flex items-center gap-2 mb-3 text-ink-3">
         {icon}
         <span className="text-xs font-medium uppercase tracking-wide flex-1">{title}</span>
         {tooltip && <InfoTooltip>{tooltip}</InfoTooltip>}

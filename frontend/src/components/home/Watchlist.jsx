@@ -1,15 +1,13 @@
-// Watchlist — tickers que el user "sigue" sin tenerlos en portfolio.
-//
-// Diseño: tabla compacta. Cada row clickeable → AssetQuickView.
-// Empty state: explicación + CTA "Buscá un ticker arriba para agregarlo".
-//
-// V1.5: backend GET/POST/DELETE /api/watchlist
-// V2: integrar mini-sparkline 30d en cada row
+// Watchlist — tickers seguidos sin holding (V2).
+// Panel denso + DataRow por ticker.
 
 import { useEffect, useState } from 'react'
 import { Star, X, TrendingUp, TrendingDown, Eye } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetQuickView from './AssetQuickView'
+import Panel from '../Panel'
+import Eyebrow from '../Eyebrow'
+import DataRow from '../DataRow'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -19,7 +17,7 @@ function fmtPct(p) {
 
 function fmtPrice(p) {
   if (p == null) return '—'
-  return `US$${p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 export default function Watchlist() {
@@ -44,7 +42,6 @@ export default function Watchlist() {
       await api.delete(`/watchlist/${encodeURIComponent(symbol)}`)
       setItems(prev => prev.filter(i => i.symbol !== symbol))
     } catch {
-      // silent fail; al cerrar el optimistic refresh lo restaura
       load()
     } finally {
       setRemovingSym(null)
@@ -54,15 +51,11 @@ export default function Watchlist() {
   if (loading) {
     return (
       <section>
-        <h2 className="font-display text-sm uppercase tracking-wider text-ink-3 mb-2">
-          Watchlist
-        </h2>
-        <div className="rounded-sm border border-line bg-bg-1 p-3">
-          <div className="space-y-2">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-8 rounded-sm bg-bg-2 animate-pulse" />
-            ))}
-          </div>
+        <Eyebrow>Watchlist</Eyebrow>
+        <div className="mt-2 rounded border border-line bg-bg-1 p-3 space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-8 rounded-sm bg-bg-2 animate-pulse" />
+          ))}
         </div>
       </section>
     )
@@ -71,60 +64,62 @@ export default function Watchlist() {
   return (
     <section>
       <div className="flex items-baseline justify-between mb-2">
-        <h2 className="font-display text-sm uppercase tracking-wider text-ink-3">
-          Watchlist
-        </h2>
+        <Eyebrow>Watchlist</Eyebrow>
         {items.length > 0 && (
-          <span className="text-[11px] text-ink-3 font-mono">{items.length} tickers</span>
+          <span className="text-[10px] text-ink-3 font-mono">{items.length} tickers</span>
         )}
       </div>
 
       {items.length === 0 ? (
-        <div className="rounded-sm border border-line bg-bg-1 p-6 text-center">
-          <Eye size={20} className="mx-auto mb-2 text-ink-3" strokeWidth={1.5} aria-hidden="true" />
+        <Panel padding="lg" className="text-center">
+          <Eye size={18} className="mx-auto mb-2 text-ink-3" strokeWidth={1.5} aria-hidden="true" />
           <p className="text-xs text-ink-2">
             Tu watchlist está vacía. Buscá un ticker arriba y agregalo desde su ficha.
           </p>
-        </div>
+        </Panel>
       ) : (
-        <div className="rounded-sm border border-line bg-bg-1 overflow-hidden">
-          <ul className="divide-y divide-line/30">
+        <Panel padding="none" className="overflow-hidden">
+          <div className="divide-y divide-line/30">
             {items.map(it => {
               const pos = (it.change_pct ?? 0) >= 0
               return (
-                <li key={it.symbol} className="flex items-center gap-2 px-3 py-2 hover:bg-bg-2/40 transition-colors">
-                  <button
+                <div key={it.symbol} className="flex items-center group">
+                  <DataRow
+                    density="default"
+                    hoverable
                     onClick={() => setSelected(it.symbol)}
-                    className="flex-1 min-w-0 flex items-center gap-3 text-left"
+                    className="flex-1"
                   >
                     <Star size={11} className="text-rendi-warn flex-shrink-0" fill="currentColor" strokeWidth={1.5} aria-hidden="true" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-mono text-ink-0">{it.symbol}</div>
-                    </div>
-                    <div className="text-sm font-mono tabular text-ink-1 min-w-[90px] text-right">
-                      {fmtPrice(it.price)}
-                    </div>
-                    <div className={`text-sm font-mono tabular min-w-[70px] text-right flex items-center justify-end gap-1 ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                      {pos
-                        ? <TrendingUp size={10} strokeWidth={1.75} aria-hidden="true" />
-                        : <TrendingDown size={10} strokeWidth={1.75} aria-hidden="true" />}
-                      {fmtPct(it.change_pct)}
-                    </div>
-                  </button>
+                    <DataRow.Cell width={80} mono>
+                      <span className="text-ink-0 text-[13px]">{it.symbol}</span>
+                    </DataRow.Cell>
+                    <DataRow.Cell align="right" mono tabular>
+                      US${fmtPrice(it.price)}
+                    </DataRow.Cell>
+                    <DataRow.Cell align="right" width={80} mono tabular>
+                      <span className={`flex items-center justify-end gap-1 ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                        {pos
+                          ? <TrendingUp size={9} strokeWidth={1.75} aria-hidden="true" />
+                          : <TrendingDown size={9} strokeWidth={1.75} aria-hidden="true" />}
+                        {fmtPct(it.change_pct)}
+                      </span>
+                    </DataRow.Cell>
+                  </DataRow>
                   <button
-                    onClick={() => remove(it.symbol)}
+                    onClick={(e) => { e.stopPropagation(); remove(it.symbol) }}
                     disabled={removingSym === it.symbol}
-                    className="text-ink-3 hover:text-rendi-neg p-1 flex-shrink-0 disabled:opacity-40"
+                    className="text-ink-3 hover:text-rendi-neg p-2 flex-shrink-0 disabled:opacity-40 opacity-0 group-hover:opacity-100 transition-opacity"
                     title="Quitar de watchlist"
                     aria-label="Quitar"
                   >
-                    <X size={12} strokeWidth={1.75} />
+                    <X size={11} strokeWidth={1.75} />
                   </button>
-                </li>
+                </div>
               )
             })}
-          </ul>
-        </div>
+          </div>
+        </Panel>
       )}
 
       {selected && (

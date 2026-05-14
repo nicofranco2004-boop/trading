@@ -44,8 +44,8 @@ export default function UpcomingEventsCard({ positions }) {
   if (!loaded || events.length === 0) return null
 
   return (
-    <div className="bg-white dark:bg-bg-1 border border-slate-200 dark:border-line rounded overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-200 dark:border-line bg-slate-50/40 dark:bg-bg-2/40 flex items-center justify-between">
+    <div className="bg-white dark:bg-bg-1 border border-line rounded overflow-hidden">
+      <div className="px-4 py-3 border-b border-line bg-bg-2/40 dark:bg-bg-2/40 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Calendar size={14} strokeWidth={1.75} className="text-rendi-accent" />
           <span className="text-sm font-semibold text-ink-0">Próximos eventos</span>
@@ -58,7 +58,7 @@ export default function UpcomingEventsCard({ positions }) {
           Ver todos <ArrowRight size={11} strokeWidth={1.75} />
         </Link>
       </div>
-      <ul className="divide-y divide-slate-100 dark:divide-line/40">
+      <ul className="divide-y divide-line/50 dark:divide-line/40">
         {events.map((ev, i) => (
           <EventRow key={`${ev.ticker}:${ev.eventType}:${ev.eventDate}:${i}`} event={ev} />
         ))}
@@ -70,7 +70,7 @@ export default function UpcomingEventsCard({ positions }) {
 function EventRow({ event }) {
   const { ticker, eventType, eventDate, confirmed } = event
   return (
-    <li className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-bg-2/40">
+    <li className="px-4 py-2.5 flex items-center gap-3 hover:bg-bg-2 dark:hover:bg-bg-2/40">
       <AssetLogo asset={ticker} size={28} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap mb-0.5">

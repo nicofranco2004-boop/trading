@@ -130,7 +130,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
   return (
     <div ref={wrapRef} className={`relative ${className}`}>
       <div className="relative">
-        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 pointer-events-none" />
+        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" />
         <input
           ref={inputRef}
           value={query}
@@ -146,13 +146,13 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
           placeholder={placeholder || 'Buscar por ticker o nombre (ej.: AAPL, Bitcoin, S&P 500)'}
           autoComplete="off"
           spellCheck="false"
-          className="w-full bg-slate-50 dark:bg-bg-2 border border-slate-300 dark:border-line rounded-md pl-8 pr-8 py-2 text-sm text-slate-900 dark:text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
+          className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md pl-8 pr-8 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
         />
         {query && (
           <button
             type="button"
             onClick={() => { setQuery(''); onChange(''); inputRef.current?.focus() }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-3 hover:text-ink-2 dark:hover:text-ink-1"
           >
             <X size={14} />
           </button>
@@ -160,9 +160,9 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
       </div>
 
       {open && (
-        <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-2xl overflow-hidden w-[min(680px,92vw)] flex flex-col" style={{ maxHeight: '70vh' }}>
+        <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-2xl overflow-hidden w-[min(680px,92vw)] flex flex-col" style={{ maxHeight: '70vh' }}>
           {/* Tabs de categorías — sticky para que no se vayan al scrollear */}
-          <div className="flex flex-wrap gap-1.5 p-2.5 bg-slate-50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-700 shrink-0">
+          <div className="flex flex-wrap gap-1.5 p-2.5 bg-bg-2 dark:bg-bg-1/50 border-b border-line shrink-0">
             {CATEGORIES.map(cat => {
               const Icon = cat.icon
               const active = activeCat === cat.id
@@ -177,8 +177,8 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
                     active
                       ? 'bg-rendi-accent/15 text-rendi-accent ring-1 ring-rendi-accent/30'
                       : isSuggested
-                      ? 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
-                      : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
+                      ? 'text-ink-1 hover:bg-bg-2 dark:hover:bg-bg-2/60'
+                      : 'text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-2/60'
                   }`}
                 >
                   <Icon size={12} />
@@ -194,7 +194,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
           {/* Lista — altura mínima 460px para mostrar bastante contenido */}
           <div ref={listRef} className="flex-1 overflow-y-auto" style={{ minHeight: '460px', maxHeight: '460px' }}>
             {filtered.length === 0 && !showManual && (
-              <div className="px-3 py-12 text-center text-xs text-slate-400 dark:text-slate-500">
+              <div className="px-3 py-12 text-center text-xs text-ink-3">
                 <Search size={24} className="mx-auto mb-2 opacity-50" />
                 Sin resultados para "<span className="font-mono">{query}</span>"
               </div>
@@ -212,14 +212,14 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
                   className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between gap-3 transition border-l-2 ${
                     highlightIdx === i
                       ? 'bg-rendi-accent/10 border-rendi-accent'
-                      : 'border-transparent hover:bg-slate-100 dark:hover:bg-bg-2'
+                      : 'border-transparent hover:bg-bg-2 dark:hover:bg-bg-2'
                   }`}
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <span className="font-mono font-semibold text-sm text-slate-900 dark:text-white shrink-0 w-20 truncate">
+                    <span className="font-mono font-semibold text-sm text-ink-0 dark:text-white shrink-0 w-20 truncate">
                       {item.s}
                     </span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                    <span className="text-xs text-ink-3 truncate">
                       {item.n}
                     </span>
                   </div>
@@ -237,14 +237,14 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
                 data-idx={filtered.length}
                 onMouseEnter={() => setHighlightIdx(filtered.length)}
                 onClick={() => pick(query.trim().toUpperCase())}
-                className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 border-t border-slate-200 dark:border-slate-700 transition ${
+                className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 border-t border-line transition ${
                   highlightIdx === filtered.length
                     ? 'bg-amber-500/10'
-                    : 'hover:bg-slate-100 dark:hover:bg-slate-700/60'
+                    : 'hover:bg-bg-2 dark:hover:bg-bg-2/60'
                 }`}
               >
                 <Plus size={14} className="text-amber-500" />
-                <span className="text-slate-700 dark:text-slate-300">
+                <span className="text-ink-1">
                   Usar <span className="font-mono font-semibold text-amber-600 dark:text-amber-400">{query.trim().toUpperCase()}</span> como ticker manual
                 </span>
               </button>
@@ -252,14 +252,14 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
           </div>
 
           {/* Footer con hint de teclado */}
-          <div className="px-3 py-1.5 text-[10px] text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <div className="px-3 py-1.5 text-[10px] text-ink-3 bg-bg-2 dark:bg-bg-1/50 border-t border-line flex items-center justify-between">
             <span>{filtered.length} resultados</span>
             <span className="flex items-center gap-2">
-              <kbd className="px-1 py-0.5 bg-slate-200 dark:bg-slate-700 rounded">↑↓</kbd>
+              <kbd className="px-1 py-0.5 bg-bg-2 dark:bg-bg-2 rounded">↑↓</kbd>
               navegar
-              <kbd className="px-1 py-0.5 bg-slate-200 dark:bg-slate-700 rounded">↵</kbd>
+              <kbd className="px-1 py-0.5 bg-bg-2 dark:bg-bg-2 rounded">↵</kbd>
               seleccionar
-              <kbd className="px-1 py-0.5 bg-slate-200 dark:bg-slate-700 rounded">esc</kbd>
+              <kbd className="px-1 py-0.5 bg-bg-2 dark:bg-bg-2 rounded">esc</kbd>
               cerrar
             </span>
           </div>

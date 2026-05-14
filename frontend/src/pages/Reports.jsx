@@ -1,35 +1,74 @@
-// Reports — timeline financiera narrativa (Phase 1).
+// Reports — timeline operativa de Rendi (V2 redesign).
+// ════════════════════════════════════════════════════════════════════════════
+// Estructura:
+//   1. Header compacto (eyebrow + título + broker selector)
+//   2. PerformanceCalendar — KPI strip + heatmap anual de meses
+//   3. Year selector (tabs) — qué año mirar en detalle
+//   4. MonthlyTable — fila por mes del año seleccionado (densa, mono caps)
+//   5. MonthCard expandible inline — click en fila → expand
 //
-// Reemplaza la pantalla vieja MonthlyReports.jsx. Diseño:
-//   - Header: PageHeader + BrokerSelector
-//   - Para cada año: banda con label "2026" / "2025" + lista de meses
-//   - Cada mes es un MonthCard premium (hero + insights + highlights + weeks colapsadas)
-//
-// Reglas de default expansion:
-//   - Mes en curso: expandido + chips visibles
-//   - Meses del año actual (cerrados): visibles, semanas colapsadas
-//   - Años pasados: la banda muestra el delta resumen del año; los meses se
-//     pueden expandir individualmente
+// Decisión: el user elige qué mes abrir. Por default nada está expandido.
 
-import { useState } from 'react'
+import { useState, useMemo, Fragment } from 'react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
-import { Loader2, FileText, AlertTriangle } from 'lucide-react'
+import { Loader2, FileText, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
 import useReportsTimeline from '../hooks/useReportsTimeline'
 import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
-import YearlyHighlights from '../components/reports/YearlyHighlights'
+import PerformanceCalendar from '../components/reports/PerformanceCalendar'
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function fmtPct(p) {
+  if (p == null) return '—'
+  const abs = Math.abs(p)
+  const sign = p >= 0 ? '+' : '−'
+  return `${sign}${abs.toFixed(abs >= 10 ? 1 : 2)}%`
+}
+
+function fmtUsd(v) {
+  if (v == null) return '—'
+  const abs = Math.abs(v)
+  const sign = v >= 0 ? '+' : '−'
+  return `${sign}US$${abs.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
+}
+
+function monthNum(period_key) {
+  if (!period_key) return null
+  const m = period_key.match(/-(\d{1,2})/)
+  return m ? parseInt(m[1], 10) : null
+}
+
+const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+
+// ─── Reports root ────────────────────────────────────────────────────────────
 
 export default function Reports() {
   const [broker, setBroker] = useState('global')
   const { loading, error, yearGroups, hasAnyData } = useReportsTimeline(broker, 12)
   const todayYear = new Date().getFullYear()
+  const [selectedYear, setSelectedYear] = useState(null)
+  const [expandedKey, setExpandedKey] = useState(null)
+
+  // Año seleccionado por default: el actual si existe en yearGroups, sino el más reciente.
+  const effectiveYear = useMemo(() => {
+    if (!yearGroups.length) return null
+    if (selectedYear && yearGroups.some(g => g.year === selectedYear)) return selectedYear
+    if (yearGroups.some(g => g.year === todayYear)) return todayYear
+    return yearGroups[0].year
+  }, [yearGroups, selectedYear, todayYear])
+
+  const yearData = useMemo(
+    () => yearGroups.find(g => g.year === effectiveYear) || null,
+    [yearGroups, effectiveYear]
+  )
 
   return (
-    <div className="page-shell">
+    <div className="page-shell-wide">
       <PageHeader
-        title="Reportes"
-        subtitle="Tu historia financiera, contada como timeline. Lo reciente con detalle, lo histórico condensado."
+        eyebrow="Reportes / Mensual"
+        title="Performance histórica"
         action={<BrokerSelector value={broker} onChange={setBroker} />}
       />
 
@@ -56,64 +95,187 @@ export default function Reports() {
       )}
 
       {!loading && !error && hasAnyData && (
-        <div className="space-y-8">
-          {yearGroups.map(({ year, months }) => (
-            <YearGroup
-              key={year}
-              year={year}
-              months={months}
-              isCurrentYear={year === todayYear}
+        <>
+          <PerformanceCalendar yearGroups={yearGroups} />
+
+          {/* Year selector */}
+          <YearTabs
+            years={yearGroups.map(g => g.year)}
+            value={effectiveYear}
+            onChange={(y) => { setSelectedYear(y); setExpandedKey(null) }}
+          />
+
+          {/* Monthly table */}
+          {yearData && (
+            <MonthlyTable
+              year={yearData.year}
+              months={yearData.months}
+              expandedKey={expandedKey}
+              onToggle={(key) => setExpandedKey(prev => prev === key ? null : key)}
             />
-          ))}
-        </div>
+          )}
+        </>
       )}
     </div>
   )
 }
 
-// ─── YearGroup ───────────────────────────────────────────────────────────────
-// Banda con label del año + lista de meses.
-// Año actual: meses con contenido expandido.
-// Años pasados: meses minimal hasta que el user expanda.
+// ─── Year tabs ───────────────────────────────────────────────────────────────
 
-function YearGroup({ year, months, isCurrentYear }) {
-  // Calcular un resumen anual a partir de los meses (delta acumulado + flows)
-  const summary = (() => {
-    const sumDelta = months.reduce((s, m) => s + (m.metrics.delta_usd || 0), 0)
-    const sumRealized = months.reduce((s, m) => s + (m.metrics.realized_pnl || 0), 0)
-    const trades = months.reduce((s, m) => s + (m.metrics.trades_count || 0), 0)
-    return { sumDelta, sumRealized, trades }
-  })()
-
+function YearTabs({ years, value, onChange }) {
+  if (years.length <= 1) return null
   return (
-    <section>
-      <header className="flex items-baseline justify-between gap-4 pb-3 mb-3 border-b border-line/40">
-        <h2 className="font-display text-3xl text-ink-0 tracking-tight">{year}</h2>
-        <div className="flex items-baseline gap-3 text-xs text-ink-3 font-mono tabular">
-          <span>{months.length} {months.length === 1 ? 'mes' : 'meses'}</span>
-          <span>·</span>
-          <span>{summary.trades} trades</span>
-          <span>·</span>
-          <span className={summary.sumRealized >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}>
-            {summary.sumRealized >= 0 ? '+' : '−'}US${Math.abs(summary.sumRealized).toLocaleString('es-AR', { maximumFractionDigits: 0 })} realizado
-          </span>
-        </div>
-      </header>
-
-      {/* Highlights del año — visibles solo si hay ≥3 meses relevantes */}
-      {months.filter(m => m.is_relevant).length >= 3 && (
-        <YearlyHighlights months={months} />
-      )}
-
-      <div className="space-y-3">
-        {months.map(m => (
-          <MonthCard
-            key={m.period_key}
-            month={m}
-            defaultExpanded={isCurrentYear}
-          />
+    <div className="flex items-center gap-2 mb-3">
+      <span className="text-[10px] font-mono uppercase tracking-label text-ink-3">Año</span>
+      <div className="inline-flex bg-bg-2 border border-line rounded-sm p-0.5">
+        {years.map(y => (
+          <button
+            key={y}
+            onClick={() => onChange(y)}
+            className={`px-3 py-1 text-xs font-mono tabular tracking-tight rounded-sm transition-colors ${
+              value === y
+                ? 'bg-bg-3 text-ink-0'
+                : 'text-ink-2 hover:text-ink-0'
+            }`}
+          >
+            {y}
+          </button>
         ))}
       </div>
-    </section>
+    </div>
+  )
+}
+
+// ─── Monthly table ───────────────────────────────────────────────────────────
+
+function MonthlyTable({ year, months, expandedKey, onToggle }) {
+  // Lista ordenada cronológicamente con todos los slots del año (1..12),
+  // ya sean activos o "—".
+  const rows = useMemo(() => {
+    const byNum = new Map(months.map(m => [monthNum(m.period_key), m]))
+    const list = []
+    for (let i = 1; i <= 12; i++) {
+      const m = byNum.get(i)
+      list.push({ num: i, name: MONTH_NAMES[i - 1], month: m })
+    }
+    // Ocultar meses futuros que no existen (después del último relevante)
+    const lastIdx = list.reduceRight((acc, r, idx) => acc === -1 && r.month ? idx : acc, -1)
+    return list.slice(0, lastIdx === -1 ? 0 : lastIdx + 1)
+  }, [months])
+
+  if (rows.length === 0) return null
+
+  return (
+    <div className="border border-line rounded bg-bg-1 overflow-hidden">
+      <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
+        <div className="flex items-center gap-2">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
+          <span className="text-[11px] font-mono uppercase tracking-label text-ink-0">Tabla mensual</span>
+          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 ml-1">/ {year}</span>
+        </div>
+        <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          {months.length} {months.length === 1 ? 'mes' : 'meses'} con actividad
+        </span>
+      </header>
+
+      <table className="w-full">
+        <thead>
+          <tr className="text-[10px] font-mono uppercase tracking-label text-ink-3 border-b border-line/60">
+            <th className="text-left  px-4 py-2 font-medium">Mes</th>
+            <th className="text-right px-3 py-2 font-medium">Rendimiento</th>
+            <th className="text-right px-3 py-2 font-medium">P&amp;L USD</th>
+            <th className="text-right px-3 py-2 font-medium">Trades</th>
+            <th className="text-right px-3 py-2 font-medium">Win&nbsp;rate</th>
+            <th className="text-right px-3 py-2 font-medium">vs S&amp;P</th>
+            <th className="text-left  px-3 py-2 font-medium hidden lg:table-cell">Headline</th>
+            <th className="px-3 py-2 w-[40px]"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ num, name, month }) => {
+            const empty = !month || !month.is_relevant
+            const isCurrent = month?.is_current
+            const isExpanded = month && expandedKey === month.period_key
+            const m = month?.metrics
+            const status = month
+              ? (isCurrent
+                  ? 'en curso'
+                  : 'cerrado')
+              : 'sin datos'
+            const pct = m?.delta_pct
+            const usd = m?.delta_usd
+            const toneRow = isExpanded
+              ? 'bg-bg-2'
+              : (pct != null && pct >= 0
+                  ? 'hover:bg-rendi-pos/[0.04]'
+                  : pct != null
+                    ? 'hover:bg-rendi-neg/[0.04]'
+                    : 'hover:bg-bg-2/40')
+            return (
+              <Fragment key={num}>
+                <tr
+                  onClick={() => month && onToggle(month.period_key)}
+                  className={`border-b border-line/30 text-sm transition-colors ${
+                    empty ? 'text-ink-3 cursor-default' : 'cursor-pointer'
+                  } ${toneRow}`}
+                >
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-ink-1 min-w-[36px]">{name}</span>
+                      {isCurrent && (
+                        <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm">
+                          En curso
+                        </span>
+                      )}
+                      {!isCurrent && !empty && (
+                        <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3">
+                          {status}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className={`px-3 py-2.5 text-right font-mono tabular text-sm ${
+                    pct == null ? 'text-ink-3' : (pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
+                  }`}>
+                    {fmtPct(pct)}
+                  </td>
+                  <td className={`px-3 py-2.5 text-right font-mono tabular text-xs ${
+                    usd == null ? 'text-ink-3' : (usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
+                  }`}>
+                    {fmtUsd(usd)}
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-mono tabular text-xs text-ink-1">
+                    {m?.trades_count != null ? m.trades_count : '—'}
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-mono tabular text-xs text-ink-1">
+                    {m?.win_rate != null ? `${m.win_rate.toFixed(0)}%` : '—'}
+                  </td>
+                  <td className={`px-3 py-2.5 text-right font-mono tabular text-xs ${
+                    m?.vs_sp500_pct == null ? 'text-ink-3' : (m.vs_sp500_pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
+                  }`}>
+                    {m?.vs_sp500_pct != null ? `${m.vs_sp500_pct >= 0 ? '+' : ''}${m.vs_sp500_pct.toFixed(1)}pp` : '—'}
+                  </td>
+                  <td className="px-3 py-2.5 text-xs text-ink-2 truncate max-w-[260px] hidden lg:table-cell">
+                    {month?.headline || ''}
+                  </td>
+                  <td className="px-2 py-2.5 text-ink-3 text-right">
+                    {month && (isExpanded
+                      ? <ChevronUp size={14} strokeWidth={1.75} aria-hidden="true" />
+                      : <ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" />)}
+                  </td>
+                </tr>
+                {isExpanded && (
+                  <tr className="border-b border-line">
+                    <td colSpan={8} className="bg-bg-0 p-4">
+                      <MonthCard month={month} defaultExpanded={true} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
   )
 }

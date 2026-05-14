@@ -65,8 +65,10 @@ def _holdings_with_quotes(holdings: List[Dict[str, Any]],
 
 # ─── Detectores de PersonalCard ──────────────────────────────────────────────
 
-def detect_holdings_movers(holdings_quoted: List[Dict[str, Any]], top_n: int = 3) -> List[PersonalCard]:
-    """Top N holdings por |change_pct|, threshold >1.5%."""
+def detect_holdings_movers(holdings_quoted: List[Dict[str, Any]], top_n: int = 6) -> List[PersonalCard]:
+    """Holdings con movimiento ≥1.5% en el día — los más fuertes primero,
+    cap top_n. El threshold es estricto en valor absoluto, así que tanto
+    rallies como caídas relevantes entran."""
     candidates = [h for h in holdings_quoted if abs(h.get("change_pct", 0)) >= 1.5]
     candidates.sort(key=lambda h: abs(h["change_pct"]), reverse=True)
     out: List[PersonalCard] = []
@@ -173,9 +175,10 @@ def build_personal_cards(conn, uid: int, *,
     holdings_assets = {h["asset"].upper() for h in holdings}
 
     cards: List[PersonalCard] = []
-    cards.extend(detect_holdings_movers(holdings_quoted, top_n=3))
+    cards.extend(detect_holdings_movers(holdings_quoted, top_n=6))
     cards.extend(detect_earnings_soon(portfolio_events, holdings_assets))
     cards.extend(detect_dividends_soon(portfolio_events, holdings_assets))
 
-    # Cap a 4 — preferimos movements sobre eventos si hay más
-    return [asdict(c) for c in cards[:4]]
+    # Cap a 8 — el grid del frontend es 4 cols (2 filas máx). Movers van
+    # primero, luego earnings, luego dividends.
+    return [asdict(c) for c in cards[:8]]

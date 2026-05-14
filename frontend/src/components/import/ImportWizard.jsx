@@ -393,12 +393,12 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4 overflow-y-auto">
-      <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-t-2xl sm:rounded-xl w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
-          <h2 className="font-semibold text-slate-900 dark:text-slate-100 text-sm sm:text-base">
+      <div className="bg-white dark:bg-bg-2 border border-line rounded-t-2xl sm:rounded-xl w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-line flex-shrink-0">
+          <h2 className="font-semibold text-ink-0 text-sm sm:text-base">
             Importar CSV
           </h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+          <button onClick={onClose} className="text-ink-3 hover:text-ink-2 dark:hover:text-ink-0">
             <X size={18} />
           </button>
         </div>
@@ -476,12 +476,12 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
           )}
         </div>
 
-        <div className="flex justify-between gap-2 px-5 py-3 border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
+        <div className="flex justify-between gap-2 px-5 py-3 border-t border-line flex-shrink-0">
           <div>
             {step === STEP_MAP && (
               <button
                 onClick={() => setStep(STEP_UPLOAD)}
-                className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                className="px-3 py-2 text-sm text-ink-3 hover:text-ink-0 dark:hover:text-ink-0"
               >
                 ← Volver
               </button>
@@ -489,7 +489,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             {step === STEP_PREVIEW && (
               <button
                 onClick={() => setStep(isSpecificParser ? STEP_UPLOAD : STEP_MAP)}
-                className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                className="px-3 py-2 text-sm text-ink-3 hover:text-ink-0 dark:hover:text-ink-0"
               >
                 {isSpecificParser ? '← Volver' : '← Ajustar mapeo'}
               </button>
@@ -497,7 +497,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             {step === STEP_SEED && (
               <button
                 onClick={() => setStep(STEP_PREVIEW)}
-                className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                className="px-3 py-2 text-sm text-ink-3 hover:text-ink-0 dark:hover:text-ink-0"
               >
                 ← Volver a vista previa
               </button>
@@ -507,7 +507,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             {step !== STEP_DONE && (
               <button
                 onClick={onClose}
-                className="px-4 py-2 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0 dark:hover:text-ink-0"
               >
                 Cancelar
               </button>
@@ -550,7 +550,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                   disabled={busy || toImport === 0}
                   className={`px-4 py-2 text-sm rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 ${
                     hasSeedSug
-                      ? 'border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      ? 'border border-line-2 text-ink-1 hover:bg-bg-2 dark:hover:bg-bg-2'
                       : 'bg-rendi-accent hover:bg-rendi-accent/90 text-white'
                   }`}
                   title={hasSeedSug ? 'Importar el CSV sin agregar el estado inicial sugerido' : ''}
@@ -603,15 +603,15 @@ function Stepper({ step, skipMap, hasSeed }) {
   // resaltamos comparando por id.
   const idx = steps.findIndex(s => s.id === step)
   return (
-    <div className="flex items-center gap-2 px-5 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 text-xs text-slate-500 dark:text-slate-400">
+    <div className="flex items-center gap-2 px-5 py-3 border-b border-line bg-bg-2 dark:bg-bg-1/40 text-xs text-ink-3">
       {steps.map((s, i) => (
         <div key={s.id} className="flex items-center gap-2">
           <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-semibold
-            ${i <= idx ? 'bg-rendi-accent text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'}`}>
+            ${i <= idx ? 'bg-rendi-accent text-white' : 'bg-bg-2 dark:bg-bg-2 text-ink-3'}`}>
             {i + 1}
           </span>
-          <span className={i === idx ? 'text-slate-900 dark:text-slate-100 font-medium' : ''}>{s.label}</span>
-          {i < steps.length - 1 && <span className="mx-1 text-slate-400">›</span>}
+          <span className={i === idx ? 'text-ink-0 font-medium' : ''}>{s.label}</span>
+          {i < steps.length - 1 && <span className="mx-1 text-ink-3">›</span>}
         </div>
       ))}
     </div>
@@ -699,7 +699,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
       {/* Para parsers específicos, el broker lo hardcodea el parser. */}
       {isSpecific && (
         <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
-          <span className="text-slate-700 dark:text-slate-200">
+          <span className="text-ink-1">
             Este parser crea automáticamente el broker correspondiente
             (<span className="font-semibold">{parserLabel}</span>) si no existe — no necesitás seleccionar uno.
           </span>
@@ -710,7 +710,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
       {!isSpecific && (
       <div className="space-y-4">
       <div>
-        <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">¿De qué tipo es este archivo?</label>
+        <label className="block text-xs text-ink-3 mb-2">¿De qué tipo es este archivo?</label>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <button
             type="button"
@@ -718,11 +718,11 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             className={`text-left px-3 py-2.5 rounded-md border transition ${
               importMode === 'single'
                 ? 'border-rendi-accent bg-rendi-accent/10'
-                : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+                : 'border-line hover:border-line dark:hover:border-line-2'
             }`}
           >
-            <div className="text-sm font-medium text-slate-900 dark:text-slate-100">Un solo broker</div>
-            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            <div className="text-sm font-medium text-ink-0">Un solo broker</div>
+            <div className="text-xs text-ink-3 mt-0.5">
               Es un export de IBKR, Cocos, Binance, etc. Todas las filas pertenecen al mismo broker.
             </div>
           </button>
@@ -732,11 +732,11 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             className={`text-left px-3 py-2.5 rounded-md border transition ${
               importMode === 'general'
                 ? 'border-rendi-accent bg-rendi-accent/10'
-                : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+                : 'border-line hover:border-line dark:hover:border-line-2'
             }`}
           >
-            <div className="text-sm font-medium text-slate-900 dark:text-slate-100">Mezcla de brokers</div>
-            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            <div className="text-sm font-medium text-ink-0">Mezcla de brokers</div>
+            <div className="text-xs text-ink-3 mt-0.5">
               Tu archivo tiene una columna que indica a qué broker pertenece cada fila.
             </div>
           </button>
@@ -745,12 +745,12 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
 
       {importMode === 'single' && (
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Broker del archivo</label>
+          <label className="block text-xs text-ink-3 mb-1">Broker del archivo</label>
           {brokers.length > 0 ? (
             <select
               value={singleBroker}
               onChange={e => setSingleBroker(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200"
+              className="w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
             >
               {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>)}
             </select>
@@ -765,15 +765,15 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
               >Mezcla de brokers</button> para que se auto-cree.
             </div>
           )}
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          <p className="text-xs text-ink-3 mt-1">
             Todas las filas del archivo se van a importar a este broker. No necesitás una columna de broker en el CSV.
           </p>
         </div>
       )}
 
       {isArsBroker && (
-        <div className="px-3 py-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40">
-          <div className="text-xs text-slate-700 dark:text-slate-200 mb-2 font-medium">
+        <div className="px-3 py-3 rounded-md border border-line bg-bg-2 dark:bg-bg-1/40">
+          <div className="text-xs text-ink-1 mb-2 font-medium">
             ¿Este archivo tiene operaciones en dólares?
           </div>
           <div className="flex gap-2 mb-2">
@@ -781,8 +781,8 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
               type="button"
               onClick={() => setHasUsdOps(true)}
               className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
-                hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-slate-900 dark:text-slate-100 font-medium'
-                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-300'
+                hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
+                          : 'border-line text-ink-2 hover:border-line'
               }`}
             >
               Sí, hay operaciones en USD
@@ -791,20 +791,20 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
               type="button"
               onClick={() => setHasUsdOps(false)}
               className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
-                !hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-slate-900 dark:text-slate-100 font-medium'
-                           : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-300'
+                !hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
+                           : 'border-line text-ink-2 hover:border-line'
               }`}
             >
               No, todo es en ARS
             </button>
           </div>
           {hasUsdOps && (
-            <p className="text-xs text-slate-500 dark:text-slate-400">
+            <p className="text-xs text-ink-3">
               Vamos a crear automáticamente un sub-broker USD asociado a {singleBroker} y rutear cada fila según la moneda: las ARS al broker padre, las USD al sub-broker.
             </p>
           )}
           {!hasUsdOps && (
-            <p className="text-xs text-slate-500 dark:text-slate-400">
+            <p className="text-xs text-ink-3">
               Todas las filas se van a importar al broker en ARS. Si después aparecen filas con moneda USD, se van a registrar igual al broker padre.
             </p>
           )}
@@ -815,11 +815,11 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Plataforma</label>
+          <label className="block text-xs text-ink-3 mb-1">Plataforma</label>
           <select
             value={platform}
             onChange={e => changePlatform(e.target.value)}
-            className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200"
+            className="w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
           >
             {parserGroups.map(g => (
               <option key={g.platform} value={g.platform}>
@@ -830,11 +830,11 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
         </div>
         {hasMultipleExports && (
           <div>
-            <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Tipo de export</label>
+            <label className="block text-xs text-ink-3 mb-1">Tipo de export</label>
             <select
               value={format}
               onChange={e => setFormat(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md px-3 py-2 text-sm text-slate-900 dark:text-slate-200"
+              className="w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
             >
               {exportsForPlatform.map(e => (
                 <option key={e.id} value={e.id} disabled={!e.supported}>
@@ -845,7 +845,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
           </div>
         )}
       </div>
-      <p className="text-xs text-slate-500 dark:text-slate-400 -mt-2">
+      <p className="text-xs text-ink-3 -mt-2">
         {platform === 'generic'
           ? 'El template genérico funciona con cualquier CSV — vas a poder mapear las columnas en el siguiente paso.'
           : 'Elegí desde dónde lo descargaste en tu broker — los headers tienen que coincidir.'}
@@ -859,7 +859,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
       </button>
 
       <div>
-        <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Archivo CSV</label>
+        <label className="block text-xs text-ink-3 mb-1">Archivo CSV</label>
         {fileError && (
           <div className="mb-2 flex items-start gap-2 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
             <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
@@ -882,7 +882,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             e.preventDefault()
             pickFiles(e.dataTransfer?.files)
           }}
-          className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg p-6 text-center cursor-pointer hover:border-rendi-accent/50 focus:border-rendi-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-rendi-accent/40 transition"
+          className="border-2 border-dashed border-line-2 rounded-lg p-6 text-center cursor-pointer hover:border-rendi-accent/50 focus:border-rendi-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-rendi-accent/40 transition"
         >
           <input
             ref={inputRef}
@@ -893,33 +893,33 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             onChange={e => pickFiles(e.target.files)}
           />
           {files.length === 0 ? (
-            <div className="text-sm text-slate-500 dark:text-slate-400">
+            <div className="text-sm text-ink-3">
               <Upload size={20} className="mx-auto mb-2 opacity-60" />
               Soltá uno o varios CSV o hacé clic para seleccionarlos
-              <div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+              <div className="mt-1 text-[11px] text-ink-3">
                 Tip: para importar varios años de Cocos, seleccioná los CSVs juntos
               </div>
             </div>
           ) : (
-            <div className="text-sm text-slate-700 dark:text-slate-200">
-              <div className="text-xs text-slate-500 dark:text-slate-400 mb-2">
+            <div className="text-sm text-ink-1">
+              <div className="text-xs text-ink-3 mb-2">
                 {files.length} {files.length === 1 ? 'archivo seleccionado' : 'archivos seleccionados'} · hacé clic para agregar más
               </div>
               <ul className="space-y-1 text-left max-w-md mx-auto">
                 {files.map(f => (
                   <li
                     key={`${f.name}::${f.size}`}
-                    className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-slate-100 dark:bg-slate-800"
+                    className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-bg-2 dark:bg-bg-2"
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <FileText size={14} className="flex-shrink-0 text-slate-500" />
+                      <FileText size={14} className="flex-shrink-0 text-ink-3" />
                       <span className="font-medium truncate">{f.name}</span>
-                      <span className="text-slate-500 text-xs flex-shrink-0">({(f.size / 1024).toFixed(1)} KB)</span>
+                      <span className="text-ink-3 text-xs flex-shrink-0">({(f.size / 1024).toFixed(1)} KB)</span>
                     </div>
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); removeFile(f.name, f.size) }}
-                      className="text-slate-400 hover:text-red-500 transition p-0.5"
+                      className="text-ink-3 hover:text-red-500 transition p-0.5"
                       title="Quitar archivo"
                       aria-label={`Quitar ${f.name}`}
                     >
@@ -929,7 +929,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
                 ))}
               </ul>
               {!isSpecific && files.length > 1 && (
-                <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                <div className="mt-2 text-[11px] text-ink-3 max-w-md mx-auto">
                   Nota: vamos a mapear las columnas del primer archivo. Los demás
                   deben tener el mismo header.
                 </div>
@@ -939,7 +939,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
         </div>
       </div>
 
-      <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
+      <div className="text-xs text-ink-3 space-y-1">
         <p>Antes de importar, generamos una vista previa: vas a poder revisar fila por fila lo que Rendi entendió antes de guardar nada.</p>
         <p>Si tu archivo tiene errores, las filas válidas se importan igual y te mostramos cuáles fallaron.</p>
       </div>
@@ -982,11 +982,11 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
       {importMode === 'single' && singleBroker && (
         <div className="flex flex-col gap-1 px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
           <div className="flex items-center gap-2">
-            <span className="text-slate-700 dark:text-slate-200">Importando todo a:</span>
-            <span className="font-semibold text-slate-900 dark:text-slate-100">{singleBroker}</span>
+            <span className="text-ink-1">Importando todo a:</span>
+            <span className="font-semibold text-ink-0">{singleBroker}</span>
           </div>
           {useCurrencyRouting && (
-            <div className="text-xs text-slate-600 dark:text-slate-300">
+            <div className="text-xs text-ink-2">
               Filas en USD → al sub-broker <span className="font-medium">{singleBroker} · USD</span> (auto-creado).
             </div>
           )}
@@ -997,7 +997,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
       <div className="flex items-center gap-2 flex-wrap">
         {savedTemplates.length > 0 && (
           <div className="inline-flex items-center gap-1.5 text-xs">
-            <span className="text-slate-500 dark:text-slate-400">Plantilla:</span>
+            <span className="text-ink-3">Plantilla:</span>
             <select
               onChange={e => {
                 const t = savedTemplates.find(x => String(x.id) === e.target.value)
@@ -1005,7 +1005,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
                 e.target.value = ''
               }}
               defaultValue=""
-              className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1 text-xs text-slate-900 dark:text-slate-200"
+              className="bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1 text-xs text-ink-0"
             >
               <option value="" disabled>— cargar guardada —</option>
               {savedTemplates.map(t => (
@@ -1017,7 +1017,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
         <button
           type="button"
           onClick={() => { setTemplateName(''); setShowSaveDialog(true) }}
-          className="inline-flex items-center gap-1 text-xs text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 transition"
+          className="inline-flex items-center gap-1 text-xs text-ink-2 hover:text-ink-0 dark:hover:text-ink-1 px-2 py-1 rounded border border-line hover:border-line dark:hover:border-line-2 transition"
         >
           <Save size={11} /> Guardar mapeo actual
         </button>
@@ -1037,7 +1037,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
               }}
               placeholder="Nombre (ej: IBKR template)"
               autoFocus
-              className="bg-slate-50 dark:bg-slate-900/40 border border-slate-300 dark:border-slate-600 rounded-md px-2 py-1 text-xs text-slate-900 dark:text-slate-200 placeholder-slate-400"
+              className="bg-bg-2 dark:bg-bg-1/40 border border-line-2 rounded-md px-2 py-1 text-xs text-ink-0 placeholder-ink-3"
             />
             <button
               type="button"
@@ -1048,23 +1048,23 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
             <button
               type="button"
               onClick={() => setShowSaveDialog(false)}
-              className="text-xs text-slate-500 hover:text-slate-700"
+              className="text-xs text-ink-3 hover:text-ink-1"
             >Cancelar</button>
           </div>
         )}
         {savedTemplates.length > 0 && (
           <details className="text-xs ml-auto">
-            <summary className="cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">
+            <summary className="cursor-pointer text-ink-3 hover:text-ink-1 dark:hover:text-ink-0">
               Administrar
             </summary>
             <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
               {savedTemplates.map(t => (
-                <div key={t.id} className="flex items-center justify-between gap-2 px-2 py-1 rounded border border-slate-200 dark:border-slate-700">
-                  <span className="text-xs text-slate-700 dark:text-slate-200">{t.name}</span>
+                <div key={t.id} className="flex items-center justify-between gap-2 px-2 py-1 rounded border border-line">
+                  <span className="text-xs text-ink-1">{t.name}</span>
                   <button
                     type="button"
                     onClick={() => onDeleteTemplate?.(t.id)}
-                    className="text-slate-400 hover:text-red-500"
+                    className="text-ink-3 hover:text-red-500"
                     title="Borrar plantilla"
                   >
                     <Trash2 size={11} />
@@ -1076,24 +1076,24 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
         )}
       </div>
 
-      <div className="text-xs text-slate-600 dark:text-slate-300">
+      <div className="text-xs text-ink-2">
         <p className="mb-1">
           Decile a Rendi qué columna de tu archivo corresponde a cada dato. Auto-detectamos las que pudimos por el nombre, ajustá lo que haga falta.
         </p>
-        <p className="text-slate-500 dark:text-slate-400">
+        <p className="text-ink-3">
           {importMode === 'single'
             ? 'Si tu archivo no tiene una columna (ej.: moneda), podés definir un valor fijo para todas las filas.'
             : 'Si tu archivo no tiene una columna (ej.: broker o moneda), podés definir un valor fijo para todas las filas.'}
         </p>
       </div>
 
-      <div className="px-3 py-2 rounded-md bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700">
-        <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+      <div className="px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-1/40 border border-line">
+        <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1">
           Columnas detectadas en tu archivo
         </div>
         <div className="flex flex-wrap gap-1.5">
           {headers.map(h => (
-            <span key={h} className="text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-2 py-0.5 font-mono">
+            <span key={h} className="text-xs bg-white dark:bg-bg-2 border border-line rounded px-2 py-0.5 font-mono">
               {h}
             </span>
           ))}
@@ -1107,14 +1107,14 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
           const help = FIELD_HELP[f.id]
           return (
             <div key={f.id} className="grid grid-cols-1 sm:grid-cols-[160px_1fr_1fr] gap-2 items-center">
-              <label className="text-xs text-slate-700 dark:text-slate-200 inline-flex items-center gap-1">
+              <label className="text-xs text-ink-1 inline-flex items-center gap-1">
                 <span>{f.label}{f.required && <span className="text-red-500 ml-0.5">*</span>}</span>
                 {help && (
                   <InfoTooltip size={11} align="left" label={`Qué es ${f.label}`}>
-                    <p className="font-semibold text-slate-800 dark:text-slate-100">{help.title}</p>
+                    <p className="font-semibold text-ink-0">{help.title}</p>
                     <p>{help.body}</p>
                     {help.examples && (
-                      <p className="text-slate-500 dark:text-slate-400 italic">{help.examples}</p>
+                      <p className="text-ink-3 italic">{help.examples}</p>
                     )}
                   </InfoTooltip>
                 )}
@@ -1122,7 +1122,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
               <select
                 value={colVal}
                 onChange={e => setColumn(f.id, e.target.value)}
-                className="w-full bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200"
+                className="w-full bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0"
               >
                 <option value="">— sin columna —</option>
                 {headers.map(h => <option key={h} value={h}>{h}</option>)}
@@ -1132,7 +1132,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
                   <select
                     value={defVal}
                     onChange={e => setDefault(f.id, e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200"
+                    className="w-full bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0"
                   >
                     <option value="">— valor fijo (opcional) —</option>
                     {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
@@ -1143,7 +1143,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
                     value={defVal}
                     onChange={e => setDefault(f.id, e.target.value)}
                     placeholder="— valor fijo (opcional) —"
-                    className="w-full bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200 placeholder-slate-400"
+                    className="w-full bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0 placeholder-ink-3"
                   />
                 )
               ) : <div />}
@@ -1154,15 +1154,15 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
 
       {sampleRows.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+          <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1">
             Vista previa de tu archivo (primeras filas)
           </div>
-          <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
+          <div className="overflow-x-auto border border-line rounded-md">
             <table className="w-full text-[11px]">
               <thead>
-                <tr className="bg-slate-50 dark:bg-slate-900/40">
+                <tr className="bg-bg-2 dark:bg-bg-1/40">
                   {headers.map(h => (
-                    <th key={h} className="px-2 py-1 text-left font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                    <th key={h} className="px-2 py-1 text-left font-mono text-ink-2 whitespace-nowrap">
                       {h}
                     </th>
                   ))}
@@ -1170,9 +1170,9 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
               </thead>
               <tbody>
                 {sampleRows.map((r, i) => (
-                  <tr key={i} className="border-t border-slate-100 dark:border-slate-700/40">
+                  <tr key={i} className="border-t border-line/50 dark:border-line/40">
                     {headers.map(h => (
-                      <td key={h} className="px-2 py-1 text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                      <td key={h} className="px-2 py-1 text-ink-1 whitespace-nowrap">
                         {r[h] || ''}
                       </td>
                     ))}
@@ -1205,10 +1205,10 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
           <div className="flex items-start gap-2">
             <RotateCcw size={14} className="mt-0.5 flex-shrink-0 text-emerald-600 dark:text-emerald-400" />
             <div>
-              <div className="font-medium text-slate-900 dark:text-slate-100 mb-0.5">
+              <div className="font-medium text-ink-0 mb-0.5">
                 Editar y rehacer
               </div>
-              <p className="text-xs text-slate-600 dark:text-slate-300">
+              <p className="text-xs text-ink-2">
                 Revertimos el import original y reprocesamos los mismos datos. Ajustá lo que haga falta (omitir filas, cargar estado inicial, etc.) y confirmá para crear un import nuevo.
               </p>
             </div>
@@ -1220,10 +1220,10 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
           <div className="flex items-start gap-2 mb-2">
             <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-blue-500" />
             <div>
-              <div className="font-medium text-slate-900 dark:text-slate-100 mb-0.5">
+              <div className="font-medium text-ink-0 mb-0.5">
                 Tu CSV parece arrancar mid-historia
               </div>
-              <p className="text-xs text-slate-600 dark:text-slate-300">
+              <p className="text-xs text-ink-2">
                 Detectamos {seedSug.totals?.sell_errors > 0 && (
                   <span><span className="tabular font-medium">{seedSug.totals.sell_errors}</span> {seedSug.totals.sell_errors === 1 ? 'venta' : 'ventas'} sin compra previa</span>
                 )}
@@ -1249,13 +1249,13 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
       {importMode === 'single' && singleBroker && (
         <div className="flex flex-col gap-1 px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
           <div className="flex items-center gap-2">
-            <span className="text-slate-700 dark:text-slate-200">Importando todo a:</span>
-            <span className="font-semibold text-slate-900 dark:text-slate-100">{singleBroker}</span>
+            <span className="text-ink-1">Importando todo a:</span>
+            <span className="font-semibold text-ink-0">{singleBroker}</span>
           </div>
           {useCurrencyRouting && routing && (
-            <div className="text-xs text-slate-600 dark:text-slate-300">
+            <div className="text-xs text-ink-2">
               <span className="tabular">{routing.ars_rows_to_parent}</span> filas ARS → {singleBroker}{' · '}
-              <span className="tabular">{routing.usd_rows_to_sibling}</span> filas USD → {singleBroker} · USD <span className="text-slate-500 dark:text-slate-400">(sub-broker)</span>
+              <span className="tabular">{routing.usd_rows_to_sibling}</span> filas USD → {singleBroker} · USD <span className="text-ink-3">(sub-broker)</span>
             </div>
           )}
         </div>
@@ -1263,20 +1263,20 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
 
       {(preview.new_brokers_created || []).length > 0 && (
         <div className="px-3 py-2 rounded-md bg-blue-500/10 border border-blue-500/30 text-sm">
-          <div className="text-slate-700 dark:text-slate-200 mb-1 font-medium">
+          <div className="text-ink-1 mb-1 font-medium">
             Brokers nuevos creados
           </div>
-          <p className="text-xs text-slate-600 dark:text-slate-300 mb-1.5">
+          <p className="text-xs text-ink-2 mb-1.5">
             Detectamos brokers en el archivo que no estaban en tu cuenta. Los creamos automáticamente con la moneda inferida (podés cambiarla después en Configuración).
           </p>
           <ul className="text-xs space-y-0.5">
             {preview.new_brokers_created.map(b => (
               <li key={b.name} className="flex items-center gap-2">
-                <span className="font-semibold text-slate-900 dark:text-slate-100">{b.name}</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-slate-700 dark:text-slate-200">
+                <span className="font-semibold text-ink-0">{b.name}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-ink-1">
                   {b.currency}
                 </span>
-                <span className="text-slate-500 dark:text-slate-400">· {b.rows} {b.rows === 1 ? 'fila' : 'filas'}</span>
+                <span className="text-ink-3">· {b.rows} {b.rows === 1 ? 'fila' : 'filas'}</span>
               </li>
             ))}
           </ul>
@@ -1285,20 +1285,20 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
 
       {isMulti && breakdown.length > 0 && (
         <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
-          <div className="text-slate-700 dark:text-slate-200 mb-1.5 font-medium">
+          <div className="text-ink-1 mb-1.5 font-medium">
             Distribución por broker
           </div>
           <ul className="text-xs space-y-1">
             {breakdown.map(b => (
               <li key={b.broker} className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold text-slate-900 dark:text-slate-100">{b.broker}</span>
-                <span className="text-slate-500 dark:text-slate-400">({b.broker_currency})</span>
-                <span className="text-slate-600 dark:text-slate-300">
+                <span className="font-semibold text-ink-0">{b.broker}</span>
+                <span className="text-ink-3">({b.broker_currency})</span>
+                <span className="text-ink-2">
                   · <span className="tabular">{b.ars_rows}</span> ARS{' '}
                   · <span className="tabular">{b.usd_rows}</span> USD
                 </span>
                 {b.creates_sibling && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/20 text-slate-700 dark:text-slate-200">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/20 text-ink-1">
                     USD → {b.sibling_name} (auto-creado)
                   </span>
                 )}
@@ -1323,7 +1323,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
       </div>
 
       <Section title="Se va a crear">
-        <ul className="text-sm text-slate-700 dark:text-slate-300 space-y-1">
+        <ul className="text-sm text-ink-1 space-y-1">
           {(s.by_operation_type || []).map(it => (
             <li key={it.type} className="flex justify-between">
               <span>{it.label}</span>
@@ -1331,7 +1331,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             </li>
           ))}
         </ul>
-        <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400 space-y-0.5">
+        <div className="mt-3 pt-3 border-t border-line text-xs text-ink-3 space-y-0.5">
           <div>{s.estimated_impact?.positions_to_create || 0} posiciones nuevas en <em>Posiciones</em></div>
           <div>{s.estimated_impact?.operations_to_create || 0} operaciones cerradas en <em>Operaciones</em></div>
           <div>{s.estimated_impact?.cash_movements || 0} movimientos de cash</div>
@@ -1340,8 +1340,8 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
       </Section>
 
       {s.date_range && (
-        <div className="text-xs text-slate-500 dark:text-slate-400">
-          Período: <span className="text-slate-700 dark:text-slate-300 tabular">{s.date_range.from}</span> → <span className="text-slate-700 dark:text-slate-300 tabular">{s.date_range.to}</span>
+        <div className="text-xs text-ink-3">
+          Período: <span className="text-ink-1 tabular">{s.date_range.from}</span> → <span className="text-ink-1 tabular">{s.date_range.to}</span>
         </div>
       )}
 
@@ -1349,13 +1349,13 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
         <Section title="Por activo">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left text-slate-500 dark:text-slate-400">
+              <tr className="text-left text-ink-3">
                 <th className="py-1">Activo</th><th className="py-1">Compras</th><th className="py-1">Ventas</th><th className="py-1 text-right">Neto</th>
               </tr>
             </thead>
             <tbody>
               {preview.by_asset.map(a => (
-                <tr key={a.asset} className="border-t border-slate-100 dark:border-slate-700/40">
+                <tr key={a.asset} className="border-t border-line/50 dark:border-line/40">
                   <td className="py-1 font-medium">{a.asset}</td>
                   <td className="py-1 tabular">{a.buys} ({a.buy_qty})</td>
                   <td className="py-1 tabular">{a.sells} ({a.sell_qty})</td>
@@ -1371,13 +1371,13 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
 
       {(preview.duplicate_row_indices || []).length > 0 && (
         <div className="px-3 py-2 rounded-md bg-blue-500/10 border border-blue-500/30 text-xs">
-          <div className="font-medium text-slate-700 dark:text-slate-200 mb-1">
+          <div className="font-medium text-ink-1 mb-1">
             {preview.duplicate_row_indices.length} {preview.duplicate_row_indices.length === 1 ? 'fila ya fue importada antes' : 'filas ya fueron importadas antes'}
           </div>
-          <p className="text-slate-600 dark:text-slate-300">
+          <p className="text-ink-2">
             Detectamos que estas filas coinciden con operaciones de imports anteriores (misma fecha + broker + tipo + activo + cantidad + precio).
             Si confirmás, se van a duplicar en el portfolio. Filas: {' '}
-            <span className="font-mono text-slate-700 dark:text-slate-200">
+            <span className="font-mono text-ink-1">
               {preview.duplicate_row_indices.slice(0, 30).join(', ')}
               {preview.duplicate_row_indices.length > 30 && '…'}
             </span>
@@ -1424,13 +1424,13 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
 
       {(preview.rows_preview || []).length > 0 && (
         <Section title={`Filas a importar (${preview.rows_preview.length - skippedRowIndices.size}${skippedRowIndices.size > 0 ? ` · ${skippedRowIndices.size} omitidas` : ''})`}>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
+          <p className="text-xs text-ink-3 mb-2">
             Tildá filas para excluirlas de este import. La data del archivo no se modifica.
           </p>
           <div className="max-h-60 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-white dark:bg-slate-800">
-                <tr className="text-left text-slate-500 dark:text-slate-400">
+              <thead className="sticky top-0 bg-white dark:bg-bg-2">
+                <tr className="text-left text-ink-3">
                   <th className="py-1 w-6"></th>
                   <th className="py-1">#</th>
                   <th className="py-1">Fecha</th>
@@ -1444,7 +1444,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                 {preview.rows_preview.map(r => {
                   const isSkipped = skippedRowIndices.has(r.row_index)
                   return (
-                    <tr key={r.row_index} className={`border-t border-slate-100 dark:border-slate-700/40 ${isSkipped ? 'opacity-40 line-through' : ''}`}>
+                    <tr key={r.row_index} className={`border-t border-line/50 dark:border-line/40 ${isSkipped ? 'opacity-40 line-through' : ''}`}>
                       <td className="py-1">
                         <input
                           type="checkbox"
@@ -1454,7 +1454,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                           title={isSkipped ? 'Restaurar fila' : 'Omitir fila'}
                         />
                       </td>
-                      <td className="py-1 tabular text-slate-400">{r.row_index}</td>
+                      <td className="py-1 tabular text-ink-3">{r.row_index}</td>
                       <td className="py-1 tabular">{r.date}</td>
                       <td className="py-1">{OP_LABELS[r.operation_type] || r.operation_type}</td>
                       <td className="py-1 font-medium">{r.asset_symbol || '—'}</td>
@@ -1529,10 +1529,10 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
     <div className="space-y-4">
       <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
         <div className="flex flex-col gap-1">
-          <div className="text-slate-700 dark:text-slate-200 font-medium">
+          <div className="text-ink-1 font-medium">
             Estado inicial al {seedDate}
           </div>
-          <p className="text-xs text-slate-600 dark:text-slate-300">
+          <p className="text-xs text-ink-2">
             Vamos a generar depósitos y compras sintéticas con esa fecha (1 día antes de la primera fila del CSV).
             Eso le da al sistema el cash y las posiciones que ya tenías para que las ventas y los gastos del CSV cuadren.
           </p>
@@ -1540,7 +1540,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
       </div>
 
       {brokers.length === 0 && (
-        <div className="text-sm text-slate-500 dark:text-slate-400 text-center py-6">
+        <div className="text-sm text-ink-3 text-center py-6">
           No detectamos brokers que necesiten estado inicial.
         </div>
       )}
@@ -1554,12 +1554,12 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
         // Aseguramos siempre la moneda del broker como mínimo
         if (b.broker_currency) cashCurrencies.add(b.broker_currency)
         return (
-          <div key={bi} className="border border-slate-200 dark:border-slate-700 rounded-md">
-            <div className="px-3 py-2 bg-slate-50 dark:bg-slate-900/40 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <div key={bi} className="border border-line rounded-md">
+            <div className="px-3 py-2 bg-bg-2 dark:bg-bg-1/40 border-b border-line flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="font-semibold text-slate-900 dark:text-slate-100 text-sm">{b.broker}</span>
+                <span className="font-semibold text-ink-0 text-sm">{b.broker}</span>
                 {b.broker_currency && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 uppercase">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-2 dark:bg-bg-2 text-ink-1 uppercase">
                     {b.broker_currency}
                   </span>
                 )}
@@ -1568,7 +1568,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
             <div className="p-3 space-y-3">
               {/* Cash */}
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+                <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1.5">
                   Cash que tenías al {seedDate}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -1576,7 +1576,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                     const overdraft = b.cash_overdraft?.[cur]
                     return (
                       <label key={cur} className="block">
-                        <div className="text-xs text-slate-600 dark:text-slate-300 mb-0.5 flex items-center gap-1">
+                        <div className="text-xs text-ink-2 mb-0.5 flex items-center gap-1">
                           <span>{cur}</span>
                           {overdraft > 0 && (
                             <span className="text-[10px] text-amber-600 dark:text-amber-400">
@@ -1591,7 +1591,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           value={b.cash?.[cur] ?? ''}
                           onChange={e => setCash(bi, cur, e.target.value)}
                           placeholder="0"
-                          className="w-full bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200"
+                          className="w-full bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0"
                         />
                       </label>
                     )
@@ -1601,7 +1601,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
 
               {/* Assets */}
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5 flex items-center justify-between">
+                <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1.5 flex items-center justify-between">
                   <span>Posiciones que tenías al {seedDate}</span>
                   <button
                     type="button"
@@ -1612,12 +1612,12 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                   </button>
                 </div>
                 {(b.assets || []).length === 0 ? (
-                  <div className="text-xs text-slate-500 dark:text-slate-400 italic px-1">
+                  <div className="text-xs text-ink-3 italic px-1">
                     Si tenías posiciones, agregalas con el botón de arriba.
                   </div>
                 ) : (
                   <div className="space-y-1.5">
-                    <div className="grid grid-cols-[1fr_1fr_1fr_24px] gap-2 text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 px-1">
+                    <div className="grid grid-cols-[1fr_1fr_1fr_24px] gap-2 text-[10px] uppercase tracking-wider text-ink-3 px-1">
                       <span>Activo</span>
                       <span>Cantidad</span>
                       <span>Costo unitario</span>
@@ -1630,7 +1630,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           value={a.symbol}
                           onChange={e => setAsset(bi, ai, { symbol: e.target.value.toUpperCase() })}
                           placeholder="BTC"
-                          className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200 font-mono"
+                          className="bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0 font-mono"
                         />
                         <input
                           type="number"
@@ -1639,7 +1639,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           value={a.qty}
                           onChange={e => setAsset(bi, ai, { qty: e.target.value })}
                           placeholder={a.min_qty ? String(a.min_qty) : '0'}
-                          className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200 tabular"
+                          className="bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0 tabular"
                         />
                         <input
                           type="number"
@@ -1648,12 +1648,12 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           value={a.cost_basis_unit}
                           onChange={e => setAsset(bi, ai, { cost_basis_unit: e.target.value })}
                           placeholder="precio promedio"
-                          className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-xs text-slate-900 dark:text-slate-200 tabular"
+                          className="bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0 tabular"
                         />
                         <button
                           type="button"
                           onClick={() => removeAsset(bi, ai)}
-                          className="text-slate-400 hover:text-red-500"
+                          className="text-ink-3 hover:text-red-500"
                           title="Quitar activo"
                         >
                           <Trash2 size={12} />
@@ -1663,7 +1663,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                   </div>
                 )}
                 {(b.assets || []).some(a => a.min_qty > 0) && (
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1.5">
+                  <p className="text-[10px] text-ink-3 mt-1.5">
                     La cantidad sugerida ({(b.assets || []).filter(a => a.min_qty > 0).map(a => `${a.symbol}: ${a.min_qty}`).join(', ')}) es lo mínimo para que las ventas del CSV cuadren. Si tenías más, ponelo igual.
                   </p>
                 )}
@@ -1673,7 +1673,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
         )
       })}
 
-      <div className="text-xs text-slate-500 dark:text-slate-400">
+      <div className="text-xs text-ink-3">
         El estado inicial se guarda como filas sintéticas dentro del mismo lote — al revertir el import, también se borran.
       </div>
     </div>
@@ -1730,11 +1730,11 @@ function CashReconcileCard({ c, onApplied }) {
             <CheckCircle2 size={14} />
             <span className="text-xs font-semibold">{c.broker}</span>
           </div>
-          <span className="text-sm font-mono text-slate-900 dark:text-slate-100">
+          <span className="text-sm font-mono text-ink-0">
             {formatMoney(applied.target, c.currency)}
           </span>
         </div>
-        <p className="text-[11px] text-slate-500 dark:text-slate-400 pl-6">
+        <p className="text-[11px] text-ink-3 pl-6">
           Ajustado. Diferencia de {formatMoney(applied.diff, c.currency, true)} registrada como
           {' '}{applied.diff < 0 ? 'retiro' : 'aporte'} pre-CSV.
         </p>
@@ -1748,11 +1748,11 @@ function CashReconcileCard({ c, onApplied }) {
     <div className={`rounded-lg border p-3 space-y-2.5 ${
       isNegative
         ? 'border-rendi-warn/40 bg-rendi-warn/5'
-        : 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/30'
+        : 'border-line bg-bg-2/50 dark:bg-bg-1/30'
     }`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{c.broker}</span>
+          <span className="text-sm font-semibold text-ink-0">{c.broker}</span>
           {isNegative && (
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30">
               negativo
@@ -1760,8 +1760,8 @@ function CashReconcileCard({ c, onApplied }) {
           )}
         </div>
         <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Calculado del CSV</div>
-          <div className={`text-sm font-mono ${isNegative ? 'text-rendi-warn' : 'text-slate-700 dark:text-slate-300'}`}>
+          <div className="text-[10px] uppercase tracking-wide text-ink-3">Calculado del CSV</div>
+          <div className={`text-sm font-mono ${isNegative ? 'text-rendi-warn' : 'text-ink-1'}`}>
             {computedFmt}
           </div>
         </div>
@@ -1769,11 +1769,11 @@ function CashReconcileCard({ c, onApplied }) {
 
       <div className="flex items-stretch gap-2">
         <div className="flex-1">
-          <label className="block text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+          <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
             ¿Qué cash muestra tu app de {c.broker}?
           </label>
           <div className="relative">
-            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-500 dark:text-slate-400 pointer-events-none">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-ink-3 pointer-events-none">
               {currencySymbol}
             </span>
             <input
@@ -1782,7 +1782,7 @@ function CashReconcileCard({ c, onApplied }) {
               onKeyDown={e => { if (e.key === 'Enter' && validTarget) apply() }}
               disabled={busy}
               placeholder="0.00"
-              className="w-full pl-9 pr-2 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-md tabular text-slate-900 dark:text-slate-100 focus:outline-none focus:border-rendi-accent disabled:opacity-50"
+              className="w-full pl-9 pr-2 py-2 text-sm bg-white dark:bg-bg-2 border border-line-2 rounded-md tabular text-ink-0 focus:outline-none focus:border-rendi-accent disabled:opacity-50"
             />
           </div>
         </div>
@@ -1809,7 +1809,7 @@ function CashReconcileCard({ c, onApplied }) {
         </div>
       )}
       {validTarget && !diffSig && (
-        <div className="text-[11px] text-slate-500 dark:text-slate-400 px-2">
+        <div className="text-[11px] text-ink-3 px-2">
           Ya coincide — no hay ajuste necesario.
         </div>
       )}
@@ -1840,21 +1840,21 @@ function DoneStep({ result }) {
       {/* Hero: success header */}
       <div className="text-center space-y-2">
         <CheckCircle2 size={36} className={`mx-auto ${hasIssues ? 'text-rendi-warn' : 'text-rendi-pos'}`} />
-        <h3 className="font-semibold text-slate-900 dark:text-slate-100">
+        <h3 className="font-semibold text-ink-0">
           {hasIssues ? 'Importación completada con observaciones' : 'Importación completada'}
         </h3>
-        <div className="flex justify-center gap-3 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
+        <div className="flex justify-center gap-3 text-xs text-ink-3 flex-wrap">
           {(result.positions_created || 0) > 0 && (
-            <span><strong className="text-slate-700 dark:text-slate-200 tabular">{result.positions_created}</strong> posiciones</span>
+            <span><strong className="text-ink-1 tabular">{result.positions_created}</strong> posiciones</span>
           )}
           {(result.operations_created || 0) > 0 && (
-            <span><strong className="text-slate-700 dark:text-slate-200 tabular">{result.operations_created}</strong> operaciones</span>
+            <span><strong className="text-ink-1 tabular">{result.operations_created}</strong> operaciones</span>
           )}
           {(result.cash_movements || 0) > 0 && (
-            <span><strong className="text-slate-700 dark:text-slate-200 tabular">{result.cash_movements}</strong> movs. cash</span>
+            <span><strong className="text-ink-1 tabular">{result.cash_movements}</strong> movs. cash</span>
           )}
           {(result.conversions || 0) > 0 && (
-            <span><strong className="text-slate-700 dark:text-slate-200 tabular">{result.conversions}</strong> conversiones</span>
+            <span><strong className="text-ink-1 tabular">{result.conversions}</strong> conversiones</span>
           )}
         </div>
       </div>
@@ -1864,10 +1864,10 @@ function DoneStep({ result }) {
         <div className="space-y-3">
           <div className="flex items-start gap-2 px-1">
             <div className="flex-1">
-              <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              <h4 className="text-sm font-semibold text-ink-0">
                 Confirmá el cash con tu broker
               </h4>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+              <p className="text-xs text-ink-3 mt-0.5 leading-relaxed">
                 Abrí la app de cada broker y comparalo. Si no coincide,
                 {' '}<strong>tipeá el saldo real</strong> y la diferencia se registra como aporte/retiro
                 pre-CSV. Si ya coincide, podés saltarlo.
@@ -1907,7 +1907,7 @@ function DoneStep({ result }) {
         </div>
       )}
 
-      <div className="text-center text-xs text-slate-500 dark:text-slate-400 pt-2">
+      <div className="text-center text-xs text-ink-3 pt-2">
         <a href="/imports" className="text-rendi-accent hover:underline">
           Ver historial de importaciones
         </a>
@@ -1924,12 +1924,12 @@ function SummaryBox({ label, value, positive, negative }) {
     <div className={`px-3 py-2 rounded-md border
       ${positive ? 'border-emerald-500/30 bg-emerald-500/5' :
         negative ? 'border-red-500/30 bg-red-500/5' :
-        'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40'}`}>
-      <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{label}</div>
+        'border-line bg-bg-2 dark:bg-bg-1/40'}`}>
+      <div className="text-[10px] uppercase tracking-wider text-ink-3">{label}</div>
       <div className={`text-sm font-semibold mt-0.5 tabular
         ${positive ? 'text-emerald-700 dark:text-emerald-400' :
           negative ? 'text-red-700 dark:text-red-400' :
-          'text-slate-900 dark:text-slate-100'}`}>{value}</div>
+          'text-ink-0'}`}>{value}</div>
     </div>
   )
 }
@@ -1939,12 +1939,12 @@ function Section({ title, children, variant }) {
   return (
     <div>
       <div className={`text-xs font-medium mb-2
-        ${variant === 'error' ? 'text-red-700 dark:text-red-400' : 'text-slate-700 dark:text-slate-300'}`}>
+        ${variant === 'error' ? 'text-red-700 dark:text-red-400' : 'text-ink-1'}`}>
         {title}
       </div>
       <div className={`px-3 py-2 rounded-md border
         ${variant === 'error' ? 'border-red-500/30 bg-red-500/5' :
-          'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40'}`}>
+          'border-line bg-bg-2 dark:bg-bg-1/40'}`}>
         {children}
       </div>
     </div>

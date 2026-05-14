@@ -15,7 +15,7 @@ export default function RangeTabs({ value, onChange, ranges = RANGES, size = 'md
   const padX = size === 'sm' ? 'px-2.5' : 'px-3'
   const text = size === 'sm' ? 'text-[11px]' : 'text-xs'
   return (
-    <div className="inline-flex bg-slate-200/70 dark:bg-slate-800/60 p-0.5 rounded-lg">
+    <div className="inline-flex bg-bg-2 dark:bg-bg-2/60 p-0.5 rounded-lg">
       {ranges.map(r => {
         const active = value === r.id
         return (
@@ -24,8 +24,8 @@ export default function RangeTabs({ value, onChange, ranges = RANGES, size = 'md
             onClick={() => onChange(r.id)}
             className={`${padX} ${padY} ${text} rounded-md font-semibold tracking-wide transition-colors ${
               active
-                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
             }`}
           >
             {r.label}

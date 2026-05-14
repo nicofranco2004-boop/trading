@@ -40,8 +40,8 @@ export default function ActionMenu({ items = [], align = 'right' }) {
       <button
         onClick={() => setOpen(o => !o)}
         className={`p-1 rounded-md transition ${open
-          ? 'bg-slate-200 dark:bg-slate-700/60 text-slate-700 dark:text-slate-200'
-          : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/40'
+          ? 'bg-bg-2 dark:bg-bg-2/60 text-ink-1'
+          : 'text-ink-3 hover:text-ink-1 dark:hover:text-ink-0 hover:bg-bg-2 dark:hover:bg-bg-2/40'
         }`}
         title="Más acciones"
         aria-label="Más acciones"
@@ -51,12 +51,12 @@ export default function ActionMenu({ items = [], align = 'right' }) {
 
       {open && (
         <div
-          className={`absolute z-30 mt-1 min-w-[180px] py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}
+          className={`absolute z-30 mt-1 min-w-[180px] py-1 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}
           role="menu"
         >
           {visibleItems.map((it, i) => {
             if (it.divider) {
-              return <div key={`d-${i}`} className="my-1 border-t border-slate-200 dark:border-slate-700/60" />
+              return <div key={`d-${i}`} className="my-1 border-t border-line/60" />
             }
             return (
               <button
@@ -66,7 +66,7 @@ export default function ActionMenu({ items = [], align = 'right' }) {
                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition disabled:opacity-40 disabled:cursor-not-allowed ${
                   it.danger
                     ? 'text-red-600 dark:text-red-400 hover:bg-red-500/10'
-                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                    : 'text-ink-1 hover:bg-bg-2 dark:hover:bg-bg-2/50'
                 }`}
                 role="menuitem"
               >
