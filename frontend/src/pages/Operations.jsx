@@ -3,16 +3,17 @@
 // Header operativo + KPI strip denso + filtros mono caps + tabla compacta.
 
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, SlidersHorizontal, ChevronLeft, ChevronRight } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import { usd, fmtUsd, pctSigned, colorClass } from '../utils/format'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
-import Pill from '../components/Pill'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
+
+const PAGE_SIZE = 50
 
 const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: 0, pnl_pct: '', commissions: '' }
 
@@ -33,6 +34,8 @@ export default function Operations() {
   const [filterBroker, setFilterBroker] = useState('all')
   const [filterResult, setFilterResult] = useState('all')
   const [filterYear, setFilterYear] = useState('all')
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [page, setPage] = useState(0)
 
   useEffect(() => {
     load()
@@ -96,7 +99,24 @@ export default function Operations() {
     })
   }, [ops, filterAsset, filterBroker, filterResult, filterYear])
 
-  const filtersActive = filterAsset || filterBroker !== 'all' || filterResult !== 'all' || filterYear !== 'all'
+  const filtersActiveCount =
+    (filterAsset ? 1 : 0) +
+    (filterBroker !== 'all' ? 1 : 0) +
+    (filterResult !== 'all' ? 1 : 0) +
+    (filterYear !== 'all' ? 1 : 0)
+  const filtersActive = filtersActiveCount > 0
+
+  // Reset a página 0 cuando cambian los filtros o el dataset cambia de tamaño
+  useEffect(() => {
+    setPage(0)
+  }, [filterAsset, filterBroker, filterResult, filterYear, ops.length])
+
+  const totalPages = Math.max(1, Math.ceil(filteredOps.length / PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages - 1)
+  const pagedOps = useMemo(
+    () => filteredOps.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE),
+    [filteredOps, currentPage]
+  )
 
   return (
     <div className="page-shell-wide">
@@ -141,38 +161,63 @@ export default function Operations() {
         />
       </div>
 
-      {/* Filtros */}
+      {/* Filtros — collapsable, abren con botón */}
       {ops.length > 0 && (
-        <Panel padding="sm" className="mb-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" strokeWidth={1.75} />
-              <input
-                value={filterAsset}
-                onChange={e => setFilterAsset(e.target.value)}
-                placeholder="Buscar activo (BTC, GGAL…)"
-                className="w-full bg-bg-2 border border-line rounded-sm pl-8 pr-3 py-1.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2"
-              />
-            </div>
-            <FilterPill label="Broker" value={filterBroker} onChange={setFilterBroker}
-              options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]} />
-            <FilterPill label="Resultado" value={filterResult} onChange={setFilterResult}
-              options={[{ id: 'all', label: 'Todos' }, { id: 'wins', label: 'Ganadoras' }, { id: 'losses', label: 'Perdedoras' }]} />
-            <FilterPill label="Año" value={filterYear} onChange={setFilterYear}
-              options={[{ id: 'all', label: 'Todos' }, ...yearsAvailable.map(y => ({ id: y, label: y }))]} />
-            {filtersActive && (
+        <div className="mb-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => { setFilterAsset(''); setFilterBroker('all'); setFilterResult('all'); setFilterYear('all') }}
-                className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition-colors"
+                onClick={() => setFiltersOpen(o => !o)}
+                className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-sm border transition-colors ${
+                  filtersActive
+                    ? 'border-rendi-pos/30 bg-rendi-pos/10 text-rendi-pos'
+                    : 'border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3'
+                }`}
+                aria-expanded={filtersOpen}
               >
-                <X size={11} strokeWidth={1.75} /> Limpiar
+                <SlidersHorizontal size={11} strokeWidth={2} aria-hidden="true" />
+                Filtros
+                {filtersActive && (
+                  <span className="ml-1 inline-flex items-center justify-center min-w-[14px] h-[14px] px-1 text-[9px] rounded-sm bg-rendi-pos/20 text-rendi-pos tabular">
+                    {filtersActiveCount}
+                  </span>
+                )}
               </button>
-            )}
-            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 ml-auto tabular">
+              {filtersActive && (
+                <button
+                  onClick={() => { setFilterAsset(''); setFilterBroker('all'); setFilterResult('all'); setFilterYear('all') }}
+                  className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition-colors"
+                >
+                  <X size={11} strokeWidth={1.75} /> Limpiar
+                </button>
+              )}
+            </div>
+            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 tabular">
               {filteredOps.length} de {ops.length}
             </span>
           </div>
-        </Panel>
+          {filtersOpen && (
+            <Panel padding="sm" className="mt-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative flex-1 min-w-[220px]">
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" strokeWidth={1.75} />
+                  <input
+                    value={filterAsset}
+                    onChange={e => setFilterAsset(e.target.value)}
+                    placeholder="Buscar activo (BTC, GGAL…)"
+                    className="w-full bg-bg-2 border border-line rounded-sm pl-8 pr-3 py-1.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2"
+                  />
+                </div>
+                <FilterPill label="Broker" value={filterBroker} onChange={setFilterBroker}
+                  options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]} />
+                <FilterPill label="Resultado" value={filterResult} onChange={setFilterResult}
+                  options={[{ id: 'all', label: 'Todos' }, { id: 'wins', label: 'Ganadoras' }, { id: 'losses', label: 'Perdedoras' }]} />
+                <FilterPill label="Año" value={filterYear} onChange={setFilterYear}
+                  options={[{ id: 'all', label: 'Todos' }, ...yearsAvailable.map(y => ({ id: y, label: y }))]} />
+              </div>
+            </Panel>
+          )}
+        </div>
       )}
 
       <Panel padding="none">
@@ -180,7 +225,8 @@ export default function Operations() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-line text-[10px] font-mono uppercase tracking-label text-ink-3">
-                <th className="text-left px-4 py-2.5 font-medium">Fecha</th>
+                <th className="text-left px-4 py-2.5 font-medium w-[8px]"></th>
+                <th className="text-left px-3 py-2.5 font-medium">Fecha</th>
                 <th className="text-left px-3 py-2.5 font-medium">Broker</th>
                 <th className="text-left px-3 py-2.5 font-medium">Activo</th>
                 <th className="text-left px-3 py-2.5 font-medium">Tipo</th>
@@ -189,7 +235,6 @@ export default function Operations() {
                 <th className="text-right px-3 py-2.5 font-medium">Cant.</th>
                 <th className="text-right px-3 py-2.5 font-medium">P&L USD</th>
                 <th className="text-right px-3 py-2.5 font-medium">P&L %</th>
-                <th className="text-left px-3 py-2.5 font-medium">Resultado</th>
                 <th className="px-3 py-2.5 w-[60px]"></th>
               </tr>
             </thead>
@@ -213,37 +258,77 @@ export default function Operations() {
                   <EmptyState title="Sin resultados para los filtros aplicados" description="Ajustá los filtros para ampliar la búsqueda." dense />
                 </td></tr>
               )}
-              {filteredOps.map(op => (
-                <tr key={op.id} className="border-b border-line/30 hover:bg-bg-2/40 transition-colors">
-                  <td className="px-4 py-2 text-xs font-mono tabular text-ink-2">{op.date}</td>
-                  <td className="px-3 py-2 text-xs text-ink-2">{op.broker}</td>
-                  <td className="px-3 py-2 text-sm font-medium text-ink-0">{op.asset}</td>
-                  <td className="px-3 py-2 text-[11px] font-mono uppercase tracking-caps text-ink-3">{prettyOpType(op.op_type)}</td>
-                  <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
-                  <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
-                  <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.quantity ?? '—'}</td>
-                  <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)}`}>
-                    {op.pnl_usd > 0 ? '+' : op.pnl_usd < 0 ? '−' : ''}US${usd(Math.abs(op.pnl_usd || 0))}
-                  </td>
-                  <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)}`}>
-                    {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
-                  </td>
-                  <td className="px-3 py-2"><ResultPill pnl={op.pnl_usd} /></td>
-                  <td className="px-3 py-2">
-                    <div className="flex gap-2 justify-end">
-                      <button onClick={() => openEdit(op)} className="text-ink-3 hover:text-ink-0 transition-colors" title="Editar" aria-label={`Editar operación ${op.asset}`}>
-                        <Pencil size={13} strokeWidth={1.75} aria-hidden="true" />
-                      </button>
-                      <button onClick={() => del(op.id)} className="text-ink-3 hover:text-rendi-neg transition-colors" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
-                        <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {pagedOps.map(op => {
+                const isWin = op.pnl_usd != null && op.pnl_usd > 0
+                const isLoss = op.pnl_usd != null && op.pnl_usd < 0
+                const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
+                const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
+                return (
+                  <tr key={op.id} className="border-b border-line/30 hover:bg-bg-2/40 transition-colors">
+                    <td className="pl-3 pr-1 py-2 align-middle">
+                      {ArrowIcon
+                        ? <ArrowIcon size={14} strokeWidth={2} className={arrowColor} aria-label={isWin ? 'Ganancia' : 'Pérdida'} />
+                        : <span className="text-ink-3 text-xs">—</span>}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-mono tabular text-ink-2">{op.date}</td>
+                    <td className="px-3 py-2 text-xs text-ink-2">{op.broker}</td>
+                    <td className="px-3 py-2 text-sm font-medium text-ink-0">{op.asset}</td>
+                    <td className="px-3 py-2 text-[11px] font-mono uppercase tracking-caps text-ink-3">{prettyOpType(op.op_type)}</td>
+                    <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
+                    <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
+                    <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.quantity ?? '—'}</td>
+                    <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)}`}>
+                      {op.pnl_usd > 0 ? '+' : op.pnl_usd < 0 ? '−' : ''}US${usd(Math.abs(op.pnl_usd || 0))}
+                    </td>
+                    <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)}`}>
+                      {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-2 justify-end">
+                        <button onClick={() => openEdit(op)} className="text-ink-3 hover:text-ink-0 transition-colors" title="Editar" aria-label={`Editar operación ${op.asset}`}>
+                          <Pencil size={13} strokeWidth={1.75} aria-hidden="true" />
+                        </button>
+                        <button onClick={() => del(op.id)} className="text-ink-3 hover:text-rendi-neg transition-colors" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
+                          <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
+
+        {/* Paginación */}
+        {filteredOps.length > PAGE_SIZE && (
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-line text-[11px] font-mono uppercase tracking-caps text-ink-3">
+            <span className="tabular">
+              {currentPage * PAGE_SIZE + 1}–{Math.min((currentPage + 1) * PAGE_SIZE, filteredOps.length)} de {filteredOps.length}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage(p => Math.max(0, p - 1))}
+                disabled={currentPage === 0}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-sm border border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                aria-label="Página anterior"
+              >
+                <ChevronLeft size={11} strokeWidth={2} aria-hidden="true" /> Anterior
+              </button>
+              <span className="px-3 tabular text-ink-2">
+                {currentPage + 1} / {totalPages}
+              </span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                disabled={currentPage >= totalPages - 1}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-sm border border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                aria-label="Página siguiente"
+              >
+                Siguiente <ChevronRight size={11} strokeWidth={2} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        )}
       </Panel>
 
       {modal && (
@@ -288,24 +373,6 @@ function FilterPill({ label, value, onChange, options }) {
         {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
       </select>
     </label>
-  )
-}
-
-function ResultPill({ pnl }) {
-  if (pnl == null || pnl === 0) return <span className="text-ink-3 text-xs">—</span>
-  if (pnl > 0) {
-    return (
-      <Pill tone="signal" dot>
-        <ArrowUpRight size={9} strokeWidth={2} className="mr-0.5" aria-hidden="true" />
-        Ganancia
-      </Pill>
-    )
-  }
-  return (
-    <Pill tone="red" dot>
-      <ArrowDownRight size={9} strokeWidth={2} className="mr-0.5" aria-hidden="true" />
-      Pérdida
-    </Pill>
   )
 }
 

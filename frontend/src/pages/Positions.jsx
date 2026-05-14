@@ -653,39 +653,8 @@ export default function Positions() {
         />
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════════
-          BANNER 'Hoy' — variación intradía respecto del último cierre
-          guardado (snapshots diarios). Solo se muestra si hay historial.
-          ══════════════════════════════════════════════════════════════════════ */}
-      {daily && (
-        <div className={`mb-8 flex items-center gap-3 px-4 py-3 rounded border ${
-          daily.delta >= 0
-            ? 'bg-rendi-pos/[0.06] border-rendi-pos/25'
-            : 'bg-rendi-neg/[0.06] border-rendi-neg/25'
-        }`}>
-          <div className={`flex items-center justify-center w-8 h-8 rounded-sm flex-shrink-0 ${
-            daily.delta >= 0 ? 'bg-rendi-pos/15 text-rendi-pos' : 'bg-rendi-neg/15 text-rendi-neg'
-          }`}>
-            {daily.delta >= 0 ? <TrendingUp size={16} strokeWidth={1.75} /> : <TrendingDown size={16} strokeWidth={1.75} />}
-          </div>
-          <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="label-mono">{daily.badgeLabel}</span>
-            <span className={`text-base font-semibold tabular ${
-              daily.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
-            }`}>
-              {daily.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(daily.delta))}
-            </span>
-            <span className={`text-sm tabular ${
-              daily.delta >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
-            }`}>
-              ({pctSigned(daily.pct)})
-            </span>
-            <span className="text-xs text-ink-2 font-mono">
-              {daily.refLabel} · cierre USD {usd(daily.lastValue)}
-            </span>
-          </div>
-        </div>
-      )}
+      {/* Banner de variación diaria deshabilitado — requiere snapshots
+          confiables (cron server-side) que aún no están implementados. */}
 
       {sortBrokersForDisplay(brokers).map(({ broker, indent, parentName }, bi) => {
         const color = BROKER_COLORS[bi % BROKER_COLORS.length]
