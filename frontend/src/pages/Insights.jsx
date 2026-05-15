@@ -16,7 +16,7 @@ import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
 import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
 import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/format'
-import InsightsMobile from './InsightsMobile'
+import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
@@ -109,12 +109,15 @@ function pickBalancedDiagnosis(diagnosis, n = 3) {
 }
 
 export default function Insights() {
-  const isMobile = useIsMobile()
-  if (isMobile) return <InsightsMobile />
+  // Estructura única para desktop y mobile. La diferencia se maneja con
+  // useIsMobile() abajo: en mobile mostramos la card "Insight del día" como
+  // hero al top y ocultamos la curva de drawdown (decisión del producto:
+  // demasiado denso para mobile).
   return <InsightsDesktop />
 }
 
 function InsightsDesktop() {
+  const isMobile = useIsMobile()
   const { user } = useAuth()
   // Truncar y sanitizar para usarlo como dataKey de Recharts (un solo nombre, máx 12 chars).
   // Si el "name" es un email, agarrar la parte antes del @.
@@ -1180,6 +1183,9 @@ function InsightsDesktop() {
         }
       />
 
+      {/* Insight del día — solo en mobile, como hero por encima del análisis. */}
+      {isMobile && <InsightDelDiaHero />}
+
       {hasMissingPrices && (
         <div className="flex items-start gap-2.5 px-3 py-2 rounded-sm border border-rendi-warn/25 bg-rendi-warn/[0.08] text-rendi-warn text-xs">
           <AlertTriangle size={14} strokeWidth={1.75} className="flex-shrink-0 mt-0.5" />
@@ -1388,8 +1394,9 @@ function InsightsDesktop() {
       </div>
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
-          y duración de las caídas sobre el rendimiento ajustado por flujos. */}
-      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
+          y duración de las caídas sobre el rendimiento ajustado por flujos.
+          Oculto en mobile (decisión M1: demasiado denso para pantalla chica). */}
+      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6 hidden md:block">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
