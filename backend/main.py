@@ -553,6 +553,42 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
     """)
 
+    # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
+    # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
+    #   Mismo packet → mismo análisis durante 24h, sin nuevo call a LLM.
+    # ai_usage_daily: contadores por user por día — alimenta el badge Free
+    #   (3/5 análisis) y permite auditar costos por user.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS ai_analyses_cache (
+            cache_key TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            screen TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            packet_hash TEXT NOT NULL,
+            model TEXT,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_create_tokens INTEGER DEFAULT 0,
+            cost_usd_cents INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_cache_user_screen
+            ON ai_analyses_cache(user_id, screen);
+        CREATE INDEX IF NOT EXISTS idx_ai_cache_expires
+            ON ai_analyses_cache(expires_at);
+
+        CREATE TABLE IF NOT EXISTS ai_usage_daily (
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            analyses_count INTEGER NOT NULL DEFAULT 0,
+            hub_queries_count INTEGER NOT NULL DEFAULT 0,
+            cost_usd_cents INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, date)
+        );
+    """)
+
     # ─── CSV Importer ────────────────────────────────────────────────────────
     # import_batches: cada upload (en estado 'preview' es la sesión; al confirm
     # pasa a 'confirmed'; al revert pasa a 'reverted').
