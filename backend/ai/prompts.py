@@ -95,6 +95,64 @@ Foco del análisis:
 """
 
 
+def render_dashboard_composition_prompt() -> str:
+    """System para 'Analizar' SOLO la composición del portfolio."""
+    return SYSTEM_BASE + """
+Screen: Composición del portfolio (sub-componente del Dashboard).
+
+El packet trae el reparto del capital: top 5 holdings con % y value, por
+broker, por moneda (USD vs ARS), % en cash, y el HHI (Herfindahl Index —
+0 perfectamente diversificado, 1 todo en un activo).
+
+Foco del análisis:
+- ¿Está concentrado o diversificado? Interpretá el HHI en plain Spanish.
+- ¿Hay un activo o broker que domina (>30%)? ¿Es problemático?
+- ¿El reparto USD/ARS hace sentido para el perfil? ¿Demasiado cash?
+- Si todo está balanceado, decílo — no inventes problemas.
+
+NO recomendes "diversificá más" como respuesta default. Si está bien
+balanceado, elogialo. Solo flag concentración si HHI > 0.25 o top1 > 30%.
+"""
+
+
+def render_dashboard_evolution_prompt() -> str:
+    """System para 'Analizar' SOLO la curva de evolución."""
+    return SYSTEM_BASE + """
+Screen: Curva de evolución del portfolio (sub-componente del Dashboard).
+
+El packet trae la serie temporal del valor (12 puntos representativos),
+peak, trough, drawdown actual vs peak, mejor / peor mes.
+
+Foco del análisis:
+- ¿Cómo fue la trayectoria — sostenida o volátil?
+- ¿Está cerca del peak histórico o en drawdown? Si DD < -5%, flag.
+- ¿Cuál fue el mejor / peor mes y qué tan extremo fue?
+- Si insufficient_data=true, decí simplemente que falta historial.
+
+NUNCA predigas dirección futura ("va a seguir subiendo" / "puede caer
+más"). Solo describí lo que pasó.
+"""
+
+
+def render_dashboard_top_holdings_prompt() -> str:
+    """System para 'Analizar' SOLO el top de holdings."""
+    return SYSTEM_BASE + """
+Screen: Top holdings del portfolio (sub-componente del Dashboard).
+
+El packet trae top 8 posiciones con weight, value_usd, pnl_pct, days_held,
++ total_value_usd, winners_count, losers_count.
+
+Foco del análisis:
+- ¿Quiénes están manejando el resultado (winners > 10% con weight alto)?
+- ¿Hay perdedoras que tenés hace mucho tiempo (loss aversion potencial)?
+- ¿El balance winners/losers es razonable?
+- ¿Algún ticker con weight desproporcionado al resto?
+
+Citá tickers específicos cuando ilustre el punto (ej. "NVDA pesa 28% y
+viene +42% — solo esta posición explica buena parte del resultado").
+"""
+
+
 def render_monthly_prompt() -> str:
     """System para 'Analizar' un mes específico del reporte."""
     return SYSTEM_BASE + """

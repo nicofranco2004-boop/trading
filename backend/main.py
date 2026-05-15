@@ -5183,41 +5183,51 @@ class AIAnalyzeIn(BaseModel):
 
 @app.post("/api/ai/analyze")
 def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
-    """Análisis contextual estructurado de una pantalla.
+    """Análisis contextual estructurado de una pantalla o sub-componente.
 
-    Body: { screen: 'dashboard'|'position'|'behavioral'|'monthly', params: {...} }
-    Returns: { tldr, sections, follow_ups, cached, usage }
+    El `screen` usa notación con puntos para sub-topics:
+      dashboard                  — análisis general del Dashboard
+      dashboard.composition      — solo la composición del portfolio
+      dashboard.evolution        — solo la curva de evolución
+      dashboard.top_holdings     — solo el top de holdings
+
+    Body: { screen: str, params: {...} }
+    Returns: { result, cached: bool, usage }
+
+    Quota: solo descuenta del cupo Free cuando hay cache MISS (el LLM
+    realmente corrió). Cache hits son gratis — sino abrir el drawer 3
+    veces seguidas quemaría los 5 análisis del día.
     """
     from ai import llm, cache, quota
     from ai.schema import AnalysisResult
-    from ai import prompts
+    from ai.registry import get_topic, list_topics
 
     if not llm.is_configured():
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
 
-    # Dispatch al builder correspondiente
     screen = data.screen.strip().lower()
     params = data.params or {}
 
+    # Dispatch via registry (topic → builder + prompt)
+    topic = get_topic(screen)
+    if not topic:
+        raise HTTPException(
+            400,
+            f"Topic '{screen}' no soportado. Disponibles: {list_topics()}.",
+        )
+    build_packet, render_prompt = topic
+
     conn = get_db()
     try:
-        # Quota check (Free tier: 5 análisis/día)
-        allowed, usage_now = quota.can_analyze(conn, uid)
-        if not allowed:
-            raise HTTPException(429, {
-                "error": "Llegaste al límite diario de análisis.",
-                "usage": usage_now,
-            })
+        # Build packet PRIMERO (es barato y determinístico) para ver si hay
+        # cache hit antes de tocar el cupo.
+        try:
+            packet = build_packet(conn, uid, **params)
+        except Exception as ex:
+            log.exception(f"AI builder fallo (uid={uid}, screen={screen})")
+            raise HTTPException(500, f"Error construyendo packet: {type(ex).__name__}")
 
-        # Build packet por screen
-        if screen == "dashboard":
-            from ai.builders.dashboard import build as build_packet
-            packet = build_packet(conn, uid, period=params.get("period", "30d"))
-            system_prompt = prompts.render_dashboard_prompt()
-        else:
-            raise HTTPException(400, f"Screen '{screen}' no soportada todavía. Disponibles: dashboard.")
-
-        # Cache HIT?
+        # Cache HIT? → gratis (no descuenta cupo)
         cached = cache.get_cached(conn, uid, screen, packet)
         if cached:
             return {
@@ -5226,7 +5236,16 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
                 "usage": quota.get_today_usage(conn, uid),
             }
 
-        # MISS → llamamos al LLM
+        # Cache MISS → ahora sí chequeamos cupo (la llamada al LLM cuesta)
+        allowed, usage_now = quota.can_analyze(conn, uid)
+        if not allowed:
+            raise HTTPException(429, {
+                "error": "Llegaste al límite diario de análisis nuevos.",
+                "usage": usage_now,
+            })
+
+        # Llamada al LLM
+        system_prompt = render_prompt()
         try:
             llm_result = llm.analyze(
                 system_prompt=system_prompt,
@@ -5243,7 +5262,6 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
 
         result_dict = llm_result.output.model_dump()
 
-        # Persistir cache + tracking
         cache.set_cached(
             conn,
             user_id=uid,
@@ -5266,6 +5284,14 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
         }
     finally:
         conn.close()
+
+
+@app.get("/api/ai/topics")
+def ai_topics():
+    """Lista los topics disponibles para /api/ai/analyze. Endpoint público
+    sin auth — útil para que el frontend descubra topics sin hardcodear."""
+    from ai.registry import list_topics
+    return {"topics": list_topics()}
 
 
 @app.get("/api/ai/usage")

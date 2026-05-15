@@ -7,6 +7,7 @@ import UpcomingEventsCard from '../components/UpcomingEventsCard'
 import TopNewsCard from '../components/TopNewsCard'
 import PageHeader from '../components/PageHeader'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
+import AskAIAbout from '../components/ai/AskAIAbout'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import { DashboardSkeleton } from '../components/Skeleton'
@@ -409,7 +410,14 @@ export default function Dashboard() {
       </div>
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
-      <Card className="mb-8">
+      <AskAIAbout
+        topic="dashboard.evolution"
+        subtitle="Evolución del portfolio"
+        params={{ period_days: range === '1Y' ? 365 : range === '6M' ? 180 : range === '3M' ? 90 : range === '1M' ? 30 : 1825 }}
+        className="mb-8"
+        rounded={false}
+      >
+      <Card>
         <div className="flex items-start justify-between gap-3 flex-wrap mb-5">
           <div>
             <p className="eyebrow mb-1">Evolución</p>
@@ -525,21 +533,34 @@ export default function Dashboard() {
           </div>
         )}
       </Card>
+      </AskAIAbout>
 
       {/* ── Composición + Top holdings ─────────────────────────────────────── */}
       {positionsForInsight.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-4 mb-8">
-          <AssetBreakdownBar
-            positions={positionsForInsight}
-            totalValue={totalValue}
-            currency={currency}
-            tcBlue={tcBlue}
-          />
-          <TopHoldingsPanel
-            positions={positionsForInsight}
-            currency={currency}
-            tcBlue={tcBlue}
-          />
+          <AskAIAbout
+            topic="dashboard.composition"
+            subtitle="Composición del portfolio"
+            rounded={false}
+          >
+            <AssetBreakdownBar
+              positions={positionsForInsight}
+              totalValue={totalValue}
+              currency={currency}
+              tcBlue={tcBlue}
+            />
+          </AskAIAbout>
+          <AskAIAbout
+            topic="dashboard.top_holdings"
+            subtitle="Top holdings"
+            rounded={false}
+          >
+            <TopHoldingsPanel
+              positions={positionsForInsight}
+              currency={currency}
+              tcBlue={tcBlue}
+            />
+          </AskAIAbout>
         </div>
       )}
 
