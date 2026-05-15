@@ -30,6 +30,7 @@ import InsightChip from './InsightChip'
 import HighlightsRail from './HighlightsRail'
 import WeekCard from './WeekCard'
 import Pill from '../Pill'
+import AskAIAbout from '../ai/AskAIAbout'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -67,7 +68,19 @@ export default function MonthCard({ month, defaultExpanded = false }) {
     )
   }
 
+  // Extracción year/month del period_key (YYYY-MM) para los topics de IA.
+  const [yyyy, mm] = (month.period_key || '').split('-')
+  const aiParams = {
+    year: parseInt(yyyy, 10) || null,
+    month: parseInt(mm, 10) || null,
+  }
+
   return (
+    <AskAIAbout
+      topic="monthly"
+      params={aiParams}
+      subtitle={`Mes ${month.period_label}`}
+    >
     <article className="rounded border border-line bg-bg-1 overflow-hidden">
       {/* HERO */}
       <header className="px-5 py-4">
@@ -105,11 +118,23 @@ export default function MonthCard({ month, defaultExpanded = false }) {
         </div>
       )}
 
-      {/* INSIGHTS */}
+      {/* INSIGHTS — cada chip wrappeada con AskAIAbout (monthly.insight) */}
       {month.insights && month.insights.length > 0 && (
         <div className="px-5 pb-4 space-y-1.5">
           {month.insights.map((ins, i) => (
-            <InsightChip key={ins.code + i} insight={ins} />
+            <AskAIAbout
+              key={ins.code + i}
+              topic="monthly.insight"
+              params={{
+                ...aiParams,
+                code: ins.code,
+                text: ins.text,
+                severity: ins.severity,
+              }}
+              subtitle={`Insight · ${month.period_label}`}
+            >
+              <InsightChip insight={ins} />
+            </AskAIAbout>
           ))}
         </div>
       )}
@@ -155,6 +180,7 @@ export default function MonthCard({ month, defaultExpanded = false }) {
         {metricsOpen && <MetricsGrid metrics={month.metrics} />}
       </div>
     </article>
+    </AskAIAbout>
   )
 }
 

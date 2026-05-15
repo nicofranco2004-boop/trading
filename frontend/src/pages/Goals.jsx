@@ -10,6 +10,7 @@ import InfoTooltip from '../components/InfoTooltip'
 import { useToast } from '../components/Toast'
 import { usd, fmtUsd } from '../utils/format'
 import { api } from '../utils/api'
+import AskAIAbout from '../components/ai/AskAIAbout'
 
 const PRESETS = [
   { label: 'Conservador', pct: 6, hint: 'Bonos y exposición pasiva al S&P' },
@@ -255,6 +256,11 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
   const reached = currentValue >= target
 
   return (
+    <AskAIAbout
+      topic="goal"
+      params={{ goal_id: goal.id }}
+      subtitle={goal.label || `Objetivo · $${usd(target)}`}
+    >
     <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
       <div className="flex items-start justify-between mb-4">
         <div>
@@ -362,6 +368,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
       {/* Sprint 7: Goal diagnostic + sugerencia accionable basada en behavioral */}
       <GoalDiagnostic goalId={goal.id} reached={reached} />
     </div>
+    </AskAIAbout>
   )
 }
 

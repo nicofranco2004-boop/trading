@@ -23,6 +23,11 @@ ALL_RENDERS = [
     "render_insights_benchmarks_prompt",
     "render_insights_observation_prompt",
     "render_monthly_prompt",
+    # Phase 2 — Reports / Position / Goals
+    "render_monthly_insight_prompt",
+    "render_position_chart_prompt",
+    "render_position_lots_prompt",
+    "render_goal_prompt",
 ]
 
 

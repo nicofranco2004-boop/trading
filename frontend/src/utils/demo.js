@@ -769,6 +769,62 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Cuánto bajaría el TWR sin la posición top 1?', '¿Qué umbral de weight conviene para gatillar revisión?'],
   },
+  monthly: {
+    tldr: 'El mes cerró con dos motores asimétricos: un trade táctico de tamaño grande explica buena parte del P&L mientras el resto de la cartera siguió cerca del benchmark mensual.',
+    sections: [
+      { title: 'Resultado del mes', tone: 'positive', body: 'El TWRR del mes fue positivo con varios trades cerrados arriba de promedio. El delta absoluto sobre el capital inicial confirma que el resultado vino de movimientos de mercado, no de flujos.' },
+      { title: 'Factores probables', tone: 'neutral', body: 'El mejor trade del mes concentra una porción importante del P&L — sin esa contribución, el portfolio se hubiera movido cerca del benchmark mensual. El resto de las posiciones aportaron de forma pareja.' },
+      { title: 'Lectura comparativa', tone: 'neutral', body: 'El delta vs S&P 500 del mes está dentro del rango típico. La cartera mostró menos dispersión que el promedio del año, lo cual es coherente con un mes sin shocks idiosincráticos materiales.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'Un mes con resultado positivo concentrado en un solo trade es un patrón a registrar — la pregunta de proceso es si esa contribución refleja una decisión replicable o un timing puntual. Documentar el caso permite reconocer condiciones similares cuando vuelvan.' },
+    ],
+    follow_ups: ['¿Qué mes histórico se parece más a éste?', '¿Sin el top trade, cuánto hubiera rendido?'],
+  },
+  'monthly.insight': {
+    tldr: 'El insight detectado captura una concentración material del resultado del mes en pocas posiciones — un patrón que distingue meses replicables de meses con dependencia de un trade puntual.',
+    sections: [
+      { title: 'Dinámica observada', tone: 'neutral', body: 'La señal del chip indica que un activo único explica una porción mayoritaria del P&L del mes. Es una observación descriptiva: no implica habilidad ni suerte por sí sola.' },
+      { title: 'Lectura interpretativa', tone: 'warning', body: 'Cuando un mes positivo descansa sobre un solo nombre, la replicabilidad del resultado depende de seguir encontrando situaciones similares. La métrica útil a registrar es si esto se repite a lo largo de varios meses o aparece esporádicamente.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'El cambio de proceso de mayor leverage no es rebalancear ahora — es definir un umbral pre-acordado de revisión por concentración del P&L mensual. Eso convierte una observación recurrente en un disparador objetivo, no en una decisión que se toma "cuando se siente".' },
+    ],
+    follow_ups: ['¿Este patrón se repite en otros meses?', '¿Cuál sería un umbral razonable para gatillar revisión?'],
+  },
+  position: {
+    tldr: 'La posición concentra una porción significativa del portfolio total con un P&L positivo, pero su peso actual también define una asimetría de riesgo concreta — un movimiento adverso del activo impacta el TWR del agregado más de lo que sugiere su contribución promedio histórica.',
+    sections: [
+      { title: 'Dinámica de la posición', tone: 'positive', body: 'El P&L actual es positivo en términos absolutos y relativos. El holding period sugiere que la posición es de mediano plazo, no especulativa — la valuación actual incorpora múltiples meses de movimiento.' },
+      { title: 'Peso vs portfolio', tone: 'warning', body: 'La posición pesa por encima del 10% del valor total. Esa magnitud convierte un movimiento del 25% en el activo en un movimiento de 2.5pp del TWR del portfolio — material respecto del drawdown histórico habitual.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'Lo útil acá no es cerrar la posición sino pre-definir el umbral en que su peso justifica un rebalance. Cuando la decisión se toma con regla objetiva (ej. recortar si supera X% del portfolio) en lugar de en respuesta a un evento adverso, los rendimientos esperados a largo plazo mejoran.' },
+    ],
+    follow_ups: ['¿Qué umbral de weight conviene para rebalance?', '¿Cuánto pierde el portfolio si cae 25%?'],
+  },
+  'position.chart': {
+    tldr: 'El movimiento reciente del precio sugiere que la posición ya capturó la parte más rápida del recorrido — desde el peak el activo se mueve dentro de un rango más estrecho con dispersión menor que la histórica reciente.',
+    sections: [
+      { title: 'Trayectoria reciente', tone: 'neutral', body: 'El precio actual se ubica cerca del avg de compra. La serie de 30 días no muestra movimientos extremos en ningún lado — sugiere que la tesis original ya se materializó en parte, ahora la posición vive de optimismo residual o nueva información que aún no aparece en el chart.' },
+      { title: 'Volatilidad y drawdown reciente', tone: 'neutral', body: 'El drawdown reciente respecto del peak del período mostrado está controlado. Para un activo con la beta histórica de esta posición, el rango actual es estrecho — período de consolidación más que de tendencia.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'El chart no respalda ni invalida la tesis — solo describe que el movimiento esperado ya ocurrió y la información ahora viene por fuera del precio. Para decisiones futuras vale revisar fundamentales (próximos earnings, cambio de momentum sectorial) más que el chart mismo.' },
+    ],
+    follow_ups: ['¿La volatilidad reciente está dentro del rango histórico?', '¿Qué tan lejos está del próximo peak?'],
+  },
+  'position.lots': {
+    tldr: 'El historial muestra varias compras a precios crecientes — un patrón de averaging up que es coherente con momentum-following. El avg refleja entradas progresivas, no una compra única dominante.',
+    sections: [
+      { title: 'Patrón de compras', tone: 'neutral', body: 'La secuencia de operaciones registra varias entradas en momentos distintos, con precios crecientes en mayor proporción. Eso es consistente con un patrón de seguir momentum, no con apostar a reversiones.' },
+      { title: 'Estructura del avg', tone: 'neutral', body: 'El precio promedio actual está más cerca de las últimas compras que de la primera — el peso del avg lo definen las entradas tardías. Eso implica que el cushion de tolerancia ante una corrección es menor que el que sugiere el P&L absoluto.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'Averaging up funciona en mercados con tendencia clara y se vuelve costoso en mercados laterales o de reversión. La regla útil para este patrón es pre-definir el criterio para dejar de promediar al alza: si el activo cruza X múltiplo del avg, dejar de agregar y considerar el rebalance.' },
+    ],
+    follow_ups: ['¿Cuál fue el lote más rentable hasta ahora?', '¿Qué pasa con el avg si agrego un lote más al precio actual?'],
+  },
+  goal: {
+    tldr: 'El objetivo es alcanzable si se sostiene la disciplina de aportes y la tasa de retorno esperada se ubica cerca del CAGR histórico del propio portfolio. Depender solo del rendimiento sin aportes adicionales aleja el horizonte estimado en varios meses.',
+    sections: [
+      { title: 'Estado del progreso', tone: 'positive', body: 'El capital actual cubre una porción razonable del target. El gap restante es alcanzable con el aporte mensual planeado al retorno esperado configurado — el camino es factible, no garantizado.' },
+      { title: 'Sensibilidad a variables', tone: 'neutral', body: 'Si el retorno esperado cae al CAGR histórico real del portfolio (más conservador que el target), el ETA se extiende algunos meses. Si los aportes se suspenden, depende íntegramente del rendimiento y el horizonte se aleja sustancialmente. Los aportes constantes son la variable de mayor leverage.' },
+      { title: 'Comparación con escenarios', tone: 'neutral', body: 'El escenario "conservador" (rendimiento del SPY histórico) llega al objetivo más tarde que el plan original. La brecha temporal es el costo implícito de asumir un retorno esperado superior al histórico. Esa brecha vale tenerla presente como margen de error razonable.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'La métrica útil a monitorear no es el progreso mes a mes (es ruidoso) sino la trayectoria de 6 meses corrida. Si la curva real se desvía consistentemente del escenario base, el ajuste relevante suele ser revisar el aporte, no el target — el plan más robusto suele ser el que asume un retorno menor y un aporte mayor.' },
+    ],
+    follow_ups: ['¿Qué pasa si suspendo aportes 6 meses?', '¿Cuál es el CAGR histórico real del portfolio?'],
+  },
   'insights.benchmarks': {
     tldr: 'Le ganaste a la inflación AR con margen pero quedaste algunos puntos debajo del SPY — esa combinación es característica de portfolios con cash material y exposure mixto, no de un alpha negativo del stock-picking.',
     sections: [
@@ -1395,6 +1451,12 @@ export function handleDemoRequest(method, path, body) {
           'insights.drawdown',
           'insights.evolution',
           'insights.observation',
+          'monthly',
+          'monthly.insight',
+          'position',
+          'position.chart',
+          'position.lots',
+          'goal',
         ],
       }
     }

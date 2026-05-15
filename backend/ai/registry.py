@@ -34,6 +34,12 @@ from .builders.insights_drawdown import build as build_insights_drawdown
 from .builders.insights_attribution import build as build_insights_attribution
 from .builders.insights_benchmarks import build as build_insights_benchmarks
 from .builders.insights_observation import build as build_insights_observation
+from .builders.monthly import build as build_monthly
+from .builders.monthly_insight import build as build_monthly_insight
+from .builders.position import build as build_position
+from .builders.position_chart import build as build_position_chart
+from .builders.position_lots import build as build_position_lots
+from .builders.goal import build as build_goal
 
 
 # topic_id → (builder_fn, prompt_fn)
@@ -52,6 +58,13 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "insights.attribution": (build_insights_attribution, prompts.render_insights_attribution_prompt),
     "insights.benchmarks": (build_insights_benchmarks, prompts.render_insights_benchmarks_prompt),
     "insights.observation": (build_insights_observation, prompts.render_insights_observation_prompt),
+    # Phase 2: Monthly + Position + Goals
+    "monthly": (build_monthly, prompts.render_monthly_prompt),
+    "monthly.insight": (build_monthly_insight, prompts.render_monthly_insight_prompt),
+    "position": (build_position, prompts.render_position_prompt),
+    "position.chart": (build_position_chart, prompts.render_position_chart_prompt),
+    "position.lots": (build_position_lots, prompts.render_position_lots_prompt),
+    "goal": (build_goal, prompts.render_goal_prompt),
 }
 
 

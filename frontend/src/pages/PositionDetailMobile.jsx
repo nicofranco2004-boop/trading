@@ -17,6 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
+import AskAIAbout from '../components/ai/AskAIAbout'
 
 export default function PositionDetailMobile() {
   const { id } = useParams()
@@ -127,39 +128,51 @@ export default function PositionDetailMobile() {
         </div>
       </header>
 
-      {/* Hero: value + P/L */}
-      <section className="px-4 pt-5 pb-3">
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">
-          Valor actual
-        </div>
-        <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
-          ${Math.round(valueUsd).toLocaleString('en-US')}
-          <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
-        </div>
-        {!p.is_cash && pnlUsd != null && (
-          <div className={`flex items-center gap-2 mt-3 text-sm font-medium tabular ${colorClass(pnlPct)}`}>
-            {pnlPct >= 0
-              ? <TrendingUp size={13} strokeWidth={1.75} />
-              : <TrendingDown size={13} strokeWidth={1.75} />}
-            <span>
-              {pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(pnlUsd)).toLocaleString('en-US')}
-            </span>
-            <span className="text-ink-3 font-mono text-xs">·</span>
-            <span>{pctSigned(pnlPct)}</span>
+      {/* Hero: value + P/L — wrappeado con AskAIAbout para análisis general */}
+      <AskAIAbout
+        topic="position"
+        params={{ asset: p.asset, broker: p.broker }}
+        subtitle={`${p.asset} · ${p.broker}`}
+      >
+        <section className="px-4 pt-5 pb-3">
+          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">
+            Valor actual
           </div>
-        )}
-      </section>
-
-      {/* Chart 30d (solo non-cash) */}
-      {!p.is_cash && (
-        <section className="px-4 mb-5">
-          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
-            Precio · últimos 30 días
+          <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
+            ${Math.round(valueUsd).toLocaleString('en-US')}
+            <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
           </div>
-          <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
-            <AssetMiniChart symbol={isAR ? `${p.asset}.BA` : p.asset} />
-          </div>
+          {!p.is_cash && pnlUsd != null && (
+            <div className={`flex items-center gap-2 mt-3 text-sm font-medium tabular ${colorClass(pnlPct)}`}>
+              {pnlPct >= 0
+                ? <TrendingUp size={13} strokeWidth={1.75} />
+                : <TrendingDown size={13} strokeWidth={1.75} />}
+              <span>
+                {pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(pnlUsd)).toLocaleString('en-US')}
+              </span>
+              <span className="text-ink-3 font-mono text-xs">·</span>
+              <span>{pctSigned(pnlPct)}</span>
+            </div>
+          )}
         </section>
+      </AskAIAbout>
+
+      {/* Chart 30d (solo non-cash) — sub-topic position.chart */}
+      {!p.is_cash && (
+        <AskAIAbout
+          topic="position.chart"
+          params={{ asset: p.asset, broker: p.broker }}
+          subtitle={`Precio reciente · ${p.asset}`}
+        >
+          <section className="px-4 mb-5">
+            <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+              Precio · últimos 30 días
+            </div>
+            <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
+              <AssetMiniChart symbol={isAR ? `${p.asset}.BA` : p.asset} />
+            </div>
+          </section>
+        </AskAIAbout>
       )}
 
       {/* Stats */}
@@ -221,8 +234,13 @@ export default function PositionDetailMobile() {
         </div>
       </section>
 
-      {/* Histórico de operaciones */}
+      {/* Histórico de operaciones — sub-topic position.lots */}
       {operations.length > 0 && (
+      <AskAIAbout
+        topic="position.lots"
+        params={{ asset: p.asset, broker: p.broker }}
+        subtitle={`Historial · ${p.asset}`}
+      >
         <section className="px-4 mb-5">
           <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
             Operaciones de este activo · {operations.length}
@@ -253,6 +271,7 @@ export default function PositionDetailMobile() {
             ))}
           </ul>
         </section>
+      </AskAIAbout>
       )}
     </div>
   )

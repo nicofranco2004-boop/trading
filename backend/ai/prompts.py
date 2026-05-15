@@ -256,9 +256,26 @@ _FREE_FOCUS = {
         "Mejor y peor activo del mes.",
         "vs S&P 500 / inflación del mes si están en el packet.",
     ],
+    "monthly.insight": [
+        "Qué dice el insight detectado en una frase.",
+        "Datos del mes que lo respaldan (delta, trades, win rate).",
+    ],
     "position": [
         "P&L USD y % de la posición.",
         "Peso en cartera + días en posición.",
+    ],
+    "position.chart": [
+        "Movimiento reciente del precio vs el avg de compra.",
+        "Volatilidad y drawdown del período mostrado.",
+    ],
+    "position.lots": [
+        "Cantidad de lotes y patrón (compras, ventas).",
+        "Promedio de entrada vs último trade.",
+    ],
+    "goal": [
+        "Cuánto falta para alcanzar el objetivo.",
+        "Aporte mensual + rendimiento esperado.",
+        "Status (on_track / behind / ahead) y ETA.",
     ],
 }
 
@@ -725,6 +742,126 @@ def render_insights_observation_prompt(tier: str = "pro") -> str:
             "Si portfolio_context vino vacío, decirlo y mantener el análisis a la observación sola.",
             "No repetir el text de la observación — agregar capa interpretativa.",
             "No usar términos absolutos — 'cae 25%' es scenario, no predicción.",
+        ],
+    )
+
+
+def render_monthly_insight_prompt(tier: str = "pro") -> str:
+    view = "Insight individual del MonthCard (zoom sobre UNA chip detectada)"
+    pkt = (
+        "insight {code, text, severity} + month_context {headline, delta_pct, "
+        "delta_usd, trades_count, win_rate, vs_sp500_pct, best_trade, "
+        "top_driver}."
+    )
+    free = _maybe_free("monthly.insight", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Qué dice exactamente el insight detectado — traducir el text con números del month_context si aplica.",
+            "Por qué ese patrón importa específicamente para ESE mes — usar delta_pct, vs_sp500, best_trade del contexto.",
+            "Si es positivo, qué condición del mes lo posibilitó y si es replicable estructuralmente.",
+            "Si es warning/critical, qué cambio de proceso evitaría que se repita.",
+        ],
+        insight_examples=[
+            "El gain_concentration en ese mes coincide con un solo trade en BTC representando el 64% del P&L — sin esa contribución, el mes hubiera quedado parejo con el SPY. No es señal de habilidad sistemática sino de momentum capturado.",
+            "Un win_rate alto en un mes con pocos trades (4) no es estadísticamente significativo — el insight describe el dato pero no implica patrón.",
+        ],
+        pitfalls=[
+            "Si month_context viene vacío, decir que el contexto no llegó y mantenerse al texto del insight.",
+            "No repetir el text del insight — agregar capa interpretativa.",
+            "No proyectar al siguiente mes.",
+        ],
+    )
+
+
+def render_position_chart_prompt(tier: str = "pro") -> str:
+    view = "Chart de precio reciente de una posición (sub-componente Position detail)"
+    pkt = (
+        "ticker, broker, qty, avg_price, current_price, pct_from_avg, "
+        "price_series_30d (lista de puntos), drawdown_recent_pct, days_held."
+    )
+    free = _maybe_free("position.chart", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Movimiento reciente del precio vs el promedio de entrada — qué tan lejos está la posición.",
+            "Volatilidad reciente del activo dentro del período mostrado — calmo / dispersión amplia.",
+            "Si la posición está en pérdida actual, cuánto del recorrido hizo desde el peak.",
+            "Coherencia entre el chart y el tiempo de holding — si está hace meses pero el chart es plano, posible stuck position.",
+        ],
+        insight_examples=[
+            "El precio actual está un 8% debajo del avg de entrada — el mejor mes del chart fue el segundo posterior a la compra y desde entonces el rebote es lateral. Lo que mostró el chart no respaldó la tesis original.",
+            "La volatilidad reciente del activo está por encima del rango habitual del portfolio — un ticker con esa amplitud necesita criterio de salida ex-ante más estricto que un equity-like.",
+        ],
+        pitfalls=[
+            "No predecir el siguiente movimiento del precio.",
+            "Si no hay price_series (data faltante), decir que no se puede leer el chart con confianza.",
+        ],
+    )
+
+
+def render_position_lots_prompt(tier: str = "pro") -> str:
+    view = "Lots / historial de operaciones de una posición"
+    pkt = (
+        "ticker, broker, total_qty, avg_price, lots[] con {date, op_type, "
+        "price, qty, pnl_usd si cerrada}, current_price."
+    )
+    free = _maybe_free("position.lots", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Patrón de compras — averaging up (precios crecientes), averaging down (decrecientes), o entradas oportunistas en correcciones.",
+            "Coherencia entre el avg_price y los lots — si avg está sesgado por una compra grande temprana o el promedio refleja varias entradas similares.",
+            "Cierres parciales realizados — qué proporción de la posición original sigue abierta.",
+            "Si hay averaging down con tesis sin renovar, flag sesgo (interacción con 'averaging_down' del Comportamiento).",
+        ],
+        insight_examples=[
+            "Tres compras a precios decrecientes sin un cierre intermedio sugieren averaging down sistemático — la posición sigue creciendo en magnitud absoluta a medida que el activo cae. Eso multiplica el riesgo si la tesis original ya no es válida.",
+            "El avg está dominado por una compra inicial grande — los lotes subsecuentes son chicos y no movieron materialmente el promedio. La 'tesis' efectiva de la posición es la de esa primera entrada.",
+        ],
+        pitfalls=[
+            "No recomendar 'vendé X lotes para promediar', solo describir el patrón.",
+            "Si lots tiene 1 sola entrada, decirlo — no inventar patrón.",
+        ],
+    )
+
+
+def render_goal_prompt(tier: str = "pro") -> str:
+    view = "Objetivo financiero individual"
+    pkt = (
+        "goal {id, label, target_usd, target_date, expected_return_pct, "
+        "monthly_contribution, current_capital_usd} + progress + scenarios "
+        "(con/sin aportes/conservador/histórico) + diagnostic {status, "
+        "eta_months, behavioral_suggestion}."
+    )
+    free = _maybe_free("goal", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Cuán realista es el objetivo dada la tasa de retorno esperada vs CAGR histórico del propio portfolio.",
+            "Sensibilidad a los aportes — qué pasa si suspenden / aumentan / mantienen.",
+            "Comparación con escenarios alternativos (conservador / histórico / agresivo).",
+            "Diagnóstico de behavior — si el sesgo dominante del user juega a favor o en contra del objetivo.",
+        ],
+        insight_examples=[
+            "Para alcanzar el objetivo, el portfolio necesita rendir ~12% anual + el aporte mensual de US$ 500. El CAGR histórico del propio portfolio es menor — el objetivo es factible solo si se sostiene la disciplina de aportes; depender solo del rendimiento lo aleja.",
+            "El escenario 'conservador' (rendimiento del SPY histórico) lleva al objetivo 18 meses más tarde. Esa brecha es el costo de asumir un rendimiento esperado superior al histórico — vale tenerlo presente como margen de error.",
+        ],
+        pitfalls=[
+            "No recomendar cambiar el objetivo ('ponete una meta más realista').",
+            "No predecir si se va a alcanzar — sí mostrar la sensibilidad a las variables.",
         ],
     )
 
