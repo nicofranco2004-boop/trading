@@ -29,6 +29,10 @@ from .builders.dashboard_events import build as build_dashboard_events
 from .builders.behavioral import build as build_behavioral
 from .builders.behavioral_card import build as build_behavioral_card
 from .builders.insights import build as build_insights
+from .builders.insights_evolution import build as build_insights_evolution
+from .builders.insights_drawdown import build as build_insights_drawdown
+from .builders.insights_attribution import build as build_insights_attribution
+from .builders.insights_benchmarks import build as build_insights_benchmarks
 
 
 # topic_id → (builder_fn, prompt_fn)
@@ -42,6 +46,10 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "behavioral": (build_behavioral, prompts.render_behavioral_prompt),
     "behavioral.card": (build_behavioral_card, prompts.render_behavioral_card_prompt),
     "insights": (build_insights, prompts.render_insights_prompt),
+    "insights.evolution": (build_insights_evolution, prompts.render_insights_evolution_prompt),
+    "insights.drawdown": (build_insights_drawdown, prompts.render_insights_drawdown_prompt),
+    "insights.attribution": (build_insights_attribution, prompts.render_insights_attribution_prompt),
+    "insights.benchmarks": (build_insights_benchmarks, prompts.render_insights_benchmarks_prompt),
 }
 
 

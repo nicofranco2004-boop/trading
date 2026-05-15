@@ -10,6 +10,7 @@ import AICoach from '../components/AICoach'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
+import AskAIAbout from '../components/ai/AskAIAbout'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
@@ -1325,6 +1326,11 @@ function InsightsDesktop() {
       >
 
       {/* Cumulative performance chart — la moneda viene del toggle global */}
+      <AskAIAbout
+        topic="insights.evolution"
+        params={{ window_days: 365 }}
+        subtitle="Tu trayectoria mensual"
+      >
       <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1.5">
@@ -1400,11 +1406,17 @@ function InsightsDesktop() {
           </ResponsiveContainer>
         )}
       </div>
+      </AskAIAbout>
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
           y duración de las caídas sobre el rendimiento ajustado por flujos.
           Visible en desktop y mobile (paridad de features — la diferencia
           plataforma es de layout, no de contenido). */}
+      <AskAIAbout
+        topic="insights.drawdown"
+        params={{ window_days: 365 }}
+        subtitle="Drawdown del portfolio"
+      >
       <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
@@ -1452,10 +1464,16 @@ function InsightsDesktop() {
           </ResponsiveContainer>
         )}
       </div>
+      </AskAIAbout>
 
       {/* ── Atribución del crecimiento — mercado vs aportes ─────────────────── */}
       {discipline && discipline.total !== 0 && (
-        <PerformanceAttribution discipline={discipline} amt={amt} />
+        <AskAIAbout
+          topic="insights.attribution"
+          subtitle="Qué activos manejaron tu P&L"
+        >
+          <PerformanceAttribution discipline={discipline} amt={amt} />
+        </AskAIAbout>
       )}
 
       </Section>

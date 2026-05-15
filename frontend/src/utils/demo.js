@@ -727,6 +727,42 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Por qué quedé debajo del S&P 500?', '¿Tengo demasiado cash sin trabajar?', '¿Es problemática la concentración en NVDA?'],
   },
+  'insights.evolution': {
+    tldr: 'Trayectoria positiva y razonablemente consistente — la mayoría de los meses cerraron en verde. El mejor mes destacó por encima del promedio gracias a NVDA y BTC.',
+    sections: [
+      { title: 'Tu curva', tone: 'positive', body: 'TWR compuesto del ~14% en el año con consistencia decente (~65% de los meses positivos). La progresión fue sostenida — no dependiste de un único mes excepcional para llegar acá.' },
+      { title: 'Picos y valles', tone: 'neutral', body: 'Mejor mes alrededor de +6% (rally de tech). Peor mes cercano a -4% (corrección crypto). La brecha entre ambos (~10pp) es moderada, dentro de lo esperable para un portfolio mixto con exposure tech alto.' },
+      { title: 'Lectura', tone: 'neutral', body: 'No hay señales de volatilidad extrema ni de un único trade que tape el resto. Si querés más consistencia, considerá rebalancear cuando un activo crezca mucho — eso suaviza la curva.' },
+    ],
+    follow_ups: ['¿Por qué cayó en el peor mes?', '¿Es normal este nivel de consistency?'],
+  },
+  'insights.drawdown': {
+    tldr: 'Drawdown chico y corto — el peor retroceso del año fue alrededor del -8%. Pasaste por dos caídas menores que se recuperaron rápido.',
+    sections: [
+      { title: 'Tu perfil de riesgo', tone: 'positive', body: 'Max drawdown del año en torno a -8%. Para un portfolio con exposure tech US (que es lo tuyo), eso es muy controlado — el S&P 500 mismo tuvo correcciones similares en el año.' },
+      { title: 'Eventos', tone: 'neutral', body: 'Detecté dos drawdowns puntuales > -5% en el período. Ambos duraron menos de 3 semanas y se recuperaron al peak previo. No hay un "valle largo" que indique daño persistente.' },
+      { title: 'Estado actual', tone: 'positive', body: 'Estás cerca del peak histórico (current_pct cercano a 0%). No hay drawdown activo del que preocuparse hoy. Esto puede cambiar mañana — la lectura es solo descriptiva.' },
+    ],
+    follow_ups: ['¿Qué activo causó el peor drawdown?', '¿Cuánto tardó la recuperación?'],
+  },
+  'insights.attribution': {
+    tldr: 'Tu P&L del año depende mucho de NVDA — sola explica más del 50% del resultado total. Eso es buena suerte ahora pero concentración real.',
+    sections: [
+      { title: 'Top contributors', tone: 'positive', body: 'NVDA, INTC y BTC son tus tres motores. NVDA es el más grande con diferencia (~55% del P&L total entre realized y unrealized). INTC contribuyó cerrado con +148% en un solo trade.' },
+      { title: 'Concentración del resultado', tone: 'warning', body: 'Que un solo activo explique más de la mitad de tu performance es riesgo escondido: si NVDA cayera 30%, la mitad del año desaparece. Saludable cuando todo sube, doloroso en correcciones.' },
+      { title: 'Detractores', tone: 'neutral', body: 'AAVE/USDT y NFLX son los principales lastres pero la magnitud es chica vs lo que aporta NVDA. No están moviendo la aguja del resultado total.' },
+    ],
+    follow_ups: ['¿Cómo bajo la dependencia de NVDA?', '¿Conviene rebalancear ya?'],
+  },
+  'insights.benchmarks': {
+    tldr: 'Le ganaste a la inflación AR claramente, perdiste un par de puntos contra el S&P 500. Para un portfolio mixto con USD y ARS, balance saludable.',
+    sections: [
+      { title: 'vs Inflación AR', tone: 'positive', body: 'Tu retorno (~14% USD equivalent) supera la inflación AR acumulada del período. Eso significa que mantuviste — y aumentaste — poder de compra real, que es el primer objetivo en una economía como la argentina.' },
+      { title: 'vs S&P 500', tone: 'neutral', body: 'Quedaste un par de puntos por debajo del SPY. No es preocupante: el SPY es el benchmark más difícil de batir consistentemente, y tu mix incluye cash (que rinde 0%) y exposure AR que pesó negativo en moneda dura.' },
+      { title: 'vs Dólar Blue', tone: 'neutral', body: 'En términos de pesos, tu portfolio creció más que el blue — eso protege contra una devaluación gradual. Si esperás un salto del FX, los activos en USD (Schwab, Binance) actúan como hedge.' },
+    ],
+    follow_ups: ['¿Cómo le gano al S&P 500?', '¿Conviene más exposure USD?'],
+  },
 }
 
 // Mocks por código de sesgo individual (topic 'behavioral.card'). Mantenemos
@@ -1227,6 +1263,10 @@ export function handleDemoRequest(method, path, body) {
           'dashboard.top_holdings',
           'dashboard.upcoming_events',
           'insights',
+          'insights.attribution',
+          'insights.benchmarks',
+          'insights.drawdown',
+          'insights.evolution',
         ],
       }
     }

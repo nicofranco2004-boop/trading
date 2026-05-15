@@ -264,6 +264,111 @@ seguís cómodo con esa concentración".
 """
 
 
+def render_insights_evolution_prompt() -> str:
+    """System para 'Analizar' la trayectoria mensual del Insights."""
+    return SYSTEM_BASE + """
+Screen: Curva de evolución de Insights (sub-componente).
+
+El packet trae el detalle por mes: TWR del período compoundeado, serie
+de retornos mensuales (cap 18 entradas), mejor/peor mes con su %,
+consistencia (% de meses positivos sobre total de meses analizados).
+
+Foco del análisis:
+- ¿Cómo fue la trayectoria — sostenida o volátil? Si consistency_pct >
+  70 % decílo como fortaleza; si < 50% como volatilidad alta.
+- ¿Cuál fue el mejor mes y el peor mes en qué momento? Si la brecha
+  entre ambos > 20pp, mencionalo como recordatorio de la volatilidad.
+- ¿Hay tendencias evidentes (varios meses positivos seguidos vs alternancia)?
+- Si twr_pct es positivo pero consistency < 50%, decí que el retorno
+  vino concentrado en pocos meses (alta dispersión).
+
+NUNCA predigas el próximo mes. Solo describí lo que pasó.
+"""
+
+
+def render_insights_drawdown_prompt() -> str:
+    """System para 'Analizar' el perfil de drawdown del Insights."""
+    return SYSTEM_BASE + """
+Screen: Drawdown de Insights (sub-componente).
+
+El packet trae la curva de caídas desde peak: drawdown actual (current_pct
+< 0 si estamos en zona bajista), peor caída del período (max_pct),
+días desde el último peak, peak/trough values, y `dd_events` (top 5
+eventos > -5% con start/end/depth/duration). `recovered` = True si ya
+volvimos al peak previo.
+
+Foco del análisis:
+- ¿Qué tan profundo es el peor drawdown del período? Si max_pct < -20,
+  flag fuerte; entre -10 y -20, normal; > -10 es DD chico.
+- ¿Cuántos eventos hubo y de qué tamaño? Más eventos = más volatilidad.
+- ¿Cuánto duró cada caída? Si duration_days > 90, mencionar que fue
+  largo (no agradable bancarlo).
+- Si current_pct < -5, decir que estamos en DD activo (contexto, no
+  alarma). Si recovered=True, decir que ya pasó.
+
+NUNCA digas "es buen momento para comprar más" ni predigas recovery.
+"""
+
+
+def render_insights_attribution_prompt() -> str:
+    """System para 'Analizar' atribución (P&L absoluto) en Insights."""
+    return SYSTEM_BASE + """
+Screen: Atribución de P&L de Insights (sub-componente).
+
+El packet trae quién aportó/restó plata REAL en el período (suma de
+realized + unrealized por ticker, no peso): total_realized_usd +
+total_unrealized_usd = total_pnl_usd. Top 5 contributors y top 5
+detractors con share_pct (qué % del P&L absoluto explica cada uno).
+`concentration_flag` = True si el top 1 contributor explica > 50% del
+resultado.
+
+Foco del análisis:
+- ¿De dónde viene el resultado? Si top1_share > 50, decí que TODO el
+  resultado depende de un solo activo y eso es riesgo.
+- ¿La distribución es saludable (varios contribuyentes medianos) o
+  concentrada (uno enorme)?
+- ¿Hay detractores grandes que arrastran? Si su pérdida > 30% de la
+  ganancia del top contributor, vale mencionarlo.
+- Cita tickers específicos siempre que estén en el packet (ej. "NVDA
+  aporta 60% del resultado — sin NVDA estarías casi en cero").
+
+NO recomendes "comprá más X" ni "vendé Y". Sí podés decir "el resultado
+depende mucho de un solo nombre — vale revisar tu tesis y tu criterio
+de salida para esa posición".
+"""
+
+
+def render_insights_benchmarks_prompt() -> str:
+    """System para 'Analizar' performance vs benchmarks en Insights."""
+    return SYSTEM_BASE + """
+Screen: Performance vs benchmarks de Insights (sub-componente).
+
+El packet trae el retorno del user (user_return_pct) y los 3 benchmarks
+que tiene Rendi: S&P 500 (USD), inflación AR (compound mensual),
+dólar blue (peso real). Más los deltas en puntos porcentuales (user -
+benchmark) y un flag `outperform.{benchmark}` por cada uno.
+
+Foco del análisis:
+- ¿A cuáles benchmarks les ganaste y a cuáles perdiste? Sé directo.
+- Si delta_sp500 > +5pp es outperform claro; entre -2 y +2 está parejo;
+  < -5pp es underperform real.
+- Para Argentina: pegarle a la inflación AR es el mínimo. Si user >
+  inflation, decí que mantuviste poder de compra. Si no, decí que
+  perdiste valor real.
+- Dólar blue mide cuánto creció tu portfolio EN PESOS comparado con
+  la suba del blue. Si user_return_pct (en USD) > dolar_blue_pct, no
+  importa porque tu cartera ya está en USD — mencionarlo solo si tiene
+  ARS importante.
+- Si algún benchmark es None (data faltante), decí simplemente que no
+  tenés ese dato — NUNCA lo inventes.
+
+Reglas:
+- NO digas "el S&P va a seguir subiendo / cayendo" ni proyectes.
+- SÍ podés contextualizar: "le ganaste a la inflación AR un 8% — buena
+  defensa de poder de compra".
+"""
+
+
 def render_monthly_prompt() -> str:
     """System para 'Analizar' un mes específico del reporte."""
     return SYSTEM_BASE + """
