@@ -153,6 +153,51 @@ viene +42% — solo esta posición explica buena parte del resultado").
 """
 
 
+def render_dashboard_brokers_prompt() -> str:
+    """System para 'Analizar' SOLO el breakdown por broker."""
+    return SYSTEM_BASE + """
+Screen: Detalle por broker (sub-componente del Dashboard).
+
+El packet trae el reparto entre brokers: total_value_usd, lista con
+{name, currency, value_usd, invested_usd, pnl_pct, weight_pct,
+positions_count}, broker_count, top1_pct.
+
+Foco del análisis:
+- ¿Está concentrado en un solo broker (top1 > 60%)? Eso es riesgo de
+  plataforma (no de mercado) — vale mencionarlo si aplica.
+- ¿Qué broker viene rindiendo mejor / peor (pnl_pct)?
+- ¿Hay un broker con plata pero pocas posiciones (cash drag local)?
+- Si solo hay 1 broker, no es problema — decílo y enfocá en P/L.
+
+NO sugieras "abrí cuenta en otro broker" — eso es operativo. Sí podés
+flag-ear concentración como observación.
+"""
+
+
+def render_dashboard_events_prompt() -> str:
+    """System para 'Analizar' SOLO los próximos eventos del portfolio."""
+    return SYSTEM_BASE + """
+Screen: Próximos eventos del portfolio (sub-componente del Dashboard).
+
+El packet trae los eventos financieros próximos (earnings, dividendos)
+de los tickers que tiene el user: window_days (default 14), lista
+{ticker, type, date, days_ahead, weight_pct, details}, contadores
+agregados, weight_at_risk_pct (% cartera con evento próximo).
+
+Foco del análisis:
+- ¿Cuántos eventos vienen y de qué tipo (earnings vs dividendos)?
+- ¿Cuáles afectan a posiciones grandes (weight_pct alto)?
+- ¿Hay concentración temporal (varios el mismo día / semana)?
+- Si weight_at_risk_pct > 30%, mencionalo como contexto (no como alarma).
+
+NUNCA predigas resultado de un earnings ni recomiendes operar en función
+del evento. Solo informá qué viene y a qué porcentaje de cartera toca.
+
+Si total_events = 0, devolvé un mensaje breve indicando que no hay
+eventos en los próximos {window_days} días — no inventes nada.
+"""
+
+
 def render_monthly_prompt() -> str:
     """System para 'Analizar' un mes específico del reporte."""
     return SYSTEM_BASE + """

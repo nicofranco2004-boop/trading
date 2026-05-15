@@ -570,7 +570,13 @@ export default function Dashboard() {
 
       {/* ── Per-broker grid ──────────────────────────────────────────────────── */}
       {brokers.length > 0 && (
-        <div className="mb-8">
+        <AskAIAbout
+          topic="dashboard.brokers"
+          subtitle="Detalle por broker"
+          className="mb-8"
+          rounded={false}
+        >
+        <div>
           <div className="mb-4">
             <p className="eyebrow mb-1">Brokers</p>
             <h3 className="text-base font-semibold text-ink-0 leading-tight">Detalle por cuenta</h3>
@@ -605,13 +611,20 @@ export default function Dashboard() {
             })}
           </div>
         </div>
+        </AskAIAbout>
       )}
 
       {/* Próximos eventos del portfolio + noticias recientes.
           Cada card se renderea sólo si tiene contenido — el dashboard no
           se inunda con cards vacías. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        <UpcomingEventsCard positions={positions} />
+        <AskAIAbout
+          topic="dashboard.upcoming_events"
+          subtitle="Próximos eventos"
+          rounded={false}
+        >
+          <UpcomingEventsCard positions={positions} />
+        </AskAIAbout>
         <TopNewsCard />
       </div>
 

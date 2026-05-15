@@ -24,6 +24,8 @@ from .builders.dashboard import build as build_dashboard
 from .builders.dashboard_composition import build as build_dashboard_composition
 from .builders.dashboard_evolution import build as build_dashboard_evolution
 from .builders.dashboard_top_holdings import build as build_dashboard_top_holdings
+from .builders.dashboard_brokers import build as build_dashboard_brokers
+from .builders.dashboard_events import build as build_dashboard_events
 
 
 # topic_id → (builder_fn, prompt_fn)
@@ -32,6 +34,8 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "dashboard.composition": (build_dashboard_composition, prompts.render_dashboard_composition_prompt),
     "dashboard.evolution": (build_dashboard_evolution, prompts.render_dashboard_evolution_prompt),
     "dashboard.top_holdings": (build_dashboard_top_holdings, prompts.render_dashboard_top_holdings_prompt),
+    "dashboard.brokers": (build_dashboard_brokers, prompts.render_dashboard_brokers_prompt),
+    "dashboard.upcoming_events": (build_dashboard_events, prompts.render_dashboard_events_prompt),
 }
 
 
