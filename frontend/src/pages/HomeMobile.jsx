@@ -1,12 +1,17 @@
 // HomeMobile — Home mobile (Sprint M1, item 01 del audit).
 // ═══════════════════════════════════════════════════════════════════════════
-// Render priorizado para "una mirada de 8 segundos":
-//   1. Hero balance (USD) + delta + sparkline 30d
-//   2. KPI strip 2-col (P&L día · P&L mes · capital aportado · mejor activo hoy)
-//   3. "Hoy en tu cartera" — PersonalLayer reducido a movimientos relevantes
-//   4. Heatmap mini al fondo
+// PRINCIPIO: paridad de features con desktop. Mismo contenido, distinto
+// orden y layout. La filosofía mobile (chequeo rápido) se manifiesta en
+// el ORDEN priorizado (lo importante arriba) — no en recortar features.
 //
-// NO va watchlist en home mobile (audit: "vive en su tab propio").
+// Orden:
+//   1. Hero balance (USD) + delta + sparkline 30d
+//   2. KPI strip 2-col (P&L día · P&L mes · capital aportado · mejor activo)
+//   3. "Hoy en tu cartera" — PersonalLayer (movimientos del día relevantes)
+//   4. Heatmap S&P
+//   5. Movers del día (top gainers + losers)
+//   6. Watchlist
+//   7. Noticias + Eventos (apilados, no en grid 2-col)
 
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -14,6 +19,11 @@ import { ArrowRight, TrendingUp, TrendingDown } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
 import PersonalLayer from '../components/home/PersonalLayer'
 import Heatmap from '../components/home/Heatmap'
+import MoversRail from '../components/home/MoversRail'
+import Watchlist from '../components/home/Watchlist'
+import NewsPreview from '../components/home/NewsPreview'
+import EventsPreview from '../components/home/EventsPreview'
+import Eyebrow from '../components/Eyebrow'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import { fmtUsd, pctSigned, colorClass } from '../utils/format'
@@ -239,12 +249,33 @@ export default function HomeMobile() {
         <PersonalLayer />
       </section>
 
-      {/* ── 4. Heatmap mini al fondo ───────────────────────────────── */}
-      <section className="px-4">
+      {/* ── 4. Heatmap S&P ─────────────────────────────────────────── */}
+      <section className="px-4 mb-5">
         <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
           S&P 500 hoy
         </h2>
         <Heatmap defaultMarket="sp500" />
+      </section>
+
+      {/* ── 5. Movers del día ──────────────────────────────────────── */}
+      <section className="px-4 mb-5">
+        <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+          Movers del día
+        </h2>
+        <MoversRail market="sp500" />
+      </section>
+
+      {/* ── 6. Watchlist ───────────────────────────────────────────── */}
+      <section className="px-4 mb-5">
+        <Watchlist />
+      </section>
+
+      {/* ── 7. Noticias + Eventos (apilados en mobile) ─────────────── */}
+      <section className="px-4 mb-5">
+        <NewsPreview />
+      </section>
+      <section className="px-4">
+        <EventsPreview />
       </section>
     </div>
   )

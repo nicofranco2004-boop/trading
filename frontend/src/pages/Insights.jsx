@@ -1395,8 +1395,9 @@ function InsightsDesktop() {
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
           y duración de las caídas sobre el rendimiento ajustado por flujos.
-          Oculto en mobile (decisión M1: demasiado denso para pantalla chica). */}
-      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6 hidden md:block">
+          Visible en desktop y mobile (paridad de features — la diferencia
+          plataforma es de layout, no de contenido). */}
+      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
