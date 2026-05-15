@@ -707,6 +707,15 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Conviene cerrar antes del earnings?', '¿Qué pasa si NVDA cae 10%?'],
   },
+  behavioral: {
+    tldr: 'Tu sesgo dominante es vender ganadoras antes de tiempo y mantener perdedoras esperando recuperación. Patrón clásico de "disposition effect" — manejable si lo hacés consciente.',
+    sections: [
+      { title: 'Patrón dominante', tone: 'warning', body: 'Mantenés tus posiciones perdedoras casi el doble de tiempo que las ganadoras. Cerraste varias en verde rápido (INTC, KO) y seguís bancando AAVE/USDT y NFLX hace meses esperando que vuelvan. Es el sesgo más estudiado de finanzas conductuales y el más caro a largo plazo.' },
+      { title: 'Lo que estás haciendo bien', tone: 'positive', body: 'Tu turnover anual es bajo (~1×/año), no estás overtradeando. Tampoco veo loss aversion fuerte ni averaging-down en activos en caída libre. Tu exposición a inflación AR está controlada por el mix con USD.' },
+      { title: 'Para revisar', tone: 'neutral', body: 'Concentración media-alta (NVDA pesa 28%) y home_bias moderado. No son problemas mientras el mercado acompañe, pero amplifican drawdowns. Considerá definir tu criterio de salida ANTES de comprar — eso desarma el disposition effect porque la decisión no depende de cómo te sentís cuando el activo cae.' },
+    ],
+    follow_ups: ['¿Cómo evito vender ganadoras temprano?', '¿Es problemática la concentración en NVDA?', '¿Qué hago con AAVE/USDT?'],
+  },
 }
 
 // CAGR sintético del demo. Lo computamos sobre los globals usando misma
@@ -1117,6 +1126,7 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/ai/topics') {
       return {
         topics: [
+          'behavioral',
           'dashboard',
           'dashboard.brokers',
           'dashboard.composition',

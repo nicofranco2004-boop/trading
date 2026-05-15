@@ -21,6 +21,7 @@ import ShareCardModal from '../components/ShareCardModal'
 import { specFromInsight } from '../utils/shareCard'
 import { api } from '../utils/api'
 import { track } from '../utils/track'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
 
 // Mapeo code → icono + tono visual.
 const CARD_META = {
@@ -104,6 +105,12 @@ export default function Behavioral() {
         eyebrow="Análisis"
         title="Comportamiento"
         subtitle="Sesgos comportamentales detectados sobre tu historial de operaciones. Lo que tu broker no te dice."
+        action={
+          <AnalyzeButton
+            screen="behavioral"
+            subtitle="Tus patrones de comportamiento"
+          />
+        }
       />
 
       {/* KPI strip de resumen */}
