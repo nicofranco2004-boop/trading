@@ -153,6 +153,7 @@ export default function Behavioral() {
               topic="behavioral.card"
               params={{ code: card.code }}
               subtitle={card.title || card.code}
+              className="h-full"
             >
               <BehavioralCard
                 card={card}
@@ -210,7 +211,7 @@ function BehavioralCard({ card, onClick }) {
 
   if (card.insufficient_data) {
     return (
-      <div className="border border-line rounded bg-bg-1 p-4 opacity-70">
+      <div className="border border-line rounded bg-bg-1 p-4 opacity-70 h-full">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <Icon size={14} strokeWidth={1.75} className="text-ink-3" />
@@ -227,7 +228,7 @@ function BehavioralCard({ card, onClick }) {
   return (
     <button
       onClick={onClick}
-      className={`text-left border ${tone.border} rounded bg-bg-1 p-4 hover:bg-bg-2/40 transition-colors group`}
+      className={`w-full h-full text-left border ${tone.border} rounded bg-bg-1 p-4 hover:bg-bg-2/40 transition-colors group flex flex-col`}
     >
       <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2 min-w-0">
@@ -242,7 +243,7 @@ function BehavioralCard({ card, onClick }) {
       <h3 className="text-base font-medium text-ink-0 mb-1.5 leading-snug">{card.title}</h3>
       <p className="text-sm text-ink-2 leading-relaxed mb-3">{card.one_liner}</p>
 
-      <div className="flex items-center justify-between text-xs">
+      <div className="flex items-center justify-between text-xs mt-auto">
         <span className="font-mono tabular text-ink-1">{card.value_label}</span>
         <span className="text-ink-3 inline-flex items-center gap-0.5 group-hover:text-ink-0 transition-colors">
           Ver detalle <ChevronRight size={11} strokeWidth={1.75} />
