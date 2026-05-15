@@ -76,7 +76,7 @@ export default function MobileTopBar({ onRefresh }) {
             <span className="text-sm font-semibold text-ink-0 tracking-tight">rendi</span>
           </Link>
           <Link
-            to="/?action=search"
+            to="/buscar"
             aria-label="Buscar"
             className="p-2 rounded-sm text-ink-2 hover:text-ink-0 hover:bg-bg-2/60 transition-colors"
           >

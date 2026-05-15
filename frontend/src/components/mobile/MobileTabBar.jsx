@@ -18,8 +18,9 @@ import { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Home, Briefcase, Compass, MoreHorizontal, Plus,
-  PlusCircle, Repeat, Star, Search, X, Target as TargetIcon,
+  PlusCircle, Repeat, Star, Search,
 } from 'lucide-react'
+import BottomSheet from './BottomSheet'
 import { track } from '../../utils/track'
 
 const TABS = [
@@ -140,7 +141,7 @@ const QUICK_ACTIONS = [
     sub: 'Ver precio, info, agregar',
     icon: Search,
     tone: 'info',
-    to: '/?action=search',
+    to: '/buscar',
   },
 ]
 
@@ -161,61 +162,34 @@ function QuickActionsSheet({ onClose }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-end bg-black/60 backdrop-blur-sm animate-fadeIn"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Acciones rápidas"
+    <BottomSheet
+      open
+      onClose={onClose}
+      eyebrow="Acciones rápidas"
+      title="¿Qué querés hacer?"
+      ariaLabel="Acciones rápidas"
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full bg-bg-1 border-t border-line-2 rounded-t-2xl pb-safe animate-slideUp"
-        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
-      >
-        {/* Drag handle */}
-        <div className="flex justify-center pt-2 pb-1">
-          <div aria-hidden className="w-9 h-1 rounded-full bg-line-3" />
-        </div>
-
-        <header className="flex items-center justify-between px-4 py-3 border-b border-line/40">
-          <div>
-            <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none">
-              Acciones rápidas
-            </div>
-            <h2 className="text-sm font-medium text-ink-0 mt-1.5 leading-none">¿Qué querés hacer?</h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-ink-3 hover:text-ink-0 transition-colors p-1"
-            aria-label="Cerrar"
-          >
-            <X size={16} strokeWidth={1.75} />
-          </button>
-        </header>
-
-        <ul className="px-3 py-2">
-          {QUICK_ACTIONS.map((a) => {
-            const Icon = a.icon
-            return (
-              <li key={a.code}>
-                <button
-                  onClick={() => handleAction(a)}
-                  className="w-full flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-bg-2/60 active:bg-bg-3 transition-colors text-left"
-                >
-                  <span className={`w-10 h-10 rounded-full border ${TONE_CLASS[a.tone] || TONE_CLASS.info} flex items-center justify-center flex-shrink-0`}>
-                    <Icon size={16} strokeWidth={1.75} />
-                  </span>
-                  <span className="flex-1 min-w-0">
-                    <span className="block text-sm font-medium text-ink-0 leading-tight">{a.label}</span>
-                    <span className="block text-[11px] text-ink-3 leading-tight mt-0.5">{a.sub}</span>
-                  </span>
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      </div>
-    </div>
+      <ul className="px-3 py-2">
+        {QUICK_ACTIONS.map((a) => {
+          const Icon = a.icon
+          return (
+            <li key={a.code}>
+              <button
+                onClick={() => handleAction(a)}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-bg-2/60 active:bg-bg-3 transition-colors text-left"
+              >
+                <span className={`w-10 h-10 rounded-full border ${TONE_CLASS[a.tone] || TONE_CLASS.info} flex items-center justify-center flex-shrink-0`}>
+                  <Icon size={16} strokeWidth={1.75} />
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-sm font-medium text-ink-0 leading-tight">{a.label}</span>
+                  <span className="block text-[11px] text-ink-3 leading-tight mt-0.5">{a.sub}</span>
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </BottomSheet>
   )
 }

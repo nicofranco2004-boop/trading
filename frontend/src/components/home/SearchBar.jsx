@@ -28,7 +28,7 @@ function logoSymbolFor(symbol) {
 // `type` matchea las tabs de filtro: stock_us | cedear | bond | crypto | etf
 // Universo curado: blue chips US, principales acciones Merval, CEDEARs más
 // negociados, bonos soberanos AR (USD + CER), ETFs core y cripto top.
-const POPULAR_TICKERS = [
+export const POPULAR_TICKERS = [
   // ─── Acciones US (blue chips + tech) ──────────────────────────────────────
   { symbol: 'AAPL',  name: 'Apple',                   exchange: 'NASDAQ', type: 'stock_us' },
   { symbol: 'MSFT',  name: 'Microsoft',               exchange: 'NASDAQ', type: 'stock_us' },
@@ -146,7 +146,7 @@ const POPULAR_TICKERS = [
   { symbol: 'USDC',  name: 'USD Coin',                  exchange: 'CRYPTO', type: 'crypto' },
 ]
 
-const FILTERS = [
+export const FILTERS = [
   { id: 'all',      label: 'Todos'        },
   { id: 'stock_us', label: 'Acciones US'  },
   { id: 'stock_ar', label: 'Acciones AR'  },
@@ -157,7 +157,7 @@ const FILTERS = [
 ]
 
 // Heurística para inferir tipo a partir de la posición del user (campo `asset`).
-function inferType(asset) {
+export function inferType(asset) {
   if (!asset) return 'stock_us'
   const a = asset.toUpperCase()
   if (['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT', 'MATIC', 'LINK'].includes(a)) return 'crypto'
