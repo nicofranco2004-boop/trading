@@ -16,6 +16,8 @@ import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
 import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
 import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/format'
+import InsightsMobile from './InsightsMobile'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import { lookupHistoricalDolar } from '../utils/fx'
@@ -107,6 +109,12 @@ function pickBalancedDiagnosis(diagnosis, n = 3) {
 }
 
 export default function Insights() {
+  const isMobile = useIsMobile()
+  if (isMobile) return <InsightsMobile />
+  return <InsightsDesktop />
+}
+
+function InsightsDesktop() {
   const { user } = useAuth()
   // Truncar y sanitizar para usarlo como dataKey de Recharts (un solo nombre, máx 12 chars).
   // Si el "name" es un email, agarrar la parte antes del @.

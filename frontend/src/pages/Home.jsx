@@ -18,8 +18,13 @@ import EventsPreview from '../components/home/EventsPreview'
 import SearchBar from '../components/home/SearchBar'
 import Watchlist from '../components/home/Watchlist'
 import Eyebrow from '../components/Eyebrow'
+import HomeMobile from './HomeMobile'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 export default function Home() {
+  const isMobile = useIsMobile()
+  if (isMobile) return <HomeMobile />
+
   return (
     <div className="page-shell">
       {/* Header compacto — sin el PageHeader editorial gigante */}

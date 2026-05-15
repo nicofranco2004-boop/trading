@@ -25,6 +25,8 @@ import { computeBrokerValue } from '../utils/valuation'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import LazySparkline from '../components/LazySparkline'
+import PositionsMobile from './PositionsMobile'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 const REFRESH_MS = 90_000
 
@@ -45,6 +47,12 @@ const BROKER_COLORS = [
 ]
 
 export default function Positions() {
+  const isMobile = useIsMobile()
+  if (isMobile) return <PositionsMobile />
+  return <PositionsDesktop />
+}
+
+function PositionsDesktop() {
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
   const [config, setConfig] = useState({ tc_mep: 1415, tc_blue: 1415 })

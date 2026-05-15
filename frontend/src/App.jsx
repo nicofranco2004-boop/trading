@@ -3,7 +3,10 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import Sidebar from './components/Sidebar'
+import MobileTabBar from './components/mobile/MobileTabBar'
+import MobileTopBar from './components/mobile/MobileTopBar'
 import DemoBanner from './components/DemoBanner'
+import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -21,6 +24,7 @@ import Home from './pages/Home'
 import FirstInsight from './pages/FirstInsight'
 import Behavioral from './pages/Behavioral'
 import Wrapped from './pages/Wrapped'
+import More from './pages/More'
 
 function RouteTracker() {
   // Trackea cambios de ruta automáticamente. Vive adentro del <BrowserRouter>
@@ -36,8 +40,40 @@ function RouteTracker() {
   return null
 }
 
+function AppRoutes() {
+  // Las rutas son las mismas en desktop y mobile — el layout cambia, el
+  // árbol de rutas no. Algunas páginas detectan useIsMobile() internamente
+  // para variar el render.
+  return (
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/dashboard" element={<Dashboard />} />
+      <Route path="/posiciones" element={<Positions />} />
+      <Route path="/insights" element={<Insights />} />
+      <Route path="/comportamiento" element={<Behavioral />} />
+      <Route path="/mensual" element={<Monthly />} />
+      <Route path="/reportes" element={<Reports />} />
+      <Route path="/novedades" element={<Novedades />} />
+      {/* Redirects back-compat */}
+      <Route path="/eventos"  element={<Navigate to="/novedades?tab=eventos"  replace />} />
+      <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />
+      <Route path="/operaciones" element={<Operations />} />
+      <Route path="/config" element={<Config />} />
+      <Route path="/objetivos" element={<Goals />} />
+      <Route path="/wrapped" element={<Wrapped />} />
+      <Route path="/imports" element={<Imports />} />
+      <Route path="/bienvenida" element={<FirstInsight />} />
+      <Route path="/admin" element={<Admin />} />
+      {/* Mobile-only: "Más" drawer page */}
+      <Route path="/mas" element={<More />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  )
+}
+
 function Layout() {
   const { user } = useAuth()
+  const isMobile = useIsMobile()
 
   if (!user) {
     return (
@@ -47,6 +83,22 @@ function Layout() {
     )
   }
 
+  // ─── Mobile shell ──────────────────────────────────────────────────────
+  if (isMobile) {
+    return (
+      <>
+        <RouteTracker />
+        <MobileTopBar />
+        <main className="min-h-screen">
+          <DemoBanner />
+          <AppRoutes />
+        </main>
+        <MobileTabBar />
+      </>
+    )
+  }
+
+  // ─── Desktop shell ─────────────────────────────────────────────────────
   return (
     <>
       <RouteTracker />
@@ -58,29 +110,7 @@ function Layout() {
         style={{ marginLeft: 'var(--sidebar-w, 220px)' }}
       >
         <DemoBanner />
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/posiciones" element={<Positions />} />
-          <Route path="/insights" element={<Insights />} />
-          <Route path="/comportamiento" element={<Behavioral />} />
-          <Route path="/mensual" element={<Monthly />} />
-          <Route path="/reportes" element={<Reports />} />
-          <Route path="/novedades" element={<Novedades />} />
-          {/* Redirects para back-compat con bookmarks/links viejos. Antes
-              estas rutas montaban las páginas standalone; ahora reenvían al
-              hub para mantener una sola UI consistente. */}
-          <Route path="/eventos"  element={<Navigate to="/novedades?tab=eventos"  replace />} />
-          <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />
-          <Route path="/operaciones" element={<Operations />} />
-          <Route path="/config" element={<Config />} />
-          <Route path="/objetivos" element={<Goals />} />
-          <Route path="/wrapped" element={<Wrapped />} />
-          <Route path="/imports" element={<Imports />} />
-          <Route path="/bienvenida" element={<FirstInsight />} />
-          <Route path="/admin" element={<Admin />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <AppRoutes />
       </main>
     </>
   )
