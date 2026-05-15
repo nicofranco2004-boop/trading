@@ -648,6 +648,67 @@ const WRAPPED = (year) => ({
   summary: { has_data: true, twr: 0.1432, months_count: 12, operations_count: 14, slide_count: 10 },
 })
 
+// AI v2 — análisis pre-redactados por topic.
+// Coherentes con la fixture demo (portfolio ~$8K, NVDA top, AAVE/USDT en
+// rojo, mix Schwab USD + Cocos ARS + Binance USDT, sesgo dominante
+// disposition_effect medio).
+const DEMO_AI_RESULTS = {
+  dashboard: {
+    tldr: 'Tu portfolio rinde +14.3% sobre lo aportado, principalmente por NVDA y BTC. Le ganaste a la inflación AR pero quedaste levemente por debajo del S&P 500.',
+    sections: [
+      { title: 'Qué pasó', tone: 'neutral', body: 'En los últimos 30 días tu cartera se movió moderadamente. El valor total está en US$ 8.3K con un capital aportado neto de US$ 7.1K — la diferencia (US$ 1.2K) son ganancias acumuladas reales, no flujos.' },
+      { title: 'Qué lo explica', tone: 'positive', body: 'NVDA pesa cerca del 28% de la cartera y viene +29% desde la compra. Junto a BTC son los dos motores principales del resultado. INTC también suma fuerte (+US$ 561 de P&L cerrado).' },
+      { title: 'Lo que conviene mirar', tone: 'warning', body: 'Tenés una concentración alta en NVDA y un sesgo medio de "disposition effect" (vender ganadoras antes que perdedoras). AAVE/USDT viene rezagado — vale revisar tu tesis de entrada.' },
+    ],
+    follow_ups: ['¿Por qué NVDA pesa tanto?', '¿Cómo voy vs S&P 500?', '¿Qué pasa con AAVE/USDT?'],
+  },
+  'dashboard.composition': {
+    tldr: 'Cartera con concentración moderada-alta — NVDA sola pesa 28% del total. Reparto USD/ARS bastante balanceado y poco cash.',
+    sections: [
+      { title: 'Composición actual', tone: 'neutral', body: 'Top 5 holdings explican aproximadamente 65% del portfolio. NVDA, AAPL y MSFT son los más grandes. Las posiciones en ARS (Cocos) suman algo más del 30%.' },
+      { title: 'Concentración', tone: 'warning', body: 'El HHI está en zona "alta concentración" — significa que una caída fuerte de NVDA te impactaría desproporcionadamente. No es un problema en mercados que suben, pero amplifica drawdowns.' },
+      { title: 'Cash drag', tone: 'positive', body: 'Solo ~2% en cash, así que tu capital está casi todo trabajando. Eso es saludable si tu horizonte es largo.' },
+    ],
+    follow_ups: ['¿Qué tan riesgosa es esta concentración?', '¿Conviene rebalancear?'],
+  },
+  'dashboard.evolution': {
+    tldr: 'Curva ascendente con dos drawdowns menores. Estás cerca del peak histórico, no en zona de stress.',
+    sections: [
+      { title: 'Trayectoria', tone: 'positive', body: 'El valor del portfolio creció de forma sostenida en los últimos 12 meses, con un peak en marzo. La curva no muestra caídas violentas.' },
+      { title: 'Drawdown', tone: 'neutral', body: 'Tu drawdown actual desde el peak es bajo. Los dos retrocesos más fuertes fueron de corta duración y se recuperaron en 2-3 semanas.' },
+      { title: 'Mejor / peor mes', tone: 'neutral', body: 'Tu mejor mes fue marzo (+6.21%) y el peor junio (−3.84%). Ambos están dentro del rango razonable para un portfolio mixto.' },
+    ],
+    follow_ups: ['¿Cuánto cayó el portfolio en el peor mes?', '¿Estoy cerca del máximo histórico?'],
+  },
+  'dashboard.top_holdings': {
+    tldr: 'NVDA y AAPL son los motores del resultado. La mayoría de las posiciones están en verde, con AAVE/USDT como el principal lastre.',
+    sections: [
+      { title: 'Ganadoras', tone: 'positive', body: 'NVDA (+29% desde compra, weight 28%) y AAPL (+18%) son las que más explican tu performance. NVDA sola maneja una porción grande del resultado total.' },
+      { title: 'Perdedoras', tone: 'negative', body: 'AAVE/USDT viene −12% y NFLX flat. Si las tenés hace varios meses sin tesis clara, vale el ejercicio de preguntarte si seguís creyendo en ellas o estás manteniendo por "loss aversion".' },
+      { title: 'Balance', tone: 'neutral', body: 'Más del 70% de tus posiciones están en verde — un balance favorable. El problema típico de carteras así no es la cantidad de ganadoras, sino qué tan grandes son.' },
+    ],
+    follow_ups: ['¿NVDA está sobre-comprada?', '¿Qué hacer con AAVE/USDT?'],
+  },
+  'dashboard.brokers': {
+    tldr: 'Tres brokers bien repartidos. Schwab maneja la mayor parte (acciones US), Cocos ARS un tercio (panel argentino + CEDEARs), Binance el resto en crypto.',
+    sections: [
+      { title: 'Reparto', tone: 'neutral', body: 'Schwab concentra alrededor del 50% del valor, Cocos un 30% y Binance el 20%. Ningún broker domina al punto de generar riesgo de plataforma.' },
+      { title: 'Performance por broker', tone: 'positive', body: 'Las tres cuentas están en verde. Schwab (acciones US) lidera en P&L absoluto gracias a NVDA y AAPL. Binance contribuye con BTC. Cocos ARS suma sin grandes sobresaltos.' },
+      { title: 'Riesgo de plataforma', tone: 'neutral', body: 'Tener custodia en 3 brokers reduce el riesgo de "que pase algo en uno y se complique todo". No hace falta sumar más.' },
+    ],
+    follow_ups: ['¿Conviene unificar brokers?', '¿Cuánto pesan los CEDEARs?'],
+  },
+  'dashboard.upcoming_events': {
+    tldr: 'Pocos eventos próximos en los activos que tenés. NVDA tiene earnings la semana que viene y representa una parte significativa de tu cartera.',
+    sections: [
+      { title: 'Qué viene', tone: 'neutral', body: 'En los próximos 14 días hay eventos de earnings para NVDA y AAPL. Dividendos: KO. Total ~3 eventos relevantes.' },
+      { title: 'Exposure', tone: 'warning', body: 'El earnings de NVDA toca una posición que pesa aproximadamente 28% de tu cartera. Movimientos post-earnings de un solo activo pueden mover el resultado total del día. Es contexto, no alarma.' },
+      { title: 'Sugerencia', tone: 'neutral', body: 'No tomes decisiones operativas en función del earnings — históricamente la reacción es impredecible. Solo tené presente que el día del reporte tu portfolio puede moverse más de lo usual.' },
+    ],
+    follow_ups: ['¿Conviene cerrar antes del earnings?', '¿Qué pasa si NVDA cae 10%?'],
+  },
+}
+
 // CAGR sintético del demo. Lo computamos sobre los globals usando misma
 // fórmula que el backend (TWR mensual + media geométrica anualizada).
 const DEMO_CAGR = (() => {
@@ -1041,6 +1102,30 @@ export function handleDemoRequest(method, path, body) {
       const year = parseInt(yearStr, 10) || new Date().getFullYear()
       return WRAPPED(year)
     }
+    // ── AI v2 endpoints — usage + topics ────────────────────────────────
+    if (basePath === '/ai/usage') {
+      return {
+        tier: 'free',
+        analyses_count: 0,
+        analyses_limit: 5,
+        hub_queries_count: 0,
+        hub_queries_limit: 3,
+        analyses_remaining: 5,
+        hub_queries_remaining: 3,
+      }
+    }
+    if (basePath === '/ai/topics') {
+      return {
+        topics: [
+          'dashboard',
+          'dashboard.brokers',
+          'dashboard.composition',
+          'dashboard.evolution',
+          'dashboard.top_holdings',
+          'dashboard.upcoming_events',
+        ],
+      }
+    }
     // Insights endpoints opcionales — devuelven shape vacío para no romper
     if (basePath.startsWith('/insights')) return {}
     if (basePath.startsWith('/goals'))    return []
@@ -1123,6 +1208,29 @@ export function handleDemoRequest(method, path, body) {
     return {
       reply: 'Estás en modo demo. Para usar el coach con tu portfolio real, creá una cuenta gratis y subí tu CSV.',
     }
+  }
+
+  // ── AI v2 analyze: mocks por topic (datos consistentes con la fixture demo)
+  if (method === 'POST' && basePath === '/ai/analyze') {
+    const topic = (body?.screen || '').toLowerCase()
+    const result = DEMO_AI_RESULTS[topic] || DEMO_AI_RESULTS.dashboard
+    return {
+      result,
+      cached: false,
+      usage: {
+        tier: 'free',
+        analyses_count: 1,
+        analyses_limit: 5,
+        hub_queries_count: 0,
+        hub_queries_limit: 3,
+        analyses_remaining: 4,
+        hub_queries_remaining: 3,
+      },
+    }
+  }
+  // Invalidar cache → no-op (los mocks son determinísticos, no hay cache)
+  if (method === 'DELETE' && basePath.startsWith('/ai/cache/')) {
+    return { deleted: 0 }
   }
 
   // Default: 200 ok silencioso para no romper handlers no mapeados
