@@ -27,6 +27,7 @@ import { Sparkles } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { track } from '../../utils/track'
 import AnalysisDrawer from './AnalysisDrawer'
+import { isAIDiscovered, markAIDiscovered } from './AIDiscoveryBanner'
 
 export default function AskAIAbout({
   topic,
@@ -41,10 +42,27 @@ export default function AskAIAbout({
 }) {
   const [open, setOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
+  // Si el user NUNCA descubrió la feature, dejamos el ✦ siempre visible
+  // (con un pulse sutil) hasta el primer click. Después pasa a hover-only.
+  const [discovered, setDiscovered] = useState(true)
   const isMobile = useIsMobile()
   const lastClickRef = useRef(0)
 
+  // Refresh discovered flag al montar — sigue al banner si el user lo cierra
+  useEffect(() => {
+    setDiscovered(isAIDiscovered())
+    function onStorage(e) {
+      if (e.key === 'rendi_ai_discovered') setDiscovered(isAIDiscovered())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
   function openDrawer(source) {
+    if (!discovered) {
+      markAIDiscovered()
+      setDiscovered(true)
+    }
     track('ai_analyze_opened', { screen: topic, source })
     setOpen(true)
   }
@@ -82,18 +100,32 @@ export default function AskAIAbout({
           'absolute z-10 inline-flex items-center justify-center',
           'top-2 right-2',
           rounded ? 'w-7 h-7 rounded-sm' : 'w-6 h-6 rounded-sm',
-          'bg-bg-1/90 backdrop-blur-sm border border-data-violet/40 text-data-violet',
-          'hover:bg-data-violet/15 hover:border-data-violet/60 transition-all duration-150',
-          // Mobile: siempre visible (pero chico). Desktop: fade al hover.
-          isMobile
-            ? 'opacity-90'
-            : hovered
-              ? 'opacity-100 translate-y-0'
-              : 'opacity-0 -translate-y-1 pointer-events-none',
+          'bg-bg-1/90 backdrop-blur-sm border text-data-violet',
+          'transition-all duration-150',
+          // Pre-descubrimiento: visible siempre con border más fuerte + pulse.
+          // Post-descubrimiento: fade al hover (mobile siempre visible chico).
+          !discovered
+            ? 'opacity-100 border-data-violet/70 shadow-md shadow-data-violet/20 hover:bg-data-violet/15 ai-discover-pulse'
+            : isMobile
+              ? 'opacity-90 border-data-violet/40 hover:bg-data-violet/15 hover:border-data-violet/60'
+              : hovered
+                ? 'opacity-100 translate-y-0 border-data-violet/40 hover:bg-data-violet/15 hover:border-data-violet/60'
+                : 'opacity-0 -translate-y-1 pointer-events-none border-data-violet/40',
         ].join(' ')}
       >
         <Sparkles size={isMobile ? 12 : 13} strokeWidth={1.75} />
       </button>
+
+      {/* Pulse animation para pre-discovery */}
+      {!discovered && (
+        <style>{`
+          @keyframes ai-discover-pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(125, 140, 255, 0.4); }
+            50%      { box-shadow: 0 0 0 5px rgba(125, 140, 255, 0); }
+          }
+          .ai-discover-pulse { animation: ai-discover-pulse 2.2s ease-in-out infinite; }
+        `}</style>
+      )}
 
       {open && (
         <AnalysisDrawer

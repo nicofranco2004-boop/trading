@@ -8,6 +8,7 @@ import TopNewsCard from '../components/TopNewsCard'
 import PageHeader from '../components/PageHeader'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import AIDiscoveryBanner from '../components/ai/AIDiscoveryBanner'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import { DashboardSkeleton } from '../components/Skeleton'
@@ -299,6 +300,9 @@ export default function Dashboard() {
           </div>
         }
       />
+
+      {/* Banner descubrimiento IA — primer load por usuario */}
+      <AIDiscoveryBanner />
 
       {positions.filter(p => !p.is_cash).length === 0 && !loading && (
         <Card className="mb-6">
