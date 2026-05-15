@@ -9,6 +9,7 @@ import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target
 import AICoach from '../components/AICoach'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
@@ -1165,20 +1166,27 @@ function InsightsDesktop() {
         title="Insights"
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
-          <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
-            {['USD', 'ARS'].map(c => (
-              <button
-                key={c}
-                onClick={() => setCurrency(c)}
-                className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-label transition-colors ${
-                  currency === c
-                    ? 'bg-bg-3 text-ink-0'
-                    : 'text-ink-2 hover:text-ink-0'
-                }`}
-              >
-                {c}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            <AnalyzeButton
+              screen="insights"
+              params={{ window_days: 365 }}
+              subtitle="Tu performance del último año"
+            />
+            <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
+              {['USD', 'ARS'].map(c => (
+                <button
+                  key={c}
+                  onClick={() => setCurrency(c)}
+                  className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-label transition-colors ${
+                    currency === c
+                      ? 'bg-bg-3 text-ink-0'
+                      : 'text-ink-2 hover:text-ink-0'
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
           </div>
         }
       />

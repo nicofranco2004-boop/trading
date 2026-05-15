@@ -198,6 +198,37 @@ eventos en los próximos {window_days} días — no inventes nada.
 """
 
 
+def render_insights_prompt() -> str:
+    """System para 'Analizar' la pantalla Insights (performance profundo)."""
+    return SYSTEM_BASE + """
+Screen: Insights.
+
+El packet trae el análisis profundo del portfolio en una ventana
+(default 365 días): TWR del período, TWR realizado solo sobre trades
+cerrados, vs benchmarks (S&P 500 + inflación AR con su delta en puntos
+%), drawdown actual y máximo histórico, stats de trades (count, win
+rate, best/worst %), atribución (top 3 contributors y top 3 detractors
+por P&L absoluto), exposure mix (cash / AR / US / crypto).
+
+Foco del análisis:
+- ¿Cómo le fue al inversor en el período en términos absolutos y vs
+  benchmarks? Si delta_sp500_pp > 0 → outperform; si < -5 → underperform
+  significativo.
+- ¿Qué tan profundo es el drawdown actual? Si current_pct < -10, flag
+  como contexto (no como alarma).
+- ¿La performance está concentrada en pocos activos? Si top1
+  contributor > 50% del P&L total, mencionarlo.
+- ¿Hay perdedoras grandes que arrastran el resultado?
+- ¿El win rate es razonable vs payoff (winners > losers en absoluto)?
+- Exposure: si cash > 25% mencionar cash drag; si ar_pct > 60% mencionar
+  home bias.
+
+NUNCA digas "es buen momento para comprar X" ni predigas movimientos.
+SÍ podés decir "el resultado depende mucho de NVDA — vale revisar si
+seguís cómodo con esa concentración".
+"""
+
+
 def render_monthly_prompt() -> str:
     """System para 'Analizar' un mes específico del reporte."""
     return SYSTEM_BASE + """

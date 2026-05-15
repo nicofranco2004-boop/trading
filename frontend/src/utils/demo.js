@@ -716,6 +716,15 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Cómo evito vender ganadoras temprano?', '¿Es problemática la concentración en NVDA?', '¿Qué hago con AAVE/USDT?'],
   },
+  insights: {
+    tldr: 'Rendiste 14.3% en los últimos 12 meses con drawdowns controlados. Le ganaste a la inflación AR pero quedaste 2-3 puntos por debajo del S&P 500. Resultado bien diversificado, no dependiste de un solo activo.',
+    sections: [
+      { title: 'Performance', tone: 'positive', body: 'TWR del año ~14% con un drawdown máximo de solo -8% — la curva fue sostenida sin sustos. Win rate del 60% en trades cerrados, y el promedio de ganadoras supera al de perdedoras (payoff > 1).' },
+      { title: 'Qué movió la aguja', tone: 'neutral', body: 'Tus tres motores fueron NVDA, INTC y BTC — entre los tres explican buena parte del P&L del año. INTC fue el trade más rentable (+148%). En contra: AAVE/USDT cerrada en rojo y algunas posiciones crypto que arrastraron poco pero arrastraron.' },
+      { title: 'Riesgo y exposure', tone: 'warning', body: 'Tu mix está 47% en activos US (Schwab + CEDEARs), 8% en panel AR, 0% crypto activo, y un 45% en cash USDT/ARS sin trabajar. Ese cash drag es alto — si tu horizonte es largo, deberías considerar bajar el efectivo. La concentración de NVDA (28% del riesgo de mercado) amplifica drawdowns en correcciones del Nasdaq.' },
+    ],
+    follow_ups: ['¿Por qué quedé debajo del S&P 500?', '¿Tengo demasiado cash sin trabajar?', '¿Es problemática la concentración en NVDA?'],
+  },
 }
 
 // CAGR sintético del demo. Lo computamos sobre los globals usando misma
@@ -1133,6 +1142,7 @@ export function handleDemoRequest(method, path, body) {
           'dashboard.evolution',
           'dashboard.top_holdings',
           'dashboard.upcoming_events',
+          'insights',
         ],
       }
     }
