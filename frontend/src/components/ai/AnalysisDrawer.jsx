@@ -60,7 +60,7 @@ export default function AnalysisDrawer({
     <div className="space-y-5">
       {error && !loading && (
         <div className="text-xs text-rendi-neg bg-rendi-neg/[0.06] border border-rendi-neg/25 rounded-sm px-3 py-2">
-          {error}
+          {typeof error === 'string' ? error : 'No pudimos generar el análisis.'}
         </div>
       )}
 
@@ -75,7 +75,9 @@ export default function AnalysisDrawer({
         </span>
         {usage && (
           <span>
-            {usage.analyses_count}/{usage.analyses_limit} hoy
+            {usage.tier === 'admin'
+              ? 'Admin · sin tope'
+              : `${usage.analyses_count}/${usage.analyses_limit} hoy`}
           </span>
         )}
       </div>

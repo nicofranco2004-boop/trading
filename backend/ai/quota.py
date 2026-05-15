@@ -1,4 +1,4 @@
-"""quota — Free vs Pro tier + límites diarios.
+"""quota — Free vs Pro vs Admin tier + límites diarios.
 ═══════════════════════════════════════════════════════════════════════════
 Cuotas por tier (configurables — empezamos generosos para no frustrar
 mientras no haya paywall real):
@@ -13,9 +13,13 @@ mientras no haya paywall real):
     - Modelo: claude-sonnet-4-6 para análisis "profundos" (insights,
       wrapped, behavioral). Resto sigue en Haiku.
 
-Hoy NO hay tabla de subscriptions todavía — todos los users son Free.
-Cuando agreguemos pricing, este módulo lee el plan del user y devuelve
-el tier real. Por ahora `get_tier()` devuelve siempre 'free'.
+  Admin (interno, no se vende):
+    - Cap muy alto (1000/día) para dogfood + debugging sin tener que
+      esperar al reset diario. Solo el user con is_admin=1.
+
+Hoy NO hay tabla de subscriptions todavía — todos los users non-admin
+son Free. Cuando agreguemos pricing, este módulo lee el plan del user
+y devuelve el tier real.
 
 Tracking:
   Cada call (HIT o MISS) incrementa ai_usage_daily.analyses_count.
@@ -26,7 +30,7 @@ from __future__ import annotations
 from typing import Literal
 from datetime import date
 
-Tier = Literal["free", "pro"]
+Tier = Literal["free", "pro", "admin"]
 
 # Límites por tier
 LIMITS = {
@@ -38,14 +42,28 @@ LIMITS = {
         "analyses_per_day": 100,
         "hub_queries_per_day": 100,
     },
+    "admin": {
+        "analyses_per_day": 1000,
+        "hub_queries_per_day": 1000,
+    },
 }
 
 
 def get_tier(conn, user_id: int) -> Tier:
-    """Tier del user. Hoy retorna siempre 'free' — placeholder para cuando
-    haya paywall. Cuando lo agreguemos: leer columna 'plan' de tabla users
-    o subscriptions."""
-    # TODO: cuando exista subscriptions table, leer de ahí.
+    """Tier del user. Admin (is_admin=1) tiene cupo casi ilimitado; el resto
+    queda en 'free' hasta que exista paywall.
+
+    TODO: cuando exista subscriptions table, leer plan real de ahí para
+    distinguir free vs pro pago."""
+    try:
+        row = conn.execute(
+            "SELECT is_admin FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row and row["is_admin"]:
+            return "admin"
+    except Exception:
+        # Tabla / columna no existe (entornos legacy) — no rompemos, fallback Free
+        pass
     return "free"
 
 

@@ -35,10 +35,14 @@ export function useAIAnalysis({ screen, params, autoload = true } = {}) {
       setUsage(data.usage)
       track('ai_analyze_loaded', { screen, cached: !!data.cached, ms })
     } catch (ex) {
-      // El backend devuelve 429 con { error, usage } cuando se acaba el cupo
+      // El backend devuelve 429 con detail={error, usage} cuando se acaba el
+      // cupo — api.js extrae el .error como ex.message y deja el payload en
+      // ex.payload.detail.usage para que actualicemos el badge.
       const msg = ex?.message || 'No pudimos generar el análisis.'
       setError(msg)
-      track('ai_analyze_error', { screen, error: msg })
+      const usagePayload = ex?.payload?.detail?.usage
+      if (usagePayload) setUsage(usagePayload)
+      track('ai_analyze_error', { screen, status: ex?.status, error: msg })
     } finally {
       setLoading(false)
     }
