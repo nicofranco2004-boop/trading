@@ -27,6 +27,7 @@ from .builders.dashboard_top_holdings import build as build_dashboard_top_holdin
 from .builders.dashboard_brokers import build as build_dashboard_brokers
 from .builders.dashboard_events import build as build_dashboard_events
 from .builders.behavioral import build as build_behavioral
+from .builders.behavioral_card import build as build_behavioral_card
 from .builders.insights import build as build_insights
 
 
@@ -39,6 +40,7 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "dashboard.brokers": (build_dashboard_brokers, prompts.render_dashboard_brokers_prompt),
     "dashboard.upcoming_events": (build_dashboard_events, prompts.render_dashboard_events_prompt),
     "behavioral": (build_behavioral, prompts.render_behavioral_prompt),
+    "behavioral.card": (build_behavioral_card, prompts.render_behavioral_card_prompt),
     "insights": (build_insights, prompts.render_insights_prompt),
 }
 

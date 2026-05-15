@@ -716,6 +716,8 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Cómo evito vender ganadoras temprano?', '¿Es problemática la concentración en NVDA?', '¿Qué hago con AAVE/USDT?'],
   },
+  // behavioral.card — usamos un mapa por código + un fallback genérico.
+  // El handler de demo lee body.params.code y arma el result al vuelo.
   insights: {
     tldr: 'Rendiste 14.3% en los últimos 12 meses con drawdowns controlados. Le ganaste a la inflación AR pero quedaste 2-3 puntos por debajo del S&P 500. Resultado bien diversificado, no dependiste de un solo activo.',
     sections: [
@@ -726,6 +728,87 @@ const DEMO_AI_RESULTS = {
     follow_ups: ['¿Por qué quedé debajo del S&P 500?', '¿Tengo demasiado cash sin trabajar?', '¿Es problemática la concentración en NVDA?'],
   },
 }
+
+// Mocks por código de sesgo individual (topic 'behavioral.card'). Mantenemos
+// solo los más probables de aparecer en la demo — para otros, el handler usa
+// el fallback genérico al final.
+const DEMO_BEHAVIORAL_CARDS = {
+  disposition_effect: {
+    tldr: 'Mantenés tus posiciones perdedoras casi el doble de tiempo que las ganadoras. Es el sesgo más estudiado de finanzas conductuales y el más caro a largo plazo.',
+    sections: [
+      { title: 'Qué dice el dato', tone: 'warning', body: 'El ratio winners/losers de holding days está en torno a 0.55× — eso significa que mantenés las perdedoras casi al doble del tiempo que las ganadoras. Vender ganadoras rápido y mantener perdedoras "hasta que vuelvan" es la firma del disposition effect.' },
+      { title: 'Por qué importa', tone: 'neutral', body: 'A largo plazo este patrón te hace perder rendimiento porque las ganadoras tienden a seguir ganando un poco más (momentum) y las perdedoras a seguir perdiendo. La literatura de Shefrin & Statman muestra que cortarse el upside y bancarse el downside cuesta varios puntos por año.' },
+      { title: 'Qué hacer', tone: 'positive', body: 'Definí tu criterio de salida ANTES de comprar (stop loss + take profit). Si una posición cae al stop, sale — sin renegociar con vos mismo. Eso desarma el efecto porque la decisión ya está tomada.' },
+    ],
+    follow_ups: ['¿Cómo defino un stop loss razonable?', '¿Cuándo conviene cortar una perdedora?'],
+  },
+  overtrade: {
+    tldr: 'Frecuencia de trades razonable — rotás tu portfolio aproximadamente 1× por año. Estás en el rango del inversor a mediano plazo, no estás operando de más.',
+    sections: [
+      { title: 'Qué dice el dato', tone: 'positive', body: 'Tu turnover anual está en ~1× — saludable. Los inversores que sobre-operan suelen estar arriba de 4-5× al año, donde comisiones y diferencial bid/ask se comen un porcentaje real de la performance.' },
+      { title: 'Por qué importa', tone: 'neutral', body: 'Mientras menos operás, más se acerca tu retorno al del mercado (a igual exposure). Cada operación tiene un costo silencioso: comisiones, impuestos sobre realizados, y el costo de oportunidad de equivocar el timing.' },
+      { title: 'Conclusión', tone: 'positive', body: 'Estás bien acá — no tenés que cambiar nada. Seguí operando solo cuando tengas tesis clara y no cuando "no pase nada".' },
+    ],
+    follow_ups: ['¿Cuál es el turnover ideal?', '¿Cuánto pesan las comisiones en mi resultado?'],
+  },
+  concentration: {
+    tldr: 'Concentración moderada — tu top 1 pesa 18%, top 3 = 46%. Diversificación razonable, sin un activo que domine el riesgo.',
+    sections: [
+      { title: 'Tu reparto', tone: 'neutral', body: 'Ningún activo pesa más del 30%. La cartera está suficientemente diversificada como para que una caída fuerte de un solo nombre no te haga un agujero serio en el resultado total.' },
+      { title: 'Riesgo de mercado', tone: 'neutral', body: 'Más allá del nombre, lo que importa es la correlación. Si tu top 3 son todas tech US, técnicamente diversificado pero todas se mueven juntas en una corrección del Nasdaq. Revisá si la exposición real (no nominal) está repartida.' },
+      { title: 'Estado', tone: 'positive', body: 'Por ahora no es un flag. Solo lo sería si una posición creciera mucho con el tiempo (>30%) o si el top 3 superara el 70%.' },
+    ],
+    follow_ups: ['¿Qué pasa si una posición se hace muy grande?', '¿Cómo mido correlación real?'],
+  },
+  inflation_loss: {
+    tldr: 'Perdiste aproximadamente US$ 272 en poder de compra por tener cash ARS sin invertir mientras la inflación corría. No es enorme, pero es plata real que no recuperás.',
+    sections: [
+      { title: 'Qué pasó', tone: 'warning', body: 'Mantenés cash en pesos en una economía con inflación de dos dígitos. Cada mes que el peso queda quieto, perdés poder de compra equivalente a la inflación INDEC del mes. En tu período acumulaste ~US$ 272 de erosión.' },
+      { title: 'Por qué importa', tone: 'neutral', body: 'El cash ARS es la "posición default" cuando no decidís. En Argentina esa posición tiene un costo conocido y persistente. No es una pérdida visible (no aparece en P&L) pero es real.' },
+      { title: 'Alternativas', tone: 'positive', body: 'Considerá Lecaps en pesos (rinden cerca de inflación), MEP/CCL para dolarizar lo no operativo, o CEDEARs/USD si tu horizonte es largo. Cualquiera de los tres elimina o reduce ese drag.' },
+    ],
+    follow_ups: ['¿Lecap o MEP?', '¿Cuánto cash conviene tener en ARS?'],
+  },
+  winrate_payoff: {
+    tldr: 'Combinación win rate + payoff sólida — 56% de aciertos con payoff 7.02×. Cada operación promedio te deja +US$ 81. Está funcionando.',
+    sections: [
+      { title: 'Qué significa', tone: 'positive', body: 'Win rate del 56% es modesto, pero el payoff 7.02× (ganadora promedio vale 7 veces más que perdedora promedio) compensa con creces. Tu expectancy = win_rate × avg_win − loss_rate × avg_loss = +US$ 81 por operación.' },
+      { title: 'Por qué importa', tone: 'neutral', body: 'Muchos traders se obsesionan con tener alto win rate (acertar mucho). Pero el secreto de los buenos sistemas es asimétricos: pocas ganadoras grandes vs muchas perdedoras chicas. Lo tuyo se parece a eso.' },
+      { title: 'Sostenibilidad', tone: 'neutral', body: 'El payoff alto suele venir de 1-2 trades muy buenos (como INTC +148% en tu caso). Si esos trades grandes desaparecen, el sistema vuelve a la media. Vale tener presente que la asimetría también puede revertir.' },
+    ],
+    follow_ups: ['¿Mi payoff es sostenible?', '¿Qué pasaría si bajo el win rate?'],
+  },
+  loss_aversion: {
+    tldr: 'Patrón saludable — tus winners son más grandes que tus losers. Cortás pérdidas chicas y dejás correr ganadoras. Mantener esto es difícil.',
+    sections: [
+      { title: 'Qué hacés bien', tone: 'positive', body: 'En promedio tus ganadoras superan en magnitud a tus perdedoras. Eso indica que cuando una tesis falla la cortás temprano (loss aversion baja) y cuando funciona la dejás correr. Es la firma de un proceso disciplinado.' },
+      { title: 'Por qué importa', tone: 'neutral', body: 'La mayoría de los inversores hacen lo opuesto: cortan ganadoras rápido (por miedo a perder lo ganado) y mantienen perdedoras (esperando recuperación). Si vos hacés lo inverso, tu expectancy compunde mejor a largo plazo.' },
+      { title: 'Cómo mantenerlo', tone: 'neutral', body: 'Lo difícil acá es no romper el patrón cuando una ganadora "se agranda demasiado". Si una posición pasa del 8% al 20% del portfolio, es tentador tomar ganancia. Definí desde antes qué hacés en ese escenario.' },
+    ],
+    follow_ups: ['¿Cuándo conviene tomar ganancia?', '¿Cómo defino "dejar correr"?'],
+  },
+  cash_drag: {
+    tldr: 'Tu cash ratio es alto — una parte significativa del portfolio está en USDT y ARS sin trabajar. Si tu horizonte es largo, eso es rendimiento que estás dejando arriba de la mesa.',
+    sections: [
+      { title: 'Qué pasa', tone: 'warning', body: 'Mantener cash equivale a un retorno cero (o negativo si es ARS y hay inflación). Si tu objetivo es crecer capital a 5+ años, cada dólar parado tiene un costo de oportunidad real — el del mercado al que no estás expuesto.' },
+      { title: 'Cuándo está bien', tone: 'neutral', body: 'El cash tiene sentido como reserva de oportunidad (entrar en correcciones) o como buffer de liquidez. Pero más allá de un 5-10%, ya empieza a pesar negativamente en el rendimiento a largo plazo.' },
+      { title: 'Próximos pasos', tone: 'neutral', body: 'Revisá si parte de ese cash puede ir a algo de bajo riesgo (Lecaps, money market USD, bonos cortos) que al menos compense inflación. No es necesario invertir todo en equity de golpe.' },
+    ],
+    follow_ups: ['¿Cuánto cash ideal mantengo?', '¿Lecaps o bonos cortos en USD?'],
+  },
+}
+
+// Fallback genérico para códigos sin mock específico — útil para no romper
+// el demo cuando se agreguen detectores nuevos.
+const DEMO_BEHAVIORAL_CARD_GENERIC = (code) => ({
+  tldr: `Análisis del sesgo "${code}" — el detector encontró un patrón en tu historial que vale la pena revisar.`,
+  sections: [
+    { title: 'Patrón detectado', tone: 'neutral', body: 'En modo demo este sesgo específico todavía no tiene una narrativa pre-redactada. La versión real con tus datos te daría una explicación detallada del patrón y por qué importa.' },
+    { title: 'Cómo funciona', tone: 'neutral', body: 'Cada sesgo se calcula sobre tu historial real de operaciones, comparando con benchmarks académicos. La severidad (alta/media/baja/positiva) te orienta sobre dónde poner atención.' },
+    { title: 'Probalo logueado', tone: 'positive', body: 'Si querés ver el análisis personalizado, creá una cuenta gratis y subí tu CSV o cargá algunas operaciones para que los detectores tengan datos para trabajar.' },
+  ],
+  follow_ups: ['¿Cómo se calculan los sesgos?', '¿Qué referencias usan los detectores?'],
+})
 
 // CAGR sintético del demo. Lo computamos sobre los globals usando misma
 // fórmula que el backend (TWR mensual + media geométrica anualizada).
@@ -1136,6 +1219,7 @@ export function handleDemoRequest(method, path, body) {
       return {
         topics: [
           'behavioral',
+          'behavioral.card',
           'dashboard',
           'dashboard.brokers',
           'dashboard.composition',
@@ -1233,7 +1317,13 @@ export function handleDemoRequest(method, path, body) {
   // ── AI v2 analyze: mocks por topic (datos consistentes con la fixture demo)
   if (method === 'POST' && basePath === '/ai/analyze') {
     const topic = (body?.screen || '').toLowerCase()
-    const result = DEMO_AI_RESULTS[topic] || DEMO_AI_RESULTS.dashboard
+    let result
+    if (topic === 'behavioral.card') {
+      const code = (body?.params?.code || '').toLowerCase()
+      result = DEMO_BEHAVIORAL_CARDS[code] || DEMO_BEHAVIORAL_CARD_GENERIC(code || 'unknown')
+    } else {
+      result = DEMO_AI_RESULTS[topic] || DEMO_AI_RESULTS.dashboard
+    }
     return {
       result,
       cached: false,

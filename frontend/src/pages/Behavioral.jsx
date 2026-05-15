@@ -22,6 +22,7 @@ import { specFromInsight } from '../utils/shareCard'
 import { api } from '../utils/api'
 import { track } from '../utils/track'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
+import AskAIAbout from '../components/ai/AskAIAbout'
 
 // Mapeo code → icono + tono visual.
 const CARD_META = {
@@ -141,18 +142,26 @@ export default function Behavioral() {
         </div>
       )}
 
-      {/* Grid de cards */}
+      {/* Grid de cards — cada card wrappeada con AskAIAbout para análisis
+          individual del sesgo. Click normal sigue abriendo el modal de
+          detalle existente; ✦ (hover) o double-click abren el drawer IA. */}
       {!allInsufficient && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {cards.map(card => (
-            <BehavioralCard
+            <AskAIAbout
               key={card.code}
-              card={card}
-              onClick={() => {
-                track('behavioral_card_opened', { code: card.code })
-                setSelectedCard(card)
-              }}
-            />
+              topic="behavioral.card"
+              params={{ code: card.code }}
+              subtitle={card.title || card.code}
+            >
+              <BehavioralCard
+                card={card}
+                onClick={() => {
+                  track('behavioral_card_opened', { code: card.code })
+                  setSelectedCard(card)
+                }}
+              />
+            </AskAIAbout>
           ))}
         </div>
       )}

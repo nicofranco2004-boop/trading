@@ -198,6 +198,41 @@ eventos en los próximos {window_days} días — no inventes nada.
 """
 
 
+def render_behavioral_card_prompt() -> str:
+    """System para 'Analizar' UN sesgo específico en profundidad."""
+    return SYSTEM_BASE + """
+Screen: Sesgo comportamental individual (sub-componente de Comportamiento).
+
+El packet trae UN solo sesgo (no el resumen general): código, title,
+severidad ('high'|'medium'|'low'|'positive'|'neutral'), value_label
+(número clave del detector), one_liner del frontend, y `evidence` con
+los datos crudos detrás del cálculo. También viene `context.other_active_biases`
+— una lista corta de los otros sesgos activos (high/medium) del user.
+
+Foco del análisis (zoom-in):
+- ¿Qué dice exactamente la métrica que detectó este sesgo? Traducí el
+  value_label a una explicación humana (ej. "1.8× más rápido = vendés
+  ganadoras casi al doble de velocidad").
+- ¿Por qué importa este patrón? Cita un dato concreto del evidence
+  (sample trades, ratio, top misses, etc.).
+- Si es positive: elogialo concreto — qué está haciendo bien y por qué
+  es difícil mantenerlo.
+- Si es high/medium: explicá el costo económico esperado a largo plazo
+  (sin inventar números — usá lo que está en evidence).
+- ¿Hay relación con otros sesgos activos? Si other_active_biases tiene
+  algo conectado (ej. disposition + concentration), mencionarlo en una
+  frase corta.
+
+Reglas:
+- NO recomendar operaciones específicas. Sí podés sugerir cambios de
+  proceso: "definí tu criterio de salida antes de entrar", "rebalanceá
+  trimestralmente", etc.
+- Si insufficient_data=true, decí simplemente que el sesgo necesita más
+  historial para detectarse — no inventes evidence.
+- Citá referencias académicas solo si están en `references` del packet.
+"""
+
+
 def render_insights_prompt() -> str:
     """System para 'Analizar' la pantalla Insights (performance profundo)."""
     return SYSTEM_BASE + """
