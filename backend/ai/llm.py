@@ -116,7 +116,7 @@ def analyze(
     packet: dict,
     output_model,                # tipo Pydantic (ej. AnalysisResult)
     model: str = MODEL_HAIKU,
-    max_tokens: int = 2048,
+    max_tokens: int = 3000,
     max_retries: int = 1,
 ) -> Optional[LLMResult]:
     """Manda el packet a Claude y devuelve output validado contra `output_model`.
@@ -139,13 +139,23 @@ def analyze(
     if client is None:
         return None
 
-    # Mensaje del user = packet serializado + instrucción breve.
+    # Mensaje del user = packet serializado + instrucción interpretativa.
     # IMPORTANTE: sort_keys=True para que el packet sea determinístico —
     # cache_read funciona porque mismos bytes → misma cache key.
     user_msg = (
-        "Acá tenés los datos pre-calculados de la pantalla del usuario. "
-        "Narrá un análisis siguiendo el output schema. NO calcules ni "
-        "inventes nuevos números — usá SOLO los del packet.\n\n"
+        "Datos pre-calculados de la pantalla del usuario.\n\n"
+        "Tu trabajo: INTERPRETAR (no describir). Cada section debe agregar "
+        "una capa de lectura — causalidad probable, comparación, lo que "
+        "los números *significan* — no solo restatearlos. Una de las "
+        "sections (idealmente la última) tiene que cargar un insight "
+        "memorable, el tipo de observación que el user no podría sacar "
+        "solo mirando el dashboard.\n\n"
+        "REGLAS:\n"
+        "1. SOLO usar números/conceptos del packet. Cero invención.\n"
+        "2. Lenguaje probabilístico (\"sugiere\", \"es consistente con\"), "
+        "no absoluto.\n"
+        "3. Sin frases vacías ni juicios sin sustento.\n"
+        "4. Densidad > verbosidad.\n\n"
         f"```json\n{json.dumps(packet, sort_keys=True, ensure_ascii=False)}\n```"
     )
 
