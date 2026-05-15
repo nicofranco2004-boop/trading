@@ -8,6 +8,7 @@ import AssetQuickView from './AssetQuickView'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
+import { subscribeWatchlistChanged, notifyWatchlistChanged } from '../../utils/watchlistEvents'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -26,21 +27,43 @@ export default function Watchlist() {
   const [selected, setSelected] = useState(null)
   const [removingSym, setRemovingSym] = useState(null)
 
-  function load() {
-    setLoading(true)
+  function load({ silent = false } = {}) {
+    if (!silent) setLoading(true)
     api.get('/watchlist')
       .then(d => setItems(d.items || []))
       .catch(() => setItems([]))
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    // Escuchar cambios disparados desde MobileSearch / SearchBar /
+    // AssetQuickView para refrescar la lista sin requerir reload.
+    const unsubscribe = subscribeWatchlistChanged(({ detail }) => {
+      // Si llega { symbol, added: true } podemos hacer optimistic update
+      // — agregamos el row con price/change_pct null mientras el fetch
+      // completa con precios reales.
+      if (detail?.added && detail?.symbol) {
+        setItems(prev => {
+          if (prev.some(i => i.symbol === detail.symbol)) return prev
+          return [{ symbol: detail.symbol, price: null, change_pct: null, _pending: true }, ...prev]
+        })
+      }
+      if (detail?.removed && detail?.symbol) {
+        setItems(prev => prev.filter(i => i.symbol !== detail.symbol))
+      }
+      // Re-fetch en background para traer precios + sync con backend
+      load({ silent: true })
+    })
+    return unsubscribe
+  }, [])
 
   async function remove(symbol) {
     setRemovingSym(symbol)
     try {
       await api.delete(`/watchlist/${encodeURIComponent(symbol)}`)
       setItems(prev => prev.filter(i => i.symbol !== symbol))
+      notifyWatchlistChanged({ symbol, removed: true })
     } catch {
       load()
     } finally {
@@ -82,6 +105,7 @@ export default function Watchlist() {
           <div className="divide-y divide-line/30">
             {items.map(it => {
               const pos = (it.change_pct ?? 0) >= 0
+              const pending = it._pending && it.price == null
               return (
                 <div key={it.symbol} className="flex items-center group">
                   <DataRow
@@ -95,15 +119,21 @@ export default function Watchlist() {
                       <span className="text-ink-0 text-[13px]">{it.symbol}</span>
                     </DataRow.Cell>
                     <DataRow.Cell align="right" mono tabular>
-                      US${fmtPrice(it.price)}
+                      {pending
+                        ? <span className="inline-block w-12 h-3 rounded-sm bg-bg-2 animate-pulse" aria-label="Cargando precio" />
+                        : `US$${fmtPrice(it.price)}`}
                     </DataRow.Cell>
                     <DataRow.Cell align="right" width={80} mono tabular>
-                      <span className={`flex items-center justify-end gap-1 ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                        {pos
-                          ? <TrendingUp size={9} strokeWidth={1.75} aria-hidden="true" />
-                          : <TrendingDown size={9} strokeWidth={1.75} aria-hidden="true" />}
-                        {fmtPct(it.change_pct)}
-                      </span>
+                      {pending
+                        ? <span className="inline-block w-10 h-3 rounded-sm bg-bg-2 animate-pulse" />
+                        : (
+                          <span className={`flex items-center justify-end gap-1 ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                            {pos
+                              ? <TrendingUp size={9} strokeWidth={1.75} aria-hidden="true" />
+                              : <TrendingDown size={9} strokeWidth={1.75} aria-hidden="true" />}
+                            {fmtPct(it.change_pct)}
+                          </span>
+                        )}
                     </DataRow.Cell>
                   </DataRow>
                   <button

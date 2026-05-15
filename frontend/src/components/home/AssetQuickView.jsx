@@ -11,6 +11,7 @@ import { X, TrendingUp, TrendingDown, ExternalLink, Star, Check } from 'lucide-r
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
 import AssetMiniChart from './AssetMiniChart'
+import { notifyWatchlistChanged } from '../../utils/watchlistEvents'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -56,9 +57,11 @@ export default function AssetQuickView({ symbol, onClose }) {
       if (inWatchlist) {
         await api.delete(`/watchlist/${encodeURIComponent(symbol)}`)
         setInWatchlist(false)
+        notifyWatchlistChanged({ symbol, removed: true })
       } else {
         await api.post('/watchlist', { symbol })
         setInWatchlist(true)
+        notifyWatchlistChanged({ symbol, added: true })
       }
     } catch (ex) {
       console.error('Watchlist toggle:', ex)

@@ -203,8 +203,18 @@ def _to_yf(sym: str) -> str:
     return s
 
 
+# ─── Quote cache per-symbol ──────────────────────────────────────────────────
+# Cada quote vive 60s. Antes el watchlist refetcheaba yfinance entero en cada
+# GET — 1-3s de latencia. Con cache, solo los símbolos nuevos/expirados se
+# fetchean; el resto sale instantáneo. Mismo wrapper para todos los callers
+# (watchlist, behavioral, goals, wrapped, dashboard, prices).
+_QUOTE_CACHE: Dict[str, Dict[str, Any]] = {}  # symbol → { ..., '_ts': float }
+_QUOTE_TTL_S = 60
+
+
 def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Versión batched — un solo download de yfinance para N símbolos.
+    """Versión batched + cacheada — un solo download de yfinance para los
+    símbolos que NO están cacheados (o cuyo TTL expiró).
 
     Mantiene un mapeo bidireccional para revertir el ticker yfinance al
     símbolo original de la app (BTC-USD → BTC). Sin esto, los holdings de
@@ -213,8 +223,19 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     if not symbols:
         return out
+    now = time.time()
+    # Primer pass: lo que está cacheado y fresco sale directo.
+    to_fetch: List[str] = []
+    for s in symbols:
+        cached = _QUOTE_CACHE.get(s)
+        if cached and now - cached.get("_ts", 0) < _QUOTE_TTL_S:
+            out[s] = {k: v for k, v in cached.items() if k != "_ts"}
+        else:
+            to_fetch.append(s)
+    if not to_fetch:
+        return out
     # Mapeo orig → yf, y reverse para encontrar el símbolo original al parsear.
-    yf_for: Dict[str, str] = {s: _to_yf(s) for s in symbols}
+    yf_for: Dict[str, str] = {s: _to_yf(s) for s in to_fetch}
     orig_for: Dict[str, str] = {v: k for k, v in yf_for.items()}
     yf_symbols = list(orig_for.keys())
     try:
@@ -235,17 +256,29 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
                 last = float(closes.iloc[-1])
                 if prev <= 0:
                     continue
-                out[orig_sym] = {
+                entry = {
                     "symbol": orig_sym,
                     "price": round(last, 2),
                     "prev_close": round(prev, 2),
                     "change_pct": round(((last / prev) - 1) * 100, 2),
                 }
+                out[orig_sym] = entry
+                _QUOTE_CACHE[orig_sym] = {**entry, "_ts": now}
             except Exception as ex:
                 log.warning(f"_fetch_batch_quotes parsing {yf_sym} (orig {orig_sym}): {ex}")
     except Exception as ex:
         log.error(f"_fetch_batch_quotes batch download falló: {ex}")
     return out
+
+
+def _invalidate_quote_cache(symbols: Optional[List[str]] = None) -> None:
+    """Permite forzar refresh manual (ej. tras un import grande). Si no se
+    pasan símbolos, limpia todo."""
+    if symbols is None:
+        _QUOTE_CACHE.clear()
+        return
+    for s in symbols:
+        _QUOTE_CACHE.pop(s, None)
 
 
 # Nota: removí _fetch_market_caps porque 50 llamadas sequenciales a yfinance

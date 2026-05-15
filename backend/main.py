@@ -6,6 +6,26 @@ from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json
 from collections import defaultdict
+
+# ─── Cargar .env del backend antes de leer cualquier variable de entorno ────
+# Permite tener `backend/.env` con secretos (ANTHROPIC_API_KEY, SECRET_KEY,
+# ADMIN_EMAIL_HASH, etc.) sin exportarlos a mano cada vez que se levanta
+# uvicorn. En producción (Railway) las env vars se setean en el dashboard
+# y este load_dotenv() es no-op porque no hay archivo .env.
+#
+# IMPORTANTE: usamos override=True. Caso real: el user tenía una API key
+# vieja exportada en ~/.zshrc; al hacer cd y arrancar uvicorn, esa key
+# vieja llegaba al proceso por herencia del shell. Sin override, load_dotenv
+# preserva la del shell y nuestro .env queda ignorado. Con override=True el
+# .env del repo siempre gana — comportamiento esperado para dev local.
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path, override=True)
+except ImportError:
+    # python-dotenv opcional — si no está, seguimos con env vars del sistema.
+    pass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 import requests
@@ -512,6 +532,25 @@ def init_db():
             UNIQUE(user_id, symbol)
         );
         CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
+    """)
+
+    # ─── Push notifications (M4) ──────────────────────────────────────────────
+    # Una sub por device. Un user puede tener varias (laptop + celular + tablet).
+    # endpoint es el URL único que devuelve el browser al subscribirse — distinto
+    # por device. Si el endpoint expira (HTTP 410 al hacer send), borramos la sub.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            endpoint TEXT NOT NULL,
+            p256dh TEXT NOT NULL,
+            auth TEXT NOT NULL,
+            user_agent TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            last_used_at TEXT,
+            UNIQUE(user_id, endpoint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
     """)
 
     # ─── CSV Importer ────────────────────────────────────────────────────────
@@ -5892,6 +5931,157 @@ def watchlist_remove(symbol: str, uid: int = Depends(get_current_user)):
         return {"ok": True, "symbol": sym}
     finally:
         conn.close()
+
+
+# ─── Push notifications (Sprint M4) ──────────────────────────────────────────
+# Web Push (VAPID). Funciona en Chrome/Firefox/Edge desktop + Android. iOS Safari
+# desde 16.4 PERO solo si la app está "instalada" como PWA (Add to Home Screen).
+#
+# Flow:
+#   1. Frontend pide VAPID_PUBLIC_KEY al backend.
+#   2. Frontend llama navigator.serviceWorker → registration.pushManager.subscribe()
+#      pasando el public key. El browser genera un endpoint único + claves de
+#      cifrado (p256dh + auth).
+#   3. Frontend manda esos datos a POST /api/push/subscribe.
+#   4. Backend guarda la sub. Cuando hay evento → carga subs del user → llama
+#      send_push() con pywebpush firmando con el VAPID_PRIVATE_KEY.
+#
+# Si el push gateway devuelve 404/410, la sub está muerta → la borramos.
+
+
+class PushSubIn(BaseModel):
+    endpoint: str = Field(..., max_length=2000)
+    p256dh: str = Field(..., max_length=200)
+    auth: str = Field(..., max_length=200)
+    user_agent: Optional[str] = Field(None, max_length=500)
+
+
+@app.get("/api/push/vapid-public-key")
+def push_vapid_public_key():
+    """Devuelve la public key VAPID para que el frontend la use al subscribirse.
+    Endpoint público (no requiere auth) — la public key no es secreta."""
+    key = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+    if not key:
+        raise HTTPException(503, "Push no configurado (falta VAPID_PUBLIC_KEY)")
+    return {"public_key": key}
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
+    """Guarda la subscripción push del device del user.
+    Idempotente: si ya existe el endpoint, actualiza los datos."""
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO push_subscriptions
+                   (user_id, endpoint, p256dh, auth, user_agent, last_used_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(user_id, endpoint) DO UPDATE SET
+                     p256dh = excluded.p256dh,
+                     auth = excluded.auth,
+                     user_agent = excluded.user_agent,
+                     last_used_at = datetime('now')""",
+                (uid, sub.endpoint, sub.p256dh, sub.auth, sub.user_agent),
+            )
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/push/subscribe")
+def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_current_user)):
+    """Borra la subscripción push de este device. El frontend llama acá cuando
+    el user desactiva las notificaciones."""
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute(
+                "DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?",
+                (uid, sub.endpoint),
+            )
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.get("/api/push/status")
+def push_status(uid: int = Depends(get_current_user)):
+    """Cuenta cuántas subs tiene este user. Útil para que el UI sepa si está
+    suscrito en al menos un device."""
+    conn = get_db()
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", (uid,)
+        ).fetchone()[0]
+        return {"subscribed_devices": count}
+    finally:
+        conn.close()
+
+
+def _send_push_to_user(uid: int, payload: dict) -> int:
+    """Envía un push a TODOS los devices del user. Devuelve cantidad enviados.
+
+    Si un endpoint devuelve 404/410 (Gone), borra la sub. Otros errores se
+    logean pero no propagan.
+    """
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        return 0
+    pub = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+    priv = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
+    subject = os.environ.get("VAPID_SUBJECT", "mailto:hola@rendi.app").strip()
+    if not pub or not priv:
+        return 0
+
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?",
+            (uid,),
+        ).fetchall()
+        sent = 0
+        for r in rows:
+            sub_info = {
+                "endpoint": r["endpoint"],
+                "keys": {"p256dh": r["p256dh"], "auth": r["auth"]},
+            }
+            try:
+                webpush(
+                    subscription_info=sub_info,
+                    data=json.dumps(payload),
+                    vapid_private_key=priv,
+                    vapid_claims={"sub": subject},
+                    ttl=86400,  # 24h
+                )
+                sent += 1
+            except WebPushException as ex:
+                status = getattr(getattr(ex, "response", None), "status_code", None)
+                if status in (404, 410):
+                    # Endpoint muerto — borrar
+                    with conn:
+                        conn.execute(
+                            "DELETE FROM push_subscriptions WHERE id = ?", (r["id"],)
+                        )
+                else:
+                    log.warning(f"push send fallo (sub {r['id']}, status {status}): {ex}")
+        return sent
+    finally:
+        conn.close()
+
+
+@app.post("/api/push/test")
+def push_test(uid: int = Depends(get_current_user)):
+    """Manda un push de prueba al user actual. Sirve para verificar que la
+    config end-to-end funciona (VAPID + SW + permisos del browser)."""
+    sent = _send_push_to_user(uid, {
+        "title": "Rendi · Test",
+        "body": "Si ves esta notificación, todo está funcionando ✓",
+        "url": "/insights",
+        "tag": "test",
+    })
+    return {"sent": sent}
 
 
 @app.get("/api/home/personal")
