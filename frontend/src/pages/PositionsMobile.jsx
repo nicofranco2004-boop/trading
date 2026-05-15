@@ -11,7 +11,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowDownUp, Search } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
-import LazySparkline from '../components/LazySparkline'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
 
@@ -65,6 +64,7 @@ export default function PositionsMobile() {
   )
 
   // Enriquecemos cada posición con su valor USD y P&L %.
+  // Para cash: NO computamos P/L (cash es cash, no tiene "variación").
   const enriched = useMemo(() => {
     return positions.map(p => {
       const isAR = arsBrokerSet.has(p.broker)
@@ -73,8 +73,10 @@ export default function PositionsMobile() {
       let valueUsd = 0
       let priceLocal = null
       if (p.is_cash) {
+        // Cash: el `invested` está en la moneda nativa del broker. Conversión
+        // solo para totalizar en USD. P/L = null (no aplica).
         valueUsd = isAR ? invested / tcBlue : invested
-        priceLocal = null
+        return { ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null, isAR }
       } else if (isAR) {
         priceLocal = p.price_override ?? prices[p.asset + '.BA']
         if (priceLocal) valueUsd = (priceLocal * qty) / tcBlue
@@ -84,7 +86,7 @@ export default function PositionsMobile() {
         if (priceLocal) valueUsd = priceLocal * qty
         else valueUsd = invested
       }
-      const investedUsd = isAR && !p.is_cash ? invested / tcBlue : invested
+      const investedUsd = isAR ? invested / tcBlue : invested
       const pnlUsd = valueUsd - investedUsd
       const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
       return { ...p, valueUsd, priceLocal, pnlUsd, pnlPct, isAR }
@@ -183,13 +185,13 @@ export default function PositionsMobile() {
 }
 
 // ─── Row ──────────────────────────────────────────────────────────────────
+// Layout en 3 columnas para aprovechar el ancho:
+//   [avatar]  TICKER · broker        P/L USD       $value USD
+//             qty · CUR              +X.X%         USD
+// Cash: NO muestra P/L (no tiene sentido la variación %). Solo value.
 
 function PositionRow({ p }) {
-  const positive = (p.pnlPct || 0) >= 0
   const cur = p.isAR ? 'ARS' : 'USD'
-  const priceFmt = p.priceLocal != null
-    ? (p.isAR ? `${ars(p.priceLocal)} ARS` : `$${p.priceLocal.toLocaleString('en-US', { maximumFractionDigits: 2 })}`)
-    : null
   return (
     <Link
       to={`/posiciones#${p.id || ''}`}
@@ -197,6 +199,7 @@ function PositionRow({ p }) {
     >
       <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={32} />
 
+      {/* Col 1: identificador */}
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-1.5">
           <span className="text-sm font-semibold text-ink-0 leading-none truncate">
@@ -211,21 +214,25 @@ function PositionRow({ p }) {
         </div>
       </div>
 
-      {!p.is_cash && (
-        <div className="hidden xs:block flex-shrink-0">
-          <LazySparkline
-            symbol={p.isAR ? `${p.asset}.BA` : p.asset}
-            variant="row"
-          />
+      {/* Col 2: P/L (oculto para cash — no tiene variación) */}
+      {!p.is_cash && (p.pnlUsd != null || p.pnlPct != null) && (
+        <div className="flex-shrink-0 text-right min-w-[72px]">
+          <div className={`text-sm font-medium tabular leading-none ${colorClass(p.pnlUsd)}`}>
+            {p.pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(p.pnlUsd)).toLocaleString('en-US')}
+          </div>
+          <div className={`text-[11px] font-mono tabular leading-none mt-1.5 ${colorClass(p.pnlPct)}`}>
+            {pctSigned(p.pnlPct)}
+          </div>
         </div>
       )}
 
+      {/* Col 3: valor actual */}
       <div className="flex-shrink-0 text-right min-w-[78px]">
         <div className="text-sm font-medium tabular text-ink-0 leading-none">
           ${Math.round(p.valueUsd).toLocaleString('en-US')}
         </div>
-        <div className={`text-[11px] font-mono tabular leading-none mt-1.5 ${colorClass(p.pnlPct)}`}>
-          {pctSigned(p.pnlPct)}
+        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mt-1.5">
+          USD
         </div>
       </div>
     </Link>
