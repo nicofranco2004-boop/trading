@@ -26,6 +26,7 @@ import Behavioral from './pages/Behavioral'
 import Wrapped from './pages/Wrapped'
 import More from './pages/More'
 import MobileSearch from './pages/MobileSearch'
+import PositionDetailMobile from './pages/PositionDetailMobile'
 
 function RouteTracker() {
   // Trackea cambios de ruta automáticamente. Vive adentro del <BrowserRouter>
@@ -65,9 +66,10 @@ function AppRoutes() {
       <Route path="/imports" element={<Imports />} />
       <Route path="/bienvenida" element={<FirstInsight />} />
       <Route path="/admin" element={<Admin />} />
-      {/* Mobile-only: "Más" drawer page + buscador full-screen */}
+      {/* Mobile-only: "Más" drawer page + buscador full-screen + detail */}
       <Route path="/mas" element={<More />} />
       <Route path="/buscar" element={<MobileSearch />} />
+      <Route path="/posiciones/:id" element={<PositionDetailMobile />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

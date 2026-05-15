@@ -8,11 +8,16 @@
 // Tap por ahora navega a /posiciones (vista desktop / detail pendiente M3).
 
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { ArrowDownUp, Search } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
+import EmptyState from '../components/EmptyState'
+import SwipeRow from '../components/mobile/SwipeRow'
+import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
+import { track } from '../utils/track'
+import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -170,13 +175,25 @@ export default function PositionsMobile() {
 
       {/* Lista densa */}
       {filtered.length === 0 ? (
-        <div className="px-4 py-10 text-center text-sm text-ink-3">
-          {query ? 'No encontramos coincidencias.' : 'No tenés posiciones cargadas.'}
+        <div className="px-4">
+          <EmptyState
+            icon={<Briefcase size={18} strokeWidth={1.5} />}
+            eyebrow="Cartera vacía"
+            title={query ? 'Sin coincidencias' : 'No tenés posiciones cargadas'}
+            description={
+              query
+                ? 'Probá con otro ticker, broker o limpiá la búsqueda.'
+                : 'Cargá tus tenencias actuales con el botón [+] del medio o desde "Más → Importaciones".'
+            }
+          />
         </div>
       ) : (
         <ul className="divide-y divide-line/30">
           {filtered.map(p => (
-            <PositionRow key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`} p={p} />
+            <PositionRow
+              key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
+              p={p}
+            />
           ))}
         </ul>
       )}
@@ -189,14 +206,59 @@ export default function PositionsMobile() {
 //   [avatar]  TICKER · broker        P/L USD       $value USD
 //             qty · CUR              +X.X%         USD
 // Cash: NO muestra P/L (no tiene sentido la variación %). Solo value.
+//
+// Sprint M3 item 12: swipe izquierda revela 2 acciones rápidas:
+//   - Operar: navega a /operaciones?action=new&asset=X
+//   - Watchlist: agrega el símbolo a la watchlist
 
 function PositionRow({ p }) {
+  const navigate = useNavigate()
+  const toast = useToast()
   const cur = p.isAR ? 'ARS' : 'USD'
+  const [addedToWl, setAddedToWl] = useState(false)
+
+  // Solo armamos swipe actions para non-cash (cash no tiene operación
+  // ni se agrega a watchlist).
+  const actions = p.is_cash ? [] : [
+    {
+      id: 'op',
+      label: 'Operar',
+      icon: Repeat,
+      tone: 'accent',
+      onClick: () => {
+        track('mobile_swipe_action', { code: 'operate', asset: p.asset })
+        navigate(`/operaciones?action=new&asset=${encodeURIComponent(p.asset)}&broker=${encodeURIComponent(p.broker)}`)
+      },
+    },
+    {
+      id: 'wl',
+      label: addedToWl ? 'Listo' : 'Watchlist',
+      icon: addedToWl ? Check : Star,
+      tone: addedToWl ? 'pos' : 'warn',
+      onClick: async () => {
+        if (addedToWl) return
+        track('mobile_swipe_action', { code: 'watchlist', asset: p.asset })
+        try {
+          await api.post('/watchlist', { symbol: p.asset })
+          setAddedToWl(true)
+          notifyWatchlistChanged({ symbol: p.asset, added: true })
+          toast?.show?.({ kind: 'success', text: `${p.asset} agregado a watchlist` })
+        } catch (ex) {
+          toast?.show?.({ kind: 'error', text: ex?.message || 'Error al agregar' })
+        }
+      },
+    },
+  ]
+
   return (
-    <Link
-      to={`/posiciones#${p.id || ''}`}
-      className="flex items-center gap-3 px-4 py-3 hover:bg-bg-2/30 active:bg-bg-3 transition-colors"
+    <SwipeRow
+      actions={actions}
+      onTap={() => navigate(p.id ? `/posiciones/${p.id}` : '/posiciones')}
+      rowId={`${p.broker}:${p.asset}:${p.id || ''}`}
     >
+      <div
+        className="flex items-center gap-3 px-4 py-3 hover:bg-bg-2/30 active:bg-bg-3 transition-colors cursor-pointer"
+      >
       <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={32} />
 
       {/* Col 1: identificador */}
@@ -235,7 +297,8 @@ function PositionRow({ p }) {
           USD
         </div>
       </div>
-    </Link>
+      </div>
+    </SwipeRow>
   )
 }
 

@@ -12,6 +12,8 @@ import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
+import OperationsMobile from './OperationsMobile'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 const PAGE_SIZE = 50
 
@@ -26,6 +28,12 @@ function prettyOpType(raw) {
 }
 
 export default function Operations() {
+  const isMobile = useIsMobile()
+  if (isMobile) return <OperationsMobile />
+  return <OperationsDesktop />
+}
+
+function OperationsDesktop() {
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
   const [modal, setModal] = useState(null)
