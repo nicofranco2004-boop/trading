@@ -22,6 +22,7 @@ import AssetLogo from '../components/AssetLogo'
 import { api } from '../utils/api'
 import { useToast } from '../components/Toast'
 import { track } from '../utils/track'
+import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 
 // Reusamos los tickers populares + helpers del SearchBar desktop para no
 // duplicar el universo. Import statement nombrado — agregamos los exports en
@@ -119,6 +120,9 @@ export default function MobileSearch() {
     try {
       await api.post('/watchlist', { symbol: t.symbol })
       setWatchlist(prev => [...prev, t.symbol])
+      // Notificar a otros componentes (Watchlist en /home) para que actualicen
+      // sin requerir recarga manual.
+      notifyWatchlistChanged({ symbol: t.symbol, added: true })
       track('watchlist_added', { symbol: t.symbol, source: 'mobile_search' })
       toast?.show?.({ kind: 'success', text: `${t.symbol} agregado a watchlist` })
     } catch (ex) {

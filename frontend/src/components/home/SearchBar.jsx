@@ -15,6 +15,7 @@ import { Search, X, CornerDownLeft, ArrowUp, ArrowDown, Plus, Check } from 'luci
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
 import AssetQuickView from './AssetQuickView'
+import { notifyWatchlistChanged, subscribeWatchlistChanged } from '../../utils/watchlistEvents'
 
 // Normaliza el símbolo para resolver el logo: strip sufijo CEDEAR (.BA) para
 // reutilizar el logo de la US version; deja todo lo demás intacto.
@@ -227,14 +228,20 @@ export default function SearchBar() {
 
   // ── Fetch watchlist actual para hidear "+ WATCHLIST" si ya está ───────────
   useEffect(() => {
-    api.get('/watchlist')
-      .then(d => {
-        // El backend devuelve { items: [...] }. Compat con array directo
-        // por si algún caller legacy sigue ese shape.
-        const items = Array.isArray(d) ? d : (d?.items || [])
-        setWatchlist(items.map(w => (w.symbol || '').toUpperCase()))
-      })
-      .catch(() => setWatchlist([]))
+    function load() {
+      api.get('/watchlist')
+        .then(d => {
+          // El backend devuelve { items: [...] }. Compat con array directo
+          // por si algún caller legacy sigue ese shape.
+          const items = Array.isArray(d) ? d : (d?.items || [])
+          setWatchlist(items.map(w => (w.symbol || '').toUpperCase()))
+        })
+        .catch(() => setWatchlist([]))
+    }
+    load()
+    // Cuando otro componente cambia la watchlist (MobileSearch, AssetQuickView)
+    // refrescamos para que el botón "+ WATCHLIST" refleje el estado actual.
+    return subscribeWatchlistChanged(load)
   }, [])
 
   // ── Click-outside cierra ───────────────────────────────────────────────────
@@ -288,7 +295,8 @@ export default function SearchBar() {
   }
 
   // Toggle: si ya está → DELETE; si no → POST. El backend es idempotente en
-  // ambos lados, así que duplicar clicks no es problema.
+  // ambos lados, así que duplicar clicks no es problema. Dispara broadcast
+  // para que el componente <Watchlist> en /home actualice sin reload.
   async function toggleWatchlist(symbol) {
     if (!symbol) return
     const isIn = watchlist.includes(symbol)
@@ -297,9 +305,11 @@ export default function SearchBar() {
       if (isIn) {
         await api.delete(`/watchlist/${encodeURIComponent(symbol)}`)
         setWatchlist(prev => prev.filter(s => s !== symbol))
+        notifyWatchlistChanged({ symbol, removed: true })
       } else {
         await api.post('/watchlist', { symbol })
         setWatchlist(prev => [...prev, symbol])
+        notifyWatchlistChanged({ symbol, added: true })
       }
     } catch {
       // silent fail
