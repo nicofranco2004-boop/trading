@@ -846,6 +846,73 @@ const DEMO_BEHAVIORAL_CARD_GENERIC = (code) => ({
   follow_ups: ['¿Cómo se calculan los sesgos?', '¿Qué referencias usan los detectores?'],
 })
 
+// Builder dinámico para 'insights.observation' — usa los params que el
+// frontend le pasó (title, text, category, level) para armar un análisis
+// coherente con la observación. Los datos del portfolio del demo están
+// hardcoded acá para que el LLM-mock sea consistente.
+function buildDemoObservation(params = {}) {
+  const { title = 'Observación', text = '', category = '', level = 'info' } = params
+  const toneByLevel = {
+    urgent: 'negative',
+    danger: 'negative',
+    warn: 'warning',
+    warning: 'warning',
+    positive: 'positive',
+    info: 'neutral',
+    diagnostic: 'neutral',
+  }
+  const baseTone = toneByLevel[(level || '').toLowerCase()] || 'neutral'
+
+  // Heurística simple por categoría/keywords para que la sección "implicancias"
+  // se ajuste al tipo de observación. No es magia — es un mock razonable.
+  const lower = (title + ' ' + text).toLowerCase()
+  let implication
+  if (lower.includes('concentración') || lower.includes('represent') || lower.includes('% del portfolio')) {
+    implication = 'En tu cartera ($8.3K) ese peso significa que un movimiento del 20% en ese activo te mueve el resultado total varios puntos. Mientras la posición acompañe estás de suerte; en un giro de mercado el riesgo se cobra.'
+  } else if (lower.includes('drawdown') || lower.includes('máximo histórico')) {
+    implication = 'Tu drawdown actual está controlado (-2.8% desde el peak). Para tu mix (47% US + 8% AR + 45% cash), una caída del 10-15% es normal en correcciones del Nasdaq y no debería disparar decisiones operativas.'
+  } else if (lower.includes('cash') || lower.includes('liquidez')) {
+    implication = 'Tu 45% en cash (USDT + ARS) está perdiendo poder de compra real en pesos. Si tu horizonte es largo, esa parada cuesta varios puntos por año vs estar invertido en SPY o un mix similar.'
+  } else if (lower.includes('argentin') || lower.includes('ar') || lower.includes('broker')) {
+    implication = 'Tener un 53-69% en activos AR (panel local + CEDEARs) significa que tu rendimiento medido en USD depende también de la evolución del dólar blue. Si el blue salta, los CEDEARs en pesos suben y te alivia; si baja, perdés en USD.'
+  } else if (lower.includes('s&p') || lower.includes('benchmark') || lower.includes('rinde')) {
+    implication = 'Tu portfolio viene rindiendo +14% TWR vs el S&P en territorio similar. Le ganaste a la inflación AR con margen, lo cual es la primera victoria importante en este contexto.'
+  } else if (lower.includes('profit factor') || lower.includes('expectancy') || lower.includes('win rate')) {
+    implication = 'Win rate 56% con payoff 7x es una combinación asimétrica saludable. El sistema gana porque las pocas ganadoras grandes pagan todo. El riesgo es asumir que esa asimetría es permanente — históricamente revierte.'
+  } else if (lower.includes('intc') || lower.includes('mejor operación')) {
+    implication = 'INTC +148% fue tu mejor trade del año y representa una parte grande del P&L total. Tiene sentido entender qué tuvo de distinto esa operación (timing, tamaño, conviction) para repetir el patrón cuando sea posible.'
+  } else {
+    implication = 'Esta observación te alerta sobre un patrón concreto en tus datos. La mejor forma de actuar es revisarla con calma y, si aplica, ajustar tu proceso (no tu posicionamiento de hoy).'
+  }
+
+  const sections = [
+    { title: 'Qué significa', tone: baseTone, body: `${text} Es una de las observaciones priorizadas del diagnóstico — el sistema la detectó porque cumple cierto umbral en tu data.` },
+    { title: 'Por qué importa en tu caso', tone: 'neutral', body: implication },
+    {
+      title: 'Próximo paso',
+      tone: 'positive',
+      body: baseTone === 'positive'
+        ? 'Estás del lado bueno acá. Lo difícil es mantener el patrón cuando el mercado tienta a romperlo — definí desde ya qué hacés si la situación cambia.'
+        : 'Antes de tocar el portfolio, definí tu criterio: ¿a partir de qué umbral concreto cambiarías algo? Mejor decisión fría hoy que reacción caliente cuando el dato empeore.',
+    },
+  ]
+
+  const tldrPrefix = baseTone === 'positive'
+    ? 'Patrón saludable detectado'
+    : baseTone === 'warning' || baseTone === 'negative'
+      ? 'Punto de atención'
+      : 'Observación del diagnóstico'
+
+  return {
+    tldr: `${tldrPrefix}: ${title.toLowerCase()}`,
+    sections,
+    follow_ups: [
+      `¿Cómo se calcula "${(category || 'esto').toLowerCase()}"?`,
+      '¿Qué tendría que cambiar para que deje de aparecer?',
+    ],
+  }
+}
+
 // CAGR sintético del demo. Lo computamos sobre los globals usando misma
 // fórmula que el backend (TWR mensual + media geométrica anualizada).
 const DEMO_CAGR = (() => {
@@ -1267,6 +1334,7 @@ export function handleDemoRequest(method, path, body) {
           'insights.benchmarks',
           'insights.drawdown',
           'insights.evolution',
+          'insights.observation',
         ],
       }
     }
@@ -1361,6 +1429,10 @@ export function handleDemoRequest(method, path, body) {
     if (topic === 'behavioral.card') {
       const code = (body?.params?.code || '').toLowerCase()
       result = DEMO_BEHAVIORAL_CARDS[code] || DEMO_BEHAVIORAL_CARD_GENERIC(code || 'unknown')
+    } else if (topic === 'insights.observation') {
+      // Dinámico — el LLM real recibiría la observación; acá la mockeamos
+      // armando un análisis razonable según level / categoría / keywords.
+      result = buildDemoObservation(body?.params || {})
     } else {
       result = DEMO_AI_RESULTS[topic] || DEMO_AI_RESULTS.dashboard
     }

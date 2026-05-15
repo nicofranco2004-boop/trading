@@ -2079,44 +2079,57 @@ function DiagnosisCard({ d }) {
   const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
   const cta = ctaForCategory(d.category)
   // Parse del text: primera oración = título, resto = contexto.
-  const parts = d.text.split(/\.\s+/)
+  // Quitamos markdown bold para que el LLM reciba texto plano limpio.
+  const plainText = (d.text || '').replace(/\*\*/g, '')
+  const parts = plainText.split(/\.\s+/)
   const title = parts[0] + (parts.length > 1 ? '.' : '')
   const context = parts.slice(1).join('. ').trim()
   return (
-    <div className="bg-white dark:bg-bg-1 p-5 flex flex-col">
-      <div className="flex items-center gap-2 mb-3">
-        <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
-          {sev.label}
-        </span>
-      </div>
-      <p className="text-sm font-medium leading-snug text-ink-0 mb-2">
-        <DiagnosticText text={title} />
-      </p>
-      {context && (
-        <p className="text-xs text-ink-2 leading-relaxed flex-1">
-          <DiagnosticText text={context} />
+    <AskAIAbout
+      topic="insights.observation"
+      params={{
+        id: d.id,
+        title,
+        text: plainText,
+        category: d.category,
+        level: d.severity,
+      }}
+      subtitle={title.length > 60 ? title.slice(0, 60) + '…' : title}
+      className="h-full"
+    >
+      <div className="bg-white dark:bg-bg-1 p-5 flex flex-col h-full">
+        <div className="flex items-center gap-2 mb-3">
+          <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
+            {sev.label}
+          </span>
+        </div>
+        <p className="text-sm font-medium leading-snug text-ink-0 mb-2">
+          <DiagnosticText text={title} />
         </p>
-      )}
-      {cta && (
-        cta.href.startsWith('#') ? (
-          // Anchor en la misma página — usamos <a> para que el browser
-          // scrollee al elemento; react-router-dom no scrollea con <Link>.
-          <a
-            href={cta.href}
-            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
-          >
-            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-          </a>
-        ) : (
-          <Link
-            to={cta.href}
-            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
-          >
-            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-          </Link>
-        )
-      )}
-    </div>
+        {context && (
+          <p className="text-xs text-ink-2 leading-relaxed flex-1">
+            <DiagnosticText text={context} />
+          </p>
+        )}
+        {cta && (
+          cta.href.startsWith('#') ? (
+            <a
+              href={cta.href}
+              className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+            >
+              {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+            </a>
+          ) : (
+            <Link
+              to={cta.href}
+              className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+            >
+              {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+            </Link>
+          )
+        )}
+      </div>
+    </AskAIAbout>
   )
 }
 

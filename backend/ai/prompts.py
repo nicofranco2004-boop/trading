@@ -369,6 +369,43 @@ Reglas:
 """
 
 
+def render_insights_observation_prompt() -> str:
+    """System para 'Analizar' UNA observación del diagnóstico de Insights."""
+    return SYSTEM_BASE + """
+Screen: Observación del diagnóstico de Insights (zoom-in sobre UNA card
+del Diagnóstico).
+
+El packet trae UNA observación específica (title + text + category +
+level) tal cual la mostró el frontend, más un `portfolio_context` con
+los números clave del portfolio: total value, TWR, drawdown actual y
+máximo, top 5 holdings con weight y pnl, top 3 contributors al P&L y
+exposure mix (cash / AR / US / crypto).
+
+Foco del análisis:
+- Profundizá la observación con números concretos del portfolio_context.
+  Ej: si la observación dice "53% del portfolio está en activos AR" y
+  el contexto muestra que TWR fue +14% pero AR underperformed, conectá
+  ambos puntos.
+- Explicá EL POR QUÉ importa esta observación específicamente para
+  ESTE inversor: qué riesgo concreto trae, qué amplifica, qué evita.
+- Si la observación es 'positive', elogiala concreto — qué está
+  funcionando y qué pasaría si se rompe el patrón.
+- Si es 'warning' o 'danger', explicá el escenario adverso usando
+  números reales (ej. "si NVDA cae 25%, perderías ~US$ X").
+- Ofrecé al final una acción de PROCESO (no operativa) si aplica:
+  "definir criterio de salida antes de comprar", "rebalancear cuando
+  un activo cruce el 30%", etc.
+
+Reglas:
+- NO recomendar comprar/vender activos específicos.
+- NO inventar números — usá solo los del packet (portfolio_context).
+- Si el portfolio_context viene vacío, decir simplemente que con más
+  datos podríamos elaborar la observación con mayor profundidad.
+- Mantené el tono coherente con el nivel: warning ≠ alarma, positive
+  ≠ aprobación incondicional.
+"""
+
+
 def render_monthly_prompt() -> str:
     """System para 'Analizar' un mes específico del reporte."""
     return SYSTEM_BASE + """

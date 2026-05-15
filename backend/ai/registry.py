@@ -33,6 +33,7 @@ from .builders.insights_evolution import build as build_insights_evolution
 from .builders.insights_drawdown import build as build_insights_drawdown
 from .builders.insights_attribution import build as build_insights_attribution
 from .builders.insights_benchmarks import build as build_insights_benchmarks
+from .builders.insights_observation import build as build_insights_observation
 
 
 # topic_id → (builder_fn, prompt_fn)
@@ -50,6 +51,7 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "insights.drawdown": (build_insights_drawdown, prompts.render_insights_drawdown_prompt),
     "insights.attribution": (build_insights_attribution, prompts.render_insights_attribution_prompt),
     "insights.benchmarks": (build_insights_benchmarks, prompts.render_insights_benchmarks_prompt),
+    "insights.observation": (build_insights_observation, prompts.render_insights_observation_prompt),
 }
 
 
