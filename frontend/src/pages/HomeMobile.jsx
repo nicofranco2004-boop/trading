@@ -74,7 +74,7 @@ export default function HomeMobile() {
   // Serie 30d desde snapshots — base para sparkline + delta del período
   const series30d = useMemo(() => {
     if (!snapshots?.length) return null
-    const sorted = [...snapshots].sort((a, b) => (a.snapshot_date > b.snapshot_date ? 1 : -1))
+    const sorted = [...snapshots].sort((a, b) => (a.date > b.date ? 1 : -1))
     const values = sorted.map(s => Number(s.total_value || 0))
     if (values.length < 2) return null
     const first = values[0]
@@ -94,7 +94,7 @@ export default function HomeMobile() {
       ? (lastMonth.pnl_realized || 0) + (lastMonth.pnl_unrealized || 0)
       : null
     // P&L día: delta del último vs penúltimo snapshot
-    const sortedSnaps = [...snapshots].sort((a, b) => (a.snapshot_date > b.snapshot_date ? 1 : -1))
+    const sortedSnaps = [...snapshots].sort((a, b) => (a.date > b.date ? 1 : -1))
     let pnlDay = null
     if (sortedSnaps.length >= 2) {
       const last = Number(sortedSnaps[sortedSnaps.length - 1].total_value || 0)

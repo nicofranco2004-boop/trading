@@ -942,7 +942,16 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/brokers')     return BROKERS
     if (basePath === '/operations')  return OPERATIONS
     if (basePath === '/monthly')     return MONTHLY
-    if (basePath === '/snapshots')   return SNAPSHOTS
+    if (basePath === '/snapshots') {
+      // Respetar el param ?days=N filtrando por ventana. Si no viene, devolver
+      // toda la serie. Backend ordena DESC por date — replicamos.
+      const daysMatch = (query || '').match(/days=(\d+)/)
+      const cutoff = daysMatch ? Date.now() - parseInt(daysMatch[1], 10) * 86400000 : 0
+      const filtered = cutoff
+        ? SNAPSHOTS.filter(s => new Date(s.date).getTime() >= cutoff)
+        : SNAPSHOTS
+      return [...filtered].sort((a, b) => (a.date < b.date ? 1 : -1))
+    }
     if (basePath === '/watchlist') {
       // Shape: { items: [...] } — coincide con el backend real.
       // Si el user nunca tocó la watchlist, devolvemos la base. Una vez que la
