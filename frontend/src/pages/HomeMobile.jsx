@@ -71,11 +71,17 @@ export default function HomeMobile() {
     return { totalValue, totalCost, totalPnl, pct }
   }, [positions, prices, brokers, tcBlue])
 
-  // Sparkline 30d desde snapshots (total_value por día)
-  const sparkData = useMemo(() => {
+  // Serie 30d desde snapshots — base para sparkline + delta del período
+  const series30d = useMemo(() => {
     if (!snapshots?.length) return null
     const sorted = [...snapshots].sort((a, b) => (a.snapshot_date > b.snapshot_date ? 1 : -1))
-    return sorted.map(s => Number(s.total_value || 0))
+    const values = sorted.map(s => Number(s.total_value || 0))
+    if (values.length < 2) return null
+    const first = values[0]
+    const last = values[values.length - 1]
+    const deltaUsd = last - first
+    const deltaPct = first > 0 ? deltaUsd / first : 0
+    return { values, first, last, deltaUsd, deltaPct, positive: deltaUsd >= 0 }
   }, [snapshots])
 
   // KPIs derivados de monthly (P&L mes en curso) + delta vs día anterior (snapshots)
@@ -128,36 +134,60 @@ export default function HomeMobile() {
     <div className="pb-8">
       {/* ── 1. Hero balance ─────────────────────────────────────────── */}
       <section className="px-4 pt-5 pb-4">
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">
-          Tu portfolio
-        </div>
-        <div className="flex items-end justify-between gap-3 mb-1">
-          <div className="min-w-0">
-            <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
-              ${fmtNumber(totals.totalValue)}
-              <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
-            </div>
-            <div className={`mt-2 text-sm tabular font-medium ${colorClass(totals.pct)} flex items-center gap-1`}>
-              {totals.pct >= 0
-                ? <TrendingUp size={13} strokeWidth={1.75} />
-                : <TrendingDown size={13} strokeWidth={1.75} />}
-              {pctSigned(totals.pct)} <span className="text-ink-3 font-mono text-xs">total</span>
-            </div>
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+            Tu portfolio
           </div>
-          {sparkData?.length > 1 && (
-            <div className="flex-shrink-0">
-              <MiniSparkline
-                data={sparkData}
-                positive={(sparkData[sparkData.length - 1] || 0) >= (sparkData[0] || 0)}
-                width={88}
-                height={36}
-              />
-              <div className="text-[9px] font-mono uppercase tracking-caps text-ink-3 text-right mt-1">
-                30d
-              </div>
+          {totals.pct != null && (
+            <div className={`text-[10px] font-mono uppercase tracking-caps tabular ${colorClass(totals.pct)}`}>
+              {pctSigned(totals.pct)} histórico
             </div>
           )}
         </div>
+
+        {/* Balance grande */}
+        <div className="text-5xl font-medium tabular tracking-tight text-ink-0 leading-none mb-3">
+          ${fmtNumber(totals.totalValue)}
+          <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
+        </div>
+
+        {/* Sparkline 30d con delta del MISMO período (no histórico) */}
+        {series30d ? (
+          <div className="bg-bg-1 border border-line/40 rounded-lg p-3">
+            <div className="flex items-baseline justify-between mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+                  Últimos 30 días
+                </span>
+                <span className={`inline-flex items-center gap-0.5 text-xs font-medium tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                  {series30d.positive
+                    ? <TrendingUp size={11} strokeWidth={1.75} />
+                    : <TrendingDown size={11} strokeWidth={1.75} />}
+                  {pctSigned(series30d.deltaPct)}
+                </span>
+              </div>
+              <span className={`text-xs font-mono tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                {series30d.positive ? '+' : '−'}${fmtNumber(Math.abs(series30d.deltaUsd))}
+              </span>
+            </div>
+            <div className="h-12 -mx-1">
+              <MiniSparkline
+                data={series30d.values}
+                positive={series30d.positive}
+                width={400}
+                height={48}
+              />
+            </div>
+            <div className="flex items-baseline justify-between mt-1.5 text-[10px] font-mono text-ink-3">
+              <span className="tabular">Hace 30d · ${fmtNumber(series30d.first)}</span>
+              <span className="tabular">Hoy · ${fmtNumber(series30d.last)}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-bg-1 border border-line/40 rounded-lg p-3 text-center text-[11px] text-ink-3">
+            Cargá tus snapshots diarios para ver la evolución 30d.
+          </div>
+        )}
       </section>
 
       {/* ── 2. KPI strip 2x2 ────────────────────────────────────────── */}
