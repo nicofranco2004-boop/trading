@@ -6,6 +6,20 @@ from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json
 from collections import defaultdict
+
+# ─── Cargar .env del backend antes de leer cualquier variable de entorno ────
+# Permite tener `backend/.env` con secretos (ANTHROPIC_API_KEY, SECRET_KEY,
+# ADMIN_EMAIL_HASH, etc.) sin exportarlos a mano cada vez que se levanta
+# uvicorn. En producción (Railway) las env vars se setean en el dashboard
+# y este load_dotenv() es no-op porque no hay archivo .env.
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path)
+except ImportError:
+    # python-dotenv opcional — si no está, seguimos con env vars del sistema.
+    pass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 import requests
