@@ -965,7 +965,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             e.preventDefault()
             pickFiles(e.dataTransfer?.files)
           }}
-          className="border-2 border-dashed border-line rounded-sm p-6 text-center cursor-pointer hover:border-rendi-pos/50 hover:bg-bg-2/40 focus:border-rendi-pos focus:outline-none focus-visible:ring-2 focus-visible:ring-rendi-pos/30 transition-colors"
+          className="border-2 border-dashed border-line-2 rounded-lg p-6 text-center cursor-pointer hover:border-rendi-accent/50 focus:border-rendi-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-rendi-accent/40 transition"
         >
           <input
             ref={inputRef}
