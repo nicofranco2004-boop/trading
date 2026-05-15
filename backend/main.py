@@ -12,11 +12,17 @@ from collections import defaultdict
 # ADMIN_EMAIL_HASH, etc.) sin exportarlos a mano cada vez que se levanta
 # uvicorn. En producción (Railway) las env vars se setean en el dashboard
 # y este load_dotenv() es no-op porque no hay archivo .env.
+#
+# IMPORTANTE: usamos override=True. Caso real: el user tenía una API key
+# vieja exportada en ~/.zshrc; al hacer cd y arrancar uvicorn, esa key
+# vieja llegaba al proceso por herencia del shell. Sin override, load_dotenv
+# preserva la del shell y nuestro .env queda ignorado. Con override=True el
+# .env del repo siempre gana — comportamiento esperado para dev local.
 try:
     from dotenv import load_dotenv
     _env_path = os.path.join(os.path.dirname(__file__), ".env")
     if os.path.exists(_env_path):
-        load_dotenv(_env_path)
+        load_dotenv(_env_path, override=True)
 except ImportError:
     # python-dotenv opcional — si no está, seguimos con env vars del sistema.
     pass
