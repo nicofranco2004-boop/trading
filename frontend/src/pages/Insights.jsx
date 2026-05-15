@@ -1117,6 +1117,36 @@ export default function Insights() {
     return [...new Set(out)].slice(0, 4)
   })()
 
+  // Early return: si el user no tiene positions, mostramos solo el header
+  // y un empty state grande. El resto del análisis (KPIs / charts / tables)
+  // no tiene sentido con 0 holdings y muestra "—" en todos lados.
+  const hasAnyPositions = positions.filter(p => !p.is_cash).length > 0
+  if (!hasAnyPositions) {
+    return (
+      <div className="page-shell space-y-6">
+        <PageHeader
+          eyebrow="Análisis"
+          title="Insights"
+          subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
+        />
+        <div className="border border-line rounded bg-bg-1 px-6 py-12 text-center max-w-2xl mx-auto">
+          <Activity size={28} strokeWidth={1.5} className="mx-auto mb-3 text-ink-3" />
+          <h2 className="text-base font-medium text-ink-0 mb-1.5">Todavía no podemos analizar tu portfolio</h2>
+          <p className="text-sm text-ink-2 leading-relaxed mb-4 max-w-md mx-auto">
+            Los insights de concentración, drawdown y atribución necesitan al menos 30 días de historial. Importá tu CSV para empezar.
+          </p>
+          <Link
+            to="/config"
+            className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-4 py-2 rounded-sm transition-colors"
+          >
+            Importar mi historial
+            <ArrowRight size={13} strokeWidth={1.75} />
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="page-shell space-y-8">
       <PageHeader
@@ -1148,6 +1178,15 @@ export default function Insights() {
           <span>
             <span className="font-semibold">Cargando cotizaciones de mercado.</span> Algunos cálculos pueden mostrar valores parciales hasta completar la sincronización.
           </span>
+        </div>
+      )}
+
+      {monthly.length < 2 && (
+        <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-sm border border-data-cyan/25 bg-data-cyan/[0.06] text-xs">
+          <Info size={14} strokeWidth={1.75} className="flex-shrink-0 mt-0.5 text-data-cyan" />
+          <div className="text-ink-1">
+            <span className="font-medium text-ink-0">Esperá unos días.</span> Los insights más valiosos (drawdown, atribución, comparación) se vuelven precisos con al menos 30 días de historial.
+          </div>
         </div>
       )}
 

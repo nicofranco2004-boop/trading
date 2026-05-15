@@ -1,7 +1,10 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect, useRef } from 'react'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import Sidebar from './components/Sidebar'
+import DemoBanner from './components/DemoBanner'
+import { trackRoute } from './utils/track'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Positions from './pages/Positions'
@@ -15,6 +18,23 @@ import Imports from './pages/Imports'
 import Reports from './pages/Reports'
 import Novedades from './pages/Novedades'
 import Home from './pages/Home'
+import FirstInsight from './pages/FirstInsight'
+import Behavioral from './pages/Behavioral'
+import Wrapped from './pages/Wrapped'
+
+function RouteTracker() {
+  // Trackea cambios de ruta automáticamente. Vive adentro del <BrowserRouter>
+  // implícito de App.jsx (asume que react-router-dom está montado por encima).
+  const location = useLocation()
+  const prev = useRef(location.pathname)
+  useEffect(() => {
+    if (prev.current !== location.pathname) {
+      trackRoute(prev.current, location.pathname)
+      prev.current = location.pathname
+    }
+  }, [location.pathname])
+  return null
+}
 
 function Layout() {
   const { user } = useAuth()
@@ -29,6 +49,7 @@ function Layout() {
 
   return (
     <>
+      <RouteTracker />
       <Sidebar />
       {/* main content shifteado dinámicamente por --sidebar-w
           (la sidebar setea esta CSS var según expandida/colapsada) */}
@@ -36,11 +57,13 @@ function Layout() {
         className="min-h-screen transition-[margin] duration-200 ease-out"
         style={{ marginLeft: 'var(--sidebar-w, 220px)' }}
       >
+        <DemoBanner />
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/posiciones" element={<Positions />} />
           <Route path="/insights" element={<Insights />} />
+          <Route path="/comportamiento" element={<Behavioral />} />
           <Route path="/mensual" element={<Monthly />} />
           <Route path="/reportes" element={<Reports />} />
           <Route path="/novedades" element={<Novedades />} />
@@ -52,7 +75,9 @@ function Layout() {
           <Route path="/operaciones" element={<Operations />} />
           <Route path="/config" element={<Config />} />
           <Route path="/objetivos" element={<Goals />} />
+          <Route path="/wrapped" element={<Wrapped />} />
           <Route path="/imports" element={<Imports />} />
+          <Route path="/bienvenida" element={<FirstInsight />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

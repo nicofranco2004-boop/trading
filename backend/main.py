@@ -668,6 +668,15 @@ def get_admin_user(uid: int = Depends(get_current_user)) -> int:
 
 ARS_BROKER_NAMES = {'cocos', 'iol', 'bull', 'balanz', 'lemon', 'naranja', 'pppi', 'invertironline'}
 
+# Sets de brokers cripto vs tradicionales — usado para inferir currency al
+# auto-crear un broker desde un import o desde la migración del admin.
+# Lemon aparece en ambos sets a propósito (Lemon Cash maneja ARS y crypto):
+# acá lo dejamos en ARS para fidelidad histórica; si en algún momento Lemon
+# tiene un parser propio cripto, ese parser hardcodea el nombre.
+CRYPTO_BROKER_NAMES = {'binance', 'coinbase', 'kraken', 'bybit', 'kucoin',
+                       'bitget', 'okx', 'huobi', 'gemini', 'crypto.com',
+                       'ripio', 'buenbit', 'satoshitango', 'fiwind'}
+
 MAX_STR = 100   # max length for names/assets
 MAX_NOTES = 500
 
@@ -736,7 +745,15 @@ def register(data: RegisterIn, request: Request):
                 ).fetchall()
             ]
             for bname in existing_brokers:
-                currency = 'ARS' if bname.lower() in ARS_BROKER_NAMES else 'USDT'
+                bname_lower = bname.lower()
+                # Inferencia: ARS para brokers AR conocidos, USDT para crypto-
+                # native, USD por default para el resto (Schwab, IBKR, etc.).
+                if bname_lower in ARS_BROKER_NAMES:
+                    currency = 'ARS'
+                elif bname_lower in CRYPTO_BROKER_NAMES:
+                    currency = 'USDT'
+                else:
+                    currency = 'USD'
                 conn.execute(
                     "INSERT OR IGNORE INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                     (uid, bname, currency),
@@ -4316,6 +4333,144 @@ def get_operations(uid: int = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
+@app.get("/api/wrapped/{year}")
+def wrapped_year(year: int, uid: int = Depends(get_current_user)):
+    """Wrapped anual — reseña tipo Spotify del año en inversiones.
+    Sprint 6 del plan post-auditoría. Slides con highlights:
+    rendimiento, mejor/peor mes, mejor trade, sesgo dominante, vs benchmarks,
+    vs inflación AR. Si no hay data del año, devuelve un slide informativo.
+    """
+    if year < 2000 or year > 2200:
+        raise HTTPException(400, "Año fuera de rango")
+    from wrapped import build_wrapped
+    from behavioral import build_behavioral_insights
+    conn = get_db()
+    try:
+        monthly = [dict(r) for r in conn.execute(
+            "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month", (uid,)
+        ).fetchall()]
+        ops = [dict(r) for r in conn.execute(
+            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+        ).fetchall()]
+        # Behavioral: reusamos el mismo builder. No fallar el wrapped si el
+        # behavioral falla — los slides del bias son opcionales.
+        positions = [dict(r) for r in conn.execute(
+            "SELECT * FROM positions WHERE user_id=?", (uid,)
+        ).fetchall()]
+        try:
+            symbols = list(set(
+                p["asset"] for p in positions if p.get("asset") and not p.get("is_cash")
+            ))
+            prices = {}
+            if symbols:
+                quotes = _fetch_batch_quotes(symbols)
+                prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price") is not None}
+        except Exception:
+            prices = {}
+        try:
+            global _bench_cache
+            inflation_monthly = (_bench_cache.get("data") or {}).get("inflation_ar") or {}
+            if not inflation_monthly:
+                inflation_monthly = _fetch_inflation_ar()
+        except Exception:
+            inflation_monthly = {}
+        tc_blue = _user_tc_blue(conn, uid)
+        try:
+            behavioral = build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue)
+            behavioral_cards = behavioral.get("cards") or []
+        except Exception:
+            behavioral_cards = []
+        # Benchmarks YTD: agarrar el último valor del cache de benchmarks del
+        # año en cuestión. Si no está, el slide vs_benchmark se filtra solo.
+        # Hoy sólo tenemos S&P 500 mensual en cache; MERVAL queda pendiente
+        # de pipeline propio.
+        benchmarks = {}
+        try:
+            data = (_bench_cache.get("data") or {})
+            sp_series = data.get("sp500") or {}
+            if sp_series:
+                # Buscamos el último close del año y el último de diciembre del año anterior
+                prev_year = year - 1
+                in_year = [(k, v) for k, v in sp_series.items() if k.startswith(f"{year}-")]
+                in_year.sort()
+                prev_dec = sp_series.get(f"{prev_year}-12")
+                if in_year and prev_dec:
+                    last_close = in_year[-1][1]
+                    if prev_dec > 0:
+                        benchmarks["sp500_ytd"] = (last_close / prev_dec) - 1
+        except Exception:
+            benchmarks = {}
+        # Inflación YTD AR: compose por mes del año
+        inflation_ytd = None
+        try:
+            if inflation_monthly:
+                acc = 1.0
+                any_match = False
+                for ym, m_pct in inflation_monthly.items():
+                    if isinstance(ym, str) and ym.startswith(f"{year}-"):
+                        acc *= 1 + (m_pct or 0) / 100
+                        any_match = True
+                if any_match:
+                    inflation_ytd = acc - 1
+        except Exception:
+            inflation_ytd = None
+    finally:
+        conn.close()
+    return build_wrapped(year, monthly, ops, behavioral_cards, benchmarks, inflation_ytd)
+
+
+@app.get("/api/behavioral/insights")
+def behavioral_insights(uid: int = Depends(get_current_user)):
+    """Detecta sesgos comportamentales sobre el historial del usuario.
+    Sprint 3 + 3.1 + 3.2 del plan post-auditoría. 10 detectores en total.
+
+    Detectores:
+      Sprint 3 (4):
+        - disposition_effect, overtrade, loss_aversion, averaging_down
+      Sprint 3.1 (3):
+        - concentration: top holdings como % del portfolio
+        - inflation_loss: pérdida de cash ARS por inflación INDEC
+        - counterfactual: rendimiento si NO hubieras cerrado tus ventas
+      Sprint 3.2 (3):
+        - winrate_payoff: win rate × payoff ratio (expectancy)
+        - home_bias: % portfolio en activos AR
+        - cash_drag: % portfolio en cash (con énfasis ARS)
+    """
+    from behavioral import build_behavioral_insights
+    conn = get_db()
+    try:
+        ops = [dict(r) for r in conn.execute(
+            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+        ).fetchall()]
+        positions = [dict(r) for r in conn.execute(
+            "SELECT * FROM positions WHERE user_id=?", (uid,)
+        ).fetchall()]
+        # Precios actuales: del cache de quotes del Home (mismo dataset que
+        # usa el Dashboard). Sin fallar si no hay batch fetch a mano.
+        symbols = list(set([p["asset"] for p in positions if p.get("asset") and not p.get("is_cash")]))
+        prices = {}
+        if symbols:
+            try:
+                quotes = _fetch_batch_quotes(symbols)
+                prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price") is not None}
+            except Exception:
+                prices = {}
+        # Inflación AR del bench cache (12 últimos meses)
+        inflation_monthly = {}
+        try:
+            global _bench_cache
+            if _bench_cache.get("data"):
+                inflation_monthly = _bench_cache["data"].get("inflation_ar") or {}
+            else:
+                inflation_monthly = _fetch_inflation_ar()
+        except Exception:
+            inflation_monthly = {}
+        tc_blue = _user_tc_blue(conn, uid)
+    finally:
+        conn.close()
+    return build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue)
+
+
 @app.post("/api/operations")
 def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
     conn = get_db()
@@ -4420,6 +4575,106 @@ def delete_goal(gid: int, uid: int = Depends(get_current_user)):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+@app.get("/api/goals/{gid}/diagnostic")
+def goal_diagnostic(gid: int, uid: int = Depends(get_current_user)):
+    """Sprint 7 — Goals 2.0. Cruza:
+    - Velocidad real del usuario (CAGR histórico).
+    - Velocidad necesaria para la meta.
+    - Sesgo dominante (behavioral) → sugerencia accionable si va atrasado.
+
+    Si el goal no es del user → 404. Si no hay valor actual del portfolio
+    (no posiciones) → status=unknown.
+    """
+    from goals_diagnostic import build_goal_diagnostic
+    from behavioral import build_behavioral_insights
+    conn = get_db()
+    try:
+        goal = conn.execute(
+            "SELECT * FROM goals WHERE id=? AND user_id=?", (gid, uid)
+        ).fetchone()
+        if not goal:
+            raise HTTPException(404, "Goal no encontrado")
+        goal_dict = dict(goal)
+
+        # Valor actual del portfolio = sum(positions value) en USD
+        positions = [dict(r) for r in conn.execute(
+            "SELECT * FROM positions WHERE user_id=?", (uid,)
+        ).fetchall()]
+        ops = [dict(r) for r in conn.execute(
+            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+        ).fetchall()]
+
+        # Reusar la pipeline ya armada de behavioral para precios e insights
+        try:
+            symbols = list(set(
+                p["asset"] for p in positions if p.get("asset") and not p.get("is_cash")
+            ))
+            prices = {}
+            if symbols:
+                quotes = _fetch_batch_quotes(symbols)
+                prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price") is not None}
+        except Exception:
+            prices = {}
+        tc_blue = _user_tc_blue(conn, uid)
+
+        # Valor actual del portfolio en USD — sumamos valor de cada posición
+        # con la misma fórmula que usamos en behavioral._position_value_usd
+        from behavioral import _position_value_usd
+        current_value = 0.0
+        for p in positions:
+            try:
+                v = _position_value_usd(p, prices, tc_blue)
+                if v is not None:
+                    current_value += v
+            except Exception:
+                continue
+
+        # CAGR histórico desde monthly_entries (mismo cálculo que /api/goals/cagr)
+        rows = conn.execute(
+            """SELECT year, month, deposits, withdrawals, capital_inicio, capital_final
+               FROM monthly_entries WHERE user_id=? AND broker='global'
+               ORDER BY year ASC, month ASC""",
+            (uid,),
+        ).fetchall()
+        user_cagr_pct = None
+        if len(rows) >= 2:
+            factors = []
+            for r in rows:
+                ci = r["capital_inicio"] or 0
+                cf = r["capital_final"] or 0
+                net = (r["deposits"] or 0) - (r["withdrawals"] or 0)
+                if ci <= 0:
+                    continue
+                ret_m = (cf - ci - net) / ci
+                ret_m = max(-0.95, min(5.0, ret_m))
+                factors.append(1 + ret_m)
+            if factors:
+                prod = 1.0
+                for f in factors:
+                    prod *= f
+                avg_monthly = prod ** (1 / len(factors))
+                user_cagr_pct = round((avg_monthly ** 12 - 1) * 100, 2)
+
+        # Behavioral cards
+        try:
+            global _bench_cache
+            inflation_monthly = (_bench_cache.get("data") or {}).get("inflation_ar") or {}
+            behavioral_cards = build_behavioral_insights(
+                ops, positions, prices, inflation_monthly, tc_blue
+            ).get("cards") or []
+        except Exception:
+            behavioral_cards = []
+    finally:
+        conn.close()
+
+    return build_goal_diagnostic(
+        goal_dict,
+        current_value=current_value,
+        user_cagr_pct=user_cagr_pct,
+        behavioral_cards=behavioral_cards,
+    )
 
 
 @app.get("/api/goals/cagr")

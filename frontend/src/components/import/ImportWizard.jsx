@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw } from 'lucide-react'
+import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw, Sparkles } from 'lucide-react'
 import InfoTooltip from '../InfoTooltip'
 import { api } from '../../utils/api'
 
@@ -619,11 +619,53 @@ function Stepper({ step, skipMap, hasSeed }) {
 }
 
 
+// ─── CSV format auto-detection ───────────────────────────────────────────────
+// Lee las primeras líneas del archivo y intenta identificar el broker por
+// firma de columnas. Devuelve el `platform` id (no `format`) — el caller
+// puede llamar a changePlatform() y dejar que se auto-seleccione el export
+// soportado.
+//
+// Patrones se actualizan cuando el broker cambia su export. Tests por
+// fixture en backend/tests/test_imports_*.
+async function detectPlatformFromCsv(file) {
+  if (!file) return null
+  try {
+    // Solo leemos ~2KB — los headers están en las primeras filas
+    const text = await file.slice(0, 4096).text()
+    const firstLines = text.split(/\r?\n/).slice(0, 8).join('\n').toLowerCase()
+
+    // Cocos Capital: incluye "tipo","activo","tc compra" o similar
+    if (/tc.{0,4}compra/.test(firstLines) || /\bcocos\b/.test(firstLines)) {
+      return 'cocos'
+    }
+    // Binance Spot: "date(utc)","pair","side","executed"
+    if (/date\(utc\)/.test(firstLines) && /\bpair\b/.test(firstLines)) {
+      return 'binance'
+    }
+    // Binance generic export con "user_id","time","category","operation"
+    if (/user_id/.test(firstLines) && /\bcategory\b/.test(firstLines)) {
+      return 'binance'
+    }
+    // Schwab: header con "Date","Action","Symbol","Description","Quantity","Price"
+    if (/^date,action,symbol/.test(firstLines)) {
+      return 'schwab'
+    }
+    // IBKR: header tipo "ClientAccountID,AccountAlias,Model"
+    if (/clientaccountid/.test(firstLines)) {
+      return 'ibkr'
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
                       format, setFormat, files, setFiles, downloadTemplate, inputRef,
                       importMode, setImportMode, singleBroker, setSingleBroker, brokers,
                       isArsBroker, hasUsdOps, setHasUsdOps }) {
   const [fileError, setFileError] = useState(null)
+  const [detection, setDetection] = useState(null)  // { platform, label } | null
   const isSpecific = format && format !== 'rendi_generic'
   const parserLabel = parsers.find(p => p.id === format)?.label || format
 
@@ -646,7 +688,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
   // Acumula files: en cada pickFiles agregamos al state existente (no
   // reemplazamos). Permite seleccionar archivos en pasos o por drag-and-drop
   // múltiples veces. Dedup por (name, size).
-  function pickFiles(newFiles) {
+  async function pickFiles(newFiles) {
     if (!newFiles || newFiles.length === 0) return
     const incoming = Array.from(newFiles)
     const errors = []
@@ -658,6 +700,20 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
         continue
       }
       valid.push(f)
+    }
+
+    // Detección automática del formato — solo si el user no eligió todavía
+    // una plataforma específica. Le damos un hint, NO cambiamos por él.
+    if (valid.length > 0 && (!platform || platform === 'generic')) {
+      const detected = await detectPlatformFromCsv(valid[0])
+      if (detected) {
+        const group = parserGroups.find(g => g.platform === detected)
+        if (group) {
+          setDetection({ platform: detected, label: group.platform_label })
+        }
+      } else {
+        setDetection(null)
+      }
     }
     // Dedup + feedback de duplicates
     let dupCount = 0
@@ -675,15 +731,18 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
       }
       return merged
     })
-    // Feedback: combinamos errores (no-CSV) + duplicates ignorados (info).
+    // Feedback humano: combinamos errores (no-CSV) + duplicates ignorados.
     if (errors.length > 0) {
-      setFileError(
-        errors.join(' ') +
-        ' Solo aceptamos archivos .csv. Si tu broker te dio PDF/Excel, exportalo como CSV.',
-      )
+      const hasPdf = errors.some(e => /\.pdf/i.test(e))
+      const hasXlsx = errors.some(e => /\.xlsx?/i.test(e))
+      let helpText = ' Solo aceptamos CSV. '
+      if (hasPdf) helpText += 'Si tu broker exportó un PDF, buscá la opción "Exportar a CSV" o "Descargar movimientos en CSV".'
+      else if (hasXlsx) helpText += 'Abrí el Excel y guardalo como CSV (Archivo → Guardar como → Tipo: CSV UTF-8).'
+      else helpText += 'Si tu broker no exporta CSV, podés pegar los datos en Google Sheets y descargar como CSV.'
+      setFileError(errors.join(' ') + helpText)
     } else if (dupCount > 0) {
       setFileError(
-        `${dupCount} ${dupCount === 1 ? 'archivo ya estaba' : 'archivos ya estaban'} seleccionado${dupCount === 1 ? '' : 's'} — lo ignoramos.`,
+        `${dupCount} ${dupCount === 1 ? 'archivo ya estaba' : 'archivos ya estaban'} en la lista — lo ignoramos.`,
       )
     } else {
       setFileError(null)
@@ -861,9 +920,33 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
       <div>
         <label className="block text-xs text-ink-3 mb-1">Archivo CSV</label>
         {fileError && (
-          <div className="mb-2 flex items-start gap-2 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
+          <div className="mb-2 flex items-start gap-2 px-3 py-2 rounded-sm bg-rendi-warn/[0.08] border border-rendi-warn/25 text-rendi-warn text-xs">
             <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
             <span>{fileError}</span>
+          </div>
+        )}
+        {detection && detection.platform !== platform && (
+          <div className="mb-2 flex items-start gap-2 px-3 py-2 rounded-sm bg-rendi-pos/[0.06] border border-rendi-pos/25 text-xs">
+            <Sparkles size={12} strokeWidth={1.75} className="mt-0.5 flex-shrink-0 text-rendi-pos" />
+            <div className="flex-1 text-ink-1">
+              Detectamos que tu archivo parece de{' '}
+              <span className="font-medium text-ink-0">{detection.label}</span>.
+              <button
+                type="button"
+                onClick={() => { changePlatform(detection.platform); setDetection(null) }}
+                className="ml-2 text-rendi-pos hover:text-ink-0 underline underline-offset-2"
+              >
+                Usar este parser
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDetection(null)}
+              className="text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0"
+              aria-label="Descartar sugerencia"
+            >
+              <X size={11} strokeWidth={1.75} />
+            </button>
           </div>
         )}
         <div

@@ -228,7 +228,12 @@ export default function SearchBar() {
   // ── Fetch watchlist actual para hidear "+ WATCHLIST" si ya está ───────────
   useEffect(() => {
     api.get('/watchlist')
-      .then(d => setWatchlist((d || []).map(w => (w.symbol || '').toUpperCase())))
+      .then(d => {
+        // El backend devuelve { items: [...] }. Compat con array directo
+        // por si algún caller legacy sigue ese shape.
+        const items = Array.isArray(d) ? d : (d?.items || [])
+        setWatchlist(items.map(w => (w.symbol || '').toUpperCase()))
+      })
       .catch(() => setWatchlist([]))
   }, [])
 

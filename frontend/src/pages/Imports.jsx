@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Upload, RotateCcw, AlertTriangle, CheckCircle2, Trash2, FileText, ChevronLeft, Loader2, Edit3 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
@@ -8,7 +9,13 @@ import Modal from '../components/Modal'
 import ImportWizard from '../components/import/ImportWizard'
 import { api } from '../utils/api'
 
+// Flag de localStorage: si el user nunca completó un import → al confirmar
+// el primero lo redirigimos a /bienvenida para el "primer insight" en lugar
+// de devolverlo a la tabla administrativa.
+const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
+
 export default function Imports() {
+  const navigate = useNavigate()
   const [batches, setBatches] = useState([])
   const [loading, setLoading] = useState(true)
   const [reverting, setReverting] = useState(null) // batch_id en proceso
@@ -17,6 +24,7 @@ export default function Imports() {
   const [confirmRedo, setConfirmRedo] = useState(null)     // batch object pendiente de "rehacer"
   const [redoPreview, setRedoPreview] = useState(null)     // {preview, original_batch_id} → abre wizard
   const [showWizard, setShowWizard] = useState(false)      // wizard de import nuevo (no redo)
+  const [importJustConfirmed, setImportJustConfirmed] = useState(false)  // marca interna: el wizard pasó por onConfirmed
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
 
@@ -269,8 +277,24 @@ export default function Imports() {
 
       {showWizard && (
         <ImportWizard
-          onClose={() => { setShowWizard(false); load() }}
-          onConfirmed={() => { load() }}
+          onClose={() => {
+            setShowWizard(false)
+            // Si es el primer import del user, redirect al primer insight.
+            // El flag se setea cuando hicieron click en "Cerrar" del DoneStep
+            // (= confirmaron el import). Después ya no se vuelve a mostrar.
+            if (importJustConfirmed && !localStorage.getItem(FIRST_IMPORT_FLAG)) {
+              localStorage.setItem(FIRST_IMPORT_FLAG, '1')
+              setImportJustConfirmed(false)
+              navigate('/bienvenida')
+              return
+            }
+            setImportJustConfirmed(false)
+            load()
+          }}
+          onConfirmed={() => {
+            setImportJustConfirmed(true)
+            load()
+          }}
         />
       )}
 

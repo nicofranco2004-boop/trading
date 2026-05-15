@@ -1,17 +1,46 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { api } from '../utils/api'
+import { isDemoMode, enableDemoMode, disableDemoMode } from '../utils/demo'
+import { track } from '../utils/track'
 
 const AuthContext = createContext(null)
 
+// User fake para modo demo. No tiene token real — todas las llamadas API
+// son interceptadas por handleDemoRequest en api.js.
+const DEMO_USER = {
+  name: 'Inversor Demo',
+  email: 'demo@rendi.app',
+  is_admin: false,
+  demo: true,
+  id: 0,
+  created_at: '2024-04-01T00:00:00Z',
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
+    // Activación de demo via query param. Soporta `?demo=1` y `?demo=true`.
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const demoParam = params.get('demo')
+      if (demoParam === '1' || demoParam === 'true') {
+        enableDemoMode()
+        track('demo_mode_started')
+        // Limpiamos la URL para no dejar el param visible (UX más limpia)
+        try {
+          const cleanUrl = window.location.pathname + window.location.hash
+          window.history.replaceState({}, '', cleanUrl)
+        } catch {}
+      }
+      if (isDemoMode()) return DEMO_USER
+    }
     try { return JSON.parse(localStorage.getItem('rendi_user')) } catch { return null }
   })
   const [bootstrapped, setBootstrapped] = useState(false)
 
   // Rehidratación: si hay token, validarlo y traer datos frescos del server.
-  // Esto cubre: localStorage corrupto, name desactualizado, is_admin no presente, token expirado.
+  // En modo demo skipeamos la rehidratación (no hay token real).
   useEffect(() => {
+    if (isDemoMode()) { setBootstrapped(true); return }
     const token = localStorage.getItem('rendi_token')
     if (!token) { setBootstrapped(true); return }
     api.get('/auth/me')
@@ -21,7 +50,6 @@ export function AuthProvider({ children }) {
         setUser(fresh)
       })
       .catch(() => {
-        // Token inválido/expirado: limpiar (api.js ya redirige al login)
         localStorage.removeItem('rendi_token')
         localStorage.removeItem('rendi_user')
         setUser(null)
@@ -45,13 +73,25 @@ export function AuthProvider({ children }) {
   }
 
   function logout() {
+    if (user?.demo) {
+      track('demo_mode_exited')
+      disableDemoMode()
+    }
     localStorage.removeItem('rendi_token')
     localStorage.removeItem('rendi_user')
     setUser(null)
   }
 
+  function exitDemo() {
+    track('demo_mode_exited')
+    disableDemoMode()
+    setUser(null)
+  }
+
+  const isDemo = !!user?.demo
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, updateUser, bootstrapped }}>
+    <AuthContext.Provider value={{ user, isDemo, login, logout, exitDemo, updateUser, bootstrapped }}>
       {children}
     </AuthContext.Provider>
   )

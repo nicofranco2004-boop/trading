@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Sparkles, ArrowRight } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import { enableDemoMode } from '../utils/demo'
+import { track } from '../utils/track'
 import RendiLogo from '../components/RendiLogo'
 
 export default function Login() {
@@ -59,6 +62,21 @@ export default function Login() {
           <RendiLogo size={36} />
           <span className="text-2xl font-bold text-ink-0 dark:text-white tracking-tight">rendi</span>
         </div>
+
+        {/* Demo mode CTA — entry point para probar sin cuenta */}
+        <button
+          onClick={() => {
+            track('demo_mode_started')
+            enableDemoMode()
+            // Forzar reload para que AuthContext detecte el flag y monte el demo user
+            window.location.href = '/'
+          }}
+          className="w-full mb-4 inline-flex items-center justify-center gap-2 bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 rounded-lg py-2.5 text-sm transition-colors"
+        >
+          <Sparkles size={14} strokeWidth={1.75} />
+          Probar sin cuenta · Modo demo
+          <ArrowRight size={13} strokeWidth={1.75} />
+        </button>
 
         <div className="bg-white dark:bg-bg-2/60 border border-line/50 rounded-2xl p-6">
           <div className="flex mb-6 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">

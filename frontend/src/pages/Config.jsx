@@ -8,7 +8,7 @@
 //   5. Grid 2 col: Cambiar contraseña | Datos / Importaciones (Sistema)
 
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Pencil, RefreshCw, Lock, Upload, History, KeyRound } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
@@ -88,7 +88,10 @@ function currencyTone(c) {
 
 // ─── Página ──────────────────────────────────────────────────────────────────
 
+const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
+
 export default function Config() {
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [brokers, setBrokers] = useState([])
   const [dolar, setDolar] = useState(null)
@@ -97,6 +100,7 @@ export default function Config() {
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
   const [pwState, setPwState] = useState({ loading: false, error: '', success: '' })
   const [showImport, setShowImport] = useState(false)
+  const [importJustConfirmed, setImportJustConfirmed] = useState(false)
   const [showAddBroker, setShowAddBroker] = useState(false)
 
   useEffect(() => {
@@ -510,8 +514,17 @@ export default function Config() {
 
       {showImport && (
         <ImportWizard
-          onClose={() => setShowImport(false)}
-          onConfirmed={() => { /* Config no muestra portfolio — no refresh */ }}
+          onClose={() => {
+            setShowImport(false)
+            if (importJustConfirmed && !localStorage.getItem(FIRST_IMPORT_FLAG)) {
+              localStorage.setItem(FIRST_IMPORT_FLAG, '1')
+              setImportJustConfirmed(false)
+              navigate('/bienvenida')
+              return
+            }
+            setImportJustConfirmed(false)
+          }}
+          onConfirmed={() => { setImportJustConfirmed(true) }}
         />
       )}
     </div>
