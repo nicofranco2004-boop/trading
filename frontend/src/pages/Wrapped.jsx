@@ -239,67 +239,347 @@ function SlideProgress({ total, idx, onJump }) {
 }
 
 // ─── Slide stage ──────────────────────────────────────────────────────────
+// Dispatcher: cada kind tiene un layout específico para sacarle jugo al espacio.
+// Los kinds genéricos (stats, dominant_bias) caen al layout default.
 
 function SlideStage({ slide, year }) {
   const tone = slide.tone || 'neutral'
   const bgClass = TONE_BG[tone] || TONE_BG.neutral
   const accent = TONE_ACCENT[tone] || TONE_ACCENT.neutral
+  const accentHex =
+    tone === 'positive' ? '#21D07A' :
+    tone === 'negative' ? '#FF5360' :
+    '#4E83FF'
+
+  // Header común a todos los layouts
+  const eyebrow = (
+    <div className="flex items-center gap-2">
+      <Sparkles size={14} strokeWidth={1.75} className={accent} />
+      <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+        {slide.metric?.label || `${year}`}
+      </span>
+    </div>
+  )
 
   return (
     <div
       className={`relative bg-gradient-to-br ${bgClass} bg-bg-1 border border-line/50 rounded-lg overflow-hidden`}
-      style={{ minHeight: '420px' }}
+      style={{ minHeight: '480px' }}
     >
       <div className="absolute inset-0 flex flex-col justify-between p-6 sm:p-10">
-        {/* Top: eyebrow */}
-        <div className="flex items-center gap-2">
-          <Sparkles size={14} strokeWidth={1.75} className={accent} />
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
-            {slide.metric?.label || `${year}`}
-          </span>
-        </div>
+        {eyebrow}
+        <SlideContent slide={slide} tone={tone} accentHex={accentHex} year={year} />
+      </div>
+    </div>
+  )
+}
 
-        {/* Middle: metric + title */}
-        <div className="space-y-3 max-w-2xl">
-          {slide.metric?.value && slide.kind !== 'intro' && slide.kind !== 'outro' && (
-            <div className={`text-5xl sm:text-7xl font-medium tabular tracking-tight ${
-              tone === 'positive' ? 'text-rendi-pos'
-              : tone === 'negative' ? 'text-rendi-neg'
-              : 'text-ink-0'
-            }`}>
-              {slide.metric.value}
-            </div>
-          )}
-          {(slide.kind === 'intro' || slide.kind === 'outro') && slide.metric?.value && (
-            <div className="text-4xl sm:text-6xl font-medium tabular tracking-tight text-ink-0">
-              {slide.metric.value}
-            </div>
-          )}
-          <h2 className="text-xl sm:text-2xl font-medium text-ink-0 leading-tight">
-            {slide.title}
-          </h2>
-          {slide.subtitle && (
-            <p className="text-sm sm:text-base text-ink-2 leading-relaxed max-w-xl">
-              {slide.subtitle}
-            </p>
-          )}
-        </div>
+function SlideContent({ slide, tone, accentHex, year }) {
+  // ─── Layout específico por kind ─────────────────────────────────────────
+  if (slide.kind === 'intro') return <IntroLayout slide={slide} year={year} />
+  if (slide.kind === 'outro') return <OutroLayout slide={slide} />
+  if (slide.kind === 'pnl') return <PnlLayout slide={slide} tone={tone} />
+  if (slide.kind === 'vs_benchmark' || slide.kind === 'vs_inflation') {
+    return <VsLayout slide={slide} tone={tone} accentHex={accentHex} />
+  }
+  if (slide.code === 'activity') return <ActivityLayout slide={slide} accentHex={accentHex} />
+  if (slide.kind === 'best_trade') return <BestTradeLayout slide={slide} />
+  if (slide.kind === 'dominant_bias') return <BiasLayout slide={slide} tone={tone} />
+  // Default (best_month, worst_month, no_data, fallback)
+  return <DefaultLayout slide={slide} tone={tone} />
+}
 
-        {/* Bottom: stats */}
-        {slide.stats?.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-3 border-t border-line/40">
-            {slide.stats.slice(0, 4).map((s, i) => (
+// ─── Layouts ──────────────────────────────────────────────────────────────
+
+function IntroLayout({ slide, year }) {
+  return (
+    <>
+      {/* Middle: año GIGANTE + titulo + subtitle */}
+      <div className="space-y-3">
+        <div className="text-7xl sm:text-9xl font-medium tabular tracking-tighter text-ink-0 leading-none">
+          {year}
+        </div>
+        <h2 className="text-xl sm:text-3xl font-medium text-ink-0 leading-tight">
+          {slide.title}
+        </h2>
+        <p className="text-sm sm:text-base text-ink-2 leading-relaxed max-w-xl">
+          {slide.subtitle}
+        </p>
+      </div>
+
+      {/* Bottom: teaser stats grid — vista rápida de qué incluye el wrapped */}
+      {slide.stats?.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4 border-t border-line/40">
+          {slide.stats.slice(0, 4).map((s, i) => (
+            <TeaserStat key={i} label={s.label} value={s.value} />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function OutroLayout({ slide }) {
+  return (
+    <>
+      <div className="space-y-3 max-w-xl">
+        <div className="text-4xl sm:text-6xl font-medium tabular tracking-tight text-ink-0">
+          {slide.metric?.value}
+        </div>
+        <h2 className="text-xl sm:text-2xl font-medium text-ink-0 leading-tight">
+          {slide.title}
+        </h2>
+        <p className="text-sm sm:text-base text-ink-2 leading-relaxed">
+          {slide.subtitle}
+        </p>
+      </div>
+      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 pt-4 border-t border-line/40">
+        Tocá compartir para guardar o enviar cualquiera de los slides.
+      </div>
+    </>
+  )
+}
+
+function PnlLayout({ slide, tone }) {
+  const big = slide.metric?.value
+  const isPositive = tone === 'positive'
+  return (
+    <>
+      <div className="space-y-2">
+        <div className={`text-6xl sm:text-8xl font-medium tabular tracking-tight ${
+          isPositive ? 'text-rendi-pos' : tone === 'negative' ? 'text-rendi-neg' : 'text-ink-0'
+        }`}>
+          {slide.title}
+        </div>
+        <p className="text-base sm:text-lg text-ink-1">{slide.subtitle}</p>
+        {big && (
+          <p className={`text-2xl sm:text-3xl font-medium tabular ${
+            isPositive ? 'text-rendi-pos' : tone === 'negative' ? 'text-rendi-neg' : 'text-ink-0'
+          }`}>
+            {big}
+          </p>
+        )}
+      </div>
+
+      {slide.stats?.length > 0 && (
+        <div className="grid grid-cols-3 gap-3 pt-4 border-t border-line/40">
+          {slide.stats.slice(0, 3).map((s, i) => (
+            <TeaserStat key={i} label={s.label} value={s.value} />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function VsLayout({ slide, tone, accentHex }) {
+  const bars = slide.bars || []
+  // Normalizar a fracciones. Calcular escala: max abs + algo de aire
+  const maxAbs = Math.max(0.001, ...bars.map(b => Math.abs(Number(b.value) || 0)))
+  const fmtPct = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(2)}%`
+
+  return (
+    <>
+      <div className="space-y-2">
+        <h2 className="text-xl sm:text-3xl font-medium text-ink-0 leading-tight">
+          {slide.title}
+        </h2>
+        <p className="text-sm sm:text-base text-ink-2 max-w-xl">{slide.subtitle}</p>
+      </div>
+
+      {bars.length > 0 && (
+        <div className="space-y-2.5 pt-2">
+          {bars.map((b, i) => {
+            const v = Number(b.value) || 0
+            const pctOfMax = Math.abs(v) / maxAbs
+            const isHighlight = b.highlight
+            const barColor = v >= 0
+              ? (isHighlight ? '#21D07A' : '#46C6E0')
+              : (isHighlight ? '#FF5360' : '#8B7DFF')
+            return (
               <div key={i}>
-                <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1.5">
-                  {s.label}
+                <div className="flex items-baseline justify-between mb-1">
+                  <span className={`text-xs font-mono uppercase tracking-caps ${
+                    isHighlight ? 'text-ink-0 font-semibold' : 'text-ink-3'
+                  }`}>
+                    {b.label}
+                  </span>
+                  <span className={`text-sm font-medium tabular ${
+                    isHighlight ? 'text-ink-0' : 'text-ink-2'
+                  }`}>
+                    {fmtPct(v)}
+                  </span>
                 </div>
-                <div className="text-sm font-medium text-ink-0 tabular leading-none">
-                  {s.value}
+                <div className="h-3 bg-bg-2 rounded-sm overflow-hidden">
+                  <div
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.max(2, pctOfMax * 100)}%`,
+                      background: barColor,
+                      opacity: isHighlight ? 1 : 0.6,
+                    }}
+                  />
                 </div>
               </div>
-            ))}
+            )
+          })}
+        </div>
+      )}
+    </>
+  )
+}
+
+function ActivityLayout({ slide, accentHex }) {
+  const bars = slide.bars || []
+  const maxCount = Math.max(1, ...bars.map(b => Number(b.value) || 0))
+  const total = slide.metric?.value
+  const distinct = slide.stats?.find(s => s.label === 'Distintos activos')?.value
+
+  return (
+    <>
+      <div className="space-y-2">
+        <div className="text-6xl sm:text-7xl font-medium tabular tracking-tight text-ink-0">
+          {total}
+        </div>
+        <h2 className="text-xl sm:text-2xl font-medium text-ink-0 leading-tight">
+          {slide.title}
+        </h2>
+        <p className="text-sm sm:text-base text-ink-2">{slide.subtitle}</p>
+      </div>
+
+      <div className="space-y-3 pt-4 border-t border-line/40">
+        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          Top activos operados
+        </div>
+        {bars.length > 0 ? bars.map((b, i) => {
+          const w = (Number(b.value) / maxCount) * 100
+          return (
+            <div key={i} className="flex items-center gap-3">
+              <div className="text-xs font-mono uppercase tracking-caps text-ink-2 w-16 flex-shrink-0">
+                {b.label}
+              </div>
+              <div className="flex-1 h-2 bg-bg-2 rounded-sm overflow-hidden">
+                <div
+                  className="h-full bg-data-blue transition-all duration-500"
+                  style={{ width: `${Math.max(4, w)}%`, opacity: 1 - i * 0.2 }}
+                />
+              </div>
+              <div className="text-xs font-mono text-ink-1 tabular w-12 text-right flex-shrink-0">
+                {b.value}×
+              </div>
+            </div>
+          )
+        }) : (
+          <div className="text-xs text-ink-3">Sin datos.</div>
+        )}
+        {distinct && (
+          <div className="text-[11px] text-ink-3 pt-1">
+            Operaste {distinct} activos distintos este año.
           </div>
         )}
+      </div>
+    </>
+  )
+}
+
+function BestTradeLayout({ slide }) {
+  const asset = slide.stats?.find(s => s.label === 'Activo')?.value || slide.metric?.label
+  const date = slide.stats?.find(s => s.label === 'Fecha')?.value
+  return (
+    <>
+      <div className="space-y-2">
+        <div className="text-2xl sm:text-3xl font-mono uppercase tracking-tight text-ink-3 leading-none">
+          {asset}
+        </div>
+        <div className="text-5xl sm:text-7xl font-medium tabular tracking-tight text-rendi-pos">
+          {slide.metric?.value}
+        </div>
+        <h2 className="text-xl sm:text-2xl font-medium text-ink-0 leading-tight pt-2">
+          {slide.title}
+        </h2>
+        <p className="text-sm sm:text-base text-ink-2">{slide.subtitle}</p>
+      </div>
+      {date && (
+        <div className="flex items-center justify-between pt-4 border-t border-line/40">
+          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Fecha de cierre</span>
+          <span className="text-sm font-mono tabular text-ink-1">{date}</span>
+        </div>
+      )}
+    </>
+  )
+}
+
+function BiasLayout({ slide, tone }) {
+  return (
+    <>
+      <div className="space-y-3 max-w-2xl">
+        <div className={`inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border ${
+          tone === 'negative' ? 'bg-rendi-neg/[0.06] border-rendi-neg/25 text-rendi-neg'
+          : tone === 'positive' ? 'bg-rendi-pos/[0.06] border-rendi-pos/25 text-rendi-pos'
+          : 'bg-data-blue/[0.06] border-data-blue/25 text-data-blue'
+        }`}>
+          {slide.metric?.value}
+        </div>
+        <h2 className="text-2xl sm:text-4xl font-medium text-ink-0 leading-tight">
+          {slide.title}
+        </h2>
+        <p className="text-sm sm:text-base text-ink-2 leading-relaxed">
+          {slide.subtitle}
+        </p>
+      </div>
+
+      {slide.stats?.length > 0 && (
+        <div className="grid grid-cols-2 gap-3 pt-4 border-t border-line/40">
+          {slide.stats.slice(0, 2).map((s, i) => (
+            <TeaserStat key={i} label={s.label} value={s.value} />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function DefaultLayout({ slide, tone }) {
+  return (
+    <>
+      <div className="space-y-3 max-w-2xl">
+        {slide.metric?.value && (
+          <div className={`text-5xl sm:text-7xl font-medium tabular tracking-tight ${
+            tone === 'positive' ? 'text-rendi-pos'
+            : tone === 'negative' ? 'text-rendi-neg'
+            : 'text-ink-0'
+          }`}>
+            {slide.metric.value}
+          </div>
+        )}
+        <h2 className="text-xl sm:text-2xl font-medium text-ink-0 leading-tight">
+          {slide.title}
+        </h2>
+        {slide.subtitle && (
+          <p className="text-sm sm:text-base text-ink-2 leading-relaxed max-w-xl">
+            {slide.subtitle}
+          </p>
+        )}
+      </div>
+      {slide.stats?.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-3 border-t border-line/40">
+          {slide.stats.slice(0, 4).map((s, i) => (
+            <TeaserStat key={i} label={s.label} value={s.value} />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function TeaserStat({ label, value }) {
+  return (
+    <div>
+      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1.5">
+        {label}
+      </div>
+      <div className="text-base sm:text-lg font-medium text-ink-0 tabular leading-none">
+        {value}
       </div>
     </div>
   )

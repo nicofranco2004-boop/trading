@@ -134,6 +134,41 @@ def test_slide_intro_has_correct_year():
     assert s['code'] == 'intro'
     assert '2026' in s['title']
     assert s['metric']['value'] == '2026'
+    assert s['stats'] == []  # sin teaser → sin stats
+
+
+def test_slide_intro_with_teaser_shows_summary_stats():
+    teaser = {
+        'twr': 0.1432,
+        'pnl_usd': 4287,
+        'total_trades': 14,
+        'months_count': 12,
+        'best_month_label': 'Marzo',
+    }
+    s = _slide_intro(2026, teaser=teaser)
+    labels = [st['label'] for st in s['stats']]
+    assert 'Rendimiento' in labels
+    assert 'P&L total' in labels
+    assert 'Operaciones' in labels
+    assert 'Mejor mes' in labels
+    # twr formato con + porque es positivo
+    rendimiento = next(st for st in s['stats'] if st['label'] == 'Rendimiento')
+    assert rendimiento['value'].startswith('+')
+    pnl = next(st for st in s['stats'] if st['label'] == 'P&L total')
+    assert pnl['value'].startswith('+$')
+
+
+def test_slide_intro_with_negative_teaser_uses_minus():
+    teaser = {'twr': -0.05, 'pnl_usd': -250, 'total_trades': None, 'months_count': 6, 'best_month_label': None}
+    s = _slide_intro(2026, teaser=teaser)
+    rendimiento = next(st for st in s['stats'] if st['label'] == 'Rendimiento')
+    assert rendimiento['value'].startswith('−')
+    pnl = next(st for st in s['stats'] if st['label'] == 'P&L total')
+    assert pnl['value'].startswith('−$')
+    # Sin best_month, cae a meses operados
+    labels = [st['label'] for st in s['stats']]
+    assert 'Meses operados' in labels
+    assert 'Operaciones' not in labels  # total_trades None → skipped
 
 
 def test_slide_pnl_positive_tone():
@@ -219,9 +254,12 @@ def test_slide_activity_counts_correctly():
     s = _slide_activity(ops)
     assert s is not None
     assert '3' in s['metric']['value']
-    most_traded = next(x for x in s['stats'] if x['label'] == 'Más operado')
-    assert 'AAPL' in most_traded['value']
-    assert '2' in most_traded['value']
+    # El top asset es AAPL con 2× y aparece como primera stat
+    assert s['stats'][0]['label'] == 'AAPL'
+    assert s['stats'][0]['value'] == '2×'
+    # También se expone como `bars` para gráfico
+    assert s['bars'][0]['label'] == 'AAPL'
+    assert s['bars'][0]['value'] == 2
 
 
 # ── Dominant bias ──────────────────────────────────────────────────────────
@@ -336,6 +374,21 @@ def test_build_wrapped_complete_year():
     assert 'vs_benchmark' in codes
     assert 'vs_inflation' in codes
     assert 'dominant_bias' in codes
+
+    # El intro ahora tiene teaser con stats del año
+    intro = out['slides'][0]
+    intro_labels = [st['label'] for st in intro['stats']]
+    assert 'Rendimiento' in intro_labels
+    assert 'P&L total' in intro_labels
+    assert 'Operaciones' in intro_labels  # 3 ops del año
+
+    # vs_benchmark trae bars para gráfico comparativo
+    vs_bm = next(s for s in out['slides'] if s['code'] == 'vs_benchmark')
+    assert 'bars' in vs_bm
+    assert any(b.get('highlight') for b in vs_bm['bars'])
+    # activity también trae bars (top 3 assets)
+    act = next(s for s in out['slides'] if s['code'] == 'activity')
+    assert 'bars' in act
 
 
 def test_build_wrapped_skips_optional_slides_with_no_data():

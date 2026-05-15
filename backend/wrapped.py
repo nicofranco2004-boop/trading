@@ -79,14 +79,38 @@ def _operations_for_year(operations: List[dict], year: int) -> List[dict]:
 
 # ── Slide builders ──────────────────────────────────────────────────────────
 
-def _slide_intro(year: int) -> dict:
+def _slide_intro(year: int, teaser: Optional[dict] = None) -> dict:
+    """Intro hero. Si hay `teaser`, mostramos un mini-resumen del año para
+    que no quede vacío. Teaser shape:
+      { twr, pnl_usd, total_trades, months_count, best_month_label }
+    """
+    stats = []
+    if teaser:
+        twr = teaser.get('twr')
+        if twr is not None:
+            sign = '+' if twr >= 0 else '−'
+            stats.append({'label': 'Rendimiento', 'value': f'{sign}{abs(twr) * 100:.2f}%'})
+        pnl_usd = teaser.get('pnl_usd')
+        if pnl_usd is not None:
+            sign = '+' if pnl_usd >= 0 else '−'
+            stats.append({'label': 'P&L total', 'value': f'{sign}${abs(pnl_usd):,.0f}'})
+        total_trades = teaser.get('total_trades')
+        if total_trades is not None and total_trades > 0:
+            stats.append({'label': 'Operaciones', 'value': str(total_trades)})
+        best_month = teaser.get('best_month_label')
+        if best_month:
+            stats.append({'label': 'Mejor mes', 'value': str(best_month)})
+        months_count = teaser.get('months_count')
+        if months_count and not best_month:
+            stats.append({'label': 'Meses operados', 'value': str(months_count)})
+
     return {
         'code': 'intro',
         'kind': 'intro',
         'title': f'Tu {year} en Rendi',
         'subtitle': 'Un repaso a tus inversiones del año.',
         'metric': {'value': str(year), 'label': 'AÑO'},
-        'stats': [],
+        'stats': stats,
         'tone': 'neutral',
     }
 
@@ -212,20 +236,25 @@ def _slide_activity(ops: List[dict]) -> Optional[dict]:
         a = op.get('asset')
         if a:
             asset_counts[a] += 1
-    most_traded = asset_counts.most_common(1)
-    most_traded_str = f'{most_traded[0][0]} ({most_traded[0][1]}×)' if most_traded else '—'
+    most_traded = asset_counts.most_common(3)
     total = len(ops)
+    # Stats: top 3 activos operados como filas separadas
+    stats = []
+    for asset, count in most_traded:
+        stats.append({'label': asset, 'value': f'{count}×'})
+    stats.append({'label': 'Distintos activos', 'value': str(len(asset_counts))})
+    top_label = most_traded[0][0] if most_traded else '—'
     return {
         'code': 'activity',
         'kind': 'stats',
         'title': f'{total} operaciones cerradas',
-        'subtitle': f'Tu activo más operado: {most_traded[0][0] if most_traded else "—"}',
+        'subtitle': f'Tu activo más operado fue {top_label}.',
         'metric': {'value': str(total), 'label': 'TRADES'},
-        'stats': [
-            {'label': 'Más operado', 'value': most_traded_str},
-            {'label': 'Distintos activos', 'value': str(len(asset_counts))},
-        ],
+        'stats': stats,
         'tone': 'neutral',
+        'bars': [  # data extra para gráfico de barras horizontal
+            {'label': asset, 'value': count} for asset, count in most_traded
+        ],
     }
 
 
@@ -308,6 +337,12 @@ def _slide_vs_benchmark(twr_user: Optional[float], benchmarks: Optional[dict], y
         title = 'Los índices te ganaron'
         subtitle = f'Tu rendimiento estuvo por debajo del promedio de benchmarks ({year}).'
         tone = 'negative'
+    # Bars: tu rendimiento vs benchmarks. value = fracción (0.12 = 12%)
+    bars = [{'label': 'Tu cartera', 'value': twr_user, 'highlight': True}]
+    if sp500 is not None:
+        bars.append({'label': 'S&P 500', 'value': sp500})
+    if merval is not None:
+        bars.append({'label': 'MERVAL', 'value': merval})
     return {
         'code': 'vs_benchmark',
         'kind': 'vs_benchmark',
@@ -319,6 +354,7 @@ def _slide_vs_benchmark(twr_user: Optional[float], benchmarks: Optional[dict], y
         },
         'stats': stats,
         'tone': tone,
+        'bars': bars,
     }
 
 
@@ -330,6 +366,10 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
         return None
     delta = twr_user - inflation_ytd
     sign = '+' if delta >= 0 else '−'
+    bars = [
+        {'label': 'Tu cartera', 'value': twr_user, 'highlight': True},
+        {'label': f'Inflación AR {year}', 'value': inflation_ytd},
+    ]
     if delta >= 0:
         return {
             'code': 'vs_inflation',
@@ -342,6 +382,7 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
                 {'label': f'Inflación {year}', 'value': f'{inflation_ytd * 100:.2f}%'},
             ],
             'tone': 'positive',
+            'bars': bars,
         }
     return {
         'code': 'vs_inflation',
@@ -354,6 +395,7 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
             {'label': f'Inflación {year}', 'value': f'{inflation_ytd * 100:.2f}%'},
         ],
         'tone': 'negative',
+        'bars': bars,
     }
 
 
@@ -389,8 +431,39 @@ def build_wrapped(
     ops = _operations_for_year(operations or [], year)
     twr = _twr_for_period(rows)
 
+    # Computar teaser para el intro
+    pnl_usd_total = None
+    best_month_label = None
+    if rows:
+        pnl_usd_total = sum(
+            (r.get('pnl_realized') or 0) + (r.get('pnl_unrealized') or 0)
+            for r in rows
+        )
+        # Best month label (mismo cálculo que el slide best_month)
+        best_candidates = []
+        for r in rows:
+            ci = r.get('capital_inicio') or 0
+            if ci <= 0:
+                continue
+            ret = ((r.get('pnl_realized') or 0) + (r.get('pnl_unrealized') or 0)) / ci
+            best_candidates.append((ret, r))
+        if best_candidates:
+            best_candidates.sort(key=lambda t: t[0], reverse=True)
+            best_row = best_candidates[0][1]
+            month_idx = (best_row.get('month') or 1) - 1
+            if 0 <= month_idx < 12:
+                best_month_label = MONTHS_ES[month_idx].capitalize()
+
+    teaser = {
+        'twr': twr,
+        'pnl_usd': pnl_usd_total,
+        'total_trades': len(ops) if ops else None,
+        'months_count': len(rows) if rows else None,
+        'best_month_label': best_month_label,
+    }
+
     slides: List[dict] = []
-    slides.append(_slide_intro(year))
+    slides.append(_slide_intro(year, teaser=teaser))
     slides.append(_slide_pnl(rows, year))
 
     # Si no hay data del año, terminamos acá con un mensaje claro
