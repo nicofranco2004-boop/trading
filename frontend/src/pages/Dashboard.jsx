@@ -6,6 +6,7 @@ import MonthlyTeaser from '../components/MonthlyTeaser'
 import UpcomingEventsCard from '../components/UpcomingEventsCard'
 import TopNewsCard from '../components/TopNewsCard'
 import PageHeader from '../components/PageHeader'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import { DashboardSkeleton } from '../components/Skeleton'
@@ -272,20 +273,28 @@ export default function Dashboard() {
         title="Estado del portfolio"
         meta={meta}
         action={
-          <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
-            {['USD', 'ARS'].map(c => (
-              <button
-                key={c}
-                onClick={() => setCurrency(c)}
-                className={`px-3 py-1 text-xs font-mono uppercase tracking-caps rounded-sm transition-colors ${
-                  currency === c
-                    ? 'bg-bg-3 text-ink-0'
-                    : 'text-ink-2 hover:text-ink-0'
-                }`}
-              >
-                {c}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Analizar — abre el drawer con análisis IA contextual */}
+            <AnalyzeButton
+              screen="dashboard"
+              params={{ period: '30d' }}
+              subtitle="Estado de tu portfolio"
+            />
+            <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
+              {['USD', 'ARS'].map(c => (
+                <button
+                  key={c}
+                  onClick={() => setCurrency(c)}
+                  className={`px-3 py-1 text-xs font-mono uppercase tracking-caps rounded-sm transition-colors ${
+                    currency === c
+                      ? 'bg-bg-3 text-ink-0'
+                      : 'text-ink-2 hover:text-ink-0'
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
           </div>
         }
       />

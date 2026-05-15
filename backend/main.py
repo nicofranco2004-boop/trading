@@ -5163,9 +5163,144 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
     return {"error": f"Tool '{name}' no reconocida"}
 
 
+# ─── AI v2 — Contextual Analysis (Sprint AI v2) ─────────────────────────────
+# Reemplaza el chat libre con análisis estructurado on-demand. Cada screen
+# del producto tiene su packet builder y se renderiza en un drawer.
+#
+# Flow:
+#   POST /api/ai/analyze { screen, params }
+#     → ContextPacketBuilder.build(conn, uid, **params)
+#     → cache.get_cached() → HIT? return
+#     → llm.analyze() con prompt caching
+#     → cache.set_cached() + record_analysis()
+#     → return result + usage
+
+
+class AIAnalyzeIn(BaseModel):
+    screen: str = Field(..., max_length=64)
+    params: Optional[dict] = Field(default_factory=dict)
+
+
+@app.post("/api/ai/analyze")
+def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
+    """Análisis contextual estructurado de una pantalla.
+
+    Body: { screen: 'dashboard'|'position'|'behavioral'|'monthly', params: {...} }
+    Returns: { tldr, sections, follow_ups, cached, usage }
+    """
+    from ai import llm, cache, quota
+    from ai.schema import AnalysisResult
+    from ai import prompts
+
+    if not llm.is_configured():
+        raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
+
+    # Dispatch al builder correspondiente
+    screen = data.screen.strip().lower()
+    params = data.params or {}
+
+    conn = get_db()
+    try:
+        # Quota check (Free tier: 5 análisis/día)
+        allowed, usage_now = quota.can_analyze(conn, uid)
+        if not allowed:
+            raise HTTPException(429, {
+                "error": "Llegaste al límite diario de análisis.",
+                "usage": usage_now,
+            })
+
+        # Build packet por screen
+        if screen == "dashboard":
+            from ai.builders.dashboard import build as build_packet
+            packet = build_packet(conn, uid, period=params.get("period", "30d"))
+            system_prompt = prompts.render_dashboard_prompt()
+        else:
+            raise HTTPException(400, f"Screen '{screen}' no soportada todavía. Disponibles: dashboard.")
+
+        # Cache HIT?
+        cached = cache.get_cached(conn, uid, screen, packet)
+        if cached:
+            return {
+                "result": cached,
+                "cached": True,
+                "usage": quota.get_today_usage(conn, uid),
+            }
+
+        # MISS → llamamos al LLM
+        try:
+            llm_result = llm.analyze(
+                system_prompt=system_prompt,
+                packet=packet,
+                output_model=AnalysisResult,
+                model=llm.MODEL_HAIKU,
+            )
+        except Exception as ex:
+            log.warning(f"AI analyze fallo (uid={uid}, screen={screen}): {ex}")
+            raise HTTPException(502, f"AI procesamiento fallo: {type(ex).__name__}")
+
+        if llm_result is None:
+            raise HTTPException(503, "AI no disponible momentáneamente")
+
+        result_dict = llm_result.output.model_dump()
+
+        # Persistir cache + tracking
+        cache.set_cached(
+            conn,
+            user_id=uid,
+            screen=screen,
+            packet=packet,
+            result=result_dict,
+            model=llm_result.model,
+            input_tokens=llm_result.input_tokens,
+            output_tokens=llm_result.output_tokens,
+            cache_read_tokens=llm_result.cache_read_input_tokens,
+            cache_create_tokens=llm_result.cache_creation_input_tokens,
+            cost_usd_cents=llm_result.cost_usd_cents,
+        )
+        quota.record_analysis(conn, uid, cost_usd_cents=llm_result.cost_usd_cents)
+
+        return {
+            "result": result_dict,
+            "cached": False,
+            "usage": quota.get_today_usage(conn, uid),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/ai/usage")
+def ai_usage(uid: int = Depends(get_current_user)):
+    """Devuelve el usage diario del user — el frontend muestra badge
+    '3/5 análisis hoy' en Free."""
+    from ai import quota
+    conn = get_db()
+    try:
+        return quota.get_today_usage(conn, uid)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/ai/cache/{screen}")
+def ai_invalidate_cache(screen: str, uid: int = Depends(get_current_user)):
+    """Borra el cache de un screen para este user. Lo llama el frontend
+    cuando aprieta 'Refrescar' en el drawer. Tambien lo llaman los
+    endpoints de mutación (POST /positions, /operations, etc.) en futuro."""
+    from ai import cache
+    conn = get_db()
+    try:
+        n = cache.invalidate_for_user(conn, uid, screens=[screen.lower()])
+        return {"deleted": n}
+    finally:
+        conn.close()
+
+
 @app.post("/api/ai/chat")
 def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_user)):
-    """Chat libre con el coach IA. Usa el historial + snapshot rico como contexto.
+    """[DEPRECATED] Chat libre con el coach IA — reemplazado por /api/ai/analyze.
+    Mantenido temporalmente para compat con el frontend viejo durante la
+    migración del Sprint AI v2. Se eliminará después de Phase 4.
+
+    Usa el historial + snapshot rico como contexto.
     Soporta tool_use: el modelo puede pedir precios en tiempo real u otro dato de DB."""
     _check_rate_limit(request, max_calls=40, window_seconds=3600, suffix=f"ai_chat:{uid}")
 
