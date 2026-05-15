@@ -1355,14 +1355,27 @@ export function handleDemoRequest(method, path, body) {
     }
     // ── AI v2 endpoints — usage + topics ────────────────────────────────
     if (basePath === '/ai/usage') {
+      // En demo simulamos un user "Pro" para que vea respuestas premium
+      // sin contadores agresivos. La idea del demo es mostrar el mejor
+      // caso del producto.
+      const nextMonday = (() => {
+        const today = new Date()
+        const daysToMon = (8 - today.getDay()) % 7 || 7
+        const d = new Date(today)
+        d.setDate(d.getDate() + daysToMon)
+        return d.toISOString().slice(0, 10)
+      })()
       return {
-        tier: 'free',
-        analyses_count: 0,
-        analyses_limit: 5,
+        tier: 'pro',
+        period: 'week',
+        analyses_count: 3,
+        analyses_limit: 200,
+        analyses_remaining: 197,
         hub_queries_count: 0,
-        hub_queries_limit: 3,
-        analyses_remaining: 5,
-        hub_queries_remaining: 3,
+        hub_queries_limit: 200,
+        hub_queries_remaining: 200,
+        resets_on: nextMonday,
+        week_starts_on: nextMonday,
       }
     }
     if (basePath === '/ai/topics') {
@@ -1483,17 +1496,30 @@ export function handleDemoRequest(method, path, body) {
     } else {
       result = DEMO_AI_RESULTS[topic] || DEMO_AI_RESULTS.dashboard
     }
+    // En demo simulamos al user como Pro — respuestas premium + contador
+    // generoso. Cuando exista el real signup, el usuario nuevo entra como
+    // Free y ve los mocks descriptivos correspondientes.
+    const nextMonday = (() => {
+      const today = new Date()
+      const daysToMon = (8 - today.getDay()) % 7 || 7
+      const d = new Date(today)
+      d.setDate(d.getDate() + daysToMon)
+      return d.toISOString().slice(0, 10)
+    })()
     return {
       result,
       cached: false,
+      tier: 'pro',
       usage: {
-        tier: 'free',
-        analyses_count: 1,
-        analyses_limit: 5,
+        tier: 'pro',
+        period: 'week',
+        analyses_count: 3,
+        analyses_limit: 200,
+        analyses_remaining: 197,
         hub_queries_count: 0,
-        hub_queries_limit: 3,
-        analyses_remaining: 4,
-        hub_queries_remaining: 3,
+        hub_queries_limit: 200,
+        hub_queries_remaining: 200,
+        resets_on: nextMonday,
       },
     }
   }

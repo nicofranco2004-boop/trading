@@ -31,24 +31,29 @@ log = logging.getLogger("ai.cache")
 CACHE_TTL_SECONDS = 24 * 3600  # 24h
 
 
-def _compute_keys(user_id: int, screen: str, packet: dict) -> tuple[str, str]:
+def _compute_keys(user_id: int, screen: str, packet: dict, tier: str = "pro") -> tuple[str, str]:
     """Devuelve (packet_hash, cache_key). Ambos sha256 hex strings.
 
     packet_hash es solo del JSON ordenado del packet (sin user_id) —
     sirve para detectar si el packet cambió. cache_key incluye user_id +
-    screen para aislar cuentas.
+    screen + tier para aislar cuentas Y tiers (Free y Pro tienen
+    respuestas distintas para el mismo packet — el tier separa pools).
     """
     packet_json = json.dumps(packet, sort_keys=True, ensure_ascii=False)
     packet_hash = hashlib.sha256(packet_json.encode("utf-8")).hexdigest()
     cache_key = hashlib.sha256(
-        f"{user_id}:{screen}:{packet_hash}".encode("utf-8")
+        f"{user_id}:{screen}:{tier}:{packet_hash}".encode("utf-8")
     ).hexdigest()
     return packet_hash, cache_key
 
 
-def get_cached(conn, user_id: int, screen: str, packet: dict) -> Optional[dict]:
-    """Devuelve el result_json cacheado si existe + está fresco. None si miss."""
-    _, cache_key = _compute_keys(user_id, screen, packet)
+def get_cached(conn, user_id: int, screen: str, packet: dict,
+               tier: str = "pro") -> Optional[dict]:
+    """Devuelve el result_json cacheado si existe + está fresco. None si miss.
+
+    El tier afecta la cache_key — Free y Pro no comparten respuesta porque
+    la calidad/tono del análisis es distinto."""
+    _, cache_key = _compute_keys(user_id, screen, packet, tier)
     row = conn.execute(
         """SELECT result_json, expires_at FROM ai_analyses_cache
            WHERE cache_key = ? AND user_id = ?""",
@@ -83,9 +88,13 @@ def set_cached(
     cache_read_tokens: int = 0,
     cache_create_tokens: int = 0,
     cost_usd_cents: int = 0,
+    tier: str = "pro",
 ) -> None:
-    """Guarda un análisis en cache + registra costo para auditing."""
-    packet_hash, cache_key = _compute_keys(user_id, screen, packet)
+    """Guarda un análisis en cache + registra costo para auditing.
+
+    `tier` se mezcla en la cache_key — un análisis Free y uno Pro del
+    mismo packet quedan en filas independientes."""
+    packet_hash, cache_key = _compute_keys(user_id, screen, packet, tier)
     expires_at = (datetime.utcnow() + timedelta(seconds=CACHE_TTL_SECONDS)).isoformat()
     with conn:
         conn.execute(

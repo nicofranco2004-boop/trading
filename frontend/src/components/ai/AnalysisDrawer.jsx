@@ -16,6 +16,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import BottomSheet from '../mobile/BottomSheet'
 import AnalysisCard from './AnalysisCard'
 import AISkeleton from './AISkeleton'
+import UpgradePromoCard from './UpgradePromoCard'
 
 export default function AnalysisDrawer({
   open,
@@ -26,11 +27,13 @@ export default function AnalysisDrawer({
   subtitle,
 }) {
   const isMobile = useIsMobile()
-  const { result, usage, cached, loading, error, refresh } = useAIAnalysis({
+  const { result, usage, tier, cached, loading, error, upgrade, refresh } = useAIAnalysis({
     screen,
     params,
     autoload: open,
   })
+  // 429 con upgrade payload → mostramos UpgradePromoCard en lugar de banner rojo.
+  const showUpgradeCard = !!(upgrade && upgrade.available)
   const [refreshing, setRefreshing] = useState(false)
 
   // ESC cierra
@@ -56,9 +59,22 @@ export default function AnalysisDrawer({
     try { await refresh() } finally { setRefreshing(false) }
   }
 
+  // Badge weekly: free=X/10 esta semana, pro=X/200 esta semana, admin=sin tope.
+  function renderUsageBadge() {
+    if (!usage) return null
+    if (usage.tier === 'admin') return 'Admin · sin tope'
+    if (usage.tier === 'pro') return `${usage.analyses_count}/${usage.analyses_limit} · Pro`
+    // Free
+    return `${usage.analyses_count}/${usage.analyses_limit} esta semana`
+  }
+
   const body = (
     <div className="space-y-5">
-      {error && !loading && (
+      {/* 429 con upgrade payload → card promocional; otros errores → banner */}
+      {showUpgradeCard && !loading && (
+        <UpgradePromoCard usage={usage} upgrade={upgrade} source={`drawer_429_${screen}`} />
+      )}
+      {error && !loading && !showUpgradeCard && (
         <div className="text-xs text-rendi-neg bg-rendi-neg/[0.06] border border-rendi-neg/25 rounded-sm px-3 py-2">
           {typeof error === 'string' ? error : 'No pudimos generar el análisis.'}
         </div>
@@ -68,17 +84,13 @@ export default function AnalysisDrawer({
 
       {result && <AnalysisCard result={result} onFollowUp={() => { /* future: turn into sub-analysis */ }} />}
 
-      {/* Footer meta — cached + usage badge */}
+      {/* Footer meta — cached + usage badge (weekly) */}
       <div className="pt-3 border-t border-line/40 flex items-center justify-between text-[10px] font-mono uppercase tracking-caps text-ink-3">
         <span>
           {loading ? 'Generando…' : cached ? 'Análisis cacheado · ≤24h' : 'Generado ahora'}
         </span>
         {usage && (
-          <span>
-            {usage.tier === 'admin'
-              ? 'Admin · sin tope'
-              : `${usage.analyses_count}/${usage.analyses_limit} hoy`}
-          </span>
+          <span>{renderUsageBadge()}</span>
         )}
       </div>
     </div>

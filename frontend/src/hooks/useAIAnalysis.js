@@ -18,14 +18,17 @@ import { track } from '../utils/track'
 export function useAIAnalysis({ screen, params, autoload = true } = {}) {
   const [result, setResult] = useState(null)
   const [usage, setUsage] = useState(null)
+  const [tier, setTier] = useState(null)
   const [cached, setCached] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [upgradePayload, setUpgradePayload] = useState(null)
 
   const analyze = useCallback(async () => {
     if (!screen) return
     setLoading(true)
     setError(null)
+    setUpgradePayload(null)
     try {
       const t0 = performance.now()
       const data = await api.post('/ai/analyze', { screen, params: params || {} })
@@ -33,15 +36,23 @@ export function useAIAnalysis({ screen, params, autoload = true } = {}) {
       setResult(data.result)
       setCached(!!data.cached)
       setUsage(data.usage)
-      track('ai_analyze_loaded', { screen, cached: !!data.cached, ms })
+      setTier(data.tier || data.usage?.tier || null)
+      track('ai_analyze_loaded', { screen, cached: !!data.cached, tier: data.tier, ms })
     } catch (ex) {
-      // El backend devuelve 429 con detail={error, usage} cuando se acaba el
-      // cupo — api.js extrae el .error como ex.message y deja el payload en
-      // ex.payload.detail.usage para que actualicemos el badge.
+      // El backend devuelve 429 con detail={error, usage, upgrade} cuando
+      // se acaba el cupo. api.js extrae el .error como ex.message y deja el
+      // payload completo en ex.payload.detail para que actualicemos badge
+      // y mostremos el upgrade card.
       const msg = ex?.message || 'No pudimos generar el análisis.'
       setError(msg)
-      const usagePayload = ex?.payload?.detail?.usage
-      if (usagePayload) setUsage(usagePayload)
+      const detail = ex?.payload?.detail
+      const usagePayload = detail?.usage
+      const upgrade = detail?.upgrade
+      if (usagePayload) {
+        setUsage(usagePayload)
+        setTier(usagePayload.tier || null)
+      }
+      if (upgrade) setUpgradePayload(upgrade)
       track('ai_analyze_error', { screen, status: ex?.status, error: msg })
     } finally {
       setLoading(false)
@@ -64,5 +75,15 @@ export function useAIAnalysis({ screen, params, autoload = true } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, JSON.stringify(params), autoload])
 
-  return { result, usage, cached, loading, error, analyze, refresh }
+  return {
+    result,
+    usage,
+    tier,
+    cached,
+    loading,
+    error,
+    upgrade: upgradePayload,
+    analyze,
+    refresh,
+  }
 }

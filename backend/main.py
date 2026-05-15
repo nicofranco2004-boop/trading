@@ -5219,6 +5219,9 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
 
     conn = get_db()
     try:
+        # Resolver tier del user al inicio — afecta cache key, prompt y mensaje 429.
+        tier = quota.get_tier(conn, uid)
+
         # Build packet PRIMERO (es barato y determinístico) para ver si hay
         # cache hit antes de tocar el cupo.
         try:
@@ -5227,25 +5230,46 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
             log.exception(f"AI builder fallo (uid={uid}, screen={screen})")
             raise HTTPException(500, f"Error construyendo packet: {type(ex).__name__}")
 
-        # Cache HIT? → gratis (no descuenta cupo)
-        cached = cache.get_cached(conn, uid, screen, packet)
+        # Cache HIT? → gratis (no descuenta cupo). El tier separa pools
+        # (Free y Pro tienen respuestas distintas para el mismo packet).
+        cached = cache.get_cached(conn, uid, screen, packet, tier=tier)
         if cached:
             return {
                 "result": cached,
                 "cached": True,
-                "usage": quota.get_today_usage(conn, uid),
+                "tier": tier,
+                "usage": quota.get_current_usage(conn, uid),
             }
 
         # Cache MISS → ahora sí chequeamos cupo (la llamada al LLM cuesta)
         allowed, usage_now = quota.can_analyze(conn, uid)
         if not allowed:
+            # 429 — mensaje + payload de upgrade. Free se topa contra el cap
+            # semanal (10/sem); el mensaje sugiere Pro como path lógico.
             raise HTTPException(429, {
-                "error": "Llegaste al límite diario de análisis nuevos.",
+                "error": (
+                    "Llegaste al límite semanal de análisis del plan Free "
+                    "(10/sem). Tu cuota se renueva el lunes próximo. Para "
+                    "uso ilimitado con respuestas más profundas, pasate a "
+                    "Rendi Pro."
+                ),
                 "usage": usage_now,
+                "upgrade": {
+                    "available": tier == "free",
+                    "current_tier": tier,
+                    "target_tier": "pro",
+                    "resets_on": usage_now.get("resets_on"),
+                    "benefits": [
+                        "Análisis ilimitados",
+                        "Respuestas profundas con causalidad y comparaciones",
+                        "Un insight memorable por análisis",
+                    ],
+                },
             })
 
-        # Llamada al LLM
-        system_prompt = render_prompt()
+        # Llamada al LLM — prompt resuelto según tier (Free=descriptivo,
+        # Pro/Admin=research note).
+        system_prompt = render_prompt(tier=tier)
         try:
             llm_result = llm.analyze(
                 system_prompt=system_prompt,
@@ -5254,7 +5278,7 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
                 model=llm.MODEL_HAIKU,
             )
         except Exception as ex:
-            log.warning(f"AI analyze fallo (uid={uid}, screen={screen}): {ex}")
+            log.warning(f"AI analyze fallo (uid={uid}, screen={screen}, tier={tier}): {ex}")
             raise HTTPException(502, f"AI procesamiento fallo: {type(ex).__name__}")
 
         if llm_result is None:
@@ -5274,13 +5298,15 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
             cache_read_tokens=llm_result.cache_read_input_tokens,
             cache_create_tokens=llm_result.cache_creation_input_tokens,
             cost_usd_cents=llm_result.cost_usd_cents,
+            tier=tier,
         )
         quota.record_analysis(conn, uid, cost_usd_cents=llm_result.cost_usd_cents)
 
         return {
             "result": result_dict,
             "cached": False,
-            "usage": quota.get_today_usage(conn, uid),
+            "tier": tier,
+            "usage": quota.get_current_usage(conn, uid),
         }
     finally:
         conn.close()
@@ -5296,12 +5322,13 @@ def ai_topics():
 
 @app.get("/api/ai/usage")
 def ai_usage(uid: int = Depends(get_current_user)):
-    """Devuelve el usage diario del user — el frontend muestra badge
-    '3/5 análisis hoy' en Free."""
+    """Usage de la SEMANA en curso (ISO week, lunes-domingo) — el frontend
+    lo usa para mostrar 'X/10 esta semana' en Free, 'Admin · sin tope' para
+    admin, etc."""
     from ai import quota
     conn = get_db()
     try:
-        return quota.get_today_usage(conn, uid)
+        return quota.get_current_usage(conn, uid)
     finally:
         conn.close()
 

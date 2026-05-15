@@ -1,23 +1,74 @@
-"""prompts — system prompts CACHEABLES para el LLM.
+"""prompts — system prompts CACHEABLES para el LLM (dos tiers de calidad).
 ═══════════════════════════════════════════════════════════════════════════
-Manifiesto editorial: los prompts de Rendi son *research notes*, no copy
-de marketing. El usuario tiene su data ahí adelante — no necesita que se
-la cuenten, necesita que se la *interpreten*.
+Manifiesto editorial DUAL — el tier del user define la profundidad:
+
+  Free → SYSTEM_BASE_FREE (descriptivo, breve, resume sin interpretar).
+  Pro / Admin → SYSTEM_BASE_PRO (research note: interpretación, causalidad,
+                comparación, insights memorables).
+
+Cada render_*_prompt(tier=) compone el SYSTEM_BASE_<tier> + un bloque por
+topic que indica qué interpretar (Pro) o qué resumir (Free).
 
 Reglas de prompt caching:
   El system prompt NO PUEDE cambiar entre requests del mismo "screen"
-  o el cache_read pasa a 0 (silenciosamente). Específicamente:
+  + mismo tier o el cache_read pasa a 0 (silenciosamente). Específicamente:
     ✗ NO fechas actuales, NO user_id, NO conteos, NO timestamps.
     ✗ NO concatenar conditional sections.
   Todo lo dinámico va en el user message (el packet JSON).
+
+  Free y Pro tienen prompts distintos → cache pools separados pero
+  cada uno hit-consistente dentro de su tier.
 """
 
 # ─────────────────────────────────────────────────────────────────────────
-# SYSTEM_BASE — manifiesto editorial compartido. Tocar este string invalida
-# TODO el cache de IA. Cambios mayores requieren un push deliberado.
+# SYSTEM_BASE_FREE — manifiesto Free tier. Resumen claro y descriptivo,
+# sin interpretación profunda. Pensado para que el user entienda lo que
+# pasó, pero que al ver la versión Pro note una diferencia material.
 # ─────────────────────────────────────────────────────────────────────────
 
-SYSTEM_BASE = """Sos el analista financiero de Rendi. No sos coach, no sos chatbot, no sos copywriter. Tu trabajo es interpretar números pre-calculados de la cartera del usuario y devolver un análisis estructurado tipo research note — denso, contextual, profesional, breve. Pensá como analista buy-side junior comentando una cartera real, no como app fintech onboardeando.
+SYSTEM_BASE_FREE = """Sos el asistente de análisis de Rendi para usuarios del plan Free. Recibís datos pre-calculados del portfolio del usuario y devolvés un resumen breve y claro de lo que pasó.
+
+ESTILO
+- Español rioplatense (vos, tenés). Directo y accesible.
+- Sin saludos, emojis, asteriscos, signos de exclamación.
+- Frases cortas. Una idea por oración.
+- Tono informativo, no opinativo. Si los datos muestran X, decís "X". No explicás por qué.
+
+REGLAS DE CONTENIDO
+
+1. DESCRIBIR, no interpretar.
+   Bien: "El portfolio bajó 8% desde su máximo."
+   Mal: "El retroceso del 8% encaja dentro del rango histórico reciente, lo que sugiere..."
+   (la segunda forma es del tier Pro, no del Free).
+
+2. NO sumar causalidad, comparaciones extendidas ni insights "memorables". Eso es la diferencia con Pro — los usuarios Free reciben los hechos, no la lectura analítica.
+
+3. Lo que NO está en el packet, NO existe. Sin invención de números, sectores, eventos.
+
+4. CERO asesoramiento operativo (comprá/vendé). Si la observación requiere acción, decí "puede valer revisar X" sin más detalle.
+
+OUTPUT (JSON validado contra schema {tldr, sections[], follow_ups[]})
+
+- tldr: 1 frase con el dato principal. No interpretativa.
+- sections: 2-3 bloques cortos. Cada uno con title (frase noun-phrase de 2-4 palabras), body (1-3 oraciones), tone. Cada section es un dato del packet expresado en lenguaje común.
+- follow_ups: 0-2 preguntas SIMPLES — "¿Cómo se compara con el mes pasado?", "¿Cuáles fueron los mejores activos?".
+
+CONTEXTO DEL PRODUCTO
+- Rendi: tracker de inversiones AR/US/crypto.
+- CEDEARs: certificados argentinos de acciones US — son exposure US económicamente.
+- Rendi calcula. Vos resumís.
+
+DIFERENCIACIÓN CON PRO
+- Pro recibe interpretación, comparación, causalidad y un insight memorable por análisis.
+- Vos (Free) das el resumen plano de los datos. Es deliberado — el usuario Free ve los datos, el usuario Pro recibe la lectura analítica completa."""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# SYSTEM_BASE_PRO — manifiesto editorial Pro / Admin. Tocar este string
+# invalida el cache de IA Pro. Cambios mayores requieren push deliberado.
+# ─────────────────────────────────────────────────────────────────────────
+
+SYSTEM_BASE_PRO = """Sos el analista financiero de Rendi. No sos coach, no sos chatbot, no sos copywriter. Tu trabajo es interpretar números pre-calculados de la cartera del usuario y devolver un análisis estructurado tipo research note — denso, contextual, profesional, breve. Pensá como analista buy-side junior comentando una cartera real, no como app fintech onboardeando.
 
 ESTILO
 
@@ -80,15 +131,21 @@ CONTEXTO DEL PRODUCTO
 - Rendi calcula todo. Vos solo interpretás y comunicás."""
 
 
+# Alias para back-compat: callers viejos que importaban SYSTEM_BASE quedan
+# apuntando al manifiesto Pro (mismo contenido que antes del split).
+SYSTEM_BASE = SYSTEM_BASE_PRO
+
+
 # ─────────────────────────────────────────────────────────────────────────
-# Helpers para construir prompts por topic con el patrón:
-#   SYSTEM_BASE + bloque específico de la vista (qué interpretar y cómo).
+# Helpers para construir prompts por topic. Dos versiones:
+#   _topic_block_pro  → manifiesto research note (interpretación + insight).
+#   _topic_block_free → resumen plano de qué describir (sin pirotecnia).
+# Ambos cacheable-friendly (sin datos volátiles).
 # ─────────────────────────────────────────────────────────────────────────
 
-def _topic_block(view_name: str, packet_summary: str, focus: list[str],
-                 insight_examples: list[str], pitfalls: list[str]) -> str:
-    """Construye el bloque específico de un topic. Mantener consistente para
-    que el LLM aprenda el patrón y los prompts queden cacheable-friendly."""
+def _topic_block_pro(view_name: str, packet_summary: str, focus: list[str],
+                     insight_examples: list[str], pitfalls: list[str]) -> str:
+    """Bloque específico para tier Pro — guías de interpretación profunda."""
     focus_lines = "\n".join(f"  {i+1}. {f}" for i, f in enumerate(focus))
     insight_lines = "\n".join(f"  • {ex}" for ex in insight_examples)
     pitfall_lines = "\n".join(f"  • {p}" for p in pitfalls)
@@ -108,18 +165,129 @@ Trampas específicas a evitar:
 {pitfall_lines}"""
 
 
+def _topic_block_free(view_name: str, packet_summary: str, focus: list[str]) -> str:
+    """Bloque para tier Free — solo qué resumir, sin interpretación."""
+    focus_lines = "\n".join(f"  • {f}" for f in focus)
+    return f"""
+
+VISTA: {view_name}
+
+Packet: {packet_summary}
+
+Qué describir (resumen plano, NO interpretación):
+{focus_lines}
+
+Mantenete en el plano descriptivo. La interpretación causal y los insights memorables son del tier Pro — acá solo el resumen de los datos del packet."""
+
+
+# Alias para callers existentes que importan _topic_block.
+_topic_block = _topic_block_pro
+
+
+# Diccionarios FREE → mensajes simples de qué resumir por topic.
+# Mantener corto — el Free es el "teaser" del Pro. Si el Free es completo, el
+# upgrade no tiene gancho.
+_FREE_FOCUS = {
+    "dashboard": [
+        "Cuánto vale el portfolio y cuánto rindió en el período.",
+        "Qué activos pesan más en la cartera.",
+        "Cómo le fue contra los benchmarks si están en el packet.",
+    ],
+    "dashboard.composition": [
+        "Top holdings y su peso.",
+        "Reparto USD vs ARS y % en cash.",
+    ],
+    "dashboard.evolution": [
+        "Cómo se movió la curva en el período (sube / baja / lateral).",
+        "Mejor y peor mes.",
+        "Drawdown actual respecto del máximo.",
+    ],
+    "dashboard.top_holdings": [
+        "Ganadoras principales con su P&L.",
+        "Perdedoras principales con su P&L.",
+        "Cantidad de winners vs losers.",
+    ],
+    "dashboard.brokers": [
+        "Reparto del portfolio por broker.",
+        "Performance por broker.",
+        "Cantidad de posiciones por cuenta.",
+    ],
+    "dashboard.upcoming_events": [
+        "Cuántos eventos vienen y de qué tipo (earnings/dividendos).",
+        "Qué % de cartera afecta cada uno.",
+    ],
+    "behavioral": [
+        "Cuántos sesgos se detectaron y su severidad.",
+        "Cuáles son los principales detectados.",
+        "Patrones positivos detectados.",
+    ],
+    "behavioral.card": [
+        "Qué dice exactamente el detector — value_label + one_liner.",
+        "Si es positivo, qué está bien; si es negativo, qué es lo que mide.",
+    ],
+    "insights": [
+        "TWR del período y P&L total.",
+        "Mejor y peor activo.",
+        "Performance vs benchmarks si están en el packet.",
+    ],
+    "insights.evolution": [
+        "Mejor / peor mes y consistency_pct.",
+        "TWR compoundeado del período.",
+    ],
+    "insights.drawdown": [
+        "Drawdown actual y máximo.",
+        "Cantidad de eventos > -5%.",
+    ],
+    "insights.attribution": [
+        "Top contributors y sus P&L USD.",
+        "Top detractors y sus P&L USD.",
+        "Concentración del resultado (top1_share_pct).",
+    ],
+    "insights.benchmarks": [
+        "TWR del user + S&P 500 + inflación AR + dólar blue.",
+        "Delta vs cada benchmark si están en el packet.",
+    ],
+    "insights.observation": [
+        "Descripción de la observación detectada.",
+        "Métrica clave que la disparó.",
+    ],
+    "monthly": [
+        "P&L del mes en USD y %.",
+        "Mejor y peor activo del mes.",
+        "vs S&P 500 / inflación del mes si están en el packet.",
+    ],
+    "position": [
+        "P&L USD y % de la posición.",
+        "Peso en cartera + días en posición.",
+    ],
+}
+
+
+def _maybe_free(topic_key: str, view_name: str, packet_summary: str, tier: str):
+    """Si tier=free, devuelve el bloque simple del topic. Sino None."""
+    if tier != "free":
+        return None
+    focus = _FREE_FOCUS.get(topic_key, ["Resumen breve de lo que está en el packet."])
+    return SYSTEM_BASE_FREE + _topic_block_free(view_name, packet_summary, focus)
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Renders por topic — cada uno hereda SYSTEM_BASE y agrega su bloque.
 # ─────────────────────────────────────────────────────────────────────────
 
-def render_dashboard_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Dashboard — snapshot agregado del portfolio",
-        packet_summary=(
-            "valor actual, TWR del período, mejor/peor posición, vs "
-            "benchmarks (S&P 500 + inflación AR cuando aplique), behavioral "
-            "bias dominante si está, % cash, anomalías detectadas."
-        ),
+def render_dashboard_prompt(tier: str = "pro") -> str:
+    view = "Dashboard — snapshot agregado del portfolio"
+    pkt = (
+        "valor actual, TWR del período, mejor/peor posición, vs "
+        "benchmarks (S&P 500 + inflación AR cuando aplique), behavioral "
+        "bias dominante si está, % cash, anomalías detectadas."
+    )
+    free = _maybe_free("dashboard", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Qué está moviendo la aguja del resultado — atribución implícita por posición o sector.",
             "Cómo se compara el TWR con el benchmark relevante (si está en el packet).",
@@ -139,13 +307,18 @@ def render_dashboard_prompt() -> str:
     )
 
 
-def render_position_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Detalle de posición individual",
-        packet_summary=(
-            "ticker, broker, qty, precio promedio, precio actual, P/L USD y %, "
-            "peso en cartera, sector, drawdown personal, comparación con sector."
-        ),
+def render_position_prompt(tier: str = "pro") -> str:
+    view = "Detalle de posición individual"
+    pkt = (
+        "ticker, broker, qty, precio promedio, precio actual, P/L USD y %, "
+        "peso en cartera, sector, drawdown personal, comparación con sector."
+    )
+    free = _maybe_free("position", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "P&L total absoluto vs P&L reciente — separar la 'cosecha' acumulada de la dinámica actual.",
             "Tamaño relativo al portfolio — concentración y riesgo asimétrico de esta posición.",
@@ -164,13 +337,18 @@ def render_position_prompt() -> str:
     )
 
 
-def render_behavioral_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Comportamiento — visión integrada de los 12 detectores de sesgos",
-        packet_summary=(
-            "12 cards con código, severidad ('high'|'medium'|'low'|'positive'|"
-            "'neutral'), value_label, one_liner. Sumario con conteos por nivel."
-        ),
+def render_behavioral_prompt(tier: str = "pro") -> str:
+    view = "Comportamiento — visión integrada de los 12 detectores de sesgos"
+    pkt = (
+        "12 cards con código, severidad ('high'|'medium'|'low'|'positive'|"
+        "'neutral'), value_label, one_liner. Sumario con conteos por nivel."
+    )
+    free = _maybe_free("behavioral", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Sesgo o patrón dominante — cuál tiene severidad más alta y qué dice del estilo del inversor.",
             "Patrones sanos también — qué hace bien (severity=positive) y por qué eso es difícil de mantener.",
@@ -189,15 +367,20 @@ def render_behavioral_prompt() -> str:
     )
 
 
-def render_behavioral_card_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Sesgo individual (zoom-in sobre UNA card de Comportamiento)",
-        packet_summary=(
-            "UN sesgo con code, title, severity, score, value_label, evidence "
-            "completo (dict con los números crudos del detector) y references "
-            "académicas. Más context.other_active_biases con los otros sesgos "
-            "high/medium del user."
-        ),
+def render_behavioral_card_prompt(tier: str = "pro") -> str:
+    view = "Sesgo individual (zoom-in sobre UNA card de Comportamiento)"
+    pkt = (
+        "UN sesgo con code, title, severity, score, value_label, evidence "
+        "completo (dict con los números crudos del detector) y references "
+        "académicas. Más context.other_active_biases con los otros sesgos "
+        "high/medium del user."
+    )
+    free = _maybe_free("behavioral.card", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Qué significa exactamente la métrica del detector — traducir el value_label a explicación con números del evidence.",
             "Por qué importa este patrón específicamente para ESTE inversor — usá el evidence concreto.",
@@ -216,14 +399,19 @@ def render_behavioral_card_prompt() -> str:
     )
 
 
-def render_dashboard_composition_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Composición del portfolio (sub-componente Dashboard)",
-        packet_summary=(
-            "top 5 holdings con % y value, por broker, por moneda (USD vs "
-            "ARS), % cash, HHI (Herfindahl Index: 0 perfectamente diversificado, "
-            "1 todo en un activo)."
-        ),
+def render_dashboard_composition_prompt(tier: str = "pro") -> str:
+    view = "Composición del portfolio (sub-componente Dashboard)"
+    pkt = (
+        "top 5 holdings con % y value, por broker, por moneda (USD vs "
+        "ARS), % cash, HHI (Herfindahl Index: 0 perfectamente diversificado, "
+        "1 todo en un activo)."
+    )
+    free = _maybe_free("dashboard.composition", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Lectura del HHI en clave intuitiva — qué dice sobre concentración real, no nominal.",
             "Si hay activo o broker dominante (>30%), qué riesgo agrega y bajo qué escenario se materializa.",
@@ -242,13 +430,18 @@ def render_dashboard_composition_prompt() -> str:
     )
 
 
-def render_dashboard_evolution_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Curva de evolución del portfolio (sub-componente Dashboard)",
-        packet_summary=(
-            "serie temporal del valor (12 puntos representativos), peak, "
-            "trough, drawdown actual vs peak, mejor / peor mes."
-        ),
+def render_dashboard_evolution_prompt(tier: str = "pro") -> str:
+    view = "Curva de evolución del portfolio (sub-componente Dashboard)"
+    pkt = (
+        "serie temporal del valor (12 puntos representativos), peak, "
+        "trough, drawdown actual vs peak, mejor / peor mes."
+    )
+    free = _maybe_free("dashboard.evolution", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Forma de la curva — sostenida vs volátil vs step-función — y qué dice del estilo del inversor.",
             "Profundidad y duración del peor drawdown vs el actual.",
@@ -266,13 +459,18 @@ def render_dashboard_evolution_prompt() -> str:
     )
 
 
-def render_dashboard_top_holdings_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Top holdings del portfolio (sub-componente Dashboard)",
-        packet_summary=(
-            "top 8 posiciones con weight, value_usd, pnl_pct, days_held, total "
-            "value, conteo winners/losers."
-        ),
+def render_dashboard_top_holdings_prompt(tier: str = "pro") -> str:
+    view = "Top holdings del portfolio (sub-componente Dashboard)"
+    pkt = (
+        "top 8 posiciones con weight, value_usd, pnl_pct, days_held, total "
+        "value, conteo winners/losers."
+    )
+    free = _maybe_free("dashboard.top_holdings", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Quién maneja el resultado — winners con weight alto que dominan la atribución.",
             "Perdedoras con holding largo — señal posible de stuck positions o falta de criterio de salida.",
@@ -290,14 +488,19 @@ def render_dashboard_top_holdings_prompt() -> str:
     )
 
 
-def render_dashboard_brokers_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Detalle por broker (sub-componente Dashboard)",
-        packet_summary=(
-            "broker_count, total_value_usd, lista de brokers con {name, "
-            "currency, value_usd, invested_usd, pnl_pct, weight_pct, "
-            "positions_count}, top1_pct."
-        ),
+def render_dashboard_brokers_prompt(tier: str = "pro") -> str:
+    view = "Detalle por broker (sub-componente Dashboard)"
+    pkt = (
+        "broker_count, total_value_usd, lista de brokers con {name, "
+        "currency, value_usd, invested_usd, pnl_pct, weight_pct, "
+        "positions_count}, top1_pct."
+    )
+    free = _maybe_free("dashboard.brokers", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Concentración por broker — top1 > 60% es riesgo de plataforma (no de mercado).",
             "Performance diferencial entre brokers — qué cuenta rinde mejor y por qué la composición lo explica.",
@@ -315,14 +518,19 @@ def render_dashboard_brokers_prompt() -> str:
     )
 
 
-def render_dashboard_events_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Próximos eventos del portfolio (sub-componente Dashboard)",
-        packet_summary=(
-            "ventana (default 14 días), lista de eventos {ticker, type, date, "
-            "days_ahead, weight_pct, details}, conteos por tipo, "
-            "weight_at_risk_pct (% cartera con evento próximo)."
-        ),
+def render_dashboard_events_prompt(tier: str = "pro") -> str:
+    view = "Próximos eventos del portfolio (sub-componente Dashboard)"
+    pkt = (
+        "ventana (default 14 días), lista de eventos {ticker, type, date, "
+        "days_ahead, weight_pct, details}, conteos por tipo, "
+        "weight_at_risk_pct (% cartera con evento próximo)."
+    )
+    free = _maybe_free("dashboard.upcoming_events", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Cuántos eventos vienen y de qué tipo — earnings (volatilidad) vs dividendos (cash flow).",
             "Eventos que tocan posiciones con weight alto — exposure asimétrica al evento.",
@@ -339,15 +547,20 @@ def render_dashboard_events_prompt() -> str:
     )
 
 
-def render_insights_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Insights — análisis profundo del portfolio (vista completa)",
-        packet_summary=(
-            "TWR período (compuesto via monthly_entries), TWR realizado solo "
-            "trades cerrados, vs benchmarks con deltas en pp, drawdown actual "
-            "y máximo, stats de trades, atribución (top 3 contributors y "
-            "detractors por P&L absoluto), exposure mix (cash/AR/US/crypto)."
-        ),
+def render_insights_prompt(tier: str = "pro") -> str:
+    view = "Insights — análisis profundo del portfolio (vista completa)"
+    pkt = (
+        "TWR período (compuesto via monthly_entries), TWR realizado solo "
+        "trades cerrados, vs benchmarks con deltas en pp, drawdown actual "
+        "y máximo, stats de trades, atribución (top 3 contributors y "
+        "detractors por P&L absoluto), exposure mix (cash/AR/US/crypto)."
+    )
+    free = _maybe_free("insights", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Performance neta en términos absolutos y relativos — outperform vs SPY > 5pp es destacable, < -5pp es underperform real.",
             "Origen del resultado — concentración en pocos activos o distribución pareja.",
@@ -366,14 +579,19 @@ def render_insights_prompt() -> str:
     )
 
 
-def render_insights_evolution_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Curva de evolución del Insights — trayectoria mensual",
-        packet_summary=(
-            "TWR del período compoundeado, monthly_returns (cap 18 entradas) "
-            "con {month, return_pct, capital_final}, mejor/peor mes, "
-            "positive_months, total_months, consistency_pct."
-        ),
+def render_insights_evolution_prompt(tier: str = "pro") -> str:
+    view = "Curva de evolución del Insights — trayectoria mensual"
+    pkt = (
+        "TWR del período compoundeado, monthly_returns (cap 18 entradas) "
+        "con {month, return_pct, capital_final}, mejor/peor mes, "
+        "positive_months, total_months, consistency_pct."
+    )
+    free = _maybe_free("insights.evolution", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Forma de la curva — consistency_pct > 70% sugiere disciplina; < 50% sugiere dependencia de pocos meses excepcionales.",
             "Brecha entre best y worst month — > 20pp indica dispersión alta del estilo.",
@@ -391,14 +609,19 @@ def render_insights_evolution_prompt() -> str:
     )
 
 
-def render_insights_drawdown_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Perfil de drawdown del Insights — riesgo histórico",
-        packet_summary=(
-            "current_pct (caída actual desde peak), max_pct (peor caída del "
-            "período), days_since_peak, peak/trough values, dd_events (top 5 "
-            "> -5% con start/end/depth/duration), recovered (bool)."
-        ),
+def render_insights_drawdown_prompt(tier: str = "pro") -> str:
+    view = "Perfil de drawdown del Insights — riesgo histórico"
+    pkt = (
+        "current_pct (caída actual desde peak), max_pct (peor caída del "
+        "período), days_since_peak, peak/trough values, dd_events (top 5 "
+        "> -5% con start/end/depth/duration), recovered (bool)."
+    )
+    free = _maybe_free("insights.drawdown", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Profundidad del peor DD — < -20 grave, entre -10 y -20 normal, > -10 chico para portfolios con exposure tech.",
             "Cantidad y duración de eventos — más eventos = más volatilidad estructural; duration > 90 días = caída larga, no agradable bancarla.",
@@ -416,14 +639,19 @@ def render_insights_drawdown_prompt() -> str:
     )
 
 
-def render_insights_attribution_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Atribución de P&L del Insights — quién manejó el resultado",
-        packet_summary=(
-            "total_realized_usd, total_unrealized_usd, total_pnl_usd, top 5 "
-            "contributors y top 5 detractors con share_pct (% del P&L total), "
-            "top1_share_pct, concentration_flag (True si top1 > 50%)."
-        ),
+def render_insights_attribution_prompt(tier: str = "pro") -> str:
+    view = "Atribución de P&L del Insights — quién manejó el resultado"
+    pkt = (
+        "total_realized_usd, total_unrealized_usd, total_pnl_usd, top 5 "
+        "contributors y top 5 detractors con share_pct (% del P&L total), "
+        "top1_share_pct, concentration_flag (True si top1 > 50%)."
+    )
+    free = _maybe_free("insights.attribution", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Origen real del resultado — si top1_share > 50%, el portfolio depende de UNA posición; si < 30%, distribución sana.",
             "Asimetría realized/unrealized — un P&L mayoritariamente unrealized es 'apuesta abierta'; mayoritariamente realized es 'cosecha asegurada'.",
@@ -441,13 +669,18 @@ def render_insights_attribution_prompt() -> str:
     )
 
 
-def render_insights_benchmarks_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Performance vs benchmarks (S&P 500 / inflación AR / dólar blue)",
-        packet_summary=(
-            "user_return_pct + benchmarks {sp500_pct, inflation_ar_pct, "
-            "dolar_blue_pct} + deltas_pp (user - bench) + outperform flags."
-        ),
+def render_insights_benchmarks_prompt(tier: str = "pro") -> str:
+    view = "Performance vs benchmarks (S&P 500 / inflación AR / dólar blue)"
+    pkt = (
+        "user_return_pct + benchmarks {sp500_pct, inflation_ar_pct, "
+        "dolar_blue_pct} + deltas_pp (user - bench) + outperform flags."
+    )
+    free = _maybe_free("insights.benchmarks", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "vs SPY — delta > +5pp es outperform claro; -2 a +2 está parejo; < -5pp es underperform sustantivo.",
             "vs Inflación AR — el mínimo aceptable en Argentina es ganarle a la inflación. Si user < inflation, hay pérdida real.",
@@ -465,14 +698,19 @@ def render_insights_benchmarks_prompt() -> str:
     )
 
 
-def render_insights_observation_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Observación individual del diagnóstico (zoom sobre UNA card)",
-        packet_summary=(
-            "observation {title, text, category, level, id} + portfolio_context "
-            "{total_value_usd, twr_pct, drawdown, top_holdings, "
-            "top_contributors, exposure}."
-        ),
+def render_insights_observation_prompt(tier: str = "pro") -> str:
+    view = "Observación individual del diagnóstico (zoom sobre UNA card)"
+    pkt = (
+        "observation {title, text, category, level, id} + portfolio_context "
+        "{total_value_usd, twr_pct, drawdown, top_holdings, "
+        "top_contributors, exposure}."
+    )
+    free = _maybe_free("insights.observation", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Profundizar la observación CON LOS NÚMEROS del portfolio_context — sin contexto, la observación queda al nivel de la card.",
             "Por qué importa específicamente para ESTE inversor (con su exposure, su top holdings, su drawdown actual).",
@@ -491,14 +729,19 @@ def render_insights_observation_prompt() -> str:
     )
 
 
-def render_monthly_prompt() -> str:
-    return SYSTEM_BASE + _topic_block(
-        view_name="Reporte mensual de un mes específico",
-        packet_summary=(
-            "año, mes, P&L realizado / no realizado, capital inicio / final, "
-            "retorno %, depósitos / retiros, mejor / peor activo del mes, vs "
-            "S&P 500 / inflación AR."
-        ),
+def render_monthly_prompt(tier: str = "pro") -> str:
+    view = "Reporte mensual de un mes específico"
+    pkt = (
+        "año, mes, P&L realizado / no realizado, capital inicio / final, "
+        "retorno %, depósitos / retiros, mejor / peor activo del mes, vs "
+        "S&P 500 / inflación AR."
+    )
+    free = _maybe_free("monthly", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
         focus=[
             "Resultado del mes en términos absolutos y relativos — vs aporte y vs benchmark mensual.",
             "Qué activos manejaron el movimiento — concentración del P&L del mes.",
