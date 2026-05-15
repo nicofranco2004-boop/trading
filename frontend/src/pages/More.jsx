@@ -4,13 +4,16 @@
 // En mobile es una página real (/mas). En desktop esta ruta no se usa
 // porque la sidebar muestra todo directamente.
 
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   LayoutDashboard, Bell, BarChart3, Brain, List, Upload,
-  Target, Sparkles, Settings, Shield, ChevronRight, LogOut,
+  Target, Sparkles, Settings, Shield, ChevronRight, LogOut, BellRing, BellOff, Send,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import { useAuth } from '../contexts/AuthContext'
+import { useToast } from '../components/Toast'
+import { usePushNotifications } from '../hooks/usePushNotifications'
 
 const GROUPS = [
   {
@@ -88,6 +91,9 @@ export default function More() {
         </section>
       ))}
 
+      {/* Notificaciones push */}
+      <PushNotificationsSection />
+
       {/* Configuración + logout */}
       <section>
         <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
@@ -120,5 +126,138 @@ export default function More() {
         </div>
       </section>
     </div>
+  )
+}
+
+// ─── Push notifications section ─────────────────────────────────────────
+
+function PushNotificationsSection() {
+  const toast = useToast()
+  const {
+    supported, permission, subscribed, loading, error,
+    subscribe, unsubscribe, sendTest,
+  } = usePushNotifications()
+  const [testing, setTesting] = useState(false)
+
+  if (!supported) {
+    return (
+      <section>
+        <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
+          Notificaciones
+        </h2>
+        <div className="bg-bg-1 border border-line/60 rounded-lg p-4">
+          <div className="flex items-center gap-3">
+            <BellOff size={16} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
+            <p className="text-xs text-ink-2 leading-relaxed">
+              Tu navegador no soporta notificaciones push. En iOS necesitás
+              instalar Rendi como PWA primero (Compartir → Agregar a inicio).
+            </p>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  async function handleToggle() {
+    try {
+      if (subscribed) {
+        await unsubscribe()
+        toast?.show?.({ kind: 'success', text: 'Notificaciones desactivadas' })
+      } else {
+        await subscribe()
+        toast?.show?.({ kind: 'success', text: 'Notificaciones activadas' })
+      }
+    } catch (ex) {
+      toast?.show?.({ kind: 'error', text: ex?.message || 'Hubo un error' })
+    }
+  }
+
+  async function handleTest() {
+    setTesting(true)
+    try {
+      const sent = await sendTest()
+      if (sent > 0) {
+        toast?.show?.({ kind: 'success', text: `Push enviado a ${sent} ${sent === 1 ? 'device' : 'devices'}` })
+      } else {
+        toast?.show?.({ kind: 'warning', text: 'No hay devices suscritos.' })
+      }
+    } catch (ex) {
+      toast?.show?.({ kind: 'error', text: ex?.message || 'No se pudo enviar' })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const statusLabel = subscribed
+    ? 'Activadas'
+    : permission === 'denied'
+      ? 'Bloqueadas por el navegador'
+      : 'Desactivadas'
+  const statusTone = subscribed ? 'text-rendi-pos' : permission === 'denied' ? 'text-rendi-neg' : 'text-ink-3'
+
+  return (
+    <section>
+      <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
+        Notificaciones
+      </h2>
+      <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
+        {/* Toggle activar/desactivar */}
+        <button
+          onClick={handleToggle}
+          disabled={loading || permission === 'denied'}
+          className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-bg-2/60 active:bg-bg-3 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {subscribed
+            ? <BellRing size={16} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0" />
+            : <Bell size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />}
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-ink-0 leading-tight flex items-center gap-2">
+              Notificaciones push
+              <span className={`text-[10px] font-mono uppercase tracking-caps ${statusTone}`}>
+                {statusLabel}
+              </span>
+            </div>
+            <div className="text-[11px] text-ink-3 leading-tight mt-0.5">
+              {subscribed
+                ? 'Recibís alertas de earnings, drawdowns y nuevos sesgos.'
+                : permission === 'denied'
+                  ? 'Reactivá en los ajustes del navegador.'
+                  : 'Recibí alertas cuando algo importante pasa en tu cartera.'}
+            </div>
+          </div>
+          <span className={`text-[10px] font-mono uppercase tracking-caps ${subscribed ? 'text-rendi-neg' : 'text-rendi-pos'}`}>
+            {loading ? '...' : subscribed ? 'Desactivar' : 'Activar'}
+          </span>
+        </button>
+
+        {/* Test button */}
+        {subscribed && (
+          <button
+            onClick={handleTest}
+            disabled={testing}
+            className="w-full flex items-center gap-3 px-4 py-3 border-t border-line/40 text-left hover:bg-bg-2/60 active:bg-bg-3 transition-colors disabled:opacity-60"
+          >
+            <Send size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-ink-0 leading-tight">
+                Mandame un test
+              </div>
+              <div className="text-[11px] text-ink-3 leading-tight mt-0.5">
+                Verificá que las notificaciones llegan correctamente.
+              </div>
+            </div>
+            <span className="text-[10px] font-mono uppercase tracking-caps text-data-blue">
+              {testing ? '...' : 'Enviar'}
+            </span>
+          </button>
+        )}
+
+        {error && (
+          <div className="px-4 py-2 border-t border-line/40 bg-rendi-neg/[0.04] text-[11px] text-rendi-neg">
+            {error}
+          </div>
+        )}
+      </div>
+    </section>
   )
 }
