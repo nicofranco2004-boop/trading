@@ -522,6 +522,25 @@ const BEHAVIORAL_INSIGHTS = {
   generated_at: new Date().toISOString(),
 }
 
+// Wrapped anual — mock para demo. Estructura debe matchear el shape de
+// backend/wrapped.py: { year, slides[], summary }.
+const WRAPPED = (year) => ({
+  year,
+  slides: [
+    { code: 'intro', kind: 'intro', title: `Tu ${year} en Rendi`, subtitle: 'Un repaso a tus inversiones del año.', metric: { value: String(year), label: 'AÑO' }, stats: [], tone: 'neutral' },
+    { code: 'pnl', kind: 'pnl', title: '+14.32%', subtitle: `Tu rendimiento TWR de ${year}`, metric: { value: '+$4,287', label: 'P&L TOTAL' }, stats: [{ label: 'Capital inicio', value: '$30,000' }, { label: 'Capital final', value: '$34,287' }, { label: 'Meses operados', value: '12' }], tone: 'positive' },
+    { code: 'best_month', kind: 'best_month', title: 'Marzo fue tu mejor mes', subtitle: '+6.21% — $31,250 → $33,191', metric: { value: '+6.21%', label: 'MARZO' }, stats: [], tone: 'positive' },
+    { code: 'worst_month', kind: 'worst_month', title: 'Junio fue el más duro', subtitle: '−3.84% — todos tenemos meses así.', metric: { value: '−3.84%', label: 'JUNIO' }, stats: [], tone: 'negative' },
+    { code: 'best_trade', kind: 'best_trade', title: 'NVDA fue tu mejor trade', subtitle: '+$680 (+22.4%)', metric: { value: '+$680', label: 'NVDA' }, stats: [{ label: 'Activo', value: 'NVDA' }, { label: 'Fecha', value: `${year}-03-14` }], tone: 'positive' },
+    { code: 'activity', kind: 'stats', title: '14 operaciones cerradas', subtitle: 'Tu activo más operado: AAPL', metric: { value: '14', label: 'TRADES' }, stats: [{ label: 'Más operado', value: 'AAPL (3×)' }, { label: 'Distintos activos', value: '9' }], tone: 'neutral' },
+    { code: 'vs_benchmark', kind: 'vs_benchmark', title: 'Le ganaste a los índices', subtitle: `Tu rendimiento estuvo por encima del promedio de benchmarks (${year}).`, metric: { value: '+14.32%', label: 'TU RENDIMIENTO' }, stats: [{ label: 'vs S&P 500', value: '+4.32pp' }], tone: 'positive' },
+    { code: 'vs_inflation', kind: 'vs_inflation', title: 'La inflación AR te ganó', subtitle: 'Tu rendimiento quedó 15.68pp por debajo de la inflación AR.', metric: { value: '−15.68pp', label: 'VS INFLACIÓN AR' }, stats: [{ label: 'Tu rendimiento', value: '+14.32%' }, { label: `Inflación ${year}`, value: '30.00%' }], tone: 'negative' },
+    { code: 'dominant_bias', kind: 'dominant_bias', title: 'Vendés ganadoras más rápido que perdedoras', subtitle: 'En promedio aguantás tus perdedoras 1.8× más tiempo que tus ganadoras. Vale la pena revisar criterios de salida.', metric: { value: 'MEDIUM', label: 'SEVERIDAD' }, stats: [{ label: 'Tipo', value: 'disposition_effect' }, { label: 'Indicador', value: '0.55× (winners/losers)' }], tone: 'neutral' },
+    { code: 'outro', kind: 'outro', title: `Gracias por usar Rendi en ${year}`, subtitle: 'Compartí tu Wrapped y ayudanos a hacer crecer la comunidad de inversores Latam.', metric: { value: 'RENDI', label: 'COMPARTILO' }, stats: [], tone: 'neutral' },
+  ],
+  summary: { has_data: true, twr: 0.1432, months_count: 12, operations_count: 14, slide_count: 10 },
+})
+
 // CAGR sintético del demo. Lo computamos sobre los globals usando misma
 // fórmula que el backend (TWR mensual + media geométrica anualizada).
 const DEMO_CAGR = (() => {
@@ -864,11 +883,48 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/reports/timeline') {
       return { reports: REPORTS_TIMELINE, total: REPORTS_TIMELINE.length }
     }
-    // Goals + CAGR (Objetivos page)
-    if (basePath === '/goals') return []
+    // Goals + CAGR (Objetivos page) — demo siempre muestra una meta de ejemplo
+    // para que el user vea el diagnostic (Sprint 7) sin tener que crear una.
+    if (basePath === '/goals') {
+      return [{
+        id: 1,
+        target_usd: 25000,
+        target_date: (() => {
+          const d = new Date()
+          d.setFullYear(d.getFullYear() + 2)
+          return d.toISOString().slice(0, 10)
+        })(),
+        expected_return_pct: 12,
+        label: 'Comprar mi primer auto',
+      }]
+    }
     if (basePath === '/goals/cagr') return DEMO_CAGR
+    // Goal diagnostic (Sprint 7) — devuelve mock determinístico
+    if (/^\/goals\/\d+\/diagnostic$/.test(basePath)) {
+      return {
+        status: 'behind',
+        projected_value_at_target_date: 28400,
+        eta_months_at_current_rate: 38,
+        delta_pct_required: 6.5,
+        months_left: 24,
+        required_annual_pct: 18.4,
+        diagnostic: 'A este ritmo llegás en ~38 meses (14 más que tu objetivo). Necesitás acelerar o aumentar aportes.',
+        suggestion: {
+          code: 'overtrade',
+          title: 'Operás demasiado',
+          action: 'Cada operación restá comisiones y spread. Reducí frecuencia y vas a ver más capital trabajando para tu meta.',
+          evidence: 'Hicieron 38 operaciones cerradas en 12 meses — por encima del promedio Latam (≈18).',
+        },
+      }
+    }
     // Behavioral insights — sesgos comportamentales (Sprint 3-4)
     if (basePath === '/behavioral/insights') return BEHAVIORAL_INSIGHTS
+    // Wrapped anual — reseña del año (Sprint 6)
+    if (basePath.startsWith('/wrapped/')) {
+      const yearStr = basePath.slice('/wrapped/'.length).split('?')[0]
+      const year = parseInt(yearStr, 10) || new Date().getFullYear()
+      return WRAPPED(year)
+    }
     // Insights endpoints opcionales — devuelven shape vacío para no romper
     if (basePath.startsWith('/insights')) return {}
     if (basePath.startsWith('/goals'))    return []

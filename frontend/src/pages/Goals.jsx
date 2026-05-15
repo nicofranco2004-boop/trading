@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Target, Plus, Pencil, Trash2, TrendingUp, Calendar, DollarSign, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Target, Plus, Pencil, Trash2, TrendingUp, Calendar, DollarSign, CheckCircle2, AlertTriangle, Compass, Zap, ArrowRight } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, Legend } from 'recharts'
 import Modal from '../components/Modal'
 import DateInput from '../components/DateInput'
@@ -355,6 +356,96 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
           {userCagr >= goal.expected_return_pct
             ? `Tu rendimiento histórico (${userCagr.toFixed(1)}%) supera al asumido (${goal.expected_return_pct}%). El plan está alineado.`
             : `Tu rendimiento histórico (${userCagr.toFixed(1)}%) se ubica por debajo del asumido (${goal.expected_return_pct}%). Conviene aumentar los aportes o revisar la meta.`}
+        </div>
+      )}
+
+      {/* Sprint 7: Goal diagnostic + sugerencia accionable basada en behavioral */}
+      <GoalDiagnostic goalId={goal.id} reached={reached} />
+    </div>
+  )
+}
+
+function GoalDiagnostic({ goalId, reached }) {
+  const [diag, setDiag] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    if (reached) return
+    setLoading(true)
+    setError(null)
+    api.get(`/goals/${goalId}/diagnostic`)
+      .then(setDiag)
+      .catch(ex => setError(ex?.message))
+      .finally(() => setLoading(false))
+  }, [goalId, reached])
+
+  if (reached || loading || error || !diag) return null
+  if (diag.status === 'unknown') return null
+
+  const STATUS_STYLE = {
+    on_track: { tone: 'pos', label: 'En camino', Icon: CheckCircle2 },
+    ahead:    { tone: 'pos', label: 'Adelantado', Icon: TrendingUp },
+    behind:   { tone: 'warn', label: 'Atrasado', Icon: AlertTriangle },
+    unreachable: { tone: 'neg', label: 'Inalcanzable al ritmo actual', Icon: AlertTriangle },
+  }
+  const meta = STATUS_STYLE[diag.status] || STATUS_STYLE.behind
+  const { Icon } = meta
+  const toneClasses = meta.tone === 'pos'
+    ? 'bg-rendi-pos/[0.06] border-rendi-pos/25 text-rendi-pos'
+    : meta.tone === 'warn'
+    ? 'bg-rendi-warn/[0.06] border-rendi-warn/25 text-rendi-warn'
+    : 'bg-rendi-neg/[0.06] border-rendi-neg/25 text-rendi-neg'
+
+  return (
+    <div className="mt-4 border border-line/60 rounded-lg bg-bg-2/40 overflow-hidden">
+      <div className="flex items-start gap-2 px-3 py-2.5 border-b border-line/40">
+        <Compass size={13} strokeWidth={1.75} className="text-ink-3 mt-0.5 flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1.5">
+            Diagnóstico
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-caps px-1.5 py-0.5 rounded-sm border ${toneClasses}`}>
+              <Icon size={10} strokeWidth={1.75} /> {meta.label}
+            </span>
+            {diag.eta_months_at_current_rate != null && (
+              <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+                ETA · {diag.eta_months_at_current_rate} meses
+              </span>
+            )}
+            {diag.required_annual_pct != null && (
+              <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+                Necesario · {diag.required_annual_pct.toFixed(1)}%/año
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-ink-1 leading-relaxed mt-2">{diag.diagnostic}</p>
+        </div>
+      </div>
+
+      {/* Sugerencia accionable basada en el sesgo dominante */}
+      {diag.suggestion && (
+        <div className="px-3 py-2.5 flex items-start gap-2 bg-bg-1">
+          <Zap size={13} strokeWidth={1.75} className="text-rendi-warn mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1.5">
+              Sugerencia · {diag.suggestion.code}
+            </div>
+            <p className="text-sm font-medium text-ink-0 leading-snug mb-1">{diag.suggestion.title}</p>
+            <p className="text-xs text-ink-2 leading-relaxed">{diag.suggestion.action}</p>
+            {diag.suggestion.evidence && (
+              <p className="text-[11px] text-ink-3 italic mt-1.5 leading-relaxed">
+                {diag.suggestion.evidence}
+              </p>
+            )}
+            <Link
+              to="/comportamiento"
+              className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-data-blue hover:text-rendi-accent mt-2"
+            >
+              Ver detalle en Comportamiento <ArrowRight size={11} strokeWidth={1.75} />
+            </Link>
+          </div>
         </div>
       )}
     </div>
