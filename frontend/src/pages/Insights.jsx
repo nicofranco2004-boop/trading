@@ -9,6 +9,8 @@ import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target
 import AICoach from '../components/AICoach'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
+import AskAIAbout from '../components/ai/AskAIAbout'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
@@ -1165,20 +1167,27 @@ function InsightsDesktop() {
         title="Insights"
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
-          <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
-            {['USD', 'ARS'].map(c => (
-              <button
-                key={c}
-                onClick={() => setCurrency(c)}
-                className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-label transition-colors ${
-                  currency === c
-                    ? 'bg-bg-3 text-ink-0'
-                    : 'text-ink-2 hover:text-ink-0'
-                }`}
-              >
-                {c}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            <AnalyzeButton
+              screen="insights"
+              params={{ window_days: 365 }}
+              subtitle="Tu performance del último año"
+            />
+            <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
+              {['USD', 'ARS'].map(c => (
+                <button
+                  key={c}
+                  onClick={() => setCurrency(c)}
+                  className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-label transition-colors ${
+                    currency === c
+                      ? 'bg-bg-3 text-ink-0'
+                      : 'text-ink-2 hover:text-ink-0'
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
           </div>
         }
       />
@@ -1317,6 +1326,11 @@ function InsightsDesktop() {
       >
 
       {/* Cumulative performance chart — la moneda viene del toggle global */}
+      <AskAIAbout
+        topic="insights.evolution"
+        params={{ window_days: 365 }}
+        subtitle="Tu trayectoria mensual"
+      >
       <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1.5">
@@ -1392,11 +1406,17 @@ function InsightsDesktop() {
           </ResponsiveContainer>
         )}
       </div>
+      </AskAIAbout>
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
           y duración de las caídas sobre el rendimiento ajustado por flujos.
           Visible en desktop y mobile (paridad de features — la diferencia
           plataforma es de layout, no de contenido). */}
+      <AskAIAbout
+        topic="insights.drawdown"
+        params={{ window_days: 365 }}
+        subtitle="Drawdown del portfolio"
+      >
       <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
@@ -1444,10 +1464,16 @@ function InsightsDesktop() {
           </ResponsiveContainer>
         )}
       </div>
+      </AskAIAbout>
 
       {/* ── Atribución del crecimiento — mercado vs aportes ─────────────────── */}
       {discipline && discipline.total !== 0 && (
-        <PerformanceAttribution discipline={discipline} amt={amt} />
+        <AskAIAbout
+          topic="insights.attribution"
+          subtitle="Qué activos manejaron tu P&L"
+        >
+          <PerformanceAttribution discipline={discipline} amt={amt} />
+        </AskAIAbout>
       )}
 
       </Section>
@@ -2053,44 +2079,57 @@ function DiagnosisCard({ d }) {
   const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
   const cta = ctaForCategory(d.category)
   // Parse del text: primera oración = título, resto = contexto.
-  const parts = d.text.split(/\.\s+/)
+  // Quitamos markdown bold para que el LLM reciba texto plano limpio.
+  const plainText = (d.text || '').replace(/\*\*/g, '')
+  const parts = plainText.split(/\.\s+/)
   const title = parts[0] + (parts.length > 1 ? '.' : '')
   const context = parts.slice(1).join('. ').trim()
   return (
-    <div className="bg-white dark:bg-bg-1 p-5 flex flex-col">
-      <div className="flex items-center gap-2 mb-3">
-        <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
-          {sev.label}
-        </span>
-      </div>
-      <p className="text-sm font-medium leading-snug text-ink-0 mb-2">
-        <DiagnosticText text={title} />
-      </p>
-      {context && (
-        <p className="text-xs text-ink-2 leading-relaxed flex-1">
-          <DiagnosticText text={context} />
+    <AskAIAbout
+      topic="insights.observation"
+      params={{
+        id: d.id,
+        title,
+        text: plainText,
+        category: d.category,
+        level: d.severity,
+      }}
+      subtitle={title.length > 60 ? title.slice(0, 60) + '…' : title}
+      className="h-full"
+    >
+      <div className="bg-white dark:bg-bg-1 p-5 flex flex-col h-full">
+        <div className="flex items-center gap-2 mb-3">
+          <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
+            {sev.label}
+          </span>
+        </div>
+        <p className="text-sm font-medium leading-snug text-ink-0 mb-2">
+          <DiagnosticText text={title} />
         </p>
-      )}
-      {cta && (
-        cta.href.startsWith('#') ? (
-          // Anchor en la misma página — usamos <a> para que el browser
-          // scrollee al elemento; react-router-dom no scrollea con <Link>.
-          <a
-            href={cta.href}
-            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
-          >
-            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-          </a>
-        ) : (
-          <Link
-            to={cta.href}
-            className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
-          >
-            {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-          </Link>
-        )
-      )}
-    </div>
+        {context && (
+          <p className="text-xs text-ink-2 leading-relaxed flex-1">
+            <DiagnosticText text={context} />
+          </p>
+        )}
+        {cta && (
+          cta.href.startsWith('#') ? (
+            <a
+              href={cta.href}
+              className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+            >
+              {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+            </a>
+          ) : (
+            <Link
+              to={cta.href}
+              className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+            >
+              {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+            </Link>
+          )
+        )}
+      </div>
+    </AskAIAbout>
   )
 }
 

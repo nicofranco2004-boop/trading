@@ -1,0 +1,163 @@
+"""builders.insights_attribution — packet de atribución de Insights.
+═══════════════════════════════════════════════════════════════════════════
+Topic: insights.attribution
+
+Sub-componente del Insights — qué activos manejaron tu P&L absoluto en el
+período. A diferencia del 'dashboard.top_holdings' (que mira weight), acá
+enfocamos en quién aportó/restó plata en USD absolutos.
+
+Combina:
+- P&L cerrado (operations con pnl_usd) por ticker.
+- P&L no realizado (precio actual vs invested) por posición abierta.
+
+Shape (~900 bytes):
+{
+  "screen": "insights.attribution",
+  "total_realized_usd": float,
+  "total_unrealized_usd": float,
+  "total_pnl_usd": float,
+  "top_contributors": [
+    { "ticker": str, "realized_usd": float, "unrealized_usd": float,
+      "total_usd": float, "share_pct": float }
+  ],
+  "top_detractors": [
+    { "ticker": str, "realized_usd": float, "unrealized_usd": float,
+      "total_usd": float, "share_pct": float }
+  ],
+  "top1_share_pct": float,   # qué % del P&L total explica el top1 contributor
+  "concentration_flag": bool, # True si top1 > 50%
+}
+"""
+from __future__ import annotations
+from typing import Dict, Any, List
+
+
+_AR_BROKERS = {"cocos", "iol", "bull", "balanz", "naranja", "pppi", "invertironline", "lemon"}
+
+
+def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
+    # ── Realized: agregamos P&L de operations cerradas por ticker ────────────
+    ops = conn.execute(
+        """SELECT asset, op_type, pnl_usd
+             FROM operations
+            WHERE user_id=? AND pnl_usd IS NOT NULL""",
+        (user_id,),
+    ).fetchall()
+
+    realized_by_ticker: Dict[str, float] = {}
+    for o in ops:
+        op_type = (o["op_type"] or "").strip()
+        if op_type in ("Compra", "Dividendo", "Interés", ""):
+            continue
+        if op_type.startswith(("CONVERSION", "Conversión")):
+            continue
+        ticker = (o["asset"] or "").upper()
+        if not ticker:
+            continue
+        realized_by_ticker[ticker] = realized_by_ticker.get(ticker, 0) + float(o["pnl_usd"] or 0)
+
+    # ── Unrealized: precio actual * qty - invested por posición abierta ──────
+    positions = [dict(r) for r in conn.execute(
+        "SELECT asset, broker, quantity, invested, is_cash FROM positions "
+        "WHERE user_id=? AND quantity > 0 AND (is_cash = 0 OR is_cash IS NULL)",
+        (user_id,),
+    ).fetchall()]
+
+    brokers = conn.execute(
+        "SELECT name, currency FROM brokers WHERE user_id=?", (user_id,)
+    ).fetchall()
+    broker_currency = {b["name"]: (b["currency"] or "USD").upper() for b in brokers}
+
+    tc_row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
+    ).fetchone()
+    try:
+        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1415.0
+    except (TypeError, ValueError):
+        tc_blue = 1415.0
+    if tc_blue <= 0:
+        tc_blue = 1415.0
+
+    prices: Dict[str, float] = {}
+    try:
+        from home.market import _fetch_batch_quotes
+        symbols = set()
+        for p in positions:
+            asset = p.get("asset")
+            if not asset:
+                continue
+            currency = broker_currency.get(p.get("broker") or "", "USD").upper()
+            if currency == "ARS":
+                symbols.add(f"{asset}.BA")
+            else:
+                symbols.add(asset)
+        if symbols:
+            quotes = _fetch_batch_quotes(list(symbols))
+            prices = {s: q["price"] for s, q in quotes.items()
+                      if q and q.get("price") is not None}
+    except Exception:
+        prices = {}
+
+    unrealized_by_ticker: Dict[str, float] = {}
+    for p in positions:
+        asset = (p.get("asset") or "").upper()
+        if not asset:
+            continue
+        currency = broker_currency.get(p.get("broker") or "", "USD").upper()
+        qty = float(p.get("quantity") or 0)
+        invested = float(p.get("invested") or 0)
+        if currency == "ARS":
+            price = prices.get(f"{asset}.BA")
+            mv_usd = (price * qty) / tc_blue if price else 0
+            invested_usd = invested / tc_blue
+        else:
+            price = prices.get(asset)
+            mv_usd = price * qty if price else 0
+        pnl = mv_usd - (invested / tc_blue if currency == "ARS" else invested)
+        # Si no hay precio actual, no podemos computar unrealized — skip
+        if price is None:
+            continue
+        unrealized_by_ticker[asset] = unrealized_by_ticker.get(asset, 0) + pnl
+
+    # ── Combinar realized + unrealized por ticker ────────────────────────────
+    all_tickers = set(realized_by_ticker.keys()) | set(unrealized_by_ticker.keys())
+    combined: List[Dict[str, Any]] = []
+    for t in all_tickers:
+        r = realized_by_ticker.get(t, 0)
+        u = unrealized_by_ticker.get(t, 0)
+        combined.append({
+            "ticker": t,
+            "realized_usd": round(r, 2),
+            "unrealized_usd": round(u, 2),
+            "total_usd": round(r + u, 2),
+        })
+
+    total_realized = sum(c["realized_usd"] for c in combined)
+    total_unrealized = sum(c["unrealized_usd"] for c in combined)
+    total_pnl = total_realized + total_unrealized
+    # Para share_pct, usamos magnitud para no dividir por algo cercano a 0
+    abs_total = max(abs(total_pnl), 1)
+
+    def with_share(items):
+        return [
+            {**c, "share_pct": round(c["total_usd"] / abs_total * 100, 1)}
+            for c in items
+        ]
+
+    sorted_desc = sorted(combined, key=lambda c: c["total_usd"], reverse=True)
+    sorted_asc = sorted(combined, key=lambda c: c["total_usd"])
+    contributors = with_share([c for c in sorted_desc if c["total_usd"] > 0][:5])
+    detractors = with_share([c for c in sorted_asc if c["total_usd"] < 0][:5])
+
+    top1_share = contributors[0]["share_pct"] if contributors else 0.0
+
+    return {
+        "screen": "insights.attribution",
+        "total_realized_usd": round(total_realized, 2),
+        "total_unrealized_usd": round(total_unrealized, 2),
+        "total_pnl_usd": round(total_pnl, 2),
+        "top_contributors": contributors,
+        "top_detractors": detractors,
+        "top1_share_pct": top1_share,
+        "concentration_flag": top1_share > 50.0,
+    }

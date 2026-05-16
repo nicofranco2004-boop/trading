@@ -49,12 +49,33 @@ async function req(method, path, body) {
   }
 
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`
-    try { const j = await res.json(); detail = j.detail || detail } catch {}
-    throw new Error(detail)
+    throw await buildHttpError(res)
   }
 
   return res.json()
+}
+
+// Parsea el body del error y arma un Error con mensaje legible. FastAPI puede
+// devolver `detail` como string ("Token inválido") o como dict ({error,usage}
+// — el caso del 429 de IA). Si es dict, intentamos extraer .error / .message /
+// .detail; si no, JSON.stringify como último recurso. Adjuntamos el payload
+// crudo en err.payload por si el caller necesita info adicional (ej. usage).
+async function buildHttpError(res) {
+  let message = `HTTP ${res.status}`
+  let payload = null
+  try {
+    payload = await res.json()
+    const detail = payload?.detail
+    if (typeof detail === 'string') {
+      message = detail
+    } else if (detail && typeof detail === 'object') {
+      message = detail.error || detail.message || detail.detail || JSON.stringify(detail)
+    }
+  } catch { /* body no es JSON — dejamos el HTTP {status} */ }
+  const err = new Error(message)
+  err.status = res.status
+  err.payload = payload
+  return err
 }
 
 async function upload(path, formData) {
@@ -79,9 +100,7 @@ async function upload(path, formData) {
     throw new Error('Unauthorized')
   }
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`
-    try { const j = await res.json(); detail = j.detail || detail } catch {}
-    throw new Error(detail)
+    throw await buildHttpError(res)
   }
   return res.json()
 }

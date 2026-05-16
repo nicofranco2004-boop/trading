@@ -553,6 +553,42 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
     """)
 
+    # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
+    # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
+    #   Mismo packet → mismo análisis durante 24h, sin nuevo call a LLM.
+    # ai_usage_daily: contadores por user por día — alimenta el badge Free
+    #   (3/5 análisis) y permite auditar costos por user.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS ai_analyses_cache (
+            cache_key TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            screen TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            packet_hash TEXT NOT NULL,
+            model TEXT,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_create_tokens INTEGER DEFAULT 0,
+            cost_usd_cents INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_cache_user_screen
+            ON ai_analyses_cache(user_id, screen);
+        CREATE INDEX IF NOT EXISTS idx_ai_cache_expires
+            ON ai_analyses_cache(expires_at);
+
+        CREATE TABLE IF NOT EXISTS ai_usage_daily (
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            analyses_count INTEGER NOT NULL DEFAULT 0,
+            hub_queries_count INTEGER NOT NULL DEFAULT 0,
+            cost_usd_cents INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, date)
+        );
+    """)
+
     # ─── CSV Importer ────────────────────────────────────────────────────────
     # import_batches: cada upload (en estado 'preview' es la sesión; al confirm
     # pasa a 'confirmed'; al revert pasa a 'reverted').
@@ -952,6 +988,7 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_current_user)):
         # Safe: lastrowid always belongs to this user (just inserted)
         row = conn.execute("SELECT * FROM brokers WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
         conn.close()
+        _ai_cache_invalidate(uid)
         return dict(row)
     except sqlite3.IntegrityError:
         conn.close()
@@ -971,6 +1008,7 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)
     conn.close()
     if not row:
         raise HTTPException(404)
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -980,6 +1018,7 @@ def delete_broker(bid: int, uid: int = Depends(get_current_user)):
     conn.execute("DELETE FROM brokers WHERE id=? AND user_id=?", (bid, uid))
     conn.commit()
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -2661,6 +2700,7 @@ def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
                 "SELECT * FROM positions WHERE id=? AND user_id=?", (new_id, uid)
             ).fetchone()
         conn.close()
+        _ai_cache_invalidate(uid)
         return dict(row)
     except HTTPException:
         conn.close()
@@ -2688,6 +2728,7 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -2697,6 +2738,7 @@ def delete_position(pid: int, uid: int = Depends(get_current_user)):
     conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
     conn.commit()
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -4223,6 +4265,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
                 "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)
             ).fetchone()) for oid in ops_created]
         conn.close()
+        _ai_cache_invalidate(uid)
         return {"ok": True, "operations": ops, "closed_count": len(ops)}
     except HTTPException:
         conn.close()
@@ -4287,6 +4330,7 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_current_user)):
             _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
         row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (new_id, uid)).fetchone()
         conn.close()
+        _ai_cache_invalidate(uid)
         return dict(row)
     except sqlite3.IntegrityError:
         conn.close()
@@ -4309,6 +4353,7 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_current_user))
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4324,6 +4369,7 @@ def delete_monthly(eid: int, uid: int = Depends(get_current_user)):
         if target:
             _repair_monthly_chain(conn, uid, target['broker'])  # Phase 8
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -4522,6 +4568,7 @@ def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
     conn.commit()
     row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
     conn.close()
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4541,6 +4588,7 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_u
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4550,6 +4598,7 @@ def delete_operation(oid: int, uid: int = Depends(get_current_user)):
     conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (oid, uid))
     conn.commit()
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -4589,6 +4638,7 @@ def create_goal(g: GoalIn, uid: int = Depends(get_current_user)):
     conn.commit()
     row = conn.execute("SELECT * FROM goals WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
     conn.close()
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4604,6 +4654,7 @@ def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_current_user)):
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4613,6 +4664,7 @@ def delete_goal(gid: int, uid: int = Depends(get_current_user)):
     conn.execute("DELETE FROM goals WHERE id=? AND user_id=?", (gid, uid))
     conn.commit()
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -4870,83 +4922,10 @@ def _get_anthropic_client():
     return _anthropic_client
 
 
-_AI_SYSTEM = """Sos el coach financiero de Rendi, una app argentina de seguimiento de inversiones personales.
-
-Estilo:
-- Hablás en español rioplatense (vos, tenés, etc.), tono cercano pero profesional.
-- Sos directo y honesto: si algo está mal, lo decís sin endulzar. Si está bien, lo elogiás sin exagerar.
-- Nunca das consejos financieros específicos ("comprá X"), pero sí observaciones y preguntas que ayuden al usuario a pensar.
-- Frases cortas y claras. Evitás jerga financiera salvo que la expliques.
-- Sin emojis salvo que aporten claridad. Sin disclaimers genéricos tipo "consultá un profesional".
-
-Output: SIEMPRE devolvés un JSON válido con la estructura solicitada en el mensaje del usuario. Nada de texto antes ni después del JSON."""
-
-
-class AIInsightsIn(BaseModel):
-    """Snapshot mínimo del portfolio para generar insights."""
-    total_usd: float = Field(..., ge=0)
-    pnl_total_usd: float
-    pnl_total_pct: float
-    months_tracked: int = Field(0, ge=0)
-    drawdown_max_pct: Optional[float] = None
-    drawdown_current_pct: Optional[float] = None
-    best_month_pct: Optional[float] = None
-    worst_month_pct: Optional[float] = None
-    win_rate_pct: Optional[float] = None
-    total_trades: int = Field(0, ge=0)
-    top_asset: Optional[str] = None
-    top_asset_pnl: Optional[float] = None
-    concentration_top3_pct: Optional[float] = None
-    avg_hold_days: Optional[float] = None
-
-
-@app.post("/api/ai/insights")
-def ai_insights(data: AIInsightsIn, request: Request, uid: int = Depends(get_current_user)):
-    """Genera 1-3 textos de insights personalizados usando Claude Haiku.
-    Devuelve { observations: [{title, text, tone: 'positive'|'neutral'|'warning'}] }"""
-    _check_rate_limit(request, max_calls=20, window_seconds=3600, suffix=f"ai_insights:{uid}")
-
-    client = _get_anthropic_client()
-    if client is None:
-        raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
-
-    portfolio_json = data.model_dump_json(indent=2)
-
-    user_msg = f"""Datos del portfolio del usuario:
-```json
-{portfolio_json}
-```
-
-Generá 3 observaciones cortas (60-100 palabras cada una) sobre lo que ves. Cada una debe:
-- Tener un título de 3-5 palabras (sin emojis, sin signos)
-- Mencionar al menos un número específico del JSON
-- Terminar con una pregunta accionable o una observación concreta
-
-Devolvé EXACTAMENTE este JSON (sin markdown, sin texto extra):
-{{"observations": [
-  {{"title": "...", "text": "...", "tone": "positive|neutral|warning"}},
-  {{"title": "...", "text": "...", "tone": "positive|neutral|warning"}},
-  {{"title": "...", "text": "...", "tone": "positive|neutral|warning"}}
-]}}"""
-
-    try:
-        msg = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=1024,
-            system=[
-                {"type": "text", "text": _AI_SYSTEM, "cache_control": {"type": "ephemeral"}}
-            ],
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        text = msg.content[0].text.strip()
-        # Por las dudas: si el modelo envuelve en ```json ... ``` lo limpiamos
-        if text.startswith("```"):
-            text = text.split("```")[1].lstrip("json\n").rstrip("`").strip()
-        return json.loads(text)
-    except json.JSONDecodeError:
-        raise HTTPException(502, "La IA devolvió un formato inválido. Intentá de nuevo.")
-    except Exception as ex:
-        raise HTTPException(500, f"Error al generar insights: {ex}")
+# ─── /api/ai/insights ELIMINADO (AI v2) ─────────────────────────────────────
+# El endpoint /api/ai/insights legacy + AIInsightsIn + _AI_SYSTEM fueron
+# eliminados — el frontend ya no los consume. Reemplazado por la
+# arquitectura packets/builders con /api/ai/analyze (ver ai/registry.py).
 
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
@@ -5127,9 +5106,220 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
     return {"error": f"Tool '{name}' no reconocida"}
 
 
+# ─── AI v2 — Contextual Analysis (Sprint AI v2) ─────────────────────────────
+# Reemplaza el chat libre con análisis estructurado on-demand. Cada screen
+# del producto tiene su packet builder y se renderiza en un drawer.
+#
+# Flow:
+#   POST /api/ai/analyze { screen, params }
+#     → ContextPacketBuilder.build(conn, uid, **params)
+#     → cache.get_cached() → HIT? return
+#     → llm.analyze() con prompt caching
+#     → cache.set_cached() + record_analysis()
+#     → return result + usage
+
+
+class AIAnalyzeIn(BaseModel):
+    screen: str = Field(..., max_length=64)
+    params: Optional[dict] = Field(default_factory=dict)
+
+
+def _ai_cache_invalidate(uid: int) -> None:
+    """Invalida TODO el cache de IA del user. Llamado desde endpoints de
+    mutación (positions, operations, monthly, goals, brokers, etc.).
+
+    Sin esto, el user agrega una operación y sigue viendo análisis viejos
+    cacheados (TTL 24h). Esto es el riesgo de credibilidad más alto del
+    sistema — el LLM cuesta dinero, pero un análisis desactualizado
+    cuesta confianza.
+
+    Es 'safe' — captura cualquier excepción para no romper el endpoint
+    de mutación si el cache de IA falla por alguna razón inesperada.
+    """
+    try:
+        from ai import cache as _ai_cache
+        conn = get_db()
+        try:
+            _ai_cache.invalidate_for_user(conn, uid)
+        finally:
+            conn.close()
+    except Exception as ex:
+        log.warning("ai_cache_invalidate fallo para uid=%s: %s", uid, ex)
+
+
+@app.post("/api/ai/analyze")
+def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
+    """Análisis contextual estructurado de una pantalla o sub-componente.
+
+    El `screen` usa notación con puntos para sub-topics:
+      dashboard                  — análisis general del Dashboard
+      dashboard.composition      — solo la composición del portfolio
+      dashboard.evolution        — solo la curva de evolución
+      dashboard.top_holdings     — solo el top de holdings
+
+    Body: { screen: str, params: {...} }
+    Returns: { result, cached: bool, usage }
+
+    Quota: solo descuenta del cupo Free cuando hay cache MISS (el LLM
+    realmente corrió). Cache hits son gratis — sino abrir el drawer 3
+    veces seguidas quemaría los 5 análisis del día.
+    """
+    from ai import llm, cache, quota
+    from ai.schema import AnalysisResult
+    from ai.registry import get_topic, list_topics
+
+    if not llm.is_configured():
+        raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
+
+    screen = data.screen.strip().lower()
+    params = data.params or {}
+
+    # Dispatch via registry (topic → builder + prompt)
+    topic = get_topic(screen)
+    if not topic:
+        raise HTTPException(
+            400,
+            f"Topic '{screen}' no soportado. Disponibles: {list_topics()}.",
+        )
+    build_packet, render_prompt = topic
+
+    conn = get_db()
+    try:
+        # Resolver tier del user al inicio — afecta cache key, prompt y mensaje 429.
+        tier = quota.get_tier(conn, uid)
+
+        # Build packet PRIMERO (es barato y determinístico) para ver si hay
+        # cache hit antes de tocar el cupo.
+        try:
+            packet = build_packet(conn, uid, **params)
+        except Exception as ex:
+            log.exception(f"AI builder fallo (uid={uid}, screen={screen})")
+            raise HTTPException(500, f"Error construyendo packet: {type(ex).__name__}")
+
+        # Cache HIT? → gratis (no descuenta cupo). El tier separa pools
+        # (Free y Pro tienen respuestas distintas para el mismo packet).
+        cached = cache.get_cached(conn, uid, screen, packet, tier=tier)
+        if cached:
+            return {
+                "result": cached,
+                "cached": True,
+                "tier": tier,
+                "usage": quota.get_current_usage(conn, uid),
+            }
+
+        # Cache MISS → ahora sí chequeamos cupo (la llamada al LLM cuesta)
+        allowed, usage_now = quota.can_analyze(conn, uid)
+        if not allowed:
+            # 429 — mensaje + payload de upgrade. Free se topa contra el cap
+            # semanal (10/sem); el mensaje sugiere Pro como path lógico.
+            raise HTTPException(429, {
+                "error": (
+                    "Llegaste al límite semanal de análisis del plan Free "
+                    "(10/sem). Tu cuota se renueva el lunes próximo. Para "
+                    "uso ilimitado con respuestas más profundas, pasate a "
+                    "Rendi Pro."
+                ),
+                "usage": usage_now,
+                "upgrade": {
+                    "available": tier == "free",
+                    "current_tier": tier,
+                    "target_tier": "pro",
+                    "resets_on": usage_now.get("resets_on"),
+                    "benefits": [
+                        "Análisis ilimitados",
+                        "Respuestas profundas con causalidad y comparaciones",
+                        "Un insight memorable por análisis",
+                    ],
+                },
+            })
+
+        # Llamada al LLM — prompt resuelto según tier (Free=descriptivo,
+        # Pro/Admin=research note).
+        system_prompt = render_prompt(tier=tier)
+        try:
+            llm_result = llm.analyze(
+                system_prompt=system_prompt,
+                packet=packet,
+                output_model=AnalysisResult,
+                model=llm.MODEL_HAIKU,
+            )
+        except Exception as ex:
+            log.warning(f"AI analyze fallo (uid={uid}, screen={screen}, tier={tier}): {ex}")
+            raise HTTPException(502, f"AI procesamiento fallo: {type(ex).__name__}")
+
+        if llm_result is None:
+            raise HTTPException(503, "AI no disponible momentáneamente")
+
+        result_dict = llm_result.output.model_dump()
+
+        cache.set_cached(
+            conn,
+            user_id=uid,
+            screen=screen,
+            packet=packet,
+            result=result_dict,
+            model=llm_result.model,
+            input_tokens=llm_result.input_tokens,
+            output_tokens=llm_result.output_tokens,
+            cache_read_tokens=llm_result.cache_read_input_tokens,
+            cache_create_tokens=llm_result.cache_creation_input_tokens,
+            cost_usd_cents=llm_result.cost_usd_cents,
+            tier=tier,
+        )
+        quota.record_analysis(conn, uid, cost_usd_cents=llm_result.cost_usd_cents)
+
+        return {
+            "result": result_dict,
+            "cached": False,
+            "tier": tier,
+            "usage": quota.get_current_usage(conn, uid),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/ai/topics")
+def ai_topics():
+    """Lista los topics disponibles para /api/ai/analyze. Endpoint público
+    sin auth — útil para que el frontend descubra topics sin hardcodear."""
+    from ai.registry import list_topics
+    return {"topics": list_topics()}
+
+
+@app.get("/api/ai/usage")
+def ai_usage(uid: int = Depends(get_current_user)):
+    """Usage de la SEMANA en curso (ISO week, lunes-domingo) — el frontend
+    lo usa para mostrar 'X/10 esta semana' en Free, 'Admin · sin tope' para
+    admin, etc."""
+    from ai import quota
+    conn = get_db()
+    try:
+        return quota.get_current_usage(conn, uid)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/ai/cache/{screen}")
+def ai_invalidate_cache(screen: str, uid: int = Depends(get_current_user)):
+    """Borra el cache de un screen para este user. Lo llama el frontend
+    cuando aprieta 'Refrescar' en el drawer. Tambien lo llaman los
+    endpoints de mutación (POST /positions, /operations, etc.) en futuro."""
+    from ai import cache
+    conn = get_db()
+    try:
+        n = cache.invalidate_for_user(conn, uid, screens=[screen.lower()])
+        return {"deleted": n}
+    finally:
+        conn.close()
+
+
 @app.post("/api/ai/chat")
 def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_user)):
-    """Chat libre con el coach IA. Usa el historial + snapshot rico como contexto.
+    """[DEPRECATED] Chat libre con el coach IA — reemplazado por /api/ai/analyze.
+    Mantenido temporalmente para compat con el frontend viejo durante la
+    migración del Sprint AI v2. Se eliminará después de Phase 4.
+
+    Usa el historial + snapshot rico como contexto.
     Soporta tool_use: el modelo puede pedir precios en tiempo real u otro dato de DB."""
     _check_rate_limit(request, max_calls=40, window_seconds=3600, suffix=f"ai_chat:{uid}")
 

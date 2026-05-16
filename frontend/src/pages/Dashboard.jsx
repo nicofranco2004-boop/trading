@@ -6,6 +6,9 @@ import MonthlyTeaser from '../components/MonthlyTeaser'
 import UpcomingEventsCard from '../components/UpcomingEventsCard'
 import TopNewsCard from '../components/TopNewsCard'
 import PageHeader from '../components/PageHeader'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
+import AskAIAbout from '../components/ai/AskAIAbout'
+import AIDiscoveryBanner from '../components/ai/AIDiscoveryBanner'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import { DashboardSkeleton } from '../components/Skeleton'
@@ -272,23 +275,34 @@ export default function Dashboard() {
         title="Estado del portfolio"
         meta={meta}
         action={
-          <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
-            {['USD', 'ARS'].map(c => (
-              <button
-                key={c}
-                onClick={() => setCurrency(c)}
-                className={`px-3 py-1 text-xs font-mono uppercase tracking-caps rounded-sm transition-colors ${
-                  currency === c
-                    ? 'bg-bg-3 text-ink-0'
-                    : 'text-ink-2 hover:text-ink-0'
-                }`}
-              >
-                {c}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Analizar — abre el drawer con análisis IA contextual */}
+            <AnalyzeButton
+              screen="dashboard"
+              params={{ period: '30d' }}
+              subtitle="Estado de tu portfolio"
+            />
+            <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
+              {['USD', 'ARS'].map(c => (
+                <button
+                  key={c}
+                  onClick={() => setCurrency(c)}
+                  className={`px-3 py-1 text-xs font-mono uppercase tracking-caps rounded-sm transition-colors ${
+                    currency === c
+                      ? 'bg-bg-3 text-ink-0'
+                      : 'text-ink-2 hover:text-ink-0'
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
           </div>
         }
       />
+
+      {/* Banner descubrimiento IA — primer load por usuario */}
+      <AIDiscoveryBanner />
 
       {positions.filter(p => !p.is_cash).length === 0 && !loading && (
         <Card className="mb-6">
@@ -400,7 +414,14 @@ export default function Dashboard() {
       </div>
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
-      <Card className="mb-8">
+      <AskAIAbout
+        topic="dashboard.evolution"
+        subtitle="Evolución del portfolio"
+        params={{ period_days: range === '1Y' ? 365 : range === '6M' ? 180 : range === '3M' ? 90 : range === '1M' ? 30 : 1825 }}
+        className="mb-8"
+        rounded={false}
+      >
+      <Card>
         <div className="flex items-start justify-between gap-3 flex-wrap mb-5">
           <div>
             <p className="eyebrow mb-1">Evolución</p>
@@ -516,27 +537,46 @@ export default function Dashboard() {
           </div>
         )}
       </Card>
+      </AskAIAbout>
 
       {/* ── Composición + Top holdings ─────────────────────────────────────── */}
       {positionsForInsight.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-4 mb-8">
-          <AssetBreakdownBar
-            positions={positionsForInsight}
-            totalValue={totalValue}
-            currency={currency}
-            tcBlue={tcBlue}
-          />
-          <TopHoldingsPanel
-            positions={positionsForInsight}
-            currency={currency}
-            tcBlue={tcBlue}
-          />
+          <AskAIAbout
+            topic="dashboard.composition"
+            subtitle="Composición del portfolio"
+            rounded={false}
+          >
+            <AssetBreakdownBar
+              positions={positionsForInsight}
+              totalValue={totalValue}
+              currency={currency}
+              tcBlue={tcBlue}
+            />
+          </AskAIAbout>
+          <AskAIAbout
+            topic="dashboard.top_holdings"
+            subtitle="Top holdings"
+            rounded={false}
+          >
+            <TopHoldingsPanel
+              positions={positionsForInsight}
+              currency={currency}
+              tcBlue={tcBlue}
+            />
+          </AskAIAbout>
         </div>
       )}
 
       {/* ── Per-broker grid ──────────────────────────────────────────────────── */}
       {brokers.length > 0 && (
-        <div className="mb-8">
+        <AskAIAbout
+          topic="dashboard.brokers"
+          subtitle="Detalle por broker"
+          className="mb-8"
+          rounded={false}
+        >
+        <div>
           <div className="mb-4">
             <p className="eyebrow mb-1">Brokers</p>
             <h3 className="text-base font-semibold text-ink-0 leading-tight">Detalle por cuenta</h3>
@@ -571,13 +611,20 @@ export default function Dashboard() {
             })}
           </div>
         </div>
+        </AskAIAbout>
       )}
 
       {/* Próximos eventos del portfolio + noticias recientes.
           Cada card se renderea sólo si tiene contenido — el dashboard no
           se inunda con cards vacías. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        <UpcomingEventsCard positions={positions} />
+        <AskAIAbout
+          topic="dashboard.upcoming_events"
+          subtitle="Próximos eventos"
+          rounded={false}
+        >
+          <UpcomingEventsCard positions={positions} />
+        </AskAIAbout>
         <TopNewsCard />
       </div>
 

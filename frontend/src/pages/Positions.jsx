@@ -13,6 +13,7 @@ import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import { isBondTicker } from '../utils/tickers'
 import { detectPendingCashflows } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
+import InlineAIButton from '../components/ai/InlineAIButton'
 import {
   generateSchedule,
   getRemainingPayments,
@@ -863,7 +864,16 @@ function PositionsDesktop() {
                           {showDetail && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—'}</td>}
                           <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
                           <td className={tdClass}>
-                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker })} />
+                            <div className="flex items-center gap-1 justify-end">
+                              {!p.is_cash && (
+                                <InlineAIButton
+                                  topic="position"
+                                  params={{ asset: p.asset, broker: p.broker }}
+                                  subtitle={`${p.asset} · ${p.broker}`}
+                                />
+                              )}
+                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker })} />
+                            </div>
                           </td>
                         </tr>
                         {expanded && (
@@ -1007,7 +1017,16 @@ function PositionsDesktop() {
                         </td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
                         <td className={tdClass}>
-                          <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker })} />
+                          <div className="flex items-center gap-1 justify-end">
+                            {!p.is_cash && (
+                              <InlineAIButton
+                                topic="position"
+                                params={{ asset: p.asset, broker: p.broker }}
+                                subtitle={`${p.asset} · ${p.broker}`}
+                              />
+                            )}
+                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker })} />
+                          </div>
                         </td>
                       </tr>
                       {expanded && (

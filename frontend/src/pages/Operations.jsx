@@ -14,6 +14,8 @@ import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import OperationsMobile from './OperationsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
+import InlineAIButton from '../components/ai/InlineAIButton'
 
 const PAGE_SIZE = 50
 
@@ -132,12 +134,15 @@ function OperationsDesktop() {
         eyebrow="Operaciones / Cerradas"
         title="Historial de trades"
         action={
-          <button
-            onClick={openAdd}
-            className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"
-          >
-            <Plus size={12} strokeWidth={2} /> Nueva operación
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <AnalyzeButton screen="operations" subtitle="Tu historial completo" />
+            <button
+              onClick={openAdd}
+              className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"
+            >
+              <Plus size={12} strokeWidth={2} /> Nueva operación
+            </button>
+          </div>
         }
       />
 
@@ -287,11 +292,19 @@ function OperationsDesktop() {
                       {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
                     </td>
                     <td className="px-3 py-2">
-                      <div className="flex gap-2 justify-end">
-                        <button onClick={() => openEdit(op)} className="text-ink-3 hover:text-ink-0 transition-colors" title="Editar" aria-label={`Editar operación ${op.asset}`}>
+                      <div className="flex gap-1 justify-end items-center">
+                        {op.pnl_usd != null && (
+                          <InlineAIButton
+                            topic="operations.trade"
+                            params={{ operation_id: op.id }}
+                            subtitle={`${op.asset} · ${op.date}`}
+                            ariaLabel={`Analizar trade de ${op.asset}`}
+                          />
+                        )}
+                        <button onClick={() => openEdit(op)} className="text-ink-3 hover:text-ink-0 transition-colors p-1" title="Editar" aria-label={`Editar operación ${op.asset}`}>
                           <Pencil size={13} strokeWidth={1.75} aria-hidden="true" />
                         </button>
-                        <button onClick={() => del(op.id)} className="text-ink-3 hover:text-rendi-neg transition-colors" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
+                        <button onClick={() => del(op.id)} className="text-ink-3 hover:text-rendi-neg transition-colors p-1" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
                           <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
                         </button>
                       </div>

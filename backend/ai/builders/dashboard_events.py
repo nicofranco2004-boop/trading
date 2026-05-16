@@ -1,0 +1,165 @@
+"""builders.dashboard_events — packet de próximos eventos del portfolio.
+═══════════════════════════════════════════════════════════════════════════
+Topic: dashboard.upcoming_events
+
+Eventos próximos (earnings, dividendos) de los tickers que tiene el user.
+Ventana: 14 días (mismo que el endpoint /api/events/portfolio).
+
+Shape (~400 bytes):
+{
+  "screen": "dashboard.upcoming_events",
+  "window_days": 14,
+  "events": [
+    { "ticker": str, "type": str, "date": str, "days_ahead": int,
+      "weight_pct": float | null, "details": str | null }
+  ],
+  "total_events": int,
+  "tickers_affected": int,
+  "earnings_count": int,
+  "dividends_count": int,
+  "weight_at_risk_pct": float,    # % cartera con evento próximo
+}
+"""
+
+from __future__ import annotations
+from typing import Dict, Any, List
+from datetime import date, timedelta
+
+
+def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
+    window_days = int(kwargs.get("window_days", 14))
+    today = date.today()
+    cutoff = today + timedelta(days=window_days)
+
+    # Tickers del user (non-cash, qty > 0)
+    rows = conn.execute(
+        """SELECT asset, broker, quantity, invested, is_cash
+             FROM positions
+            WHERE user_id = ? AND (is_cash = 0 OR is_cash IS NULL)
+              AND quantity > 0""",
+        (user_id,),
+    ).fetchall()
+    positions = [dict(r) for r in rows]
+    tickers = sorted({p["asset"] for p in positions if p.get("asset")})
+
+    if not tickers:
+        return {
+            "screen": "dashboard.upcoming_events",
+            "window_days": window_days,
+            "events": [],
+            "total_events": 0,
+            "tickers_affected": 0,
+            "earnings_count": 0,
+            "dividends_count": 0,
+            "weight_at_risk_pct": 0,
+        }
+
+    # Buscar eventos en la ventana (tabla `financial_events`)
+    placeholders = ",".join("?" * len(tickers))
+    events = conn.execute(
+        f"""SELECT ticker, event_type, event_date, details
+              FROM financial_events
+             WHERE ticker IN ({placeholders})
+               AND event_date >= ? AND event_date <= ?
+             ORDER BY event_date ASC""",
+        (*tickers, today.isoformat(), cutoff.isoformat()),
+    ).fetchall()
+
+    # Necesitamos valor de cartera + por-ticker para weight_pct
+    # Reutilizamos pricing simple: si el ticker tiene precio, usamos market value
+    # Si no, fallback al invested (best effort).
+    brokers = [dict(r) for r in conn.execute(
+        "SELECT * FROM brokers WHERE user_id=?", (user_id,)
+    ).fetchall()]
+    tc_row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
+    ).fetchone()
+    try:
+        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1
+    except (TypeError, ValueError):
+        tc_blue = 1
+    if tc_blue <= 0:
+        tc_blue = 1
+
+    ars_broker_set = {b["name"] for b in brokers if b.get("currency") == "ARS"}
+
+    prices: Dict[str, float] = {}
+    try:
+        from home.market import _fetch_batch_quotes
+        symbols = set()
+        for p in positions:
+            if p.get("broker") in ars_broker_set:
+                symbols.add(f"{p['asset']}.BA")
+            else:
+                symbols.add(p["asset"])
+        if symbols:
+            quotes = _fetch_batch_quotes(list(symbols))
+            prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price")}
+    except Exception:
+        prices = {}
+
+    # USD value por ticker (agregado)
+    value_by_ticker: Dict[str, float] = {}
+    total_value = 0.0
+    for p in positions:
+        is_ar = p.get("broker") in ars_broker_set
+        qty = p.get("quantity") or 0
+        invested = p.get("invested") or 0
+        if is_ar:
+            price = prices.get(f"{p['asset']}.BA")
+            v = (price * qty) / tc_blue if price else invested / tc_blue
+        else:
+            price = prices.get(p["asset"])
+            v = price * qty if price else invested
+        value_by_ticker[p["asset"]] = value_by_ticker.get(p["asset"], 0) + v
+        total_value += v
+    total_value = max(total_value, 1)
+
+    # Armamos lista de eventos enriquecidos
+    enriched: List[Dict[str, Any]] = []
+    tickers_in_events = set()
+    earnings_count = 0
+    dividends_count = 0
+    weight_at_risk = 0.0
+    counted_for_risk = set()
+
+    for ev in events:
+        ticker = ev["ticker"]
+        try:
+            d = date.fromisoformat(ev["event_date"])
+            days_ahead = (d - today).days
+        except (TypeError, ValueError):
+            days_ahead = None
+
+        ttype = (ev["event_type"] or "").lower()
+        if "earning" in ttype:
+            earnings_count += 1
+        elif "div" in ttype:
+            dividends_count += 1
+
+        weight = value_by_ticker.get(ticker, 0) / total_value
+        # Acumular weight solo una vez por ticker (no doblar si tiene 2 eventos)
+        if ticker not in counted_for_risk:
+            weight_at_risk += weight
+            counted_for_risk.add(ticker)
+
+        tickers_in_events.add(ticker)
+        enriched.append({
+            "ticker": ticker,
+            "type": ev["event_type"],
+            "date": ev["event_date"],
+            "days_ahead": days_ahead,
+            "weight_pct": round(weight, 4) if weight else None,
+            "details": ev["details"],
+        })
+
+    return {
+        "screen": "dashboard.upcoming_events",
+        "window_days": window_days,
+        "events": enriched[:12],   # cap a 12 para no inflar el packet
+        "total_events": len(enriched),
+        "tickers_affected": len(tickers_in_events),
+        "earnings_count": earnings_count,
+        "dividends_count": dividends_count,
+        "weight_at_risk_pct": round(weight_at_risk, 4),
+    }

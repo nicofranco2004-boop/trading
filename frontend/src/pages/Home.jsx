@@ -20,6 +20,8 @@ import Watchlist from '../components/home/Watchlist'
 import Eyebrow from '../components/Eyebrow'
 import HomeMobile from './HomeMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
+import AskAIAbout from '../components/ai/AskAIAbout'
 
 export default function Home() {
   const isMobile = useIsMobile()
@@ -33,7 +35,10 @@ export default function Home() {
           <Eyebrow>Inicio</Eyebrow>
           <h1 className="display-heading mt-1">El mercado hoy</h1>
         </div>
-        <SearchBar />
+        <div className="flex items-center gap-2 flex-wrap">
+          <AnalyzeButton screen="home" subtitle="El mercado y tu portfolio hoy" />
+          <SearchBar />
+        </div>
       </header>
 
       <div className="space-y-6">
@@ -59,10 +64,14 @@ export default function Home() {
         {/* 5. Watchlist */}
         <Watchlist />
 
-        {/* 6. Noticias + eventos */}
+        {/* 6. Noticias + eventos — cada uno con su ✦ */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <NewsPreview />
-          <EventsPreview />
+          <AskAIAbout topic="news" subtitle="Tus noticias del período">
+            <NewsPreview />
+          </AskAIAbout>
+          <AskAIAbout topic="events" subtitle="Tus eventos próximos">
+            <EventsPreview />
+          </AskAIAbout>
         </div>
       </div>
     </div>

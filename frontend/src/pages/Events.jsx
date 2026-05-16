@@ -24,6 +24,8 @@ import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
 import EventBadge from '../components/EventBadge'
 import { api } from '../utils/api'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
+import InlineAIButton from '../components/ai/InlineAIButton'
 import { computeBrokerValue } from '../utils/valuation'
 import { pct } from '../utils/format'
 import {
@@ -196,7 +198,13 @@ export default function Events({ embedded = false }) {
         <PageHeader
           title="Eventos financieros"
           subtitle="Próximos cupones, earnings, dividendos y eventos macro."
+          action={<AnalyzeButton screen="events" subtitle="Tu calendario completo" />}
         />
+      )}
+      {embedded && (
+        <div className="flex justify-end mb-3">
+          <AnalyzeButton screen="events" subtitle="Tu calendario completo" />
+        </div>
       )}
 
       {/* Sub-tabs Para ti / Popular — pills. */}
@@ -551,13 +559,14 @@ function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd }) {
   return (
     <div className="bg-bg-1 border border-line rounded overflow-hidden">
       {/* Header — pinned, label-mono columns */}
-      <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
+      <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px_40px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
         <div className="label-mono">Fecha</div>
         <div className="label-mono">Activo</div>
         <div className="label-mono">Tipo</div>
         <div className="label-mono">Detalle</div>
         <div className="label-mono text-right">Monto</div>
         <div className="label-mono text-right">{tab === 'portfolio' ? 'Impact' : 'Cartera'}</div>
+        <div className="label-mono text-right" title="Analizar"></div>
       </div>
       <ul className="divide-y divide-line/40">
         {sorted.map((ev, i) => (
@@ -601,7 +610,7 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
   const detailNode = renderDetail(event)
 
   return (
-    <li className="grid grid-cols-[64px_1fr] md:grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-3 items-center hover:bg-bg-2/40 transition-colors">
+    <li className="grid grid-cols-[64px_1fr_auto] md:grid-cols-[80px_180px_100px_1fr_140px_80px_40px] gap-3 px-4 py-3 items-center hover:bg-bg-2/40 transition-colors">
       {/* Fecha — countdown + fecha corta abajo */}
       <div className="flex flex-col">
         <span className={`text-xs font-mono font-semibold uppercase tracking-wider ${dateTone}`}>
@@ -672,6 +681,23 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
         {amountNode}
         {tab === 'portfolio' && impactPct != null && impactPct > 0.0001 && (
           <span className="text-rendi-accent">· {pct(impactPct)}</span>
+        )}
+      </div>
+
+      {/* Botón ✦ — análisis del evento individual. Solo si no es macro
+          (no tenemos contexto de portfolio para macros). */}
+      <div className="row-start-1 row-span-2 md:row-auto md:col-start-7 flex items-start md:items-center justify-end">
+        {!isMacro && (
+          <InlineAIButton
+            topic="events.item"
+            params={{
+              ticker,
+              event_type: eventType,
+              event_date: eventDate,
+              details: typeof details === 'string' ? details : (details?.title || ''),
+            }}
+            subtitle={`${ticker} · ${eventType}`}
+          />
         )}
       </div>
     </li>
