@@ -988,6 +988,7 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_current_user)):
         # Safe: lastrowid always belongs to this user (just inserted)
         row = conn.execute("SELECT * FROM brokers WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
         conn.close()
+        _ai_cache_invalidate(uid)
         return dict(row)
     except sqlite3.IntegrityError:
         conn.close()
@@ -1007,6 +1008,7 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)
     conn.close()
     if not row:
         raise HTTPException(404)
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -1016,6 +1018,7 @@ def delete_broker(bid: int, uid: int = Depends(get_current_user)):
     conn.execute("DELETE FROM brokers WHERE id=? AND user_id=?", (bid, uid))
     conn.commit()
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -2697,6 +2700,7 @@ def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
                 "SELECT * FROM positions WHERE id=? AND user_id=?", (new_id, uid)
             ).fetchone()
         conn.close()
+        _ai_cache_invalidate(uid)
         return dict(row)
     except HTTPException:
         conn.close()
@@ -2724,6 +2728,7 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -2733,6 +2738,7 @@ def delete_position(pid: int, uid: int = Depends(get_current_user)):
     conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
     conn.commit()
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -4259,6 +4265,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
                 "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)
             ).fetchone()) for oid in ops_created]
         conn.close()
+        _ai_cache_invalidate(uid)
         return {"ok": True, "operations": ops, "closed_count": len(ops)}
     except HTTPException:
         conn.close()
@@ -4323,6 +4330,7 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_current_user)):
             _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
         row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (new_id, uid)).fetchone()
         conn.close()
+        _ai_cache_invalidate(uid)
         return dict(row)
     except sqlite3.IntegrityError:
         conn.close()
@@ -4345,6 +4353,7 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_current_user))
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4360,6 +4369,7 @@ def delete_monthly(eid: int, uid: int = Depends(get_current_user)):
         if target:
             _repair_monthly_chain(conn, uid, target['broker'])  # Phase 8
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -4558,6 +4568,7 @@ def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
     conn.commit()
     row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
     conn.close()
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4577,6 +4588,7 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_u
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4586,6 +4598,7 @@ def delete_operation(oid: int, uid: int = Depends(get_current_user)):
     conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (oid, uid))
     conn.commit()
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -4625,6 +4638,7 @@ def create_goal(g: GoalIn, uid: int = Depends(get_current_user)):
     conn.commit()
     row = conn.execute("SELECT * FROM goals WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
     conn.close()
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4640,6 +4654,7 @@ def update_goal(gid: int, g: GoalIn, uid: int = Depends(get_current_user)):
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
+    _ai_cache_invalidate(uid)
     return dict(row)
 
 
@@ -4649,6 +4664,7 @@ def delete_goal(gid: int, uid: int = Depends(get_current_user)):
     conn.execute("DELETE FROM goals WHERE id=? AND user_id=?", (gid, uid))
     conn.commit()
     conn.close()
+    _ai_cache_invalidate(uid)
     return {"ok": True}
 
 
@@ -4906,83 +4922,10 @@ def _get_anthropic_client():
     return _anthropic_client
 
 
-_AI_SYSTEM = """Sos el coach financiero de Rendi, una app argentina de seguimiento de inversiones personales.
-
-Estilo:
-- Hablás en español rioplatense (vos, tenés, etc.), tono cercano pero profesional.
-- Sos directo y honesto: si algo está mal, lo decís sin endulzar. Si está bien, lo elogiás sin exagerar.
-- Nunca das consejos financieros específicos ("comprá X"), pero sí observaciones y preguntas que ayuden al usuario a pensar.
-- Frases cortas y claras. Evitás jerga financiera salvo que la expliques.
-- Sin emojis salvo que aporten claridad. Sin disclaimers genéricos tipo "consultá un profesional".
-
-Output: SIEMPRE devolvés un JSON válido con la estructura solicitada en el mensaje del usuario. Nada de texto antes ni después del JSON."""
-
-
-class AIInsightsIn(BaseModel):
-    """Snapshot mínimo del portfolio para generar insights."""
-    total_usd: float = Field(..., ge=0)
-    pnl_total_usd: float
-    pnl_total_pct: float
-    months_tracked: int = Field(0, ge=0)
-    drawdown_max_pct: Optional[float] = None
-    drawdown_current_pct: Optional[float] = None
-    best_month_pct: Optional[float] = None
-    worst_month_pct: Optional[float] = None
-    win_rate_pct: Optional[float] = None
-    total_trades: int = Field(0, ge=0)
-    top_asset: Optional[str] = None
-    top_asset_pnl: Optional[float] = None
-    concentration_top3_pct: Optional[float] = None
-    avg_hold_days: Optional[float] = None
-
-
-@app.post("/api/ai/insights")
-def ai_insights(data: AIInsightsIn, request: Request, uid: int = Depends(get_current_user)):
-    """Genera 1-3 textos de insights personalizados usando Claude Haiku.
-    Devuelve { observations: [{title, text, tone: 'positive'|'neutral'|'warning'}] }"""
-    _check_rate_limit(request, max_calls=20, window_seconds=3600, suffix=f"ai_insights:{uid}")
-
-    client = _get_anthropic_client()
-    if client is None:
-        raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
-
-    portfolio_json = data.model_dump_json(indent=2)
-
-    user_msg = f"""Datos del portfolio del usuario:
-```json
-{portfolio_json}
-```
-
-Generá 3 observaciones cortas (60-100 palabras cada una) sobre lo que ves. Cada una debe:
-- Tener un título de 3-5 palabras (sin emojis, sin signos)
-- Mencionar al menos un número específico del JSON
-- Terminar con una pregunta accionable o una observación concreta
-
-Devolvé EXACTAMENTE este JSON (sin markdown, sin texto extra):
-{{"observations": [
-  {{"title": "...", "text": "...", "tone": "positive|neutral|warning"}},
-  {{"title": "...", "text": "...", "tone": "positive|neutral|warning"}},
-  {{"title": "...", "text": "...", "tone": "positive|neutral|warning"}}
-]}}"""
-
-    try:
-        msg = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=1024,
-            system=[
-                {"type": "text", "text": _AI_SYSTEM, "cache_control": {"type": "ephemeral"}}
-            ],
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        text = msg.content[0].text.strip()
-        # Por las dudas: si el modelo envuelve en ```json ... ``` lo limpiamos
-        if text.startswith("```"):
-            text = text.split("```")[1].lstrip("json\n").rstrip("`").strip()
-        return json.loads(text)
-    except json.JSONDecodeError:
-        raise HTTPException(502, "La IA devolvió un formato inválido. Intentá de nuevo.")
-    except Exception as ex:
-        raise HTTPException(500, f"Error al generar insights: {ex}")
+# ─── /api/ai/insights ELIMINADO (AI v2) ─────────────────────────────────────
+# El endpoint /api/ai/insights legacy + AIInsightsIn + _AI_SYSTEM fueron
+# eliminados — el frontend ya no los consume. Reemplazado por la
+# arquitectura packets/builders con /api/ai/analyze (ver ai/registry.py).
 
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
@@ -5179,6 +5122,29 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
 class AIAnalyzeIn(BaseModel):
     screen: str = Field(..., max_length=64)
     params: Optional[dict] = Field(default_factory=dict)
+
+
+def _ai_cache_invalidate(uid: int) -> None:
+    """Invalida TODO el cache de IA del user. Llamado desde endpoints de
+    mutación (positions, operations, monthly, goals, brokers, etc.).
+
+    Sin esto, el user agrega una operación y sigue viendo análisis viejos
+    cacheados (TTL 24h). Esto es el riesgo de credibilidad más alto del
+    sistema — el LLM cuesta dinero, pero un análisis desactualizado
+    cuesta confianza.
+
+    Es 'safe' — captura cualquier excepción para no romper el endpoint
+    de mutación si el cache de IA falla por alguna razón inesperada.
+    """
+    try:
+        from ai import cache as _ai_cache
+        conn = get_db()
+        try:
+            _ai_cache.invalidate_for_user(conn, uid)
+        finally:
+            conn.close()
+    except Exception as ex:
+        log.warning("ai_cache_invalidate fallo para uid=%s: %s", uid, ex)
 
 
 @app.post("/api/ai/analyze")

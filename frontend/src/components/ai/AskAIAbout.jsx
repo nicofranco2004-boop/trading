@@ -22,7 +22,7 @@
 //     <ComponentePropio />
 //   </AskAIAbout>
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Sparkles } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { track } from '../../utils/track'
@@ -46,7 +46,6 @@ export default function AskAIAbout({
   // (con un pulse sutil) hasta el primer click. Después pasa a hover-only.
   const [discovered, setDiscovered] = useState(true)
   const isMobile = useIsMobile()
-  const lastClickRef = useRef(0)
 
   // Refresh discovered flag al montar — sigue al banner si el user lo cierra
   useEffect(() => {

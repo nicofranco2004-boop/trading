@@ -30,7 +30,7 @@ Shape (~1KB):
 }
 """
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from collections import Counter
 
 

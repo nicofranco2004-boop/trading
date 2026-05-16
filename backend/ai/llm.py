@@ -84,13 +84,24 @@ def _calc_cost_cents(model: str, input_t: int, output_t: int,
     return max(1, round(total_usd * 100 * 100))  # centavos de centavo (precision)
 
 
+# Singleton state — inicializado al módulo, evita NameError + re-warnings.
+_client = None
+_client_init_attempted = False
+
+
 def _get_anthropic_client():
-    """Singleton del cliente Anthropic. Reuse para hit del prompt cache."""
-    global _client
-    try:
+    """Singleton del cliente Anthropic. Reuse para hit del prompt cache.
+
+    Importante: si la API key no está, registramos warning UNA sola vez
+    y retornamos None en las siguientes llamadas sin re-loguear ni
+    re-importar el SDK."""
+    global _client, _client_init_attempted
+    if _client is not None:
         return _client
-    except NameError:
-        pass
+    if _client_init_attempted:
+        # Ya intentamos antes y falló — no reintentar en cada call.
+        return None
+    _client_init_attempted = True
     try:
         from anthropic import Anthropic
         api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
