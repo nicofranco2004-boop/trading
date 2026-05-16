@@ -59,22 +59,22 @@ def _market_summary(indices: List[Dict[str, Any]]) -> str:
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
-    # ── 1. Índices de mercado (cache de main) ────────────────────────────────
+    # ── 1. Índices de mercado ────────────────────────────────────────────────
+    # Llamamos directo al fetcher de home.market (mismo que /api/home/indices).
+    # Tiene su propio cache TTL internamente, así que no duplicamos.
     indices_list: List[Dict[str, Any]] = []
     try:
-        import main as _m
-        cache_idx = getattr(_m, "_indices_cache", {}) or {}
-        data = cache_idx.get("data") if isinstance(cache_idx, dict) else None
-        if isinstance(data, list):
-            for item in data[:6]:
-                indices_list.append({
-                    "symbol": item.get("symbol") or item.get("name"),
-                    "kind": item.get("kind") or "index",
-                    "change_pct": (
-                        round(float(item["change_pct"]), 2)
-                        if item.get("change_pct") is not None else None
-                    ),
-                })
+        from home.market import get_indices_strip
+        data = get_indices_strip() or []
+        for item in data[:6]:
+            indices_list.append({
+                "symbol": item.get("symbol") or item.get("name"),
+                "kind": item.get("kind") or "index",
+                "change_pct": (
+                    round(float(item["change_pct"]), 2)
+                    if item.get("change_pct") is not None else None
+                ),
+            })
     except Exception:
         indices_list = []
 
@@ -158,20 +158,61 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
                 "days_ahead": days_ahead,
             }
 
+            # weight_at_risk_pct: peso combinado de tickers únicos con evento
+            # próximo (usamos weights de top_holdings que reusamos arriba).
+            try:
+                from .dashboard_top_holdings import build as build_top_w
+                weights_packet = build_top_w(conn, user_id)
+                weights_by_ticker = {
+                    h.get("ticker"): h.get("weight_pct", 0)
+                    for h in (weights_packet.get("top_holdings") or [])
+                }
+                affected = {ev["ticker"] for ev in ev_rows if ev["ticker"]}
+                w_sum = sum(
+                    weights_by_ticker.get(t, 0) for t in affected
+                )
+                events_window["weight_at_risk_pct"] = round(w_sum, 2)
+            except Exception:
+                pass
+
     # ── 5. Top 3 holdings con su delta del día ───────────────────────────────
+    # change_pct_today viene de las quotes (cada quote trae change_pct del día).
     top_holdings_pulse: List[Dict[str, Any]] = []
     try:
-        # Reusamos el packet de dashboard.top_holdings para consistencia
         from .dashboard_top_holdings import build as build_top
         top_packet = build_top(conn, user_id)
-        for h in (top_packet.get("top_holdings") or [])[:3]:
+        top_list = top_packet.get("top_holdings") or []
+
+        # Map ticker → change_pct del día desde las quotes que ya fetcheamos
+        ticker_change: Dict[str, float] = {}
+        try:
+            import main as _m
+            symbols_for_change = set()
+            for h in top_list[:3]:
+                t = h.get("ticker")
+                if not t:
+                    continue
+                # broker AR → símbolo termina en .BA
+                broker_n = (h.get("broker") or "").lower()
+                if broker_n in {"cocos", "cocos capital", "iol", "bull", "balanz", "naranja", "pppi", "invertironline"}:
+                    symbols_for_change.add(f"{t}.BA")
+                else:
+                    symbols_for_change.add(t)
+            if symbols_for_change:
+                quotes = _m._fetch_batch_quotes(list(symbols_for_change))
+                for sym, q in (quotes or {}).items():
+                    if q and q.get("change_pct") is not None:
+                        base = sym.replace(".BA", "")
+                        ticker_change[base] = round(float(q["change_pct"]), 2)
+        except Exception:
+            ticker_change = {}
+
+        for h in top_list[:3]:
+            ticker = h.get("ticker")
             top_holdings_pulse.append({
-                "ticker": h.get("ticker"),
+                "ticker": ticker,
                 "weight_pct": h.get("weight_pct"),
-                # Por simplicidad, no calculamos change_pct del día acá —
-                # el packet ya transmite el "estado" estructural; el cambio
-                # diario aparece en personal_cards si el move es material.
-                "change_pct_today": None,
+                "change_pct_today": ticker_change.get(ticker),
             })
     except Exception:
         top_holdings_pulse = []

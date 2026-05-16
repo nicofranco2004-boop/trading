@@ -10,9 +10,9 @@ Shape (~500 bytes):
 {
   "screen": "dashboard.top_holdings",
   "total_value_usd": int,
-  "holdings": [
+  "top_holdings": [
     {
-      "asset": str, "broker": str, "weight_pct": float,
+      "ticker": str, "broker": str, "weight_pct": float,
       "value_usd": int, "pnl_pct": float | null,
       "days_held": int | null,
     }
@@ -20,6 +20,11 @@ Shape (~500 bytes):
   "winners_count": int,
   "losers_count": int,
 }
+
+NOTA: La clave es `top_holdings` (no `holdings`) — varios builders downstream
+(home, news, events, insights.observation) la consumen con ese nombre para
+extraer pesos por ticker. El field `ticker` reemplaza a `asset` por consistencia
+con la nomenclatura del resto del sistema (atribution, eventos, etc.).
 """
 
 from __future__ import annotations
@@ -119,13 +124,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     return {
         "screen": "dashboard.top_holdings",
         "total_value_usd": int(round(grand)),
-        "holdings": [
+        "top_holdings": [
             {
-                "asset": h["asset"],
+                "ticker": h["asset"],
                 "broker": h["broker"],
-                "weight_pct": round(h["value_usd"] / grand, 4),
+                "weight_pct": round(h["value_usd"] / grand * 100, 2),
                 "value_usd": int(round(h["value_usd"])),
-                "pnl_pct": round(h["pnl_pct"], 4),
+                "pnl_pct": round(h["pnl_pct"] * 100, 2),
                 "days_held": h["days_held"],
             }
             for h in top
