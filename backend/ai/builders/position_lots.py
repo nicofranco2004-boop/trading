@@ -36,14 +36,18 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     total_buy_value = 0.0
     closes = 0
     for r in rows:
-        op_type = (r["op_type"] or "").strip()
-        qty = float(r["quantity"] or 0)
-        entry = float(r["entry_price"] or 0)
-        exit_p = r.get("exit_price")
-        pnl = r.get("pnl_usd")
+        # sqlite3.Row no tiene .get() — usar dict() o el acceso por índice
+        # con try/except. Convertimos a dict para uniformar y poder probar
+        # con .get() seguro.
+        rd = dict(r)
+        op_type = (rd.get("op_type") or "").strip()
+        qty = float(rd.get("quantity") or 0)
+        entry = float(rd.get("entry_price") or 0)
+        exit_p = rd.get("exit_price")
+        pnl = rd.get("pnl_usd")
         price = float(exit_p) if exit_p is not None else entry
         lot = {
-            "date": str(r["date"])[:10] if r["date"] else None,
+            "date": str(rd.get("date"))[:10] if rd.get("date") else None,
             "op_type": op_type,
             "price": round(price, 4),
             "qty": round(qty, 6),
