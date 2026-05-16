@@ -92,12 +92,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     grand = max(grand, 1)  # evitar div-by-zero
 
-    # Top 5 holdings by value
+    # Top 5 holdings by value — nomenclatura canónica: 'ticker' + 'weight_pct'
+    # (alineado con dashboard.top_holdings, home, news, events que esperan
+    # estas claves).
     top5 = sorted(by_asset.items(), key=lambda kv: kv[1], reverse=True)[:5]
     top_holdings = [
         {
-            "asset": asset,
-            "pct": round(val / grand, 4),
+            "ticker": asset,
+            "weight_pct": round(val / grand * 100, 2),
             "value_usd": int(round(val)),
         }
         for asset, val in top5
@@ -113,13 +115,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "total_value_usd": int(round(grand)),
         "top_holdings": top_holdings,
         "by_broker": [
-            {"broker": b, "pct": round(v / grand, 4)}
+            {"broker": b, "weight_pct": round(v / grand * 100, 2)}
             for b, v in sorted(by_broker.items(), key=lambda kv: kv[1], reverse=True)
         ],
         "by_currency": {
-            "usd_pct": round(usd_total / grand, 4),
-            "ars_pct": round(ars_total / grand, 4),
+            "usd_pct": round(usd_total / grand * 100, 2),
+            "ars_pct": round(ars_total / grand * 100, 2),
         },
-        "cash_pct": round(cash_total / grand, 4),
+        "cash_pct": round(cash_total / grand * 100, 2),
         "hhi": hhi,
     }
