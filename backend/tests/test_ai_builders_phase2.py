@@ -789,3 +789,127 @@ class TestReportsBuilder:
         assert abs(p_2026["twr_year_pct"] - 5.0) < 0.1
         assert abs(p_2025["twr_year_pct"] - 10.0) < 0.1
         assert p_2026["years_available"] == [2025, 2026]
+
+
+class TestOperationsBuilder:
+
+    def test_empty_returns_zero(self):
+        from ai.builders.operations import build
+        conn = _phase3_db()
+        p = build(conn, 1)
+        assert p["screen"] == "operations"
+        assert p["total_closed"] == 0
+        assert p["win_rate"] == 0.0
+        assert p["best_trade"] is None
+
+    def test_aggregates_winners_losers_payoff(self):
+        conn = _phase3_db()
+        # 3 winners (+100, +200, +50), 2 losers (-30, -50) sobre NVDA, AAPL, BTC
+        ops_data = [
+            ("2026-01-01", "NVDA", "Venta", 100),
+            ("2026-02-01", "AAPL", "Venta", 200),
+            ("2026-03-01", "NVDA", "Venta", 50),
+            ("2026-04-01", "BTC", "Venta", -30),
+            ("2026-05-01", "AAPL", "Venta", -50),
+        ]
+        for date_str, asset, op_type, pnl in ops_data:
+            conn.execute(
+                """INSERT INTO operations (user_id, date, asset, op_type,
+                                          entry_price, quantity, pnl_usd, pnl_pct)
+                   VALUES (1, ?, ?, ?, 100, 1, ?, 0)""",
+                (date_str, asset, op_type, pnl),
+            )
+        from ai.builders.operations import build
+        p = build(conn, 1)
+        assert p["total_closed"] == 5
+        assert p["winners_count"] == 3
+        assert p["losers_count"] == 2
+        # win_rate = 3/5 = 0.6
+        assert abs(p["win_rate"] - 0.6) < 0.01
+        # avg_win = (100+200+50)/3 = 116.67
+        assert abs(p["avg_win_usd"] - 116.67) < 0.5
+        # avg_loss = -40
+        assert abs(p["avg_loss_usd"] - (-40)) < 0.5
+        # payoff = 116.67 / 40 ≈ 2.92
+        assert abs(p["payoff_ratio"] - 2.92) < 0.1
+        # best_trade: AAPL +200
+        assert p["best_trade"]["ticker"] == "AAPL"
+        assert p["best_trade"]["pnl_usd"] == 200.0
+        # worst_trade: AAPL -50
+        assert p["worst_trade"]["ticker"] == "AAPL"
+        assert p["worst_trade"]["pnl_usd"] == -50.0
+        # tickers únicos: NVDA, AAPL, BTC
+        assert p["tickers_traded"] == 3
+
+    def test_excludes_compras_and_dividendos(self):
+        conn = _phase3_db()
+        # Compra (NO trade), Dividendo (NO trade), Venta (sí trade)
+        conn.execute(
+            "INSERT INTO operations (user_id, date, asset, op_type, pnl_usd) "
+            "VALUES (1, '2026-01-01', 'NVDA', 'Compra', NULL)"
+        )
+        conn.execute(
+            "INSERT INTO operations (user_id, date, asset, op_type, pnl_usd) "
+            "VALUES (1, '2026-02-01', 'NVDA', 'Dividendo', 50)"
+        )
+        conn.execute(
+            "INSERT INTO operations (user_id, date, asset, op_type, pnl_usd) "
+            "VALUES (1, '2026-03-01', 'NVDA', 'Venta', 100)"
+        )
+        from ai.builders.operations import build
+        p = build(conn, 1)
+        # Solo la Venta cuenta como trade
+        assert p["total_closed"] == 1
+
+
+class TestOperationTradeBuilder:
+
+    def test_requires_operation_id(self):
+        from ai.builders.operation_trade import build
+        conn = _phase3_db()
+        with pytest.raises(ValueError, match="operation_id"):
+            build(conn, 1)
+
+    def test_not_found_raises(self):
+        from ai.builders.operation_trade import build
+        conn = _phase3_db()
+        with pytest.raises(ValueError, match="no encontrada"):
+            build(conn, 1, operation_id=999)
+
+    def test_compra_not_trade_raises(self):
+        """Una Compra (sin pnl_usd) no es un trade cerrado."""
+        from ai.builders.operation_trade import build
+        conn = _phase3_db()
+        conn.execute(
+            "INSERT INTO operations (id, user_id, date, asset, op_type, pnl_usd) "
+            "VALUES (10, 1, '2026-01-01', 'NVDA', 'Compra', NULL)"
+        )
+        with pytest.raises(ValueError, match="no es un trade"):
+            build(conn, 1, operation_id=10)
+
+    def test_packet_shape_with_holding_days(self):
+        from ai.builders.operation_trade import build
+        conn = _phase3_db()
+        conn.execute(
+            """INSERT INTO operations
+               (id, user_id, date, asset, broker, op_type,
+                entry_price, exit_price, quantity, pnl_usd, pnl_pct, entry_date)
+               VALUES (5, 1, '2026-03-15', 'NVDA', 'Schwab', 'Venta',
+                       100, 148, 10, 480, 48, '2026-01-15')"""
+        )
+        p = build(conn, 1, operation_id=5)
+        assert p["screen"] == "operations.trade"
+        assert p["trade"]["ticker"] == "NVDA"
+        assert p["trade"]["pnl_usd"] == 480.0
+        assert p["trade"]["holding_days"] == 59  # 31 ene + 28 feb = 59
+
+    def test_user_isolation(self):
+        """Un trade de user 1 no es accesible para user 2."""
+        from ai.builders.operation_trade import build
+        conn = _phase3_db()
+        conn.execute(
+            "INSERT INTO operations (id, user_id, date, asset, op_type, pnl_usd) "
+            "VALUES (7, 1, '2026-01-01', 'NVDA', 'Venta', 100)"
+        )
+        with pytest.raises(ValueError, match="no encontrada"):
+            build(conn, 2, operation_id=7)

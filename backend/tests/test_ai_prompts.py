@@ -35,6 +35,8 @@ ALL_RENDERS = [
     "render_events_prompt",
     "render_events_item_prompt",
     "render_reports_prompt",
+    "render_operations_prompt",
+    "render_operation_trade_prompt",
 ]
 
 

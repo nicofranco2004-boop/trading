@@ -815,6 +815,26 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Cuál fue el lote más rentable hasta ahora?', '¿Qué pasa con el avg si agrego un lote más al precio actual?'],
   },
+  operations: {
+    tldr: 'El sistema descansa sobre asimetría favorable — pocas ganadoras grandes pagan varias perdedoras chicas. Pero un par de trades excepcionales infla el payoff promedio: si se excluyen, la expectancy se acerca al break-even.',
+    sections: [
+      { title: 'Estadísticas del sistema', tone: 'positive', body: 'Win rate moderado con payoff ratio elevado configuran un sistema de trend-following clásico — pocos aciertos grandes superan en magnitud a varios fallos chicos. La expectancy es positiva sostenida sobre la muestra histórica.' },
+      { title: 'Lo que esconde el promedio', tone: 'warning', body: 'El avg_win está inflado por un par de trades excepcionales. Si se excluye el outlier histórico, el payoff cae a un nivel más cercano a 2-3x — todavía favorable, pero materialmente distinto. La métrica robusta para evaluar el sistema es la mediana del P&L, no el promedio.' },
+      { title: 'Concentración por ticker', tone: 'neutral', body: 'Los top 3 tickers más operados acumulan la mayoría de los trades del historial. Esa concentración indica un universo de trading reducido — el sistema vive de operar pocos nombres conocidos en profundidad, no de explorar muchos activos en superficial.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'La pregunta útil sobre este sistema no es si va a seguir funcionando, sino qué condiciones del mercado fueron las que posibilitaron los trades excepcionales. Si esas condiciones se repiten poco (ej. correcciones fuertes seguidas de rebotes), el sistema depende de un régimen específico — válido reconocerlo y registrar cuándo se da.' },
+    ],
+    follow_ups: ['¿Cuál es la expectancy sin los outliers?', '¿En qué año concentré más trades?'],
+  },
+  'operations.trade': {
+    tldr: 'Este trade vale varias veces el avg_win del sistema — fue el aporte más grande del año. Identificar qué condiciones lo posibilitaron es lo más útil del análisis: cómo se construyó el setup, no si va a repetirse.',
+    sections: [
+      { title: 'Magnitud relativa', tone: 'positive', body: 'El P&L de la operación supera por mucho al avg_win histórico. Esa diferencia ubica al trade como un outlier estadístico del propio sistema — no es una ejecución típica sino una excepción.' },
+      { title: 'Ranking en el año', tone: 'neutral', body: 'Es el trade de mayor P&L del año. Una contribución de esta magnitud define la temporada — sin esta operación, el resultado del año se acercaría al benchmark. La replicabilidad de un trade así no se debería asumir.' },
+      { title: 'Holding period', tone: 'neutral', body: 'El tiempo de la posición es de mediano plazo — ni intraday ni multi-año. Esa ventana es la típica de las ganadoras grandes en sistemas de trend-following: hay tiempo para que la tesis se desarrolle pero no se mantiene a través de varios ciclos.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'Documentar qué fue diferente en este trade (tamaño, timing, conviction, contexto sectorial) es más valioso que el P&L. Sin ese ejercicio, el outlier queda como suerte no transferible. Con el ejercicio, se convierte en una entrada del checklist para reconocer setups similares.' },
+    ],
+    follow_ups: ['¿Hubo otros trades del mismo ticker?', '¿Cómo se compara con el peor trade del año?'],
+  },
   reports: {
     tldr: 'El año cierra con TWR positivo pero la mayor parte del rendimiento se concentra en uno o dos meses excepcionales — la consistency mensual es media, lo cual hace al resultado menos replicable que un año con curva pareja.',
     sections: [
@@ -1523,6 +1543,8 @@ export function handleDemoRequest(method, path, body) {
           'events',
           'events.item',
           'reports',
+          'operations',
+          'operations.trade',
         ],
       }
     }

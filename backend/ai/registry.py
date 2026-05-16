@@ -46,6 +46,8 @@ from .builders.news_item import build as build_news_item
 from .builders.events import build as build_events
 from .builders.events_item import build as build_events_item
 from .builders.reports import build as build_reports
+from .builders.operations import build as build_operations
+from .builders.operation_trade import build as build_operation_trade
 
 
 # topic_id → (builder_fn, prompt_fn)
@@ -78,6 +80,8 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "events": (build_events, prompts.render_events_prompt),
     "events.item": (build_events_item, prompts.render_events_item_prompt),
     "reports": (build_reports, prompts.render_reports_prompt),
+    "operations": (build_operations, prompts.render_operations_prompt),
+    "operations.trade": (build_operation_trade, prompts.render_operation_trade_prompt),
 }
 
 

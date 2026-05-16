@@ -305,6 +305,15 @@ _FREE_FOCUS = {
         "Mejor / peor mes con sus deltas.",
         "Win rate mensual + consistencia.",
     ],
+    "operations": [
+        "Cantidad de trades cerrados + win rate.",
+        "P&L total y mejor / peor trade.",
+        "Tickers más operados.",
+    ],
+    "operations.trade": [
+        "Fecha, ticker, P&L USD y % del trade.",
+        "Holding days si está disponible.",
+    ],
 }
 
 
@@ -890,6 +899,67 @@ def render_goal_prompt(tier: str = "pro") -> str:
         pitfalls=[
             "No recomendar cambiar el objetivo ('ponete una meta más realista').",
             "No predecir si se va a alcanzar — sí mostrar la sensibilidad a las variables.",
+        ],
+    )
+
+
+def render_operations_prompt(tier: str = "pro") -> str:
+    view = "Historial completo de operaciones cerradas"
+    pkt = (
+        "total_closed, winners/losers, win_rate, total_pnl_usd, avg_win/loss, "
+        "payoff_ratio, expectancy_usd, best/worst_trade, trades_by_year, "
+        "tickers_traded, top_traded_tickers."
+    )
+    free = _maybe_free("operations", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Combinación win_rate × payoff — si payoff alto compensa win_rate moderado, el sistema vive de pocas operaciones grandes; si win_rate alto con payoff cercano a 1, sistema de muchas ganancias chicas.",
+            "Expectancy + asimetría — la métrica útil para evaluar replicabilidad es la mediana, no el promedio. Si avg_win está inflado por uno o dos outliers, la expectancy es engañosa.",
+            "Distribución temporal — años con muchos trades vs años con pocos pueden indicar cambio de estilo o régimen.",
+            "Tickers más operados — si el net P&L de uno de ellos es muy distinto al promedio, ese activo está deformando el resultado.",
+        ],
+        insight_examples=[
+            "El payoff ratio del sistema descansa sobre un par de trades excepcionales. Si se excluyera el outlier histórico (best_trade), la expectancy se acerca al break-even — el sistema vive de encontrar pocos trades muy buenos, no de ser consistentemente rentable.",
+            "Win rate moderado con payoff elevado es el patrón típico del trend-following. Funciona si el inversor está cómodo con muchos pequeños 'fallos' seguidos de algunos aciertos grandes — psicológicamente difícil de mantener.",
+        ],
+        pitfalls=[
+            "Si total_closed < 20, decir que la muestra es chica para conclusiones estadísticas.",
+            "No recomendar 'operá más' ni 'operá menos'.",
+            "No predecir el resultado del próximo trade.",
+        ],
+    )
+
+
+def render_operation_trade_prompt(tier: str = "pro") -> str:
+    view = "Trade individual (zoom sobre UNA operación cerrada)"
+    pkt = (
+        "trade {id, date, ticker, broker, op_type, entry_price, exit_price, "
+        "quantity, pnl_usd, pnl_pct, holding_days} + user_context {avg_win/loss, "
+        "payoff_ratio, vs_avg_win_multiplier, rank_in_year, year_total_trades}."
+    )
+    free = _maybe_free("operations.trade", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Magnitud relativa del trade vs el promedio del usuario — un trade que vale 3x el avg_win es excepcional; uno que vale 0.5x es típico.",
+            "Holding period vs el comportamiento general — un trade cerrado en pocos días es trading táctico, uno con holding largo es position trading.",
+            "Rank en el año — si es top 1-3 del año, es un outlier que define la temporada; si es promedio, es ejecución de sistema.",
+            "Para perdedoras (pnl negativo): cuán proporcional fue al avg_loss del user — si lo superó mucho, vale revisar si el criterio de stop falló.",
+        ],
+        insight_examples=[
+            "Este trade representa más de 3x el avg_win del sistema — fue el aporte más grande del año. Identificar qué condiciones lo posibilitaron (tamaño, timing, conviction) es lo más valioso del análisis. La pregunta no es si se va a repetir, sino qué tuvo de distinto para registrarlo como patrón.",
+            "Un trade cerrado en pocos días con P&L pequeño es ejecución limpia de sistema — ni outlier ni problema. Lo importante en estos casos no es el trade sino que se mantuvo la regla.",
+        ],
+        pitfalls=[
+            "No celebrar ni lamentar el trade — describir su lugar relativo en el sistema.",
+            "Si holding_days falta (sin entry_date), decir que no se puede leer el tiempo de la posición.",
         ],
     )
 
