@@ -19,6 +19,8 @@ import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
 import NewsTagBadge, { newsTagLabel } from '../components/NewsTagBadge'
 import { api } from '../utils/api'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
+import InlineAIButton from '../components/ai/InlineAIButton'
 
 const TABS = [
   { value: 'portfolio', label: 'Para ti',  desc: 'Noticias de los activos de tu cartera' },
@@ -125,33 +127,41 @@ export default function News({ embedded = false }) {
         <PageHeader
           title="Noticias"
           subtitle="Lo que pasa en el mercado y en los activos de tu cartera."
+          action={<AnalyzeButton screen="news" subtitle="Tu radar de noticias" />}
         />
       )}
 
       {/* Sub-tabs Para ti / Mercado — pills. */}
-      <div
-        role="tablist"
-        aria-label="Origen de noticias"
-        className="flex items-center gap-1.5 mb-4 flex-wrap"
-      >
-        {TABS.map(t => {
-          const active = tab === t.value
-          return (
-            <button
-              key={t.value}
-              role="tab"
-              aria-selected={active}
-              onClick={() => { setTab(t.value); setTickerFilter(null); setTagFilter(null) }}
-              className={`text-xs px-3 py-1.5 rounded-full border transition ${
-                active
-                  ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
-                  : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3'
-              }`}
-            >
-              {t.label}
-            </button>
-          )
-        })}
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div
+          role="tablist"
+          aria-label="Origen de noticias"
+          className="flex items-center gap-1.5 flex-wrap"
+        >
+          {TABS.map(t => {
+            const active = tab === t.value
+            return (
+              <button
+                key={t.value}
+                role="tab"
+                aria-selected={active}
+                onClick={() => { setTab(t.value); setTickerFilter(null); setTagFilter(null) }}
+                className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                  active
+                    ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
+                    : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3'
+                }`}
+              >
+                {t.label}
+              </button>
+            )
+          })}
+        </div>
+        {/* Botón Analizar visible siempre — tanto en /noticias standalone
+            como en /novedades?tab=noticias (embedded). */}
+        {embedded && (
+          <AnalyzeButton screen="news" subtitle="Tu radar de noticias" />
+        )}
       </div>
 
       {/* KPI strip */}
@@ -267,11 +277,28 @@ function NewsFeatured({ news, tab, onTagClick }) {
   const { title, summary, url, published_at, ticker, tags } = news
   const { cleanTitle, sourceName } = splitTitleSource(title)
   return (
+    <div className="group relative bg-bg-1 border border-line rounded hover:border-rendi-accent/40 transition">
+      {ticker && (
+        <div className="absolute top-3 right-3 z-10">
+          <InlineAIButton
+            topic="news.item"
+            params={{
+              ticker,
+              title: cleanTitle || title,
+              source: sourceName,
+              published_at,
+              summary,
+              tags,
+            }}
+            subtitle={`${ticker} · ${sourceName || 'noticia destacada'}`}
+          />
+        </div>
+      )}
     <a
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="group block bg-bg-1 border border-line rounded p-4 sm:p-5 hover:border-rendi-accent/40 transition"
+      className="block p-4 sm:p-5"
     >
       <div className="flex flex-col sm:flex-row gap-4 sm:gap-5">
         {/* Side accent — un panel vertical color rendi-accent que distingue la featured */}
@@ -317,6 +344,7 @@ function NewsFeatured({ news, tab, onTagClick }) {
         <ExternalLink size={14} strokeWidth={1.5} className="text-ink-3 shrink-0 mt-1 self-start hidden sm:block" />
       </div>
     </a>
+    </div>
   )
 }
 
@@ -325,12 +353,31 @@ function NewsTile({ news, tab, onTagClick }) {
   const { cleanTitle, sourceName } = splitTitleSource(title)
 
   return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group block bg-bg-1 border border-line rounded p-3.5 hover:border-rendi-accent/40 transition relative"
-    >
+    <div className="group bg-bg-1 border border-line rounded hover:border-rendi-accent/40 transition relative">
+      {/* Botón ✦ absoluto en top-right — sobre el anchor, NO consume el click
+          principal porque tiene stopPropagation interno. */}
+      {ticker && (
+        <div className="absolute top-2 right-2 z-10">
+          <InlineAIButton
+            topic="news.item"
+            params={{
+              ticker,
+              title: cleanTitle || title,
+              source: sourceName,
+              published_at,
+              summary,
+              tags,
+            }}
+            subtitle={`${ticker} · ${sourceName || 'noticia'}`}
+          />
+        </div>
+      )}
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block p-3.5"
+      >
       <div className="flex items-center gap-2 mb-2 flex-wrap">
         {tab === 'portfolio' && ticker && (
           <span className="flex items-center gap-1">
@@ -363,9 +410,10 @@ function NewsTile({ news, tab, onTagClick }) {
       <ExternalLink
         size={11}
         strokeWidth={1.5}
-        className="text-ink-3 absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity"
+        className="text-ink-3 absolute top-3 right-9 opacity-0 group-hover:opacity-100 transition-opacity"
       />
-    </a>
+      </a>
+    </div>
   )
 }
 

@@ -277,6 +277,29 @@ _FREE_FOCUS = {
         "Aporte mensual + rendimiento esperado.",
         "Status (on_track / behind / ahead) y ETA.",
     ],
+    "home": [
+        "Estado de mercado del día (mostly_up/down/mixed).",
+        "Delta del portfolio del día si está disponible.",
+        "Cantidad de eventos próximos y peso afectado.",
+    ],
+    "news": [
+        "Cantidad total de noticias del período.",
+        "Tickers cubiertos por las noticias.",
+        "Tags más frecuentes.",
+    ],
+    "news.item": [
+        "Ticker, fuente y fecha de la noticia.",
+        "Si el user tiene el ticker, su peso en cartera.",
+    ],
+    "events": [
+        "Total de eventos próximos y por tipo (earnings/dividendos/splits).",
+        "Distribución temporal (esta semana / mes / más allá).",
+        "Weight at risk del portfolio.",
+    ],
+    "events.item": [
+        "Ticker, tipo y fecha del evento.",
+        "Si el user tiene el ticker, su peso.",
+    ],
 }
 
 
@@ -862,6 +885,154 @@ def render_goal_prompt(tier: str = "pro") -> str:
         pitfalls=[
             "No recomendar cambiar el objetivo ('ponete una meta más realista').",
             "No predecir si se va a alcanzar — sí mostrar la sensibilidad a las variables.",
+        ],
+    )
+
+
+def render_home_prompt(tier: str = "pro") -> str:
+    view = "Home — snapshot del día (mercado + portfolio + eventos próximos)"
+    pkt = (
+        "market.indices + summary (mostly_up/down/mixed/flat), portfolio_today "
+        "(total_value_usd, delta_pct_today, delta_usd_today), "
+        "personal_cards_count, portfolio_events_window {total, "
+        "weight_at_risk_pct, next_event}, top_holdings_pulse."
+    )
+    free = _maybe_free("home", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Estado del mercado del día y cómo se vincula con la composición del portfolio (si la exposure dominante coincide con sectores que se movieron).",
+            "Delta del día del portfolio vs delta del día del mercado — outperform / underperform en escala diaria.",
+            "Eventos próximos que tocan posiciones grandes — qué semana es la de mayor riesgo idiosincrático.",
+            "Si personal_cards_count > 0, mencionar que hay cards individuales con detalle adicional.",
+        ],
+        insight_examples=[
+            "El portfolio cierra el día arriba mientras el mercado general bajó — esa divergencia suele venir de sectores específicos. Vale revisar qué posiciones del top 3 se movieron en sentido inverso al benchmark.",
+            "La semana próxima concentra varios earnings sobre posiciones de peso material. El día de los reportes el portfolio puede moverse más del promedio diario incluso si el mercado general queda plano.",
+        ],
+        pitfalls=[
+            "El día no es señal — un solo día de outperform no constituye alpha. Mantener el tono descriptivo del día sin extrapolar.",
+            "No predecir el cierre del día siguiente.",
+            "Si los snapshots no tienen 2 días disponibles, decir que falta historial reciente.",
+        ],
+    )
+
+
+def render_news_prompt(tier: str = "pro") -> str:
+    view = "Feed de noticias del portfolio (vista general)"
+    pkt = (
+        "total_news en window_days, tickers_covered, tickers_silent_count, "
+        "top_tags + top_sources con counts, headlines (cap 10) con "
+        "weight_pct del ticker en cartera."
+    )
+    free = _maybe_free("news", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Distribución temática — qué tags dominan y qué dicen sobre los temas del momento en la cartera.",
+            "Concentración de cobertura — si las noticias se aglomeran en uno o dos tickers, ese activo está en el radar de mercado.",
+            "Tickers silent — si varias posiciones no tienen cobertura reciente, es contexto: la decisión de tenerlas no se está revalidando con flujo informativo.",
+            "Relevancia ponderada — headlines sobre posiciones de weight alto importan más que sobre weight bajo.",
+        ],
+        insight_examples=[
+            "Más del 50% de las noticias del período tocan un solo ticker — coincide con el peso dominante en la cartera. La señal aquí no es cuántas noticias sino que el portfolio entero refleja un solo tema.",
+            "Hay 4 tickers de la cartera sin noticias en la ventana. Para un inversor activo, esa ausencia es señal: si decidiste tener la posición y nada nuevo informó la tesis, vale registrar si la decisión sigue siendo activa o se volvió default.",
+        ],
+        pitfalls=[
+            "NO analizar el contenido de las noticias — solo describirlas en metadata (ticker, source, tag).",
+            "Si total_news = 0, decir que el feed está silencioso y la ventana actual no aporta material.",
+        ],
+    )
+
+
+def render_news_item_prompt(tier: str = "pro") -> str:
+    view = "Noticia individual (sub-componente del feed)"
+    pkt = (
+        "article {ticker, title, source, published_at, summary, tags} + "
+        "portfolio_context {holds_ticker, weight_pct, pnl_pct, broker, "
+        "days_held, other_news_count_30d}."
+    )
+    free = _maybe_free("news.item", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Si el user TIENE el ticker (holds_ticker=true): cuán relevante es la noticia dado el peso y el P&L de la posición.",
+            "Si NO lo tiene: descripción neutra de qué tipo de noticia es (por tags) sin recomendar entrar.",
+            "Si other_news_count_30d es alto, mencionar que el ticker viene generando cobertura sostenida — no es un evento aislado.",
+            "Si el portfolio_context muestra una posición grande (>15%) y pnl_pct negativo, la noticia puede ser parte de la tesis a reconciliar.",
+        ],
+        insight_examples=[
+            "La noticia toca una posición que pesa 28% de la cartera y viene +29% — vale leerla con criterio. Lo útil no es la noticia per se sino qué cambia (si es que cambia) en la tesis original.",
+            "El ticker registra varias noticias en los últimos 30 días. Esa continuidad de cobertura sugiere que el mercado lo está re-evaluando — puede ser oportunidad o adversidad, depende del sentimiento agregado que el packet no captura.",
+        ],
+        pitfalls=[
+            "Cero análisis literal de la noticia — el LLM no sabe qué dice más allá del headline.",
+            "No recomendar comprar/vender en función de la noticia.",
+            "Si holds_ticker=false, mantener el análisis en el plano informativo, no en el de oportunidad.",
+        ],
+    )
+
+
+def render_events_prompt(tier: str = "pro") -> str:
+    view = "Calendario completo de eventos próximos del portfolio"
+    pkt = (
+        "window_days (default 60), total_events, by_type, by_horizon, "
+        "weight_at_risk_pct, concentrated_week (bool), events list (cap 12)."
+    )
+    free = _maybe_free("events", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Distribución temporal — concentrated_week indica una semana de alta varianza esperada.",
+            "Mix de tipos — earnings traen volatilidad, dividendos traen cash flow. La proporción dice algo del estilo de la cartera.",
+            "weight_at_risk_pct alto significa que el portfolio depende fuerte de un puñado de reportes.",
+            "Si total_events = 0, decir que la ventana está despejada — período natural para revisar tesis sin presión de evento.",
+        ],
+        insight_examples=[
+            "El portfolio acumula 6 earnings en una sola semana sobre posiciones que suman 60% del valor. Esa semana el TWR puede moverse más que el promedio mensual — vale tener pre-definido qué umbral de movimiento dispara revisión.",
+            "Los dividendos cubren cerca de un 30% del weight del portfolio. Esa porción genera cash flow conocido — diferenciar el cash flow esperado del market movement ayuda a leer el TWR con criterio.",
+        ],
+        pitfalls=[
+            "No predecir resultado de earnings.",
+            "Si concentrated_week=False, no inventar concentración.",
+        ],
+    )
+
+
+def render_events_item_prompt(tier: str = "pro") -> str:
+    view = "Evento financiero individual (zoom sobre UNO)"
+    pkt = "event {ticker, type, date, days_ahead, details} + portfolio_context {holds_ticker, weight_pct, pnl_pct, broker}."
+    free = _maybe_free("events.item", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Tipo de evento → tipo de impacto esperable: earnings = volatilidad, dividend = cash flow conocido, split = ajuste técnico.",
+            "Si el user tiene el ticker con weight alto, magnitud del impacto en el TWR del día del evento.",
+            "Días hasta el evento — más de 30 días = contexto, menos de 7 = relevante para el plan de la semana.",
+            "Si el ticker viene con pnl_pct negativo, el evento puede ser bisagra de la tesis (especialmente earnings).",
+        ],
+        insight_examples=[
+            "El earnings de un activo que pesa 28% del portfolio en 4 días puede mover el TWR diario del orden de 2-3 puntos según el movimiento típico post-earnings. Es contexto a tener presente, no señal de acción.",
+            "Un dividendo de fecha próxima sobre una posición chica no mueve la aguja del portfolio, pero suma a una serie de cash flows que conviene registrar separados del market return para no confundir generación de cash con apreciación de capital.",
+        ],
+        pitfalls=[
+            "No recomendar 'cerrá antes del earnings'.",
+            "Si holds_ticker=false, decir que el evento es informativo — sin sugerir entrar.",
         ],
     )
 

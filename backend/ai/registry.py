@@ -40,6 +40,11 @@ from .builders.position import build as build_position
 from .builders.position_chart import build as build_position_chart
 from .builders.position_lots import build as build_position_lots
 from .builders.goal import build as build_goal
+from .builders.home import build as build_home
+from .builders.news import build as build_news
+from .builders.news_item import build as build_news_item
+from .builders.events import build as build_events
+from .builders.events_item import build as build_events_item
 
 
 # topic_id → (builder_fn, prompt_fn)
@@ -65,6 +70,12 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "position.chart": (build_position_chart, prompts.render_position_chart_prompt),
     "position.lots": (build_position_lots, prompts.render_position_lots_prompt),
     "goal": (build_goal, prompts.render_goal_prompt),
+    # Phase 3: Home + Novedades (News + Events)
+    "home": (build_home, prompts.render_home_prompt),
+    "news": (build_news, prompts.render_news_prompt),
+    "news.item": (build_news_item, prompts.render_news_item_prompt),
+    "events": (build_events, prompts.render_events_prompt),
+    "events.item": (build_events_item, prompts.render_events_item_prompt),
 }
 
 

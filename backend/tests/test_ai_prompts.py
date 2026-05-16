@@ -28,6 +28,12 @@ ALL_RENDERS = [
     "render_position_chart_prompt",
     "render_position_lots_prompt",
     "render_goal_prompt",
+    # Phase 3 — Home + Novedades
+    "render_home_prompt",
+    "render_news_prompt",
+    "render_news_item_prompt",
+    "render_events_prompt",
+    "render_events_item_prompt",
 ]
 
 

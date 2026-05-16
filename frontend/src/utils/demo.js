@@ -815,6 +815,56 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Cuál fue el lote más rentable hasta ahora?', '¿Qué pasa con el avg si agrego un lote más al precio actual?'],
   },
+  home: {
+    tldr: 'El día abre con mercado mixto y el portfolio se mueve cerca de cero — buena ventana para revisar tesis sin presión de evento. La semana próxima concentra varios reportes sobre posiciones grandes.',
+    sections: [
+      { title: 'Estado del día', tone: 'neutral', body: 'Los índices abren mixtos: algunos verdes, otros rojos. La sesión no muestra un tema dominante y el portfolio se mueve dentro del rango habitual de un día sin shocks materiales.' },
+      { title: 'Vinculación con la cartera', tone: 'neutral', body: 'El portfolio acompaña el rango del mercado del día. Cuando el delta del portfolio se desvía mucho del delta del mercado, esa divergencia suele venir de sectores específicos — hoy no es ese caso.' },
+      { title: 'Riesgo de la semana', tone: 'warning', body: 'En los próximos 14 días aparecen earnings sobre posiciones que combinadas representan ~40% del valor del portfolio. La semana del reporte puede mover el TWR diario más de lo usual.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'Días sin volatilidad son los más útiles para revisar criterio sin reaccionar al precio. Hoy es ese tipo de día — vale verificar si los umbrales de rebalance están bien calibrados antes de que llegue una sesión con noticias.' },
+    ],
+    follow_ups: ['¿Qué tan correlacionado está mi portfolio con el SPY?', '¿Cuál es el peso combinado con earnings esta semana?'],
+  },
+  news: {
+    tldr: 'El feed de noticias del período concentra la mayor parte de su volumen en pocos tickers — un patrón que refleja que los temas del momento tocan posiciones específicas de la cartera, no el portfolio entero.',
+    sections: [
+      { title: 'Distribución de cobertura', tone: 'neutral', body: 'En el período cubierto, una parte significativa de las noticias menciona los mismos 2-3 tickers. Eso significa que las posiciones grandes están en el radar del mercado — el ruido informativo es proporcional al peso, no al diversificado nominal.' },
+      { title: 'Temas dominantes', tone: 'neutral', body: 'Los tags más frecuentes apuntan a earnings + movimientos sectoriales. Es un período donde el calendario de reportes domina sobre las noticias macro — eso es normal en semanas de reporting season.' },
+      { title: 'Tickers silent', tone: 'neutral', body: 'Varias posiciones del portfolio NO aparecen en las noticias del período. Esa ausencia no es positiva ni negativa por sí sola, pero vale registrar si esas posiciones siguen siendo decisión activa o se volvieron defaults.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'Cuando el ruido informativo se concentra en pocas posiciones, las decisiones suelen sesgarse hacia esos tickers — el feed crea agenda. Mantener un registro de "qué decidiste sin noticias" es una métrica simple pero útil para chequear si la toma de decisión responde a la tesis o al volumen de cobertura del día.' },
+    ],
+    follow_ups: ['¿Qué ticker concentra más cobertura este período?', '¿Cuáles son los tags dominantes?'],
+  },
+  'news.item': {
+    tldr: 'La noticia toca una posición material del portfolio — vale leerla con criterio. Lo importante no es la noticia en sí, sino qué (si es que algo) cambia en la tesis original de la posición.',
+    sections: [
+      { title: 'Relevancia para tu cartera', tone: 'warning', body: 'El ticker de la noticia está entre las posiciones grandes del portfolio. Una noticia que mueve la valuación del activo se transmite al TWR del portfolio en proporción al peso — vale prestarle atención.' },
+      { title: 'Contexto del activo', tone: 'neutral', body: 'La posición viene con P&L positivo acumulado y un holding de varios meses. La noticia llega sobre un activo que ya cargó parte de la tesis — la reacción del precio post-noticia suele ser menor en activos que ya recorrieron camino.' },
+      { title: 'Cobertura sostenida', tone: 'neutral', body: 'El ticker registra varias noticias en los últimos 30 días. Esa continuidad indica que el mercado está re-evaluando el activo — la noticia individual es menos importante que la tendencia agregada de cobertura.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'Una noticia rara vez justifica cambiar la posición — lo que sí justifica el cambio es si la noticia modifica la TESIS original. La pregunta práctica es "¿lo que dice esto hace que mi razón para tener la posición ya no aplique?". Si la respuesta es no, la noticia es ruido — útil de leer, no de actuar.' },
+    ],
+    follow_ups: ['¿Cuántas otras noticias hay del mismo ticker?', '¿Qué % del portfolio depende de esta posición?'],
+  },
+  events: {
+    tldr: 'El calendario concentra la mayoría de los eventos sobre un puñado de posiciones grandes — una semana en particular concentra varios reportes que pueden mover el TWR del portfolio más que el rango diario habitual.',
+    sections: [
+      { title: 'Composición del calendario', tone: 'neutral', body: 'En la ventana cubierta aparecen earnings, dividendos y algunos eventos macro. El mix es típico de una temporada de reportes: el peso recae en earnings, que es lo que más volatilidad introduce en la cartera.' },
+      { title: 'Concentración temporal', tone: 'warning', body: 'Hay una semana con varios eventos simultáneos sobre posiciones que combinadas representan una porción material del portfolio. En esos días, el portfolio puede comportarse de forma menos predecible que el promedio.' },
+      { title: 'Cash flow vs market movement', tone: 'neutral', body: 'Los dividendos del calendario generan flujos conocidos. Diferenciar ese cash flow del movimiento de mercado ayuda a leer el TWR con criterio — el portfolio puede subir un día solo por dividendos pagados, sin que el activo haya apreciado.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'La utilidad del calendario no es decidir qué hacer en cada evento sino fijar el plan ANTES de que llegue. Pre-definir el umbral de tolerancia a movimientos post-earnings ("si X cae más de Y% sin razón fundamental") evita decisiones tomadas en caliente — los datos académicos muestran que decisiones tomadas en frío rinden mejor que las post-evento.' },
+    ],
+    follow_ups: ['¿Qué semana concentra más eventos?', '¿Qué porcentaje del portfolio está expuesto a earnings esta temporada?'],
+  },
+  'events.item': {
+    tldr: 'El evento toca una posición de peso material — el día del reporte el portfolio puede moverse más que el promedio diario habitual. Es contexto a tener presente, no señal de acción.',
+    sections: [
+      { title: 'Magnitud del impacto', tone: 'warning', body: 'El ticker representa una proporción significativa del portfolio. Un movimiento típico post-earnings del orden del ±8% en ese activo se traduce en 2-3 puntos de TWR del portfolio en una sola sesión.' },
+      { title: 'Comportamiento típico', tone: 'neutral', body: 'La reacción del precio a un earnings beat/miss tiene baja correlación con la calidad del reporte — la sorpresa relativa al consenso pesa más que los números absolutos. El inversor individual no tiene edge informacional acá.' },
+      { title: 'Posición previa al evento', tone: 'neutral', body: 'La posición viene con P&L positivo. Llega al evento con cushion. Eso no garantiza nada del movimiento del precio el día del reporte, pero baja la presión emocional respecto de llegar al evento con la posición en rojo.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'La regla útil para earnings de posiciones grandes no es cerrar antes o esperar — es pre-definir el escenario adverso. Por ejemplo: "si el activo cae más de 15% post-earnings sin que cambien los fundamentales explicados en el reporte, mantengo o promedio". Eso convierte una decisión de reacción en una verificación contra criterio.' },
+    ],
+    follow_ups: ['¿Cuál fue el movimiento promedio de earnings previos de este ticker?', '¿Cuánto cae el portfolio si el activo retrocede 15%?'],
+  },
   goal: {
     tldr: 'El objetivo es alcanzable si se sostiene la disciplina de aportes y la tasa de retorno esperada se ubica cerca del CAGR histórico del propio portfolio. Depender solo del rendimiento sin aportes adicionales aleja el horizonte estimado en varios meses.',
     sections: [
@@ -1457,6 +1507,11 @@ export function handleDemoRequest(method, path, body) {
           'position.chart',
           'position.lots',
           'goal',
+          'home',
+          'news',
+          'news.item',
+          'events',
+          'events.item',
         ],
       }
     }

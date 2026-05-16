@@ -486,3 +486,217 @@ class TestGoalBuilder:
         # User 2 intenta acceder al goal de user 1 → raises
         with pytest.raises(ValueError, match="no encontrado"):
             build(conn, 2, goal_id=1)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 3 builders — home + news + events
+# ════════════════════════════════════════════════════════════════════════════
+
+def _phase3_db():
+    """DB con tablas adicionales que home/news/events necesitan."""
+    conn = _base_db()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS financial_events (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT, event_type TEXT, event_date TEXT, details TEXT
+        );
+        CREATE TABLE IF NOT EXISTS news (
+            id INTEGER PRIMARY KEY,
+            ticker TEXT, title TEXT, source TEXT,
+            published_at TEXT, tags TEXT, url TEXT
+        );
+    """)
+    return conn
+
+
+class TestHomeBuilder:
+
+    def test_shape_with_empty_db(self):
+        conn = _phase3_db()
+        from ai.builders.home import build
+        # Sin posiciones, sin snapshots — el builder no debe crashear
+        p = build(conn, 1)
+        assert p["screen"] == "home"
+        assert "market" in p
+        assert "portfolio_today" in p
+        assert "portfolio_events_window" in p
+        assert p["portfolio_events_window"]["total"] == 0
+
+    def test_portfolio_today_computes_delta(self):
+        """Con 2 snapshots consecutivos el builder computa delta_pct/usd."""
+        conn = _phase3_db()
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value) "
+            "VALUES (1, '2026-05-14', 10000)"
+        )
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value) "
+            "VALUES (1, '2026-05-15', 10500)"
+        )
+        from ai.builders.home import build
+        p = build(conn, 1)
+        assert p["portfolio_today"]["total_value_usd"] == 10500.0
+        # 10500/10000 - 1 = 5%
+        assert p["portfolio_today"]["delta_pct_today"] == 5.0
+        assert p["portfolio_today"]["delta_usd_today"] == 500.0
+
+
+class TestNewsBuilder:
+
+    def test_empty_db_zero_news(self):
+        from ai.builders.news import build
+        conn = _phase3_db()
+        p = build(conn, 1)
+        assert p["screen"] == "news"
+        assert p["total_news"] == 0
+        assert p["tickers_covered"] == []
+
+    def test_aggregates_tickers_and_tags(self):
+        conn = _phase3_db()
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, quantity, invested) "
+            "VALUES (1, 'Schwab', 'NVDA', 10, 5000)"
+        )
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, quantity, invested) "
+            "VALUES (1, 'Schwab', 'AAPL', 5, 1000)"
+        )
+        # 2 noticias de NVDA con tags 'earnings'; 1 de AAPL con 'macro'
+        from datetime import date, timedelta
+        recent = date.today().isoformat()
+        for _ in range(2):
+            conn.execute(
+                """INSERT INTO news (ticker, title, source, published_at, tags)
+                   VALUES ('NVDA', 'NVDA up', 'Reuters', ?, '[\"earnings\"]')""",
+                (recent,),
+            )
+        conn.execute(
+            """INSERT INTO news (ticker, title, source, published_at, tags)
+               VALUES ('AAPL', 'AAPL macro', 'BBG', ?, '[\"macro\"]')""",
+            (recent,),
+        )
+
+        from ai.builders.news import build
+        p = build(conn, 1, window_days=7)
+        assert p["total_news"] == 3
+        assert "NVDA" in p["tickers_covered"]
+        assert "AAPL" in p["tickers_covered"]
+        # earnings aparece 2 veces, macro 1 vez
+        tag_counts = {t["tag"]: t["count"] for t in p["top_tags"]}
+        assert tag_counts.get("earnings") == 2
+        assert tag_counts.get("macro") == 1
+
+
+class TestNewsItemBuilder:
+
+    def test_requires_ticker_and_title(self):
+        from ai.builders.news_item import build
+        conn = _phase3_db()
+        with pytest.raises(ValueError, match="ticker"):
+            build(conn, 1, title="x")
+        with pytest.raises(ValueError, match="title"):
+            build(conn, 1, ticker="NVDA")
+
+    def test_holds_ticker_false_when_no_position(self):
+        from ai.builders.news_item import build
+        conn = _phase3_db()
+        p = build(conn, 1, ticker="MSFT", title="MSFT does something")
+        assert p["screen"] == "news.item"
+        assert p["article"]["ticker"] == "MSFT"
+        assert p["portfolio_context"]["holds_ticker"] is False
+
+    def test_holds_ticker_true_with_position(self):
+        from ai.builders.news_item import build
+        conn = _phase3_db()
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, quantity, invested) "
+            "VALUES (1, 'Schwab', 'NVDA', 10, 5000)"
+        )
+        from unittest.mock import patch
+        with patch("home.market._fetch_batch_quotes", side_effect=Exception):
+            p = build(conn, 1, ticker="NVDA", title="NVDA news")
+        assert p["portfolio_context"]["holds_ticker"] is True
+        assert p["portfolio_context"]["broker"] == "Schwab"
+
+
+class TestEventsBuilder:
+
+    def test_empty_returns_zero(self):
+        from ai.builders.events import build
+        conn = _phase3_db()
+        p = build(conn, 1)
+        assert p["screen"] == "events"
+        assert p["total_events"] == 0
+        assert p["concentrated_week"] is False
+
+    def test_aggregates_by_type_and_horizon(self):
+        conn = _phase3_db()
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, quantity, invested) "
+            "VALUES (1, 'Schwab', 'NVDA', 10, 5000)"
+        )
+        # 2 earnings esta semana + 1 dividend más adelante
+        from datetime import date, timedelta
+        today = date.today()
+        for delta_days in [3, 5]:
+            conn.execute(
+                "INSERT INTO financial_events (ticker, event_type, event_date) "
+                "VALUES (?, ?, ?)",
+                ("NVDA", "earnings", (today + timedelta(days=delta_days)).isoformat()),
+            )
+        conn.execute(
+            "INSERT INTO financial_events (ticker, event_type, event_date) "
+            "VALUES (?, ?, ?)",
+            ("NVDA", "dividend", (today + timedelta(days=40)).isoformat()),
+        )
+
+        from ai.builders.events import build
+        p = build(conn, 1, window_days=60)
+        assert p["total_events"] == 3
+        assert p["by_type"]["earnings"] == 2
+        assert p["by_type"]["dividend"] == 1
+        assert p["by_horizon"]["this_week"] == 2
+        assert p["by_horizon"]["later"] == 1
+
+
+class TestEventsItemBuilder:
+
+    def test_requires_ticker_and_type(self):
+        from ai.builders.events_item import build
+        conn = _phase3_db()
+        with pytest.raises(ValueError, match="ticker"):
+            build(conn, 1, event_type="earnings")
+        with pytest.raises(ValueError, match="event_type"):
+            build(conn, 1, ticker="NVDA")
+
+    def test_packet_shape_with_position(self):
+        from ai.builders.events_item import build
+        conn = _phase3_db()
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, quantity, invested) "
+            "VALUES (1, 'Schwab', 'NVDA', 10, 5000)"
+        )
+        from unittest.mock import patch
+        with patch("home.market._fetch_batch_quotes", side_effect=Exception):
+            p = build(
+                conn, 1,
+                ticker="NVDA", event_type="earnings",
+                event_date="2026-05-20",
+            )
+        assert p["screen"] == "events.item"
+        assert p["event"]["ticker"] == "NVDA"
+        assert p["event"]["type"] == "earnings"
+        assert p["portfolio_context"]["holds_ticker"] is True
+
+    def test_days_ahead_computation(self):
+        from ai.builders.events_item import build
+        from datetime import date, timedelta
+        conn = _phase3_db()
+        future_date = (date.today() + timedelta(days=10)).isoformat()
+        p = build(
+            conn, 1,
+            ticker="UNKNOWN", event_type="dividend",
+            event_date=future_date,
+        )
+        assert p["event"]["days_ahead"] == 10
+        assert p["portfolio_context"]["holds_ticker"] is False
