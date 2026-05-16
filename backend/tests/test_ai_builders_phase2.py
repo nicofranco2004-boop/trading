@@ -700,3 +700,92 @@ class TestEventsItemBuilder:
         )
         assert p["event"]["days_ahead"] == 10
         assert p["portfolio_context"]["holds_ticker"] is False
+
+
+class TestReportsBuilder:
+
+    def test_empty_returns_zero(self):
+        from ai.builders.reports import build
+        from datetime import date
+        conn = _phase3_db()
+        p = build(conn, 1, year=date.today().year)
+        assert p["screen"] == "reports"
+        assert p["total_months_active"] == 0
+        assert p["twr_year_pct"] is None
+        assert p["winrate_monthly"] == 0.0
+        assert p["consistency"] == "bajo"
+
+    def test_compounds_monthly_returns(self):
+        conn = _phase3_db()
+        # 3 meses: +5%, -2%, +10% → compound ≈ 12.99%
+        for m, ci, cf in [(1, 10000, 10500), (2, 10500, 10290), (3, 10290, 11319)]:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, capital_inicio, capital_final,
+                    deposits, withdrawals, pnl_realized)
+                   VALUES (1, 2026, ?, 'global', ?, ?, 0, 0, 0)""",
+                (m, ci, cf),
+            )
+        from ai.builders.reports import build
+        p = build(conn, 1, year=2026)
+        assert p["total_months_active"] == 3
+        # 1.05 × 0.98 × 1.10 - 1 = 0.1319 → ~13.19%
+        assert abs(p["twr_year_pct"] - 13.19) < 0.5
+        # 2 positivos de 3 → ~66.7%
+        assert abs(p["winrate_monthly"] - 66.7) < 0.5
+        # consistency medio (50-70)
+        assert p["consistency"] == "medio"
+
+    def test_best_and_worst_months_detected(self):
+        conn = _phase3_db()
+        # mejor mes: feb +20%, peor: mar -10%
+        for m, ci, cf in [(1, 10000, 10100), (2, 10100, 12120), (3, 12120, 10908)]:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, capital_inicio, capital_final,
+                    deposits, withdrawals, pnl_realized)
+                   VALUES (1, 2026, ?, 'global', ?, ?, 0, 0, 0)""",
+                (m, ci, cf),
+            )
+        from ai.builders.reports import build
+        p = build(conn, 1, year=2026)
+        assert p["best_month"]["month"] == "2026-02"
+        assert p["worst_month"]["month"] == "2026-03"
+
+    def test_high_consistency_label(self):
+        conn = _phase3_db()
+        # 4 meses, todos positivos → 100% winrate → consistency 'alto'
+        for m in range(1, 5):
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, capital_inicio, capital_final,
+                    deposits, withdrawals, pnl_realized)
+                   VALUES (1, 2026, ?, 'global', 10000, 10300, 0, 0, 0)""",
+                (m,),
+            )
+        from ai.builders.reports import build
+        p = build(conn, 1, year=2026)
+        assert p["winrate_monthly"] == 100.0
+        assert p["consistency"] == "alto"
+
+    def test_year_filter_isolates(self):
+        """Datos de un año no contaminan otro."""
+        conn = _phase3_db()
+        conn.execute(
+            """INSERT INTO monthly_entries (user_id, year, month, broker,
+                                            capital_inicio, capital_final)
+               VALUES (1, 2025, 1, 'global', 10000, 11000)"""
+        )
+        conn.execute(
+            """INSERT INTO monthly_entries (user_id, year, month, broker,
+                                            capital_inicio, capital_final)
+               VALUES (1, 2026, 1, 'global', 10000, 10500)"""
+        )
+        from ai.builders.reports import build
+        p_2026 = build(conn, 1, year=2026)
+        p_2025 = build(conn, 1, year=2025)
+        assert p_2026["total_months_active"] == 1
+        assert p_2025["total_months_active"] == 1
+        assert abs(p_2026["twr_year_pct"] - 5.0) < 0.1
+        assert abs(p_2025["twr_year_pct"] - 10.0) < 0.1
+        assert p_2026["years_available"] == [2025, 2026]

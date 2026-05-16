@@ -19,6 +19,7 @@ import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
 import PerformanceCalendar from '../components/reports/PerformanceCalendar'
 import InlineAIButton from '../components/ai/InlineAIButton'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -71,7 +72,16 @@ export default function Reports() {
       <PageHeader
         eyebrow="Reportes / Mensual"
         title="Performance histórica"
-        action={<BrokerSelector value={broker} onChange={setBroker} />}
+        action={
+          <div className="flex items-center gap-2 flex-wrap">
+            <AnalyzeButton
+              screen="reports"
+              params={{ year: effectiveYear }}
+              subtitle={`Performance ${effectiveYear}`}
+            />
+            <BrokerSelector value={broker} onChange={setBroker} />
+          </div>
+        }
       />
 
       {error && (

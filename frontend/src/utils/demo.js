@@ -815,6 +815,16 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Cuál fue el lote más rentable hasta ahora?', '¿Qué pasa con el avg si agrego un lote más al precio actual?'],
   },
+  reports: {
+    tldr: 'El año cierra con TWR positivo pero la mayor parte del rendimiento se concentra en uno o dos meses excepcionales — la consistency mensual es media, lo cual hace al resultado menos replicable que un año con curva pareja.',
+    sections: [
+      { title: 'TWR del año', tone: 'positive', body: 'El portfolio acumula un rendimiento positivo sobre los meses activos del año. Eso describe el resultado bruto, pero no dice cuán pareja fue la curva — la métrica clave para evaluar replicabilidad no es el TWR final sino la dispersión mensual.' },
+      { title: 'Win rate mensual', tone: 'neutral', body: 'El % de meses positivos se ubica cerca del 50%. Eso significa que tantos meses negativos como positivos contribuyeron al resultado — el TWR positivo se sostiene porque los meses ganadores fueron de mayor magnitud que los perdedores. Esa asimetría es la firma típica de portfolios con concentración alta en pocos activos volátiles.' },
+      { title: 'Mejor vs peor mes', tone: 'neutral', body: 'La brecha entre mejor y peor mes es amplia. Una dispersión así sugiere que el portfolio responde con fuerza al ciclo del activo dominante. Para perfiles que buscan menos volatilidad, suavizar esa brecha requiere bajar concentración o agregar exposure no correlacionada.' },
+      { title: 'Insight clave', tone: 'neutral', body: 'La métrica útil a monitorear no es el TWR acumulado del año sino la consistencia de la curva. Un año con TWR del 14% concentrado en dos meses tiene replicabilidad menor que uno con TWR del 10% distribuido en seis meses positivos. Para evaluar el sistema, ignoré el resultado y mirá la varianza mensual.' },
+    ],
+    follow_ups: ['¿Qué mes contribuyó más al TWR del año?', '¿Cómo se ve la dispersión vs el año anterior?'],
+  },
   home: {
     tldr: 'El día abre con mercado mixto y el portfolio se mueve cerca de cero — buena ventana para revisar tesis sin presión de evento. La semana próxima concentra varios reportes sobre posiciones grandes.',
     sections: [
@@ -1512,6 +1522,7 @@ export function handleDemoRequest(method, path, body) {
           'news.item',
           'events',
           'events.item',
+          'reports',
         ],
       }
     }

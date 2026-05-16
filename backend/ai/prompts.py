@@ -300,6 +300,11 @@ _FREE_FOCUS = {
         "Ticker, tipo y fecha del evento.",
         "Si el user tiene el ticker, su peso.",
     ],
+    "reports": [
+        "TWR del año + meses activos.",
+        "Mejor / peor mes con sus deltas.",
+        "Win rate mensual + consistencia.",
+    ],
 }
 
 
@@ -885,6 +890,38 @@ def render_goal_prompt(tier: str = "pro") -> str:
         pitfalls=[
             "No recomendar cambiar el objetivo ('ponete una meta más realista').",
             "No predecir si se va a alcanzar — sí mostrar la sensibilidad a las variables.",
+        ],
+    )
+
+
+def render_reports_prompt(tier: str = "pro") -> str:
+    view = "Reportes — performance histórica mensual por año"
+    pkt = (
+        "year + total_months_active + winrate_monthly + twr_year_pct + "
+        "pnl_year_usd + trades_year + best_month + worst_month + vs_sp500_pp "
+        "+ consistency (alto/medio/bajo) + years_available."
+    )
+    free = _maybe_free("reports", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "TWR del año + cuántos meses contribuyeron — si la mayoría del rendimiento vino de pocos meses, el resultado es menos replicable.",
+            "Win rate mensual (% meses positivos) — interpretar como tendencia más que como métrica aislada. > 70% es muy sostenido, < 50% indica meses ganadores grandes pero alternancia.",
+            "Mejor y peor mes en magnitud — dispersión mensual amplia significa volatilidad del estilo, no solo del mercado.",
+            "vs SPY promedio — si delta positivo sostenido todos los meses, alpha real; si solo viene de uno o dos meses, suerte concentrada.",
+            "Consistency tag — usar para enmarcar el tipo de año (sostenido, mixto, concentrado).",
+        ],
+        insight_examples=[
+            "El año cierra con un TWR positivo pero la consistency es media — eso significa que los meses negativos restaron más de lo que aportaron varios meses planos. Un win rate del 50% con TWR positivo describe un año donde uno o dos meses excepcionales sostuvieron el resultado.",
+            "vs SPY promedio negativo en sostenido sugiere un underperform estructural — no es señal de error de stock-picking necesariamente, pero sí de que el bench dominante del período fue difícil de batir con la composición actual.",
+        ],
+        pitfalls=[
+            "Si total_months_active < 6, decir que la muestra es chica y la consistency aún no es informativa.",
+            "No predecir el cierre del año o el próximo mes.",
+            "Si vs_sp500_pp es None, decir que no hay datos del bench para el período.",
         ],
     )
 
