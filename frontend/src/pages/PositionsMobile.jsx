@@ -9,7 +9,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase } from 'lucide-react'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles } from 'lucide-react'
+import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import EmptyState from '../components/EmptyState'
 import SwipeRow from '../components/mobile/SwipeRow'
@@ -216,10 +217,21 @@ function PositionRow({ p }) {
   const toast = useToast()
   const cur = p.isAR ? 'ARS' : 'USD'
   const [addedToWl, setAddedToWl] = useState(false)
+  const [aiOpen, setAiOpen] = useState(false)
 
   // Solo armamos swipe actions para non-cash (cash no tiene operación
   // ni se agrega a watchlist).
   const actions = p.is_cash ? [] : [
+    {
+      id: 'ai',
+      label: 'Analizar',
+      icon: Sparkles,
+      tone: 'accent',
+      onClick: () => {
+        track('mobile_swipe_action', { code: 'analyze', asset: p.asset })
+        setAiOpen(true)
+      },
+    },
     {
       id: 'op',
       label: 'Operar',
@@ -251,6 +263,7 @@ function PositionRow({ p }) {
   ]
 
   return (
+    <>
     <SwipeRow
       actions={actions}
       onTap={() => navigate(p.id ? `/posiciones/${p.id}` : '/posiciones')}
@@ -299,6 +312,17 @@ function PositionRow({ p }) {
       </div>
       </div>
     </SwipeRow>
+    {aiOpen && (
+      <AnalysisDrawer
+        open
+        onClose={() => setAiOpen(false)}
+        screen="position"
+        params={{ asset: p.asset, broker: p.broker }}
+        title="Análisis"
+        subtitle={`${p.asset} · ${p.broker}`}
+      />
+    )}
+    </>
   )
 }
 

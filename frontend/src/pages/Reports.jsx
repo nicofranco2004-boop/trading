@@ -18,6 +18,7 @@ import useReportsTimeline from '../hooks/useReportsTimeline'
 import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
 import PerformanceCalendar from '../components/reports/PerformanceCalendar'
+import InlineAIButton from '../components/ai/InlineAIButton'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -198,6 +199,7 @@ function MonthlyTable({ year, months, expandedKey, onToggle }) {
             <th className="text-right px-3 py-2 font-medium">Win&nbsp;rate</th>
             <th className="text-right px-3 py-2 font-medium">vs S&amp;P</th>
             <th className="text-left  px-3 py-2 font-medium hidden lg:table-cell">Headline</th>
+            <th className="px-2 py-2 w-[34px] font-medium" title="Analizar con IA"></th>
             <th className="px-3 py-2 w-[40px]"></th>
           </tr>
         </thead>
@@ -268,6 +270,18 @@ function MonthlyTable({ year, months, expandedKey, onToggle }) {
                   <td className="px-3 py-2.5 text-xs text-ink-2 truncate max-w-[260px] hidden lg:table-cell">
                     {month?.headline || ''}
                   </td>
+                  <td className="px-2 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                    {month && !empty && (
+                      <InlineAIButton
+                        topic="monthly"
+                        params={{
+                          year: parseInt((month.period_key || '').slice(0, 4), 10),
+                          month: parseInt((month.period_key || '').slice(5, 7), 10),
+                        }}
+                        subtitle={`Mes ${month.period_label}`}
+                      />
+                    )}
+                  </td>
                   <td className="px-2 py-2.5 text-ink-3 text-right">
                     {month && (isExpanded
                       ? <ChevronUp size={14} strokeWidth={1.75} aria-hidden="true" />
@@ -276,7 +290,7 @@ function MonthlyTable({ year, months, expandedKey, onToggle }) {
                 </tr>
                 {isExpanded && (
                   <tr className="border-b border-line">
-                    <td colSpan={8} className="bg-bg-0 p-4">
+                    <td colSpan={9} className="bg-bg-0 p-4">
                       <MonthCard month={month} defaultExpanded={true} />
                     </td>
                   </tr>
