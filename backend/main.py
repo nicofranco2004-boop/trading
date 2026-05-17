@@ -1161,20 +1161,38 @@ def _fetch_inflation_ar():
 
 
 def _fetch_sp500_monthly():
-    """S&P 500 month-end close from yfinance. Returns dict {YYYY-MM: close}."""
-    try:
-        data = yf.Ticker("^GSPC").history(period="5y", interval="1mo")
-        if data.empty:
-            return {}
-        out = {}
-        for idx, row in data.iterrows():
-            key = idx.strftime("%Y-%m")
-            close = float(row["Close"]) if not math.isnan(row["Close"]) else None
-            if close:
-                out[key] = close
-        return out
-    except Exception:
-        return {}
+    """S&P 500 month-end close from yfinance. Returns dict {YYYY-MM: close}.
+
+    Usamos ^SP500TR (Total Return Index): incluye reinversión de dividendos.
+    Eso hace comparación JUSTA contra portfolios del user, que sí acumulan
+    dividendos vía monthly_entries.pnl_realized.
+
+    Si usáramos ^GSPC (price only), el benchmark subestimaría al SPY en
+    ~1.5-2% anual — un portfolio que apenas empata al SPY total aparecería
+    como "outperform" engañoso, y un portfolio rezagado parecería un poco
+    menos rezagado de lo que realmente está.
+
+    Fallback a ^GSPC si ^SP500TR no devuelve data (algunos plans de yfinance
+    no tienen el ticker TR, mejor degradar a price que devolver vacío).
+    """
+    for ticker in ("^SP500TR", "^GSPC"):
+        try:
+            data = yf.Ticker(ticker).history(period="5y", interval="1mo")
+            if data.empty:
+                continue
+            out = {}
+            for idx, row in data.iterrows():
+                key = idx.strftime("%Y-%m")
+                close = float(row["Close"]) if not math.isnan(row["Close"]) else None
+                if close:
+                    out[key] = close
+            if out:
+                if ticker == "^GSPC":
+                    log.warning("SPY: ^SP500TR no disponible, usando ^GSPC (sin dividendos)")
+                return out
+        except Exception:
+            continue
+    return {}
 
 
 def _fetch_dolar_blue_monthly():
