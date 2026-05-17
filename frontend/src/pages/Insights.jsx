@@ -1446,13 +1446,19 @@ function InsightsDesktop() {
             <InfoTooltip>
               <p className="font-semibold text-ink-0">Time-Weighted Return (TWRR)</p>
               <p>Rendimiento <strong>independiente del timing</strong> de tus aportes y retiros — mide solamente cómo performeó el capital invertido. Es la métrica estándar de la industria (la que usa el S&P 500 para reportar).</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Las 3 líneas</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>P/L total</strong> (verde sólido): rendimiento de tu cartera, incluye realizado + no realizado.</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>P/L realizado</strong> (amarillo punteado): solo lo ya cobrado (ventas + dividendos + intereses), excluye plusvalía no realizada.</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{currency === 'USD' ? 'S&P 500' : 'Inflación ARS'}</strong>: benchmark de comparación.</p>
+              <div className="border-t border-line/60 my-1.5" />
               <p className="text-ink-3">
                 Puede no coincidir con "Resultado total / Capital aportado" del Dashboard:
                 el Dashboard mide cuánto creció tu plata neta; el chart compone rendimientos mes a mes
                 — un crash temprano cuesta más en TWRR porque después tenés que recuperar desde una base chica.
               </p>
               {currency === 'USD'
-                ? <p className="text-ink-3">Ambas líneas arrancan en 0% al inicio del período seleccionado para comparación directa.</p>
+                ? <p className="text-ink-3">Todas las líneas arrancan en 0% al inicio del período seleccionado para comparación directa.</p>
                 : <p className="text-ink-3">Fijado a los últimos 12 meses. Períodos más extensos pierden comparabilidad por la hiperinflación previa.</p>
               }
             </InfoTooltip>
@@ -1506,8 +1512,8 @@ function InsightsDesktop() {
                 formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : '—', '']}
               />
               <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontFamily: 'JetBrains Mono' }} />
-              <Line type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2} dot={{ r: 2.5 }} />
-              <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#21D07A" strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
+              <Line type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2.25} dot={{ r: 2.5 }} />
+              <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#E8B14A" strokeWidth={1.5} strokeDasharray="6 4" dot={{ r: 2, fill: '#E8B14A' }} />
               <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
