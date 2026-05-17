@@ -1,10 +1,25 @@
+// AICoach — preguntas pre-fijadas con contexto del portfolio.
+// ═══════════════════════════════════════════════════════════════════════════
+// Decisión de producto (AI v2 — post audit):
+// El chat libre fue retirado. El user NO escribe libremente, solo elige
+// entre preguntas pre-fijadas que el backend sabe responder con calidad
+// consistente. Esto:
+//   1) Elimina el riesgo de respuestas pobres ante preguntas vagas.
+//   2) Reduce el costo (queries acotadas, prompts cacheables).
+//   3) Alinea con la filosofía del manifiesto editorial: el LLM
+//      interpreta datos pre-calculados, no improvisa.
+//
+// Si el user quiere análisis profundo de algo específico, el botón ✦ en
+// cada sección del producto (AskAIAbout) le da contextual analysis con
+// el tono research-note.
+
 import { useState, useRef, useEffect } from 'react'
-import { Sparkles, Send, AlertCircle, RotateCcw } from 'lucide-react'
+import { Sparkles, AlertCircle, RotateCcw } from 'lucide-react'
 import { api } from '../utils/api'
 
-// Preguntas por defecto — se usan si el caller no pasa `suggested` o si la
-// generación dinámica no produjo lo suficiente. Insights las reemplaza por
-// preguntas data-driven basadas en el snapshot real.
+// Preguntas por defecto — se usan si el caller no pasa `suggested`.
+// Insights genera dinámicamente preguntas data-driven basadas en el
+// snapshot real (drawdown actual, win rate, concentración, etc.).
 const DEFAULT_SUGGESTED = [
   '¿Cómo está mi portfolio en general?',
   '¿Qué riesgos detectás en mi cartera?',
@@ -13,13 +28,11 @@ const DEFAULT_SUGGESTED = [
 ]
 
 export default function AICoach({ snapshot, suggested }) {
-  const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 4) : DEFAULT_SUGGESTED
+  const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 6) : DEFAULT_SUGGESTED
   const [messages, setMessages] = useState([])
-  const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const scrollRef = useRef(null)
-  const inputRef = useRef(null)
 
   // Auto-scroll al final cuando llegan mensajes nuevos
   useEffect(() => {
@@ -29,13 +42,12 @@ export default function AICoach({ snapshot, suggested }) {
   }, [messages, loading])
 
   async function send(text) {
-    const content = (text ?? input).trim()
+    const content = (text || '').trim()
     if (!content || loading || !snapshot) return
 
     const userMsg = { role: 'user', content }
     const newMessages = [...messages, userMsg]
     setMessages(newMessages)
-    setInput('')
     setLoading(true)
     setError(null)
 
@@ -47,27 +59,24 @@ export default function AICoach({ snapshot, suggested }) {
       setMessages(m => [...m, { role: 'assistant', content: res.reply }])
     } catch (e) {
       setError(e.message || 'No pudimos completar la consulta. Intentalo nuevamente.')
-      // Sacar el último user msg si falló, para que pueda reintentarlo
+      // Sacar el último user msg si falló — el user puede reintentar con otro chip
       setMessages(m => m.slice(0, -1))
-      setInput(content)
     } finally {
       setLoading(false)
-      inputRef.current?.focus()
     }
   }
 
   function reset() {
     setMessages([])
     setError(null)
-    setInput('')
   }
 
-  function handleKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      send()
-    }
-  }
+  // Cuál chips mostrar: si todavía no hay mensajes, las 4-6 iniciales.
+  // Si ya hubo intercambio, las restantes (las que no preguntó aún).
+  const askedQuestions = new Set(
+    messages.filter(m => m.role === 'user').map(m => m.content)
+  )
+  const availableQuestions = SUGGESTED.filter(q => !askedQuestions.has(q))
 
   return (
     <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col">
@@ -79,7 +88,7 @@ export default function AICoach({ snapshot, suggested }) {
           </div>
           <div>
             <h2 className="font-semibold text-ink-0">Coach IA</h2>
-            <p className="text-[11px] text-ink-3">Asistente con contexto sobre tu portfolio</p>
+            <p className="text-[11px] text-ink-3">Preguntas con contexto de tu portfolio</p>
           </div>
         </div>
         {messages.length > 0 && (
@@ -97,21 +106,10 @@ export default function AICoach({ snapshot, suggested }) {
       {/* Mensajes */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 max-h-[420px] min-h-[180px]">
         {messages.length === 0 && !loading && (
-          <div className="text-center py-4">
+          <div className="text-center py-2">
             <p className="text-sm text-ink-2 mb-3">
-              Tengo contexto completo sobre tu portfolio. ¿Qué te gustaría analizar?
+              Elegí una pregunta para que la analice con tu data:
             </p>
-            <div className="flex flex-wrap gap-2 justify-center">
-              {SUGGESTED.map(q => (
-                <button
-                  key={q}
-                  onClick={() => send(q)}
-                  className="text-xs px-3 py-1.5 bg-bg-2 hover:bg-bg-2 dark:bg-bg-2 dark:hover:bg-bg-3 border border-line text-ink-1 rounded-full transition"
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
           </div>
         )}
 
@@ -149,34 +147,42 @@ export default function AICoach({ snapshot, suggested }) {
         )}
       </div>
 
-      {/* Input */}
-      <div className="border-t border-line/70 dark:border-line/40 px-3 py-2.5">
-        <div className="flex items-end gap-2">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Escribí tu consulta..."
-            rows={1}
-            disabled={loading}
-            className="flex-1 resize-none bg-bg-2 dark:bg-bg-2 border border-line rounded-lg px-3 py-2 text-sm text-ink-0 placeholder-ink-3 dark:placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 disabled:opacity-50 max-h-32"
-            style={{ minHeight: '38px' }}
-          />
+      {/* Chips de preguntas — siempre visibles abajo, NO hay input libre */}
+      {availableQuestions.length > 0 && (
+        <div className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40">
+          <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+            {messages.length === 0 ? 'Preguntas sugeridas' : 'Otra pregunta'}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {availableQuestions.map(q => (
+              <button
+                key={q}
+                onClick={() => send(q)}
+                disabled={loading}
+                className="text-xs px-3 py-1.5 bg-bg-2 hover:bg-bg-3 dark:bg-bg-2 dark:hover:bg-bg-3 border border-line text-ink-1 rounded-full transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {availableQuestions.length === 0 && messages.length > 0 && (
+        <div className="border-t border-line/70 dark:border-line/40 px-3 py-3 bg-bg-1/40 text-center">
+          <p className="text-xs text-ink-3 mb-2">Ya recorriste todas las preguntas sugeridas.</p>
           <button
-            onClick={() => send()}
-            disabled={loading || !input.trim()}
-            className="flex-shrink-0 bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg p-2 transition"
-            title="Enviar (Enter)"
-            aria-label="Enviar mensaje"
+            onClick={reset}
+            className="text-xs text-rendi-accent hover:underline inline-flex items-center gap-1"
           >
-            <Send size={16} />
+            <RotateCcw size={11} /> Empezar de nuevo
           </button>
         </div>
-        <p className="text-[10px] text-ink-3 mt-1.5 text-center">
-          Claude Haiku · Observaciones de carácter orientativo. No constituyen asesoramiento financiero.
-        </p>
-      </div>
+      )}
+
+      <p className="text-[10px] text-ink-3 px-3 py-1.5 text-center border-t border-line/40">
+        Claude Haiku · Observaciones orientativas. No constituyen asesoramiento financiero.
+      </p>
     </div>
   )
 }
