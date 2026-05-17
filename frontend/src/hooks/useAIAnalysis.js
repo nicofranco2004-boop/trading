@@ -15,9 +15,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../utils/api'
 import { track } from '../utils/track'
 
-// Hard cap a 2 follow-ups por análisis — coincide con el cap del schema
-// backend. Después de eso las chips dejan de mostrarse.
-const MAX_FOLLOWUPS_PER_ANALYSIS = 2
+// Hard cap a 1 follow-up por análisis — coincide con el cap del schema
+// backend. Después de eso las chips dejan de mostrarse. Decisión de
+// producto: el follow-up se usa para profundizar UN punto específico,
+// no para tener una conversación encadenada. Si el user quiere más,
+// hace un análisis nuevo o usa el AnalyzeButton de otro componente.
+const MAX_FOLLOWUPS_PER_ANALYSIS = 1
 
 export function useAIAnalysis({ screen, params, autoload = true } = {}) {
   const [result, setResult] = useState(null)

@@ -112,7 +112,7 @@ export default function AnalysisDrawer({
       {/* Cap alcanzado */}
       {followupsExhausted && !followupLoading && (
         <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 text-center pt-2">
-          Llegaste al máximo de 2 preguntas por análisis. Refrescá para empezar de nuevo.
+          Ya profundizaste una vez. Refrescá para hacer otra pregunta.
         </div>
       )}
 

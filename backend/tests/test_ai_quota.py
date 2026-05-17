@@ -95,7 +95,12 @@ def test_limits_free_is_10_per_week():
 
 
 def test_limits_pro_high_cap():
-    assert quota.LIMITS["pro"]["analyses_per_week"] >= 100
+    # Cap Pro: 60/sem (a $7 USD/mes con 1 follow-up worst = $3.64/mes,
+    # margen 48%). El test verifica que sea claramente mayor al Free
+    # para preservar el diferencial.
+    pro = quota.LIMITS["pro"]["analyses_per_week"]
+    free = quota.LIMITS["free"]["analyses_per_week"]
+    assert pro >= free * 4, f"Pro ({pro}) debe ser >= 4x Free ({free}) para diferencial real"
 
 
 def test_limits_admin_unlimited():

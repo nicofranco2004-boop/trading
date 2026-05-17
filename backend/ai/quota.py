@@ -42,14 +42,18 @@ from datetime import date, timedelta
 Tier = Literal["free", "pro", "admin"]
 
 # Cap semanal. Cambiar acá afecta UI, mensaje 429, demo mock.
+# Cálculo costo Pro a $7 USD/mes con 60/sem + 1 follow-up por análisis:
+#   60 × 4.33 sem × 2 calls (análisis + follow-up) ≈ 520 LLM calls/mes worst case.
+#   520 × $0.007 ≈ $3.64/mes → margen 48% a $7. En la práctica con cache hits
+#   de 24h el costo real está ~40-50% por debajo (= $1.80-$2.20/mes real).
 LIMITS = {
     "free": {
         "analyses_per_week": 10,
         "hub_queries_per_week": 5,
     },
     "pro": {
-        "analyses_per_week": 200,
-        "hub_queries_per_week": 200,
+        "analyses_per_week": 60,
+        "hub_queries_per_week": 60,
     },
     "admin": {
         "analyses_per_week": 1000,

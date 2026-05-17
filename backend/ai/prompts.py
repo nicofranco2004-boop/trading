@@ -51,7 +51,7 @@ OUTPUT (JSON validado contra schema {tldr, sections[], follow_ups[]})
 
 - tldr: 1 frase con el dato principal. No interpretativa.
 - sections: 2-3 bloques cortos. Cada uno con title (frase noun-phrase de 2-4 palabras), body (1-3 oraciones), tone. Cada section es un dato del packet expresado en lenguaje común.
-- follow_ups: 0-2 preguntas SIMPLES — "¿Cómo se compara con el mes pasado?", "¿Cuáles fueron los mejores activos?".
+- follow_ups: 0-1 pregunta SIMPLE — "¿Cómo se compara con el mes pasado?". UNA sola, o vacío si el resumen quedó completo.
 
 CONTEXTO DEL PRODUCTO
 - Rendi: tracker de inversiones AR/US/crypto.
@@ -122,7 +122,7 @@ OUTPUT (JSON validado contra schema {tldr, sections[], follow_ups[]})
     5) Insight clave o cambio de proceso sugerido
   No usar viñetas dentro del body — la section es la unidad. La última section idealmente carga el insight memorable, no un cierre genérico tipo "en suma…".
 
-- follow_ups (0-2): preguntas SUSTANTIVAS. Cosas que el user no se preguntaría sin haber leído el análisis. Evitar obvias ("¿qué hago?", "¿está bien?"). Bien: "¿Cuánto pierdo si NVDA cae 25%?", "¿Cuánto tarda el portfolio en recuperar un drawdown del 10%?". Máximo 2 — cada follow_up clickeado dispara otra llamada al LLM.
+- follow_ups (0-1): UNA pregunta SUSTANTIVA. Algo que el user no se preguntaría sin haber leído el análisis. Evitar obvias ("¿qué hago?", "¿está bien?"). Bien: "¿Cuánto pierdo si NVDA cae 25%?". Si tu análisis quedó completo, puede ir vacío — solo sugerí follow-up cuando hay una profundización genuina específica, no por relleno. Cada follow_up clickeado cuesta otra llamada al LLM.
 
 CONTEXTO DEL PRODUCTO
 - Rendi: tracker de inversiones AR/US/crypto, multi-broker, USD+ARS.

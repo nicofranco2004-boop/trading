@@ -666,7 +666,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Riesgo asimétrico actual', tone: 'warning', body: 'Si NVDA corrigiera un 25%, el portfolio perdería alrededor de 7 puntos de TWR — más de la mitad del rendimiento anual. El sesgo de disposition effect (medio) agrega tensión: la tentación a cerrar ganadoras en corrección choca con la lógica del trade core. Tener pre-definido el umbral de rebalance vale más que cualquier decisión en caliente.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La diversificación que el HHI sugiere se diluye cuando uno mira las fuentes del rendimiento, no las del capital. Más del 60% del P&L viene de dos tickers — el resto de la cartera funciona casi como un buy-and-hold con beta menor. La pregunta operativa no es qué comprar, sino bajo qué condición concreta reducir la exposure dominante.' },
     ],
-    follow_ups: ['¿Cuánto pierdo si NVDA cae 25%?', '¿Cómo se compara mi TWR con el SPY del período exacto?', '¿Cuál es el cash drag estimado anualizado?'],
+    follow_ups: ['¿Cuánto pierdo si NVDA cae 25%?'],
   },
   'dashboard.composition': {
     tldr: 'El HHI sugiere concentración moderada, pero la lectura por fuente de rendimiento es más concentrada — NVDA pesa 28% del capital y explica una porción mucho mayor del P&L del período.',
@@ -676,7 +676,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Cash y reserva táctica', tone: 'neutral', body: 'El cash es bajo en el ratio principal del Dashboard pero alto si se suman los USDT/ARS de cuentas de tránsito — esa diferencia importa porque la primera lectura sugiere capital trabajando y la segunda revela parking material. Diferenciar reserva táctica de cash drag estructural cambia la lectura del riesgo.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La regla útil para esta cartera no es bajar concentración por concentración, sino fijar un umbral de rebalance pre-acordado: por ejemplo, recortar si una posición supera el 30% o si los tres tickers tech combinados pasan el 60% del valor. Eso convierte una decisión emocional en una mecánica.' },
     ],
-    follow_ups: ['¿A qué umbral conviene rebalancear NVDA?', '¿Qué % de la beta del portfolio explica el sector tech?'],
+    follow_ups: ['¿A qué umbral conviene rebalancear NVDA?'],
   },
   'dashboard.evolution': {
     tldr: 'La curva del período es sostenida con dispersión mensual baja — sugiere demanda estructural más que un rally puntual. El peor drawdown se ubica dentro del rango histórico previo y se recuperó dentro de las 3-4 semanas habituales para esta cartera.',
@@ -686,7 +686,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Dispersión mensual', tone: 'neutral', body: 'La brecha entre el mejor y peor mes ronda los 10pp — moderada para una cartera con exposure tech alto. Una dispersión más estrecha sugeriría un portfolio más defensivo; una más amplia indicaría dependencia de pocos meses excepcionales.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Curvas sostenidas como ésta son más replicables que las que dependen de uno o dos meses extraordinarios. La métrica útil a monitorear es la varianza mensual, no solo el TWR acumulado — si esa varianza crece sin que cambie la composición, suele anticipar un cambio en el comportamiento del mercado más que del portfolio.' },
     ],
-    follow_ups: ['¿Cuánto duraron los drawdowns anteriores hasta recuperar?', '¿La dispersión mensual de este año vs el anterior?'],
+    follow_ups: ['¿Cuánto duraron los drawdowns anteriores hasta recuperar?'],
   },
   'dashboard.top_holdings': {
     tldr: 'Las dos posiciones que dominan el resultado lo hacen por razones distintas — NVDA por peso (28% × +29%) e INTC por un cierre excepcional (+148%). Sin esos dos vehículos, la cartera se acerca al comportamiento de un buy-and-hold pasivo.',
@@ -696,7 +696,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Perdedoras con holding largo', tone: 'warning', body: 'AAVE/USDT (-12%) y NFLX flat acumulan varios meses en la cartera sin que aparezca una tesis explícita de reversión. El patrón de mantener perdedoras chicas con horizonte indefinido es una de las firmas más caras a largo plazo, según los detectores de Comportamiento.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La pregunta útil para revisar este top 8 no es "¿vendo NVDA?" sino "¿qué define que una perdedora siga siendo válida o deba salir?". Las ganadoras grandes se gestionan con criterio de rebalance; las perdedoras chicas, con criterio de salida pre-establecido. Hoy ambos están implícitos — explicitarlos cambia el frame de la decisión.' },
     ],
-    follow_ups: ['¿Cuánto tiempo es razonable mantener AAVE/USDT sin revisar la tesis?', '¿La expectancy del sistema sin INTC es positiva?'],
+    follow_ups: ['¿Cuánto tiempo es razonable mantener AAVE/USDT sin revisar la tesis?'],
   },
   'dashboard.brokers': {
     tldr: 'La cartera vive en tres custodios con función distinta — Schwab para US directo, Cocos para CEDEARs y panel AR, Binance para crypto. La asignación parece equilibrada pero esconde una concentración funcional: el alpha del año vive casi entero en uno solo.',
@@ -706,7 +706,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Riesgo operacional', tone: 'neutral', body: 'Tres custodios reducen el riesgo de plataforma frente a tener todo en una sola cuenta — la continuidad del portfolio no depende de un solo proveedor. Sumar un cuarto broker agregaría complejidad operativa sin reducir materialmente el riesgo por debajo del nivel actual.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Tener brokers segmentados por función ayuda a la operación pero también facilita un sesgo común: medir cada cuenta por separado y perder de vista la consolidación. Una mejora mecánica simple es revisar el TWR conjunto con la misma frecuencia que cada cuenta individual — el portfolio que importa para la decisión es el agregado, no el broker.' },
     ],
-    follow_ups: ['¿Qué porción del alpha viene de Schwab vs los demás?', '¿Hay solapamiento entre los CEDEARs de Cocos y las acciones US directas?'],
+    follow_ups: ['¿Qué porción del alpha viene de Schwab vs los demás?'],
   },
   'dashboard.upcoming_events': {
     tldr: 'La ventana próxima concentra eventos sobre las posiciones de mayor peso — el riesgo idiosincrático del portfolio para los siguientes días depende de un puñado de reportes, no del mercado.',
@@ -716,7 +716,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Comportamiento típico', tone: 'neutral', body: 'La reacción del precio a un beat o miss de earnings tiene baja correlación con la calidad real del reporte — la sorpresa relativa al consenso pesa más que los números absolutos. No es un evento sobre el cual el inversor individual tenga edge informacional.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La utilidad operativa del calendario de earnings no es decidir qué hacer ese día — es decidir, antes del evento, hasta qué movimiento adverso se está dispuesto a tolerar sin tocar la posición. Definir ese umbral ex-ante evita reacciones post-fact que la literatura muestra como sub-óptimas en promedio.' },
     ],
-    follow_ups: ['¿Cuál es el movimiento promedio post-earnings de NVDA?', '¿Qué % del portfolio queda expuesta esa semana?'],
+    follow_ups: ['¿Cuál es el movimiento promedio post-earnings de NVDA?'],
   },
   behavioral: {
     tldr: 'El perfil combina disciplina sistémica (turnover bajo, sin averaging-down) con un sesgo dominante de gestión asimétrica de ganadoras vs perdedoras. Esa combinación protege contra los errores caros pero deja sobre la mesa el upside de cortar perdedoras antes.',
@@ -726,7 +726,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Lectura combinada de sesgos', tone: 'neutral', body: 'Concentración media-alta + home_bias moderado + disposition effect arman una asimetría específica: la cartera funciona bien cuando NVDA y el sector tech acompañan, pero el sesgo de gestión amplifica drawdowns porque la tentación de cerrar es mayor en las posiciones grandes. La concentración no es problema aislado — es problema porque interactúa con el sesgo dominante.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El cambio de proceso de mayor leverage no es psicológico sino procedural: definir el criterio de salida ANTES de la entrada, no después. Esa regla aparentemente trivial es la que desarma el disposition effect — saca la decisión del momento de tensión y la convierte en una verificación contra un umbral pre-acordado. No es operativa, es estructural.' },
     ],
-    follow_ups: ['¿Cuánto cuesta el disposition effect anualizado en esta cartera?', '¿Qué interacción tiene la concentración con el sesgo dominante?', '¿Cómo se ve un criterio de salida bien definido en la práctica?'],
+    follow_ups: ['¿Cuánto cuesta el disposition effect anualizado en esta cartera?'],
   },
   insights: {
     tldr: 'El +14% TWR del año descansa sobre dos motores asimétricos (NVDA por peso, INTC por trade único). Le gana a la inflación AR con margen pero queda algunos puntos debajo del SPY — combinación coherente con un portfolio con cash drag y exposure parcial al panel local.',
@@ -737,7 +737,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Riesgo y exposure', tone: 'warning', body: 'La exposición se reparte ~47% US (Schwab + CEDEARs), ~8% panel AR, ~45% en cash distribuido entre USDT y ARS. El cash de esa magnitud, si no es reserva táctica activa, representa un costo de oportunidad anualizado material. La concentración en NVDA (28% weight) amplifica drawdowns en correcciones del Nasdaq.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El portfolio supera a la inflación pero queda detrás del SPY — ese resultado es característico de carteras donde el alpha de stock-picking se ve neutralizado por el cash drag. La decisión estratégica relevante no es qué activo agregar sino bajo qué condición el cash actual se convierte en posición — fijar un umbral o calendario de despliegue elimina la fricción mensual de "todavía no".' },
     ],
-    follow_ups: ['¿Cuánto cuesta el cash drag anualizado en esta cartera?', '¿Cuál sería el TWR sin la posición NVDA?', '¿El payoff 7x es replicable o un outlier histórico?'],
+    follow_ups: ['¿Cuánto cuesta el cash drag anualizado en esta cartera?'],
   },
   'insights.evolution': {
     tldr: 'La trayectoria mensual muestra dispersión moderada con consistencia del 50-65% — el TWR positivo del período viene de varios meses aportando en paralelo, no de uno o dos extraordinarios. La replicabilidad de este resultado es mayor que la de portfolios con curva más volátil.',
@@ -747,7 +747,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Lectura comparativa', tone: 'neutral', body: 'El mejor mes coincide con períodos de fuerza relativa del Nasdaq según el contexto del packet. El peor mes está dentro del rango histórico del propio portfolio — no representa un cambio de régimen sino ruido normal. La asimetría entre ambos no sugiere ni euforia ni capitulación.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Lo que sostiene este tipo de curva no es la estrategia del último mes sino la combinación de turnover bajo y disciplina de no mover el portfolio en cada corrección. La métrica que importa monitorear es la varianza mensual, no solo el TWR acumulado: si la varianza crece sin que cambie la composición, suele anticipar un cambio en el comportamiento del mercado más que del portfolio.' },
     ],
-    follow_ups: ['¿La dispersión mensual sigue una tendencia creciente?', '¿Qué meses del año concentran la mayor parte del TWR?'],
+    follow_ups: ['¿La dispersión mensual sigue una tendencia creciente?'],
   },
   'insights.drawdown': {
     tldr: 'El peor drawdown del período se mantiene dentro del rango histórico habitual de la cartera. El actual es de magnitud menor — más cerca del ruido normal que de un cambio de régimen.',
@@ -757,7 +757,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Estado actual', tone: 'positive', body: 'El drawdown actual está cerca de cero — el portfolio se mueve en la franja de los máximos históricos. La distancia al peak es pequeña, lo cual no implica que no pueda profundizar; solo describe que hoy no hay daño material acumulado desde el último high.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El patrón "drawdown chico y recuperación rápida" del período no es atributo permanente del portfolio — depende de que la exposure y el comportamiento de los activos sostengan ese ritmo. Una mejora útil al proceso es registrar el time-to-recover de cada DD: cuando ese tiempo se alarga, suele ser una señal anticipada de cambio en el régimen del portfolio, anterior al cambio en el TWR.' },
     ],
-    follow_ups: ['¿Cuánto fue el time-to-recover del peor drawdown histórico?', '¿Hay correlación entre la profundidad del DD y el sector más afectado?'],
+    follow_ups: ['¿Cuánto fue el time-to-recover del peor drawdown histórico?'],
   },
   'insights.attribution': {
     tldr: 'Más del 50% del P&L total proviene de una sola posición — la diversificación nominal del portfolio se diluye cuando se mira la fuente real del rendimiento. La concentración de fuente es el factor más asimétrico del año.',
@@ -767,7 +767,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Detractores', tone: 'neutral', body: 'AAVE/USDT y NFLX son los principales lastres del año pero su magnitud no neutraliza materialmente a las ganadoras. La pregunta práctica no es si compensan o no, sino qué patrón de proceso permite que se mantengan tanto tiempo sin reconciliación con la tesis original.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Una posición que aporta más de la mitad del rendimiento anual exige un umbral de rebalance explícito — no para reducirla por reflexivo, sino para evitar que la decisión llegue en el momento de tensión (caída del activo o cambio macro). Pre-definir "qué condición concreta dispara revisar la posición" convierte una decisión emocional en una mecánica medible.' },
     ],
-    follow_ups: ['¿Cuánto bajaría el TWR sin la posición top 1?', '¿Qué umbral de weight conviene para gatillar revisión?'],
+    follow_ups: ['¿Cuánto bajaría el TWR sin la posición top 1?'],
   },
   monthly: {
     tldr: 'El mes cerró con dos motores asimétricos: un trade táctico de tamaño grande explica buena parte del P&L mientras el resto de la cartera siguió cerca del benchmark mensual.',
@@ -777,7 +777,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Lectura comparativa', tone: 'neutral', body: 'El delta vs S&P 500 del mes está dentro del rango típico. La cartera mostró menos dispersión que el promedio del año, lo cual es coherente con un mes sin shocks idiosincráticos materiales.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Un mes con resultado positivo concentrado en un solo trade es un patrón a registrar — la pregunta de proceso es si esa contribución refleja una decisión replicable o un timing puntual. Documentar el caso permite reconocer condiciones similares cuando vuelvan.' },
     ],
-    follow_ups: ['¿Qué mes histórico se parece más a éste?', '¿Sin el top trade, cuánto hubiera rendido?'],
+    follow_ups: ['¿Qué mes histórico se parece más a éste?'],
   },
   'monthly.insight': {
     tldr: 'El insight detectado captura una concentración material del resultado del mes en pocas posiciones — un patrón que distingue meses replicables de meses con dependencia de un trade puntual.',
@@ -786,7 +786,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Lectura interpretativa', tone: 'warning', body: 'Cuando un mes positivo descansa sobre un solo nombre, la replicabilidad del resultado depende de seguir encontrando situaciones similares. La métrica útil a registrar es si esto se repite a lo largo de varios meses o aparece esporádicamente.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El cambio de proceso de mayor leverage no es rebalancear ahora — es definir un umbral pre-acordado de revisión por concentración del P&L mensual. Eso convierte una observación recurrente en un disparador objetivo, no en una decisión que se toma "cuando se siente".' },
     ],
-    follow_ups: ['¿Este patrón se repite en otros meses?', '¿Cuál sería un umbral razonable para gatillar revisión?'],
+    follow_ups: ['¿Este patrón se repite en otros meses?'],
   },
   position: {
     tldr: 'La posición concentra una porción significativa del portfolio total con un P&L positivo, pero su peso actual también define una asimetría de riesgo concreta — un movimiento adverso del activo impacta el TWR del agregado más de lo que sugiere su contribución promedio histórica.',
@@ -795,7 +795,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Peso vs portfolio', tone: 'warning', body: 'La posición pesa por encima del 10% del valor total. Esa magnitud convierte un movimiento del 25% en el activo en un movimiento de 2.5pp del TWR del portfolio — material respecto del drawdown histórico habitual.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Lo útil acá no es cerrar la posición sino pre-definir el umbral en que su peso justifica un rebalance. Cuando la decisión se toma con regla objetiva (ej. recortar si supera X% del portfolio) en lugar de en respuesta a un evento adverso, los rendimientos esperados a largo plazo mejoran.' },
     ],
-    follow_ups: ['¿Qué umbral de weight conviene para rebalance?', '¿Cuánto pierde el portfolio si cae 25%?'],
+    follow_ups: ['¿Qué umbral de weight conviene para rebalance?'],
   },
   'position.chart': {
     tldr: 'El movimiento reciente del precio sugiere que la posición ya capturó la parte más rápida del recorrido — desde el peak el activo se mueve dentro de un rango más estrecho con dispersión menor que la histórica reciente.',
@@ -804,7 +804,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Volatilidad y drawdown reciente', tone: 'neutral', body: 'El drawdown reciente respecto del peak del período mostrado está controlado. Para un activo con la beta histórica de esta posición, el rango actual es estrecho — período de consolidación más que de tendencia.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El chart no respalda ni invalida la tesis — solo describe que el movimiento esperado ya ocurrió y la información ahora viene por fuera del precio. Para decisiones futuras vale revisar fundamentales (próximos earnings, cambio de momentum sectorial) más que el chart mismo.' },
     ],
-    follow_ups: ['¿La volatilidad reciente está dentro del rango histórico?', '¿Qué tan lejos está del próximo peak?'],
+    follow_ups: ['¿La volatilidad reciente está dentro del rango histórico?'],
   },
   'position.lots': {
     tldr: 'El historial muestra varias compras a precios crecientes — un patrón de averaging up que es coherente con momentum-following. El avg refleja entradas progresivas, no una compra única dominante.',
@@ -813,7 +813,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Estructura del avg', tone: 'neutral', body: 'El precio promedio actual está más cerca de las últimas compras que de la primera — el peso del avg lo definen las entradas tardías. Eso implica que el cushion de tolerancia ante una corrección es menor que el que sugiere el P&L absoluto.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Averaging up funciona en mercados con tendencia clara y se vuelve costoso en mercados laterales o de reversión. La regla útil para este patrón es pre-definir el criterio para dejar de promediar al alza: si el activo cruza X múltiplo del avg, dejar de agregar y considerar el rebalance.' },
     ],
-    follow_ups: ['¿Cuál fue el lote más rentable hasta ahora?', '¿Qué pasa con el avg si agrego un lote más al precio actual?'],
+    follow_ups: ['¿Cuál fue el lote más rentable hasta ahora?'],
   },
   operations: {
     tldr: 'El sistema descansa sobre asimetría favorable — pocas ganadoras grandes pagan varias perdedoras chicas. Pero un par de trades excepcionales infla el payoff promedio: si se excluyen, la expectancy se acerca al break-even.',
@@ -823,7 +823,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Concentración por ticker', tone: 'neutral', body: 'Los top 3 tickers más operados acumulan la mayoría de los trades del historial. Esa concentración indica un universo de trading reducido — el sistema vive de operar pocos nombres conocidos en profundidad, no de explorar muchos activos en superficial.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La pregunta útil sobre este sistema no es si va a seguir funcionando, sino qué condiciones del mercado fueron las que posibilitaron los trades excepcionales. Si esas condiciones se repiten poco (ej. correcciones fuertes seguidas de rebotes), el sistema depende de un régimen específico — válido reconocerlo y registrar cuándo se da.' },
     ],
-    follow_ups: ['¿Cuál es la expectancy sin los outliers?', '¿En qué año concentré más trades?'],
+    follow_ups: ['¿Cuál es la expectancy sin los outliers?'],
   },
   'operations.trade': {
     tldr: 'Este trade vale varias veces el avg_win del sistema — fue el aporte más grande del año. Identificar qué condiciones lo posibilitaron es lo más útil del análisis: cómo se construyó el setup, no si va a repetirse.',
@@ -833,7 +833,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Holding period', tone: 'neutral', body: 'El tiempo de la posición es de mediano plazo — ni intraday ni multi-año. Esa ventana es la típica de las ganadoras grandes en sistemas de trend-following: hay tiempo para que la tesis se desarrolle pero no se mantiene a través de varios ciclos.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Documentar qué fue diferente en este trade (tamaño, timing, conviction, contexto sectorial) es más valioso que el P&L. Sin ese ejercicio, el outlier queda como suerte no transferible. Con el ejercicio, se convierte en una entrada del checklist para reconocer setups similares.' },
     ],
-    follow_ups: ['¿Hubo otros trades del mismo ticker?', '¿Cómo se compara con el peor trade del año?'],
+    follow_ups: ['¿Hubo otros trades del mismo ticker?'],
   },
   reports: {
     tldr: 'El año cierra con TWR positivo pero la mayor parte del rendimiento se concentra en uno o dos meses excepcionales — la consistency mensual es media, lo cual hace al resultado menos replicable que un año con curva pareja.',
@@ -843,7 +843,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Mejor vs peor mes', tone: 'neutral', body: 'La brecha entre mejor y peor mes es amplia. Una dispersión así sugiere que el portfolio responde con fuerza al ciclo del activo dominante. Para perfiles que buscan menos volatilidad, suavizar esa brecha requiere bajar concentración o agregar exposure no correlacionada.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La métrica útil a monitorear no es el TWR acumulado del año sino la consistencia de la curva. Un año con TWR del 14% concentrado en dos meses tiene replicabilidad menor que uno con TWR del 10% distribuido en seis meses positivos. Para evaluar el sistema, ignoré el resultado y mirá la varianza mensual.' },
     ],
-    follow_ups: ['¿Qué mes contribuyó más al TWR del año?', '¿Cómo se ve la dispersión vs el año anterior?'],
+    follow_ups: ['¿Qué mes contribuyó más al TWR del año?'],
   },
   home: {
     tldr: 'El día abre con mercado mixto y el portfolio se mueve cerca de cero — buena ventana para revisar tesis sin presión de evento. La semana próxima concentra varios reportes sobre posiciones grandes.',
@@ -853,7 +853,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Riesgo de la semana', tone: 'warning', body: 'En los próximos 14 días aparecen earnings sobre posiciones que combinadas representan ~40% del valor del portfolio. La semana del reporte puede mover el TWR diario más de lo usual.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Días sin volatilidad son los más útiles para revisar criterio sin reaccionar al precio. Hoy es ese tipo de día — vale verificar si los umbrales de rebalance están bien calibrados antes de que llegue una sesión con noticias.' },
     ],
-    follow_ups: ['¿Qué tan correlacionado está mi portfolio con el SPY?', '¿Cuál es el peso combinado con earnings esta semana?'],
+    follow_ups: ['¿Qué tan correlacionado está mi portfolio con el SPY?'],
   },
   news: {
     tldr: 'El feed de noticias del período concentra la mayor parte de su volumen en pocos tickers — un patrón que refleja que los temas del momento tocan posiciones específicas de la cartera, no el portfolio entero.',
@@ -863,7 +863,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Tickers silent', tone: 'neutral', body: 'Varias posiciones del portfolio NO aparecen en las noticias del período. Esa ausencia no es positiva ni negativa por sí sola, pero vale registrar si esas posiciones siguen siendo decisión activa o se volvieron defaults.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Cuando el ruido informativo se concentra en pocas posiciones, las decisiones suelen sesgarse hacia esos tickers — el feed crea agenda. Mantener un registro de "qué decidiste sin noticias" es una métrica simple pero útil para chequear si la toma de decisión responde a la tesis o al volumen de cobertura del día.' },
     ],
-    follow_ups: ['¿Qué ticker concentra más cobertura este período?', '¿Cuáles son los tags dominantes?'],
+    follow_ups: ['¿Qué ticker concentra más cobertura este período?'],
   },
   'news.item': {
     tldr: 'La noticia toca una posición material del portfolio — vale leerla con criterio. Lo importante no es la noticia en sí, sino qué (si es que algo) cambia en la tesis original de la posición.',
@@ -873,7 +873,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Cobertura sostenida', tone: 'neutral', body: 'El ticker registra varias noticias en los últimos 30 días. Esa continuidad indica que el mercado está re-evaluando el activo — la noticia individual es menos importante que la tendencia agregada de cobertura.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Una noticia rara vez justifica cambiar la posición — lo que sí justifica el cambio es si la noticia modifica la TESIS original. La pregunta práctica es "¿lo que dice esto hace que mi razón para tener la posición ya no aplique?". Si la respuesta es no, la noticia es ruido — útil de leer, no de actuar.' },
     ],
-    follow_ups: ['¿Cuántas otras noticias hay del mismo ticker?', '¿Qué % del portfolio depende de esta posición?'],
+    follow_ups: ['¿Cuántas otras noticias hay del mismo ticker?'],
   },
   events: {
     tldr: 'El calendario concentra la mayoría de los eventos sobre un puñado de posiciones grandes — una semana en particular concentra varios reportes que pueden mover el TWR del portfolio más que el rango diario habitual.',
@@ -883,7 +883,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Cash flow vs market movement', tone: 'neutral', body: 'Los dividendos del calendario generan flujos conocidos. Diferenciar ese cash flow del movimiento de mercado ayuda a leer el TWR con criterio — el portfolio puede subir un día solo por dividendos pagados, sin que el activo haya apreciado.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La utilidad del calendario no es decidir qué hacer en cada evento sino fijar el plan ANTES de que llegue. Pre-definir el umbral de tolerancia a movimientos post-earnings ("si X cae más de Y% sin razón fundamental") evita decisiones tomadas en caliente — los datos académicos muestran que decisiones tomadas en frío rinden mejor que las post-evento.' },
     ],
-    follow_ups: ['¿Qué semana concentra más eventos?', '¿Qué porcentaje del portfolio está expuesto a earnings esta temporada?'],
+    follow_ups: ['¿Qué semana concentra más eventos?'],
   },
   'events.item': {
     tldr: 'El evento toca una posición de peso material — el día del reporte el portfolio puede moverse más que el promedio diario habitual. Es contexto a tener presente, no señal de acción.',
@@ -893,7 +893,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Posición previa al evento', tone: 'neutral', body: 'La posición viene con P&L positivo. Llega al evento con cushion. Eso no garantiza nada del movimiento del precio el día del reporte, pero baja la presión emocional respecto de llegar al evento con la posición en rojo.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La regla útil para earnings de posiciones grandes no es cerrar antes o esperar — es pre-definir el escenario adverso. Por ejemplo: "si el activo cae más de 15% post-earnings sin que cambien los fundamentales explicados en el reporte, mantengo o promedio". Eso convierte una decisión de reacción en una verificación contra criterio.' },
     ],
-    follow_ups: ['¿Cuál fue el movimiento promedio de earnings previos de este ticker?', '¿Cuánto cae el portfolio si el activo retrocede 15%?'],
+    follow_ups: ['¿Cuál fue el movimiento promedio de earnings previos de este ticker?'],
   },
   goal: {
     tldr: 'El objetivo es alcanzable si se sostiene la disciplina de aportes y la tasa de retorno esperada se ubica cerca del CAGR histórico del propio portfolio. Depender solo del rendimiento sin aportes adicionales aleja el horizonte estimado en varios meses.',
@@ -903,7 +903,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Comparación con escenarios', tone: 'neutral', body: 'El escenario "conservador" (rendimiento del SPY histórico) llega al objetivo más tarde que el plan original. La brecha temporal es el costo implícito de asumir un retorno esperado superior al histórico. Esa brecha vale tenerla presente como margen de error razonable.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La métrica útil a monitorear no es el progreso mes a mes (es ruidoso) sino la trayectoria de 6 meses corrida. Si la curva real se desvía consistentemente del escenario base, el ajuste relevante suele ser revisar el aporte, no el target — el plan más robusto suele ser el que asume un retorno menor y un aporte mayor.' },
     ],
-    follow_ups: ['¿Qué pasa si suspendo aportes 6 meses?', '¿Cuál es el CAGR histórico real del portfolio?'],
+    follow_ups: ['¿Qué pasa si suspendo aportes 6 meses?'],
   },
   'insights.benchmarks': {
     tldr: 'Le ganaste a la inflación AR con margen pero quedaste algunos puntos debajo del SPY — esa combinación es característica de portfolios con cash material y exposure mixto, no de un alpha negativo del stock-picking.',
@@ -913,7 +913,7 @@ const DEMO_AI_RESULTS = {
       { title: 'vs Dólar Blue', tone: 'neutral', body: 'Para la parte ARS de la cartera, ganarle al blue significa defender poder adquisitivo en pesos. Para la parte USD, el blue es referencia tangencial — esa porción ya está protegida de devaluación gradual. La métrica solo es material para evaluar el costo de quedarse en pesos vs dolarizar.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La métrica útil acá no es "¿cómo le gano al SPY?" sino "¿qué porción del cash debería estar invertida si quiero achicar el gap?". El gap vs SPY es esencialmente cash drag — desplegarlo de forma escalonada y pre-pactada (no en función del precio diario) suele cerrar la diferencia sin agregar riesgo material.' },
     ],
-    follow_ups: ['¿Qué TWR tendría la cartera con 0% de cash drag?', '¿Hay períodos donde el portfolio sí superó al SPY?'],
+    follow_ups: ['¿Qué TWR tendría la cartera con 0% de cash drag?'],
   },
 }
 
@@ -929,7 +929,7 @@ const DEMO_BEHAVIORAL_CARDS = {
       { title: 'Interacción con concentración', tone: 'neutral', body: 'El sesgo se vuelve más caro cuando hay una posición core grande: la tentación a cerrar la ganadora en corrección amplifica el efecto. NVDA con 28% de weight y el disposition effect activo arman exactamente esa tensión latente.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El cambio de leverage más alto no es psicológico — es procedural. Definir el criterio de salida ANTES de la entrada (stop por precio, por % de portfolio o por cambio en la tesis) saca la decisión del momento de tensión y la convierte en una verificación contra un umbral pre-acordado. Eso desarma el sesgo sin pelearlo en cada operación.' },
     ],
-    follow_ups: ['¿Cuántos puntos por año estimás que cuesta este sesgo en mi caso?', '¿Cómo se ve en la práctica un criterio de salida pre-definido?'],
+    follow_ups: ['¿Cuántos puntos por año estimás que cuesta este sesgo en mi caso?'],
   },
   overtrade: {
     tldr: 'Turnover anual de 1x ubica al portfolio en territorio de inversor a mediano plazo — fuera de la zona donde fricciones de costo erosionan el resultado. Esa disciplina es difícil de mantener y suele subestimarse como factor de performance.',
@@ -938,7 +938,7 @@ const DEMO_BEHAVIORAL_CARDS = {
       { title: 'Por qué importa', tone: 'neutral', body: 'Cada operación tiene un costo silencioso. Barber & Odean documentaron que portfolios de inversores individuales subperformaban el mercado en proporción directa a su nivel de actividad. El portfolio menos activo tiende a estar más cerca del benchmark — y para la mayoría eso ya es resultado.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Mantener turnover bajo es contraintuitivo porque la operatoria se confunde con "estar trabajando la cartera". El research muestra lo opuesto: el portfolio se beneficia más de la decisión inicial bien tomada que de las decisiones intermedias. La regla útil acá es operar solo cuando hay tesis clara que justifica costo — no cuando "no pasa nada".' },
     ],
-    follow_ups: ['¿Qué pasa con la expectancy si subiera el turnover a 3x?', '¿El bid-ask spread es material en mis brokers actuales?'],
+    follow_ups: ['¿Qué pasa con la expectancy si subiera el turnover a 3x?'],
   },
   concentration: {
     tldr: 'La concentración nominal (top1 ~18%, top3 ~46%) está en zona moderada — pero la concentración por fuente de rendimiento es mayor. La diversificación de capital no se traduce automáticamente en diversificación de riesgo.',
@@ -947,7 +947,7 @@ const DEMO_BEHAVIORAL_CARDS = {
       { title: 'Concentración encubierta', tone: 'warning', body: 'Si los top 3 holdings son del mismo sector (tech US) o del mismo factor (growth), la diversificación efectiva es menor que la nominal. En una corrección del Nasdaq, los tres se mueven en la misma dirección y la cartera se comporta como si tuviera una sola posición agregada.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La regla útil no es bajar concentración por concentración — es definir un umbral pre-acordado que dispare revisión. Por ejemplo: rebalancear si un activo cruza el 25% del portfolio, o si dos del mismo sector combinados superan el 40%. Eso convierte la decisión emocional ("me siento expuesto") en una mecánica medible.' },
     ],
-    follow_ups: ['¿Qué % del riesgo de mercado explica el sector tech?', '¿A qué umbral conviene gatillar rebalance?'],
+    follow_ups: ['¿Qué % del riesgo de mercado explica el sector tech?'],
   },
   inflation_loss: {
     tldr: 'Los ~US$ 272 de erosión por inflación AR son una pérdida real que no aparece en el P&L — el cash ARS no se queda quieto en términos de poder adquisitivo. Tratar esa porción como neutral en lugar de inversión inflación-pasiva subestima el costo.',
@@ -956,7 +956,7 @@ const DEMO_BEHAVIORAL_CARDS = {
       { title: 'Por qué importa específicamente', tone: 'neutral', body: 'El cash ARS funciona como reserva táctica solo si se usa en un horizonte cercano — para operaciones, gastos o deploy a corto plazo. Si lleva más de algunas semanas quieto, deja de ser reserva y se convierte en costo. Distinguir uno del otro cambia la decisión.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La mejora de mayor leverage no es elegir el mejor instrumento alternativo (Lecaps, MEP, CEDEARs) sino fijar una regla de no-permanencia: cash ARS que no se mueve en X semanas se rota automáticamente al instrumento default elegido. Eso convierte una pérdida pasiva en una decisión estructural única, no una decisión recurrente.' },
     ],
-    follow_ups: ['¿Cuánto cuesta anualizado mantener cash ARS sin instrumentar?', '¿Cuál es la frontera práctica entre reserva táctica y cash drag?'],
+    follow_ups: ['¿Cuánto cuesta anualizado mantener cash ARS sin instrumentar?'],
   },
   winrate_payoff: {
     tldr: 'El win rate del 56% con payoff 7x sugiere un sistema asimétrico saludable, pero la lectura honesta es que el payoff promedio está inflado por un o dos trades excepcionales. Sin esos outliers, la expectancy cae al territorio de break-even.',
@@ -965,7 +965,7 @@ const DEMO_BEHAVIORAL_CARDS = {
       { title: 'Lo que esconde el promedio', tone: 'warning', body: 'INTC +148% como trade único distorsiona el avg_win. Si se excluye, el payoff promedio cae sustancialmente y la expectancy se acerca al break-even. La métrica robusta es la mediana, no el promedio — pero el packet trae promedio, lo cual hay que tener en cuenta al interpretar.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Sistemas asimétricos como éste tienen un riesgo específico: confundir suerte sostenida con habilidad sistemática. La validación útil no es si el payoff sigue alto el próximo trade, sino si se mantiene cuando se excluye el outlier histórico. Si la respuesta es no, el "sistema" depende de seguir encontrando outliers — lo cual no es predecible.' },
     ],
-    follow_ups: ['¿Cuál sería la expectancy excluyendo el trade INTC?', '¿Cómo se ve la mediana del payoff vs el promedio?'],
+    follow_ups: ['¿Cuál sería la expectancy excluyendo el trade INTC?'],
   },
   loss_aversion: {
     tldr: 'El patrón de ganadoras > perdedoras en magnitud es uno de los más difíciles de mantener — es el opuesto a la tendencia instintiva. Lo que está funcionando hoy no es una decisión puntual sino un proceso silencioso que vale más que cualquier trade individual del año.',
@@ -974,7 +974,7 @@ const DEMO_BEHAVIORAL_CARDS = {
       { title: 'Por qué es frágil', tone: 'neutral', body: 'Mantener este patrón es difícil porque pelea contra dos sesgos al mismo tiempo: el deseo de "asegurar" ganancias cuando una posición sube fuerte (anchoring al precio de compra), y la tendencia a mantener perdedoras esperando recuperación. El proceso se rompe en momentos de tensión, no en operatoria normal.' },
       { title: 'Insight clave', tone: 'neutral', body: 'Lo importante no es el patrón actual — es identificar cuál es el momento típico donde se rompe. Suele ser cuando una ganadora pasa de +30% a +80%: la tentación a cerrar para "asegurar" es máxima ahí. Pre-definir qué se hace en ese escenario (ej. rebalancear al 50% solo si supera X% del portfolio) protege el patrón sin requerir disciplina momentánea.' },
     ],
-    follow_ups: ['¿En qué momentos típicamente se rompe este patrón?', '¿Cómo proteger el patrón sin pelearlo en cada decisión?'],
+    follow_ups: ['¿En qué momentos típicamente se rompe este patrón?'],
   },
   cash_drag: {
     tldr: 'El 45% en cash combinado (USDT + ARS) no es inversión defensiva — es capital sin desplegar. Si esa decisión no es activa (esperando un nivel concreto), el costo de oportunidad anualizado supera a cualquier alpha potencial del stock-picking del año.',
@@ -983,7 +983,7 @@ const DEMO_BEHAVIORAL_CARDS = {
       { title: 'Reserva táctica vs cash drag', tone: 'neutral', body: 'El cash con función específica (deploy planificado, gasto cercano, reserva por evento) tiene sentido. El cash sin función específica acumulado por inacción no — es la posición default cuando no se decide. Diferenciar ambos casos cambia totalmente la lectura del riesgo.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La mejora útil no es invertir el cash en bloque, sino pre-acordar una regla de despliegue escalonado. Por ejemplo: deploy mensual del X% durante Y meses, independiente del precio. Esa mecánica saca al inversor del dilema "todavía no" sin requerir convicción en un timing — y el research muestra que el promedio del DCA suele estar dentro del 1% del óptimo retrospectivo.' },
     ],
-    follow_ups: ['¿Cuánto del gap vs SPY se explica por cash drag?', '¿Qué cantidad de cash es razonable como reserva táctica vs operativa?'],
+    follow_ups: ['¿Cuánto del gap vs SPY se explica por cash drag?'],
   },
 }
 
@@ -996,7 +996,7 @@ const DEMO_BEHAVIORAL_CARD_GENERIC = (code) => ({
     { title: 'Cómo funciona', tone: 'neutral', body: 'Cada sesgo se calcula sobre tu historial real de operaciones, comparando con benchmarks académicos. La severidad (alta/media/baja/positiva) te orienta sobre dónde poner atención.' },
     { title: 'Probalo logueado', tone: 'positive', body: 'Si querés ver el análisis personalizado, creá una cuenta gratis y subí tu CSV o cargá algunas operaciones para que los detectores tengan datos para trabajar.' },
   ],
-  follow_ups: ['¿Cómo se calculan los sesgos?', '¿Qué referencias usan los detectores?'],
+  follow_ups: ['¿Cómo se calculan los sesgos?'],
 })
 
 // Mock de follow-up: el LLM real responde la pregunta puntual con el packet.
@@ -1559,11 +1559,11 @@ export function handleDemoRequest(method, path, body) {
         tier: 'pro',
         period: 'week',
         analyses_count: 3,
-        analyses_limit: 200,
-        analyses_remaining: 197,
+        analyses_limit: 60,
+        analyses_remaining: 57,
         hub_queries_count: 0,
-        hub_queries_limit: 200,
-        hub_queries_remaining: 200,
+        hub_queries_limit: 60,
+        hub_queries_remaining: 60,
         resets_on: nextMonday,
         week_starts_on: nextMonday,
       }
@@ -1722,11 +1722,11 @@ export function handleDemoRequest(method, path, body) {
         tier: 'pro',
         period: 'week',
         analyses_count: 3,
-        analyses_limit: 200,
-        analyses_remaining: 197,
+        analyses_limit: 60,
+        analyses_remaining: 57,
         hub_queries_count: 0,
-        hub_queries_limit: 200,
-        hub_queries_remaining: 200,
+        hub_queries_limit: 60,
+        hub_queries_remaining: 60,
         resets_on: nextMonday,
       },
     }
