@@ -285,65 +285,128 @@ function InsightsDesktop() {
       realized: 0, total: 0,
     })
 
-    let netFlows = 0
+    // TWR chain-linked vía Modified Dietz — mismo método que
+    // buildEvolutionFromSnapshots() usa cuando hay daily granularity.
+    //
+    // Bug fix: la fórmula vieja (dollar-weighted: (value - invested) / invested)
+    // se rompe cuando hay retiros grandes. Caso real: el user retira US$ 177k
+    // para impuestos personales y queda con US$ 65k invertidos. La fórmula vieja
+    // dividía por ese 65k y mostraba "+94% mes" cuando en realidad la cartera
+    // siguió rindiendo normal — el spike es artefacto del denominador chico
+    // post-withdrawal, no rendimiento real.
+    //
+    // TWR neutraliza flujos: el retiro NO afecta el % reportado. Es la métrica
+    // correcta para comparar contra SPY (que tampoco tiene flujos).
+    //
+    // Para cada mes:
+    //   net_flow     = deposits - withdrawals
+    //   avg_capital  = cap_inicio + 0.5 × net_flow  (Modified Dietz)
+    //   period_ret   = (cap_final - cap_inicio - net_flow) / avg_capital
+    //   idx_t        = idx_(t-1) × (1 + period_ret)
+    //
+    // Caso especial: primer mes con cap_inicio=0 y depósito grande (típico
+    // de imports iniciales) usa el depósito como capital base completo en
+    // lugar de avg, para evitar inflar 2x el retorno del mes.
+    let cumIdx = 1.0
     let cumRealized = 0
-    let netFlowsArs = 0
+    let cumIdxArs = 1.0
     let cumRealizedArs = 0
     const baselineArs = baseline * (fxBase || 0)
+    // Capital aportado NETO (deposits - withdrawals) acumulado. Coincide
+    // con lo que muestra el Dashboard. Si Pablo deposita $200k y retira
+    // $180k para impuestos, cum_net queda en $20k (no $200k del bruto).
+    let cumNetDeposits = baseline
+    // Peak histórico del net acumulado. Usamos esto como denominador
+    // SAFE cuando hay retiros temporales — evita que el realized% spikee
+    // a 90% post-withdrawal (cuando el net actual queda muy chico).
+    // Cuando el net vuelve a niveles normales, retomamos el net actual.
+    let peakNetDeposits = baseline
 
-    for (const m of globalMonthly) {
+    // Función para denominador estable: usa net actual si está al menos
+    // al 60% del peak; sino, usa peak (el capital que TUVO el portfolio
+    // en su mejor momento — el retiro fue ruido temporal).
+    const safeDenom = (netDep, peakDep) =>
+      netDep >= peakDep * 0.6 && netDep > 1000 ? netDep : peakDep
+
+    for (let i = 0; i < globalMonthly.length; i++) {
+      const m = globalMonthly[i]
+      const isFirst = i === 0
+      const ci = m.capital_inicio || 0
+      const cf = m.capital_final || 0
       const net = (m.deposits || 0) - (m.withdrawals || 0)
-      netFlows += net
       cumRealized += (m.pnl_realized || 0)
+      cumNetDeposits += net
+      if (cumNetDeposits > peakNetDeposits) peakNetDeposits = cumNetDeposits
 
-      const invested = baseline + netFlows
-      const value = m.capital_final || 0
-      // Clamp a -99 — meses con value < 0 (drift residual) no rompen el rebase.
-      const rawTotal = invested > 0 ? ((value - invested) / invested) * 100 : 0
-      const totalPct = Math.max(rawTotal, -99)
-      const realPct = invested > 0 ? (cumRealized / invested) * 100 : 0
+      // Modified Dietz USD
+      const isImportInitial = isFirst && ci === 0 && net > 0
+      const avgCap = isImportInitial ? net : ci + 0.5 * net
+      const rRaw = avgCap > 0 ? (cf - ci - net) / avgCap : 0
+      const r = Math.max(rRaw, -0.99)
+      cumIdx *= (1 + r)
+
+      const totalPct = +((cumIdx - 1) * 100).toFixed(2)
+      const denom = safeDenom(cumNetDeposits, peakNetDeposits)
+      const realPct = denom > 0 ? +((cumRealized / denom) * 100).toFixed(2) : 0
 
       seriesUsd.push({
         key: monthKey(m.year, m.month),
         label: `${MONTHS[m.month - 1].slice(0, 3)} ${String(m.year).slice(2)}`,
-        realized: +realPct.toFixed(2),
-        total: +totalPct.toFixed(2),
+        realized: realPct,
+        total: totalPct,
       })
 
-      // ARS: convertir value e invested a pesos del mes
+      // ARS: misma fórmula TWR, con flujos al fx del mes
       if (fxBase && bench?.dolar_blue) {
         const fx = lookupDolar(monthKey(m.year, m.month)) || fxBase
-        netFlowsArs += net * fx
+        const ciArs = ci * fx
+        const cfArs = cf * fx
+        const netArs = net * fx
+        const avgArs = isImportInitial ? netArs : ciArs + 0.5 * netArs
+        const rArsRaw = avgArs > 0 ? (cfArs - ciArs - netArs) / avgArs : 0
+        const rArs = Math.max(rArsRaw, -0.99)
+        cumIdxArs *= (1 + rArs)
         cumRealizedArs += (m.pnl_realized || 0) * fx
-        const investedArs = baselineArs + netFlowsArs
-        const valueArs = value * fx
-        const rawTotalArs = investedArs > 0 ? ((valueArs - investedArs) / investedArs) * 100 : 0
-        const totalPctArs = Math.max(rawTotalArs, -99)
-        const realPctArs = investedArs > 0 ? (cumRealizedArs / investedArs) * 100 : 0
+
+        const totalPctArs = +((cumIdxArs - 1) * 100).toFixed(2)
+        const denomArs = safeDenom(cumNetDeposits, peakNetDeposits) * fx
+        const realPctArs = denomArs > 0 ? +((cumRealizedArs / denomArs) * 100).toFixed(2) : 0
         seriesArs.push({
           key: monthKey(m.year, m.month),
           label: `${MONTHS[m.month - 1].slice(0, 3)} ${String(m.year).slice(2)}`,
-          realized: +realPctArs.toFixed(2),
-          total: +totalPctArs.toFixed(2),
+          realized: realPctArs,
+          total: totalPctArs,
         })
       }
     }
 
-    // Punto "Hoy" — usa live portfolio
-    if (totalPortfolio > 0) {
-      const investedLive = baseline + netFlows
-      const rawTotalLive = investedLive > 0 ? ((totalPortfolio - investedLive) / investedLive) * 100 : 0
-      const totalLive = Math.max(rawTotalLive, -99)
-      const realLive = investedLive > 0 ? (cumRealized / investedLive) * 100 : 0
-      seriesUsd.push({ key: 'today', label: 'Hoy', realized: +realLive.toFixed(2), total: +totalLive.toFixed(2) })
+    // Punto "Hoy" — extiende el último mes con live portfolio.
+    if (totalPortfolio > 0 && globalMonthly.length > 0) {
+      const lastM = globalMonthly[globalMonthly.length - 1]
+      const lastCf = lastM.capital_final || 0
+      if (lastCf > 0) {
+        const rLive = (totalPortfolio - lastCf) / lastCf
+        const rLiveClamped = Math.max(rLive, -0.99)
+        cumIdx *= (1 + rLiveClamped)
+      }
+      const totalLive = +((cumIdx - 1) * 100).toFixed(2)
+      const denomLive = safeDenom(cumNetDeposits, peakNetDeposits)
+      const realLive = denomLive > 0 ? +((cumRealized / denomLive) * 100).toFixed(2) : 0
+      seriesUsd.push({ key: 'today', label: 'Hoy', realized: realLive, total: totalLive })
 
+      // ARS "Hoy" — extiende cumIdxArs igual que en USD
       if (fxBase && tcBlue) {
-        const investedArsLive = baselineArs + netFlowsArs
+        const lastCfArs = lastCf * tcBlue
         const valueArsLive = totalPortfolio * tcBlue
-        const rawTotalArsLive = investedArsLive > 0 ? ((valueArsLive - investedArsLive) / investedArsLive) * 100 : 0
-        const totalArsLive = Math.max(rawTotalArsLive, -99)
-        const realArsLive = investedArsLive > 0 ? (cumRealizedArs / investedArsLive) * 100 : 0
-        seriesArs.push({ key: 'today', label: 'Hoy', realized: +realArsLive.toFixed(2), total: +totalArsLive.toFixed(2) })
+        if (lastCfArs > 0) {
+          const rLiveArs = (valueArsLive - lastCfArs) / lastCfArs
+          const rLiveArsClamped = Math.max(rLiveArs, -0.99)
+          cumIdxArs *= (1 + rLiveArsClamped)
+        }
+        const totalArsLive = +((cumIdxArs - 1) * 100).toFixed(2)
+        const denomArsLive = safeDenom(cumNetDeposits, peakNetDeposits) * tcBlue
+        const realArsLive = denomArsLive > 0 ? +((cumRealizedArs / denomArsLive) * 100).toFixed(2) : 0
+        seriesArs.push({ key: 'today', label: 'Hoy', realized: realArsLive, total: totalArsLive })
       }
     }
   }
@@ -1444,6 +1507,7 @@ function InsightsDesktop() {
               />
               <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontFamily: 'JetBrains Mono' }} />
               <Line type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2} dot={{ r: 2.5 }} />
+              <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#21D07A" strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
               <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
