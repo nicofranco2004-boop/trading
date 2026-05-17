@@ -11,6 +11,7 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 import AIDiscoveryBanner from '../components/ai/AIDiscoveryBanner'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
+import InfoTooltip from '../components/InfoTooltip'
 import { DashboardSkeleton } from '../components/Skeleton'
 import InsightLine from '../components/InsightLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
@@ -392,24 +393,58 @@ export default function Dashboard() {
           label="Capital aportado"
           value={fmt(netDeposited)}
           sub="depósitos netos"
+          infoAlign="left"
+          info={
+            <>
+              <p className="font-medium text-ink-0">Capital aportado neto</p>
+              <p>Plata que pusiste de tu bolsillo y que sigue invertida.</p>
+              <p className="text-ink-3 font-mono text-[11px]">= depósitos − retiros</p>
+              <p className="text-ink-3">Si retirás y volvés a depositar lo mismo, no se duplica: solo cuenta el neto que está expuesto al mercado.</p>
+            </>
+          }
         />
         <KpiCell
           label="Resultado total"
           value={fmt(totalReturnUsd)}
           tone={totalReturnUsd >= 0 ? 'pos' : 'neg'}
           sub={`${pctSigned(totalReturnPct)} desde el inicio`}
+          infoAlign="left"
+          info={
+            <>
+              <p className="font-medium text-ink-0">Resultado total acumulado</p>
+              <p>Cuánto ganaste (o perdiste) desde que empezaste, en dólares.</p>
+              <p className="text-ink-3 font-mono text-[11px]">= valor actual − capital aportado neto</p>
+              <p className="text-ink-3">Incluye TODO: P&L realizado, no realizado, dividendos cobrados e intereses. El porcentaje es sobre el capital aportado neto.</p>
+            </>
+          }
         />
         <KpiCell
           label="P&L realizado"
           value={fmt(realizedPnl)}
           tone={realizedPnl >= 0 ? 'pos' : 'neg'}
           sub="operaciones cerradas"
+          info={
+            <>
+              <p className="font-medium text-ink-0">P&L realizado</p>
+              <p>Ganancia ya materializada: operaciones cerradas (ventas) + dividendos cobrados + intereses.</p>
+              <p className="text-ink-3 font-mono text-[11px]">= Σ pnl_realized de cada venta</p>
+              <p className="text-ink-3">Es plata que ya "tocaste". No cambia con los precios actuales: una vez cerrada la operación, queda fijo.</p>
+            </>
+          }
         />
         <KpiCell
           label="P&L no realizado"
           value={fmt(totalPnl)}
           tone={totalPnl >= 0 ? 'pos' : 'neg'}
           sub={`${pctSigned(totalPct)} sobre costo`}
+          info={
+            <>
+              <p className="font-medium text-ink-0">P&L no realizado</p>
+              <p>Ganancia "en papel" de las posiciones que tenés abiertas hoy.</p>
+              <p className="text-ink-3 font-mono text-[11px]">= valor actual − costo de compra</p>
+              <p className="text-ink-3">Mark to market: cambia todos los días con los precios. Sólo se convierte en realizado cuando vendés. El % es sobre el costo de compra.</p>
+            </>
+          }
         />
       </div>
 
@@ -646,14 +681,17 @@ function rangeLabel(id) {
 }
 
 // KPI cell denso V2: label mono uppercase + value tabular + sub mono caps.
-function KpiCell({ label, value, sub, tone, first }) {
+function KpiCell({ label, value, sub, tone, first, info, infoAlign = 'right' }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
     tone === 'neg' ? 'text-rendi-neg' :
     'text-ink-0'
   return (
     <div className={`px-4 py-3 flex-1 min-w-[160px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 leading-none">{label}</div>
+      <div className="flex items-center gap-1 leading-none">
+        <div className="text-[10px] font-mono uppercase tracking-label text-ink-3">{label}</div>
+        {info && <InfoTooltip size={11} align={infoAlign}>{info}</InfoTooltip>}
+      </div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{value}</div>
       <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none truncate uppercase tracking-caps">{sub}</div>
     </div>
