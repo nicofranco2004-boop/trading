@@ -92,6 +92,7 @@ export function buildCumulativeReturnSeries(globalMonthly, liveValue = null) {
 
   for (let i = 0; i < sorted.length; i++) {
     const m = sorted[i]
+    const isFirst = i === 0
     const isLast = i === sorted.length - 1
     const capInicio = m.capital_inicio || 0
     const net = (m.deposits || 0) - (m.withdrawals || 0)
@@ -99,7 +100,25 @@ export function buildCumulativeReturnSeries(globalMonthly, liveValue = null) {
       ? liveValue
       : (m.capital_final || 0)
 
-    const avgCapital = capInicio + 0.5 * net
+    // Modified Dietz estándar: capInicio + 0.5 × net (asume flujos al medio
+    // del mes). Funciona bien para meses de operación normal.
+    //
+    // CASO ESPECIAL — primer mes con cap_inicio=0 y depósito grande:
+    //   Este patrón es típico de imports (el user trae su histórico, marca el
+    //   primer mes como "depósito inicial" sin que haya habido un mes previo).
+    //   En ese caso el depósito NO ocurrió a mitad de mes — fue la base inicial
+    //   del período. La fórmula estándar divide por base chica y duplica
+    //   artificialmente la pérdida/ganancia.
+    //
+    //   Solución: tratar el depósito como capital base completo (no avg).
+    //   Ejemplo: cap=0, dep=123k, final=111k
+    //     Modified Dietz estándar: (111-0-123)/61.5 = -19.5% ❌ (infla)
+    //     Modified Dietz para import inicial: (111-0-123)/123 = -9.8% ✓
+    const isImportInitialMonth = isFirst && capInicio === 0 && net > 0
+    const avgCapital = isImportInitialMonth
+      ? net                          // depósito = capital base completo
+      : capInicio + 0.5 * net        // Modified Dietz estándar
+
     const rawReturn = avgCapital > 0
       ? (capFinal - capInicio - net) / avgCapital
       : 0

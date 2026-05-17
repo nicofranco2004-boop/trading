@@ -109,6 +109,39 @@ describe('buildCumulativeReturnSeries', () => {
     expect(s[0].monthlyReturn).toBe(0)
     expect(s[0].index).toBe(1)
   })
+
+  // REGRESIÓN: primer mes con cap_inicio=0 y depósito grande (typical import
+  // inicial) debe usar el depósito como base, NO como flow mid-month. Sin
+  // este caso, Modified Dietz infla 2x la pérdida/ganancia del primer mes.
+  it('primer mes con cap_inicio=0 y depósito grande usa deposit como base', () => {
+    // User importa histórico: el primer mes tuvo $123k de depósito y cerró
+    // en $111k (perdió 9.4% real, no 19% como diría Modified Dietz estándar).
+    const m = [month(2025, 1, 0, 111429, 123000, 0)]
+    const s = buildCumulativeReturnSeries(m)
+    // (111429 - 0 - 123000) / 123000 = -0.0941
+    expect(s[0].monthlyReturn).toBeCloseTo(-0.0941, 3)
+    // NO debería estar cerca de -0.19 (el resultado buggy anterior)
+    expect(s[0].monthlyReturn).toBeGreaterThan(-0.12)
+  })
+
+  it('primer mes con ganancia sobre depósito inicial también se ajusta', () => {
+    // $10k iniciales → $11k cierre = +10% real (no +20% del cálculo viejo)
+    const m = [month(2025, 1, 0, 11000, 10000, 0)]
+    const s = buildCumulativeReturnSeries(m)
+    expect(s[0].monthlyReturn).toBeCloseTo(0.10, 3)
+  })
+
+  it('NO afecta segundo mes — solo el primer mes con cap_inicio=0', () => {
+    // Segundo mes con cap_inicio > 0 usa Modified Dietz normal aunque
+    // haya depósito grande.
+    const m = [
+      month(2025, 1, 0, 10000, 10000, 0),       // import inicial, ret=0%
+      month(2025, 2, 10000, 11500, 1000, 0),    // +500 ganancia + $1k aporte
+    ]
+    const s = buildCumulativeReturnSeries(m)
+    // Segundo mes: avg = 10000 + 0.5*1000 = 10500, ret = (11500-10000-1000)/10500 = 4.76%
+    expect(s[1].monthlyReturn).toBeCloseTo(0.0476, 3)
+  })
 })
 
 // ── computeDrawdownOnReturns ──────────────────────────────────────────────────
