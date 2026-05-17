@@ -129,6 +129,7 @@ def analyze(
     model: str = MODEL_HAIKU,
     max_tokens: int = 3000,
     max_retries: int = 1,
+    followup_question: Optional[str] = None,
 ) -> Optional[LLMResult]:
     """Manda el packet a Claude y devuelve output validado contra `output_model`.
 
@@ -139,6 +140,8 @@ def analyze(
         model: 'claude-haiku-4-5' (default) o 'claude-sonnet-4-6' (Pro).
         max_tokens: cap de output (narrativa breve, no necesita >2K).
         max_retries: si el LLM rompe el schema, reintentar N veces.
+        followup_question: si viene, el LLM responde la pregunta puntual
+            usando el mismo packet en lugar de generar el análisis general.
 
     Returns:
         LLMResult con .output validado, o None si AI no está configurada.
@@ -150,25 +153,46 @@ def analyze(
     if client is None:
         return None
 
-    # Mensaje del user = packet serializado + instrucción interpretativa.
-    # IMPORTANTE: sort_keys=True para que el packet sea determinístico —
-    # cache_read funciona porque mismos bytes → misma cache key.
-    user_msg = (
-        "Datos pre-calculados de la pantalla del usuario.\n\n"
-        "Tu trabajo: INTERPRETAR (no describir). Cada section debe agregar "
-        "una capa de lectura — causalidad probable, comparación, lo que "
-        "los números *significan* — no solo restatearlos. Una de las "
-        "sections (idealmente la última) tiene que cargar un insight "
-        "memorable, el tipo de observación que el user no podría sacar "
-        "solo mirando el dashboard.\n\n"
-        "REGLAS:\n"
-        "1. SOLO usar números/conceptos del packet. Cero invención.\n"
-        "2. Lenguaje probabilístico (\"sugiere\", \"es consistente con\"), "
-        "no absoluto.\n"
-        "3. Sin frases vacías ni juicios sin sustento.\n"
-        "4. Densidad > verbosidad.\n\n"
-        f"```json\n{json.dumps(packet, sort_keys=True, ensure_ascii=False)}\n```"
-    )
+    # Mensaje del user — si hay followup_question, el LLM responde la
+    # pregunta puntual en lugar de generar análisis general.
+    if followup_question:
+        user_msg = (
+            "El usuario ya leyó un análisis previo del mismo packet y ahora "
+            "te pregunta puntualmente:\n\n"
+            f"PREGUNTA: \"{followup_question}\"\n\n"
+            "Tu trabajo: responder específicamente esa pregunta usando SOLO "
+            "los datos del packet de abajo. Mantenete dentro del mismo schema "
+            "(tldr + sections + follow_ups) pero adaptado a la pregunta:\n"
+            "- tldr: respuesta directa en 1-2 frases.\n"
+            "- sections: 2-3 bloques que profundicen la respuesta. NO repetir "
+            "el análisis general — enfocate en la pregunta.\n"
+            "- follow_ups: 0-1 preguntas relacionadas, NO la pregunta original.\n\n"
+            "REGLAS:\n"
+            "1. SOLO usar números/conceptos del packet. Cero invención.\n"
+            "2. Si la pregunta NO se puede responder con el packet, decirlo "
+            "claro (\"no tengo ese dato en este snapshot\") sin inventar.\n"
+            "3. Lenguaje probabilístico, denso, sin frases vacías.\n\n"
+            f"```json\n{json.dumps(packet, sort_keys=True, ensure_ascii=False)}\n```"
+        )
+    else:
+        # Mensaje del análisis principal — packet serializado + instrucción
+        # interpretativa. sort_keys=True para que sea determinístico (cache).
+        user_msg = (
+            "Datos pre-calculados de la pantalla del usuario.\n\n"
+            "Tu trabajo: INTERPRETAR (no describir). Cada section debe agregar "
+            "una capa de lectura — causalidad probable, comparación, lo que "
+            "los números *significan* — no solo restatearlos. Una de las "
+            "sections (idealmente la última) tiene que cargar un insight "
+            "memorable, el tipo de observación que el user no podría sacar "
+            "solo mirando el dashboard.\n\n"
+            "REGLAS:\n"
+            "1. SOLO usar números/conceptos del packet. Cero invención.\n"
+            "2. Lenguaje probabilístico (\"sugiere\", \"es consistente con\"), "
+            "no absoluto.\n"
+            "3. Sin frases vacías ni juicios sin sustento.\n"
+            "4. Densidad > verbosidad.\n\n"
+            f"```json\n{json.dumps(packet, sort_keys=True, ensure_ascii=False)}\n```"
+        )
 
     last_error = None
     for attempt in range(max_retries + 1):

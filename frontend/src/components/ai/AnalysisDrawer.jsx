@@ -27,7 +27,11 @@ export default function AnalysisDrawer({
   subtitle,
 }) {
   const isMobile = useIsMobile()
-  const { result, usage, tier, cached, loading, error, upgrade, refresh } = useAIAnalysis({
+  const {
+    result, usage, tier, cached, loading, error, upgrade,
+    followups, followupLoading, followupsExhausted,
+    refresh, askFollowUp,
+  } = useAIAnalysis({
     screen,
     params,
     autoload: open,
@@ -82,7 +86,35 @@ export default function AnalysisDrawer({
 
       {loading && !result && <AISkeleton />}
 
-      {result && <AnalysisCard result={result} onFollowUp={() => { /* future: turn into sub-analysis */ }} />}
+      {result && (
+        <AnalysisCard
+          result={result}
+          onFollowUp={askFollowUp}
+          followUpsDisabled={followupLoading || followupsExhausted}
+        />
+      )}
+
+      {/* Follow-ups acumulados — cada uno con su pregunta + respuesta */}
+      {followups.map((fu, i) => (
+        <FollowUpBlock key={i} followup={fu} />
+      ))}
+
+      {/* Loading del follow-up activo */}
+      {followupLoading && (
+        <div className="pt-3 border-t border-line/40">
+          <div className="text-[10px] font-mono uppercase tracking-caps text-data-violet mb-2">
+            Profundizando…
+          </div>
+          <AISkeleton />
+        </div>
+      )}
+
+      {/* Cap alcanzado */}
+      {followupsExhausted && !followupLoading && (
+        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 text-center pt-2">
+          Llegaste al máximo de 2 preguntas por análisis. Refrescá para empezar de nuevo.
+        </div>
+      )}
 
       {/* Footer meta — cached + usage badge (weekly) */}
       <div className="pt-3 border-t border-line/40 flex items-center justify-between text-[10px] font-mono uppercase tracking-caps text-ink-3">
@@ -195,6 +227,30 @@ export default function AnalysisDrawer({
           to { transform: translateX(0); }
         }
       `}</style>
+    </div>
+  )
+}
+
+
+// FollowUpBlock — render de un follow-up ejecutado (pregunta + respuesta o
+// error). Visualmente diferenciado del análisis principal con borde violeta
+// sutil para que el user vea claro que es una capa adicional.
+function FollowUpBlock({ followup }) {
+  return (
+    <div className="pt-4 border-t border-data-violet/20 space-y-3">
+      <div className="flex items-start gap-2">
+        <div className="flex-shrink-0 w-1 h-4 bg-data-violet/40 rounded-full mt-1" />
+        <p className="text-xs font-medium text-data-violet leading-snug">
+          {followup.question}
+        </p>
+      </div>
+      {followup.error ? (
+        <p className="text-xs text-rendi-neg bg-rendi-neg/[0.06] border border-rendi-neg/25 rounded-sm px-3 py-2">
+          {followup.error}
+        </p>
+      ) : (
+        <AnalysisCard result={followup.result} hideFollowUps />
+      )}
     </div>
   )
 }

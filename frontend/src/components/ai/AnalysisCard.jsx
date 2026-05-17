@@ -13,7 +13,12 @@ const TONE_CLASSES = {
   warning:  { accent: 'text-rendi-warn', iconCls: 'text-rendi-warn', Icon: AlertTriangle },
 }
 
-export default function AnalysisCard({ result, onFollowUp }) {
+export default function AnalysisCard({
+  result,
+  onFollowUp,
+  followUpsDisabled = false,
+  hideFollowUps = false,
+}) {
   if (!result) return null
 
   return (
@@ -48,8 +53,9 @@ export default function AnalysisCard({ result, onFollowUp }) {
         </div>
       )}
 
-      {/* Follow-ups — chips clickeables */}
-      {Array.isArray(result.follow_ups) && result.follow_ups.length > 0 && (
+      {/* Follow-ups — chips clickeables. Solo se muestran si NO estamos
+          dentro de un FollowUpBlock (hideFollowUps=true) y si hay handler. */}
+      {!hideFollowUps && Array.isArray(result.follow_ups) && result.follow_ups.length > 0 && (
         <div className="pt-3 border-t border-line/40">
           <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
             Profundizar
@@ -59,10 +65,11 @@ export default function AnalysisCard({ result, onFollowUp }) {
               <button
                 key={i}
                 onClick={() => onFollowUp?.(q)}
-                className="inline-flex items-center gap-1 text-xs text-ink-1 hover:text-ink-0 bg-bg-2 hover:bg-bg-3 border border-line/60 px-2.5 py-1 rounded-sm transition-colors"
+                disabled={followUpsDisabled || !onFollowUp}
+                className="inline-flex items-center gap-1 text-xs text-ink-1 hover:text-ink-0 bg-bg-2 hover:bg-bg-3 border border-line/60 px-2.5 py-1 rounded-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-left"
               >
                 {q}
-                <ArrowRight size={10} strokeWidth={1.75} className="text-ink-3" />
+                <ArrowRight size={10} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
               </button>
             ))}
           </div>

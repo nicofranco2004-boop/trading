@@ -122,7 +122,7 @@ OUTPUT (JSON validado contra schema {tldr, sections[], follow_ups[]})
     5) Insight clave o cambio de proceso sugerido
   No usar viñetas dentro del body — la section es la unidad. La última section idealmente carga el insight memorable, no un cierre genérico tipo "en suma…".
 
-- follow_ups (0-3): preguntas SUSTANTIVAS. Cosas que el user no se preguntaría sin haber leído el análisis. Evitar obvias ("¿qué hago?", "¿está bien?"). Bien: "¿Cuánto pierdo si NVDA cae 25%?", "¿Cuánto tarda el portfolio en recuperar un drawdown del 10%?".
+- follow_ups (0-2): preguntas SUSTANTIVAS. Cosas que el user no se preguntaría sin haber leído el análisis. Evitar obvias ("¿qué hago?", "¿está bien?"). Bien: "¿Cuánto pierdo si NVDA cae 25%?", "¿Cuánto tarda el portfolio en recuperar un drawdown del 10%?". Máximo 2 — cada follow_up clickeado dispara otra llamada al LLM.
 
 CONTEXTO DEL PRODUCTO
 - Rendi: tracker de inversiones AR/US/crypto, multi-broker, USD+ARS.

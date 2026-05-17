@@ -5122,6 +5122,10 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
 class AIAnalyzeIn(BaseModel):
     screen: str = Field(..., max_length=64)
     params: Optional[dict] = Field(default_factory=dict)
+    # Follow-up: si viene, el LLM responde la pregunta puntual usando el
+    # mismo packet del topic. NO se cachea (cada pregunta es única) y SÍ
+    # descuenta del cupo semanal.
+    followup_question: Optional[str] = Field(default=None, max_length=300)
 
 
 def _ai_cache_invalidate(uid: int) -> None:
@@ -5173,6 +5177,7 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
 
     screen = data.screen.strip().lower()
     params = data.params or {}
+    followup_question = (data.followup_question or "").strip() or None
 
     # Dispatch via registry (topic → builder + prompt)
     topic = get_topic(screen)
@@ -5196,22 +5201,22 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
             log.exception(f"AI builder fallo (uid={uid}, screen={screen})")
             raise HTTPException(500, f"Error construyendo packet: {type(ex).__name__}")
 
-        # Cache HIT? → gratis (no descuenta cupo). El tier separa pools
-        # (Free y Pro tienen respuestas distintas para el mismo packet).
-        cached = cache.get_cached(conn, uid, screen, packet, tier=tier)
-        if cached:
-            return {
-                "result": cached,
-                "cached": True,
-                "tier": tier,
-                "usage": quota.get_current_usage(conn, uid),
-            }
+        # Cache HIT? → solo para análisis principales. Follow-ups NUNCA se
+        # cachean (cada pregunta es única).
+        if followup_question is None:
+            cached = cache.get_cached(conn, uid, screen, packet, tier=tier)
+            if cached:
+                return {
+                    "result": cached,
+                    "cached": True,
+                    "tier": tier,
+                    "followup": False,
+                    "usage": quota.get_current_usage(conn, uid),
+                }
 
-        # Cache MISS → ahora sí chequeamos cupo (la llamada al LLM cuesta)
+        # Cache MISS o follow-up → chequeamos cupo (la llamada al LLM cuesta)
         allowed, usage_now = quota.can_analyze(conn, uid)
         if not allowed:
-            # 429 — mensaje + payload de upgrade. Free se topa contra el cap
-            # semanal (10/sem); el mensaje sugiere Pro como path lógico.
             raise HTTPException(429, {
                 "error": (
                     "Llegaste al límite semanal de análisis del plan Free "
@@ -5234,7 +5239,8 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
             })
 
         # Llamada al LLM — prompt resuelto según tier (Free=descriptivo,
-        # Pro/Admin=research note).
+        # Pro/Admin=research note). Si hay follow-up, pasamos la pregunta
+        # al LLM para que responda específicamente sobre el packet.
         system_prompt = render_prompt(tier=tier)
         try:
             llm_result = llm.analyze(
@@ -5242,6 +5248,7 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
                 packet=packet,
                 output_model=AnalysisResult,
                 model=llm.MODEL_HAIKU,
+                followup_question=followup_question,
             )
         except Exception as ex:
             log.warning(f"AI analyze fallo (uid={uid}, screen={screen}, tier={tier}): {ex}")
@@ -5252,26 +5259,29 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
 
         result_dict = llm_result.output.model_dump()
 
-        cache.set_cached(
-            conn,
-            user_id=uid,
-            screen=screen,
-            packet=packet,
-            result=result_dict,
-            model=llm_result.model,
-            input_tokens=llm_result.input_tokens,
-            output_tokens=llm_result.output_tokens,
-            cache_read_tokens=llm_result.cache_read_input_tokens,
-            cache_create_tokens=llm_result.cache_creation_input_tokens,
-            cost_usd_cents=llm_result.cost_usd_cents,
-            tier=tier,
-        )
+        # Solo cacheamos los análisis principales — no los follow-ups.
+        if followup_question is None:
+            cache.set_cached(
+                conn,
+                user_id=uid,
+                screen=screen,
+                packet=packet,
+                result=result_dict,
+                model=llm_result.model,
+                input_tokens=llm_result.input_tokens,
+                output_tokens=llm_result.output_tokens,
+                cache_read_tokens=llm_result.cache_read_input_tokens,
+                cache_create_tokens=llm_result.cache_creation_input_tokens,
+                cost_usd_cents=llm_result.cost_usd_cents,
+                tier=tier,
+            )
         quota.record_analysis(conn, uid, cost_usd_cents=llm_result.cost_usd_cents)
 
         return {
             "result": result_dict,
             "cached": False,
             "tier": tier,
+            "followup": followup_question is not None,
             "usage": quota.get_current_usage(conn, uid),
         }
     finally:

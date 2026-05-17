@@ -999,6 +999,60 @@ const DEMO_BEHAVIORAL_CARD_GENERIC = (code) => ({
   follow_ups: ['¿Cómo se calculan los sesgos?', '¿Qué referencias usan los detectores?'],
 })
 
+// Mock de follow-up: el LLM real responde la pregunta puntual con el packet.
+// Acá armamos una respuesta interpretativa coherente con la cartera demo
+// (NVDA top, INTC trade excepcional, mix Schwab/Cocos/Binance, etc.).
+function buildDemoFollowup(topic, question) {
+  const q = (question || '').toLowerCase()
+  let tldr, sections
+
+  if (q.includes('nvda') && (q.includes('cae') || q.includes('cay') || q.includes('baja'))) {
+    tldr = 'Con NVDA pesando ~28% de la cartera, una caída del 25% se traduce aproximadamente en 7 puntos de TWR del portfolio agregado — más de la mitad del rendimiento anual desaparecería en una sola sesión adversa.'
+    sections = [
+      { title: 'Cálculo aproximado', tone: 'warning', body: 'El impacto absoluto sería del orden de 25% × 28% = 7pp sobre el TWR del portfolio. Sobre una cartera con valuación cercana a US$ 8.3K, eso son ~US$ 580 de pérdida no realizada en un día.' },
+      { title: 'Contexto histórico', tone: 'neutral', body: 'Movimientos de NVDA del orden -20%/-30% no son inusuales en corrections del Nasdaq — el activo ha tenido al menos dos drawdowns intra-año de esa magnitud en los últimos ciclos. La pregunta práctica no es si puede pasar, sino cuándo y bajo qué criterio reacciones.' },
+    ]
+  } else if (q.includes('cash') || q.includes('drag') || q.includes('liquidez')) {
+    tldr = 'Tu cash drag está en torno a 45% combinado entre USDT y ARS. Con SPY rindiendo histórico ~10%/año, ese cash sin trabajar te cuesta del orden de 4-5 puntos anualizados de rendimiento esperado.'
+    sections = [
+      { title: 'Magnitud del costo', tone: 'warning', body: 'Sobre tu valor del portfolio, ~US$ 3.7K en cash a un costo de oportunidad del 10% anual = ~US$ 370/año que dejás arriba de la mesa por no estar invertido. Eso es un drag real, no contable.' },
+      { title: 'Mejora estructural', tone: 'neutral', body: 'El despliegue escalonado (DCA mensual) suele cerrar la mayor parte de ese gap sin requerir convicción sobre timing. La pregunta es si tu cash actual es reserva táctica activa o cash drag por inacción.' },
+    ]
+  } else if (q.includes('s&p') || q.includes('spy') || q.includes('benchmark')) {
+    tldr = 'El gap vs SPY de este período se explica casi enteramente por dos factores estructurales: cash material (~45%) sin participar del rally + exposure AR sin alpha relativo. No es un déficit del stock-picking, es un déficit de despliegue.'
+    sections = [
+      { title: 'Descomposición del gap', tone: 'neutral', body: 'Si el SPY rindió ~16% en el período y vos hiciste ~14%, los 2pp de diferencia se cubren con ~45% en cash rindiendo 0% vs SPY rindiendo 16%: 0.45 × 16 = 7.2pp negativos esperados. Pero tu stock-picking compensó ~5pp, así que el resultado neto es razonable.' },
+      { title: 'Lectura útil', tone: 'neutral', body: 'Para cerrar el gap vs SPY, la palanca dominante NO es elegir mejor stocks — es decidir cuándo desplegar el cash. Un schedule de DCA pre-pactado normalmente cierra la diferencia sin agregar riesgo material.' },
+    ]
+  } else if (q.includes('intc') || q.includes('148') || q.includes('mejor trade')) {
+    tldr = 'INTC +148% representa más de la mitad del P&L realizado del año. Sin ese trade, la expectancy del sistema se acerca al break-even — el resto de las operaciones rindió cerca del promedio del mercado.'
+    sections = [
+      { title: 'Contribución asimétrica', tone: 'positive', body: 'Sobre 9 trades cerrados del año, INTC explica una fracción material del avg_win. Ese tipo de outlier es lo que hace que el payoff ratio del sistema sea alto, pero también lo que hace difícil pronosticar replicabilidad.' },
+      { title: 'Validación de sistema', tone: 'neutral', body: 'La pregunta clave: ¿qué condiciones permitieron el setup de ese trade? Si son condiciones que se repiten (corrección sectorial + entrada a múltiplos bajos + paciencia hasta inflexión), es reproducible. Si fue un evento idiosincrático, fue suerte capturada bien.' },
+    ]
+  } else if (q.includes('concentr') || q.includes('rebalanc')) {
+    tldr = 'Tu concentración nominal (top1 ~28%) está en zona moderada, pero la concentración por fuente de rendimiento es claramente más alta. Esa asimetría es lo que justifica un rebalance pre-acordado.'
+    sections = [
+      { title: 'Regla útil', tone: 'neutral', body: 'Un umbral mecánico simple: recortar si una posición cruza el 30% del portfolio O si el top 3 combinado pasa el 60%. Eso convierte la decisión emocional (\\"me siento expuesto\\") en una regla objetiva que aplica solo cuando los datos lo justifican.' },
+      { title: 'Frecuencia', tone: 'neutral', body: 'Rebalancear con criterio (umbral cruzado) es más eficiente que rebalancear calendario (mensual/trimestral). El primero solo actúa cuando hay desviación real; el segundo paga fricciones constantes incluso sin cambio material.' },
+    ]
+  } else {
+    // Generic fallback — respuesta corta y honesta
+    tldr = `Sobre "${question}": la data del packet permite responder solo parcialmente. Te paso lo que sí se puede afirmar y dónde quedan los huecos.`
+    sections = [
+      { title: 'Lo que el packet permite', tone: 'neutral', body: 'Tengo los números agregados del portfolio (TWR, drawdown, top holdings, exposure). Eso me deja contestar preguntas estructurales sobre composición, riesgo, y attribution.' },
+      { title: 'Lo que no tengo', tone: 'neutral', body: 'Para precisión sobre activos puntuales, momentum sectorial o eventos macro específicos, necesitaría un análisis sobre el ticker o sección específica. El botón ✦ en cada componente te da ese zoom-in.' },
+    ]
+  }
+
+  return {
+    tldr,
+    sections,
+    follow_ups: [],  // los follow-ups internos no traen más follow_ups (cap)
+  }
+}
+
+
 // Builder dinámico para 'insights.observation'. Usa keywords del title/text
 // para activar una de varias narrativas interpretativas. Mantiene el estilo
 // research-note del manifiesto editorial: interpretación + comparación +
@@ -1635,8 +1689,12 @@ export function handleDemoRequest(method, path, body) {
   // ── AI v2 analyze: mocks por topic (datos consistentes con la fixture demo)
   if (method === 'POST' && basePath === '/ai/analyze') {
     const topic = (body?.screen || '').toLowerCase()
+    const followupQ = (body?.followup_question || '').trim()
     let result
-    if (topic === 'behavioral.card') {
+    if (followupQ) {
+      // Mock de follow-up: armamos respuesta corta interpretativa
+      result = buildDemoFollowup(topic, followupQ)
+    } else if (topic === 'behavioral.card') {
       const code = (body?.params?.code || '').toLowerCase()
       result = DEMO_BEHAVIORAL_CARDS[code] || DEMO_BEHAVIORAL_CARD_GENERIC(code || 'unknown')
     } else if (topic === 'insights.observation') {

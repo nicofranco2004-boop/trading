@@ -9,7 +9,7 @@ Estructura del output:
     "sections": [
       { "title": str, "body": str (2-4 frases), "tone": Tone }
     ],
-    "follow_ups": [str]  // 0-3 chips
+    "follow_ups": [str]  // 0-2 chips (cap por costo — cada follow_up
   }
 
 Tone se mapea visualmente en el frontend:
@@ -90,11 +90,12 @@ class AnalysisResult(BaseModel):
     follow_ups: List[str] = Field(
         default_factory=list,
         description=(
-            "0-3 preguntas SUSTANTIVAS — cosas que el user no se "
+            "0-2 preguntas SUSTANTIVAS — cosas que el user no se "
             "preguntaría sin haber leído el análisis. Evitá obvias "
-            "('¿qué hago?', '¿está bien?')."
+            "('¿qué hago?', '¿está bien?'). Máximo 2 porque cada "
+            "follow_up clickeado dispara otra llamada al LLM."
         ),
-        max_length=3,
+        max_length=2,
     )
 
     model_config = {"json_schema_extra": {"additionalProperties": False}}

@@ -15,6 +15,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../utils/api'
 import { track } from '../utils/track'
 
+// Hard cap a 2 follow-ups por análisis — coincide con el cap del schema
+// backend. Después de eso las chips dejan de mostrarse.
+const MAX_FOLLOWUPS_PER_ANALYSIS = 2
+
 export function useAIAnalysis({ screen, params, autoload = true } = {}) {
   const [result, setResult] = useState(null)
   const [usage, setUsage] = useState(null)
@@ -23,12 +27,16 @@ export function useAIAnalysis({ screen, params, autoload = true } = {}) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [upgradePayload, setUpgradePayload] = useState(null)
+  // Follow-ups acumulados por sesión: cada uno es {question, result}
+  const [followups, setFollowups] = useState([])
+  const [followupLoading, setFollowupLoading] = useState(false)
 
   const analyze = useCallback(async () => {
     if (!screen) return
     setLoading(true)
     setError(null)
     setUpgradePayload(null)
+    setFollowups([])  // reset cuando se hace un análisis nuevo
     try {
       const t0 = performance.now()
       const data = await api.post('/ai/analyze', { screen, params: params || {} })
@@ -39,10 +47,6 @@ export function useAIAnalysis({ screen, params, autoload = true } = {}) {
       setTier(data.tier || data.usage?.tier || null)
       track('ai_analyze_loaded', { screen, cached: !!data.cached, tier: data.tier, ms })
     } catch (ex) {
-      // El backend devuelve 429 con detail={error, usage, upgrade} cuando
-      // se acaba el cupo. api.js extrae el .error como ex.message y deja el
-      // payload completo en ex.payload.detail para que actualicemos badge
-      // y mostremos el upgrade card.
       const msg = ex?.message || 'No pudimos generar el análisis.'
       setError(msg)
       const detail = ex?.payload?.detail
@@ -70,6 +74,52 @@ export function useAIAnalysis({ screen, params, autoload = true } = {}) {
     await analyze()
   }, [screen, analyze])
 
+  // askFollowUp(question) — dispara una request al mismo topic + packet
+  // pero con la pregunta puntual del user. Cuesta como cualquier análisis
+  // (descuenta del cupo). Cap a 2 follow-ups por análisis principal.
+  const askFollowUp = useCallback(async (question) => {
+    if (!screen || !question) return
+    if (followups.length >= MAX_FOLLOWUPS_PER_ANALYSIS) {
+      track('ai_followup_blocked_cap', { screen, count: followups.length })
+      return
+    }
+    setFollowupLoading(true)
+    try {
+      const t0 = performance.now()
+      const data = await api.post('/ai/analyze', {
+        screen,
+        params: params || {},
+        followup_question: question,
+      })
+      const ms = Math.round(performance.now() - t0)
+      setFollowups(prev => [...prev, { question, result: data.result }])
+      if (data.usage) {
+        setUsage(data.usage)
+        setTier(data.tier || data.usage?.tier || null)
+      }
+      track('ai_followup_loaded', { screen, ms, count_after: followups.length + 1 })
+    } catch (ex) {
+      const msg = ex?.message || 'No pudimos generar la respuesta.'
+      const detail = ex?.payload?.detail
+      const upgrade = detail?.upgrade
+      const usagePayload = detail?.usage
+      if (usagePayload) {
+        setUsage(usagePayload)
+        setTier(usagePayload.tier || null)
+      }
+      if (upgrade) setUpgradePayload(upgrade)
+      // El error se muestra como un follow-up "fallido" para que el user
+      // entienda qué pasó sin perder los anteriores
+      setFollowups(prev => [
+        ...prev,
+        { question, error: msg },
+      ])
+      track('ai_followup_error', { screen, status: ex?.status, error: msg })
+    } finally {
+      setFollowupLoading(false)
+    }
+  }, [screen, JSON.stringify(params), followups.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (autoload && screen) analyze()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -83,7 +133,11 @@ export function useAIAnalysis({ screen, params, autoload = true } = {}) {
     loading,
     error,
     upgrade: upgradePayload,
+    followups,
+    followupLoading,
+    followupsExhausted: followups.length >= MAX_FOLLOWUPS_PER_ANALYSIS,
     analyze,
     refresh,
+    askFollowUp,
   }
 }
