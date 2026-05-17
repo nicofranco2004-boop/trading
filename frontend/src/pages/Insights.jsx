@@ -1092,28 +1092,68 @@ function InsightsDesktop() {
 
   // ── Preguntas dinámicas para el AICoach ────────────────────────────────────
   // En lugar de chips genéricos ('¿Cómo está mi portfolio?'), generamos
-  // preguntas data-driven basadas en lo que el portfolio realmente muestra
-  // hoy. Cada regla aporta 1 candidata; tomamos las 4 más prioritarias.
+  // Preguntas data-driven basadas en lo que el portfolio realmente muestra
+  // hoy. Cada regla aporta 1 candidata; cortamos en 12 para tener buena
+  // variedad sin saturar el UI.
   const aiSuggested = (() => {
     const out = []
     const top = aiPositions[0]
+    const top3 = aiPositions.slice(0, 3)
+    const bestPos = aiPositions.find(p => (p.pnl_pct ?? 0) > 20)
+    const worstPos = aiPositions.find(p => (p.pnl_pct ?? 0) < -15)
+
+    // ── Concentración / composición ─────────────────────────────────────────
     if (top && top.pct_of_portfolio > 30) {
       out.push(`${top.asset} es el ${top.pct_of_portfolio.toFixed(0)}% de mi portfolio — ¿es demasiada concentración?`)
     }
+    if (top3.length === 3) {
+      const top3Pct = top3.reduce((s, p) => s + (p.pct_of_portfolio || 0), 0)
+      if (top3Pct > 60) {
+        out.push(`Mi top 3 holdings concentra ${top3Pct.toFixed(0)}% del portfolio — ¿es saludable?`)
+      }
+    }
+    if (cashRatio > 25) {
+      out.push(`Tengo ${cashRatio.toFixed(0)}% en cash — ¿estoy perdiendo oportunidades?`)
+    } else if (cashRatio < 3) {
+      out.push('Tengo casi nada de cash — ¿debería liberar buffer para correcciones?')
+    }
+
+    // ── Performance + drawdown ──────────────────────────────────────────────
     if (drawdown?.current && drawdown.current < -10) {
       out.push(`Estoy en un drawdown del ${Math.abs(drawdown.current).toFixed(0)}% — ¿qué hago?`)
+    }
+    if (drawdown?.max && drawdown.max < -20) {
+      out.push(`Mi peor caída histórica fue ${Math.abs(drawdown.max).toFixed(0)}% — ¿es excesivo para mi perfil?`)
     }
     if (totalResult < 0) {
       out.push('¿Por qué estoy perdiendo plata y cómo lo reviero?')
     }
+    if (totalResult > 0 && winRate >= 0.5 && (drawdown?.current ?? 0) >= -5) {
+      out.push('¿Cómo está mi portfolio en general? ¿Hay algo a optimizar?')
+    }
+
+    // ── Benchmarks ──────────────────────────────────────────────────────────
     if (vsSp500 != null && vsSp500 < -5) {
       out.push(`Estoy rindiendo ${Math.abs(vsSp500).toFixed(1)}% peor que el S&P 500 — ¿por qué?`)
+    } else if (vsSp500 != null && vsSp500 > 5) {
+      out.push(`Le estoy ganando al S&P 500 por ${vsSp500.toFixed(1)}% — ¿qué lo explica?`)
     }
+    if (currency === 'ARS' || cashRatio > 10) {
+      out.push('¿Mi cartera le gana a la inflación argentina?')
+    }
+
+    // ── Trading: win rate + activos puntuales ───────────────────────────────
     if (winRate != null && winRate < 0.5) {
       out.push(`Mi win rate es ${(winRate * 100).toFixed(0)}% — ¿cómo puedo mejorarlo?`)
     }
-    if (cashRatio > 25) {
-      out.push(`Tengo ${cashRatio.toFixed(0)}% en cash — ¿estoy perdiendo oportunidades?`)
+    if (winRate != null && winRate >= 0.6) {
+      out.push(`Tengo ${(winRate * 100).toFixed(0)}% de win rate — ¿es sostenible?`)
+    }
+    if (worstPos && worstPos.asset) {
+      out.push(`${worstPos.asset} viene ${Math.abs(worstPos.pnl_pct).toFixed(0)}% en rojo — ¿la mantengo o salgo?`)
+    }
+    if (bestPos && bestPos.asset) {
+      out.push(`${bestPos.asset} viene +${bestPos.pnl_pct.toFixed(0)}% — ¿conviene tomar ganancia parcial?`)
     }
     if (topContribNeg.length > 0) {
       const worst = topContribNeg[0]
@@ -1121,13 +1161,16 @@ function InsightsDesktop() {
         out.push(`¿Vendo ${worst.asset}? Es el activo que más me hace perder.`)
       }
     }
-    if (totalResult > 0 && winRate >= 0.5 && (drawdown?.current ?? 0) >= -5) {
-      out.push('¿Cómo está mi portfolio en general? ¿Hay algo a optimizar?')
-    }
-    // Fallback siempre presente para que nunca queden menos de 4
+
+    // ── Estrategia general ──────────────────────────────────────────────────
     out.push('¿Qué riesgos detectás en mi cartera?')
     out.push('¿Mi diversificación está bien?')
-    return [...new Set(out)].slice(0, 4)
+    out.push('¿Detectás algún sesgo en mi forma de operar?')
+    out.push('¿Qué métrica debería empezar a monitorear y todavía no miro?')
+    out.push('Si tuvieras que mejorar UNA cosa de mi cartera, ¿cuál sería?')
+    out.push('¿Mi exposure por sector/región está equilibrado?')
+
+    return [...new Set(out)].slice(0, 12)
   })()
 
   // Early return: si el user no tiene positions, mostramos solo el header

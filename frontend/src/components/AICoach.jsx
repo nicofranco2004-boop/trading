@@ -19,16 +19,25 @@ import { api } from '../utils/api'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
-// snapshot real (drawdown actual, win rate, concentración, etc.).
+// snapshot real (drawdown actual, win rate, concentración, etc.) y
+// puede sumar hasta 12.
 const DEFAULT_SUGGESTED = [
   '¿Cómo está mi portfolio en general?',
   '¿Qué riesgos detectás en mi cartera?',
   '¿Mi nivel de concentración es elevado?',
   '¿Cómo evalúo mi win rate?',
+  '¿Mi diversificación está bien?',
+  '¿Detectás algún sesgo en mi forma de operar?',
+  '¿Mi exposure por sector/región está equilibrado?',
+  '¿Qué métrica debería empezar a monitorear y todavía no miro?',
+  'Si tuvieras que mejorar UNA cosa de mi cartera, ¿cuál sería?',
+  '¿Cómo voy vs el S&P 500?',
+  '¿Le estoy ganando a la inflación argentina?',
+  '¿Qué activo es el que más riesgo me agrega?',
 ]
 
 export default function AICoach({ snapshot, suggested }) {
-  const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 6) : DEFAULT_SUGGESTED
+  const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 12) : DEFAULT_SUGGESTED
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -147,19 +156,25 @@ export default function AICoach({ snapshot, suggested }) {
         )}
       </div>
 
-      {/* Chips de preguntas — siempre visibles abajo, NO hay input libre */}
+      {/* Chips de preguntas — siempre visibles abajo, NO hay input libre.
+          Scrolleable cuando son muchas (Insights genera hasta 12 data-driven). */}
       {availableQuestions.length > 0 && (
         <div className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40">
-          <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
-            {messages.length === 0 ? 'Preguntas sugeridas' : 'Otra pregunta'}
-          </p>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+              {messages.length === 0 ? 'Preguntas sugeridas' : 'Otra pregunta'}
+            </p>
+            <span className="text-[10px] font-mono text-ink-3 tabular">
+              {availableQuestions.length} disponibles
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5 max-h-[160px] overflow-y-auto pr-1">
             {availableQuestions.map(q => (
               <button
                 key={q}
                 onClick={() => send(q)}
                 disabled={loading}
-                className="text-xs px-3 py-1.5 bg-bg-2 hover:bg-bg-3 dark:bg-bg-2 dark:hover:bg-bg-3 border border-line text-ink-1 rounded-full transition disabled:opacity-40 disabled:cursor-not-allowed"
+                className="text-xs px-3 py-1.5 bg-bg-2 hover:bg-bg-3 dark:bg-bg-2 dark:hover:bg-bg-3 border border-line text-ink-1 rounded-full transition disabled:opacity-40 disabled:cursor-not-allowed text-left"
               >
                 {q}
               </button>
