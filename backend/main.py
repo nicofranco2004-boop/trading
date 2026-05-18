@@ -592,6 +592,55 @@ def init_db():
             PRIMARY KEY (user_id, date)
         );
 
+        -- ─── subscriptions: estado de billing por user ──────────────────────
+        -- Una fila por user con suscripción ACTIVA o cancelada (histórica).
+        -- mp_subscription_id es el preapproval_id de MP. external_reference
+        -- es el campo `rendi-{user_id}-{period}` que mandamos a MP.
+        -- status: 'pending' (esperando pago), 'authorized' (activa, pagando),
+        -- 'paused', 'cancelled', 'failed'.
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            mp_subscription_id TEXT,             -- preapproval_id de MP (puede ser NULL hasta que MP confirma)
+            external_reference TEXT NOT NULL,    -- 'rendi-{uid}-{period}'
+            period TEXT NOT NULL,                -- 'monthly' | 'annual'
+            status TEXT NOT NULL DEFAULT 'pending',
+            amount_ars INTEGER NOT NULL,         -- monto en pesos cobrado por período
+            current_period_start TEXT,           -- ISO date inicio período pagado
+            current_period_end TEXT,             -- ISO date fin período pagado (cuando expira Pro)
+            next_charge_date TEXT,               -- próxima fecha de cobro automático
+            init_point TEXT,                     -- URL del checkout (útil para retry)
+            last_payment_id TEXT,                -- último payment_id procesado por webhook
+            cancelled_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_user
+            ON subscriptions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_mp_id
+            ON subscriptions(mp_subscription_id);
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_status
+            ON subscriptions(status);
+
+        -- ─── billing_events: log de webhooks de MP para auditoría ────────────
+        -- Cada webhook recibido (incluso los rechazados por signature inválida)
+        -- queda registrado. Útil para debug + cumplimiento + reproducción.
+        CREATE TABLE IF NOT EXISTS billing_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mp_event_id TEXT,                    -- 'id' del payload top-level
+            mp_event_type TEXT,                  -- 'subscription_authorized_payment', 'preapproval', ...
+            mp_data_id TEXT,                     -- 'data.id' del payload (preapproval_id o payment_id)
+            user_id INTEGER,                     -- decoded desde external_reference (si match)
+            signature_valid INTEGER DEFAULT 0,
+            processed INTEGER DEFAULT 0,
+            raw_payload TEXT,                    -- JSON serializado para debug
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_billing_events_user
+            ON billing_events(user_id);
+        CREATE INDEX IF NOT EXISTS idx_billing_events_mp_data
+            ON billing_events(mp_data_id);
+
         -- ─── plan_events: telemetría del paywall Free → Pro ─────────────────
         -- Cada click en un CTA bloqueado (LockedSection, UpgradeModal, PlanHero)
         -- inserta una fila acá. Permite medir CTR de upgrade por feature/source

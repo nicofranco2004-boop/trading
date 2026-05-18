@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from 'react'
 import { api } from '../utils/api'
 import { isDemoMode, enableDemoMode, disableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
+import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 
 const AuthContext = createContext(null)
 
@@ -54,11 +55,16 @@ export function AuthProvider({ children }) {
         }
         localStorage.setItem('rendi_user', JSON.stringify(fresh))
         setUser(fresh)
+        // Invalidamos el cache de plan features — el tier acaba de
+        // refrescarse desde el server, cualquier valor cacheado de
+        // sesión anterior queda stale.
+        refreshPlanFeatures()
       })
       .catch(() => {
         localStorage.removeItem('rendi_token')
         localStorage.removeItem('rendi_user')
         setUser(null)
+        refreshPlanFeatures()
       })
       .finally(() => setBootstrapped(true))
   }, [])
@@ -68,6 +74,9 @@ export function AuthProvider({ children }) {
     const u = { name, ...extra }
     localStorage.setItem('rendi_user', JSON.stringify(u))
     setUser(u)
+    // Identity change → forzar refetch del plan features (no usar el
+    // cache de quien estuvo logueado antes).
+    refreshPlanFeatures()
   }
 
   function updateUser(patch) {
@@ -86,6 +95,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('rendi_token')
     localStorage.removeItem('rendi_user')
     setUser(null)
+    refreshPlanFeatures()  // limpiamos cache para el próximo login
   }
 
   function exitDemo() {
