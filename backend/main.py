@@ -963,7 +963,33 @@ def get_brokers(uid: int = Depends(get_current_user)):
 
 @app.post("/api/brokers")
 def create_broker(data: BrokerIn, uid: int = Depends(get_current_user)):
+    from ai import plan
     conn = get_db()
+    # Feature gate: Free permite 1 broker máximo. Grandfather: usuarios
+    # preexistentes con N > 1 conservan sus brokers pero no agregan más
+    # hasta upgrade. Admin/Pro: sin tope.
+    allowed, quota_info = plan.check_broker_quota(conn, uid)
+    if not allowed:
+        conn.close()
+        raise HTTPException(403, {
+            "error": (
+                f"El plan Free permite 1 broker. Pasate a Rendi Pro para "
+                f"conectar todos tus brokers."
+            ),
+            "quota": quota_info,
+            "upgrade": {
+                "available": quota_info["tier"] == "free",
+                "current_tier": quota_info["tier"],
+                "target_tier": "pro",
+                "feature": "brokers.create",
+                "benefits": [
+                    "Brokers ilimitados",
+                    "10× más análisis IA (60/sem vs 6/sem)",
+                    "Comportamiento completo (todas las tags)",
+                    "Reportes históricos + Distribución por activo",
+                ],
+            },
+        })
     # Validar parent_broker_id (si se pasa, debe pertenecer al user)
     if data.parent_broker_id is not None:
         parent = conn.execute(
@@ -5342,6 +5368,28 @@ def ai_topics():
     sin auth — útil para que el frontend descubra topics sin hardcodear."""
     from ai.registry import list_topics
     return {"topics": list_topics()}
+
+
+@app.get("/api/plan/features")
+def plan_features(uid: int = Depends(get_current_user)):
+    """Feature flags + límites del tier del user para el frontend.
+
+    El frontend usa esta info en `usePlanFeatures()` para gatear UI:
+    blurear secciones bloqueadas, mostrar contadores, modal de upgrade.
+
+    Shape (estable):
+      tier: 'free' | 'pro' | 'admin'
+      limits.brokers_max / brokers_current / brokers_can_create / brokers_grandfather
+      limits.insights_diagnostic_visible
+      limits.behavioral_tags_visible
+      access.<feature_id>: bool
+    """
+    from ai import plan
+    conn = get_db()
+    try:
+        return plan.get_plan_features(conn, uid)
+    finally:
+        conn.close()
 
 
 @app.get("/api/ai/usage")

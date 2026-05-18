@@ -1568,6 +1568,27 @@ export function handleDemoRequest(method, path, body) {
         week_starts_on: nextMonday,
       }
     }
+    if (basePath === '/plan/features') {
+      // Demo siempre simula Pro para mostrar todas las features sin paywall
+      return {
+        tier: 'pro',
+        limits: {
+          brokers_max: null,
+          brokers_current: 3,
+          brokers_can_create: true,
+          brokers_grandfather: false,
+          insights_diagnostic_visible: null,
+          behavioral_tags_visible: null,
+        },
+        access: {
+          'ai.followup': true,
+          'ai.hub': false,
+          'comportamiento.full': true,
+          'insights.distribucion_activo': true,
+          'reportes.historicos': true,
+        },
+      }
+    }
     if (basePath === '/ai/topics') {
       return {
         topics: [
