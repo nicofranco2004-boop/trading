@@ -128,17 +128,25 @@ export default function Dashboard() {
   const totalReturnUsd = totalValue - netDeposited
   const totalReturnPct = netDeposited > 0 ? totalReturnUsd / netDeposited : 0
 
-  // ── Ganancias retiradas ─────────────────────────────────────────────────────
-  // Identidad contable: totalReturnUsd = realizedPnl + unrealizedPnl - gainsWithdrawn
-  // gainsWithdrawn representa plata que se cerró como ganancia (entró a realizedPnl)
-  // y que luego salió del portfolio vía retiros. Esa plata no se ve en totalReturnUsd
-  // porque ya no forma parte de totalValue ni de netDeposited.
-  // Equivalencia: netDeposited + realizedPnl − totalCostBasis
-  // (lo "que pusiste + lo que ganaste cerrado − lo que está hoy posicionado").
-  // Solo mostramos el KPI cuando es materialmente > 0 ($100 threshold para evitar
-  // ruido de floating point en cuentas sin retiros).
-  const gainsWithdrawn = (realizedPnl + totalPnl) - totalReturnUsd
-  const showGainsWithdrawn = gainsWithdrawn > 100
+  // ── Discrepancia contable ───────────────────────────────────────────────────
+  // Identidad: realizedPnl + unrealizedPnl = totalReturnUsd + discrepancia
+  //
+  // Si discrepancia > 0: hay ganancias que se cerraron y luego salieron del
+  //   portfolio (retiros que llevaron ganancias). El sistema las contabiliza
+  //   como realizedPnl pero ya no aparecen en totalValue ni en netDeposited.
+  //   Label: "Ganancias retiradas".
+  //
+  // Si discrepancia < 0: la cartera vale más de lo que explican los flujos
+  //   registrados. Típicamente: dividendos/intereses cobrados que no se
+  //   cargaron como pnl_realized, o ajustes de data (splits, baselines).
+  //   Label: "Ingresos sin clasificar".
+  //
+  // Equivalencia algebraica: netDeposited + realizedPnl − totalCostBasis
+  // (lo que pusiste + lo cerrado como ganancia − lo que está hoy posicionado).
+  // Threshold de $500 para evitar ruido en cuentas limpias.
+  const accountingGap = (realizedPnl + totalPnl) - totalReturnUsd
+  const showAccountingGap = Math.abs(accountingGap) > 500
+  const gapIsOutflow = accountingGap > 0
 
   const portfolioTotal = totalValue
 
@@ -427,11 +435,13 @@ export default function Dashboard() {
               <p>Cuánto vale tu portfolio HOY de más (o de menos) respecto a lo que pusiste neto.</p>
               <p className="text-ink-3 font-mono text-[11px]">= valor actual − capital aportado neto</p>
               <p className="text-ink-3">El porcentaje es sobre el capital aportado neto.</p>
-              {showGainsWithdrawn && (
+              {showAccountingGap && (
                 <>
                   <div className="border-t border-line/60 my-1.5" />
                   <p className="text-ink-3">
-                    <strong className="text-ink-1">¿Por qué no es igual a realizado + no realizado?</strong> Porque hubo retiros que incluían ganancias (ver KPI "Ganancias retiradas"). Esa plata salió del portfolio, por eso no aparece más acá aunque siga contabilizada como realizada.
+                    <strong className="text-ink-1">¿Por qué no es igual a realizado + no realizado?</strong> {gapIsOutflow
+                      ? 'Hubo retiros que incluían ganancias — esa plata salió del portfolio pero sigue contabilizada como realizada (ver KPI "Ganancias retiradas").'
+                      : 'La cartera vale más de lo que explican los flujos cargados, típicamente por dividendos/intereses no cargados como P&L realizado (ver KPI "Ingresos sin clasificar").'}
                   </p>
                 </>
               )}
@@ -466,21 +476,33 @@ export default function Dashboard() {
             </>
           }
         />
-        {showGainsWithdrawn && (
+        {showAccountingGap && (
           <KpiCell
-            label="Ganancias retiradas"
-            value={fmt(gainsWithdrawn)}
-            sub="fuera del portfolio"
+            label={gapIsOutflow ? 'Ganancias retiradas' : 'Ingresos sin clasificar'}
+            value={fmt(Math.abs(accountingGap))}
+            sub={gapIsOutflow ? 'fuera del portfolio' : 'no cargados como P&L'}
             info={
-              <>
-                <p className="font-medium text-ink-0">Ganancias retiradas del portfolio</p>
-                <p>Plata que se realizó como ganancia y luego salió de la cuenta vía retiros.</p>
-                <p className="text-ink-3 font-mono text-[11px]">= (realizado + no realizado) − resultado total</p>
-                <p className="text-ink-3">
-                  Cierra la identidad contable: <span className="font-mono">realizado + no realizado = resultado total + ganancias retiradas</span>.
-                </p>
-                <p className="text-ink-3">Ejemplo: si retiraste $180k para impuestos y de eso $73k eran ganancias acumuladas en cash, ese $73k aparece acá. El sistema lo cuenta como realizado (porque se cobró), pero ya no está en tu portfolio.</p>
-              </>
+              gapIsOutflow ? (
+                <>
+                  <p className="font-medium text-ink-0">Ganancias retiradas del portfolio</p>
+                  <p>Plata que se realizó como ganancia y luego salió de la cuenta vía retiros.</p>
+                  <p className="text-ink-3 font-mono text-[11px]">= (realizado + no realizado) − resultado total</p>
+                  <p className="text-ink-3">
+                    Cierra la identidad contable: <span className="font-mono">realizado + no realizado = resultado total + ganancias retiradas</span>.
+                  </p>
+                  <p className="text-ink-3">Ejemplo: si retiraste $180k para impuestos y de eso $73k eran ganancias acumuladas en cash, ese $73k aparece acá. El sistema lo cuenta como realizado (porque se cobró), pero ya no está en tu portfolio.</p>
+                </>
+              ) : (
+                <>
+                  <p className="font-medium text-ink-0">Ingresos sin clasificar</p>
+                  <p>Tu cartera vale más de lo que explican los flujos cargados. Probablemente <strong>dividendos cobrados</strong>, <strong>intereses sobre cash</strong>, o ajustes (splits, baselines) que no se cargaron como P&L realizado.</p>
+                  <p className="text-ink-3 font-mono text-[11px]">= resultado total − (realizado + no realizado)</p>
+                  <p className="text-ink-3">
+                    Cierra la identidad contable: <span className="font-mono">resultado total = realizado + no realizado + ingresos sin clasificar</span>.
+                  </p>
+                  <p className="text-ink-3">Si querés que cuadre exactamente, podés cargar los dividendos/intereses como entradas mensuales con "pnl_realized" para que pasen al KPI de P&L realizado.</p>
+                </>
+              )
             }
           />
         )}
