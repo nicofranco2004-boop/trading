@@ -13,6 +13,7 @@ import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import { DashboardSkeleton } from '../components/Skeleton'
+import ExportCsvButton from '../components/plan/ExportCsvButton'
 import InsightLine from '../components/InsightLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
@@ -303,6 +304,15 @@ export default function Dashboard() {
               screen="dashboard"
               params={{ period: '30d' }}
               subtitle="Estado de tu portfolio"
+            />
+            {/* Export consolidado: todos los movimientos (compras, ventas,
+                depósitos, retiros, dividendos, intereses) en una sola CSV.
+                Pensado para "mandárselo al contador" — gated Pro. */}
+            <ExportCsvButton
+              resource="transactions"
+              label="Exportar todo"
+              source="dashboard_header"
+              variant="compact"
             />
             <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
               {['USD', 'ARS'].map(c => (

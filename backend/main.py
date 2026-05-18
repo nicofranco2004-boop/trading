@@ -4624,6 +4624,191 @@ def export_positions_csv(uid: int = Depends(get_current_user)):
     return _csv_response(rows, headers, f"rendi_posiciones_{today}.csv")
 
 
+@app.get("/api/export/transactions.csv")
+def export_transactions_csv(uid: int = Depends(get_current_user)):
+    """Export consolidado: TODOS los movimientos del user en una sola CSV.
+
+    Pensado como "lo que mandás al contador" o "lo que mandás a otra persona
+    para que vea toda tu actividad". Incluye:
+      • Compras (BUY)  — de imports y de positions/operations manuales
+      • Ventas (SELL)  — de imports y de operations manuales
+      • Depósitos      — de imports y de monthly_entries.deposits
+      • Retiros        — de imports y de monthly_entries.withdrawals
+      • Dividendos cobrados (de imports)
+      • Intereses cobrados  (de imports)
+      • Comisiones aisladas (de imports)
+
+    Ordenado por fecha DESC (más reciente primero).
+
+    Nota: para users que importaron CSV, los BUY/SELL ya están en
+    `import_normalized_tx`. Para users que cargan manual, vienen de
+    `operations` (BUY + SELL como pares cerrados) y `positions` (BUY
+    abierta). Los flujos de cash manuales vienen de `monthly_entries`
+    no-global (aggregated por mes).
+    """
+    _gate_export(uid)
+    conn = get_db()
+    rows: list[dict] = []
+    try:
+        # ── 1) Imports normalizados (cubre todos los tipos) ──────────────────
+        tx_rows = conn.execute(
+            """SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
+                      t.asset_name, t.quantity, t.unit_price, t.gross_amount,
+                      t.currency, t.fees, t.notes
+               FROM import_normalized_tx t
+               JOIN import_batches b ON t.batch_id = b.id
+               WHERE b.user_id = ? AND b.status = 'confirmed'""",
+            (uid,),
+        ).fetchall()
+        for r in tx_rows:
+            rows.append({
+                "fecha": r["date"],
+                "tipo": _humanize_tx_type(r["operation_type"]),
+                "broker": r["broker"] or "",
+                "activo": r["asset_symbol"] or r["asset_name"] or "",
+                "cantidad": r["quantity"],
+                "precio_unitario": r["unit_price"],
+                "monto": r["gross_amount"],
+                "moneda": r["currency"] or "",
+                "comisiones": r["fees"] or 0,
+                "notas": (r["notes"] or "") + " · import",
+            })
+
+        # ── 2) Operations manuales (closed trades sin import_op_links) ───────
+        op_rows = conn.execute(
+            """SELECT o.* FROM operations o
+               WHERE o.user_id = ?
+                 AND o.id NOT IN (SELECT operation_id FROM import_op_links WHERE operation_id IS NOT NULL)""",
+            (uid,),
+        ).fetchall()
+        for r in op_rows:
+            # Cada operation = par BUY (entry_date/entry_price) + SELL (date/exit_price)
+            if r["entry_date"]:
+                rows.append({
+                    "fecha": r["entry_date"],
+                    "tipo": "COMPRA",
+                    "broker": r["broker"] or "",
+                    "activo": r["asset"] or "",
+                    "cantidad": r["quantity"],
+                    "precio_unitario": r["entry_price"],
+                    "monto": (r["entry_price"] or 0) * (r["quantity"] or 0),
+                    "moneda": r["currency"] or "USD",
+                    "comisiones": 0,
+                    "notas": "manual · operation",
+                })
+            rows.append({
+                "fecha": r["date"],
+                "tipo": "VENTA",
+                "broker": r["broker"] or "",
+                "activo": r["asset"] or "",
+                "cantidad": r["quantity"],
+                "precio_unitario": r["exit_price"],
+                "monto": (r["exit_price"] or 0) * (r["quantity"] or 0),
+                "moneda": r["currency"] or "USD",
+                "comisiones": r["commissions"] or 0,
+                "notas": (r["notes"] or "") + " · manual · operation",
+            })
+
+        # ── 3) Positions abiertas cargadas manualmente (no-cash, no-import) ──
+        pos_rows = conn.execute(
+            """SELECT p.* FROM positions p
+               WHERE p.user_id = ?
+                 AND p.is_cash = 0
+                 AND p.entry_date IS NOT NULL
+                 AND p.id NOT IN (SELECT position_id FROM import_op_links WHERE position_id IS NOT NULL)""",
+            (uid,),
+        ).fetchall()
+        for r in pos_rows:
+            rows.append({
+                "fecha": r["entry_date"],
+                "tipo": "COMPRA",
+                "broker": r["broker"] or "",
+                "activo": r["asset"] or "",
+                "cantidad": r["quantity"],
+                "precio_unitario": r["buy_price"],
+                "monto": r["invested"],
+                "moneda": r["currency"] or "USD",
+                "comisiones": r["commissions"] or 0,
+                "notas": "manual · position abierta",
+            })
+
+        # ── 4) Monthly entries: cash flows agregados por mes (no globales) ───
+        me_rows = conn.execute(
+            """SELECT year, month, broker, deposits, withdrawals
+               FROM monthly_entries
+               WHERE user_id = ? AND broker != 'global'
+                 AND (deposits > 0 OR withdrawals > 0)""",
+            (uid,),
+        ).fetchall()
+        for r in me_rows:
+            # Usamos el día 15 del mes como aproximación (cash flows agregados)
+            d = f"{r['year']:04d}-{r['month']:02d}-15"
+            if (r["deposits"] or 0) > 0:
+                rows.append({
+                    "fecha": d,
+                    "tipo": "DEPÓSITO",
+                    "broker": r["broker"] or "",
+                    "activo": "",
+                    "cantidad": "",
+                    "precio_unitario": "",
+                    "monto": r["deposits"],
+                    "moneda": "USD",
+                    "comisiones": 0,
+                    "notas": f"agregado mensual · {r['year']}-{r['month']:02d}",
+                })
+            if (r["withdrawals"] or 0) > 0:
+                rows.append({
+                    "fecha": d,
+                    "tipo": "RETIRO",
+                    "broker": r["broker"] or "",
+                    "activo": "",
+                    "cantidad": "",
+                    "precio_unitario": "",
+                    "monto": r["withdrawals"],
+                    "moneda": "USD",
+                    "comisiones": 0,
+                    "notas": f"agregado mensual · {r['year']}-{r['month']:02d}",
+                })
+    finally:
+        conn.close()
+
+    # Ordenar por fecha DESC, con tiebreaker en tipo para que COMPRAS aparezcan
+    # antes que VENTAS del mismo día (consistente con cómo se leen los libros).
+    _TYPE_ORDER = {"COMPRA": 0, "VENTA": 1, "DEPÓSITO": 2, "RETIRO": 3,
+                   "DIVIDENDO": 4, "INTERÉS": 5, "COMISIÓN": 6}
+    rows.sort(key=lambda r: (r["fecha"] or "", _TYPE_ORDER.get(r["tipo"], 9)), reverse=True)
+
+    headers = [
+        ("fecha",           "Fecha"),
+        ("tipo",            "Tipo"),
+        ("broker",          "Broker"),
+        ("activo",          "Activo"),
+        ("cantidad",        "Cantidad"),
+        ("precio_unitario", "Precio unit."),
+        ("monto",           "Monto"),
+        ("moneda",          "Moneda"),
+        ("comisiones",      "Comisiones"),
+        ("notas",           "Notas"),
+    ]
+    today = date.today().isoformat()
+    return _csv_response(rows, headers, f"rendi_movimientos_{today}.csv")
+
+
+def _humanize_tx_type(t: str) -> str:
+    """Mapea operation_type del importer a labels en español para el contador."""
+    if not t: return ""
+    t = t.upper().strip()
+    return {
+        "BUY":       "COMPRA",
+        "SELL":      "VENTA",
+        "DEPOSIT":   "DEPÓSITO",
+        "WITHDRAW":  "RETIRO",
+        "DIVIDEND":  "DIVIDENDO",
+        "INTEREST":  "INTERÉS",
+        "FEE":       "COMISIÓN",
+    }.get(t, t)
+
+
 @app.get("/api/export/monthly.csv")
 def export_monthly_csv(uid: int = Depends(get_current_user)):
     """Resumen mensual → CSV con flujos + P&L realizado mes a mes.

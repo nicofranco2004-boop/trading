@@ -45,7 +45,7 @@ const PRO_FEATURES = [
   { label: 'Insights diagnóstico completo' },
   { label: 'Distribución por activo' },
   { label: 'Reportes históricos completos (todos los meses)' },
-  { label: 'Export CSV para tu contador', sub: 'Operaciones, posiciones y resumen mensual' },
+  { label: 'Export CSV consolidado para tu contador', sub: 'Todos los movimientos (compras, ventas, depósitos, retiros, dividendos) en un solo archivo' },
   { label: 'AI Hub: exploración libre sobre tu portfolio', comingSoon: true },
   { label: 'Tax helper AFIP: cálculo FIFO + reporte fiscal', comingSoon: true },
 ]

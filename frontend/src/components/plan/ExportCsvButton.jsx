@@ -40,7 +40,15 @@ export default function ExportCsvButton({
       // Descargar como blob para forzar el browser a abrir el "guardar como"
       // sin perder la auth header.
       const blob = await api.getBlob(`/export/${resource}.csv`)
-      const filename = `rendi_${resource}_${new Date().toISOString().slice(0, 10)}.csv`
+      // Filename amistoso en español para el user (el contenido viene del
+      // backend con label en español también).
+      const spanish = {
+        operations: 'operaciones',
+        positions: 'posiciones',
+        monthly: 'mensual',
+        transactions: 'movimientos',
+      }[resource] || resource
+      const filename = `rendi_${spanish}_${new Date().toISOString().slice(0, 10)}.csv`
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url

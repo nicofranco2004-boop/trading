@@ -132,9 +132,64 @@ class ExportCsvTest(unittest.TestCase):
     # ── Requires auth ────────────────────────────────────────────────────────
 
     def test_export_requires_auth(self):
-        for path in ("operations.csv", "positions.csv", "monthly.csv"):
+        for path in ("operations.csv", "positions.csv", "monthly.csv", "transactions.csv"):
             r = self.client.get(f"/api/export/{path}")
             self.assertIn(r.status_code, (401, 403), f"{path}: esperaba 401/403")
+
+    # ── transactions.csv: export consolidado ─────────────────────────────────
+
+    def test_transactions_export_blocked_for_free(self):
+        r = self.client.get("/api/export/transactions.csv", headers=self.headers_free)
+        self.assertEqual(r.status_code, 403)
+
+    def test_transactions_export_includes_manual_operations_and_positions(self):
+        """El export consolidado debe incluir la venta manual + la posición
+        manual del user admin (insertadas en setUp)."""
+        r = self.client.get("/api/export/transactions.csv", headers=self.headers_admin)
+        self.assertEqual(r.status_code, 200)
+        # admin tiene 1 venta manual (AAPL) que debería generar 2 rows: COMPRA + VENTA
+        self.assertIn("AAPL", r.text)
+        self.assertIn("VENTA", r.text)
+        # Header en español
+        self.assertIn("Tipo", r.text)
+        self.assertIn("Broker", r.text)
+
+    def test_transactions_export_includes_manual_monthly_deposits(self):
+        """Depósitos cargados via monthly_entries deben aparecer como DEPÓSITO."""
+        conn = main.get_db()
+        # Monthly entry no-global con depósito + retiro
+        conn.execute(
+            """INSERT INTO monthly_entries (user_id, year, month, broker,
+                                            capital_inicio, capital_final,
+                                            deposits, withdrawals, pnl_realized)
+               VALUES (?, 2025, 9, 'Schwab', 5000, 5500, 600, 100, 0)""",
+            (self.uid_admin,),
+        )
+        conn.commit()
+        conn.close()
+        r = self.client.get("/api/export/transactions.csv", headers=self.headers_admin)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("DEPÓSITO", r.text)
+        self.assertIn("RETIRO", r.text)
+
+    def test_transactions_export_includes_manual_open_positions(self):
+        """Posiciones abiertas manuales (entry_date set, no cash) deben
+        aparecer como COMPRA en el export consolidado."""
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO positions (user_id, asset, broker, is_cash, quantity,
+                                      invested, buy_price, commissions, entry_date)
+               VALUES (?, 'MSFT', 'Schwab', 0, 5, 1500, 300, 0, '2025-06-15')""",
+            (self.uid_admin,),
+        )
+        conn.commit()
+        conn.close()
+        r = self.client.get("/api/export/transactions.csv", headers=self.headers_admin)
+        self.assertEqual(r.status_code, 200)
+        # MSFT debe estar en el CSV como COMPRA
+        self.assertIn("MSFT", r.text)
+        self.assertIn("COMPRA", r.text)
+        self.assertIn("2025-06-15", r.text)
 
 
 if __name__ == "__main__":
