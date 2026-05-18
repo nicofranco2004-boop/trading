@@ -21,6 +21,7 @@ def _make_db():
         CREATE TABLE users (
             id INTEGER PRIMARY KEY,
             email TEXT,
+            name TEXT,
             is_admin INTEGER DEFAULT 0,
             tier TEXT
         );
@@ -37,6 +38,9 @@ def _make_db():
             next_charge_date TEXT,
             init_point TEXT,
             cancelled_at TEXT,
+            welcome_email_sent_at TEXT,
+            cancellation_email_sent_at TEXT,
+            expiration_reminder_sent_at TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );

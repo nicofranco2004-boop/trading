@@ -155,14 +155,15 @@ class BillingWebhookTest(unittest.TestCase):
     def setUp(self):
         from fastapi.testclient import TestClient
         self.client = TestClient(main.app)
+        self.sub_id = f"wh-sub-{uuid.uuid4().hex[:8]}"
         conn = main.get_db()
         self.uid, _ = _new_user(conn)
         # Pre-cargar una subscription pending
         conn.execute(
             """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,
                                           period, status, amount_ars)
-               VALUES (?, 'wh-sub-1', ?, 'monthly', 'pending', 12100)""",
-            (self.uid, f"rendi-{self.uid}-monthly"),
+               VALUES (?, ?, ?, 'monthly', 'pending', 12100)""",
+            (self.uid, self.sub_id, f"rendi-{self.uid}-monthly"),
         )
         conn.commit()
         conn.close()
@@ -171,13 +172,13 @@ class BillingWebhookTest(unittest.TestCase):
         """Cuando MP avisa que el preapproval fue authorized, el user pasa a tier='pro'."""
         with patch("billing.mercadopago.get_preapproval") as mock_get:
             mock_get.return_value = {
-                "id": "wh-sub-1",
+                "id": self.sub_id,
                 "status": "authorized",
                 "external_reference": f"rendi-{self.uid}-monthly",
                 "auto_recurring": {"start_date": "2026-05-18T00:00:00.000Z"},
                 "next_payment_date": "2026-06-18T00:00:00.000Z",
             }
-            payload = {"id": "evt-1", "type": "preapproval", "data": {"id": "wh-sub-1"}}
+            payload = {"id": "evt-1", "type": "preapproval", "data": {"id": self.sub_id}}
             r = self.client.post(
                 "/api/billing/webhook",
                 content=json.dumps(payload),
@@ -189,10 +190,12 @@ class BillingWebhookTest(unittest.TestCase):
         conn = main.get_db()
         u = conn.execute("SELECT tier FROM users WHERE id = ?", (self.uid,)).fetchone()
         sub = conn.execute(
-            "SELECT status, current_period_end FROM subscriptions WHERE mp_subscription_id='wh-sub-1'"
+            "SELECT status, current_period_end FROM subscriptions WHERE mp_subscription_id = ?",
+            (self.sub_id,),
         ).fetchone()
         evt = conn.execute(
-            "SELECT processed, user_id FROM billing_events WHERE mp_data_id = 'wh-sub-1' ORDER BY id DESC LIMIT 1"
+            "SELECT processed, user_id FROM billing_events WHERE mp_data_id = ? ORDER BY id DESC LIMIT 1",
+            (self.sub_id,),
         ).fetchone()
         conn.close()
         self.assertEqual(u["tier"], "pro")

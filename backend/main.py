@@ -134,7 +134,7 @@ def _table_cols(conn, table: str) -> set:
     # Table name is always hardcoded in callers — never user-supplied
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
-               'import_mappings', 'news'}
+               'import_mappings', 'news', 'subscriptions'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -613,6 +613,11 @@ def init_db():
             init_point TEXT,                     -- URL del checkout (útil para retry)
             last_payment_id TEXT,                -- último payment_id procesado por webhook
             cancelled_at TEXT,
+            -- Idempotencia de emails: cada flag es el timestamp del último envío.
+            -- Vacíos = nunca enviado, no-vacíos = ya enviado (no reintentar).
+            welcome_email_sent_at TEXT,
+            cancellation_email_sent_at TEXT,
+            expiration_reminder_sent_at TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -663,6 +668,15 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_plan_events_created
             ON plan_events(created_at);
     """)
+
+    # subscriptions: columnas de idempotencia de emails (idempotent migration
+    # para tablas pre-existentes — las new tienen estas cols ya en el CREATE).
+    sub_cols = _table_cols(conn, 'subscriptions')
+    for col in ['welcome_email_sent_at', 'cancellation_email_sent_at',
+                'expiration_reminder_sent_at']:
+        if sub_cols and col not in sub_cols:
+            conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col} TEXT")
+    conn.commit()
 
     # ─── CSV Importer ────────────────────────────────────────────────────────
     # import_batches: cada upload (en estado 'preview' es la sesión; al confirm
@@ -6123,6 +6137,9 @@ def billing_cancel(uid: int = Depends(get_current_user)):
                 (sub["mp_subscription_id"],),
             )
 
+        # Email de confirmación de cancelación (idempotente)
+        _maybe_send_cancellation_email(conn, sub["mp_subscription_id"], uid)
+
         return {"status": "cancelled", "subscription_id": sub["mp_subscription_id"]}
     finally:
         conn.close()
@@ -6333,11 +6350,11 @@ def _process_preapproval_event(conn, preapproval_id: str):
             (our_status, period_start, next_pmt, next_pmt, preapproval_id),
         )
 
-    # Si quedó authorized → el user pasa a tier='pro'
+    # Si quedó authorized → el user pasa a tier='pro' + email de bienvenida
     if our_status == "authorized":
         parsed = mercadopago.parse_external_reference(ext_ref)
         if parsed:
-            user_id, _ = parsed
+            user_id, parsed_period = parsed
             with conn:
                 conn.execute("UPDATE users SET tier = 'pro' WHERE id = ?", (user_id,))
                 conn.execute(
@@ -6345,18 +6362,61 @@ def _process_preapproval_event(conn, preapproval_id: str):
                     (user_id, preapproval_id),
                 )
             log.info("User %s upgraded to tier='pro' via MP preapproval %s", user_id, preapproval_id)
+            _maybe_send_welcome_email(conn, preapproval_id, user_id, parsed_period, pa)
     elif our_status in ("cancelled", "paused"):
-        # NOTA: no revertimos tier aún — el user mantiene Pro hasta fin de período.
-        # Un cron diario (no implementado todavía) chequeará current_period_end y bajará.
+        # NO revertimos tier — el user mantiene Pro hasta current_period_end.
+        # El cron _run_subscription_lifecycle_job lo baja a Free al expirar.
         log.info("Subscription %s now %s (tier change pending end of period)", preapproval_id, our_status)
 
 
+def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state):
+    """Manda el email de bienvenida UNA SOLA VEZ por suscripción.
+    Idempotente vía welcome_email_sent_at — si está set, saltamos."""
+    from billing import emails
+    row = conn.execute(
+        """SELECT s.welcome_email_sent_at, s.amount_ars, u.email, u.name
+           FROM subscriptions s JOIN users u ON u.id = s.user_id
+           WHERE s.mp_subscription_id = ?""",
+        (preapproval_id,),
+    ).fetchone()
+    if not row:
+        return
+    if row["welcome_email_sent_at"]:
+        return  # ya enviamos
+    try:
+        sent = emails.send_welcome_pro(
+            to=row["email"],
+            user_name=(row["name"] or row["email"].split("@")[0]),
+            period=period,
+            amount_ars=row["amount_ars"],
+            next_charge_date=mp_state.get("next_payment_date"),
+        )
+        if sent or not emails._is_configured():
+            # Marcamos como enviado igual en modo "no configurado" (log-only)
+            # para no spamear el log con cada webhook.
+            with conn:
+                conn.execute(
+                    """UPDATE subscriptions SET welcome_email_sent_at = datetime('now')
+                       WHERE mp_subscription_id = ?""",
+                    (preapproval_id,),
+                )
+    except Exception as ex:
+        log.error("Welcome email failed for sub %s: %s", preapproval_id, ex)
+
+
 def _process_payment_event(conn, payment_id: str, payload: dict):
-    """Procesa un payment event recurrente. Por ahora solo registramos el
-    payment_id en la subscription para auditoría. Un cron periódico
-    podría hacer reconciliación de fechas si es necesario."""
-    # MP también incluye preapproval_id en algunos payment events
+    """Procesa un payment event recurrente.
+
+    Para cada pago, dispara el email correspondiente:
+      • status 'approved' / 'accredited' → receipt
+      • status 'rejected' / 'cancelled'  → payment_failed
+
+    Registramos el payment_id en la subscription para auditoría e
+    idempotencia (last_payment_id evita disparar el mismo email dos veces)."""
+    from billing import emails
+
     pa_id = (payload.get("data") or {}).get("preapproval_id")
+    data_status = ((payload.get("data") or {}).get("status") or "").lower()
     if pa_id:
         with conn:
             conn.execute(
@@ -6365,7 +6425,80 @@ def _process_payment_event(conn, payment_id: str, payload: dict):
                    WHERE mp_subscription_id = ?""",
                 (payment_id, pa_id),
             )
-    log.info("MP payment event processed: payment_id=%s preapproval=%s", payment_id, pa_id)
+    log.info("MP payment event processed: payment_id=%s preapproval=%s status=%s",
+            payment_id, pa_id, data_status)
+
+    if not pa_id:
+        return
+
+    sub_row = conn.execute(
+        """SELECT s.user_id, s.amount_ars, s.next_charge_date, s.welcome_email_sent_at,
+                  u.email, u.name
+           FROM subscriptions s JOIN users u ON u.id = s.user_id
+           WHERE s.mp_subscription_id = ?""",
+        (pa_id,),
+    ).fetchone()
+    if not sub_row:
+        return
+
+    user_name = (sub_row["name"] or (sub_row["email"] or "").split("@")[0] or "Inversor")
+
+    is_approved = data_status in ("approved", "accredited", "authorized") or not data_status
+    if is_approved and sub_row["welcome_email_sent_at"]:
+        # Renovación exitosa después de la primera (welcome ya fue) → recibo.
+        try:
+            emails.send_receipt(
+                to=sub_row["email"],
+                user_name=user_name,
+                amount_ars=sub_row["amount_ars"],
+                payment_date=(payload.get("data") or {}).get("date_approved")
+                             or _iso_today(),
+                next_charge_date=sub_row["next_charge_date"],
+                payment_id=str(payment_id),
+            )
+        except Exception as ex:
+            log.error("Receipt email failed for payment %s: %s", payment_id, ex)
+    elif data_status in ("rejected", "cancelled", "refunded"):
+        try:
+            emails.send_payment_failed(
+                to=sub_row["email"],
+                user_name=user_name,
+                retry_date=sub_row["next_charge_date"],
+            )
+        except Exception as ex:
+            log.error("Payment failed email failed for payment %s: %s", payment_id, ex)
+
+
+def _iso_today() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
+    """Email de cancelación. Idempotente vía cancellation_email_sent_at."""
+    from billing import emails
+    row = conn.execute(
+        """SELECT s.cancellation_email_sent_at, s.current_period_end, u.email, u.name
+           FROM subscriptions s JOIN users u ON u.id = s.user_id
+           WHERE s.mp_subscription_id = ?""",
+        (preapproval_id,),
+    ).fetchone()
+    if not row or row["cancellation_email_sent_at"]:
+        return
+    try:
+        valid_until = row["current_period_end"] or _iso_today()
+        emails.send_cancellation(
+            to=row["email"],
+            user_name=(row["name"] or row["email"].split("@")[0]),
+            valid_until=valid_until,
+        )
+        with conn:
+            conn.execute(
+                """UPDATE subscriptions SET cancellation_email_sent_at = datetime('now')
+                   WHERE mp_subscription_id = ?""",
+                (preapproval_id,),
+            )
+    except Exception as ex:
+        log.error("Cancellation email failed for sub %s: %s", preapproval_id, ex)
 
 
 @app.get("/api/ai/usage")

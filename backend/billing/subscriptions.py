@@ -35,6 +35,7 @@ def run_lifecycle_job(conn) -> dict:
         "downgraded": 0,
         "stale_pending_cancelled": 0,
         "synced_from_mp": 0,
+        "expiration_reminders_sent": 0,
         "errors": 0,
     }
     try:
@@ -52,7 +53,64 @@ def run_lifecycle_job(conn) -> dict:
     except Exception as ex:
         log.error("MP sync step failed: %s", ex)
         result["errors"] += 1
+    try:
+        result["expiration_reminders_sent"] = _send_expiration_reminders(conn)
+    except Exception as ex:
+        log.error("Expiration reminders failed: %s", ex)
+        result["errors"] += 1
     return result
+
+
+def _send_expiration_reminders(conn, days_before: int = 3) -> int:
+    """Manda recordatorio a users cuya sub cancelada está por expirar en N días.
+
+    Solo afecta a subs `cancelled` (no a `authorized` activas — esas se renuevan
+    automáticamente). Idempotente vía expiration_reminder_sent_at."""
+    from billing import emails
+    rows = conn.execute(
+        """SELECT s.id, s.mp_subscription_id, s.current_period_end,
+                  u.email, u.name
+           FROM subscriptions s
+           JOIN users u ON u.id = s.user_id
+           WHERE s.status = 'cancelled'
+             AND s.expiration_reminder_sent_at IS NULL
+             AND s.current_period_end IS NOT NULL
+             AND date(s.current_period_end) BETWEEN date('now')
+                                                AND date('now', ?)""",
+        (f"+{days_before} days",),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    sent_count = 0
+    for r in rows:
+        try:
+            from datetime import datetime
+            try:
+                period_end = datetime.fromisoformat(
+                    r["current_period_end"].replace("Z", "").split(".")[0]
+                )
+                days_left = max(0, (period_end - datetime.utcnow()).days)
+            except Exception:
+                days_left = days_before
+
+            emails.send_expiration_reminder(
+                to=r["email"],
+                user_name=(r["name"] or r["email"].split("@")[0]),
+                days_left=days_left,
+                expires_at=r["current_period_end"],
+            )
+            with conn:
+                conn.execute(
+                    """UPDATE subscriptions SET expiration_reminder_sent_at = datetime('now')
+                       WHERE id = ?""",
+                    (r["id"],),
+                )
+            sent_count += 1
+        except Exception as ex:
+            log.error("Expiration reminder failed for sub %s: %s",
+                     r["mp_subscription_id"], ex)
+    return sent_count
 
 
 def _downgrade_expired_cancellations(conn) -> int:
