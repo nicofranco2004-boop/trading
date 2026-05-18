@@ -191,6 +191,48 @@ class ExportCsvTest(unittest.TestCase):
         self.assertIn("COMPRA", r.text)
         self.assertIn("2025-06-15", r.text)
 
+    def test_transactions_export_includes_positions_without_entry_date(self):
+        """Regression: posiciones legacy sin entry_date deben aparecer en el
+        export (no filtrarse). Bug detectado por el user — la mayoría de
+        positions manuales viejas no tienen fecha registrada."""
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO positions (user_id, asset, broker, is_cash, quantity,
+                                      invested, buy_price, commissions)
+               VALUES (?, 'NVDA', 'cocos', 0, 28, 306320, 10940, 0)""",
+            (self.uid_admin,),
+        )
+        conn.commit()
+        conn.close()
+        r = self.client.get("/api/export/transactions.csv", headers=self.headers_admin)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("NVDA", r.text)
+        self.assertIn("sin fecha registrada", r.text)
+
+    def test_transactions_export_futures_use_pnl_as_monto(self):
+        """Regression: operaciones de futuros (sin quantity/precios pero con
+        pnl_usd) deben mostrar el pnl_usd como Monto en lugar de 0."""
+        conn = main.get_db()
+        # Operación SHORT Futuros con pérdida de $20
+        conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type,
+                                       pnl_usd, commissions)
+               VALUES (?, '2025-06-22', 'Binance', 'BTC/USDT', 'SHORT Futuros', -20.0, 0)""",
+            (self.uid_admin,),
+        )
+        conn.commit()
+        conn.close()
+        r = self.client.get("/api/export/transactions.csv", headers=self.headers_admin)
+        self.assertEqual(r.status_code, 200)
+        # Buscar la línea de la futuros
+        for line in r.text.split("\n"):
+            if "BTC/USDT" in line and "Futuros" in line:
+                # Monto debe ser -20, no 0
+                self.assertIn("-20", line, f"Esperaba -20 en monto, línea: {line}")
+                self.assertIn("VENTA", line)
+                return
+        self.fail("No se encontró la fila de BTC/USDT Futuros")
+
 
 if __name__ == "__main__":
     unittest.main()

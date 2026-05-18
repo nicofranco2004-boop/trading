@@ -4682,7 +4682,32 @@ def export_transactions_csv(uid: int = Depends(get_current_user)):
             (uid,),
         ).fetchall()
         for r in op_rows:
-            # Cada operation = par BUY (entry_date/entry_price) + SELL (date/exit_price)
+            op_type = r["op_type"] or ""
+            # Futuros: solo se carga pnl_usd, no hay quantity/precios. Se exporta
+            # como UNA fila con monto = pnl_usd (puede ser negativo).
+            is_futuros = (
+                "Futuros" in op_type
+                or "futuros" in op_type
+                or (r["quantity"] is None and r["entry_price"] is None and r["exit_price"] is None)
+            )
+            if is_futuros:
+                pnl = r["pnl_usd"] or 0
+                rows.append({
+                    "fecha": r["date"],
+                    "tipo": "VENTA",
+                    "broker": r["broker"] or "",
+                    "activo": r["asset"] or "",
+                    "cantidad": "",
+                    "precio_unitario": "",
+                    "monto": pnl,
+                    "moneda": r["currency"] or "USD",
+                    "comisiones": r["commissions"] or 0,
+                    "notas": f"{op_type or 'futuros'} · P&L cerrado" + (
+                        f" · {r['notes']}" if r["notes"] else ""
+                    ),
+                })
+                continue
+            # Operación normal con apertura + cierre. Genera 2 filas si entry_date.
             if r["entry_date"]:
                 rows.append({
                     "fecha": r["entry_date"],
@@ -4709,18 +4734,22 @@ def export_transactions_csv(uid: int = Depends(get_current_user)):
                 "notas": (r["notes"] or "") + " · manual · operation",
             })
 
-        # ── 3) Positions abiertas cargadas manualmente (no-cash, no-import) ──
+        # ── 3) Positions abiertas manualmente (no-cash, no-import) ───────────
+        # NOTA: NO filtramos por entry_date — posiciones legacy sin fecha
+        # también deben aparecer en el export (sino el contador no ve la
+        # compra). Si no hay entry_date, dejamos fecha vacía y lo marcamos
+        # en las notas para que sea claro.
         pos_rows = conn.execute(
             """SELECT p.* FROM positions p
                WHERE p.user_id = ?
                  AND p.is_cash = 0
-                 AND p.entry_date IS NOT NULL
                  AND p.id NOT IN (SELECT position_id FROM import_op_links WHERE position_id IS NOT NULL)""",
             (uid,),
         ).fetchall()
         for r in pos_rows:
+            has_date = bool(r["entry_date"])
             rows.append({
-                "fecha": r["entry_date"],
+                "fecha": r["entry_date"] or "",
                 "tipo": "COMPRA",
                 "broker": r["broker"] or "",
                 "activo": r["asset"] or "",
@@ -4729,7 +4758,9 @@ def export_transactions_csv(uid: int = Depends(get_current_user)):
                 "monto": r["invested"],
                 "moneda": r["currency"] or "USD",
                 "comisiones": r["commissions"] or 0,
-                "notas": "manual · position abierta",
+                "notas": "manual · posición abierta" + (
+                    "" if has_date else " (sin fecha registrada)"
+                ),
             })
 
         # ── 4) Monthly entries: cash flows agregados por mes (no globales) ───
@@ -4754,7 +4785,7 @@ def export_transactions_csv(uid: int = Depends(get_current_user)):
                     "monto": r["deposits"],
                     "moneda": "USD",
                     "comisiones": 0,
-                    "notas": f"agregado mensual · {r['year']}-{r['month']:02d}",
+                    "notas": f"Total depósitos {r['year']}-{r['month']:02d} (fecha aproximada al 15)",
                 })
             if (r["withdrawals"] or 0) > 0:
                 rows.append({
@@ -4767,16 +4798,24 @@ def export_transactions_csv(uid: int = Depends(get_current_user)):
                     "monto": r["withdrawals"],
                     "moneda": "USD",
                     "comisiones": 0,
-                    "notas": f"agregado mensual · {r['year']}-{r['month']:02d}",
+                    "notas": f"Total retiros {r['year']}-{r['month']:02d} (fecha aproximada al 15)",
                 })
     finally:
         conn.close()
 
     # Ordenar por fecha DESC, con tiebreaker en tipo para que COMPRAS aparezcan
-    # antes que VENTAS del mismo día (consistente con cómo se leen los libros).
+    # antes que VENTAS del mismo día. Las filas SIN fecha (posiciones legacy
+    # sin entry_date) quedan al FINAL del CSV con prefijo '0000' que las
+    # ordena después de todo lo fechado (DESC).
     _TYPE_ORDER = {"COMPRA": 0, "VENTA": 1, "DEPÓSITO": 2, "RETIRO": 3,
                    "DIVIDENDO": 4, "INTERÉS": 5, "COMISIÓN": 6}
-    rows.sort(key=lambda r: (r["fecha"] or "", _TYPE_ORDER.get(r["tipo"], 9)), reverse=True)
+    def _sort_key(r):
+        # En modo DESC, "0000-..." quedaría al final (el menor). Pero queremos
+        # que las sin fecha queden DESPUÉS de las fechadas — así que usamos un
+        # tuple (has_date, fecha, type) para evitar que NULL trepe arriba.
+        has_date = 1 if r["fecha"] else 0
+        return (has_date, r["fecha"] or "", -_TYPE_ORDER.get(r["tipo"], 9))
+    rows.sort(key=_sort_key, reverse=True)
 
     headers = [
         ("fecha",           "Fecha"),
