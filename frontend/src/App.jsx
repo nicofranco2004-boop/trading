@@ -10,6 +10,7 @@ import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import Login from './pages/Login'
 import VerifyEmail from './pages/VerifyEmail'
+import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
 import Positions from './pages/Positions'
 import Monthly from './pages/Monthly'
@@ -89,9 +90,10 @@ function Layout() {
   if (!user) {
     return (
       <Routes>
-        {/* /verify-email es accesible sin login — el user pasa por acá tras
-            registrarse, antes de tener token. */}
+        {/* Rutas accesibles SIN login — el user pasa por acá tras registrarse
+            o tras clickear un magic link de password reset. */}
         <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="*" element={<Login />} />
       </Routes>
     )

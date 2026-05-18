@@ -17,8 +17,39 @@ export default function Login() {
   // específico para ir al login en vez del mensaje de error genérico.
   const [emailExists, setEmailExists] = useState(false)
   const [loading, setLoading] = useState(false)
+  // Mini-flow inline para "Olvidé mi contraseña" — no necesita página separada,
+  // se muestra como un panel debajo del form de login.
+  const [forgotMode, setForgotMode] = useState(false)
+  const [forgotLoading, setForgotLoading] = useState(false)
+  const [forgotSent, setForgotSent] = useState(false)
   const { login } = useAuth()
   const navigate = useNavigate()
+
+  async function handleForgotPassword(e) {
+    e.preventDefault()
+    if (!email.trim()) {
+      setError('Ingresá tu email para recibir el link.')
+      return
+    }
+    setError('')
+    setForgotLoading(true)
+    try {
+      const res = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'No pudimos enviar el link. Intentá de nuevo en unos minutos.')
+      }
+      setForgotSent(true)
+    } catch (ex) {
+      setError(ex.message)
+    } finally {
+      setForgotLoading(false)
+    }
+  }
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -156,7 +187,18 @@ export default function Login() {
               />
             </div>
             <div>
-              <label htmlFor="login-password" className="block text-xs text-ink-3 mb-1">Contraseña</label>
+              <div className="flex items-baseline justify-between mb-1">
+                <label htmlFor="login-password" className="block text-xs text-ink-3">Contraseña</label>
+                {mode === 'login' && (
+                  <button
+                    type="button"
+                    onClick={() => { setForgotMode(true); setError(''); setForgotSent(false); }}
+                    className="text-xs text-data-violet hover:text-data-violet/80 transition-colors"
+                  >
+                    ¿Olvidaste tu contraseña?
+                  </button>
+                )}
+              </div>
               <input
                 id="login-password"
                 type="password"
@@ -197,11 +239,59 @@ export default function Login() {
                 </button>
               </div>
             )}
+            {/* Panel: Olvidé mi contraseña (mini-flow inline, sin página extra) */}
+            {forgotMode && (
+              <div className="bg-bg-2 dark:bg-bg-1/60 border border-line/60 rounded-lg p-3 space-y-2.5">
+                {forgotSent ? (
+                  <>
+                    <p className="text-sm text-ink-0 font-medium">📬 Revisá tu inbox</p>
+                    <p className="text-xs text-ink-3 leading-relaxed">
+                      Si <b className="text-ink-1">{email}</b> está registrado, te enviamos un link para
+                      restablecer tu contraseña. El link vence en 30 minutos.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setForgotMode(false); setForgotSent(false); }}
+                      className="w-full text-xs text-ink-3 hover:text-ink-0 py-1.5 transition-colors"
+                    >
+                      Volver al login
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm text-ink-1">
+                      ¿Olvidaste tu contraseña?
+                    </p>
+                    <p className="text-xs text-ink-3 leading-relaxed">
+                      Te mandamos un link a tu email para crear una nueva. Asegurate
+                      de tener tu email <b className="text-ink-2">{email || 'arriba'}</b> bien escrito.
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleForgotPassword}
+                        disabled={forgotLoading || !email.trim()}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-lg py-2 text-xs font-medium transition-colors disabled:opacity-50"
+                      >
+                        {forgotLoading ? 'Enviando…' : 'Enviar link de reseteo'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setForgotMode(false); setError(''); }}
+                        className="px-3 text-xs text-ink-3 hover:text-ink-0 transition-colors"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             {error && !emailExists && <p className="text-red-500 text-xs">{error}</p>}
             {info && <p className="text-emerald-600 dark:text-emerald-400 text-xs">{info}</p>}
             <button
               type="submit"
-              disabled={loading || emailExists}
+              disabled={loading || emailExists || forgotMode}
               className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
             >
               {loading ? 'Cargando…' : mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}

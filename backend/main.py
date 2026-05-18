@@ -688,6 +688,20 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_email_codes_user_unused
             ON email_verification_codes(user_id, used_at);
+
+        -- ─── password_reset_tokens: magic links para "olvidé mi contraseña" ──
+        -- Token es URL-safe random 256-bit (secrets.token_urlsafe(32)).
+        -- Vence en 30 min. used_at se setea al confirmar el reset.
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_pwd_reset_token ON password_reset_tokens(token);
+        CREATE INDEX IF NOT EXISTS idx_pwd_reset_user ON password_reset_tokens(user_id, used_at);
     """)
 
     # subscriptions: columnas de idempotencia de emails (idempotent migration
@@ -909,10 +923,34 @@ class ResendVerificationIn(BaseModel):
     email: str = Field(..., max_length=254)
 
 
-# ─── Email verification helpers ──────────────────────────────────────────────
+class ForgotPasswordIn(BaseModel):
+    email: str = Field(..., max_length=254)
+
+
+class ResetPasswordIn(BaseModel):
+    token: str = Field(..., min_length=20, max_length=128)
+    new_password: str = Field(..., min_length=10, max_length=128)
+
+
+# ─── Email verification + password reset helpers ────────────────────────────
 
 EMAIL_CODE_TTL_MINUTES = 15
 EMAIL_CODE_RESEND_COOLDOWN_SECONDS = 60
+PASSWORD_RESET_TTL_MINUTES = 30
+
+
+def _frontend_url() -> str:
+    """Base URL del frontend para construir magic links (password reset, etc).
+
+    Para dev: http://localhost:5173. Para prod: https://rendi.app (cambiar
+    en el .env vía MP_FRONTEND_BASE_URL — el nombre es histórico, se usa
+    también para no-billing)."""
+    return (os.environ.get("MP_FRONTEND_BASE_URL") or "http://localhost:5173").rstrip("/")
+
+
+def _gen_reset_token() -> str:
+    """URL-safe random ~43 chars (~256 bits de entropía)."""
+    return secrets.token_urlsafe(32)
 
 
 def _gen_verification_code() -> str:
@@ -1161,6 +1199,115 @@ def resend_verification(data: ResendVerificationIn, request: Request):
         return {"sent": True, "message": "Te enviamos un código nuevo."}
     finally:
         conn.close()
+
+
+@app.post("/api/auth/forgot-password")
+def forgot_password(data: ForgotPasswordIn, request: Request):
+    """Inicia el flow de reset de contraseña. Manda un magic link al email
+    del user (si existe). Respuesta SIEMPRE 200 con mensaje genérico para
+    no leakear qué emails están registrados.
+
+    Rate limit: 3 requests/hora por email + 5 por 5min por IP para mitigar
+    spam de password reset (atacante haciendo flood al inbox del user)."""
+    _check_rate_limit(request, max_calls=5, window_seconds=300, suffix="forgot_pw_ip")
+    email_norm = data.email.strip().lower()
+    _check_rate_limit(request, max_calls=3, window_seconds=3600,
+                     suffix=f"forgot_pw_email:{email_norm}")
+
+    conn = get_db()
+    try:
+        user = conn.execute(
+            "SELECT id, name, email FROM users WHERE email=?", (email_norm,)
+        ).fetchone()
+        if user:
+            from datetime import datetime, timedelta
+            token = _gen_reset_token()
+            expires = (datetime.utcnow() + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES)).isoformat()
+            with conn:
+                # Invalidamos tokens previos del user (un solo link válido a la vez)
+                conn.execute(
+                    """UPDATE password_reset_tokens SET used_at = datetime('now')
+                       WHERE user_id = ? AND used_at IS NULL""",
+                    (user["id"],),
+                )
+                conn.execute(
+                    """INSERT INTO password_reset_tokens (user_id, token, expires_at)
+                       VALUES (?, ?, ?)""",
+                    (user["id"], token, expires),
+                )
+            reset_url = f"{_frontend_url()}/reset-password?token={token}"
+            try:
+                from billing import emails
+                emails.send_password_reset(
+                    to=user["email"],
+                    user_name=(user["name"] or user["email"].split("@")[0]),
+                    reset_url=reset_url,
+                    expires_minutes=PASSWORD_RESET_TTL_MINUTES,
+                )
+            except Exception as ex:
+                log.error("Password reset email failed for uid=%s: %s", user["id"], ex)
+        # Respuesta SIEMPRE genérica para no leakear si el email existe
+        return {
+            "sent": True,
+            "message": "Si la cuenta existe, te enviamos un link para restablecer la contraseña.",
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/auth/reset-password")
+def reset_password(data: ResetPasswordIn, request: Request):
+    """Confirma el reset usando el token + nueva contraseña.
+
+    Valida que el token exista, no esté usado y no haya vencido.
+    Actualiza el password_hash, marca el token usado, y rota el JWT
+    (vía password_changed_at) para invalidar sesiones viejas."""
+    _check_rate_limit(request, max_calls=10, window_seconds=300, suffix="reset_pw_ip")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT id, user_id, expires_at, used_at FROM password_reset_tokens
+               WHERE token = ?""",
+            (data.token,),
+        ).fetchone()
+        if not row or row["used_at"]:
+            raise HTTPException(400, "Link inválido o ya usado. Pedí uno nuevo.")
+        from datetime import datetime
+        try:
+            expires = datetime.fromisoformat(row["expires_at"])
+            if expires < datetime.utcnow():
+                raise HTTPException(400, "El link expiró. Pedí uno nuevo.")
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Link inválido")
+
+        # Hash nueva password + bump password_changed_at (invalida JWTs viejos)
+        new_hash = pwd_ctx.hash(data.new_password)
+        with conn:
+            conn.execute(
+                """UPDATE users SET password_hash = ?, password_changed_at = datetime('now')
+                   WHERE id = ?""",
+                (new_hash, row["user_id"]),
+            )
+            conn.execute(
+                "UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?",
+                (row["id"],),
+            )
+        # Emitir token nuevo para que el user quede logueado tras el reset (UX)
+        user = conn.execute(
+            "SELECT name, email, password_changed_at FROM users WHERE id = ?",
+            (row["user_id"],),
+        ).fetchone()
+        return {
+            "token": create_token(row["user_id"], user["password_changed_at"]),
+            "name": user["name"] or user["email"],
+            "message": "Contraseña restablecida.",
+        }
+    except HTTPException:
+        conn.close()
+        raise
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 
 @app.post("/api/auth/logout")

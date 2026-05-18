@@ -342,3 +342,49 @@ def send_verification_code(*, to: str, user_name: str, code: str,
         f"— Rendi"
     )
     return _send(to, subject, _wrap_html(body_html), text)
+
+
+# ─── Email #7: reset de contraseña (magic link) ─────────────────────────────
+
+def send_password_reset(*, to: str, user_name: str, reset_url: str,
+                       expires_minutes: int = 30) -> bool:
+    """Envía un email con un magic link para restablecer la contraseña.
+
+    El reset_url contiene el token en la query string. El frontend abre
+    una pantalla con form de nueva contraseña que postea al endpoint
+    /api/auth/reset-password con el token."""
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Restablecé tu contraseña</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Hola {user_name}, recibimos una solicitud para restablecer tu contraseña en Rendi.
+      </p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 24px;">
+        Hacé click en el botón de abajo para crear una nueva contraseña:
+      </p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="{reset_url}" style="display:inline-block;background:#21D07A;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
+          Restablecer contraseña
+        </a>
+      </div>
+      <p style="font-size:13px;color:#6b7280;line-height:1.6;margin:0 0 8px;">
+        O copiá y pegá este link en tu navegador:
+      </p>
+      <p style="font-size:11px;color:#21D07A;word-break:break-all;font-family:monospace;background:#f9fafb;padding:10px;border-radius:4px;margin:0 0 20px;">
+        {reset_url}
+      </p>
+      <p style="font-size:13px;color:#6b7280;line-height:1.6;">
+        El link vence en <b>{expires_minutes} minutos</b>. Si no pediste cambiar tu
+        contraseña, ignorá este email — nadie va a poder cambiarla sin acceso al link.
+      </p>
+    """
+    text = (
+        f"Restablecé tu contraseña en Rendi\n\n"
+        f"Hola {user_name}, recibimos una solicitud para restablecer tu contraseña.\n\n"
+        f"Para crear una nueva, abrí este link en tu navegador:\n"
+        f"{reset_url}\n\n"
+        f"El link vence en {expires_minutes} minutos.\n\n"
+        f"Si no fuiste vos, ignorá este email — nadie podrá cambiar tu contraseña sin el link.\n\n"
+        f"— Rendi"
+    )
+    return _send(to, "Restablecé tu contraseña · Rendi",
+                 _wrap_html(body_html), text)
