@@ -5395,10 +5395,10 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
         if not allowed:
             raise HTTPException(429, {
                 "error": (
-                    "Llegaste al límite semanal de análisis del plan Free "
-                    "(6/sem). Tu cuota se renueva el lunes próximo. Para "
-                    "10× más análisis con respuestas profundas, pasate a "
-                    "Rendi Pro."
+                    "Llegaste al límite del plan Free (6 análisis en los "
+                    "últimos 7 días). Tu próximo análisis se libera al "
+                    "expirar el más antiguo. Para 10× más análisis con "
+                    "respuestas profundas, pasate a Rendi Pro."
                 ),
                 "usage": usage_now,
                 "upgrade": {

@@ -58,7 +58,7 @@ export default function UpgradePromoCard({
         <Sparkles size={14} strokeWidth={1.75} className="text-data-violet mt-0.5 flex-shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-[10px] font-mono uppercase tracking-caps text-data-violet leading-none mb-1">
-            Llegaste al límite semanal
+            Llegaste al límite del plan Free
           </p>
           <h3 className="text-sm font-medium text-ink-0 leading-snug">
             Usaste {count} de {limit} análisis del plan Free
@@ -70,7 +70,7 @@ export default function UpgradePromoCard({
       {resetLabel && (
         <div className="flex items-center gap-1.5 text-xs text-ink-2">
           <Calendar size={11} strokeWidth={1.75} className="text-ink-3" />
-          <span>Tu cuota se renueva el <span className="text-ink-0">{resetLabel}</span>.</span>
+          <span>Tu próximo análisis se libera el <span className="text-ink-0">{resetLabel}</span>.</span>
         </div>
       )}
 

@@ -29,15 +29,16 @@ Economía a 3000 Free users (worst case sin cache):
     150 Pro × ($7 − $2 costo Pro real) = $750/mes
   Net: +$210/mes ✓ (más margen con cache hits y conversión 7%+).
 
-Cap semanal vs diario:
-  El cap diario penaliza al usuario que entra fines de semana o bursts.
-  El cap semanal le da flexibilidad para usar 3 un día y 1 otro — sin
-  frustrar.
+Cap rolling 7-day vs ISO week:
+  Usamos ventana móvil de 7 días (hoy y los 6 días anteriores). Esto
+  evita el surprise reset de los lunes: si hiciste 3 análisis el domingo,
+  el lunes seguís viendo "3/6" en lugar de "0/6". Cada día, el más viejo
+  se va "cayendo" del bucket.
 
 Reset:
-  ISO week — empieza lunes a las 00:00 timezone local. La columna
-  `date` de ai_usage_daily está en formato ISO date (server-local), y
-  sumamos los días dentro de la semana en curso.
+  No hay un día fijo de reset. resets_on devuelve el día en que el slot
+  más antiguo del window "se libera" (= fecha del análisis más viejo + 7).
+  Si no hay análisis en el window, resets_on es null.
 
 Tracking:
   Cada call al LLM (cache MISS de Rendi) incrementa ai_usage_daily.analyses_count.
@@ -94,31 +95,48 @@ def get_tier(conn, user_id: int) -> Tier:
     return "free"
 
 
-def _week_start(today: date) -> date:
-    """Lunes de la semana ISO en curso. weekday() devuelve 0=lunes, 6=domingo."""
-    return today - timedelta(days=today.weekday())
+def _window_start(today: date) -> date:
+    """Inicio de la ventana móvil de 7 días: hoy − 6 días.
+
+    Resultado: el sum WHERE date >= window_start captura HOY + 6 días previos
+    = 7 días totales. Si Pablo usó IA ayer (domingo) y hoy es lunes, ese análisis
+    sigue contando — evita el surprise reset de los lunes."""
+    return today - timedelta(days=6)
+
+
+# Back-compat: callers viejos que importan _week_start siguen funcionando
+# (devuelve el mismo valor que _window_start ahora).
+_week_start = _window_start
 
 
 def get_current_usage(conn, user_id: int) -> dict:
-    """Counters de la semana en curso + límites del tier + fecha de reset.
+    """Counters de los últimos 7 días + límites del tier.
 
     Devuelve dict con shape estable para el frontend:
-      tier, period='week', analyses_count/limit/remaining,
-      hub_queries_count/limit/remaining, resets_on (ISO date del próximo lunes).
+      tier, period='rolling_7d',
+      analyses_count/limit/remaining,
+      hub_queries_count/limit/remaining,
+      resets_on (ISO date en que se libera el slot más antiguo, o null si
+                 no hay análisis en el window).
+      window_starts_on (ISO date — hoy menos 6 días).
     """
     today = date.today()
-    week_start = _week_start(today)
-    next_reset = week_start + timedelta(days=7)
+    window_start = _window_start(today)
 
+    # SQL hace el cálculo de resets_on directamente con date(MIN(date), '+7 days')
+    # para evitar dependencias del módulo `date` de Python (más limpio + testeable).
     row = conn.execute(
         """SELECT COALESCE(SUM(analyses_count), 0) AS a,
-                  COALESCE(SUM(hub_queries_count), 0) AS h
+                  COALESCE(SUM(hub_queries_count), 0) AS h,
+                  date(MIN(date), '+7 days') AS resets_on
              FROM ai_usage_daily
-            WHERE user_id = ? AND date >= ?""",
-        (user_id, week_start.isoformat()),
+            WHERE user_id = ? AND date >= ?
+              AND (analyses_count > 0 OR hub_queries_count > 0)""",
+        (user_id, window_start.isoformat()),
     ).fetchone()
     analyses = int(row["a"] or 0) if row else 0
     hub = int(row["h"] or 0) if row else 0
+    resets_on = row["resets_on"] if row else None
 
     tier = get_tier(conn, user_id)
     limits = LIMITS[tier]
@@ -127,15 +145,17 @@ def get_current_usage(conn, user_id: int) -> dict:
 
     return {
         "tier": tier,
-        "period": "week",
+        "period": "rolling_7d",
         "analyses_count": analyses,
         "analyses_limit": a_limit,
         "analyses_remaining": max(0, a_limit - analyses),
         "hub_queries_count": hub,
         "hub_queries_limit": h_limit,
         "hub_queries_remaining": max(0, h_limit - hub),
-        "resets_on": next_reset.isoformat(),
-        "week_starts_on": week_start.isoformat(),
+        "resets_on": resets_on,
+        "window_starts_on": window_start.isoformat(),
+        # Alias back-compat para callers viejos.
+        "week_starts_on": window_start.isoformat(),
     }
 
 

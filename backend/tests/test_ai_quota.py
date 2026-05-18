@@ -72,20 +72,28 @@ def test_get_tier_no_users_table():
     assert quota.get_tier(conn, 1) == "free"
 
 
-# ── _week_start: semana ISO ──────────────────────────────────────────────────
+# ── _window_start: ventana móvil 7 días ──────────────────────────────────────
 
-def test_week_start_returns_monday():
-    # Miércoles 13 may 2026 → lunes 11 may
-    assert quota._week_start(date(2026, 5, 13)) == date(2026, 5, 11)
-
-
-def test_week_start_when_today_is_monday():
-    assert quota._week_start(date(2026, 5, 11)) == date(2026, 5, 11)
+def test_window_start_is_today_minus_6():
+    """Window de 7 días inclusive = hoy − 6."""
+    assert quota._window_start(date(2026, 5, 18)) == date(2026, 5, 12)
 
 
-def test_week_start_when_today_is_sunday():
-    # Domingo 17 may → lunes 11 may de esa misma semana ISO
-    assert quota._week_start(date(2026, 5, 17)) == date(2026, 5, 11)
+def test_window_includes_previous_sunday_on_monday():
+    """Caso del bug Pablo: análisis del domingo previo NO debe excluirse
+    cuando hoy es lunes. Window rolling lo incluye."""
+    monday = date(2026, 5, 18)
+    sunday_prev = date(2026, 5, 17)
+    start = quota._window_start(monday)
+    assert sunday_prev >= start, (
+        f"Domingo previo ({sunday_prev}) debería estar en el window que empieza en {start}"
+    )
+
+
+def test_week_start_alias_still_works():
+    """_week_start es alias back-compat del _window_start nuevo."""
+    today = date(2026, 5, 18)
+    assert quota._week_start(today) == quota._window_start(today)
 
 
 # ── LIMITS por tier ──────────────────────────────────────────────────────────
@@ -117,53 +125,79 @@ def test_usage_empty_user_zero_count():
     conn = _make_db()
     u = quota.get_current_usage(conn, 3)
     assert u["tier"] == "free"
-    assert u["period"] == "week"
+    assert u["period"] == "rolling_7d"
     assert u["analyses_count"] == 0
     assert u["analyses_limit"] == 6
     assert u["analyses_remaining"] == 6
     # Hub Pro-only — Free user ve 0/0
     assert u["hub_queries_limit"] == 0
     assert u["hub_queries_remaining"] == 0
+    # Sin análisis en el window → resets_on null
+    assert u["resets_on"] is None
 
 
-def test_usage_sums_only_current_week():
-    """Análisis de la semana pasada NO cuentan para el cap actual."""
+def test_usage_excludes_analyses_older_than_7_days():
+    """Análisis de hace más de 7 días NO cuentan (cayeron del window)."""
     conn = _make_db()
-    today = date(2026, 5, 13)  # miércoles
-    last_week = today - timedelta(days=8)  # martes de la semana anterior
+    today = date(2026, 5, 13)
+    too_old = today - timedelta(days=8)   # 8 días atrás → fuera del window
+    within = today - timedelta(days=3)    # 3 días atrás → dentro del window
 
     with patch("ai.quota.date") as mock_date:
         mock_date.today.return_value = today
         mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
 
-        # 3 análisis la semana pasada
         conn.execute(
             "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, ?, ?)",
-            (2, last_week.isoformat(), 3),
+            (2, too_old.isoformat(), 3),
         )
-        # 2 análisis esta semana
         conn.execute(
             "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, ?, ?)",
-            (2, today.isoformat(), 2),
+            (2, within.isoformat(), 2),
         )
 
         u = quota.get_current_usage(conn, 2)
-        # Solo los 2 de esta semana cuentan
+        # Solo los 2 dentro del window cuentan
         assert u["analyses_count"] == 2
         assert u["analyses_remaining"] == 4
 
 
-def test_usage_sums_multiple_days_within_week():
+def test_usage_pablo_bug_sunday_analysis_counts_on_monday():
+    """Regression del bug Pablo: análisis del domingo SIGUEN contando el lunes.
+
+    Antes (ISO week): lunes resetea, count cae a 0. Sorpresa para el user.
+    Ahora (rolling 7d): el análisis del domingo está dentro del window."""
     conn = _make_db()
-    today = date(2026, 5, 13)  # miércoles
-    monday = today - timedelta(days=2)
-    tuesday = today - timedelta(days=1)
+    monday = date(2026, 5, 18)
+    sunday_prev = date(2026, 5, 17)
+
+    with patch("ai.quota.date") as mock_date:
+        mock_date.today.return_value = monday
+        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+
+        conn.execute(
+            "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, ?, ?)",
+            (2, sunday_prev.isoformat(), 1),
+        )
+
+        u = quota.get_current_usage(conn, 2)
+        assert u["analyses_count"] == 1, (
+            "El análisis del domingo previo DEBE contar el lunes (rolling window)"
+        )
+        assert u["analyses_remaining"] == 5
+
+
+def test_usage_sums_multiple_days_within_window():
+    conn = _make_db()
+    today = date(2026, 5, 13)
+    d1 = today - timedelta(days=2)
+    d2 = today - timedelta(days=1)
 
     with patch("ai.quota.date") as mock_date:
         mock_date.today.return_value = today
         mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
 
-        for d, n in [(monday, 2), (tuesday, 2), (today, 1)]:
+        for d, n in [(d1, 2), (d2, 2), (today, 1)]:
             conn.execute(
                 "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, ?, ?)",
                 (2, d.isoformat(), n),
@@ -181,24 +215,36 @@ def test_usage_admin_tier_uses_admin_limits():
     assert u["analyses_limit"] == 1000
 
 
-def test_usage_resets_on_next_monday():
-    """resets_on debe ser SIEMPRE un lunes — el inicio de la próxima semana."""
+def test_resets_on_is_oldest_analysis_plus_7_days():
+    """resets_on debe ser la fecha en que el análisis más antiguo se cae del window."""
     conn = _make_db()
-    # Probamos en distintos días de la semana
-    test_days = [
-        (date(2026, 5, 11), date(2026, 5, 18)),  # lunes → próximo lunes
-        (date(2026, 5, 13), date(2026, 5, 18)),  # miércoles → mismo próximo lunes
-        (date(2026, 5, 17), date(2026, 5, 18)),  # domingo → lunes siguiente
-        (date(2026, 5, 18), date(2026, 5, 25)),  # próximo lunes → el otro
-    ]
-    for today, expected_reset in test_days:
-        with patch("ai.quota.date") as mock_date:
-            mock_date.today.return_value = today
-            mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
-            u = quota.get_current_usage(conn, 2)
-            assert u["resets_on"] == expected_reset.isoformat(), (
-                f"Para today={today}, esperaba reset={expected_reset}, obtuve {u['resets_on']}"
-            )
+    today = date(2026, 5, 18)
+    oldest = date(2026, 5, 14)  # 4 días atrás, dentro del window
+
+    with patch("ai.quota.date") as mock_date:
+        mock_date.today.return_value = today
+        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+
+        # Análisis en el día más antiguo + uno más reciente
+        conn.execute(
+            "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, ?, ?)",
+            (2, oldest.isoformat(), 1),
+        )
+        conn.execute(
+            "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, ?, ?)",
+            (2, today.isoformat(), 1),
+        )
+
+        u = quota.get_current_usage(conn, 2)
+        # resets_on = oldest + 7 días
+        assert u["resets_on"] == (oldest + timedelta(days=7)).isoformat()
+
+
+def test_resets_on_none_when_no_analyses():
+    """Sin análisis en el window → resets_on null (no hay nada que resetear)."""
+    conn = _make_db()
+    u = quota.get_current_usage(conn, 2)
+    assert u["resets_on"] is None
 
 
 # ── can_analyze: enforcement del cap ─────────────────────────────────────────

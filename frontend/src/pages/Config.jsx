@@ -639,7 +639,7 @@ function PlanHeroFree({ usage }) {
         {/* Right: usage strip + CTA */}
         <div className="bg-bg-1 border border-line/60 rounded-sm p-4 flex flex-col">
           <div className="flex items-baseline justify-between mb-1">
-            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA esta semana</span>
+            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA últimos 7 días</span>
             <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
           </div>
           <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-2">
@@ -650,8 +650,11 @@ function PlanHeroFree({ usage }) {
           </div>
           <p className="text-[11px] text-ink-3 mb-4">
             {remaining > 0
-              ? `${remaining} análisis ${remaining === 1 ? 'restante' : 'restantes'} · se renueva el lunes`
-              : 'Llegaste al límite · se renueva el lunes'}
+              ? `${remaining} análisis ${remaining === 1 ? 'restante' : 'restantes'} · ventana móvil de 7 días`
+              : (usage?.resets_on
+                  ? `Próximo análisis disponible el ${usage.resets_on}`
+                  : 'Llegaste al límite · esperá 7 días desde tu análisis más viejo'
+                )}
           </p>
 
           {/* Pro pitch */}
@@ -739,14 +742,14 @@ function PlanHeroPro({ usage }) {
         </div>
         <div className="bg-bg-1 border border-line/60 rounded-sm p-4 flex flex-col">
           <div className="flex items-baseline justify-between mb-1">
-            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA esta semana</span>
+            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA últimos 7 días</span>
             <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
           </div>
           <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-2">
             <div className="h-full transition-all bg-data-violet" style={{ width: `${pct}%` }} />
           </div>
           <p className="text-[11px] text-ink-3">
-            Renueva el lunes · seguís dentro del plan
+            Ventana móvil de 7 días · seguís dentro del plan
           </p>
         </div>
       </div>
