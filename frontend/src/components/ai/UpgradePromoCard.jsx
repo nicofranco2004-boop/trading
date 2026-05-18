@@ -15,7 +15,7 @@ const DEFAULT_BENEFITS = [
   '10× más análisis IA (60/sem vs 6/sem)',
   'Respuestas con causalidad y comparaciones, no solo descripción',
   'Follow-ups: profundizá cualquier análisis con preguntas libres',
-  'AI Hub: exploración libre sobre tu portfolio (exclusivo Pro)',
+  'AI Hub: exploración libre sobre tu portfolio (próximamente)',
 ]
 
 function fmtReset(iso) {

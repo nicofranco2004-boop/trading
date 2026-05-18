@@ -5235,7 +5235,7 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
                         "10× más análisis IA (60/sem vs 6/sem)",
                         "Respuestas con causalidad y comparaciones",
                         "Follow-ups: profundizá con preguntas libres",
-                        "AI Hub: exploración libre sobre tu portfolio",
+                        "AI Hub: exploración libre sobre tu portfolio (próximamente)",
                     ],
                 },
             })
@@ -5281,7 +5281,7 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
                         "10× más análisis IA (60/sem vs 6/sem)",
                         "Respuestas con causalidad y comparaciones",
                         "Follow-ups: profundizá con preguntas libres",
-                        "AI Hub: exploración libre sobre tu portfolio",
+                        "AI Hub: exploración libre sobre tu portfolio (próximamente)",
                     ],
                 },
             })

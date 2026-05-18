@@ -547,10 +547,10 @@ export default function Config() {
 // Pro, sutil para Free (que SIGUE el highlight es el botón de upgrade).
 
 const PRO_FEATURES = [
-  { label: '60 análisis IA por semana', value: 'pro_only', sub: '10× más que Free (6/sem)' },
-  { label: 'Respuestas con causalidad y comparaciones', value: 'pro_only', sub: 'Free: solo descripción' },
-  { label: 'Follow-ups: profundizá con preguntas libres', value: 'pro_only', sub: 'No disponible en Free' },
-  { label: 'AI Hub: exploración libre sobre tu portfolio', value: 'pro_only', sub: 'Exclusivo Pro' },
+  { label: '60 análisis IA por semana', sub: '10× más que Free (6/sem)' },
+  { label: 'Respuestas con causalidad y comparaciones', sub: 'Free: solo descripción' },
+  { label: 'Follow-ups: profundizá con preguntas libres', sub: 'No disponible en Free' },
+  { label: 'AI Hub: exploración libre sobre tu portfolio', sub: 'Exclusivo Pro', comingSoon: true },
 ]
 
 const FREE_FEATURES = [
@@ -630,7 +630,14 @@ function PlanHeroFree({ usage }) {
                 <li key={i} className="flex items-start gap-2 text-[11px] text-ink-2">
                   <Sparkles size={10} strokeWidth={2} className="text-data-violet mt-0.5 flex-shrink-0" />
                   <div className="leading-snug">
-                    <div>{f.label}</div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span>{f.label}</span>
+                      {f.comingSoon && (
+                        <span className="font-mono text-[9px] uppercase tracking-caps px-1 py-px rounded-sm bg-data-amber/15 text-data-amber">
+                          Próximamente
+                        </span>
+                      )}
+                    </div>
                     {f.sub && <div className="text-[10px] text-ink-3">{f.sub}</div>}
                   </div>
                 </li>
@@ -682,8 +689,18 @@ function PlanHeroPro({ usage }) {
           <div className="space-y-1.5">
             {PRO_FEATURES.map((f, i) => (
               <div key={i} className="flex items-start gap-2 text-xs text-ink-1">
-                <Check size={11} strokeWidth={2} className="text-data-violet mt-0.5 flex-shrink-0" />
-                <span className="leading-snug">{f.label}</span>
+                {f.comingSoon
+                  ? <Sparkles size={11} strokeWidth={2} className="text-data-amber mt-0.5 flex-shrink-0" />
+                  : <Check size={11} strokeWidth={2} className="text-data-violet mt-0.5 flex-shrink-0" />
+                }
+                <span className="leading-snug flex items-center gap-1.5 flex-wrap">
+                  <span className={f.comingSoon ? 'text-ink-2' : ''}>{f.label}</span>
+                  {f.comingSoon && (
+                    <span className="font-mono text-[9px] uppercase tracking-caps px-1 py-px rounded-sm bg-data-amber/15 text-data-amber">
+                      Próximamente
+                    </span>
+                  )}
+                </span>
               </div>
             ))}
           </div>
