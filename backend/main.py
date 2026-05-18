@@ -5211,6 +5211,30 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
         # Resolver tier del user al inicio — afecta cache key, prompt y mensaje 429.
         tier = quota.get_tier(conn, uid)
 
+        # Follow-ups son exclusivos Pro — el diferencial real del paywall.
+        # Free tier que intenta follow-up recibe 403 con upgrade payload
+        # (el frontend lo surface via UpgradePromoCard).
+        if followup_question and tier == "free":
+            raise HTTPException(403, {
+                "error": (
+                    "Los follow-ups son exclusivos de Rendi Pro. "
+                    "Profundizá cualquier análisis con preguntas libres."
+                ),
+                "usage": quota.get_current_usage(conn, uid),
+                "upgrade": {
+                    "available": True,
+                    "current_tier": tier,
+                    "target_tier": "pro",
+                    "feature": "follow_ups",
+                    "benefits": [
+                        "10× más análisis IA (60/sem vs 6/sem)",
+                        "Respuestas con causalidad y comparaciones",
+                        "Follow-ups: profundizá con preguntas libres",
+                        "AI Hub: exploración libre sobre tu portfolio",
+                    ],
+                },
+            })
+
         # Build packet PRIMERO (es barato y determinístico) para ver si hay
         # cache hit antes de tocar el cupo.
         try:
@@ -5238,8 +5262,8 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
             raise HTTPException(429, {
                 "error": (
                     "Llegaste al límite semanal de análisis del plan Free "
-                    "(10/sem). Tu cuota se renueva el lunes próximo. Para "
-                    "uso ilimitado con respuestas más profundas, pasate a "
+                    "(6/sem). Tu cuota se renueva el lunes próximo. Para "
+                    "10× más análisis con respuestas profundas, pasate a "
                     "Rendi Pro."
                 ),
                 "usage": usage_now,
@@ -5249,9 +5273,10 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
                     "target_tier": "pro",
                     "resets_on": usage_now.get("resets_on"),
                     "benefits": [
-                        "Análisis ilimitados",
-                        "Respuestas profundas con causalidad y comparaciones",
-                        "Un insight memorable por análisis",
+                        "10× más análisis IA (60/sem vs 6/sem)",
+                        "Respuestas con causalidad y comparaciones",
+                        "Follow-ups: profundizá con preguntas libres",
+                        "AI Hub: exploración libre sobre tu portfolio",
                     ],
                 },
             })
@@ -5317,8 +5342,8 @@ def ai_topics():
 @app.get("/api/ai/usage")
 def ai_usage(uid: int = Depends(get_current_user)):
     """Usage de la SEMANA en curso (ISO week, lunes-domingo) — el frontend
-    lo usa para mostrar 'X/10 esta semana' en Free, 'Admin · sin tope' para
-    admin, etc."""
+    lo usa para mostrar 'X/6 esta semana' en Free, 'X/60' en Pro, 'Admin ·
+    sin tope' para admin, etc."""
     from ai import quota
     conn = get_db()
     try:

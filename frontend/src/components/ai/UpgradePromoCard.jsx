@@ -12,9 +12,10 @@ import { Sparkles, Calendar, Check } from 'lucide-react'
 import { track } from '../../utils/track'
 
 const DEFAULT_BENEFITS = [
-  'Análisis ilimitados',
-  'Respuestas profundas con causalidad y comparaciones',
-  'Un insight memorable por análisis',
+  '10× más análisis IA (60/sem vs 6/sem)',
+  'Respuestas con causalidad y comparaciones, no solo descripción',
+  'Follow-ups: profundizá cualquier análisis con preguntas libres',
+  'AI Hub: exploración libre sobre tu portfolio (exclusivo Pro)',
 ]
 
 function fmtReset(iso) {

@@ -1,29 +1,38 @@
 """quota — tiers + límites SEMANALES + helpers de upgrade.
 ═══════════════════════════════════════════════════════════════════════════
-Estrategia de monetización dual:
+Estrategia de monetización dual (paywall agresivo para sostener Free a escala):
 
-  Free:
-    - 10 análisis contextuales por SEMANA (ISO week, lunes-domingo).
-    - 5 queries del AI Hub por semana.
+  Free (gratis, "tasting menu"):
+    - 6 análisis contextuales por SEMANA (ISO week, lunes-domingo).
+    - 0 queries del AI Hub (Hub es feature exclusiva Pro).
+    - 0 follow-ups (también exclusivo Pro).
     - Modelo: claude-haiku-4-5.
     - System prompt: SIMPLE / DESCRIPTIVO (resume métricas sin profundizar).
 
-  Pro:
-    - 200 análisis por semana (cap suave de seguridad — efectivo ilimitado).
-    - 200 queries del AI Hub.
+  Pro ($7 USD/mes — sustentable a 3k+ usuarios):
+    - 60 análisis por semana (10× más que Free).
+    - 60 queries del AI Hub por semana.
+    - 1 follow-up por análisis (preguntas libres de profundización).
     - Modelo: claude-haiku-4-5 (mismo motor que Free).
     - System prompt: PREMIUM / RESEARCH NOTE (interpretación, causalidad,
       comparación, insights memorables).
-    El diferencial es CANTIDAD + CALIDAD de respuesta, no costo del modelo.
+    El diferencial es CANTIDAD (10×) + CALIDAD (causalidad vs descripción)
+    + FEATURES (Hub, follow-ups), no costo del modelo.
 
   Admin (dogfood, no se vende):
     - 1000/semana (cap absurdamente alto para uso interno).
     - System prompt: PREMIUM.
 
+Economía a 3000 Free users (worst case sin cache):
+    3000 × 6 análisis/sem × 4.33 sem/mes × $0.007/call ≈ $540/mes
+  vs ingresos Pro a 5% conversión:
+    150 Pro × ($7 − $2 costo Pro real) = $750/mes
+  Net: +$210/mes ✓ (más margen con cache hits y conversión 7%+).
+
 Cap semanal vs diario:
-  El cap diario (5/día) penaliza al usuario que entra fines de semana o
-  bursts de un día. El cap semanal (10/sem ISO) le da flexibilidad para
-  usar 4 un día y 1 otro, total 5 — sin frustrar.
+  El cap diario penaliza al usuario que entra fines de semana o bursts.
+  El cap semanal le da flexibilidad para usar 3 un día y 1 otro — sin
+  frustrar.
 
 Reset:
   ISO week — empieza lunes a las 00:00 timezone local. La columna
@@ -41,18 +50,25 @@ from datetime import date, timedelta
 
 Tier = Literal["free", "pro", "admin"]
 
-# Cap semanal. Cambiar acá afecta UI, mensaje 429, demo mock.
-# Cálculo costo Pro a $7 USD/mes con 60/sem + 1 follow-up por análisis:
-#   60 × 4.33 sem × 2 calls (análisis + follow-up) ≈ 520 LLM calls/mes worst case.
-#   520 × $0.007 ≈ $3.64/mes → margen 48% a $7. En la práctica con cache hits
-#   de 24h el costo real está ~40-50% por debajo (= $1.80-$2.20/mes real).
+# Cap semanal. Cambiar acá afecta UI, mensaje 429, demo mock, tests.
+#
+# Cálculo costo Free a 3000 users (worst case sin cache):
+#   3000 × 6/sem × 4.33 sem × $0.007 ≈ $545/mes.
+# Free no tiene acceso a Hub ni follow-ups — el contador hub_queries_per_week=0
+# es un gate explícito que el endpoint del Hub leerá para responder 403.
+#
+# Cálculo costo Pro a $7 USD/mes con 60 análisis/sem + 1 follow-up + 60 hub:
+#   60 análisis × 2 (con follow-up) + 60 hub = 180 calls/sem worst case.
+#   180 × 4.33 sem × $0.007 ≈ $5.46/mes worst case → margen 22%.
+#   En la práctica con cache hits de 24h y uso real (~40% de la cuota):
+#   ≈ $1.80-$2.50/mes → margen 65-75%.
 LIMITS = {
     "free": {
-        "analyses_per_week": 10,
-        "hub_queries_per_week": 5,
+        "analyses_per_week": 6,
+        "hub_queries_per_week": 0,     # Hub es Pro-only — gate en endpoint
     },
     "pro": {
-        "analyses_per_week": 60,
+        "analyses_per_week": 60,        # 10× Free
         "hub_queries_per_week": 60,
     },
     "admin": {

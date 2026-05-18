@@ -90,17 +90,21 @@ def test_week_start_when_today_is_sunday():
 
 # ── LIMITS por tier ──────────────────────────────────────────────────────────
 
-def test_limits_free_is_10_per_week():
-    assert quota.LIMITS["free"]["analyses_per_week"] == 10
+def test_limits_free_is_6_per_week():
+    # Free: 6 análisis/sem (tasting menu, paywall agresivo a 3k+ users).
+    assert quota.LIMITS["free"]["analyses_per_week"] == 6
 
 
-def test_limits_pro_high_cap():
-    # Cap Pro: 60/sem (a $7 USD/mes con 1 follow-up worst = $3.64/mes,
-    # margen 48%). El test verifica que sea claramente mayor al Free
-    # para preservar el diferencial.
+def test_limits_free_has_no_hub_access():
+    # Hub es Pro-only — el contador queda en 0 como gate explícito.
+    assert quota.LIMITS["free"]["hub_queries_per_week"] == 0
+
+
+def test_limits_pro_is_10x_free():
+    # Cap Pro: 60/sem = exactamente 10× Free, claim de marketing literal.
     pro = quota.LIMITS["pro"]["analyses_per_week"]
     free = quota.LIMITS["free"]["analyses_per_week"]
-    assert pro >= free * 4, f"Pro ({pro}) debe ser >= 4x Free ({free}) para diferencial real"
+    assert pro == free * 10, f"Pro ({pro}) debe ser exactamente 10× Free ({free})"
 
 
 def test_limits_admin_unlimited():
@@ -115,8 +119,11 @@ def test_usage_empty_user_zero_count():
     assert u["tier"] == "free"
     assert u["period"] == "week"
     assert u["analyses_count"] == 0
-    assert u["analyses_limit"] == 10
-    assert u["analyses_remaining"] == 10
+    assert u["analyses_limit"] == 6
+    assert u["analyses_remaining"] == 6
+    # Hub Pro-only — Free user ve 0/0
+    assert u["hub_queries_limit"] == 0
+    assert u["hub_queries_remaining"] == 0
 
 
 def test_usage_sums_only_current_week():
@@ -143,7 +150,7 @@ def test_usage_sums_only_current_week():
         u = quota.get_current_usage(conn, 2)
         # Solo los 2 de esta semana cuentan
         assert u["analyses_count"] == 2
-        assert u["analyses_remaining"] == 8
+        assert u["analyses_remaining"] == 4
 
 
 def test_usage_sums_multiple_days_within_week():
@@ -156,15 +163,15 @@ def test_usage_sums_multiple_days_within_week():
         mock_date.today.return_value = today
         mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
 
-        for d, n in [(monday, 2), (tuesday, 3), (today, 1)]:
+        for d, n in [(monday, 2), (tuesday, 2), (today, 1)]:
             conn.execute(
                 "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, ?, ?)",
                 (2, d.isoformat(), n),
             )
 
         u = quota.get_current_usage(conn, 2)
-        assert u["analyses_count"] == 6
-        assert u["analyses_remaining"] == 4
+        assert u["analyses_count"] == 5
+        assert u["analyses_remaining"] == 1
 
 
 def test_usage_admin_tier_uses_admin_limits():
@@ -200,11 +207,11 @@ def test_can_analyze_free_under_cap():
     conn = _make_db()
     allowed, usage = quota.can_analyze(conn, 2)
     assert allowed is True
-    assert usage["analyses_remaining"] == 10
+    assert usage["analyses_remaining"] == 6
 
 
 def test_can_analyze_free_at_cap_blocks():
-    """Cuando un Free user alcanza 10/10, can_analyze debe devolver False."""
+    """Cuando un Free user alcanza 6/6, can_analyze debe devolver False."""
     conn = _make_db()
     today = date(2026, 5, 13)
 
@@ -212,15 +219,24 @@ def test_can_analyze_free_at_cap_blocks():
         mock_date.today.return_value = today
         mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
 
-        # 10 análisis ya consumidos esta semana
+        # 6 análisis ya consumidos esta semana
         conn.execute(
             "INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?, ?, ?)",
-            (2, today.isoformat(), 10),
+            (2, today.isoformat(), 6),
         )
         allowed, usage = quota.can_analyze(conn, 2)
         assert allowed is False
         assert usage["analyses_remaining"] == 0
         assert usage["tier"] == "free"
+
+
+def test_can_hub_query_free_always_blocked():
+    """Free tier no tiene acceso al Hub — siempre False, sin importar count."""
+    conn = _make_db()
+    allowed, usage = quota.can_hub_query(conn, 2)
+    assert allowed is False
+    assert usage["hub_queries_limit"] == 0
+    assert usage["hub_queries_remaining"] == 0
 
 
 def test_can_analyze_admin_at_high_count_still_allowed():
