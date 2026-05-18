@@ -17,11 +17,16 @@
 // (telemetría para Fase 3 — entender qué features generan más conversiones).
 
 import { Lock, Sparkles, ArrowRight } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { track } from '../../utils/track'
 
-function _onCtaClick(feature, source) {
-  track('feature_blocked_clicked', { feature, source: source || 'unknown' })
-  // TODO: cuando exista checkout, redirigir.
+// Hook helper para que cada variante use navigate sin duplicar boilerplate.
+function useGoToPlanes() {
+  const navigate = useNavigate()
+  return (feature, source) => {
+    track('feature_blocked_clicked', { feature, source: source || 'unknown' })
+    navigate('/planes')
+  }
 }
 
 // ── Variante A: Placeholder full-card ────────────────────────────────────────
@@ -35,6 +40,7 @@ function Placeholder({
   icon: Icon = Sparkles,
   className = '',
 }) {
+  const go = useGoToPlanes()
   return (
     <div
       className={`relative border border-data-violet/30 bg-data-violet/[0.04] rounded p-6 text-center ${className}`}
@@ -48,7 +54,7 @@ function Placeholder({
       </p>
       <button
         type="button"
-        onClick={() => _onCtaClick(feature, source)}
+        onClick={() => go(feature, source)}
         className="inline-flex items-center gap-1.5 text-sm font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm px-4 py-2 transition-colors"
       >
         <Sparkles size={13} strokeWidth={1.75} />
@@ -70,6 +76,7 @@ function BlurredList({
   children,
   className = '',
 }) {
+  const go = useGoToPlanes()
   return (
     <div className={`relative ${className}`}>
       {children && (
@@ -96,11 +103,11 @@ function BlurredList({
         </p>
         <button
           type="button"
-          onClick={() => _onCtaClick(feature, source)}
+          onClick={() => go(feature, source)}
           className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm px-3 py-1.5 transition-colors"
         >
           <Sparkles size={11} strokeWidth={1.75} />
-          Conocer Rendi Pro
+          Ver planes
         </button>
       </div>
     </div>
@@ -117,10 +124,11 @@ function Card({
   source,
   className = '',
 }) {
+  const go = useGoToPlanes()
   return (
     <button
       type="button"
-      onClick={() => _onCtaClick(feature, source)}
+      onClick={() => go(feature, source)}
       className={`relative w-full text-left border border-data-violet/25 bg-data-violet/[0.03] hover:bg-data-violet/[0.06] hover:border-data-violet/40 rounded p-4 transition-colors group ${className}`}
     >
       <div className="flex items-start gap-3">

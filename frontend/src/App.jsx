@@ -25,6 +25,7 @@ import FirstInsight from './pages/FirstInsight'
 import Behavioral from './pages/Behavioral'
 import Wrapped from './pages/Wrapped'
 import More from './pages/More'
+import Planes from './pages/Planes'
 import MobileSearch from './pages/MobileSearch'
 import PositionDetailMobile from './pages/PositionDetailMobile'
 
@@ -66,6 +67,7 @@ function AppRoutes() {
       <Route path="/imports" element={<Imports />} />
       <Route path="/bienvenida" element={<FirstInsight />} />
       <Route path="/admin" element={<Admin />} />
+      <Route path="/planes" element={<Planes />} />
       {/* Mobile-only: "Más" drawer page + buscador full-screen + detail */}
       <Route path="/mas" element={<More />} />
       <Route path="/buscar" element={<MobileSearch />} />

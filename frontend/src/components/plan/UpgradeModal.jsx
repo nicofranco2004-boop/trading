@@ -5,6 +5,7 @@
 // CTA + beneficios.
 
 import { Sparkles, Check, X } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { track } from '../../utils/track'
 
 const DEFAULT_BENEFITS = [
@@ -23,10 +24,12 @@ export default function UpgradeModal({
   onClose,
 }) {
   const items = (benefits && benefits.length > 0) ? benefits : DEFAULT_BENEFITS
+  const navigate = useNavigate()
 
   function onUpgradeClick() {
     track('upgrade_modal_cta_clicked', { feature, source })
-    // TODO: cuando exista checkout, redirigir.
+    onClose?.()
+    navigate('/planes')
   }
 
   return (
@@ -74,7 +77,7 @@ export default function UpgradeModal({
           className="w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm py-2.5 transition-colors"
         >
           <Sparkles size={13} strokeWidth={1.75} />
-          Conocer Rendi Pro
+          Ver planes y mejorar
         </button>
         <p className="mt-2 text-[10px] text-ink-3 text-center">
           Pro está en desarrollo — te avisamos cuando esté listo.

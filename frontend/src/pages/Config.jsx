@@ -19,6 +19,7 @@ import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
 import UpgradeModal from '../components/plan/UpgradeModal'
 import { usePlanFeatures, refreshPlanFeatures } from '../hooks/usePlanFeatures'
+import { PRO_PRICE_USD } from './Planes'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -578,32 +579,16 @@ export default function Config() {
 // + comparativa Free vs Pro + CTA upgrade (solo en Free). Tono violet para
 // Pro, sutil para Free (que SIGUE el highlight es el botón de upgrade).
 
-const PRO_FEATURES = [
-  { label: '60 análisis IA por semana', sub: '10× más que Free (6/sem)' },
-  { label: 'Respuestas con causalidad y comparaciones', sub: 'Free: solo descripción' },
-  { label: 'Follow-ups: profundizá con preguntas libres', sub: 'No disponible en Free' },
-  { label: 'Brokers ilimitados', sub: 'Free: 1 broker máximo' },
-  { label: 'Reportes históricos + Distribución por activo', sub: 'Vista mes a mes + concentración por instrumento' },
-  { label: 'Comportamiento completo (todas las tags)', sub: 'Free: 1 sample' },
-  { label: 'Export CSV para tu contador', sub: 'Operaciones, posiciones y resumen mensual' },
-  { label: 'AI Hub: exploración libre sobre tu portfolio', sub: 'Exclusivo Pro', comingSoon: true },
-  { label: 'Tax helper AFIP (ganancias/pérdidas)', sub: 'Cálculo FIFO + reporte para contador', comingSoon: true },
-]
-
-const FREE_FEATURES = [
-  { label: '6 análisis IA por semana', value: 'free' },
-  { label: 'Respuestas descriptivas', value: 'free' },
-  { label: 'Dashboard, Insights, Reportes', value: 'free' },
-  { label: 'Todas las pantallas de data y posiciones', value: 'free' },
-]
-
 function PlanHero({ tier, usage }) {
   if (tier === 'admin') return <PlanHeroAdmin usage={usage} />
   if (tier === 'pro') return <PlanHeroPro usage={usage} />
   return <PlanHeroFree usage={usage} />
 }
 
+// PlanHero compacto para Free — KPIs de uso + CTA "Mejorar plan" prominente.
+// La comparativa completa de features vive en /planes (página dedicada).
 function PlanHeroFree({ usage }) {
+  const navigate = useNavigate()
   const count = usage?.analyses_count ?? 0
   const limit = usage?.analyses_limit ?? 6
   const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
@@ -611,166 +596,129 @@ function PlanHeroFree({ usage }) {
 
   function onUpgradeClick() {
     track('plan_hero_upgrade_clicked', { source: 'config' })
-    // TODO: cuando exista checkout, redirigir.
+    navigate('/planes')
   }
 
   return (
-    <section className="mb-6 border border-data-violet/30 bg-data-violet/[0.04] rounded p-5">
-      <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-5">
-        {/* Left: tier actual + headline + features Free */}
-        <div>
-          <div className="flex items-center gap-2 mb-2">
+    <section className="mb-6 border border-data-violet/30 bg-data-violet/[0.04] rounded-lg overflow-hidden">
+      <div className="p-5 flex items-center gap-5 flex-wrap">
+        {/* Left: tier badge + headline */}
+        <div className="flex-1 min-w-[240px]">
+          <div className="flex items-center gap-2 mb-1.5">
             <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-bg-2 text-ink-2">
               FREE
             </span>
           </div>
-          <h2 className="text-lg font-semibold text-ink-0 leading-snug mb-1">
-            Estás en el plan gratuito de Rendi
+          <h2 className="text-base font-semibold text-ink-0 leading-snug">
+            Mejorá a Pro y desbloqueá todo
           </h2>
-          <p className="text-sm text-ink-2 leading-relaxed mb-3">
-            Acceso completo a tu portfolio, brokers, monthly tracking, posiciones, drawdowns e Insights. Con la IA en modo descriptivo (resumen breve).
+          <p className="text-xs text-ink-2 mt-1">
+            10× más análisis IA, brokers ilimitados, follow-ups y mucho más.
           </p>
-          <div className="space-y-1.5">
-            {FREE_FEATURES.map((f, i) => (
-              <div key={i} className="flex items-start gap-2 text-xs text-ink-1">
-                <Check size={11} strokeWidth={2} className="text-ink-3 mt-0.5 flex-shrink-0" />
-                <span className="leading-snug">{f.label}</span>
-              </div>
-            ))}
-          </div>
         </div>
 
-        {/* Right: usage strip + CTA */}
-        <div className="bg-bg-1 border border-line/60 rounded-sm p-4 flex flex-col">
-          <div className="flex items-baseline justify-between mb-1">
-            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA últimos 7 días</span>
+        {/* Middle: usage strip compacto */}
+        <div className="min-w-[180px]">
+          <div className="flex items-baseline justify-between gap-3 mb-1">
+            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA</span>
             <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
           </div>
-          <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-2">
+          <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
             <div
               className={`h-full transition-all ${pct >= 100 ? 'bg-rendi-neg' : pct >= 80 ? 'bg-data-amber' : 'bg-data-violet'}`}
               style={{ width: `${pct}%` }}
             />
           </div>
-          <p className="text-[11px] text-ink-3 mb-4">
+          <p className="text-[10px] text-ink-3 leading-tight">
             {remaining > 0
-              ? `${remaining} análisis ${remaining === 1 ? 'restante' : 'restantes'} · ventana móvil de 7 días`
-              : (usage?.resets_on
-                  ? `Próximo análisis disponible el ${usage.resets_on}`
-                  : 'Llegaste al límite · esperá 7 días desde tu análisis más viejo'
-                )}
-          </p>
-
-          {/* Pro pitch */}
-          <div className="pt-3 border-t border-line/40 space-y-2 flex-1">
-            <p className="text-xs text-ink-1 font-medium">Pasate a <span className="text-data-violet">Rendi Pro</span></p>
-            <ul className="space-y-1.5">
-              {PRO_FEATURES.map((f, i) => (
-                <li key={i} className="flex items-start gap-2 text-[11px] text-ink-2">
-                  <Sparkles size={10} strokeWidth={2} className="text-data-violet mt-0.5 flex-shrink-0" />
-                  <div className="leading-snug">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span>{f.label}</span>
-                      {f.comingSoon && (
-                        <span className="font-mono text-[9px] uppercase tracking-caps px-1 py-px rounded-sm bg-data-amber/15 text-data-amber">
-                          Próximamente
-                        </span>
-                      )}
-                    </div>
-                    {f.sub && <div className="text-[10px] text-ink-3">{f.sub}</div>}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <button
-            type="button"
-            onClick={onUpgradeClick}
-            className="mt-4 w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm py-2.5 transition-colors"
-          >
-            <Sparkles size={13} strokeWidth={1.75} />
-            Conocer Rendi Pro
-          </button>
-          <p className="mt-1.5 text-[10px] text-ink-3 text-center">
-            Pro está en desarrollo — te avisamos cuando esté listo.
+              ? `${remaining} ${remaining === 1 ? 'restante' : 'restantes'} (7 días)`
+              : 'Llegaste al límite'}
           </p>
         </div>
+
+        {/* Right: CTA prominente */}
+        <button
+          type="button"
+          onClick={onUpgradeClick}
+          className="inline-flex items-center gap-2 text-sm font-medium bg-data-violet hover:bg-data-violet/90 text-white border border-data-violet rounded-sm px-5 py-3 transition-colors shadow-md shadow-data-violet/20"
+        >
+          <Sparkles size={14} strokeWidth={1.75} />
+          Mejorar plan · USD {PRO_PRICE_USD}/mes
+        </button>
       </div>
     </section>
   )
 }
 
+// PlanHero compacto Pro — info del plan activo + link a /planes para ver detalles.
 function PlanHeroPro({ usage }) {
+  const navigate = useNavigate()
   const count = usage?.analyses_count ?? 0
   const limit = usage?.analyses_limit ?? 60
   const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
 
   return (
-    <section className="mb-6 border border-data-violet/40 bg-data-violet/[0.06] rounded p-5">
-      <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-5">
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-data-violet/15 text-data-violet">
-              PRO
-            </span>
-            <span className="inline-flex items-center gap-1 text-[10px] text-rendi-pos font-mono uppercase tracking-caps">
-              <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" /> Activo
-            </span>
-          </div>
-          <h2 className="text-lg font-semibold text-ink-0 leading-snug mb-1">
-            Tenés acceso completo a Rendi Pro
-          </h2>
-          <p className="text-sm text-ink-2 leading-relaxed mb-3">
-            Análisis profundos, follow-ups, AI Hub y 10× más uso que Free. Gracias por bancar el producto.
-          </p>
-          <div className="space-y-1.5">
-            {PRO_FEATURES.map((f, i) => (
-              <div key={i} className="flex items-start gap-2 text-xs text-ink-1">
-                {f.comingSoon
-                  ? <Sparkles size={11} strokeWidth={2} className="text-data-amber mt-0.5 flex-shrink-0" />
-                  : <Check size={11} strokeWidth={2} className="text-data-violet mt-0.5 flex-shrink-0" />
-                }
-                <span className="leading-snug flex items-center gap-1.5 flex-wrap">
-                  <span className={f.comingSoon ? 'text-ink-2' : ''}>{f.label}</span>
-                  {f.comingSoon && (
-                    <span className="font-mono text-[9px] uppercase tracking-caps px-1 py-px rounded-sm bg-data-amber/15 text-data-amber">
-                      Próximamente
-                    </span>
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
+    <section className="mb-6 border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 flex items-center gap-5 flex-wrap">
+      <div className="flex-1 min-w-[240px]">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-data-violet/15 text-data-violet">
+            PRO
+          </span>
+          <span className="inline-flex items-center gap-1 text-[10px] text-rendi-pos font-mono uppercase tracking-caps">
+            <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" /> Activo
+          </span>
         </div>
-        <div className="bg-bg-1 border border-line/60 rounded-sm p-4 flex flex-col">
-          <div className="flex items-baseline justify-between mb-1">
-            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA últimos 7 días</span>
-            <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
-          </div>
-          <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-2">
-            <div className="h-full transition-all bg-data-violet" style={{ width: `${pct}%` }} />
-          </div>
-          <p className="text-[11px] text-ink-3">
-            Ventana móvil de 7 días · seguís dentro del plan
-          </p>
-        </div>
+        <h2 className="text-base font-semibold text-ink-0 leading-snug">
+          Rendi Pro está activo
+        </h2>
+        <p className="text-xs text-ink-2 mt-1">
+          Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más.
+        </p>
       </div>
+
+      <div className="min-w-[180px]">
+        <div className="flex items-baseline justify-between gap-3 mb-1">
+          <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA</span>
+          <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
+        </div>
+        <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
+          <div className="h-full transition-all bg-data-violet" style={{ width: `${pct}%` }} />
+        </div>
+        <p className="text-[10px] text-ink-3 leading-tight">
+          Ventana móvil 7 días
+        </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => navigate('/planes')}
+        className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
+      >
+        Ver detalles del plan
+      </button>
     </section>
   )
 }
 
 function PlanHeroAdmin({ usage }) {
+  const navigate = useNavigate()
   const count = usage?.analyses_count ?? 0
   return (
-    <section className="mb-6 border border-rendi-pos/30 bg-rendi-pos/[0.04] rounded px-5 py-3.5 flex items-center gap-3 flex-wrap">
+    <section className="mb-6 border border-rendi-pos/30 bg-rendi-pos/[0.04] rounded-lg px-5 py-3.5 flex items-center gap-3 flex-wrap">
       <Zap size={14} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0" />
       <span className="font-mono text-[10px] uppercase tracking-caps text-rendi-pos">Plan ADMIN</span>
       <span className="text-sm text-ink-1 flex-1 min-w-[200px]">
-        Acceso interno sin tope. {count > 0 ? `Usaste ${count} análisis IA esta semana.` : 'Sin uso de IA esta semana.'}
+        Acceso interno sin tope. {count > 0 ? `Usaste ${count} análisis IA en los últimos 7 días.` : 'Sin uso de IA reciente.'}
       </span>
+      <button
+        type="button"
+        onClick={() => navigate('/planes')}
+        className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 transition-colors"
+      >
+        Ver planes →
+      </button>
     </section>
   )
 }
