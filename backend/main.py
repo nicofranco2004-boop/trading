@@ -6128,6 +6128,62 @@ def billing_cancel(uid: int = Depends(get_current_user)):
         conn.close()
 
 
+@app.post("/api/billing/sync")
+def billing_sync(uid: int = Depends(get_current_user)):
+    """Pull-based confirmation: pregunta a MP el estado actual de la sub
+    del user y actualiza nuestra DB acordemente.
+
+    Útil principalmente para `/billing/success` tras el checkout: en lugar
+    de esperar al webhook server-to-server (que requiere URL pública), el
+    frontend llama a este endpoint y nosotros consultamos a MP directamente
+    desde el server. Si MP dice 'authorized' → activamos Pro al instante.
+
+    En producción seguimos teniendo el webhook como red de seguridad, pero
+    el sync acelera el feedback al user (no espera el round-trip MP→nuestro
+    server).
+    """
+    from billing import mercadopago
+    conn = get_db()
+    try:
+        sub = conn.execute(
+            """SELECT mp_subscription_id, status FROM subscriptions
+               WHERE user_id = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (uid,),
+        ).fetchone()
+        if not sub or not sub["mp_subscription_id"]:
+            return {"status": "no_subscription"}
+
+        # Reusamos la misma lógica del webhook — query MP + update nuestra DB
+        try:
+            _process_preapproval_event(conn, sub["mp_subscription_id"])
+        except Exception as ex:
+            log.error("Sync failed for uid=%s mp_id=%s: %s",
+                     uid, sub["mp_subscription_id"], ex)
+            raise HTTPException(502, f"Error consultando MP: {type(ex).__name__}")
+
+        # Releer estado tras update
+        updated = conn.execute(
+            """SELECT status, period, current_period_end, next_charge_date
+               FROM subscriptions WHERE mp_subscription_id = ?""",
+            (sub["mp_subscription_id"],),
+        ).fetchone()
+        user_row = conn.execute(
+            "SELECT tier FROM users WHERE id = ?", (uid,)
+        ).fetchone()
+
+        return {
+            "subscription_id": sub["mp_subscription_id"],
+            "status": updated["status"] if updated else "unknown",
+            "period": updated["period"] if updated else None,
+            "current_period_end": updated["current_period_end"] if updated else None,
+            "next_charge_date": updated["next_charge_date"] if updated else None,
+            "user_tier": user_row["tier"] if user_row else None,
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/billing/status")
 def billing_status(uid: int = Depends(get_current_user)):
     """Estado actual de la suscripción del user. Usado por /planes para

@@ -8,64 +8,133 @@
 // Después de 1-2 segundos refresheamos plan features (por si el webhook ya
 // pegó) y mostramos un mensaje claro con CTA para seguir.
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CheckCircle2, Clock, XCircle, ArrowRight, Sparkles } from 'lucide-react'
+import { CheckCircle2, Clock, XCircle, ArrowRight, Sparkles, Loader2 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { track } from '../utils/track'
+import { api } from '../utils/api'
+
+// Hook compartido: cada landing page llama a /billing/sync para que el
+// backend pregunte a MP el estado real, y devuelve { status, loading }.
+// Sin esto, la URL de retorno (success/pending/failure) podría mentir.
+function useBillingSync(intent) {
+  const [status, setStatus] = useState('checking')   // 'checking' | mp status
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    track('billing_return', { intent })
+    let cancelled = false
+    api.post('/billing/sync')
+      .then(res => {
+        if (cancelled) return
+        setStatus(res.status || 'unknown')
+        refreshPlanFeatures()
+      })
+      .catch(err => {
+        if (cancelled) return
+        console.error('Billing sync failed:', err)
+        setStatus('error')
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [intent])
+
+  return { status, loading }
+}
 
 export function BillingSuccess() {
   const navigate = useNavigate()
+  const { status, loading } = useBillingSync('success')
+  const isAuthorized = status === 'authorized'
+  const isStillPending = status === 'pending'
 
   useEffect(() => {
-    track('billing_return', { status: 'success' })
-    // El webhook ya debería haber seteado tier='pro' en backend.
-    // Forzamos refetch del plan features para que la UI se actualice.
-    refreshPlanFeatures()
-    // Auto-redirect a /dashboard tras 4 seg (UX común post-checkout)
-    const t = setTimeout(() => navigate('/dashboard'), 4000)
-    return () => clearTimeout(t)
-  }, [navigate])
+    if (isAuthorized) {
+      const t = setTimeout(() => navigate('/dashboard'), 4000)
+      return () => clearTimeout(t)
+    }
+  }, [isAuthorized, navigate])
 
+  if (loading) {
+    return (
+      <ReturnLayout
+        icon={<Loader2 size={56} className="text-data-violet animate-spin" strokeWidth={1.5} />}
+        tone="pending"
+        title="Confirmando tu pago…"
+        description="Estamos consultando a Mercado Pago el estado de tu suscripción. Tomará solo unos segundos."
+      />
+    )
+  }
+
+  // MP dice authorized → user es Pro real
+  if (isAuthorized) {
+    return (
+      <ReturnLayout
+        icon={<CheckCircle2 size={56} className="text-rendi-pos" strokeWidth={1.5} />}
+        tone="success"
+        title="¡Bienvenido a Rendi Pro!"
+        description="Tu suscripción está activa. Ya tenés acceso a todas las features Pro: 60 análisis IA por semana, follow-ups, brokers ilimitados, export CSV y todo lo demás."
+        cta="Ir al dashboard"
+        onCta={() => navigate('/dashboard')}
+        footer="Te vamos a redirigir automáticamente en unos segundos…"
+      />
+    )
+  }
+
+  // MP todavía no autorizó — pago pending (transferencia bancaria, etc.)
+  if (isStillPending) {
+    return (
+      <ReturnLayout
+        icon={<Clock size={56} className="text-data-amber" strokeWidth={1.5} />}
+        tone="pending"
+        title="Tu pago está en proceso"
+        description="Mercado Pago todavía está procesando el pago. Apenas se acredite, tu cuenta pasa a Pro automáticamente. Refrescá esta página en unos minutos."
+        cta="Ver mi cuenta"
+        onCta={() => navigate('/config')}
+      />
+    )
+  }
+
+  // Cancelled, rejected, error
   return (
     <ReturnLayout
-      icon={<CheckCircle2 size={56} className="text-rendi-pos" strokeWidth={1.5} />}
-      tone="success"
-      title="¡Bienvenido a Rendi Pro!"
-      description="Tu suscripción está activa. Ya tenés acceso a todas las features Pro: 60 análisis IA por semana, follow-ups, brokers ilimitados, export CSV y todo lo demás."
-      cta="Ir al dashboard"
-      onCta={() => navigate('/dashboard')}
-      footer="Te vamos a redirigir automáticamente en unos segundos…"
+      icon={<XCircle size={56} className="text-rendi-neg" strokeWidth={1.5} />}
+      tone="failure"
+      title="No se completó la suscripción"
+      description={`Estado actual: ${status}. Si pagaste y deberías estar Pro, esperá unos minutos y refrescá. Si el problema persiste, contactanos.`}
+      cta="Volver a /planes"
+      onCta={() => navigate('/planes')}
     />
   )
 }
 
 export function BillingPending() {
   const navigate = useNavigate()
-  useEffect(() => {
-    track('billing_return', { status: 'pending' })
-    refreshPlanFeatures()
-  }, [])
+  const { status, loading } = useBillingSync('pending')
   return (
     <ReturnLayout
-      icon={<Clock size={56} className="text-data-amber" strokeWidth={1.5} />}
+      icon={loading
+        ? <Loader2 size={56} className="text-data-amber animate-spin" strokeWidth={1.5} />
+        : <Clock size={56} className="text-data-amber" strokeWidth={1.5} />
+      }
       tone="pending"
       title="Tu pago está en proceso"
-      description="Mercado Pago todavía está procesando tu pago. Apenas se acredite, tu cuenta pasa a Pro automáticamente. Esto puede tardar de minutos a 1 día hábil según el medio de pago."
+      description={loading
+        ? "Consultando estado…"
+        : "Mercado Pago todavía está procesando tu pago. Apenas se acredite, tu cuenta pasa a Pro automáticamente. Esto puede tardar de minutos a 1 día hábil según el medio de pago."
+      }
       cta="Ver mi cuenta"
       onCta={() => navigate('/config')}
-      footer="Te vamos a avisar por email cuando se confirme."
+      footer={!loading && `Estado actual según MP: ${status}`}
     />
   )
 }
 
 export function BillingFailure() {
   const navigate = useNavigate()
-  useEffect(() => {
-    track('billing_return', { status: 'failure' })
-    refreshPlanFeatures()
-  }, [])
+  useBillingSync('failure')  // sync por las dudas, no usamos el resultado
   return (
     <ReturnLayout
       icon={<XCircle size={56} className="text-rendi-neg" strokeWidth={1.5} />}
