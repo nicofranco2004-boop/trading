@@ -8,9 +8,12 @@ Encapsula las llamadas al modelo. Convenciones:
     Calidad de Haiku alcanza para narrar packets pre-calculados; Sonnet
     solo para "análisis profundos" (Insights, Wrapped) en Pro tier.
 
-  • Prompt caching:
-      System prompt va con cache_control={"type": "ephemeral"}.
-      Mismo system + mismo packet en <5min → cache_read 90% más barato.
+  • Prompt caching (TTL 1h, beta extended-cache-ttl-2025-04-11):
+      System prompt va con cache_control={"type": "ephemeral", "ttl": "1h"}.
+      Mismo system prompt (mismo tier + screen) en <1h → cache_read 90%
+      más barato. El TTL 1h cuesta 2.0x el write pero, con >2 reads/hora,
+      gana sobre el TTL default 5min (que cuesta 1.25x). Para Rendi a
+      escala (107+ calls/hora a 3k Free users) el break-even es claro.
       CRÍTICO: el system prompt NUNCA debe tener timestamps / UUIDs /
       datos volátiles — eso invalida el cache silenciosamente. Para
       contexto dinámico, mandar en el user message.
@@ -65,10 +68,14 @@ class LLMResult:
 def _calc_cost_cents(model: str, input_t: int, output_t: int,
                      cache_create_t: int, cache_read_t: int) -> int:
     """Costo de un call en centavos enteros. Refleja prompt caching:
-        • input regular     → $X per 1M
-        • cache_creation    → $X * 1.25 per 1M
-        • cache_read        → $X * 0.10 per 1M
-        • output            → $Y per 1M
+        • input regular         → $X per 1M
+        • cache_creation (1h)   → $X * 2.0 per 1M   (TTL extendido)
+        • cache_read            → $X * 0.10 per 1M  (mismo para 5m/1h)
+        • output                → $Y per 1M
+
+    El multiplier 2.0 corresponde al TTL 1h. Si en algún punto usamos
+    TTL default (5m), sería 1.25. Asumimos 1h porque es el único modo
+    que activamos en analyze().
     """
     p = _PRICING_USD_PER_M.get(model)
     if not p:
@@ -77,7 +84,7 @@ def _calc_cost_cents(model: str, input_t: int, output_t: int,
     out_price = p["output"] / 1_000_000
     total_usd = (
         input_t * in_price
-        + cache_create_t * in_price * 1.25
+        + cache_create_t * in_price * 2.0
         + cache_read_t * in_price * 0.10
         + output_t * out_price
     )
@@ -199,18 +206,21 @@ def analyze(
         try:
             # client.messages.parse() valida automáticamente contra el
             # Pydantic model. Si el LLM no respeta el schema, levanta.
+            # TTL extendido 1h: cache_control.ttl="1h" + beta header.
+            # Trade-off: write paga 2.0x (vs 1.25x del default 5min) pero
+            # reads en la siguiente hora pagan 0.10x. A 100+ users/hora
+            # con mismo system prompt (mismo tier+screen) gana fácil.
             response = client.messages.parse(
                 model=model,
                 max_tokens=max_tokens,
-                # System con cache_control → primer call paga 1.25x, los
-                # siguientes (en 5min) pagan 0.10x. Crítico para escalar.
                 system=[{
                     "type": "text",
                     "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
                 }],
                 messages=[{"role": "user", "content": user_msg}],
                 output_format=output_model,
+                extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
             )
             output = response.parsed_output
             if output is None:

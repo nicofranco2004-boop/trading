@@ -163,6 +163,68 @@ def test_default_tier_is_pro():
     assert got == SAMPLE_RESULT_PRO
 
 
+# ── TTL tier-aware ───────────────────────────────────────────────────────────
+
+def test_ttl_for_tier_free_is_72h():
+    """Free tier tiene TTL extendido (72h) para reducir costos a escala."""
+    assert cache._ttl_for_tier("free") == 72 * 3600
+
+
+def test_ttl_for_tier_pro_is_24h():
+    assert cache._ttl_for_tier("pro") == 24 * 3600
+
+
+def test_ttl_for_tier_admin_is_24h():
+    """Admin usa el mismo TTL que Pro — dogfood real."""
+    assert cache._ttl_for_tier("admin") == 24 * 3600
+
+
+def test_ttl_for_tier_unknown_defaults_to_pro():
+    """Tier desconocido (typo o futuro) → fallback a Pro."""
+    assert cache._ttl_for_tier("enterprise") == cache._ttl_for_tier("pro")
+
+
+def test_set_cached_uses_tier_ttl_for_free():
+    """Cuando guardo con tier=free, expires_at debe ser ~72h en el futuro."""
+    from datetime import datetime, timedelta
+    conn = _make_db()
+    before = datetime.utcnow()
+    cache.set_cached(
+        conn, user_id=1, screen="dashboard", packet=SAMPLE_PACKET,
+        result=SAMPLE_RESULT_FREE,
+        model="claude-haiku-4-5", input_tokens=500, output_tokens=200,
+        tier="free",
+    )
+    row = conn.execute("SELECT expires_at FROM ai_analyses_cache").fetchone()
+    expires = datetime.fromisoformat(row["expires_at"])
+    delta = expires - before
+    # Tolerancia de 60s para el wallclock del test
+    expected = timedelta(hours=72)
+    assert abs((delta - expected).total_seconds()) < 60, (
+        f"Esperaba ~72h, fue {delta.total_seconds()}s"
+    )
+
+
+def test_set_cached_uses_tier_ttl_for_pro():
+    """Pro mantiene el TTL clásico de 24h."""
+    from datetime import datetime, timedelta
+    conn = _make_db()
+    before = datetime.utcnow()
+    cache.set_cached(
+        conn, user_id=1, screen="dashboard", packet=SAMPLE_PACKET,
+        result=SAMPLE_RESULT_PRO,
+        model="claude-haiku-4-5", input_tokens=1000, output_tokens=500,
+        tier="pro",
+    )
+    row = conn.execute("SELECT expires_at FROM ai_analyses_cache").fetchone()
+    expires = datetime.fromisoformat(row["expires_at"])
+    delta = expires - before
+    expected = timedelta(hours=24)
+    assert abs((delta - expected).total_seconds()) < 60, (
+        f"Esperaba ~24h, fue {delta.total_seconds()}s"
+    )
+
+
 # ── invalidate_for_user ──────────────────────────────────────────────────────
 
 def test_invalidate_for_user_clears_all_tiers():

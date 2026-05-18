@@ -1,4 +1,4 @@
-"""cache — capa de cache de análisis IA (SQLite, TTL 24h).
+"""cache — capa de cache de análisis IA (SQLite, TTL tier-aware).
 ═══════════════════════════════════════════════════════════════════════════
 Por qué cachear:
   • 90%+ de los "Analizar" son repeticiones del mismo packet en <24h
@@ -6,14 +6,25 @@ Por qué cachear:
   • Pre-generación nocturna también escribe acá → al abrir la app el
     user ve análisis instant sin gastar tokens.
 
+TTL tier-aware:
+  • Free: 72h. Los users gratuitos no necesitan análisis "fresh" por hora
+    — sus análisis cambian poco día a día. TTL más largo = más hits.
+    Si el packet cambia (mutación de positions/monthly), se invalida
+    automáticamente porque el packet_hash cambia.
+  • Pro: 24h. Los users pagos esperan más "freshness" y suelen tener
+    portfolios más activos. 24h es el equilibrio.
+  • Admin: 24h (mismo que Pro — dogfood).
+
 Llave del cache:
   packet_hash = sha256(json.dumps(packet, sort_keys=True))
-  cache_key = sha256(f"{user_id}:{screen}:{packet_hash}")
+  cache_key = sha256(f"{user_id}:{screen}:{tier}:{packet_hash}")
   → si el packet cambia (ej. agregaste una posición), miss automático
   → sin riesgo de cross-user contamination
+  → tier separa pools: Free y Pro generan respuestas distintas para el
+    mismo packet (prompts distintos), por eso cada uno tiene su propia row
 
 Invalidación:
-  • TTL natural (24h)
+  • TTL natural (24h Pro, 72h Free)
   • invalidate_for_user(uid, screens=[...]) cuando hay mutaciones
     (positions, operations, monthly entries, etc.)
 """
@@ -28,7 +39,21 @@ from datetime import datetime, timedelta
 
 log = logging.getLogger("ai.cache")
 
-CACHE_TTL_SECONDS = 24 * 3600  # 24h
+# TTL por tier en segundos. Free tiene TTL más largo para reducir costos a
+# escala — los analyses no necesitan ser fresh-by-hour para users gratis.
+CACHE_TTL_BY_TIER = {
+    "free":  72 * 3600,   # 72h — 3 días de freshness para Free
+    "pro":   24 * 3600,   # 24h — fresh diario para suscriptos
+    "admin": 24 * 3600,   # 24h — mismo que Pro (dogfood)
+}
+
+# Back-compat: si alguien usa CACHE_TTL_SECONDS, defaults a Pro (24h).
+CACHE_TTL_SECONDS = CACHE_TTL_BY_TIER["pro"]
+
+
+def _ttl_for_tier(tier: str) -> int:
+    """Resuelve el TTL en segundos según tier. Default a Pro si tier raro."""
+    return CACHE_TTL_BY_TIER.get(tier, CACHE_TTL_BY_TIER["pro"])
 
 
 def _compute_keys(user_id: int, screen: str, packet: dict, tier: str = "pro") -> tuple[str, str]:
@@ -93,9 +118,10 @@ def set_cached(
     """Guarda un análisis en cache + registra costo para auditing.
 
     `tier` se mezcla en la cache_key — un análisis Free y uno Pro del
-    mismo packet quedan en filas independientes."""
+    mismo packet quedan en filas independientes. El tier también define
+    el TTL: Free=72h, Pro/Admin=24h (ver CACHE_TTL_BY_TIER)."""
     packet_hash, cache_key = _compute_keys(user_id, screen, packet, tier)
-    expires_at = (datetime.utcnow() + timedelta(seconds=CACHE_TTL_SECONDS)).isoformat()
+    expires_at = (datetime.utcnow() + timedelta(seconds=_ttl_for_tier(tier))).isoformat()
     with conn:
         conn.execute(
             """INSERT INTO ai_analyses_cache
