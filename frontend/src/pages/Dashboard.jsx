@@ -128,6 +128,18 @@ export default function Dashboard() {
   const totalReturnUsd = totalValue - netDeposited
   const totalReturnPct = netDeposited > 0 ? totalReturnUsd / netDeposited : 0
 
+  // ── Ganancias retiradas ─────────────────────────────────────────────────────
+  // Identidad contable: totalReturnUsd = realizedPnl + unrealizedPnl - gainsWithdrawn
+  // gainsWithdrawn representa plata que se cerró como ganancia (entró a realizedPnl)
+  // y que luego salió del portfolio vía retiros. Esa plata no se ve en totalReturnUsd
+  // porque ya no forma parte de totalValue ni de netDeposited.
+  // Equivalencia: netDeposited + realizedPnl − totalCostBasis
+  // (lo "que pusiste + lo que ganaste cerrado − lo que está hoy posicionado").
+  // Solo mostramos el KPI cuando es materialmente > 0 ($100 threshold para evitar
+  // ruido de floating point en cuentas sin retiros).
+  const gainsWithdrawn = (realizedPnl + totalPnl) - totalReturnUsd
+  const showGainsWithdrawn = gainsWithdrawn > 100
+
   const portfolioTotal = totalValue
 
   // Dynamic insight line — uses largest gainers/losers from open positions
@@ -412,9 +424,17 @@ export default function Dashboard() {
           info={
             <>
               <p className="font-medium text-ink-0">Resultado total acumulado</p>
-              <p>Cuánto ganaste (o perdiste) desde que empezaste, en dólares.</p>
+              <p>Cuánto vale tu portfolio HOY de más (o de menos) respecto a lo que pusiste neto.</p>
               <p className="text-ink-3 font-mono text-[11px]">= valor actual − capital aportado neto</p>
-              <p className="text-ink-3">Incluye TODO: P&L realizado, no realizado, dividendos cobrados e intereses. El porcentaje es sobre el capital aportado neto.</p>
+              <p className="text-ink-3">El porcentaje es sobre el capital aportado neto.</p>
+              {showGainsWithdrawn && (
+                <>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="text-ink-3">
+                    <strong className="text-ink-1">¿Por qué no es igual a realizado + no realizado?</strong> Porque hubo retiros que incluían ganancias (ver KPI "Ganancias retiradas"). Esa plata salió del portfolio, por eso no aparece más acá aunque siga contabilizada como realizada.
+                  </p>
+                </>
+              )}
             </>
           }
         />
@@ -446,6 +466,24 @@ export default function Dashboard() {
             </>
           }
         />
+        {showGainsWithdrawn && (
+          <KpiCell
+            label="Ganancias retiradas"
+            value={fmt(gainsWithdrawn)}
+            sub="fuera del portfolio"
+            info={
+              <>
+                <p className="font-medium text-ink-0">Ganancias retiradas del portfolio</p>
+                <p>Plata que se realizó como ganancia y luego salió de la cuenta vía retiros.</p>
+                <p className="text-ink-3 font-mono text-[11px]">= (realizado + no realizado) − resultado total</p>
+                <p className="text-ink-3">
+                  Cierra la identidad contable: <span className="font-mono">realizado + no realizado = resultado total + ganancias retiradas</span>.
+                </p>
+                <p className="text-ink-3">Ejemplo: si retiraste $180k para impuestos y de eso $73k eran ganancias acumuladas en cash, ese $73k aparece acá. El sistema lo cuenta como realizado (porque se cobró), pero ya no está en tu portfolio.</p>
+              </>
+            }
+          />
+        )}
       </div>
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
