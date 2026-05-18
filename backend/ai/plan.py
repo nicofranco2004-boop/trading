@@ -34,6 +34,8 @@ FEATURE_IDS = {
     "comportamiento.full",          # Todas las tags de comportamiento (vs 1 sample en Free)
     "insights.distribucion_activo", # Card "Distribución por activo" en Insights
     "reportes.historicos",          # Meses históricos en Reportes (Free ve teaser último)
+    "export.csv",                   # Export CSV de operaciones / posiciones / monthly
+    "tax.helper",                   # Tax helper AFIP (próximamente, todavía no construido)
 }
 
 # Límites + accesos por tier.
@@ -50,6 +52,8 @@ PLAN_LIMITS = {
             "comportamiento.full": False,
             "insights.distribucion_activo": False,
             "reportes.historicos": False,
+            "export.csv": False,
+            "tax.helper": False,                   # próximamente (no construido)
         },
     },
     "pro": {
@@ -62,6 +66,8 @@ PLAN_LIMITS = {
             "comportamiento.full": True,
             "insights.distribucion_activo": True,
             "reportes.historicos": True,
+            "export.csv": True,
+            "tax.helper": False,                   # próximamente (todavía no construido)
         },
     },
     "admin": {
@@ -74,6 +80,8 @@ PLAN_LIMITS = {
             "comportamiento.full": True,
             "insights.distribucion_activo": True,
             "reportes.historicos": True,
+            "export.csv": True,
+            "tax.helper": True,                    # admin ve todo, incluso si Pro no lo tiene aún
         },
     },
 }

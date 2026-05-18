@@ -21,6 +21,7 @@ import PerformanceCalendar from '../components/reports/PerformanceCalendar'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import LockedSection from '../components/plan/LockedSection'
+import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -82,6 +83,7 @@ export default function Reports() {
               params={{ year: effectiveYear }}
               subtitle={`Performance ${effectiveYear}`}
             />
+            <ExportCsvButton resource="monthly" label="Exportar mensual" source="reports_header" variant="compact" />
             <BrokerSelector value={broker} onChange={setBroker} />
           </div>
         }

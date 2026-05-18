@@ -16,6 +16,7 @@ import OperationsMobile from './OperationsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
+import ExportCsvButton from '../components/plan/ExportCsvButton'
 
 const PAGE_SIZE = 50
 
@@ -136,6 +137,7 @@ function OperationsDesktop() {
         action={
           <div className="flex items-center gap-2 flex-wrap">
             <AnalyzeButton screen="operations" subtitle="Tu historial completo" />
+            <ExportCsvButton resource="operations" source="operations_header" variant="compact" />
             <button
               onClick={openAdd}
               className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"

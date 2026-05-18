@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
@@ -35,7 +35,7 @@ from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import run_daily_snapshot
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import math
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -4486,6 +4486,176 @@ def get_operations(uid: int = Depends(get_current_user)):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ─── CSV Export (Pro-only) ───────────────────────────────────────────────────
+# Endpoints que serializan tablas a CSV con encabezados en español pensados
+# para que el contador del usuario los pueda procesar sin gimnasia.
+# Gate por `export.csv` feature flag — Free recibe 403 con upgrade payload.
+
+import csv as _csv  # alias para evitar shadow con vars locales 'csv'
+from io import StringIO
+
+
+def _csv_response(rows: list[dict], headers: list[tuple[str, str]], filename: str) -> Response:
+    """Genera un Response CSV listo para descarga.
+
+    headers: lista de (column_key, display_label). El display_label va en la
+    primera fila del CSV (encabezado humano-readable en español).
+    """
+    buf = StringIO()
+    # delimiter ',' + quoting MINIMAL — compatible con Excel/Numbers/Google Sheets
+    writer = _csv.writer(buf, delimiter=",", quoting=_csv.QUOTE_MINIMAL)
+    writer.writerow([label for _, label in headers])
+    for row in rows:
+        writer.writerow([row.get(key, "") if row.get(key) is not None else "" for key, _ in headers])
+    content = buf.getvalue()
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            # BOM para que Excel español detecte UTF-8
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+def _gate_export(uid: int):
+    """Gate común para los exports — devuelve 403 si Free, sino sigue."""
+    from ai import plan
+    conn = get_db()
+    try:
+        if not plan.can_access(conn, uid, "export.csv"):
+            tier = plan.quota.get_tier(conn, uid)
+            raise HTTPException(403, {
+                "error": "Export CSV es exclusivo del plan Rendi Pro.",
+                "upgrade": {
+                    "available": tier == "free",
+                    "current_tier": tier,
+                    "target_tier": "pro",
+                    "feature": "export.csv",
+                    "benefits": [
+                        "Export CSV para tu contador",
+                        "10× más análisis IA (60/sem vs 6/sem)",
+                        "Brokers ilimitados",
+                        "Comportamiento + Reportes históricos completos",
+                    ],
+                },
+            })
+    finally:
+        conn.close()
+
+
+@app.get("/api/export/operations.csv")
+def export_operations_csv(uid: int = Depends(get_current_user)):
+    """Operaciones cerradas → CSV. Pensado para el contador / reporte fiscal.
+
+    Columnas pensadas para AFIP / régimen tributario AR: fecha de operación,
+    activo, broker, tipo (LONG/SHORT), cantidad, precios de entrada/salida,
+    P&L en USD, comisiones, fecha de cierre, días tenidos."""
+    _gate_export(uid)
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            """SELECT date AS fecha_cierre, entry_date, asset, broker,
+                      op_type AS tipo, quantity, entry_price, exit_price,
+                      pnl_usd, pnl_pct, commissions
+               FROM operations
+               WHERE user_id = ?
+               ORDER BY date DESC""",
+            (uid,),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+    headers = [
+        ("fecha_cierre",  "Fecha cierre"),
+        ("entry_date",    "Fecha apertura"),
+        ("asset",         "Activo"),
+        ("broker",        "Broker"),
+        ("tipo",          "Tipo"),
+        ("quantity",      "Cantidad"),
+        ("entry_price",   "Precio entrada"),
+        ("exit_price",    "Precio salida"),
+        ("pnl_usd",       "P&L USD"),
+        ("pnl_pct",       "P&L %"),
+        ("commissions",   "Comisiones"),
+    ]
+    today = date.today().isoformat()
+    return _csv_response(rows, headers, f"rendi_operaciones_{today}.csv")
+
+
+@app.get("/api/export/positions.csv")
+def export_positions_csv(uid: int = Depends(get_current_user)):
+    """Posiciones abiertas → CSV (snapshot al momento de descarga).
+
+    Incluye costo basis + cantidad. NO incluye valor de mercado actual
+    (eso es volátil — para análisis the Dashboard tiene mejor lugar)."""
+    _gate_export(uid)
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            """SELECT asset, broker, is_cash, quantity, invested, commissions,
+                      entry_date, tc_compra, price_override
+               FROM positions
+               WHERE user_id = ?
+               ORDER BY broker, asset""",
+            (uid,),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+    headers = [
+        ("asset",          "Activo"),
+        ("broker",         "Broker"),
+        ("is_cash",        "Es cash"),
+        ("quantity",       "Cantidad"),
+        ("invested",       "Costo invertido"),
+        ("commissions",    "Comisiones"),
+        ("entry_date",     "Fecha compra"),
+        ("tc_compra",      "TC compra (ARS)"),
+        ("price_override", "Precio override"),
+    ]
+    today = date.today().isoformat()
+    return _csv_response(rows, headers, f"rendi_posiciones_{today}.csv")
+
+
+@app.get("/api/export/monthly.csv")
+def export_monthly_csv(uid: int = Depends(get_current_user)):
+    """Resumen mensual → CSV con flujos + P&L realizado mes a mes.
+
+    Útil para el contador: sintetiza capital inicio/fin, depósitos,
+    retiros, P&L realizado por mes. Incluye el broker 'global' (agregado
+    de todos los brokers) y por broker individual."""
+    _gate_export(uid)
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            """SELECT year, month, broker, capital_inicio, capital_final,
+                      deposits, withdrawals, pnl_realized
+               FROM monthly_entries
+               WHERE user_id = ?
+               ORDER BY year, month, broker""",
+            (uid,),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+    # Formato 'período' YYYY-MM combinado para que el contador lo lea fácil
+    for r in rows:
+        r["periodo"] = f"{r['year']}-{r['month']:02d}"
+
+    headers = [
+        ("periodo",          "Período"),
+        ("broker",           "Broker"),
+        ("capital_inicio",   "Capital inicio"),
+        ("capital_final",    "Capital final"),
+        ("deposits",         "Depósitos"),
+        ("withdrawals",      "Retiros"),
+        ("pnl_realized",     "P&L realizado"),
+    ]
+    today = date.today().isoformat()
+    return _csv_response(rows, headers, f"rendi_mensual_{today}.csv")
 
 
 @app.get("/api/wrapped/{year}")

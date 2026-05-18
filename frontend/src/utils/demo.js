@@ -1586,6 +1586,8 @@ export function handleDemoRequest(method, path, body) {
           'comportamiento.full': true,
           'insights.distribucion_activo': true,
           'reportes.historicos': true,
+          'export.csv': true,
+          'tax.helper': false,
         },
       }
     }

@@ -70,18 +70,19 @@ def test_free_cannot_access_paywalled_features():
         assert plan.can_access(conn, 2, fid) is False, f"Free no debería acceder a {fid}"
 
 
-def test_pro_accesses_most_features_except_hub():
-    """Pro accede a todo menos AI Hub (próximamente — solo admin pre-launch)."""
-    conn = _make_db()
-    # Simulamos un Pro setteando un tier explícito vía mock
-    # (en producción esto vendría de subscriptions table, hoy solo admin/free).
-    # Validamos los flags del dict PLAN_LIMITS directamente:
+def test_pro_accesses_most_features_except_coming_soon():
+    """Pro accede a las features liberadas. AI Hub + Tax Helper son
+    próximamente y solo admin los tiene en pre-launch."""
     pro = plan.PLAN_LIMITS["pro"]["can_access"]
+    # Features liberadas
     assert pro["ai.followup"] is True
     assert pro["comportamiento.full"] is True
     assert pro["insights.distribucion_activo"] is True
     assert pro["reportes.historicos"] is True
-    assert pro["ai.hub"] is False  # próximamente
+    assert pro["export.csv"] is True
+    # Features próximamente — NO disponibles aún para Pro
+    assert pro["ai.hub"] is False
+    assert pro["tax.helper"] is False
 
 
 def test_admin_accesses_everything_including_hub():

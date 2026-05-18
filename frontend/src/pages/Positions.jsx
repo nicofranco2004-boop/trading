@@ -24,6 +24,7 @@ import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/f
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import PageHeader from '../components/PageHeader'
+import ExportCsvButton from '../components/plan/ExportCsvButton'
 import EmptyState from '../components/EmptyState'
 import LazySparkline from '../components/LazySparkline'
 import PositionsMobile from './PositionsMobile'
@@ -626,6 +627,7 @@ function PositionsDesktop() {
         eyebrow="Posiciones / Activas"
         title="Tu portfolio en vivo"
         meta={meta}
+        action={<ExportCsvButton resource="positions" source="positions_header" variant="compact" />}
       />
 
       {/* Phase 3E — Inbox de cobranzas pendientes. Sólo se renderea cuando hay

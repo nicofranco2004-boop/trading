@@ -105,10 +105,37 @@ async function upload(path, formData) {
   return res.json()
 }
 
+// Variante para GETs que devuelven binarios (ej. CSV, PDF). Mantiene la
+// auth header del usuario y propaga errores con el mismo shape (status/payload)
+// que el req() normal. En demo mode levanta un error explicativo.
+async function getBlob(path) {
+  if (isDemoMode()) {
+    const err = new Error('Las descargas no están disponibles en modo demo.')
+    err.demoBlocked = true
+    throw err
+  }
+  const headers = {}
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const res = await fetch('/api' + path, { method: 'GET', headers })
+  if (res.status === 401) {
+    localStorage.removeItem('rendi_token')
+    localStorage.removeItem('rendi_user')
+    window.location.href = '/'
+    throw new Error('Unauthorized')
+  }
+  if (!res.ok) {
+    throw await buildHttpError(res)
+  }
+  return res.blob()
+}
+
 export const api = {
   get: (path) => req('GET', path),
   post: (path, body) => req('POST', path, body),
   put: (path, body) => req('PUT', path, body),
   delete: (path, body) => req('DELETE', path, body),
   upload,
+  getBlob,
 }

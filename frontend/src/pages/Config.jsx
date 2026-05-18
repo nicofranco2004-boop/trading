@@ -582,7 +582,12 @@ const PRO_FEATURES = [
   { label: '60 análisis IA por semana', sub: '10× más que Free (6/sem)' },
   { label: 'Respuestas con causalidad y comparaciones', sub: 'Free: solo descripción' },
   { label: 'Follow-ups: profundizá con preguntas libres', sub: 'No disponible en Free' },
+  { label: 'Brokers ilimitados', sub: 'Free: 1 broker máximo' },
+  { label: 'Reportes históricos + Distribución por activo', sub: 'Vista mes a mes + concentración por instrumento' },
+  { label: 'Comportamiento completo (todas las tags)', sub: 'Free: 1 sample' },
+  { label: 'Export CSV para tu contador', sub: 'Operaciones, posiciones y resumen mensual' },
   { label: 'AI Hub: exploración libre sobre tu portfolio', sub: 'Exclusivo Pro', comingSoon: true },
+  { label: 'Tax helper AFIP (ganancias/pérdidas)', sub: 'Cálculo FIFO + reporte para contador', comingSoon: true },
 ]
 
 const FREE_FEATURES = [
