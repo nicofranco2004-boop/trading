@@ -18,7 +18,8 @@ def _make_db():
         CREATE TABLE users (
             id INTEGER PRIMARY KEY,
             email TEXT,
-            is_admin INTEGER DEFAULT 0
+            is_admin INTEGER DEFAULT 0,
+            tier TEXT
         );
         CREATE TABLE ai_usage_daily (
             user_id INTEGER NOT NULL,
@@ -29,12 +30,13 @@ def _make_db():
             PRIMARY KEY (user_id, date)
         );
     """)
-    # Tres users: 1=admin, 2=free, 3=free (sin uso aún)
+    # Cuatro users: 1=admin, 2=free, 3=free (sin uso aún), 4=pro (admin con override)
     conn.executescript("""
-        INSERT INTO users (id, email, is_admin) VALUES
-            (1, 'admin@rendi.app', 1),
-            (2, 'free@rendi.app', 0),
-            (3, 'newuser@rendi.app', 0);
+        INSERT INTO users (id, email, is_admin, tier) VALUES
+            (1, 'admin@rendi.app', 1, NULL),
+            (2, 'free@rendi.app', 0, NULL),
+            (3, 'newuser@rendi.app', 0, NULL),
+            (4, 'admin-pro@rendi.app', 1, 'pro');
     """)
     return conn
 
@@ -49,6 +51,37 @@ def test_get_tier_admin():
 def test_get_tier_free():
     conn = _make_db()
     assert quota.get_tier(conn, 2) == "free"
+
+
+def test_get_tier_override_pro_beats_admin():
+    """users.tier='pro' override hace que un admin se vea como Pro
+    (sin perder is_admin powers en otras checks)."""
+    conn = _make_db()
+    # user_id=4 es is_admin=1 + tier='pro' override
+    assert quota.get_tier(conn, 4) == "pro"
+
+
+def test_get_tier_override_free_on_free_user():
+    """users.tier='free' explícito devuelve free incluso si el user no es admin."""
+    conn = _make_db()
+    conn.execute("UPDATE users SET tier='free' WHERE id=2")
+    assert quota.get_tier(conn, 2) == "free"
+
+
+def test_get_tier_override_null_falls_back_to_is_admin():
+    """Sin override, get_tier respeta la lógica is_admin antigua."""
+    conn = _make_db()
+    # user_id=1 (is_admin=1, tier=NULL) → admin
+    assert quota.get_tier(conn, 1) == "admin"
+    # user_id=2 (is_admin=0, tier=NULL) → free
+    assert quota.get_tier(conn, 2) == "free"
+
+
+def test_get_tier_override_invalid_value_falls_back():
+    """Valores raros en users.tier (ej. 'enterprise') ignoran el override."""
+    conn = _make_db()
+    conn.execute("UPDATE users SET tier='enterprise' WHERE id=1")  # admin user
+    assert quota.get_tier(conn, 1) == "admin"  # fallback a is_admin
 
 
 def test_get_tier_unknown_user_falls_back_to_free():

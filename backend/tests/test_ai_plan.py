@@ -21,7 +21,8 @@ def _make_db(*, n_brokers_user2: int = 0, n_brokers_user1: int = 0):
         CREATE TABLE users (
             id INTEGER PRIMARY KEY,
             email TEXT,
-            is_admin INTEGER DEFAULT 0
+            is_admin INTEGER DEFAULT 0,
+            tier TEXT
         );
         INSERT INTO users (id, email, is_admin) VALUES (1, 'admin@x.com', 1);
         INSERT INTO users (id, email, is_admin) VALUES (2, 'free@x.com', 0);

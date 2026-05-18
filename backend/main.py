@@ -151,6 +151,7 @@ def init_db():
             password_hash TEXT NOT NULL,
             is_admin INTEGER NOT NULL DEFAULT 0,
             approved INTEGER NOT NULL DEFAULT 0,
+            tier TEXT,                         -- override explícito: 'pro' | 'free' | NULL
             password_changed_at TEXT DEFAULT (datetime('now')),
             last_login_at TEXT,
             created_at TEXT DEFAULT (datetime('now'))
@@ -184,6 +185,9 @@ def init_db():
         # Migración: usuarios pre-existentes quedan aprobados (no romper acceso)
         conn.execute("ALTER TABLE users ADD COLUMN approved INTEGER NOT NULL DEFAULT 0")
         conn.execute("UPDATE users SET approved=1")
+    if user_cols and 'tier' not in user_cols:
+        # Override de tier (Pro paid). NULL = sigue lógica is_admin → free/admin.
+        conn.execute("ALTER TABLE users ADD COLUMN tier TEXT")
     # Sincronizar is_admin + approved para usuarios con email admin
     rows = conn.execute("SELECT id, email FROM users").fetchall()
     for r in rows:

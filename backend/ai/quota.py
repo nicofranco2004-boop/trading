@@ -80,16 +80,27 @@ LIMITS = {
 
 
 def get_tier(conn, user_id: int) -> Tier:
-    """Resuelve tier del user. Hoy: admin si is_admin=1, sino free.
+    """Resuelve tier del user con override explícito.
 
-    Cuando exista paywall + tabla subscriptions, leer plan pago de ahí
-    y devolver 'pro' para suscriptos activos."""
+    Precedencia:
+      1. users.tier (override) — si está seteado a 'pro' o 'free', devuelve eso.
+         Permite que un admin se ponga en 'pro' para ver la UX de paywall y
+         conserve sus is_admin powers (Admin page sigue accesible).
+      2. is_admin=1 → 'admin' (default histórico)
+      3. fallback → 'free'
+
+    Cuando exista checkout real, la tabla subscriptions setea users.tier='pro'
+    y este helper sigue funcionando sin cambios."""
     try:
         row = conn.execute(
-            "SELECT is_admin FROM users WHERE id = ?", (user_id,)
+            "SELECT is_admin, tier FROM users WHERE id = ?", (user_id,)
         ).fetchone()
-        if row and row["is_admin"]:
-            return "admin"
+        if row:
+            override = (row["tier"] or "").strip().lower()
+            if override in ("pro", "free"):
+                return override  # type: ignore[return-value]
+            if row["is_admin"]:
+                return "admin"
     except Exception:
         pass
     return "free"
