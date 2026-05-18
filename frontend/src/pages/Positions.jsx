@@ -25,6 +25,7 @@ import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import PageHeader from '../components/PageHeader'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
+import BrokerManager from '../components/BrokerManager'
 import EmptyState from '../components/EmptyState'
 import LazySparkline from '../components/LazySparkline'
 import PositionsMobile from './PositionsMobile'
@@ -666,6 +667,11 @@ function PositionsDesktop() {
 
       {/* Banner de variación diaria deshabilitado — requiere snapshots
           confiables (cron server-side) que aún no están implementados. */}
+
+      {/* Broker chips + agregar (movido desde /config). Va debajo del hero
+          KPI y antes del breakdown detallado por broker para que el user
+          vea sus cuentas conectadas de un vistazo. */}
+      <BrokerManager brokers={brokers} onChange={loadAll} />
 
       {sortBrokersForDisplay(brokers).map(({ broker, indent, parentName }, bi) => {
         const color = BROKER_COLORS[bi % BROKER_COLORS.length]

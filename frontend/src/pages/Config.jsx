@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Pencil, RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Check, Zap } from 'lucide-react'
+import { RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
@@ -17,9 +17,7 @@ import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
-import UpgradeModal from '../components/plan/UpgradeModal'
-import { usePlanFeatures, refreshPlanFeatures } from '../hooks/usePlanFeatures'
-import { PRO_PRICE_USD } from './Planes'
+import { usePlanFeatures } from '../hooks/usePlanFeatures'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -79,16 +77,8 @@ function MetaRow({ label, children, last }) {
   )
 }
 
-// ─── Currency tone helper ────────────────────────────────────────────────────
-
-function currencyTone(c) {
-  switch (c) {
-    case 'ARS':  return 'info'   // azul violáceo
-    case 'USD':  return 'signal' // verde
-    case 'USDT': return 'info'   // cyan-ish via info
-    default:     return 'default'
-  }
-}
+// currencyTone() vive ahora en BrokerManager.jsx — Config sólo muestra el
+// contador de brokers, no toca el currency styling.
 
 // ─── Página ──────────────────────────────────────────────────────────────────
 
@@ -97,18 +87,13 @@ const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 export default function Config() {
   const navigate = useNavigate()
   const { user } = useAuth()
-  const [brokers, setBrokers] = useState([])
+  const [brokers, setBrokers] = useState([])  // sólo para contador en "Cuenta"
   const [dolar, setDolar] = useState(null)
-  const [newBroker, setNewBroker] = useState({ name: '', currency: 'USDT' })
-  const [editingBroker, setEditingBroker] = useState(null)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
   const [pwState, setPwState] = useState({ loading: false, error: '', success: '' })
   const [showImport, setShowImport] = useState(false)
   const [importJustConfirmed, setImportJustConfirmed] = useState(false)
-  const [showAddBroker, setShowAddBroker] = useState(false)
   const [aiUsage, setAiUsage] = useState(null)
-  // Upgrade modal cuando el backend devuelve 403 al intentar agregar broker
-  const [brokerUpgrade, setBrokerUpgrade] = useState(null)
   const plan = usePlanFeatures()
 
   useEffect(() => {
@@ -128,44 +113,9 @@ export default function Config() {
   }
 
   async function loadBrokers() {
+    // Sólo para mostrar el contador en la sección "Cuenta". El CRUD de
+    // brokers vive ahora en /posiciones (BrokerManager).
     setBrokers(await api.get('/brokers'))
-  }
-
-  async function addBroker(e) {
-    e.preventDefault()
-    if (!newBroker.name.trim()) return
-    try {
-      await api.post('/brokers', { name: newBroker.name.trim(), currency: newBroker.currency })
-      setNewBroker({ name: '', currency: 'USDT' })
-      setShowAddBroker(false)
-      loadBrokers()
-      refreshPlanFeatures()  // brokers_current cambió
-    } catch (ex) {
-      // Gate Free: backend devuelve 403 con upgrade payload cuando cap alcanzado
-      if (ex?.status === 403 && ex?.payload?.detail?.upgrade) {
-        const detail = ex.payload.detail
-        track('feature_blocked_clicked', { feature: 'brokers.create', source: 'config_add_broker' })
-        setBrokerUpgrade({
-          message: detail.error || 'El plan Free permite 1 broker.',
-          benefits: detail.upgrade?.benefits,
-        })
-        return
-      }
-      throw ex
-    }
-  }
-
-  async function saveEditBroker(e) {
-    e.preventDefault()
-    await api.put(`/brokers/${editingBroker.id}`, { name: editingBroker.name, currency: editingBroker.currency })
-    setEditingBroker(null)
-    loadBrokers()
-  }
-
-  async function deleteBroker(id) {
-    if (!confirm('¿Eliminar este broker? Las posiciones asociadas quedarán huérfanas y deberás reasignarlas manualmente.')) return
-    await api.delete(`/brokers/${id}`)
-    loadBrokers()
   }
 
   async function changePassword(e) {
@@ -257,183 +207,40 @@ export default function Config() {
         </div>
       </section>
 
-      {/* ── Grid: Brokers | Workspace info ───────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4 mb-4">
-        {/* Brokers conectados */}
-        <Panel padding="none">
-          <header className="flex items-center justify-between px-4 py-3 border-b border-line">
-            <div>
-              <h2 className="text-sm font-medium text-ink-0">Brokers</h2>
-              <p className="text-xs text-ink-3 mt-0.5">
-                {brokers.length} {brokers.length === 1 ? 'broker conectado' : 'brokers conectados'}
-              </p>
-            </div>
-            <button
-              onClick={() => setShowAddBroker(true)}
-              className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"
-            >
-              <Plus size={12} strokeWidth={2} /> Agregar broker
-            </button>
-          </header>
-
-          {brokers.length === 0 ? (
-            <div className="p-6 text-center text-ink-3 text-sm">
-              No tenés brokers configurados. Conectá uno para empezar a registrar posiciones.
-            </div>
-          ) : (
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-line/60 text-xs text-ink-3">
-                  <th className="text-left px-4 py-2 font-medium">Broker</th>
-                  <th className="text-left px-3 py-2 font-medium">Moneda</th>
-                  <th className="text-left px-3 py-2 font-medium">Estado</th>
-                  <th className="px-3 py-2 w-[60px]"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {brokers.map(b => (
-                  <tr key={b.id} className="border-b border-line/30 hover:bg-bg-2/40 transition-colors">
-                    {editingBroker?.id === b.id ? (
-                      <td colSpan={4} className="px-4 py-3 bg-bg-2/40">
-                        <form onSubmit={saveEditBroker} className="flex flex-wrap items-end gap-2">
-                          <div className="flex-1 min-w-[140px]">
-                            <label className={labelClass}>Nombre</label>
-                            <input
-                              value={editingBroker.name}
-                              onChange={e => setEditingBroker(eb => ({ ...eb, name: e.target.value }))}
-                              className={inputClass}
-                              autoFocus
-                            />
-                          </div>
-                          <div>
-                            <label className={labelClass}>Moneda</label>
-                            <select
-                              value={editingBroker.currency}
-                              onChange={e => setEditingBroker(eb => ({ ...eb, currency: e.target.value }))}
-                              className={selectClass}
-                            >
-                              <option value="USDT">USDT</option>
-                              <option value="USD">USD</option>
-                              <option value="ARS">ARS</option>
-                            </select>
-                          </div>
-                          <div className="flex gap-2">
-                            <button type="submit" className="text-xs bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 px-3 py-2 rounded-sm transition-colors">
-                              Guardar
-                            </button>
-                            <button type="button" onClick={() => setEditingBroker(null)} className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors">
-                              Cancelar
-                            </button>
-                          </div>
-                        </form>
-                      </td>
-                    ) : (
-                      <>
-                        <td className="px-4 py-2.5">
-                          <div className="text-sm font-medium text-ink-0">{b.name}</div>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <Pill tone={currencyTone(b.currency)}>{b.currency}</Pill>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <Pill tone="signal" dot>Conectado</Pill>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <div className="flex gap-2 justify-end">
-                            <button onClick={() => setEditingBroker({ ...b })} className="text-ink-3 hover:text-ink-0 transition-colors" title="Editar broker" aria-label={`Editar broker ${b.name}`}>
-                              <Pencil size={13} strokeWidth={1.75} aria-hidden="true" />
-                            </button>
-                            <button onClick={() => deleteBroker(b.id)} className="text-ink-3 hover:text-rendi-neg transition-colors" title="Eliminar broker" aria-label={`Eliminar broker ${b.name}`}>
-                              <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
-                            </button>
-                          </div>
-                        </td>
-                      </>
-                    )}
-                  </tr>
-                ))}
-                {showAddBroker && (
-                  <tr className="border-b border-line/30 bg-bg-2/40">
-                    <td colSpan={4} className="px-4 py-3">
-                      <form onSubmit={addBroker} className="flex flex-wrap items-end gap-2">
-                        <div className="flex-1 min-w-[180px]">
-                          <label className={labelClass}>Nombre del broker</label>
-                          <input
-                            value={newBroker.name}
-                            onChange={e => setNewBroker(b => ({ ...b, name: e.target.value }))}
-                            placeholder="Ej.: Binance, Cocos, IOL…"
-                            className={inputClass}
-                            autoFocus
-                          />
-                        </div>
-                        <div>
-                          <label className={labelClass}>Moneda</label>
-                          <select
-                            value={newBroker.currency}
-                            onChange={e => setNewBroker(b => ({ ...b, currency: e.target.value }))}
-                            className={selectClass}
-                          >
-                            <option value="USDT">USDT</option>
-                            <option value="USD">USD</option>
-                            <option value="ARS">ARS</option>
-                          </select>
-                        </div>
-                        <div className="flex gap-2">
-                          <button type="submit" className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 px-3 py-2 rounded-sm transition-colors">
-                            <Plus size={12} strokeWidth={2} /> Agregar
-                          </button>
-                          <button type="button" onClick={() => setShowAddBroker(false)} className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors">
-                            Cancelar
-                          </button>
-                        </div>
-                      </form>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
-
-          <div className="px-4 py-3 border-t border-line text-xs text-ink-3 leading-relaxed">
-            <span className="text-data-cyan font-medium">USDT</span> exchanges crypto (Binance) ·{' '}
-            <span className="text-ink-2 font-medium">USD</span> brokers en dólares (IBKR, Schwab) ·{' '}
-            <span className="text-ink-2 font-medium">ARS</span> brokers en pesos, convertidos al blue (Cocos, IOL).
-          </div>
-        </Panel>
-
-        {/* Workspace info */}
-        <Panel padding="none">
-          <header className="px-4 py-3 border-b border-line">
-            <h2 className="text-sm font-medium text-ink-0">Cuenta</h2>
-            <p className="text-xs text-ink-3 mt-0.5">Datos de tu workspace</p>
-          </header>
-          <div>
-            <MetaRow label="Email">
-              <span className="font-medium text-ink-0">{user?.email || user?.name || '—'}</span>
-              {user?.is_admin && (
-                <Pill tone="info" className="ml-2">Admin</Pill>
-              )}
-            </MetaRow>
-            <MetaRow label="Workspace">
-              <span className="text-ink-1">
-                {user?.email ? user.email.split('@')[0] : (user?.name || '—')}
-                <span className="text-ink-3 ml-1.5">· personal</span>
-              </span>
-            </MetaRow>
-            <MetaRow label="Plan">
-              <Pill tone="signal">Free</Pill>
-            </MetaRow>
-            <MetaRow label="Brokers">
-              <span className="tabular">
-                {brokers.length} {brokers.length === 1 ? 'conectado' : 'conectados'}
-              </span>
-            </MetaRow>
-            <MetaRow label="Miembro desde" last>
-              <span className="tabular text-xs">{memberSince(user?.created_at)}</span>
-            </MetaRow>
-          </div>
-        </Panel>
-      </div>
+      {/* ── Cuenta / Workspace info ──────────────────────────────────────── */}
+      {/* Brokers management se mudó a /posiciones (BrokerManager). */}
+      <Panel padding="none" className="mb-4">
+        <header className="px-4 py-3 border-b border-line">
+          <h2 className="text-sm font-medium text-ink-0">Cuenta</h2>
+          <p className="text-xs text-ink-3 mt-0.5">Datos de tu workspace</p>
+        </header>
+        <div>
+          <MetaRow label="Email">
+            <span className="font-medium text-ink-0">{user?.email || user?.name || '—'}</span>
+            {user?.is_admin && (
+              <Pill tone="info" className="ml-2">Admin</Pill>
+            )}
+          </MetaRow>
+          <MetaRow label="Workspace">
+            <span className="text-ink-1">
+              {user?.email ? user.email.split('@')[0] : (user?.name || '—')}
+              <span className="text-ink-3 ml-1.5">· personal</span>
+            </span>
+          </MetaRow>
+          <MetaRow label="Plan">
+            <Pill tone="signal">{(plan.tier || 'free').toUpperCase()}</Pill>
+          </MetaRow>
+          <MetaRow label="Brokers">
+            <span className="tabular">
+              {brokers.length} {brokers.length === 1 ? 'conectado' : 'conectados'}
+              <span className="text-ink-3 ml-1.5">· se gestionan desde /posiciones</span>
+            </span>
+          </MetaRow>
+          <MetaRow label="Miembro desde" last>
+            <span className="tabular text-xs">{memberSince(user?.created_at)}</span>
+          </MetaRow>
+        </div>
+      </Panel>
 
       {/* ── Grid: Datos / Importaciones | Cambiar contraseña ─────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -543,18 +350,6 @@ export default function Config() {
         </Panel>
       </div>
 
-      {/* Modal de upgrade cuando intenta agregar broker n°2 en Free */}
-      {brokerUpgrade && (
-        <UpgradeModal
-          title="Pasate a Rendi Pro para más brokers"
-          message={brokerUpgrade.message}
-          feature="brokers.create"
-          source="config_add_broker"
-          benefits={brokerUpgrade.benefits}
-          onClose={() => setBrokerUpgrade(null)}
-        />
-      )}
-
       {showImport && (
         <ImportWizard
           onClose={() => {
@@ -637,14 +432,15 @@ function PlanHeroFree({ usage }) {
           </p>
         </div>
 
-        {/* Right: CTA prominente */}
+        {/* Right: CTA prominente. Sin precio acá — el user lo descubre en /planes
+            cuando ya entendió el valor (mejor conversión). */}
         <button
           type="button"
           onClick={onUpgradeClick}
           className="inline-flex items-center gap-2 text-sm font-medium bg-data-violet hover:bg-data-violet/90 text-white border border-data-violet rounded-sm px-5 py-3 transition-colors shadow-md shadow-data-violet/20"
         >
           <Sparkles size={14} strokeWidth={1.75} />
-          Mejorar plan · USD {PRO_PRICE_USD}/mes
+          Mejorar plan
         </button>
       </div>
     </section>
