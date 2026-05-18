@@ -23,6 +23,8 @@ import { api } from '../utils/api'
 import { track } from '../utils/track'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import LockedSection from '../components/plan/LockedSection'
+import { usePlanFeatures } from '../hooks/usePlanFeatures'
 
 // Mapeo code → icono + tono visual.
 const CARD_META = {
@@ -144,27 +146,17 @@ export default function Behavioral() {
 
       {/* Grid de cards — cada card wrappeada con AskAIAbout para análisis
           individual del sesgo. Click normal sigue abriendo el modal de
-          detalle existente; ✦ (hover) o double-click abren el drawer IA. */}
+          detalle existente; ✦ (hover) o double-click abren el drawer IA.
+          GATE Free: solo 1 card visible (la primera). El resto se blurea
+          al final con CTA upgrade. */}
       {!allInsufficient && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {cards.map(card => (
-            <AskAIAbout
-              key={card.code}
-              topic="behavioral.card"
-              params={{ code: card.code }}
-              subtitle={card.title || card.code}
-              className="h-full"
-            >
-              <BehavioralCard
-                card={card}
-                onClick={() => {
-                  track('behavioral_card_opened', { code: card.code })
-                  setSelectedCard(card)
-                }}
-              />
-            </AskAIAbout>
-          ))}
-        </div>
+        <BehavioralCards
+          cards={cards}
+          onCardClick={(card) => {
+            track('behavioral_card_opened', { code: card.code })
+            setSelectedCard(card)
+          }}
+        />
       )}
 
       {/* Footer educational */}
@@ -597,6 +589,74 @@ function EvidenceRow({ label, value, count, mono }) {
         {count != null && <span className="text-ink-3 ml-1.5 text-xs">· {count}</span>}
       </span>
     </div>
+  )
+}
+
+// ─── BehavioralCards — grid de cards con gate Free/Pro ──────────────────────
+// Free: muestra solo el primer card visible, el resto blureado con CTA.
+// Pro/Admin: muestra todos.
+function BehavioralCards({ cards, onCardClick }) {
+  const { limit, hasFullAccess, loading } = usePlanFeatures()
+
+  // Mientras carga el tier, mostramos todas (avoid flash of locked UI).
+  // Si por algún motivo no resolvemos tier, default a "show all" (fail-open
+  // visualmente; el backend ya gatea las features pago, no hay leak de data).
+  if (loading || hasFullAccess) {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {cards.map(card => (
+          <AskAIAbout
+            key={card.code}
+            topic="behavioral.card"
+            params={{ code: card.code }}
+            subtitle={card.title || card.code}
+            className="h-full"
+          >
+            <BehavioralCard card={card} onClick={() => onCardClick(card)} />
+          </AskAIAbout>
+        ))}
+      </div>
+    )
+  }
+
+  // Free tier — split entre visibles y bloqueados.
+  const visibleCount = limit('behavioral_tags_visible') || 1
+  const visible = cards.slice(0, visibleCount)
+  const hidden = cards.slice(visibleCount)
+
+  return (
+    <>
+      {visible.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {visible.map(card => (
+            <AskAIAbout
+              key={card.code}
+              topic="behavioral.card"
+              params={{ code: card.code }}
+              subtitle={card.title || card.code}
+              className="h-full"
+            >
+              <BehavioralCard card={card} onClick={() => onCardClick(card)} />
+            </AskAIAbout>
+          ))}
+        </div>
+      )}
+
+      {hidden.length > 0 && (
+        <LockedSection.BlurredList
+          feature="comportamiento.full"
+          hiddenCount={hidden.length}
+          noun="análisis de sesgos"
+          source="behavioral_grid"
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {hidden.slice(0, 4).map(card => (
+              <BehavioralCard key={`hidden-${card.code}`} card={card} onClick={() => {}} />
+            ))}
+          </div>
+        </LockedSection.BlurredList>
+      )}
+    </>
   )
 }
 

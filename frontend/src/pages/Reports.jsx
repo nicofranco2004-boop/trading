@@ -20,6 +20,8 @@ import MonthCard from '../components/reports/MonthCard'
 import PerformanceCalendar from '../components/reports/PerformanceCalendar'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
+import LockedSection from '../components/plan/LockedSection'
+import { usePlanFeatures } from '../hooks/usePlanFeatures'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -53,6 +55,7 @@ export default function Reports() {
   const todayYear = new Date().getFullYear()
   const [selectedYear, setSelectedYear] = useState(null)
   const [expandedKey, setExpandedKey] = useState(null)
+  const plan = usePlanFeatures()
 
   // Año seleccionado por default: el actual si existe en yearGroups, sino el más reciente.
   const effectiveYear = useMemo(() => {
@@ -119,23 +122,81 @@ export default function Reports() {
         <>
           <PerformanceCalendar yearGroups={yearGroups} />
 
-          {/* Year selector */}
-          <YearTabs
-            years={yearGroups.map(g => g.year)}
-            value={effectiveYear}
-            onChange={(y) => { setSelectedYear(y); setExpandedKey(null) }}
-          />
-
-          {/* Monthly table */}
-          {yearData && (
-            <MonthlyTable
-              year={yearData.year}
-              months={yearData.months}
-              expandedKey={expandedKey}
-              onToggle={(key) => setExpandedKey(prev => prev === key ? null : key)}
-            />
+          {/* GATE Free: solo se muestra el último mes con actividad como teaser.
+              Pro/Admin: tabla mensual completa con todos los años cargados. */}
+          {plan.can('reportes.historicos') ? (
+            <>
+              <YearTabs
+                years={yearGroups.map(g => g.year)}
+                value={effectiveYear}
+                onChange={(y) => { setSelectedYear(y); setExpandedKey(null) }}
+              />
+              {yearData && (
+                <MonthlyTable
+                  year={yearData.year}
+                  months={yearData.months}
+                  expandedKey={expandedKey}
+                  onToggle={(key) => setExpandedKey(prev => prev === key ? null : key)}
+                />
+              )}
+            </>
+          ) : (
+            <ReportsFreeTeaser yearGroups={yearGroups} expandedKey={expandedKey} setExpandedKey={setExpandedKey} />
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+// ─── Free teaser ─────────────────────────────────────────────────────────────
+// Para usuarios Free: muestra solo el último mes con actividad como teaser
+// completo, y debajo un placeholder bloqueado para los anteriores.
+
+function ReportsFreeTeaser({ yearGroups }) {
+  // Aplastamos todos los meses de todos los años y agarramos el más reciente
+  // (que tenga is_relevant). Ese es el teaser visible.
+  const { lastMonth, totalHidden } = useMemo(() => {
+    const all = []
+    for (const g of yearGroups) {
+      for (const m of g.months) {
+        if (m && m.is_relevant) all.push({ year: g.year, month: m })
+      }
+    }
+    all.sort((a, b) => {
+      if (a.year !== b.year) return b.year - a.year
+      return monthNum(b.month.period_key) - monthNum(a.month.period_key)
+    })
+    return {
+      lastMonth: all[0] || null,
+      totalHidden: Math.max(0, all.length - 1),
+    }
+  }, [yearGroups])
+
+  if (!lastMonth) return null
+
+  return (
+    <div className="space-y-3">
+      {/* Teaser del último mes — expandido por default */}
+      <div className="border border-line rounded bg-bg-1 overflow-hidden">
+        <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
+            <span className="text-[11px] font-mono uppercase tracking-label text-ink-0">Tu último mes</span>
+          </div>
+          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Vista previa Free</span>
+        </header>
+        <MonthCard month={lastMonth.month} defaultExpanded={true} />
+      </div>
+
+      {/* Placeholder de los meses históricos */}
+      {totalHidden > 0 && (
+        <LockedSection.Placeholder
+          feature="reportes.historicos"
+          title={`Tenés ${totalHidden} ${totalHidden === 1 ? 'mes' : 'meses'} más en tu historial`}
+          description="Reportes históricos completos, comparativas mes a mes, descarga PDF y vista anual. Disponible en Rendi Pro."
+          source="reports_historicos"
+        />
       )}
     </div>
   )

@@ -16,6 +16,8 @@ import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
+import LockedSection from '../components/plan/LockedSection'
+import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
 import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/format'
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
@@ -121,6 +123,7 @@ export default function Insights() {
 function InsightsDesktop() {
   const isMobile = useIsMobile()
   const { user } = useAuth()
+  const plan = usePlanFeatures()
   // Truncar y sanitizar para usarlo como dataKey de Recharts (un solo nombre, máx 12 chars).
   // Si el "name" es un email, agarrar la parte antes del @.
   const userName = (() => {
@@ -1355,13 +1358,36 @@ function InsightsDesktop() {
         // a la rotación diaria del selector.
         const allRest = diagnosis.filter(d => !balancedIds.has(d.id))
         const restItems = allRest.slice(0, allRest.length - (allRest.length % 3))
+
+        // GATE Free: solo N observaciones visibles (default 3). El resto
+        // del diagnóstico queda blureado al final con CTA upgrade.
+        const visibleLimit = plan.limit('insights_diagnostic_visible')
+        const isLimited = !plan.hasFullAccess && typeof visibleLimit === 'number'
+        const visibleBalanced = isLimited ? balanced.slice(0, visibleLimit) : balanced
+        const hiddenBalanced = isLimited ? balanced.slice(visibleLimit) : []
+        const totalHidden = hiddenBalanced.length + (isLimited ? restItems.length : 0)
+
         return (
           <section id="diagnostico" className="scroll-mt-20">
             <p className="eyebrow mb-3">
-              Diagnóstico · {balanced.length} {balanced.length === 1 ? 'observación' : 'observaciones'} priorizadas
+              Diagnóstico · {visibleBalanced.length} {visibleBalanced.length === 1 ? 'observación' : 'observaciones'} priorizadas
             </p>
-            <DiagnosisGrid items={balanced} />
-            {restItems.length > 0 && (
+            <DiagnosisGrid items={visibleBalanced} />
+
+            {isLimited && totalHidden > 0 && (
+              <div className="mt-4">
+                <LockedSection.BlurredList
+                  feature="insights.diagnostic.full"
+                  hiddenCount={totalHidden}
+                  noun="observaciones"
+                  source="insights_diagnostic"
+                >
+                  <DiagnosisGrid items={[...hiddenBalanced, ...restItems].slice(0, 6)} />
+                </LockedSection.BlurredList>
+              </div>
+            )}
+
+            {!isLimited && restItems.length > 0 && (
               <details className="mt-3 group">
                 <summary className="cursor-pointer text-xs text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 select-none mb-3">
                   <ChevronDown size={12} strokeWidth={1.75} className="group-open:rotate-180 transition-transform" />
@@ -1830,35 +1856,45 @@ function InsightsDesktop() {
           )}
         </div>
 
-        <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
-          <h2 className="font-semibold text-ink-0 mb-4">Por activo</h2>
-          {assetPieData.length === 0 ? (
-            <p className="text-ink-3 text-sm text-center py-8">—</p>
-          ) : (
-            <div className="space-y-3">
-              {assetPieData.map((d, i) => {
-                const p = (d.value / totalPortfolio) * 100
-                return (
-                  <div key={d.name}>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-ink-1">{d.name}</span>
-                      <span className="text-ink-3 tabular">{amt(d.value)} · {p.toFixed(1)}%</span>
+        {plan.can('insights.distribucion_activo') ? (
+          <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+            <h2 className="font-semibold text-ink-0 mb-4">Por activo</h2>
+            {assetPieData.length === 0 ? (
+              <p className="text-ink-3 text-sm text-center py-8">—</p>
+            ) : (
+              <div className="space-y-3">
+                {assetPieData.map((d, i) => {
+                  const p = (d.value / totalPortfolio) * 100
+                  return (
+                    <div key={d.name}>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-ink-1">{d.name}</span>
+                        <span className="text-ink-3 tabular">{amt(d.value)} · {p.toFixed(1)}%</span>
+                      </div>
+                      <div className="h-2 bg-bg-2 dark:bg-bg-2/40 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${p}%`, background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                      </div>
                     </div>
-                    <div className="h-2 bg-bg-2 dark:bg-bg-2/40 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${p}%`, background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                    </div>
-                  </div>
-                )
-              })}
-              {assetPieData[0] && assetPieData[0].value / totalPortfolio > 0.6 && (
-                <p className="text-xs text-rendi-warn pt-2 flex items-start gap-1">
-                  <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
-                  Concentración elevada en {assetPieData[0].name} ({((assetPieData[0].value / totalPortfolio) * 100).toFixed(0)}%).
-                </p>
-              )}
-            </div>
-          )}
-        </div>
+                  )
+                })}
+                {assetPieData[0] && assetPieData[0].value / totalPortfolio > 0.6 && (
+                  <p className="text-xs text-rendi-warn pt-2 flex items-start gap-1">
+                    <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+                    Concentración elevada en {assetPieData[0].name} ({((assetPieData[0].value / totalPortfolio) * 100).toFixed(0)}%).
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <LockedSection.Placeholder
+            feature="insights.distribucion_activo"
+            title="Distribución por activo"
+            description="Visualizá cómo se reparte tu capital entre cada activo individual con concentración y alertas. Disponible en Rendi Pro."
+            source="insights_distribucion_activo"
+            className="min-h-[260px] flex flex-col items-center justify-center"
+          />
+        )}
       </div>
 
       {/* Distribución por tipo de activo (cripto / acción / CEDEAR / cash) */}

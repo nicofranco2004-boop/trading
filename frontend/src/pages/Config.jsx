@@ -17,6 +17,8 @@ import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
+import UpgradeModal from '../components/plan/UpgradeModal'
+import { usePlanFeatures, refreshPlanFeatures } from '../hooks/usePlanFeatures'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -104,6 +106,9 @@ export default function Config() {
   const [importJustConfirmed, setImportJustConfirmed] = useState(false)
   const [showAddBroker, setShowAddBroker] = useState(false)
   const [aiUsage, setAiUsage] = useState(null)
+  // Upgrade modal cuando el backend devuelve 403 al intentar agregar broker
+  const [brokerUpgrade, setBrokerUpgrade] = useState(null)
+  const plan = usePlanFeatures()
 
   useEffect(() => {
     loadDolar()
@@ -128,10 +133,25 @@ export default function Config() {
   async function addBroker(e) {
     e.preventDefault()
     if (!newBroker.name.trim()) return
-    await api.post('/brokers', { name: newBroker.name.trim(), currency: newBroker.currency })
-    setNewBroker({ name: '', currency: 'USDT' })
-    setShowAddBroker(false)
-    loadBrokers()
+    try {
+      await api.post('/brokers', { name: newBroker.name.trim(), currency: newBroker.currency })
+      setNewBroker({ name: '', currency: 'USDT' })
+      setShowAddBroker(false)
+      loadBrokers()
+      refreshPlanFeatures()  // brokers_current cambió
+    } catch (ex) {
+      // Gate Free: backend devuelve 403 con upgrade payload cuando cap alcanzado
+      if (ex?.status === 403 && ex?.payload?.detail?.upgrade) {
+        const detail = ex.payload.detail
+        track('feature_blocked_clicked', { feature: 'brokers.create', source: 'config_add_broker' })
+        setBrokerUpgrade({
+          message: detail.error || 'El plan Free permite 1 broker.',
+          benefits: detail.upgrade?.benefits,
+        })
+        return
+      }
+      throw ex
+    }
   }
 
   async function saveEditBroker(e) {
@@ -521,6 +541,18 @@ export default function Config() {
           </form>
         </Panel>
       </div>
+
+      {/* Modal de upgrade cuando intenta agregar broker n°2 en Free */}
+      {brokerUpgrade && (
+        <UpgradeModal
+          title="Pasate a Rendi Pro para más brokers"
+          message={brokerUpgrade.message}
+          feature="brokers.create"
+          source="config_add_broker"
+          benefits={brokerUpgrade.benefits}
+          onClose={() => setBrokerUpgrade(null)}
+        />
+      )}
 
       {showImport && (
         <ImportWizard
