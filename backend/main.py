@@ -587,6 +587,27 @@ def init_db():
             cost_usd_cents INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
+
+        -- ─── plan_events: telemetría del paywall Free → Pro ─────────────────
+        -- Cada click en un CTA bloqueado (LockedSection, UpgradeModal, PlanHero)
+        -- inserta una fila acá. Permite medir CTR de upgrade por feature/source
+        -- y priorizar qué bloqueos convierten más.
+        CREATE TABLE IF NOT EXISTS plan_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            tier TEXT NOT NULL,                  -- 'free' | 'pro' | 'admin' al momento del evento
+            event_name TEXT NOT NULL,            -- 'feature_blocked_clicked' | 'upgrade_modal_cta_clicked' | ...
+            feature_id TEXT,                     -- 'comportamiento.full' | 'brokers.create' | ...
+            source TEXT,                         -- 'behavioral_grid' | 'config_add_broker' | ...
+            props_json TEXT,                     -- extras opcionales (JSON serializado)
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_plan_events_user
+            ON plan_events(user_id);
+        CREATE INDEX IF NOT EXISTS idx_plan_events_feature
+            ON plan_events(feature_id, event_name);
+        CREATE INDEX IF NOT EXISTS idx_plan_events_created
+            ON plan_events(created_at);
     """)
 
     # ─── CSV Importer ────────────────────────────────────────────────────────
@@ -4891,6 +4912,88 @@ def admin_stats(uid: int = Depends(get_admin_user)):
     }
 
 
+@app.get("/api/admin/plan/conversion")
+def admin_plan_conversion(uid: int = Depends(get_admin_user)):
+    """Métricas de conversión Free → Pro.
+
+    Agrega los eventos de `plan_events` y devuelve:
+      - totals: counts totales por event_name
+      - by_feature: clicks por feature_id (qué bloqueo convierte más)
+      - by_source: clicks por origen (qué pantalla genera más intent)
+      - last_30d_total: actividad reciente
+      - distinct_users_blocked / distinct_users_clicked
+    """
+    conn = get_db()
+    try:
+        # Totales por event_name
+        totals = {}
+        rows = conn.execute(
+            """SELECT event_name, COUNT(*) AS n FROM plan_events
+               GROUP BY event_name"""
+        ).fetchall()
+        for r in rows:
+            totals[r["event_name"]] = r["n"]
+
+        # Por feature (ordenado desc por intent)
+        by_feature = [
+            dict(r) for r in conn.execute(
+                """SELECT feature_id,
+                          COUNT(*) AS clicks,
+                          COUNT(DISTINCT user_id) AS users
+                   FROM plan_events
+                   WHERE feature_id IS NOT NULL
+                   GROUP BY feature_id
+                   ORDER BY clicks DESC"""
+            ).fetchall()
+        ]
+
+        # Por source (qué pantalla)
+        by_source = [
+            dict(r) for r in conn.execute(
+                """SELECT source,
+                          COUNT(*) AS clicks,
+                          COUNT(DISTINCT user_id) AS users
+                   FROM plan_events
+                   WHERE source IS NOT NULL
+                   GROUP BY source
+                   ORDER BY clicks DESC"""
+            ).fetchall()
+        ]
+
+        # Último 30 días
+        last_30d = conn.execute(
+            """SELECT COUNT(*) AS n FROM plan_events
+               WHERE created_at >= datetime('now', '-30 days')"""
+        ).fetchone()["n"]
+
+        # Distinct users con/sin click final
+        distinct_blocked = conn.execute(
+            """SELECT COUNT(DISTINCT user_id) AS n FROM plan_events
+               WHERE tier = 'free'"""
+        ).fetchone()["n"]
+
+        # Eventos recientes (debug / monitoring)
+        recent = [
+            dict(r) for r in conn.execute(
+                """SELECT user_id, tier, event_name, feature_id, source, created_at
+                   FROM plan_events
+                   ORDER BY created_at DESC
+                   LIMIT 50"""
+            ).fetchall()
+        ]
+
+        return {
+            "totals": totals,
+            "by_feature": by_feature,
+            "by_source": by_source,
+            "last_30d_total": last_30d,
+            "distinct_free_users_with_intent": distinct_blocked,
+            "recent": recent,
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/users")
 def admin_users(uid: int = Depends(get_admin_user)):
     """Lista de usuarios con métricas básicas. NO devuelve password hashes."""
@@ -5368,6 +5471,55 @@ def ai_topics():
     sin auth — útil para que el frontend descubra topics sin hardcodear."""
     from ai.registry import list_topics
     return {"topics": list_topics()}
+
+
+class PlanEventIn(BaseModel):
+    """Payload del frontend para POST /api/plan/track."""
+    event: str = Field(..., min_length=1, max_length=64)
+    feature_id: Optional[str] = Field(default=None, max_length=64)
+    source: Optional[str] = Field(default=None, max_length=64)
+    props: Optional[dict] = None
+
+
+# Whitelist de event names que el frontend puede registrar. Cualquier otro
+# event_name se descarta (defensa contra spam / abuse).
+_ALLOWED_PLAN_EVENTS = {
+    "feature_blocked_clicked",
+    "upgrade_modal_cta_clicked",
+    "plan_hero_upgrade_clicked",
+    "upgrade_promo_clicked",
+}
+
+
+@app.post("/api/plan/track", status_code=204)
+def plan_track(data: PlanEventIn, uid: int = Depends(get_current_user)):
+    """Registra un evento de paywall para analytics de conversión.
+
+    Whitelist de event_names para evitar spam. Solo eventos clave del flow
+    de upgrade. Returns 204 (no body) — fire-and-forget desde el frontend.
+    """
+    if data.event not in _ALLOWED_PLAN_EVENTS:
+        # No es error fatal — descartamos silenciosamente para que el client
+        # no necesite manejar el rechazo (es telemetría, no acción crítica).
+        return
+    from ai import quota
+    conn = get_db()
+    try:
+        tier = quota.get_tier(conn, uid)
+        with conn:
+            conn.execute(
+                """INSERT INTO plan_events
+                       (user_id, tier, event_name, feature_id, source, props_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    uid, tier, data.event,
+                    data.feature_id,
+                    data.source,
+                    json.dumps(data.props or {}, ensure_ascii=False),
+                ),
+            )
+    finally:
+        conn.close()
 
 
 @app.get("/api/plan/features")

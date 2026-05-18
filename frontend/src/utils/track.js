@@ -41,6 +41,16 @@ const IS_DEV = typeof import.meta !== 'undefined' && import.meta?.env?.DEV
 const RECENT_EVENTS = []
 const MAX_BUFFER = 100
 
+// Eventos que se reenvían al backend para analytics de conversión Pro.
+// Whitelist coincide con _ALLOWED_PLAN_EVENTS del backend — cambios acá
+// requieren cambios allá.
+const SERVER_TRACKED_EVENTS = new Set([
+  'feature_blocked_clicked',
+  'upgrade_modal_cta_clicked',
+  'plan_hero_upgrade_clicked',
+  'upgrade_promo_clicked',
+])
+
 export function track(event, props = {}) {
   const enriched = {
     event,
@@ -55,15 +65,40 @@ export function track(event, props = {}) {
     console.debug('[track]', event, props)
   }
 
+  // Forward al backend SOLO los eventos del paywall (analytics de conversión).
+  // Fire-and-forget — no esperamos respuesta para no bloquear UX. Falla
+  // silenciosamente si no hay auth o el server no responde (es telemetría,
+  // no acción crítica).
+  if (SERVER_TRACKED_EVENTS.has(event)) {
+    _forwardToBackend(event, props)
+  }
+
   // ── Stub de provider real ──────────────────────────────────────────────────
   // Cuando integremos PostHog:
   //   if (window.posthog) window.posthog.capture(event, props)
-  // Plausible:
-  //   if (window.plausible) window.plausible(event, { props })
-  // Mixpanel:
-  //   if (window.mixpanel) window.mixpanel.track(event, props)
   if (typeof window !== 'undefined' && window.__rendi_track__) {
     try { window.__rendi_track__(event, props) } catch {}
+  }
+}
+
+async function _forwardToBackend(event, props) {
+  // Lazy import para evitar dependencias circulares con utils/api.js
+  try {
+    const { api } = await import('./api.js')
+    const { isDemoMode } = await import('./demo.js')
+    if (isDemoMode()) return  // En demo no contamina la tabla real
+    // Extraer keys reconocidas + dejar el resto como `props`
+    const { feature, source, ...rest } = props || {}
+    api.post('/plan/track', {
+      event,
+      feature_id: feature || null,
+      source: source || null,
+      props: rest,
+    }).catch(() => {
+      // No hacer nada — telemetría es best-effort
+    })
+  } catch {
+    // dynamic import failed → silent
   }
 }
 
