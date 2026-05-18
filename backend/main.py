@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 import requests
 import logging
+log = logging.getLogger(__name__)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import run_daily_snapshot
@@ -5989,6 +5990,326 @@ def plan_features(uid: int = Depends(get_current_user)):
         return plan.get_plan_features(conn, uid)
     finally:
         conn.close()
+
+
+# ─── Billing / Mercado Pago ──────────────────────────────────────────────────
+# Suscripciones recurring vía MP preapproval API. Flow:
+#  1. User clickea "Suscribirme" → POST /api/billing/subscribe (este endpoint)
+#  2. Backend crea preapproval en MP, devuelve init_point URL
+#  3. Frontend redirige al user a init_point (checkout de MP)
+#  4. User paga con tarjeta → MP llama nuestro webhook (paso 5)
+#  5. POST /api/billing/webhook → validamos signature + actualizamos tier='pro'
+#  6. MP repite cobro automáticamente cada mes/año + llama webhook cada vez
+
+class SubscribeIn(BaseModel):
+    period: str = Field(..., pattern="^(monthly|annual)$")
+
+
+@app.post("/api/billing/subscribe")
+def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
+    """Crea un preapproval en MP para que el user pague la suscripción Pro.
+
+    Devuelve `init_point` (URL del checkout MP). El frontend redirige al user
+    ahí. Tras pagar, MP llama nuestro webhook que activa el tier='pro'.
+
+    Si el user ya tiene una suscripción 'authorized', devolvemos 409. Si tiene
+    una 'pending' previa, reutilizamos el init_point (no creamos duplicado).
+    """
+    from billing import mercadopago, pricing
+    conn = get_db()
+    try:
+        # 1. Obtener email del user (MP lo necesita para el checkout)
+        user_row = conn.execute(
+            "SELECT email, tier, is_admin FROM users WHERE id = ?", (uid,)
+        ).fetchone()
+        if not user_row:
+            raise HTTPException(404, "User not found")
+        user_email = user_row["email"]
+
+        # 2. Check si ya tiene suscripción activa
+        existing = conn.execute(
+            """SELECT id, mp_subscription_id, status, init_point FROM subscriptions
+               WHERE user_id = ? AND status IN ('authorized', 'pending')
+               ORDER BY created_at DESC LIMIT 1""",
+            (uid,),
+        ).fetchone()
+        if existing and existing["status"] == "authorized":
+            raise HTTPException(409, {
+                "error": "Ya tenés una suscripción activa.",
+                "subscription_id": existing["mp_subscription_id"],
+            })
+        if existing and existing["status"] == "pending" and existing["init_point"]:
+            # Reusar el init_point pending (el user puede que abandonó el checkout
+            # y vuelva a clickear "Suscribirme")
+            return {
+                "init_point": existing["init_point"],
+                "subscription_id": existing["mp_subscription_id"],
+                "reused": True,
+            }
+
+        # 3. Crear preapproval en MP
+        try:
+            mp_response = mercadopago.create_preapproval(
+                user_id=uid,
+                user_email=user_email,
+                period=data.period,
+            )
+        except Exception as ex:
+            log.error("MP create_preapproval failed for uid=%s: %s", uid, ex)
+            raise HTTPException(502, f"Error al crear suscripción en MP: {type(ex).__name__}")
+
+        # 4. Guardar en DB
+        amount = pricing.get_pricing(data.period)["total_ars"]
+        ext_ref = f"rendi-{uid}-{data.period}"
+        with conn:
+            conn.execute(
+                """INSERT INTO subscriptions
+                       (user_id, mp_subscription_id, external_reference, period,
+                        status, amount_ars, init_point, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))""",
+                (
+                    uid,
+                    mp_response.get("id"),
+                    ext_ref,
+                    data.period,
+                    amount,
+                    mp_response.get("init_point"),
+                ),
+            )
+
+        return {
+            "init_point": mp_response.get("init_point"),
+            "subscription_id": mp_response.get("id"),
+            "reused": False,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/billing/cancel")
+def billing_cancel(uid: int = Depends(get_current_user)):
+    """Cancela la suscripción Pro del user.
+
+    NOTA: NO devolvemos el dinero del período actual. El user mantiene
+    Pro hasta `current_period_end` (la fecha en que MP iba a cobrar
+    el próximo). Después de esa fecha, el webhook NO recibe más eventos
+    de pago, y un cron periódico (o el próximo /auth/me) detectaría que
+    pasó current_period_end y bajaría a tier='free'.
+    """
+    from billing import mercadopago
+    conn = get_db()
+    try:
+        sub = conn.execute(
+            """SELECT mp_subscription_id, status FROM subscriptions
+               WHERE user_id = ? AND status = 'authorized'
+               ORDER BY created_at DESC LIMIT 1""",
+            (uid,),
+        ).fetchone()
+        if not sub:
+            raise HTTPException(404, "No tenés suscripción activa para cancelar.")
+
+        try:
+            mercadopago.cancel_preapproval(sub["mp_subscription_id"])
+        except Exception as ex:
+            log.error("MP cancel failed for uid=%s: %s", uid, ex)
+            raise HTTPException(502, f"Error al cancelar en MP: {type(ex).__name__}")
+
+        with conn:
+            conn.execute(
+                """UPDATE subscriptions
+                   SET status = 'cancelled', cancelled_at = datetime('now'),
+                       updated_at = datetime('now')
+                   WHERE mp_subscription_id = ?""",
+                (sub["mp_subscription_id"],),
+            )
+
+        return {"status": "cancelled", "subscription_id": sub["mp_subscription_id"]}
+    finally:
+        conn.close()
+
+
+@app.get("/api/billing/status")
+def billing_status(uid: int = Depends(get_current_user)):
+    """Estado actual de la suscripción del user. Usado por /planes para
+    mostrar 'Próxima renovación: X' o 'Cancelada · expira X'."""
+    conn = get_db()
+    try:
+        sub = conn.execute(
+            """SELECT mp_subscription_id, period, status, amount_ars,
+                      current_period_start, current_period_end, next_charge_date,
+                      cancelled_at, created_at
+               FROM subscriptions
+               WHERE user_id = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (uid,),
+        ).fetchone()
+        if not sub:
+            return {"has_subscription": False}
+        return {
+            "has_subscription": True,
+            **dict(sub),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request):
+    """Recibe eventos de MP server-to-server.
+
+    Eventos relevantes:
+      • `preapproval` (action: created/updated)
+         → Fetch full preapproval. Si status='authorized' → tier='pro'.
+         Si 'cancelled'/'paused' → marcar y eventualmente revertir tier.
+      • `subscription_authorized_payment` / `payment` (action: payment.created)
+         → Cobro recurring exitoso. Actualizar next_charge_date.
+
+    SECURITY: validar signature con x-signature header antes de procesar.
+    En sandbox sin MP_WEBHOOK_SECRET configurado, permitimos sin validar
+    (con warning) para facilitar dev. En prod siempre validamos.
+    """
+    from billing import mercadopago
+    raw = await request.body()
+    x_signature = request.headers.get("x-signature", "")
+    x_request_id = request.headers.get("x-request-id", "")
+
+    try:
+        payload = json.loads(raw or b"{}")
+    except Exception:
+        log.warning("Webhook with non-JSON body")
+        return Response(status_code=400)
+
+    event_type = payload.get("type") or payload.get("action") or ""
+    data_id = str((payload.get("data") or {}).get("id") or payload.get("id") or "")
+    mp_event_id = str(payload.get("id") or "")
+
+    log.info("MP webhook received: type=%s data_id=%s", event_type, data_id)
+
+    sig_valid = mercadopago.verify_webhook_signature(
+        raw, x_signature, x_request_id, data_id
+    )
+
+    conn = get_db()
+    try:
+        # Audit log — siempre guardamos el evento aunque falle (replay/debug)
+        with conn:
+            conn.execute(
+                """INSERT INTO billing_events
+                       (mp_event_id, mp_event_type, mp_data_id, signature_valid,
+                        processed, raw_payload, created_at)
+                   VALUES (?, ?, ?, ?, 0, ?, datetime('now'))""",
+                (
+                    mp_event_id,
+                    event_type,
+                    data_id,
+                    1 if sig_valid else 0,
+                    json.dumps(payload),
+                ),
+            )
+
+        if not sig_valid:
+            # En sandbox sin secret pasamos (warning ya en mercadopago.py).
+            # Sólo rechazamos si secret está configurado pero la firma falla.
+            from billing.mercadopago import _webhook_secret
+            if _webhook_secret():
+                log.warning("MP webhook with INVALID signature, rejecting")
+                return Response(status_code=401)
+
+        # Procesar según tipo de evento
+        if not data_id:
+            return Response(status_code=200)  # nada que hacer
+
+        if event_type in ("preapproval", "subscription_preapproval"):
+            _process_preapproval_event(conn, data_id)
+        elif event_type in (
+            "subscription_authorized_payment",
+            "payment",
+            "subscription_payment",
+        ):
+            _process_payment_event(conn, data_id, payload)
+
+        with conn:
+            conn.execute(
+                "UPDATE billing_events SET processed = 1 WHERE mp_event_id = ?",
+                (mp_event_id,),
+            )
+        return Response(status_code=200)
+    except Exception as ex:
+        log.exception("MP webhook processing error: %s", ex)
+        return Response(status_code=200)  # 200 para que MP no retry agresivo
+    finally:
+        conn.close()
+
+
+def _process_preapproval_event(conn, preapproval_id: str):
+    """Fetch full preapproval state from MP + sync our subscriptions row."""
+    from billing import mercadopago
+    pa = mercadopago.get_preapproval(preapproval_id)
+    if not pa:
+        return
+
+    mp_status = (pa.get("status") or "").lower()
+    ext_ref = pa.get("external_reference") or ""
+    auto = pa.get("auto_recurring") or {}
+
+    # Mapear status MP → status nuestro
+    status_map = {
+        "authorized": "authorized",
+        "pending": "pending",
+        "paused": "paused",
+        "cancelled": "cancelled",
+        "finished": "cancelled",
+    }
+    our_status = status_map.get(mp_status, "pending")
+
+    # next_charge_date / current_period_end
+    next_pmt = pa.get("next_payment_date")
+    period_start = auto.get("start_date")
+
+    with conn:
+        conn.execute(
+            """UPDATE subscriptions
+               SET status = ?, current_period_start = COALESCE(?, current_period_start),
+                   next_charge_date = COALESCE(?, next_charge_date),
+                   current_period_end = COALESCE(?, current_period_end),
+                   updated_at = datetime('now')
+               WHERE mp_subscription_id = ?""",
+            (our_status, period_start, next_pmt, next_pmt, preapproval_id),
+        )
+
+    # Si quedó authorized → el user pasa a tier='pro'
+    if our_status == "authorized":
+        parsed = mercadopago.parse_external_reference(ext_ref)
+        if parsed:
+            user_id, _ = parsed
+            with conn:
+                conn.execute("UPDATE users SET tier = 'pro' WHERE id = ?", (user_id,))
+                conn.execute(
+                    "UPDATE billing_events SET user_id = ? WHERE mp_data_id = ?",
+                    (user_id, preapproval_id),
+                )
+            log.info("User %s upgraded to tier='pro' via MP preapproval %s", user_id, preapproval_id)
+    elif our_status in ("cancelled", "paused"):
+        # NOTA: no revertimos tier aún — el user mantiene Pro hasta fin de período.
+        # Un cron diario (no implementado todavía) chequeará current_period_end y bajará.
+        log.info("Subscription %s now %s (tier change pending end of period)", preapproval_id, our_status)
+
+
+def _process_payment_event(conn, payment_id: str, payload: dict):
+    """Procesa un payment event recurrente. Por ahora solo registramos el
+    payment_id en la subscription para auditoría. Un cron periódico
+    podría hacer reconciliación de fechas si es necesario."""
+    # MP también incluye preapproval_id en algunos payment events
+    pa_id = (payload.get("data") or {}).get("preapproval_id")
+    if pa_id:
+        with conn:
+            conn.execute(
+                """UPDATE subscriptions SET last_payment_id = ?,
+                   updated_at = datetime('now')
+                   WHERE mp_subscription_id = ?""",
+                (payment_id, pa_id),
+            )
+    log.info("MP payment event processed: payment_id=%s preapproval=%s", payment_id, pa_id)
 
 
 @app.get("/api/ai/usage")

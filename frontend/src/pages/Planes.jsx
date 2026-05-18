@@ -9,19 +9,26 @@
 //   • LockedSection CTAs (cuando el user toca un gate)
 //   • UpgradeModal y UpgradePromoCard
 //
-// Cuando exista checkout real, el CTA "Suscribirme" pega a Stripe Checkout.
-// Por ahora alerta + telemetry para entender intent.
+// CTA "Suscribirme" pega a /api/billing/subscribe → MP devuelve init_point
+// → redirigimos al user al checkout de MP. Tras pagar, MP nos vuelve a
+// /billing/success y el webhook activa tier='pro'.
 
-import { Sparkles, Check, ArrowRight, Lock } from 'lucide-react'
+import { Sparkles, Check, ArrowRight, Lock, Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import PageHeader from '../components/PageHeader'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { track } from '../utils/track'
+import { api } from '../utils/api'
 
 // Precio Pro en USD/mes — placeholder que vamos a iterar.
 // Cambiar acá afecta toda la app (Config PlanHero, UpgradeModal, etc.).
 export const PRO_PRICE_USD = '6.99'
+
+// Precios ARS (mantener sync con backend/billing/pricing.py)
+const ARS_MONTHLY = '12.100'      // base 10.000 + IVA 21%
+const ARS_ANNUAL  = '123.420'     // base 102.000 + IVA 21% (15% descuento)
+const ARS_ANNUAL_MONTHLY_EQ = '10.285'  // total anual / 12
 
 // ─── Listas de features por plan ─────────────────────────────────────────────
 
@@ -55,6 +62,8 @@ const PRO_FEATURES = [
 export default function Planes() {
   const navigate = useNavigate()
   const { tier, loading } = usePlanFeatures()
+  const [billingPeriod, setBillingPeriod] = useState('monthly')  // 'monthly' | 'annual'
+  const [subscribing, setSubscribing] = useState(false)
   const isFree = tier === 'free'
   const isPro = tier === 'pro'
   const isAdmin = tier === 'admin'
@@ -66,13 +75,34 @@ export default function Planes() {
     track('planes_viewed', { from_tier: tier })
   }, [tier])
 
-  function onSubscribeClick() {
-    track('upgrade_subscribe_clicked', { from_tier: tier, source: 'planes_page' })
-    // TODO: cuando exista Stripe checkout, redirigir.
-    alert(
-      'Rendi Pro está en desarrollo. Te vamos a avisar por email cuando esté ' +
-      'listo para suscribirte.'
-    )
+  async function onSubscribeClick() {
+    if (subscribing) return
+    track('upgrade_subscribe_clicked', {
+      from_tier: tier,
+      source: 'planes_page',
+      period: billingPeriod,
+    })
+    setSubscribing(true)
+    try {
+      const res = await api.post('/billing/subscribe', { period: billingPeriod })
+      if (res.init_point) {
+        // Redirigir al checkout de MP (el user paga ahí, después MP lo devuelve
+        // a /billing/success o /billing/failure)
+        window.location.href = res.init_point
+      } else {
+        alert('No pudimos generar el checkout. Probá de nuevo en unos minutos.')
+      }
+    } catch (ex) {
+      if (ex?.status === 409) {
+        alert('Ya tenés una suscripción activa. Revisá tu estado en Configuración.')
+        navigate('/config')
+        return
+      }
+      console.error('Subscribe error:', ex)
+      alert('No pudimos iniciar la suscripción. ' + (ex?.message || 'Probá de nuevo más tarde.'))
+    } finally {
+      setSubscribing(false)
+    }
   }
 
   return (
@@ -86,33 +116,80 @@ export default function Planes() {
       {loading ? (
         <div className="text-center py-12 text-ink-3 text-sm">Cargando planes…</div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-5xl mx-auto">
-          {/* ── Free card ─── */}
-          <PlanCard
-            name="Free"
-            tagline="Lo esencial para trackear tu portfolio"
-            price="Gratis"
-            priceSub="Para siempre"
-            features={FREE_FEATURES.map(label => ({ label }))}
-            isCurrent={isFree}
-            ctaLabel={isFree ? 'Tu plan actual' : 'Disponible al downgradear'}
-            ctaDisabled
-          />
+        <>
+          {/* Toggle mensual / anual — visible solo si el user no es Pro */}
+          {!hasProTier && (
+            <div className="flex justify-center mb-6">
+              <div className="inline-flex bg-bg-2 border border-line/60 rounded-sm p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setBillingPeriod('monthly')}
+                  className={`px-4 py-1.5 text-xs font-medium rounded-sm transition-colors ${
+                    billingPeriod === 'monthly'
+                      ? 'bg-bg-3 text-ink-0'
+                      : 'text-ink-2 hover:text-ink-0'
+                  }`}
+                >
+                  Mensual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBillingPeriod('annual')}
+                  className={`px-4 py-1.5 text-xs font-medium rounded-sm transition-colors inline-flex items-center gap-2 ${
+                    billingPeriod === 'annual'
+                      ? 'bg-bg-3 text-ink-0'
+                      : 'text-ink-2 hover:text-ink-0'
+                  }`}
+                >
+                  Anual
+                  <span className="text-[9px] font-mono uppercase tracking-caps px-1 py-px rounded-sm bg-rendi-pos/15 text-rendi-pos">
+                    −15%
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
 
-          {/* ── Pro card (highlighted) ─── */}
-          <PlanCard
-            name="Pro"
-            tagline="Análisis profundos + features avanzadas"
-            price={`USD ${PRO_PRICE_USD}`}
-            priceSub="por mes"
-            features={PRO_FEATURES}
-            isCurrent={hasProTier}
-            ctaLabel={hasProTier ? 'Tu plan actual' : 'Suscribirme a Pro'}
-            ctaDisabled={hasProTier}
-            highlight
-            onCtaClick={onSubscribeClick}
-          />
-        </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-5xl mx-auto">
+            {/* ── Free card ─── */}
+            <PlanCard
+              name="Free"
+              tagline="Lo esencial para trackear tu portfolio"
+              price="Gratis"
+              priceSub="Para siempre"
+              features={FREE_FEATURES.map(label => ({ label }))}
+              isCurrent={isFree}
+              ctaLabel={isFree ? 'Tu plan actual' : 'Disponible al downgradear'}
+              ctaDisabled
+            />
+
+            {/* ── Pro card (highlighted) ─── */}
+            <PlanCard
+              name="Pro"
+              tagline="Análisis profundos + features avanzadas"
+              price={billingPeriod === 'annual' ? `ARS ${ARS_ANNUAL_MONTHLY_EQ}` : `ARS ${ARS_MONTHLY}`}
+              priceSub={billingPeriod === 'annual'
+                ? `por mes · facturado anual (ARS ${ARS_ANNUAL})`
+                : 'por mes · IVA 21% incluido'}
+              priceFootnote={billingPeriod === 'annual'
+                ? `Ahorrás ARS 21.780 al año vs mensual`
+                : `Equivalente a USD ${PRO_PRICE_USD} al blue · IVA 21% incluido`}
+              features={PRO_FEATURES}
+              isCurrent={hasProTier}
+              ctaLabel={
+                hasProTier
+                  ? 'Tu plan actual'
+                  : subscribing
+                    ? 'Redirigiendo…'
+                    : (billingPeriod === 'annual' ? 'Suscribirme anual' : 'Suscribirme a Pro')
+              }
+              ctaDisabled={hasProTier || subscribing}
+              ctaLoading={subscribing}
+              highlight
+              onCtaClick={onSubscribeClick}
+            />
+          </div>
+        </>
       )}
 
       <div className="text-center mt-8">
@@ -136,8 +213,8 @@ export default function Planes() {
 // ─── Card individual ────────────────────────────────────────────────────────
 
 function PlanCard({
-  name, tagline, price, priceSub, features,
-  isCurrent, ctaLabel, ctaDisabled, highlight, onCtaClick,
+  name, tagline, price, priceSub, priceFootnote, features,
+  isCurrent, ctaLabel, ctaDisabled, ctaLoading, highlight, onCtaClick,
 }) {
   return (
     <div
@@ -172,6 +249,9 @@ function PlanCard({
           <span className="text-3xl font-bold text-ink-0 tabular">{price}</span>
           {priceSub && <span className="text-xs text-ink-3">{priceSub}</span>}
         </div>
+        {priceFootnote && (
+          <p className="text-[10px] text-ink-3 mt-1.5 leading-snug">{priceFootnote}</p>
+        )}
       </div>
 
       {/* CTA */}
@@ -190,9 +270,12 @@ function PlanCard({
           }
         `}
       >
-        {!ctaDisabled && highlight && <Sparkles size={13} strokeWidth={1.75} />}
+        {ctaLoading
+          ? <Loader2 size={13} strokeWidth={1.75} className="animate-spin" />
+          : (!ctaDisabled && highlight && <Sparkles size={13} strokeWidth={1.75} />)
+        }
         <span>{ctaLabel}</span>
-        {!ctaDisabled && <ArrowRight size={13} strokeWidth={1.75} />}
+        {!ctaDisabled && !ctaLoading && <ArrowRight size={13} strokeWidth={1.75} />}
       </button>
 
       {/* Feature list */}
