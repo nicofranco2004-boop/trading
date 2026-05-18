@@ -47,7 +47,34 @@ def _access_token() -> str:
 
 
 def _frontend_base() -> str:
-    return (os.environ.get("MP_FRONTEND_BASE_URL") or "http://localhost:5173").rstrip("/")
+    """Base URL para back_urls del checkout MP.
+
+    MP RECHAZA back_urls con localhost / 127.0.0.1 con error 400
+    'Invalid value for back_url, must be a valid URL'. Necesita HTTPS
+    + dominio público.
+
+    Workaround para dev local: si la base es localhost, usamos rendi.app
+    como placeholder. MP acepta el formato; tras pagar, el browser intenta
+    ir a rendi.app/billing/success (puede dar 404) y el user vuelve
+    manualmente a localhost:5173/billing/success — que llama a /sync y
+    confirma el pago.
+
+    Para deploys con dominio real, el .env apunta directo al dominio."""
+    base = (os.environ.get("MP_FRONTEND_BASE_URL") or "http://localhost:5173").rstrip("/")
+    if base.startswith("http://localhost") or "://127.0.0.1" in base or base.startswith("http://0.0.0.0"):
+        return "https://rendi.app"
+    return base
+
+
+def _is_local_dev() -> bool:
+    """True cuando estamos corriendo contra localhost — afecta back_urls."""
+    base = (os.environ.get("MP_FRONTEND_BASE_URL") or "").lower()
+    return (
+        base.startswith("http://localhost")
+        or "://127.0.0.1" in base
+        or base.startswith("http://0.0.0.0")
+        or not base
+    )
 
 
 def _webhook_secret() -> str:
@@ -192,8 +219,12 @@ def verify_webhook_signature(
 # ─── Utils ─────────────────────────────────────────────────────────────────
 
 def _iso_now() -> str:
-    """ISO 8601 con TZ — formato que espera MP."""
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    """ISO 8601 con TZ — formato que espera MP.
+
+    Agregamos 2 minutos al "now" porque MP rechaza start_dates en el pasado.
+    Por el round-trip entre creación de preapproval y procesamiento server-side,
+    sin este margen MP devuelve 400 'cannot be a past date'."""
+    return (datetime.utcnow() + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def parse_external_reference(ref: str) -> Optional[tuple[int, Period]]:
