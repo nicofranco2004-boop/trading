@@ -139,7 +139,8 @@ export default function Dashboard() {
   // Si discrepancia < 0: la cartera vale más de lo que explican los flujos
   //   registrados. Típicamente: dividendos/intereses cobrados que no se
   //   cargaron como pnl_realized, o ajustes de data (splits, baselines).
-  //   Label: "Ingresos sin clasificar".
+  //   Label: "Dividendos e intereses" (la causa #1 — el tooltip aclara que
+  //   también puede incluir ajustes de splits/baselines en casos raros).
   //
   // Equivalencia algebraica: netDeposited + realizedPnl − totalCostBasis
   // (lo que pusiste + lo cerrado como ganancia − lo que está hoy posicionado).
@@ -441,7 +442,7 @@ export default function Dashboard() {
                   <p className="text-ink-3">
                     <strong className="text-ink-1">¿Por qué no es igual a realizado + no realizado?</strong> {gapIsOutflow
                       ? 'Hubo retiros que incluían ganancias — esa plata salió del portfolio pero sigue contabilizada como realizada (ver KPI "Ganancias retiradas").'
-                      : 'La cartera vale más de lo que explican los flujos cargados, típicamente por dividendos/intereses no cargados como P&L realizado (ver KPI "Ingresos sin clasificar").'}
+                      : 'La cartera tiene plusvalía no clasificada como P&L realizado, típicamente dividendos cobrados o intereses sobre cash (ver KPI "Dividendos e intereses").'}
                   </p>
                 </>
               )}
@@ -478,8 +479,9 @@ export default function Dashboard() {
         />
         {showAccountingGap && (
           <KpiCell
-            label={gapIsOutflow ? 'Ganancias retiradas' : 'Ingresos sin clasificar'}
+            label={gapIsOutflow ? 'Ganancias retiradas' : 'Dividendos e intereses'}
             value={fmt(Math.abs(accountingGap))}
+            tone={gapIsOutflow ? undefined : 'pos'}
             sub={gapIsOutflow ? 'fuera del portfolio' : 'no cargados como P&L'}
             info={
               gapIsOutflow ? (
@@ -494,13 +496,13 @@ export default function Dashboard() {
                 </>
               ) : (
                 <>
-                  <p className="font-medium text-ink-0">Ingresos sin clasificar</p>
-                  <p>Tu cartera vale más de lo que explican los flujos cargados. Probablemente <strong>dividendos cobrados</strong>, <strong>intereses sobre cash</strong>, o ajustes (splits, baselines) que no se cargaron como P&L realizado.</p>
+                  <p className="font-medium text-ink-0">Dividendos e intereses (estimado)</p>
+                  <p>Plata real que está en tu portfolio pero <strong>no se cargó como P&L realizado</strong>. La fuente típica son <strong>dividendos cobrados</strong> e <strong>intereses sobre cash</strong> del broker.</p>
                   <p className="text-ink-3 font-mono text-[11px]">= resultado total − (realizado + no realizado)</p>
                   <p className="text-ink-3">
-                    Cierra la identidad contable: <span className="font-mono">resultado total = realizado + no realizado + ingresos sin clasificar</span>.
+                    Cierra la identidad: <span className="font-mono">resultado total = realizado + no realizado + esto</span>.
                   </p>
-                  <p className="text-ink-3">Si querés que cuadre exactamente, podés cargar los dividendos/intereses como entradas mensuales con "pnl_realized" para que pasen al KPI de P&L realizado.</p>
+                  <p className="text-ink-3">En casos raros también puede incluir ajustes de splits, ajustes manuales de posiciones, o baselines mal cargados. Si lo querés ver dentro de "P&L realizado", cargá los dividendos/intereses como entradas mensuales con valor en <span className="font-mono">pnl_realized</span>.</p>
                 </>
               )
             }
