@@ -6961,6 +6961,25 @@ def _run_daily_snapshot_job():
         _snapshot_log.error(f"Daily snapshot job failed: {e}", exc_info=True)
 
 
+def _run_subscription_lifecycle_job():
+    """Cron diario que mantiene sano el estado de subscripciones:
+      - downgrade post-cancelación cuando period_end pasó
+      - cleanup de pending abandonadas (>7 días)
+      - sync con MP para detectar webhooks perdidos
+    """
+    from billing import subscriptions as billing_subs
+    _sub_log = logging.getLogger("billing.subscriptions")
+    try:
+        conn = get_db()
+        try:
+            result = billing_subs.run_lifecycle_job(conn)
+            _sub_log.info(f"Subscription lifecycle result: {result}")
+        finally:
+            conn.close()
+    except Exception as e:
+        _sub_log.error(f"Subscription lifecycle job failed: {e}", exc_info=True)
+
+
 # Scheduler in-process
 _scheduler = BackgroundScheduler(timezone='UTC')
 
@@ -6973,8 +6992,18 @@ def _start_scheduler():
         id='daily_snapshot',
         replace_existing=True,
     )
+    # 02:00 UTC todos los días — después del snapshot. Bajamos a Free los
+    # users con suscripción cancelada+vencida, limpiamos pendings stale,
+    # syncronizamos con MP.
+    _scheduler.add_job(
+        _run_subscription_lifecycle_job,
+        CronTrigger(hour=2, minute=0),
+        id='subscription_lifecycle',
+        replace_existing=True,
+    )
     _scheduler.start()
     _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 01:00 UTC)")
+    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 02:00 UTC)")
 
 
 @app.on_event("shutdown")
