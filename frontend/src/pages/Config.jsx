@@ -9,9 +9,10 @@
 
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Pencil, RefreshCw, Lock, Upload, History, KeyRound } from 'lucide-react'
+import { Plus, Trash2, Pencil, RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Check, Zap } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
+import { track } from '../utils/track'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
@@ -102,13 +103,19 @@ export default function Config() {
   const [showImport, setShowImport] = useState(false)
   const [importJustConfirmed, setImportJustConfirmed] = useState(false)
   const [showAddBroker, setShowAddBroker] = useState(false)
+  const [aiUsage, setAiUsage] = useState(null)
 
   useEffect(() => {
     loadDolar()
     loadBrokers()
+    loadAiUsage()
     const id = setInterval(loadDolar, DOLAR_REFRESH_MS)
     return () => clearInterval(id)
   }, [])
+
+  async function loadAiUsage() {
+    try { setAiUsage(await api.get('/ai/usage')) } catch {}
+  }
 
   async function loadDolar() {
     try { setDolar(await api.get('/dolar')) } catch {}
@@ -175,6 +182,9 @@ export default function Config() {
         title="Configuración"
         subtitle="Gestioná tus brokers, tipos de cambio y datos de cuenta."
       />
+
+      {/* ── Plan actual ──────────────────────────────────────────────────── */}
+      <PlanHero tier={user?.tier || 'free'} usage={aiUsage} />
 
       {/* ── FX rates ─────────────────────────────────────────────────────── */}
       <section className="mb-6">
@@ -528,5 +538,182 @@ export default function Config() {
         />
       )}
     </div>
+  )
+}
+
+// ─── PlanHero ────────────────────────────────────────────────────────────────
+// Sección destacada al tope de Config con plan actual + uso semanal de IA
+// + comparativa Free vs Pro + CTA upgrade (solo en Free). Tono violet para
+// Pro, sutil para Free (que SIGUE el highlight es el botón de upgrade).
+
+const PRO_FEATURES = [
+  { label: '60 análisis IA por semana', value: 'pro_only', sub: '10× más que Free (6/sem)' },
+  { label: 'Respuestas con causalidad y comparaciones', value: 'pro_only', sub: 'Free: solo descripción' },
+  { label: 'Follow-ups: profundizá con preguntas libres', value: 'pro_only', sub: 'No disponible en Free' },
+  { label: 'AI Hub: exploración libre sobre tu portfolio', value: 'pro_only', sub: 'Exclusivo Pro' },
+]
+
+const FREE_FEATURES = [
+  { label: '6 análisis IA por semana', value: 'free' },
+  { label: 'Respuestas descriptivas', value: 'free' },
+  { label: 'Dashboard, Insights, Reportes', value: 'free' },
+  { label: 'Todas las pantallas de data y posiciones', value: 'free' },
+]
+
+function PlanHero({ tier, usage }) {
+  if (tier === 'admin') return <PlanHeroAdmin usage={usage} />
+  if (tier === 'pro') return <PlanHeroPro usage={usage} />
+  return <PlanHeroFree usage={usage} />
+}
+
+function PlanHeroFree({ usage }) {
+  const count = usage?.analyses_count ?? 0
+  const limit = usage?.analyses_limit ?? 6
+  const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
+  const remaining = Math.max(0, limit - count)
+
+  function onUpgradeClick() {
+    track('plan_hero_upgrade_clicked', { source: 'config' })
+    // TODO: cuando exista checkout, redirigir.
+  }
+
+  return (
+    <section className="mb-6 border border-data-violet/30 bg-data-violet/[0.04] rounded p-5">
+      <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-5">
+        {/* Left: tier actual + headline + features Free */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-bg-2 text-ink-2">
+              FREE
+            </span>
+          </div>
+          <h2 className="text-lg font-semibold text-ink-0 leading-snug mb-1">
+            Estás en el plan gratuito de Rendi
+          </h2>
+          <p className="text-sm text-ink-2 leading-relaxed mb-3">
+            Acceso completo a tu portfolio, brokers, monthly tracking, posiciones, drawdowns e Insights. Con la IA en modo descriptivo (resumen breve).
+          </p>
+          <div className="space-y-1.5">
+            {FREE_FEATURES.map((f, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs text-ink-1">
+                <Check size={11} strokeWidth={2} className="text-ink-3 mt-0.5 flex-shrink-0" />
+                <span className="leading-snug">{f.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Right: usage strip + CTA */}
+        <div className="bg-bg-1 border border-line/60 rounded-sm p-4 flex flex-col">
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA esta semana</span>
+            <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
+          </div>
+          <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-2">
+            <div
+              className={`h-full transition-all ${pct >= 100 ? 'bg-rendi-neg' : pct >= 80 ? 'bg-data-amber' : 'bg-data-violet'}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="text-[11px] text-ink-3 mb-4">
+            {remaining > 0
+              ? `${remaining} análisis ${remaining === 1 ? 'restante' : 'restantes'} · se renueva el lunes`
+              : 'Llegaste al límite · se renueva el lunes'}
+          </p>
+
+          {/* Pro pitch */}
+          <div className="pt-3 border-t border-line/40 space-y-2 flex-1">
+            <p className="text-xs text-ink-1 font-medium">Pasate a <span className="text-data-violet">Rendi Pro</span></p>
+            <ul className="space-y-1.5">
+              {PRO_FEATURES.map((f, i) => (
+                <li key={i} className="flex items-start gap-2 text-[11px] text-ink-2">
+                  <Sparkles size={10} strokeWidth={2} className="text-data-violet mt-0.5 flex-shrink-0" />
+                  <div className="leading-snug">
+                    <div>{f.label}</div>
+                    {f.sub && <div className="text-[10px] text-ink-3">{f.sub}</div>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <button
+            type="button"
+            onClick={onUpgradeClick}
+            className="mt-4 w-full inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm py-2.5 transition-colors"
+          >
+            <Sparkles size={13} strokeWidth={1.75} />
+            Conocer Rendi Pro
+          </button>
+          <p className="mt-1.5 text-[10px] text-ink-3 text-center">
+            Pro está en desarrollo — te avisamos cuando esté listo.
+          </p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function PlanHeroPro({ usage }) {
+  const count = usage?.analyses_count ?? 0
+  const limit = usage?.analyses_limit ?? 60
+  const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
+
+  return (
+    <section className="mb-6 border border-data-violet/40 bg-data-violet/[0.06] rounded p-5">
+      <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-5">
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-data-violet/15 text-data-violet">
+              PRO
+            </span>
+            <span className="inline-flex items-center gap-1 text-[10px] text-rendi-pos font-mono uppercase tracking-caps">
+              <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" /> Activo
+            </span>
+          </div>
+          <h2 className="text-lg font-semibold text-ink-0 leading-snug mb-1">
+            Tenés acceso completo a Rendi Pro
+          </h2>
+          <p className="text-sm text-ink-2 leading-relaxed mb-3">
+            Análisis profundos, follow-ups, AI Hub y 10× más uso que Free. Gracias por bancar el producto.
+          </p>
+          <div className="space-y-1.5">
+            {PRO_FEATURES.map((f, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs text-ink-1">
+                <Check size={11} strokeWidth={2} className="text-data-violet mt-0.5 flex-shrink-0" />
+                <span className="leading-snug">{f.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-bg-1 border border-line/60 rounded-sm p-4 flex flex-col">
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA esta semana</span>
+            <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
+          </div>
+          <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-2">
+            <div className="h-full transition-all bg-data-violet" style={{ width: `${pct}%` }} />
+          </div>
+          <p className="text-[11px] text-ink-3">
+            Renueva el lunes · seguís dentro del plan
+          </p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function PlanHeroAdmin({ usage }) {
+  const count = usage?.analyses_count ?? 0
+  return (
+    <section className="mb-6 border border-rendi-pos/30 bg-rendi-pos/[0.04] rounded px-5 py-3.5 flex items-center gap-3 flex-wrap">
+      <Zap size={14} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0" />
+      <span className="font-mono text-[10px] uppercase tracking-caps text-rendi-pos">Plan ADMIN</span>
+      <span className="text-sm text-ink-1 flex-1 min-w-[200px]">
+        Acceso interno sin tope. {count > 0 ? `Usaste ${count} análisis IA esta semana.` : 'Sin uso de IA esta semana.'}
+      </span>
+    </section>
   )
 }

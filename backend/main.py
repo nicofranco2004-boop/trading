@@ -895,15 +895,20 @@ def logout(uid: int = Depends(get_current_user)):
 
 @app.get("/api/auth/me")
 def me(uid: int = Depends(get_current_user)):
+    from ai import quota
     conn = get_db()
     row = conn.execute(
         "SELECT id, email, name, is_admin, created_at, last_login_at FROM users WHERE id=?", (uid,)
     ).fetchone()
-    conn.close()
     if not row:
+        conn.close()
         raise HTTPException(404)
     d = dict(row)
     d["is_admin"] = bool(d["is_admin"])
+    # Tier visible para el frontend (badge en sidebar, sección Plans en Config).
+    # Hoy: admin si is_admin=1, free para el resto. Pro cuando exista paywall.
+    d["tier"] = quota.get_tier(conn, uid)
+    conn.close()
     return d
 
 

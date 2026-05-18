@@ -11,6 +11,7 @@ const DEMO_USER = {
   name: 'Inversor Demo',
   email: 'demo@rendi.app',
   is_admin: false,
+  tier: 'pro',  // Demo siempre simula Pro para mostrar todas las features
   demo: true,
   id: 0,
   created_at: '2024-04-01T00:00:00Z',
@@ -45,7 +46,12 @@ export function AuthProvider({ children }) {
     if (!token) { setBootstrapped(true); return }
     api.get('/auth/me')
       .then(me => {
-        const fresh = { name: me.name || me.email, email: me.email, is_admin: !!me.is_admin }
+        const fresh = {
+          name: me.name || me.email,
+          email: me.email,
+          is_admin: !!me.is_admin,
+          tier: me.tier || 'free',
+        }
         localStorage.setItem('rendi_user', JSON.stringify(fresh))
         setUser(fresh)
       })

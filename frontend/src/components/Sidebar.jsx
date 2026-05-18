@@ -172,11 +172,23 @@ export default function Sidebar() {
           {!collapsed && <span>Configuración</span>}
         </NavLink>
 
-        <div className={`flex items-center gap-1 mt-1 ${collapsed ? 'flex-col' : 'px-1'}`}>
-          {user && !collapsed && (
+        {/* User row: nombre + badge de plan (solo expandida) */}
+        {user && !collapsed && (
+          <div className="px-1 mt-1 mb-1 flex items-center gap-1.5 min-w-0">
             <span className="flex-1 text-[11px] text-ink-3 truncate font-mono" title={user.name}>
               {user.name}
             </span>
+            <PlanBadge tier={user.tier} />
+          </div>
+        )}
+
+        {/* Action buttons: theme + logout (siempre visibles) */}
+        <div className={`flex items-center gap-1 ${collapsed ? 'flex-col mt-1' : 'px-1'}`}>
+          {/* En modo colapsado, solo el badge mini centrado arriba */}
+          {user && collapsed && (
+            <div title={`Plan ${user.tier || 'free'}`} className="mb-1">
+              <PlanBadge tier={user.tier} compact />
+            </div>
           )}
           <button
             onClick={toggle}
@@ -199,5 +211,31 @@ export default function Sidebar() {
         </div>
       </div>
     </aside>
+  )
+}
+
+// ─── PlanBadge ───────────────────────────────────────────────────────────────
+// Mini badge tier-aware. Compact=true muestra solo un dot pequeño (modo
+// colapsado de la sidebar). Default muestra label corto + color.
+function PlanBadge({ tier, compact = false }) {
+  const t = tier || 'free'
+  const styles = {
+    free:  { label: 'FREE',  bg: 'bg-bg-2',                 text: 'text-ink-2',         dot: 'bg-ink-3' },
+    pro:   { label: 'PRO',   bg: 'bg-data-violet/15',       text: 'text-data-violet',   dot: 'bg-data-violet' },
+    admin: { label: 'ADMIN', bg: 'bg-rendi-pos/15',         text: 'text-rendi-pos',     dot: 'bg-rendi-pos' },
+  }
+  const s = styles[t] || styles.free
+  if (compact) {
+    return (
+      <span className={`inline-block w-1.5 h-1.5 rounded-full ${s.dot}`} aria-label={`Plan ${s.label}`} />
+    )
+  }
+  return (
+    <span
+      className={`shrink-0 inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${s.bg} ${s.text}`}
+      aria-label={`Plan actual: ${s.label}`}
+    >
+      {s.label}
+    </span>
   )
 }
