@@ -9,6 +9,7 @@ import DemoBanner from './components/DemoBanner'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import Login from './pages/Login'
+import VerifyEmail from './pages/VerifyEmail'
 import Dashboard from './pages/Dashboard'
 import Positions from './pages/Positions'
 import Monthly from './pages/Monthly'
@@ -88,6 +89,9 @@ function Layout() {
   if (!user) {
     return (
       <Routes>
+        {/* /verify-email es accesible sin login — el user pasa por acá tras
+            registrarse, antes de tener token. */}
+        <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="*" element={<Login />} />
       </Routes>
     )

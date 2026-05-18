@@ -23,7 +23,9 @@ def _make_db():
             email TEXT,
             name TEXT,
             is_admin INTEGER DEFAULT 0,
-            tier TEXT
+            tier TEXT,
+            email_verified INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,6 +46,18 @@ def _make_db():
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
+        -- Tablas que _delete_unverified_accounts toca (verificación de "tiene
+        -- data" + cleanup en cascada manual).
+        CREATE TABLE email_verification_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            code TEXT, expires_at TEXT, used_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE positions (id INTEGER PRIMARY KEY, user_id INTEGER);
+        CREATE TABLE operations (id INTEGER PRIMARY KEY, user_id INTEGER);
+        CREATE TABLE monthly_entries (id INTEGER PRIMARY KEY, user_id INTEGER);
+        CREATE TABLE brokers (id INTEGER PRIMARY KEY, user_id INTEGER);
     """)
     return conn
 

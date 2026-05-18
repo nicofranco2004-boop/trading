@@ -189,6 +189,12 @@ def init_db():
     if user_cols and 'tier' not in user_cols:
         # Override de tier (Pro paid). NULL = sigue lógica is_admin → free/admin.
         conn.execute("ALTER TABLE users ADD COLUMN tier TEXT")
+    if user_cols and 'email_verified' not in user_cols:
+        # Verificación de email post-register. NULL = sin migrar, 0 = no verificado,
+        # 1 = verificado. Migración: existing users → 1 (no les pedimos verificar
+        # retroactivamente para no romper su acceso).
+        conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0")
+        conn.execute("UPDATE users SET email_verified = 1")
     # Sincronizar is_admin + approved para usuarios con email admin
     rows = conn.execute("SELECT id, email FROM users").fetchall()
     for r in rows:
@@ -667,6 +673,21 @@ def init_db():
             ON plan_events(feature_id, event_name);
         CREATE INDEX IF NOT EXISTS idx_plan_events_created
             ON plan_events(created_at);
+
+        -- ─── email_verification_codes: códigos OTP de 6 dígitos ──────────────
+        -- Generado al registrarse o al pedir resend. Vence en 15 min.
+        -- used_at se setea al confirmar; rows usadas se mantienen para auditoría
+        -- (no se borran). Cleanup en cron de codes > 30 días.
+        CREATE TABLE IF NOT EXISTS email_verification_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            code TEXT NOT NULL,                  -- 6 dígitos como string ('384721')
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_email_codes_user_unused
+            ON email_verification_codes(user_id, used_at);
     """)
 
     # subscriptions: columnas de idempotencia de emails (idempotent migration
@@ -879,6 +900,63 @@ class ChangePasswordIn(BaseModel):
     new_password: str = Field(..., min_length=10, max_length=128)
 
 
+class VerifyEmailIn(BaseModel):
+    email: str = Field(..., max_length=254)
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class ResendVerificationIn(BaseModel):
+    email: str = Field(..., max_length=254)
+
+
+# ─── Email verification helpers ──────────────────────────────────────────────
+
+EMAIL_CODE_TTL_MINUTES = 15
+EMAIL_CODE_RESEND_COOLDOWN_SECONDS = 60
+
+
+def _gen_verification_code() -> str:
+    """6 dígitos, sin ceros al inicio (más fácil de tipear y se ve completo)."""
+    return f"{secrets.randbelow(900000) + 100000}"
+
+
+def _create_verification_code(conn, user_id: int) -> str:
+    """Invalida códigos previos del user e inserta uno nuevo. Devuelve el código."""
+    from datetime import datetime, timedelta
+    code = _gen_verification_code()
+    expires = (datetime.utcnow() + timedelta(minutes=EMAIL_CODE_TTL_MINUTES)).isoformat()
+    with conn:
+        # Invalidamos códigos previos (que no estén usados) para evitar
+        # que un user tenga 5 códigos válidos simultáneos
+        conn.execute(
+            """UPDATE email_verification_codes SET used_at = datetime('now')
+               WHERE user_id = ? AND used_at IS NULL""",
+            (user_id,),
+        )
+        conn.execute(
+            """INSERT INTO email_verification_codes (user_id, code, expires_at)
+               VALUES (?, ?, ?)""",
+            (user_id, code, expires),
+        )
+    return code
+
+
+def _send_verification_email(conn, user_id: int, email: str, name: Optional[str]) -> None:
+    """Genera el código y manda el email (best-effort, no levanta si email falla)."""
+    from billing import emails
+    code = _create_verification_code(conn, user_id)
+    display_name = name or (email.split("@")[0] if email else "Inversor")
+    try:
+        emails.send_verification_code(
+            to=email,
+            user_name=display_name,
+            code=code,
+            expires_minutes=EMAIL_CODE_TTL_MINUTES,
+        )
+    except Exception as ex:
+        log.error("Verification email failed for uid=%s: %s", user_id, ex)
+
+
 @app.post("/api/auth/register")
 def register(data: RegisterIn, request: Request):
     is_admin_signup = _is_admin_email(data.email)
@@ -890,11 +968,13 @@ def register(data: RegisterIn, request: Request):
     conn = get_db()
     try:
         h = pwd_ctx.hash(data.password)
-        # admin se auto-aprueba; resto queda pending hasta que admin apruebe
+        # admin se auto-aprueba + auto-verifica; resto queda pending + sin verificar
         approved = 1 if is_admin_signup else 0
+        email_verified = 1 if is_admin_signup else 0
         cur = conn.execute(
-            "INSERT INTO users (email, name, password_hash, is_admin, approved) VALUES (?,?,?,?,?)",
-            (data.email, data.name, h, 1 if is_admin_signup else 0, approved),
+            """INSERT INTO users (email, name, password_hash, is_admin, approved, email_verified)
+               VALUES (?,?,?,?,?,?)""",
+            (data.email, data.name, h, 1 if is_admin_signup else 0, approved, email_verified),
         )
         uid = cur.lastrowid
 
@@ -927,18 +1007,25 @@ def register(data: RegisterIn, request: Request):
         conn.execute("INSERT OR IGNORE INTO config VALUES ('tc_blue', '1415', ?)", (uid,))
 
         conn.commit()
+
+        # User NO admin → mandamos código de verificación al email registrado.
+        # NO devolvemos token todavía — el frontend redirige a /verify-email.
+        if not is_admin_signup:
+            _send_verification_email(conn, uid, data.email, data.name)
+            conn.close()
+            return {
+                "needs_verification": True,
+                "email": data.email,
+                "message": "Te enviamos un código a tu email para confirmar tu cuenta.",
+            }
+
+        # Admin: bypass verificación + token directo (acceso interno)
         pca_row = conn.execute("SELECT password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
         conn.close()
-        # Si no está aprobado, no devolvemos token: el usuario debe esperar aprobación
-        if not approved:
-            return {
-                "pending": True,
-                "message": "Cuenta creada. Esperando aprobación del administrador.",
-            }
         return {
             "token": create_token(uid, pca_row["password_changed_at"] if pca_row else None),
             "name": data.name or data.email,
-            "is_admin": bool(is_admin_signup),
+            "is_admin": True,
         }
     except sqlite3.IntegrityError:
         conn.close()
@@ -960,6 +1047,15 @@ def login(data: LoginIn, request: Request):
     if not pwd_ctx.verify(data.password, row["password_hash"]):
         conn.close()
         raise HTTPException(401, "Credenciales inválidas")
+    # Email verification PRIMERO — el user debe probar que el email es suyo
+    # antes que cualquier otro gate (incluso approval del admin).
+    if row["email_verified"] == 0:
+        conn.close()
+        raise HTTPException(403, {
+            "code": "EMAIL_NOT_VERIFIED",
+            "error": "Confirmá tu email antes de ingresar.",
+            "email": email_norm,
+        })
     if not row["approved"]:
         conn.close()
         raise HTTPException(403, "Cuenta pendiente de aprobación por el administrador")
@@ -975,6 +1071,90 @@ def login(data: LoginIn, request: Request):
         "name": row["name"] or row["email"],
         "is_admin": bool(row["is_admin"]),
     }
+
+
+@app.post("/api/auth/verify-email")
+def verify_email(data: VerifyEmailIn, request: Request):
+    """Confirma el email del user con un código OTP de 6 dígitos.
+
+    Si el código es válido (existe, no expiró, no fue usado), marcamos
+    `email_verified=1` e issue token (logueamos al user)."""
+    _check_rate_limit(request, max_calls=15, window_seconds=60, suffix="verify_email")
+    email_norm = data.email.strip().lower()
+    conn = get_db()
+    try:
+        user = conn.execute(
+            "SELECT id, name, email_verified, password_changed_at FROM users WHERE email=?",
+            (email_norm,),
+        ).fetchone()
+        if not user:
+            # Mensaje genérico para no leakear si el email existe
+            raise HTTPException(400, "Código inválido o expirado")
+        if user["email_verified"]:
+            raise HTTPException(400, "Tu cuenta ya está verificada. Iniciá sesión.")
+
+        # Buscar el código más reciente no usado y no vencido para este user
+        row = conn.execute(
+            """SELECT id, code, expires_at FROM email_verification_codes
+               WHERE user_id = ? AND used_at IS NULL
+               ORDER BY created_at DESC LIMIT 1""",
+            (user["id"],),
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "Código inválido o expirado")
+        if row["code"] != data.code:
+            raise HTTPException(400, "Código inválido o expirado")
+        # Vence?
+        from datetime import datetime
+        try:
+            expires = datetime.fromisoformat(row["expires_at"])
+            if expires < datetime.utcnow():
+                raise HTTPException(400, "Código inválido o expirado")
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Código inválido o expirado")
+
+        with conn:
+            conn.execute(
+                "UPDATE email_verification_codes SET used_at = datetime('now') WHERE id = ?",
+                (row["id"],),
+            )
+            conn.execute(
+                "UPDATE users SET email_verified = 1 WHERE id = ?",
+                (user["id"],),
+            )
+        conn.close()
+        return {
+            "token": create_token(user["id"], user["password_changed_at"]),
+            "name": user["name"] or email_norm,
+            "verified": True,
+        }
+    except HTTPException:
+        conn.close()
+        raise
+
+
+@app.post("/api/auth/resend-verification")
+def resend_verification(data: ResendVerificationIn, request: Request):
+    """Genera un código nuevo y lo manda al email del user.
+
+    Rate limit: 1 request cada 60s + 5 por hora por IP. Si el user ya
+    está verificado, devolvemos OK sin mandar (idempotente)."""
+    _check_rate_limit(request, max_calls=1, window_seconds=60, suffix=f"resend:{data.email.lower()}")
+    _check_rate_limit(request, max_calls=5, window_seconds=3600, suffix=f"resend_hourly:{data.email.lower()}")
+    email_norm = data.email.strip().lower()
+    conn = get_db()
+    try:
+        user = conn.execute(
+            "SELECT id, name, email, email_verified FROM users WHERE email=?",
+            (email_norm,),
+        ).fetchone()
+        # Respuesta genérica para no leakear si el email existe
+        if not user or user["email_verified"]:
+            return {"sent": True, "message": "Si la cuenta existe, te enviamos un código nuevo."}
+        _send_verification_email(conn, user["id"], user["email"], user["name"])
+        return {"sent": True, "message": "Te enviamos un código nuevo."}
+    finally:
+        conn.close()
 
 
 @app.post("/api/auth/logout")

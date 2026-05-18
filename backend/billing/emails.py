@@ -1,12 +1,17 @@
-"""emails — transactional emails para eventos de billing.
+"""emails — transactional emails de la app.
 ═══════════════════════════════════════════════════════════════════════════
-5 emails que la app manda al user:
+Aunque el módulo viva bajo `billing/`, sirve para todos los emails
+transaccionales — billing + auth/verificación + futuros.
 
-  1. send_welcome_pro    — al activarse la suscripción (post-pago)
-  2. send_receipt        — cada renovación mensual/anual exitosa
-  3. send_payment_failed — cuando MP no puede cobrar la recurrencia
-  4. send_cancellation   — cuando el user cancela
-  5. send_expiration_reminder — 3 días antes de que termine el período pago
+6 emails:
+
+  1. send_welcome_pro          — al activarse la suscripción Pro
+  2. send_receipt              — cada renovación mensual/anual exitosa
+  3. send_payment_failed       — cuando MP no puede cobrar la recurrencia
+  4. send_cancellation         — cuando el user cancela
+  5. send_expiration_reminder  — 3 días antes de fin de período pago
+  6. send_verification_code    — código OTP de 6 dígitos para verificar email
+                                 al registrarse
 
 Provider:
   • Resend (default) — simple, gratis hasta 3k/mes, AR-friendly.
@@ -304,3 +309,36 @@ def send_expiration_reminder(*, to: str, user_name: str,
     )
     return _send(to, f"⏰ Tu Rendi Pro vence en {days_left} días",
                  _wrap_html(body_html), text)
+
+
+# ─── Email #6: código de verificación post-register ─────────────────────────
+
+def send_verification_code(*, to: str, user_name: str, code: str,
+                           expires_minutes: int = 15) -> bool:
+    """Manda el OTP de 6 dígitos al user para que confirme su email."""
+    # Subject con el código adentro — se ve en notificaciones del celular
+    # antes de que el user abra el email (UX más rápido).
+    subject = f"Tu código de Rendi: {code}"
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Confirmá tu cuenta</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
+        Hola {user_name}, ingresá este código en Rendi para terminar de crear tu cuenta:
+      </p>
+      <div style="background:#f0fdf4;border:2px solid #21D07A;border-radius:8px;padding:20px;margin:20px 0;text-align:center;">
+        <p style="font-size:11px;color:#166534;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin:0 0 8px;">Tu código</p>
+        <p style="font-family:monospace;font-size:38px;font-weight:700;color:#166534;letter-spacing:8px;margin:0;">{code}</p>
+      </div>
+      <p style="font-size:13px;color:#6b7280;line-height:1.6;margin:12px 0;">
+        Vence en <b>{expires_minutes} minutos</b>. Si no fuiste vos quien intentó registrarse,
+        ignorá este email — nadie va a poder acceder sin el código.
+      </p>
+    """
+    text = (
+        f"Confirmá tu cuenta en Rendi\n\n"
+        f"Hola {user_name}, ingresá este código para terminar de crear tu cuenta:\n\n"
+        f"   {code}\n\n"
+        f"Vence en {expires_minutes} minutos.\n\n"
+        f"Si no fuiste vos, ignorá este email — nadie podrá acceder sin el código.\n\n"
+        f"— Rendi"
+    )
+    return _send(to, subject, _wrap_html(body_html), text)

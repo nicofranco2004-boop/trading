@@ -36,6 +36,7 @@ def run_lifecycle_job(conn) -> dict:
         "stale_pending_cancelled": 0,
         "synced_from_mp": 0,
         "expiration_reminders_sent": 0,
+        "unverified_accounts_deleted": 0,
         "errors": 0,
     }
     try:
@@ -58,7 +59,53 @@ def run_lifecycle_job(conn) -> dict:
     except Exception as ex:
         log.error("Expiration reminders failed: %s", ex)
         result["errors"] += 1
+    try:
+        result["unverified_accounts_deleted"] = _delete_unverified_accounts(conn)
+    except Exception as ex:
+        log.error("Unverified accounts cleanup failed: %s", ex)
+        result["errors"] += 1
     return result
+
+
+def _delete_unverified_accounts(conn, stale_days: int = 7) -> int:
+    """Elimina users con email_verified=0 creados hace > 7 días.
+
+    Estos son signups abandonados: el user se registró pero nunca confirmó.
+    Sin esto se acumulan filas zombie + emails ocupados que nadie usa.
+
+    SAFE: solo borra users sin posiciones/operaciones/monthly (un user que
+    nunca verificó no debería tener nada cargado, pero por las dudas chequeamos)."""
+    from datetime import datetime, timedelta
+    cutoff = (datetime.utcnow() - timedelta(days=stale_days)).isoformat()
+    rows = conn.execute(
+        """SELECT id, email FROM users
+           WHERE email_verified = 0 AND created_at < ?""",
+        (cutoff,),
+    ).fetchall()
+    if not rows:
+        return 0
+    deleted = 0
+    with conn:
+        for r in rows:
+            # Defensa: si por algún motivo el user cargó data, no lo borramos
+            has_data = conn.execute(
+                """SELECT 1 FROM positions WHERE user_id=? UNION
+                   SELECT 1 FROM operations WHERE user_id=? UNION
+                   SELECT 1 FROM monthly_entries WHERE user_id=? LIMIT 1""",
+                (r["id"], r["id"], r["id"]),
+            ).fetchone()
+            if has_data:
+                log.warning("Skipping unverified user %s — has data", r["id"])
+                continue
+            # Cleanup en cascada manual (SQLite no soporta FK ON DELETE CASCADE
+            # sin enable_foreign_keys=ON, y nuestras FKs no están declaradas).
+            conn.execute("DELETE FROM email_verification_codes WHERE user_id = ?", (r["id"],))
+            conn.execute("DELETE FROM brokers WHERE user_id = ?", (r["id"],))
+            conn.execute("DELETE FROM users WHERE id = ?", (r["id"],))
+            log.info("Deleted unverified user %s (%s, created > %dd ago)",
+                    r["id"], r["email"], stale_days)
+            deleted += 1
+    return deleted
 
 
 def _send_expiration_reminders(conn, days_before: int = 3) -> int:

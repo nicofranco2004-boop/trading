@@ -36,7 +36,19 @@ export default function Login() {
       } catch {
         throw new Error('No pudimos contactar el servidor. Verificá que el backend esté corriendo en el puerto 8000.')
       }
-      if (!res.ok) throw new Error(data.detail || 'Ocurrió un error')
+      if (!res.ok) {
+        // Caso especial: login con email no verificado → llevarlo a /verify-email
+        if (res.status === 403 && data?.detail?.code === 'EMAIL_NOT_VERIFIED') {
+          navigate(`/verify-email?email=${encodeURIComponent(data.detail.email || email)}`)
+          return
+        }
+        throw new Error(data.detail || 'Ocurrió un error')
+      }
+      // Registro con verificación pendiente → llevar a /verify-email
+      if (data.needs_verification) {
+        navigate(`/verify-email?email=${encodeURIComponent(data.email || email)}`)
+        return
+      }
       // Registro pendiente: el admin debe aprobar
       if (data.pending) {
         setInfo(data.message || 'Cuenta creada. Pendiente de aprobación.')
