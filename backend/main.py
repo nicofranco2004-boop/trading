@@ -1029,7 +1029,13 @@ def register(data: RegisterIn, request: Request):
         }
     except sqlite3.IntegrityError:
         conn.close()
-        raise HTTPException(400, "Email ya registrado")
+        # Estructurado para que el frontend pueda detectar el caso y ofrecer
+        # un botón "Ir al login" en lugar del flow de error genérico.
+        raise HTTPException(409, {
+            "code": "EMAIL_ALREADY_REGISTERED",
+            "error": "Este email ya está registrado.",
+            "email": data.email,
+        })
 
 
 @app.post("/api/auth/login")

@@ -39,6 +39,24 @@ class RegisterEmailVerificationTest(unittest.TestCase):
         from fastapi.testclient import TestClient
         self.client = TestClient(main.app)
 
+    def test_register_email_already_registered_returns_409_with_code(self):
+        """Cuando el email ya existe, register devuelve 409 con code
+        EMAIL_ALREADY_REGISTERED + el email para que el frontend pueda
+        mostrar un CTA específico para ir a login."""
+        email = _unique_email()
+        with patch("billing.emails._send"):
+            # Primer signup OK
+            r1 = self.client.post("/api/auth/register",
+                                  json={"email": email, "password": "Password123$"})
+            self.assertEqual(r1.status_code, 200)
+            # Segundo con MISMO email → 409 estructurado
+            r2 = self.client.post("/api/auth/register",
+                                  json={"email": email, "password": "OtroPassword123$"})
+            self.assertEqual(r2.status_code, 409)
+            detail = r2.json().get("detail", {})
+            self.assertEqual(detail.get("code"), "EMAIL_ALREADY_REGISTERED")
+            self.assertEqual(detail.get("email"), email)
+
     def test_register_sends_code_and_does_not_issue_token(self):
         email = _unique_email()
         with patch("billing.emails._send") as mock_send:

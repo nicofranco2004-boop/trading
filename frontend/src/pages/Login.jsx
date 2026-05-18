@@ -13,6 +13,9 @@ export default function Login() {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
+  // Caso especial: email ya registrado al hacer signup. Mostramos un CTA
+  // específico para ir al login en vez del mensaje de error genérico.
+  const [emailExists, setEmailExists] = useState(false)
   const [loading, setLoading] = useState(false)
   const { login } = useAuth()
   const navigate = useNavigate()
@@ -21,6 +24,7 @@ export default function Login() {
     e.preventDefault()
     setError('')
     setInfo('')
+    setEmailExists(false)
     setLoading(true)
     try {
       const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register'
@@ -42,7 +46,17 @@ export default function Login() {
           navigate(`/verify-email?email=${encodeURIComponent(data.detail.email || email)}`)
           return
         }
-        throw new Error(data.detail || 'Ocurrió un error')
+        // Caso especial: register con email ya registrado → mostrar CTA "ir a login"
+        if (res.status === 409 && data?.detail?.code === 'EMAIL_ALREADY_REGISTERED') {
+          setEmailExists(true)
+          // Pre-set email para que el switch a login lo conserve
+          return
+        }
+        // El detail puede ser string (mensaje plano) o dict (estructurado).
+        const msg = typeof data.detail === 'string'
+          ? data.detail
+          : (data.detail?.error || 'Ocurrió un error')
+        throw new Error(msg)
       }
       // Registro con verificación pendiente → llevar a /verify-email
       if (data.needs_verification) {
@@ -93,7 +107,7 @@ export default function Login() {
         <div className="bg-white dark:bg-bg-2/60 border border-line/50 rounded-2xl p-6">
           <div className="flex mb-6 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-1">
             <button
-              onClick={() => setMode('login')}
+              onClick={() => { setMode('login'); setEmailExists(false); setError(''); }}
               className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${
                 mode === 'login' ? 'bg-blue-600 text-white' : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
@@ -101,7 +115,7 @@ export default function Login() {
               Iniciar sesión
             </button>
             <button
-              onClick={() => setMode('register')}
+              onClick={() => { setMode('register'); setEmailExists(false); setError(''); }}
               className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${
                 mode === 'register' ? 'bg-blue-600 text-white' : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
@@ -136,7 +150,7 @@ export default function Login() {
                 inputMode="email"
                 spellCheck={false}
                 value={email}
-                onChange={e => setEmail(e.target.value)}
+                onChange={e => { setEmail(e.target.value); if (emailExists) setEmailExists(false) }}
                 placeholder="tu@email.com"
                 className={inputClass}
               />
@@ -158,11 +172,36 @@ export default function Login() {
                 <p className="text-xs text-amber-500 dark:text-amber-400 mt-1">Faltan caracteres · {password.length}/10</p>
               )}
             </div>
-            {error && <p className="text-red-500 text-xs">{error}</p>}
+            {/* Aviso especial: email ya registrado al intentar signup. En vez
+                del mensaje de error suelto, mostramos un panel con CTA a login. */}
+            {emailExists && (
+              <div className="bg-data-violet/10 border border-data-violet/30 rounded-lg p-3 space-y-2">
+                <p className="text-sm text-ink-1">
+                  <b className="text-data-violet">{email}</b> ya está registrado en Rendi.
+                </p>
+                <p className="text-xs text-ink-3 leading-relaxed">
+                  ¿Es tu cuenta? Iniciá sesión con tu contraseña. Si la olvidaste, contactanos.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('login')
+                    setEmailExists(false)
+                    setError('')
+                    // Email queda pre-cargado para que solo tipee el password
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-1.5 bg-data-violet text-white rounded-lg py-2 text-sm font-medium hover:bg-data-violet/90 transition-colors"
+                >
+                  Iniciar sesión con {email}
+                  <ArrowRight size={13} strokeWidth={1.75} />
+                </button>
+              </div>
+            )}
+            {error && !emailExists && <p className="text-red-500 text-xs">{error}</p>}
             {info && <p className="text-emerald-600 dark:text-emerald-400 text-xs">{info}</p>}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || emailExists}
               className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
             >
               {loading ? 'Cargando…' : mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
