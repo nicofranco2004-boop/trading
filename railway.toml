@@ -1,7 +1,8 @@
+# Railway deploy config. La configuración de build (Python, deps, etc.) vive
+# en nixpacks.toml — Railway lo lee automáticamente.
+
 [build]
 builder = "nixpacks"
-buildCommand = "pip install -r backend/requirements.txt"
 
 [deploy]
-startCommand = "cd backend && python -c 'import main' && uvicorn main:app --host 0.0.0.0 --port $PORT"
 restartPolicyType = "on_failure"
