@@ -40,7 +40,27 @@ def _api_key() -> Optional[str]:
 
 
 def _from_address() -> str:
-    return os.environ.get("EMAIL_FROM", "Rendi <hello@rendi.finance>")
+    """Default sender (fallback). Para casos específicos usar _from_noreply
+    o _from_support según corresponda."""
+    return os.environ.get("EMAIL_FROM", "Rendi <no_reply@rendi.finance>")
+
+
+def _from_noreply() -> str:
+    """Para transaccionales que NO esperan respuesta del user (recibos,
+    confirmaciones, OTPs, etc.). Replies caen igual al inbox vía alias."""
+    return os.environ.get(
+        "EMAIL_FROM_NOREPLY",
+        "Rendi <no_reply@rendi.finance>",
+    )
+
+
+def _from_support() -> str:
+    """Para emails donde el user puede tener dudas y responder (password
+    reset, login alerts, pago fallido). Replies van a soporte@ → inbox."""
+    return os.environ.get(
+        "EMAIL_FROM_SUPPORT",
+        "Rendi Soporte <soporte@rendi.finance>",
+    )
 
 
 def _is_configured() -> bool:
@@ -49,11 +69,16 @@ def _is_configured() -> bool:
 
 # ─── Backend de envío ────────────────────────────────────────────────────────
 
-def _send(to: str, subject: str, html: str, text: str) -> bool:
+def _send(to: str, subject: str, html: str, text: str,
+          from_addr: Optional[str] = None) -> bool:
     """Backend-agnostic send. Retorna True si se envió OK.
+
+    from_addr opcional: si no se pasa, usa _from_address() (default).
+    Pasar _from_noreply() o _from_support() según el tipo de email.
 
     Si no hay provider configurado, loguea a console (modo dev) y retorna
     False — el caller asume que el evento no se notificó pero no falla."""
+    sender = from_addr or _from_address()
     text = (
         f"{text}\n\n"
         f"---\n"
@@ -62,6 +87,7 @@ def _send(to: str, subject: str, html: str, text: str) -> bool:
     )
     if not _is_configured():
         log.info("=== EMAIL (no provider configured, logging only) ===")
+        log.info("  FROM:    %s", sender)
         log.info("  TO:      %s", to)
         log.info("  SUBJECT: %s", subject)
         log.info("  TEXT:    %s", text[:400] + ("..." if len(text) > 400 else ""))
@@ -77,7 +103,7 @@ def _send(to: str, subject: str, html: str, text: str) -> bool:
                 "Content-Type": "application/json",
             },
             json={
-                "from": _from_address(),
+                "from": sender,
                 "to": [to],
                 "subject": subject,
                 "html": html,
@@ -141,8 +167,8 @@ def _wrap_html(body: str) -> str:
             — te respondemos enseguida.
           </p>
           <p style="font-size:11px;color:#9ca3af;line-height:1.6;margin:0;">
-            Este es un email automático de Rendi. Si preferís email, respondé a este mensaje
-            o escribinos a hello@rendi.finance.
+            Este es un email automático de Rendi. Si preferís email, escribinos a
+            soporte@rendi.finance.
           </p>
         </td></tr>
       </table>
@@ -254,7 +280,8 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
         f"Podés cancelar cuando quieras desde Configuración → Mi plan.\n\n"
         f"— Rendi"
     )
-    return _send(to, f"¡Bienvenido a Rendi {plan_label}!", _wrap_html(body_html), text)
+    return _send(to, f"¡Bienvenido a Rendi {plan_label}!", _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
 
 
 # ─── Email #2: recibo mensual ───────────────────────────────────────────────
@@ -290,7 +317,8 @@ def send_receipt(*, to: str, user_name: str, amount_ars: int,
         f"{f'ID: {payment_id}' if payment_id else ''}\n\n"
         f"— Rendi"
     )
-    return _send(to, f"Recibo · Rendi {plan_label}", _wrap_html(body_html), text)
+    return _send(to, f"Recibo · Rendi {plan_label}", _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
 
 
 # ─── Email #3: pago fallido ─────────────────────────────────────────────────
@@ -330,7 +358,8 @@ def send_payment_failed(*, to: str, user_name: str,
         f"— Rendi"
     )
     return _send(to, f"⚠️ No pudimos cobrar tu suscripción Rendi {plan_label}",
-                 _wrap_html(body_html), text)
+                 _wrap_html(body_html), text,
+                 from_addr=_from_support())
 
 
 # ─── Email #4: cancelación confirmada ──────────────────────────────────────
@@ -364,7 +393,8 @@ def send_cancellation(*, to: str, user_name: str, valid_until: str,
         f"— Rendi"
     )
     return _send(to, f"Cancelación confirmada · Rendi {plan_label}",
-                 _wrap_html(body_html), text)
+                 _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
 
 
 # ─── Email #5: recordatorio de expiración (3 días antes) ───────────────────
@@ -396,7 +426,8 @@ def send_expiration_reminder(*, to: str, user_name: str,
         f"— Rendi"
     )
     return _send(to, f"⏰ Tu Rendi Pro vence en {days_left} días",
-                 _wrap_html(body_html), text)
+                 _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
 
 
 # ─── Email #6: código de verificación post-register ─────────────────────────
@@ -429,7 +460,8 @@ def send_verification_code(*, to: str, user_name: str, code: str,
         f"Si no fuiste vos, ignorá este email — nadie podrá acceder sin el código.\n\n"
         f"— Rendi"
     )
-    return _send(to, subject, _wrap_html(body_html), text)
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
 
 
 # ─── Email #7: reset de contraseña (magic link) ─────────────────────────────
@@ -475,7 +507,8 @@ def send_password_reset(*, to: str, user_name: str, reset_url: str,
         f"— Rendi"
     )
     return _send(to, "Restablecé tu contraseña · Rendi",
-                 _wrap_html(body_html), text)
+                 _wrap_html(body_html), text,
+                 from_addr=_from_support())
 
 
 def send_new_login_alert(*, to: str, user_name: str, device: str,
@@ -517,4 +550,5 @@ def send_new_login_alert(*, to: str, user_name: str, device: str,
         f"— Rendi"
     )
     return _send(to, "Nuevo inicio de sesión · Rendi",
-                 _wrap_html(body_html), text)
+                 _wrap_html(body_html), text,
+                 from_addr=_from_support())
