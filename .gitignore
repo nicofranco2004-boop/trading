@@ -8,6 +8,11 @@ backend/*.db-wal
 *.db
 *.db-shm
 *.db-wal
+# Snapshots / backups antes de operaciones destructivas (formato libre:
+# trading.db.backup-..., dump.sql.bak, etc.)
+*.backup
+*.backup-*
+*.sql.bak
 backend/.env
 .env
 .env.local

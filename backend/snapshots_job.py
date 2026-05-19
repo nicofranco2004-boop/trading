@@ -233,6 +233,80 @@ def take_snapshot_for_user(
     }
 
 
+# Cache in-memory para live portfolio value — TTL 60s por user.
+# Evita re-fetchear yfinance en cada call del endpoint /reports/period cuando
+# el user navega tabs día/semana/año rápido. Key = (uid, broker).
+_LIVE_VALUE_CACHE: dict = {}
+_LIVE_VALUE_TTL_SEC = 60
+
+
+def compute_live_portfolio_value(
+    conn: sqlite3.Connection,
+    uid: int,
+    tc_blue: float,
+    crypto_yf: dict,
+) -> Optional[float]:
+    """Calcula el total_value LIVE del portfolio sumando positions × precios
+    actuales — sin persistir nada. Útil cuando se necesita "valor de hoy"
+    pero el snapshot del día todavía no se generó por cron.
+
+    Cachea por 60s para evitar fetches repetidos a yfinance en navegación rápida.
+    Devuelve None si no hay positions o falla el fetch de precios.
+    """
+    import time as _time
+    cache_key = (uid, tc_blue)
+    cached = _LIVE_VALUE_CACHE.get(cache_key)
+    if cached is not None:
+        cached_at, cached_val = cached
+        if _time.time() - cached_at < _LIVE_VALUE_TTL_SEC:
+            return cached_val
+    brokers = [dict(r) for r in conn.execute(
+        "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
+    ).fetchall()]
+    positions = [dict(r) for r in conn.execute(
+        "SELECT broker, asset, is_cash, invested, quantity, commissions, price_override "
+        "FROM positions WHERE user_id=?",
+        (uid,)
+    ).fetchall()]
+    if not brokers or not positions:
+        return None
+
+    ars_brokers = {b['name'] for b in brokers if b['currency'] == 'ARS'}
+    usd_brokers = {b['name'] for b in brokers if b['currency'] != 'ARS'}
+
+    ars_symbols = list({
+        f"{p['asset']}.BA" for p in positions
+        if p['broker'] in ars_brokers and not p['is_cash']
+    })
+    usd_symbols = list({
+        p['asset'] for p in positions
+        if p['broker'] in usd_brokers and not p['is_cash']
+           and p['asset'] not in ('USDT', 'USD')
+    })
+    all_symbols = ars_symbols + usd_symbols
+    if not all_symbols:
+        return None
+
+    try:
+        prices = fetch_prices_for_symbols(all_symbols, crypto_yf)
+    except Exception as e:
+        log.warning(f"compute_live_portfolio_value: fetch_prices failed: {e}")
+        return None
+
+    total_value = 0.0
+    for b in brokers:
+        bpos = [p for p in positions if p['broker'] == b['name']]
+        try:
+            r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue)
+            total_value += r['value']
+        except Exception as e:
+            log.warning(f"compute_live_portfolio_value: broker {b['name']} failed: {e}")
+            continue
+    result = round(total_value, 2)
+    _LIVE_VALUE_CACHE[cache_key] = (_time.time(), result)
+    return result
+
+
 # ─── Job runner: itera todos los usuarios activos ────────────────────────────
 
 def run_daily_snapshot(

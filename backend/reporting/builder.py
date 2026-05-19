@@ -51,6 +51,9 @@ def parse_period_bounds(period_type: str, period_key: str) -> Tuple[str, str]:
             next_m = date_cls(y, m + 1, 1)
         last = next_m - timedelta(days=1)
         return first.isoformat(), last.isoformat()
+    if period_type == "year":
+        y = int(period_key)
+        return f"{y:04d}-01-01", f"{y:04d}-12-31"
     raise ValueError(f"period_type desconocido: {period_type}")
 
 
@@ -69,12 +72,17 @@ def period_label(period_type: str, period_key: str, period_start: str) -> str:
         y, m, d = (int(x) for x in period_key.split("-"))
         dt = date_cls(y, m, d)
         return f"{DIA[dt.weekday()]} {dt.day} {MES[m - 1].lower()}"
+    if period_type == "year":
+        return f"Año {period_key}"
     return period_key
 
 
 def is_period_current(period_type: str, period_start: str, period_end: str,
                      today: Optional[date_cls] = None) -> bool:
-    today = today or date_cls.today()
+    # Usar UTC para consistencia con _iso_today() del endpoint principal.
+    # Sin esto, servidores con TZ no-UTC pueden divergir del frontend cerca
+    # de medianoche, marcando un período como "no current" cuando sí lo es.
+    today = today or datetime.utcnow().date()
     start = date_cls.fromisoformat(period_start)
     end = date_cls.fromisoformat(period_end)
     return start <= today <= end
@@ -200,14 +208,18 @@ def benchmark_return_for_period(bench: Dict[str, Any], period_type: str,
 
 # ─── Métricas core del período ───────────────────────────────────────────────
 
-def _modified_dietz_pct(start_value: float, end_value: float, flows: float) -> float:
-    """Period return Modified Dietz. Clamped a [-0.99, +inf]."""
+def _modified_dietz_pct(start_value: float, end_value: float, flows: float) -> Optional[float]:
+    """Period return Modified Dietz.
+
+    Devuelve None si el promedio invertido es <=0 (no se puede computar un %
+    significativo — el frontend muestra "—"). NO clampa: si el portfolio cae
+    -150%, devolvemos -150 (raro pero real para shorts/leverage).
+    """
     avg = start_value + 0.5 * flows
     if avg <= 0:
-        return 0.0
+        return None
     pnl = end_value - start_value - flows
-    r = pnl / avg
-    return max(r, -0.99) * 100
+    return (pnl / avg) * 100
 
 
 def compute_metrics_for_period(
@@ -257,6 +269,27 @@ def compute_metrics_for_period(
             unrealized = float(me.get("pnl_unrealized") or 0)
         if live_value is not None and is_period_current(period_type, period_start, period_end):
             end_value = float(live_value)
+    elif period_type == "year":
+        # Sumamos los monthly_entries del año. start = capital_inicio del primer
+        # mes con data; end = capital_final del último mes con data (o live
+        # value si el año en curso). flows = suma de deposits/withdrawals.
+        y = int(period_start[:4])
+        rows = conn.execute(
+            """SELECT month, capital_inicio, capital_final, deposits, withdrawals,
+                       pnl_realized, pnl_unrealized
+                 FROM monthly_entries
+                WHERE user_id = ? AND broker = ? AND year = ?
+                ORDER BY month ASC""",
+            (uid, broker_filter, y),
+        ).fetchall()
+        if rows:
+            start_value = float(rows[0]["capital_inicio"] or 0)
+            end_value = float(rows[-1]["capital_final"] or 0)
+            deposits = sum(float(r["deposits"] or 0) for r in rows)
+            withdrawals = sum(float(r["withdrawals"] or 0) for r in rows)
+            unrealized = float(rows[-1]["pnl_unrealized"] or 0)
+        if live_value is not None and is_period_current(period_type, period_start, period_end):
+            end_value = float(live_value)
     else:
         # week / day: snapshots para start/end
         snap_start = fetch_snapshot_at_or_before(conn, uid, period_start)
@@ -269,12 +302,23 @@ def compute_metrics_for_period(
             end_value = float(live_value)
         else:
             end_value = float(snap_end["total_value"]) if snap_end else start_value
-        # deposits/withdrawals para week/day: no tenemos granularidad fina —
-        # los dejamos en 0 en Phase 1. Phase 3 (daily) los va a precisar.
+        # deposits/withdrawals para week/day: este modelo NO tiene
+        # granularidad sub-mensual de flujos (solo monthly_entries lo trackea
+        # mes a mes). Asumimos flows=0 para day/week.
+        # Limitación conocida: si el user deposita capital intra-mes, el
+        # delta_usd del día/semana lo va a contar como ganancia hasta el
+        # cierre del mes (donde monthly_entries se reconcilia).
 
     flows = deposits - withdrawals
     delta_usd = end_value - start_value - flows
-    delta_pct = _modified_dietz_pct(start_value, end_value, flows)
+    delta_pct_val = _modified_dietz_pct(start_value, end_value, flows)
+    delta_pct = round(delta_pct_val, 2) if delta_pct_val is not None else None
+
+    # Para day/week, el unrealized del período = todo el delta que no es
+    # realized (las posiciones abiertas se movieron en su mark-to-market).
+    # monthly_entries trae unrealized directo; day/week lo derivamos.
+    if period_type in ("day", "week"):
+        unrealized = delta_usd - realized
 
     cum_aportado = fetch_cum_deposits_until(conn, uid, period_end, broker_filter)
     delta_pct_over_contrib = (
@@ -290,7 +334,7 @@ def compute_metrics_for_period(
         start_value=round(start_value, 2),
         end_value=round(end_value, 2),
         delta_usd=round(delta_usd, 2),
-        delta_pct=round(delta_pct, 2),
+        delta_pct=delta_pct,
         delta_pct_over_contrib=round(delta_pct_over_contrib, 2) if delta_pct_over_contrib is not None else None,
         realized_pnl=round(realized, 2),
         unrealized_pnl=round(unrealized, 2),
@@ -376,6 +420,7 @@ def compute_highlights(ops: List[Dict[str, Any]]) -> List[Highlight]:
 # adjetivos del headline concuerden correctamente en español (semana = fem,
 # mes/día = masc). "difícil" es invariable y "período" es masc (fallback).
 _PERIOD_WORD = {
+    "year":  ("Año", "m"),
     "month": ("Mes", "m"),
     "week":  ("Semana", "f"),
     "day":   ("Día", "m"),
@@ -404,9 +449,27 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
     Reglas determinísticas (no LLM). Cada caso es un detector simple.
     Concuerda el género del adjetivo con el sustantivo del período.
     """
-    delta = metrics.delta_pct
-    abs_usd = abs(metrics.delta_usd)
+    # delta_pct puede ser None (avg<=0) — caemos a "sin grandes movimientos"
+    delta = metrics.delta_pct if metrics.delta_pct is not None else 0.0
+    abs_usd = abs(metrics.delta_usd or 0)
+    realized = metrics.realized_pnl or 0
     period_word, gender = _PERIOD_WORD.get(period_type, ("Período", "m"))
+
+    # Caso especial: cerraste operaciones ganadoras pero el portfolio total bajó
+    # (mark-to-market negativo). El user "ganó plata" en lo que cerró, aunque
+    # el delta total sea rojo. Lo hacemos explícito para evitar el headline
+    # "perdiste X%" cuando en realidad cerraste con ganancia.
+    if realized >= 50 and delta < -0.5 and metrics.trades_count > 0:
+        return (
+            f"Cerraste con ganancia (+US$ {realized:,.0f}), pero el portfolio bajó {abs(delta):.1f}%.".replace(",", "."),
+            "Operaciones ganadoras compensadas por mark-to-market negativo de las posiciones abiertas.",
+        )
+    # Caso simétrico inverso: cerraste con pérdida pero el portfolio subió por mark-to-market positivo
+    if realized <= -50 and delta > 0.5 and metrics.trades_count > 0:
+        return (
+            f"Operaciones con pérdida (US$ {realized:,.0f}), pero el portfolio subió {delta:.1f}%.".replace(",", "."),
+            "Mark-to-market positivo compensó las pérdidas realizadas.",
+        )
 
     # Caso 1: período flat — frase invariable
     if abs(delta) < 0.5 and abs_usd < 100:
@@ -435,6 +498,89 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
     return (f"{period_word} {_conjugate('mixto', gender)} — {sign}{delta:.1f}%.", None)
 
 
+# ─── Narrativa larga (qué pasó en el período) ────────────────────────────────
+
+def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContribution"],
+                       highlights: List["Highlight"], period_type: str,
+                       period_label_str: str) -> Optional[str]:
+    """Genera un párrafo de 2-4 oraciones contando qué pasó en el período.
+
+    Determinístico — combina métricas, drivers y benchmark. No usa LLM.
+    Devuelve None si el período no tiene actividad relevante.
+    """
+    delta = metrics.delta_pct if metrics.delta_pct is not None else 0.0
+    abs_usd = abs(metrics.delta_usd or 0)
+    realized = metrics.realized_pnl or 0
+    if abs(delta) < 0.5 and abs_usd < 100 and metrics.trades_count == 0:
+        return None
+
+    parts: List[str] = []
+
+    # Oración 1: balance general del período en USD y %.
+    # Caso especial: realized positivo pero delta total negativo (o viceversa).
+    # No usamos "ganaste/perdiste" sin contexto porque las dos cosas pueden ser
+    # ciertas a la vez — separamos "valor del portfolio" de "P&L realizado".
+    mismatch = (realized >= 50 and delta < -0.5) or (realized <= -50 and delta > 0.5)
+    if mismatch:
+        port_dir = "bajó" if delta < 0 else "subió"
+        real_sign = "+" if realized >= 0 else "−"
+        parts.append(
+            f"En {period_label_str.lower()} tu portfolio {port_dir} US$ {abs(metrics.delta_usd):,.0f} ({delta:+.1f}%), "
+            f"pero las operaciones cerradas dejaron {real_sign}US$ {abs(realized):,.0f} de P&L realizado. "
+            f"La diferencia viene del mark-to-market de tus posiciones abiertas."
+            .replace(",", ".")
+        )
+    else:
+        direction = "ganaste" if delta >= 0 else "perdiste"
+        parts.append(
+            f"En {period_label_str.lower()} {direction} "
+            f"US$ {abs(metrics.delta_usd):,.0f} ({delta:+.1f}%) "
+            f"sobre un capital inicial de US$ {metrics.start_value:,.0f}."
+            .replace(",", ".")
+        )
+
+    # Oración 2: drivers principales (top + bottom).
+    top_pos = next((d for d in drivers if d.pnl_usd > 0), None)
+    top_neg = next((d for d in reversed(drivers) if d.pnl_usd < 0), None)
+    driver_bits: List[str] = []
+    if top_pos and abs(top_pos.pnl_usd) >= 50:
+        driver_bits.append(
+            f"{top_pos.asset} aportó +US$ {top_pos.pnl_usd:,.0f}".replace(",", ".")
+        )
+    if top_neg and abs(top_neg.pnl_usd) >= 50:
+        driver_bits.append(
+            f"{top_neg.asset} restó US$ {abs(top_neg.pnl_usd):,.0f}".replace(",", ".")
+        )
+    if driver_bits:
+        parts.append("Los movimientos más relevantes: " + " · ".join(driver_bits) + ".")
+
+    # Oración 3: flujos de capital del período.
+    net_flow = metrics.deposits - metrics.withdrawals
+    if abs(net_flow) >= 100:
+        if net_flow > 0:
+            parts.append(f"Aportaste US$ {net_flow:,.0f} de capital nuevo.".replace(",", "."))
+        else:
+            parts.append(f"Retiraste US$ {abs(net_flow):,.0f} del portfolio.".replace(",", "."))
+
+    # Oración 4: trades cerrados + win rate.
+    if metrics.trades_count > 0:
+        wr = metrics.win_rate
+        wr_str = f" con {wr:.0f}% de win rate" if wr is not None else ""
+        parts.append(
+            f"Cerraste {metrics.trades_count} operación{'es' if metrics.trades_count != 1 else ''}"
+            f"{wr_str}, sumando US$ {metrics.realized_pnl:+,.0f} de P&L realizado.".replace(",", ".")
+        )
+
+    # Oración 5: comparativa vs S&P 500 (solo si hay dato).
+    if metrics.vs_sp500_pct is not None and abs(metrics.vs_sp500_pct) >= 0.5:
+        sign = "encima" if metrics.vs_sp500_pct > 0 else "debajo"
+        parts.append(
+            f"Quedaste {abs(metrics.vs_sp500_pct):.1f} puntos por {sign} del S&P 500."
+        )
+
+    return " ".join(parts) if parts else None
+
+
 # ─── Punto de entrada principal ──────────────────────────────────────────────
 
 def build_period_report(
@@ -457,6 +603,7 @@ def build_period_report(
     drivers = compute_drivers(ops)
     highlights = compute_highlights(ops)
     headline, subheadline = generate_headline(metrics, drivers, period_type)
+    narrative = generate_narrative(metrics, drivers, highlights, period_type, label)
 
     # is_relevant: hay actividad económica o cambios significativos
     is_relevant = (
@@ -481,4 +628,5 @@ def build_period_report(
         highlights=highlights,
         drivers=drivers,
         children=[],
+        narrative=narrative,
     )

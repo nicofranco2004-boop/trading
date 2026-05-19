@@ -33,7 +33,7 @@ import logging
 log = logging.getLogger(__name__)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from snapshots_job import run_daily_snapshot
+from snapshots_job import run_daily_snapshot, compute_live_portfolio_value
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, date
@@ -69,15 +69,46 @@ def _is_admin_email(email: str) -> bool:
     return hmac.compare_digest(h, ADMIN_EMAIL_HASH)
 
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-bearer = HTTPBearer()
+# auto_error=False: get_current_user mira primero la cookie HttpOnly; si no hay,
+# cae al header Authorization (back-compat / clientes no-browser). Sin esto, no
+# tener header genera 401 antes de que podamos chequear la cookie.
+bearer = HTTPBearer(auto_error=False)
+
+# ─── Auth cookie helpers ─────────────────────────────────────────────────────
+# El token JWT se setea como cookie HttpOnly para que JS no lo pueda leer (XSS
+# no roba la sesión). En prod (RENDI_ENV=prod) la cookie va con Secure=True;
+# en dev local (HTTP) no — sino el browser la rechaza.
+
+COOKIE_NAME = "rendi_token"
+_COOKIE_SECURE = os.environ.get("RENDI_ENV", "dev").lower() == "prod"
+
+
+def set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=TOKEN_DAYS * 86400,
+        httponly=True,
+        secure=_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie(key=COOKIE_NAME, path="/")
 
 app = FastAPI(title="Rendi", docs_url=None, redoc_url=None)  # disable public docs in prod
 
-# CORS — restrict to known origins; wildcard is OK for Bearer-auth but better to be explicit
+# CORS — origins explícitos (allow_credentials no admite "*"). En prod estos
+# son la URL del frontend (Vercel) seteada por env. En dev acepta los
+# puertos de Vite. allow_credentials=True es necesario para que el browser
+# acepte la cookie HttpOnly cross-origin.
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
@@ -702,6 +733,20 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_pwd_reset_token ON password_reset_tokens(token);
         CREATE INDEX IF NOT EXISTS idx_pwd_reset_user ON password_reset_tokens(user_id, used_at);
+
+        -- ─── login_history: dispositivos vistos por user (alerta de nuevo login) ──
+        -- Si el ua_hash actual no apareció antes para este user, se envía un email
+        -- de alerta (después del primer login, que es esperado y no alerta).
+        CREATE TABLE IF NOT EXISTS login_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            ip TEXT,
+            ua_hash TEXT,
+            ua_brief TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
     """)
 
     # subscriptions: columnas de idempotencia de emails (idempotent migration
@@ -836,9 +881,19 @@ def create_token(user_id: int, pw_changed_at: Optional[str] = None) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> int:
+def get_current_user(
+    request: Request,
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+) -> int:
+    # Preferimos la cookie HttpOnly (web), fallback al Authorization header
+    # (clientes no-browser / back-compat). El que esté primero gana.
+    token = request.cookies.get(COOKIE_NAME)
+    if not token and creds:
+        token = creds.credentials
+    if not token:
+        raise HTTPException(401, "Token inválido")
     try:
-        payload = jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         uid = int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         raise HTTPException(401, "Token inválido")
@@ -953,6 +1008,90 @@ def _gen_reset_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+# ─── Login history / device tracking ─────────────────────────────────────────
+# El UA fingerprint se hashea — si la DB se filtra, no exponemos el UA en
+# plano. ua_brief es el resumen legible que mostramos al user en el email.
+
+def _ua_brief(ua: Optional[str]) -> str:
+    """Resume el User-Agent en 'Chrome 124 / macOS' para mostrar al user."""
+    if not ua:
+        return "Dispositivo desconocido"
+    import re
+    m = re.search(r'(Chrome|Firefox|Safari|Edge|Opera)/(\d+)', ua)
+    browser = f"{m.group(1)} {m.group(2)}" if m else "Browser"
+    if "Windows" in ua:        os_name = "Windows"
+    elif "Mac OS X" in ua or "Macintosh" in ua: os_name = "macOS"
+    elif "Android" in ua:      os_name = "Android"
+    elif "iPhone" in ua or "iPad" in ua: os_name = "iOS"
+    elif "Linux" in ua:        os_name = "Linux"
+    else:                       os_name = "Sistema operativo desconocido"
+    return f"{browser} / {os_name}"
+
+
+def _ua_hash(ua: Optional[str]) -> str:
+    if not ua:
+        return ""
+    return hashlib.sha256(ua.encode("utf-8")).hexdigest()[:32]
+
+
+def _client_ip(request: Request) -> str:
+    """Extrae la IP real respetando X-Forwarded-For (Vercel/Railway proxy)."""
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
+def _record_login_and_maybe_alert(
+    conn,
+    user_id: int,
+    email: str,
+    name: Optional[str],
+    request: Request,
+) -> None:
+    """Inserta el login en login_history. Si el dispositivo (ua_hash) no fue
+    visto antes para este user — y NO es el primer login ever — manda un
+    email de alerta. Nunca tira: si la alerta falla, el login sigue OK."""
+    try:
+        ua = request.headers.get("user-agent", "")
+        ip = _client_ip(request)
+        uah = _ua_hash(ua)
+        uab = _ua_brief(ua)
+
+        total_prev = conn.execute(
+            "SELECT COUNT(*) AS c FROM login_history WHERE user_id=?", (user_id,)
+        ).fetchone()["c"]
+
+        is_new_device = False
+        if total_prev > 0:
+            prev = conn.execute(
+                "SELECT id FROM login_history WHERE user_id=? AND ua_hash=? LIMIT 1",
+                (user_id, uah),
+            ).fetchone()
+            is_new_device = not prev
+
+        conn.execute(
+            "INSERT INTO login_history (user_id, ip, ua_hash, ua_brief) VALUES (?,?,?,?)",
+            (user_id, ip, uah, uab),
+        )
+        conn.commit()
+
+        if is_new_device:
+            try:
+                from billing import emails
+                emails.send_new_login_alert(
+                    to=email,
+                    user_name=(name or email.split("@")[0]),
+                    device=uab,
+                    ip=ip or "desconocida",
+                    when=datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC"),
+                )
+            except Exception as ex:
+                log.error("Login alert email failed for uid=%s: %s", user_id, ex)
+    except Exception as ex:
+        log.error("login_history record failed for uid=%s: %s", user_id, ex)
+
+
 def _gen_verification_code() -> str:
     """6 dígitos, sin ceros al inicio (más fácil de tipear y se ve completo)."""
     return f"{secrets.randbelow(900000) + 100000}"
@@ -996,7 +1135,7 @@ def _send_verification_email(conn, user_id: int, email: str, name: Optional[str]
 
 
 @app.post("/api/auth/register")
-def register(data: RegisterIn, request: Request):
+def register(data: RegisterIn, request: Request, response: Response):
     is_admin_signup = _is_admin_email(data.email)
     # Si registro está cerrado, solo se permite el registro del admin (idempotente).
     if not ALLOW_REGISTRATION and not is_admin_signup:
@@ -1060,8 +1199,10 @@ def register(data: RegisterIn, request: Request):
         # Admin: bypass verificación + token directo (acceso interno)
         pca_row = conn.execute("SELECT password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
         conn.close()
+        token = create_token(uid, pca_row["password_changed_at"] if pca_row else None)
+        set_auth_cookie(response, token)
         return {
-            "token": create_token(uid, pca_row["password_changed_at"] if pca_row else None),
+            "token": token,
             "name": data.name or data.email,
             "is_admin": True,
         }
@@ -1077,7 +1218,7 @@ def register(data: RegisterIn, request: Request):
 
 
 @app.post("/api/auth/login")
-def login(data: LoginIn, request: Request):
+def login(data: LoginIn, request: Request, response: Response):
     email_norm = data.email.strip().lower()
     # Rate limit por IP y por email (mitiga brute-force distribuido sobre una cuenta puntual)
     _check_rate_limit(request, max_calls=10, window_seconds=60, suffix="login_ip")
@@ -1109,16 +1250,32 @@ def login(data: LoginIn, request: Request):
         conn.commit()
     except Exception:
         pass
+    # Registrar el login en login_history; si el dispositivo es nuevo (ua_hash
+    # no visto antes), dispara email de alerta. Nunca tira.
+    _record_login_and_maybe_alert(conn, row["id"], row["email"], row["name"], request)
     conn.close()
+    token = create_token(row["id"], row["password_changed_at"])
+    set_auth_cookie(response, token)
+    # Mantenemos `token` en el body por back-compat (clientes legacy / mobile).
+    # El frontend web ahora usa la cookie HttpOnly y puede ignorarlo.
     return {
-        "token": create_token(row["id"], row["password_changed_at"]),
+        "token": token,
         "name": row["name"] or row["email"],
         "is_admin": bool(row["is_admin"]),
     }
 
 
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    """Borra la cookie de auth. Para clientes que usan Bearer header, esto es
+    no-op server-side (el token sigue vigente hasta exp) — sirven con cambiar
+    la contraseña si querés invalidar todo."""
+    clear_auth_cookie(response)
+    return {"ok": True}
+
+
 @app.post("/api/auth/verify-email")
-def verify_email(data: VerifyEmailIn, request: Request):
+def verify_email(data: VerifyEmailIn, request: Request, response: Response):
     """Confirma el email del user con un código OTP de 6 dígitos.
 
     Si el código es válido (existe, no expiró, no fue usado), marcamos
@@ -1166,9 +1323,14 @@ def verify_email(data: VerifyEmailIn, request: Request):
                 "UPDATE users SET email_verified = 1 WHERE id = ?",
                 (user["id"],),
             )
+        # Verificar email = login implícito. Registramos en login_history
+        # también (igual no manda alerta porque es el primer login post-signup).
+        _record_login_and_maybe_alert(conn, user["id"], email_norm, user["name"], request)
         conn.close()
+        token = create_token(user["id"], user["password_changed_at"])
+        set_auth_cookie(response, token)
         return {
-            "token": create_token(user["id"], user["password_changed_at"]),
+            "token": token,
             "name": user["name"] or email_norm,
             "verified": True,
         }
@@ -1256,7 +1418,7 @@ def forgot_password(data: ForgotPasswordIn, request: Request):
 
 
 @app.post("/api/auth/reset-password")
-def reset_password(data: ResetPasswordIn, request: Request):
+def reset_password(data: ResetPasswordIn, request: Request, response: Response):
     """Confirma el reset usando el token + nueva contraseña.
 
     Valida que el token exista, no esté usado y no haya vencido.
@@ -1297,8 +1459,10 @@ def reset_password(data: ResetPasswordIn, request: Request):
             "SELECT name, email, password_changed_at FROM users WHERE id = ?",
             (row["user_id"],),
         ).fetchone()
+        token = create_token(row["user_id"], user["password_changed_at"])
+        set_auth_cookie(response, token)
         return {
-            "token": create_token(row["user_id"], user["password_changed_at"]),
+            "token": token,
             "name": user["name"] or user["email"],
             "message": "Contraseña restablecida.",
         }
@@ -1308,11 +1472,6 @@ def reset_password(data: ResetPasswordIn, request: Request):
     finally:
         try: conn.close()
         except Exception: pass
-
-
-@app.post("/api/auth/logout")
-def logout(uid: int = Depends(get_current_user)):
-    return {"ok": True}
 
 
 @app.get("/api/auth/me")
@@ -1335,7 +1494,7 @@ def me(uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/auth/change-password")
-def change_password(data: ChangePasswordIn, uid: int = Depends(get_current_user)):
+def change_password(data: ChangePasswordIn, response: Response, uid: int = Depends(get_current_user)):
     conn = get_db()
     row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
     if not row or not pwd_ctx.verify(data.current_password, row["password_hash"]):
@@ -1349,8 +1508,11 @@ def change_password(data: ChangePasswordIn, uid: int = Depends(get_current_user)
     conn.commit()
     pca = conn.execute("SELECT password_changed_at FROM users WHERE id=?", (uid,)).fetchone()["password_changed_at"]
     conn.close()
-    # Devolvemos token nuevo con el pca actualizado para que la sesión actual siga válida
-    return {"ok": True, "token": create_token(uid, pca)}
+    # Token nuevo con el pca actualizado para que la sesión actual siga válida
+    # (los JWTs viejos del mismo user quedaron invalidados al bumpear pca).
+    token = create_token(uid, pca)
+    set_auth_cookie(response, token)
+    return {"ok": True, "token": token}
 
 
 # ─── Brokers ─────────────────────────────────────────────────────────────────
@@ -2092,6 +2254,35 @@ def _fetch_yf_events(ticker: str) -> list:
     return events
 
 
+def _refresh_events_in_background(tickers: list):
+    """Stale-while-revalidate para events: dispara refresh en daemon thread."""
+    import threading
+    def worker():
+        local_conn = get_db()
+        try:
+            _refresh_events_for_tickers(local_conn, tickers)
+        except Exception as ex:
+            logging.getLogger(__name__).warning("background events refresh failed: %s", ex)
+        finally:
+            local_conn.close()
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _has_events_for_tickers(conn, tickers: list, days: int = 90) -> bool:
+    """Quick check: ¿hay eventos en DB para alguno de esos tickers en ventana?"""
+    if not tickers:
+        return False
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    end_date = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%d')
+    placeholders = ','.join('?' for _ in tickers)
+    row = conn.execute(
+        f"SELECT 1 FROM financial_events WHERE ticker IN ({placeholders}) "
+        f"AND event_date >= ? AND event_date <= ? LIMIT 1",
+        (*tickers, today, end_date),
+    ).fetchone()
+    return row is not None
+
+
 def _refresh_events_for_tickers(conn, tickers: list):
     """Refresca el cache de eventos para una lista de tickers. Idempotente:
     si un ticker ya fue refrescado hace <TTL, lo skipea."""
@@ -2160,15 +2351,20 @@ def get_portfolio_events(
         # Excluir bonos AR (los maneja frontend via bondSchedule)
         stock_tickers = [t for t in all_tickers if t not in AR_BONDS_DATA912 and t not in CRYPTO_SYMBOLS]
 
-        # Refresh proactivo (idempotente). No falla la request si yfinance falla.
+        # SWR: si ya hay eventos en DB para algún ticker del portfolio en la
+        # ventana, devolvemos esa data al instante y refrescamos en background.
+        # Si NO hay nada (primer load), bloqueamos.
         refreshed = 0
-        try:
-            before = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-            _refresh_events_for_tickers(conn, stock_tickers)
-            after = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-            refreshed = after - before
-        except Exception:
-            pass
+        if _has_events_for_tickers(conn, stock_tickers, days=days):
+            _refresh_events_in_background(stock_tickers)
+        else:
+            try:
+                before = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
+                _refresh_events_for_tickers(conn, stock_tickers)
+                after = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
+                refreshed = after - before
+            except Exception:
+                pass
 
         # Query: eventos próximos para los tickers del portfolio
         today = datetime.utcnow().strftime('%Y-%m-%d')
@@ -2633,6 +2829,34 @@ def _cache_key_for(kind: str, category: str, identifier: str) -> str:
     return f"{kind}:{category}:{identifier}"
 
 
+def _refresh_news_in_background(specs, ttl_seconds):
+    """Stale-while-revalidate: dispara el refresh batch en un daemon thread
+    sin bloquear la response. El próximo request ya tiene data fresca.
+
+    Si hay data en DB, los endpoints devuelven esa data inmediatamente y
+    delegan el refresh acá — el user nunca espera 1-3s de yfinance.
+    """
+    import threading
+    def worker():
+        try:
+            _ensure_news_batch_parallel(specs, ttl_seconds)
+        except Exception as ex:
+            logging.getLogger(__name__).warning("background news refresh failed: %s", ex)
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _has_news_for_categories(conn, categories: list) -> bool:
+    """Quick check: ¿hay alguna noticia en DB para esas categorías?"""
+    if not categories:
+        return False
+    placeholders = ','.join('?' for _ in categories)
+    row = conn.execute(
+        f"SELECT 1 FROM news WHERE category IN ({placeholders}) LIMIT 1",
+        categories,
+    ).fetchone()
+    return row is not None
+
+
 def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8):
     """Versión paralelizada: fetcha múltiples feeds en threads concurrentes.
 
@@ -2707,21 +2931,24 @@ def get_market_news(
     if limit <= 0 or limit > 100:
         raise HTTPException(422, "limit debe estar entre 1 y 100")
 
-    # Refresh paralelo — Google News + Investing.com en un mismo pool. Mix de
-    # 3-tuplas (legacy Google News) + 4-tuplas (multi-source). Wall time ~1s
-    # vs serial >5s.
-    try:
-        specs = (
-            [(q, lang, cat) for q, cat, lang in MARKET_NEWS_QUERIES] +
-            [('investing', url, lang, cat) for url, cat, lang in INVESTING_FEEDS]
-        )
-        _ensure_news_batch_parallel(specs, NEWS_MARKET_TTL)
-    except Exception:
-        pass
+    specs = (
+        [(q, lang, cat) for q, cat, lang in MARKET_NEWS_QUERIES] +
+        [('investing', url, lang, cat) for url, cat, lang in INVESTING_FEEDS]
+    )
 
     conn = get_db()
     try:
-        # Devolver últimas N noticias de categoría market/macro con tags.
+        # Stale-while-revalidate: si hay data en DB la devolvemos al instante
+        # y refrescamos en background. Si NO hay nada (primer boot), bloqueamos
+        # para no devolver una lista vacía.
+        if _has_news_for_categories(conn, ['market', 'macro']):
+            _refresh_news_in_background(specs, NEWS_MARKET_TTL)
+        else:
+            try:
+                _ensure_news_batch_parallel(specs, NEWS_MARKET_TTL)
+            except Exception:
+                pass
+
         rows = conn.execute(
             """SELECT title, summary, url, published_at, query_source,
                       category, source, tags
@@ -2769,10 +2996,16 @@ def get_portfolio_news(
             lang = "es" if is_ar else "en"
             query = f"{ticker} {'acciones' if is_ar else 'stock'}"
             queries_batch.append((query, lang, 'portfolio'))
-        try:
-            _ensure_news_batch_parallel(queries_batch, NEWS_TICKER_TTL)
-        except Exception:
-            pass
+
+        # SWR: si ya tenemos news para 'portfolio' en DB, refresh en background.
+        # Si es la primera vez, bloqueamos para no devolver lista vacía.
+        if _has_news_for_categories(conn, ['portfolio']):
+            _refresh_news_in_background(queries_batch, NEWS_TICKER_TTL)
+        else:
+            try:
+                _ensure_news_batch_parallel(queries_batch, NEWS_TICKER_TTL)
+            except Exception:
+                pass
 
         # Devolver noticias del portfolio matcheando query_source con cualquiera
         # de los tickers (que es el "{TICKER} stock"/"acciones" que sembramos).
@@ -6349,6 +6582,7 @@ def plan_features(uid: int = Depends(get_current_user)):
 #  6. MP repite cobro automáticamente cada mes/año + llama webhook cada vez
 
 class SubscribeIn(BaseModel):
+    plan: str = Field("pro", pattern="^(plus|pro)$")  # default pro por back-compat
     period: str = Field(..., pattern="^(monthly|annual)$")
 
 
@@ -6394,20 +6628,24 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
                 "reused": True,
             }
 
+        plan_id = data.plan if data.plan in ("plus", "pro") else "pro"
+        period = data.period
+
         # 3. Crear preapproval en MP
         try:
             mp_response = mercadopago.create_preapproval(
                 user_id=uid,
                 user_email=user_email,
-                period=data.period,
+                period=period,
+                plan=plan_id,
             )
         except Exception as ex:
             log.error("MP create_preapproval failed for uid=%s: %s", uid, ex)
             raise HTTPException(502, f"Error al crear suscripción en MP: {type(ex).__name__}")
 
         # 4. Guardar en DB
-        amount = pricing.get_pricing(data.period)["total_ars"]
-        ext_ref = f"rendi-{uid}-{data.period}"
+        amount = pricing.get_pricing(plan_id, period)["total_ars"]
+        ext_ref = f"rendi-{uid}-{plan_id}-{period}"
         with conn:
             conn.execute(
                 """INSERT INTO subscriptions
@@ -6683,18 +6921,19 @@ def _process_preapproval_event(conn, preapproval_id: str):
             (our_status, period_start, next_pmt, next_pmt, preapproval_id),
         )
 
-    # Si quedó authorized → el user pasa a tier='pro' + email de bienvenida
+    # Si quedó authorized → el user pasa a tier=plus/pro + email de bienvenida
     if our_status == "authorized":
-        parsed = mercadopago.parse_external_reference(ext_ref)
-        if parsed:
-            user_id, parsed_period = parsed
+        parsed_full = mercadopago.parse_external_reference_full(ext_ref)
+        if parsed_full:
+            user_id, parsed_plan, parsed_period = parsed_full
+            target_tier = parsed_plan if parsed_plan in ("plus", "pro") else "pro"
             with conn:
-                conn.execute("UPDATE users SET tier = 'pro' WHERE id = ?", (user_id,))
+                conn.execute("UPDATE users SET tier = ? WHERE id = ?", (target_tier, user_id))
                 conn.execute(
                     "UPDATE billing_events SET user_id = ? WHERE mp_data_id = ?",
                     (user_id, preapproval_id),
                 )
-            log.info("User %s upgraded to tier='pro' via MP preapproval %s", user_id, preapproval_id)
+            log.info("User %s upgraded to tier=%s via MP preapproval %s", user_id, target_tier, preapproval_id)
             _maybe_send_welcome_email(conn, preapproval_id, user_id, parsed_period, pa)
     elif our_status in ("cancelled", "paused"):
         # NO revertimos tier — el user mantiene Pro hasta current_period_end.
@@ -7450,6 +7689,27 @@ def _run_subscription_lifecycle_job():
 _scheduler = BackgroundScheduler(timezone='UTC')
 
 @app.on_event("startup")
+def _prewarm_news_cache():
+    """Pre-fetch news del mercado en background al boot. Así el primer user
+    que entra ya tiene caché y la página /home carga al instante. No bloquea
+    el startup — si yfinance/Google tardan, el server sigue respondiendo.
+    """
+    import threading
+    def worker():
+        try:
+            import time as _time
+            _time.sleep(3)  # dejar que las DB y dependencies estén listas
+            specs = (
+                [(q, lang, cat) for q, cat, lang in MARKET_NEWS_QUERIES] +
+                [('investing', url, lang, cat) for url, cat, lang in INVESTING_FEEDS]
+            )
+            _ensure_news_batch_parallel(specs, NEWS_MARKET_TTL)
+        except Exception as ex:
+            logging.getLogger(__name__).warning("prewarm news cache failed: %s", ex)
+    threading.Thread(target=worker, daemon=True).start()
+
+
+@app.on_event("startup")
 def _start_scheduler():
     # 01:00 UTC todos los días = 22:00 ART
     _scheduler.add_job(
@@ -7498,6 +7758,200 @@ def _latest_snapshot_value(conn, uid: int) -> Optional[float]:
     return float(row["total_value"]) if row and row["total_value"] is not None else None
 
 
+def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
+                                 live_value_override: Optional[float] = None) -> dict:
+    """Resumen estático del portfolio actual — independiente del período.
+    Útil para enriquecer el endpoint /reports/period cuando el período en
+    curso no tiene actividad (día/semana flat) y queremos mostrar igual
+    KPIs útiles como capital, # posiciones, deltas históricos, etc.
+
+    Si se pasa `live_value_override`, se usa como "valor actual" en vez del
+    último snapshot — útil para reflejar precios live cuando el snapshot del
+    día todavía no se generó por cron.
+    """
+    br_clause = "" if broker_filter == "global" else " AND broker = ?"
+    br_args: tuple = () if broker_filter == "global" else (broker_filter,)
+
+    # Último snapshot global (no se desagrega por broker)
+    latest_snap = conn.execute(
+        "SELECT date, total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
+        (uid,),
+    ).fetchone()
+    snap_value = float(latest_snap["total_value"]) if latest_snap and broker_filter == "global" else None
+    # Si tenemos live override y es global, usamos eso como "ahora";
+    # el snap_value se reserva como base para calcular delta_1d (vs cierre).
+    if broker_filter == "global" and live_value_override is not None and live_value_override > 0:
+        latest_value = live_value_override
+        latest_date = _iso_today()
+    else:
+        latest_value = snap_value
+        latest_date = latest_snap["date"] if latest_snap else None
+
+    # Capital aportado neto (cum deposits − cum withdrawals)
+    row = conn.execute(
+        f"""SELECT COALESCE(SUM(deposits) - SUM(withdrawals), 0) AS net
+              FROM monthly_entries
+             WHERE user_id = ?{br_clause}""",
+        (uid, *br_args),
+    ).fetchone()
+    cum_deposited = float(row["net"] or 0)
+
+    # # posiciones no-cash abiertas (qty != 0)
+    pos_row = conn.execute(
+        f"""SELECT COUNT(*) AS cnt
+              FROM positions
+             WHERE user_id = ? AND COALESCE(is_cash, 0) = 0
+               AND COALESCE(quantity, 0) > 0{br_clause}""",
+        (uid, *br_args),
+    ).fetchone()
+    positions_count = int(pos_row["cnt"] or 0) if pos_row else 0
+
+    # # brokers activos (con al menos 1 posición)
+    brk_row = conn.execute(
+        """SELECT COUNT(DISTINCT broker) AS cnt
+             FROM positions
+            WHERE user_id = ? AND COALESCE(quantity, 0) > 0""",
+        (uid,),
+    ).fetchone()
+    brokers_count = int(brk_row["cnt"] or 0) if brk_row else 0
+
+    # Deltas históricos: 1, 7 y 30 días atrás (global, requieren snapshots).
+    delta_1d = _snapshot_delta(conn, uid, latest_value, latest_date, days=1) if broker_filter == "global" else None
+    delta_7d = _snapshot_delta(conn, uid, latest_value, latest_date, days=7) if broker_filter == "global" else None
+    delta_30d = _snapshot_delta(conn, uid, latest_value, latest_date, days=30) if broker_filter == "global" else None
+
+    # YTD: rendimiento desde el 1 de enero del año actual.
+    ytd = _ytd_delta(conn, uid, latest_value, latest_date, broker_filter)
+
+    # Última operación cerrada (fecha, asset, broker, pnl).
+    last_op_row = conn.execute(
+        f"""SELECT date, broker, asset, op_type, pnl_usd
+              FROM operations
+             WHERE user_id = ? AND pnl_usd IS NOT NULL{br_clause}
+             ORDER BY date DESC, id DESC LIMIT 1""",
+        (uid, *br_args),
+    ).fetchone()
+    last_op = None
+    if last_op_row:
+        last_op = {
+            "date":  last_op_row["date"],
+            "asset": last_op_row["asset"],
+            "broker": last_op_row["broker"],
+            "op_type": last_op_row["op_type"],
+            "pnl_usd": float(last_op_row["pnl_usd"]) if last_op_row["pnl_usd"] is not None else None,
+        }
+
+    # Top 3 holdings por valor invertido — proxy útil de "qué tenés más"
+    top_rows = conn.execute(
+        f"""SELECT asset, broker, COALESCE(invested, 0) AS invested
+              FROM positions
+             WHERE user_id = ? AND COALESCE(is_cash, 0) = 0
+               AND COALESCE(quantity, 0) > 0{br_clause}
+             ORDER BY COALESCE(invested, 0) DESC LIMIT 3""",
+        (uid, *br_args),
+    ).fetchall()
+    top_holdings = [
+        {"asset": r["asset"], "broker": r["broker"], "invested": float(r["invested"] or 0)}
+        for r in top_rows
+    ]
+
+    # Cash % del portfolio (sumando positions is_cash)
+    cash_row = conn.execute(
+        f"""SELECT COALESCE(SUM(invested), 0) AS cash
+              FROM positions
+             WHERE user_id = ? AND COALESCE(is_cash, 0) = 1{br_clause}""",
+        (uid, *br_args),
+    ).fetchone()
+    cash_value = float(cash_row["cash"] or 0) if cash_row else 0.0
+
+    return {
+        "latest_value": latest_value,
+        "latest_date": latest_date,
+        "cum_deposited": cum_deposited,
+        "positions_count": positions_count,
+        "brokers_count": brokers_count,
+        "delta_1d": delta_1d,
+        "delta_7d": delta_7d,
+        "delta_30d": delta_30d,
+        "ytd": ytd,
+        "last_op": last_op,
+        "top_holdings": top_holdings,
+        "cash_value": cash_value,
+    }
+
+
+def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
+                    latest_date: Optional[str], days: int) -> Optional[dict]:
+    """Variación del portfolio (USD + %) entre el snapshot más reciente y
+    el snapshot más cercano a N días atrás.
+
+    Devuelve `prev_date` para que el frontend pueda mostrar "vs vie 15 may"
+    en lugar de "Δ último día" (que puede ser engañoso si hubo gap por
+    fin de semana o feriado).
+
+    Devuelve None si no hay data.
+    """
+    if latest_value is None or latest_date is None:
+        return None
+    from datetime import date as _date, timedelta as _td
+    try:
+        target = (_date.fromisoformat(latest_date) - _td(days=days)).isoformat()
+    except ValueError:
+        return None
+    prev = conn.execute(
+        "SELECT date, total_value FROM snapshots WHERE user_id=? AND date<=? ORDER BY date DESC LIMIT 1",
+        (uid, target),
+    ).fetchone()
+    if not prev or prev["total_value"] is None:
+        return None
+    prev_v = float(prev["total_value"])
+    if prev_v <= 0:
+        return None
+    return {
+        "usd": round(latest_value - prev_v, 2),
+        "pct": round(((latest_value - prev_v) / prev_v) * 100, 2),
+        "prev_date": prev["date"],
+    }
+
+
+def _ytd_delta(conn, uid: int, latest_value: Optional[float],
+               latest_date: Optional[str], broker_filter: str) -> Optional[dict]:
+    """% YTD del portfolio — desde el capital_inicio del primer mes del año
+    actual (de monthly_entries) hasta latest_value.
+
+    `since_date` indica desde qué mes/día se mide. Útil para frontend cuando
+    el user empezó a usar la app después de enero — muestra "Desde mayo 2026"
+    en lugar de un confuso "YTD 2026" que sugiere desde 1 enero.
+
+    Devuelve None si no hay datos para el año en curso.
+    """
+    if latest_value is None or latest_date is None:
+        return None
+    year = int(latest_date[:4])
+    row = conn.execute(
+        """SELECT month, capital_inicio
+             FROM monthly_entries
+            WHERE user_id = ? AND broker = ? AND year = ?
+            ORDER BY month ASC LIMIT 1""",
+        (uid, broker_filter, year),
+    ).fetchone()
+    if not row or row["capital_inicio"] is None:
+        return None
+    start = float(row["capital_inicio"])
+    if start <= 0:
+        return None
+    first_month = int(row["month"])
+    return {
+        "usd": round(latest_value - start, 2),
+        "pct": round(((latest_value - start) / start) * 100, 2),
+        "since_year": year,
+        "since_month": first_month,
+        "since_date": f"{year:04d}-{first_month:02d}-01",
+        # Frontend usa esto: si first_month != 1, mostrar "Desde {month} {year}"
+        "is_partial_year": first_month != 1,
+    }
+
+
 def _user_tc_blue(conn, uid: int) -> float:
     row = conn.execute(
         "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
@@ -7535,7 +7989,11 @@ def reports_timeline(
             "inflation_ar": _fetch_inflation_ar(),
             "sp500": _fetch_sp500_monthly(),
         }
-        live_value = _latest_snapshot_value(conn, uid)
+        # live_value es el TOTAL del portfolio (snapshots no se desagregan
+        # por broker). Solo aplica como end_value del mes en curso cuando
+        # el reporte es global; con broker_filter se cae al capital_final
+        # del monthly_entry, que ya incluye unrealized de ese broker.
+        live_value = _latest_snapshot_value(conn, uid) if broker == "global" else None
         tc_blue = _user_tc_blue(conn, uid)
         timeline = build_timeline(
             conn, uid, broker_filter=broker, months=months,
@@ -7559,7 +8017,7 @@ def reports_period_detail(
 ):
     """Detalle de un período específico — útil para deep-link o expandir un
     week/day sin pegarle a la timeline completa."""
-    if period_type not in ("day", "week", "month"):
+    if period_type not in ("day", "week", "month", "year"):
         raise HTTPException(400, "period_type inválido")
     conn = get_db()
     try:
@@ -7567,8 +8025,32 @@ def reports_period_detail(
             "inflation_ar": _fetch_inflation_ar(),
             "sp500": _fetch_sp500_monthly(),
         }
-        live_value = _latest_snapshot_value(conn, uid)
         tc_blue = _user_tc_blue(conn, uid)
+        # Para el período en curso (day/week/year actual) usamos el valor
+        # LIVE del portfolio (positions × precios) si está disponible.
+        # Esto permite ver el delta intraday vs cierre de ayer / lunes /
+        # 1 enero, aunque el cron del snapshot diario todavía no haya corrido.
+        from datetime import date as _date
+        live_value = None
+        is_current_period_for_live = False
+        if broker == "global":
+            live_value = _latest_snapshot_value(conn, uid)
+            today = _date.today()
+            if period_type == "day" and period_key == _iso_today():
+                is_current_period_for_live = True
+            elif period_type == "week":
+                iy, iw, _wd = today.isocalendar()
+                if period_key == f"{iy}-W{iw:02d}":
+                    is_current_period_for_live = True
+            elif period_type == "year" and period_key == str(today.year):
+                is_current_period_for_live = True
+            if is_current_period_for_live:
+                try:
+                    lv = compute_live_portfolio_value(conn, uid, tc_blue, CRYPTO_YF)
+                    if lv is not None and lv > 0:
+                        live_value = lv
+                except Exception:
+                    pass  # fallback a snapshot latest
         try:
             report = build_period_report(
                 conn, uid, period_type, period_key,
@@ -7585,7 +8067,17 @@ def reports_period_detail(
             avg_trades_per_period=_compute_avg_trades_per_month(conn, uid),
             historical_win_rate=_compute_user_historical_win_rate(conn, uid),
         )
-        return report_to_dict(report)
+        out = report_to_dict(report)
+        # Enriquecemos con snapshot estático del portfolio — útil cuando el
+        # período en curso (día/semana) está flat y queremos mostrar igual
+        # capital actual, # posiciones, etc.
+        # Pasamos el live_value calculado para que delta_1d refleje el
+        # cambio real entre el cierre de ayer y los precios live de hoy.
+        out["portfolio_snapshot"] = _portfolio_snapshot_summary(
+            conn, uid, broker,
+            live_value_override=(live_value if is_current_period_for_live else None),
+        )
+        return out
     finally:
         conn.close()
 

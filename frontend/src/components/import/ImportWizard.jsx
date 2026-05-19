@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw, Sparkles } from 'lucide-react'
 import InfoTooltip from '../InfoTooltip'
+import BrokerInstructions from './BrokerInstructions'
 import { api } from '../../utils/api'
 
 // Explicaciones por campo Rendi — se muestran en un (?) al lado del label.
@@ -204,9 +205,8 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   async function downloadTemplate() {
     setError(null)
     try {
-      const token = localStorage.getItem('rendi_token')
       const res = await fetch(`/api/imports/template?format=${format}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const blob = await res.blob()
@@ -753,8 +753,17 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
   function removeFile(name, size) {
     setFiles(prev => prev.filter(f => !(f.name === name && f.size === size)))
   }
+  // Mapeo platform (parser) → broker en el widget de instrucciones.
+  // 'generic' no tiene correspondencia 1-a-1 → caemos a 'cocos' como default.
+  const instructionsBrokerId = ['cocos', 'balanz', 'binance', 'iol'].includes(platform)
+    ? platform
+    : 'cocos'
+
   return (
     <div className="space-y-4">
+      {/* Instrucciones de cómo bajar el archivo de cada broker (colapsable) */}
+      <BrokerInstructions defaultBrokerId={instructionsBrokerId} />
+
       {/* Para parsers específicos, el broker lo hardcodea el parser. */}
       {isSpecific && (
         <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">

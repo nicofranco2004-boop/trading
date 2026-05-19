@@ -1,10 +1,22 @@
 import { isDemoMode, handleDemoRequest } from './demo'
 
-function getToken() {
-  return localStorage.getItem('rendi_token')
+// Wrapper de fetch para llamadas al API.
+//
+// Auth: vía cookie HttpOnly (`rendi_token`). El backend la setea en /auth/login,
+// /auth/register, /auth/verify-email, /auth/reset-password. El JS del frontend
+// NO la puede leer (HttpOnly) — sólo el browser la adjunta al request si
+// `credentials: 'include'` está activo. Esto cierra el vector XSS-roba-token.
+//
+// Cookies legacy: hay limpieza one-time abajo para borrar `rendi_token` y
+// `rendi_user` del localStorage si quedaron de versiones anteriores.
+
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem('rendi_token')  // legacy: ahora es cookie HttpOnly
+  } catch {}
 }
 
-async function req(method, path, body) {
+async function req(method, path, body, opts) {
   // ── Demo mode interceptor ────────────────────────────────────────────────
   // Si el user está en modo demo, devolvemos fixtures hardcodeadas en lugar
   // de pegarle al backend. handleDemoRequest devuelve:
@@ -28,21 +40,21 @@ async function req(method, path, body) {
   }
 
   const headers = { 'Content-Type': 'application/json' }
-  const token = getToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
 
   const res = await fetch('/api' + path, {
     method,
     headers,
+    credentials: 'include',  // adjunta la cookie HttpOnly de auth
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: opts?.signal,
   })
 
   if (res.status === 401) {
-    const hadToken = !!token
-    localStorage.removeItem('rendi_token')
+    // Si hay un usuario "conocido" en localStorage y nos rebotan, expiró la
+    // cookie / sesión — limpiar y mandar al login.
+    const hadUser = !!localStorage.getItem('rendi_user')
     localStorage.removeItem('rendi_user')
-    // Si había un token y expiró/fue invalidado, forzar recarga al login
-    if (hadToken) {
+    if (hadUser) {
       window.location.href = '/'
     }
     throw new Error('Unauthorized')
@@ -87,14 +99,13 @@ async function upload(path, formData) {
     throw err
   }
   // No setear Content-Type — el browser agrega multipart/form-data con su boundary.
-  const headers = {}
-  const token = getToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
-
-  const res = await fetch('/api' + path, { method: 'POST', headers, body: formData })
+  const res = await fetch('/api' + path, {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
+  })
 
   if (res.status === 401) {
-    localStorage.removeItem('rendi_token')
     localStorage.removeItem('rendi_user')
     window.location.href = '/'
     throw new Error('Unauthorized')
@@ -105,22 +116,20 @@ async function upload(path, formData) {
   return res.json()
 }
 
-// Variante para GETs que devuelven binarios (ej. CSV, PDF). Mantiene la
-// auth header del usuario y propaga errores con el mismo shape (status/payload)
-// que el req() normal. En demo mode levanta un error explicativo.
+// Variante para GETs que devuelven binarios (ej. CSV, PDF). Propaga errores
+// con el mismo shape (status/payload) que el req() normal. En demo levanta
+// un error explicativo.
 async function getBlob(path) {
   if (isDemoMode()) {
     const err = new Error('Las descargas no están disponibles en modo demo.')
     err.demoBlocked = true
     throw err
   }
-  const headers = {}
-  const token = getToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
-
-  const res = await fetch('/api' + path, { method: 'GET', headers })
+  const res = await fetch('/api' + path, {
+    method: 'GET',
+    credentials: 'include',
+  })
   if (res.status === 401) {
-    localStorage.removeItem('rendi_token')
     localStorage.removeItem('rendi_user')
     window.location.href = '/'
     throw new Error('Unauthorized')
@@ -132,7 +141,7 @@ async function getBlob(path) {
 }
 
 export const api = {
-  get: (path) => req('GET', path),
+  get: (path, opts) => req('GET', path, undefined, opts),
   post: (path, body) => req('POST', path, body),
   put: (path, body) => req('PUT', path, body),
   delete: (path, body) => req('DELETE', path, body),

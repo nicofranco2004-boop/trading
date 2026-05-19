@@ -1,15 +1,15 @@
-// Reports — timeline operativa de Rendi (V2 redesign).
+// Reports — timeline operativa de Rendi (V3: tabs Día/Semana/Mes/Año).
 // ════════════════════════════════════════════════════════════════════════════
 // Estructura:
 //   1. Header compacto (eyebrow + título + broker selector)
 //   2. PerformanceCalendar — KPI strip + heatmap anual de meses
-//   3. Year selector (tabs) — qué año mirar en detalle
-//   4. MonthlyTable — fila por mes del año seleccionado (densa, mono caps)
-//   5. MonthCard expandible inline — click en fila → expand
+//   3. PeriodTabs: Día / Semana / Mes / Año
+//   4. Lista de períodos: en curso arriba + históricos abajo, cards expandibles
 //
-// Decisión: el user elige qué mes abrir. Por default nada está expandido.
+// Decisión: replace MonthlyTable+desglose-semanal por tabs limpias estilo Braja.
+// Cada tab fetcha N períodos hacia atrás y los renderiza como cards consistentes.
 
-import { useState, useMemo, Fragment } from 'react'
+import { useState, useMemo, useEffect, Fragment } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
@@ -18,70 +18,153 @@ import useReportsTimeline from '../hooks/useReportsTimeline'
 import BrokerSelector from '../components/reports/BrokerSelector'
 import MonthCard from '../components/reports/MonthCard'
 import PerformanceCalendar from '../components/reports/PerformanceCalendar'
-import InlineAIButton from '../components/ai/InlineAIButton'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import LockedSection from '../components/plan/LockedSection'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { api } from '../utils/api'
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
-function fmtPct(p) {
-  if (p == null) return '—'
-  const abs = Math.abs(p)
-  const sign = p >= 0 ? '+' : '−'
-  return `${sign}${abs.toFixed(abs >= 10 ? 1 : 2)}%`
+function todayIso() {
+  return new Date().toISOString().slice(0, 10)
 }
 
-function fmtUsd(v) {
-  if (v == null) return '—'
-  const abs = Math.abs(v)
-  const sign = v >= 0 ? '+' : '−'
-  return `${sign}US$${abs.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
+function isoWeekKey(d = new Date()) {
+  // ISO week (lunes a domingo). Mismo cálculo que Python date.isocalendar()
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+  const dayNum = date.getUTCDay() || 7
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum)
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
+  const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7)
+  return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`
 }
 
-function monthNum(period_key) {
-  if (!period_key) return null
-  const m = period_key.match(/-(\d{1,2})/)
-  return m ? parseInt(m[1], 10) : null
+function monthKey(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+function yearKey(d = new Date()) {
+  return String(d.getFullYear())
+}
+
+function addDays(iso, n) {
+  const d = new Date(iso + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+
+function addWeeks(weekKey, n) {
+  // weekKey: "YYYY-Wnn" → restamos n*7 días a un día representativo (lunes)
+  const [y, w] = weekKey.split('-W').map(Number)
+  // ISO week 1 = semana del primer jueves del año
+  const jan4 = new Date(Date.UTC(y, 0, 4))
+  const monday = new Date(jan4)
+  monday.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() + 6) % 7))
+  monday.setUTCDate(monday.getUTCDate() + (w - 1 + n) * 7)
+  return isoWeekKey(monday)
+}
+
+function addMonths(monthK, n) {
+  const [y, m] = monthK.split('-').map(Number)
+  const total = y * 12 + (m - 1) + n
+  const ny = Math.floor(total / 12)
+  const nm = (total % 12) + 1
+  return `${ny}-${String(nm).padStart(2, '0')}`
+}
+
+// ─── Hook: data por tab ──────────────────────────────────────────────────────
+//
+// Devuelve la lista de períodos del tab activo, con el `current` primero y
+// los históricos abajo. Estrategia por tab:
+//   - month: usa useReportsTimeline (que ya devuelve 12 meses con metrics+narrative)
+//   - week:  aplana children de los meses del timeline (semanas embedded)
+//   - day:   fetches puntuales a /api/reports/period/day/{key} (últimos 7 días)
+//   - year:  fetches puntuales a /api/reports/period/year/{key} (años visibles)
+
+function usePeriodItems(tab, broker, timelineData) {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    let cancelled = false
+
+    // Reset items y error al cambiar tab/broker — evita ver data stale
+    // mientras carga la nueva. (Mes mantiene su lista hasta resetear con
+    // nueva data porque viene sync del hook timeline).
+    if (tab !== 'month') {
+      setItems([])
+    }
+    setError(null)
+
+    async function load() {
+      if (tab === 'month') {
+        const all = []
+        for (const g of timelineData.yearGroups || []) {
+          for (const m of g.months) all.push(m)
+        }
+        if (!cancelled) setItems(all)
+        return
+      }
+
+      let endpoint = null
+      if (tab === 'week')      endpoint = `/reports/period/week/${isoWeekKey()}`
+      else if (tab === 'day')  endpoint = `/reports/period/day/${todayIso()}`
+      else if (tab === 'year') endpoint = `/reports/period/year/${new Date().getFullYear()}`
+      if (!endpoint) return
+
+      setLoading(true)
+      try {
+        const result = await api.get(
+          `${endpoint}?broker=${encodeURIComponent(broker)}`,
+          { signal: controller.signal },
+        )
+        if (cancelled) return
+        setItems(result ? [result] : [])
+      } catch (ex) {
+        if (cancelled || ex.name === 'AbortError') return
+        // Distinguir "sin data" (404/empty) de "error de red".
+        // Mensaje genérico — el user puede retry.
+        setError(ex?.message || 'No pudimos cargar el período. Reintentá en un momento.')
+        setItems([])
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true; controller.abort() }
+  }, [tab, broker, timelineData.yearGroups])
+
+  return { items, loading, error }
+}
 
 // ─── Reports root ────────────────────────────────────────────────────────────
 
 export default function Reports() {
   const [broker, setBroker] = useState('global')
-  const { loading, error, yearGroups, hasAnyData } = useReportsTimeline(broker, 12)
-  const todayYear = new Date().getFullYear()
-  const [selectedYear, setSelectedYear] = useState(null)
+  const timelineData = useReportsTimeline(broker, 12)
+  const [tab, setTab] = useState('month')
   const [expandedKey, setExpandedKey] = useState(null)
   const plan = usePlanFeatures()
 
-  // Año seleccionado por default: el actual si existe en yearGroups, sino el más reciente.
-  const effectiveYear = useMemo(() => {
-    if (!yearGroups.length) return null
-    if (selectedYear && yearGroups.some(g => g.year === selectedYear)) return selectedYear
-    if (yearGroups.some(g => g.year === todayYear)) return todayYear
-    return yearGroups[0].year
-  }, [yearGroups, selectedYear, todayYear])
+  const { items, loading: loadingItems, error: itemsError } = usePeriodItems(tab, broker, timelineData)
 
-  const yearData = useMemo(
-    () => yearGroups.find(g => g.year === effectiveYear) || null,
-    [yearGroups, effectiveYear]
-  )
+  // Reset expanded key cuando cambia el tab
+  useEffect(() => { setExpandedKey(null) }, [tab])
 
   return (
     <div className="page-shell-wide">
       <PageHeader
-        eyebrow="Reportes / Mensual"
+        eyebrow="Reportes / Performance"
         title="Performance histórica"
         action={
           <div className="flex items-center gap-2 flex-wrap">
             <AnalyzeButton
               screen="reports"
-              params={{ year: effectiveYear }}
-              subtitle={`Performance ${effectiveYear}`}
+              params={{ tab }}
+              subtitle={`Performance · ${LABELS[tab]}`}
             />
             <ExportCsvButton resource="monthly" label="Exportar mensual" source="reports_header" variant="compact" />
             <BrokerSelector value={broker} onChange={setBroker} />
@@ -89,21 +172,21 @@ export default function Reports() {
         }
       />
 
-      {error && (
+      {timelineData.error && (
         <div className="mb-4 flex items-start gap-2 px-3 py-2 rounded-sm bg-rendi-neg/10 border border-rendi-neg/20 text-rendi-neg text-sm">
           <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
-          <span>{error}</span>
+          <span>{timelineData.error}</span>
         </div>
       )}
 
-      {loading && (
+      {timelineData.loading && (
         <div className="p-10 text-center text-ink-3">
           <Loader2 size={20} className="animate-spin mx-auto mb-2" aria-hidden="true" />
           <p className="text-sm">Armando tu timeline…</p>
         </div>
       )}
 
-      {!loading && !error && !hasAnyData && (
+      {!timelineData.loading && !timelineData.error && !timelineData.hasAnyData && (
         <EmptyState
           icon={<FileText size={20} />}
           title="Todavía no hay reportes"
@@ -120,30 +203,37 @@ export default function Reports() {
         />
       )}
 
-      {!loading && !error && hasAnyData && (
+      {!timelineData.loading && !timelineData.error && timelineData.hasAnyData && (
         <>
-          <PerformanceCalendar yearGroups={yearGroups} />
+          <PerformanceCalendar yearGroups={timelineData.yearGroups} />
 
-          {/* GATE Free: solo se muestra el último mes con actividad como teaser.
-              Pro/Admin: tabla mensual completa con todos los años cargados. */}
           {plan.can('reportes.historicos') ? (
             <>
-              <YearTabs
-                years={yearGroups.map(g => g.year)}
-                value={effectiveYear}
-                onChange={(y) => { setSelectedYear(y); setExpandedKey(null) }}
-              />
-              {yearData && (
-                <MonthlyTable
-                  year={yearData.year}
-                  months={yearData.months}
+              <PeriodTabs value={tab} onChange={setTab} />
+              {itemsError && (
+                <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-sm bg-rendi-neg/10 border border-rendi-neg/20 text-rendi-neg text-xs">
+                  <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                  <span>{itemsError}</span>
+                </div>
+              )}
+              {tab === 'day' || tab === 'week' || tab === 'year' ? (
+                <CurrentPeriodView
+                  period={items[0]}
+                  loading={loadingItems}
+                  tab={tab}
+                  broker={broker}
+                />
+              ) : (
+                <PeriodList
+                  items={items}
+                  loading={loadingItems}
                   expandedKey={expandedKey}
                   onToggle={(key) => setExpandedKey(prev => prev === key ? null : key)}
                 />
               )}
             </>
           ) : (
-            <ReportsFreeTeaser yearGroups={yearGroups} expandedKey={expandedKey} setExpandedKey={setExpandedKey} />
+            <ReportsFreeTeaser yearGroups={timelineData.yearGroups} />
           )}
         </>
       )}
@@ -152,12 +242,8 @@ export default function Reports() {
 }
 
 // ─── Free teaser ─────────────────────────────────────────────────────────────
-// Para usuarios Free: muestra solo el último mes con actividad como teaser
-// completo, y debajo un placeholder bloqueado para los anteriores.
 
 function ReportsFreeTeaser({ yearGroups }) {
-  // Aplastamos todos los meses de todos los años y agarramos el más reciente
-  // (que tenga is_relevant). Ese es el teaser visible.
   const { lastMonth, totalHidden } = useMemo(() => {
     const all = []
     for (const g of yearGroups) {
@@ -165,21 +251,14 @@ function ReportsFreeTeaser({ yearGroups }) {
         if (m && m.is_relevant) all.push({ year: g.year, month: m })
       }
     }
-    all.sort((a, b) => {
-      if (a.year !== b.year) return b.year - a.year
-      return monthNum(b.month.period_key) - monthNum(a.month.period_key)
-    })
-    return {
-      lastMonth: all[0] || null,
-      totalHidden: Math.max(0, all.length - 1),
-    }
+    all.sort((a, b) => (b.month.period_start || '').localeCompare(a.month.period_start || ''))
+    return { lastMonth: all[0] || null, totalHidden: Math.max(0, all.length - 1) }
   }, [yearGroups])
 
   if (!lastMonth) return null
 
   return (
     <div className="space-y-3">
-      {/* Teaser del último mes — expandido por default */}
       <div className="border border-line rounded bg-bg-1 overflow-hidden">
         <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
           <div className="flex items-center gap-2">
@@ -191,7 +270,6 @@ function ReportsFreeTeaser({ yearGroups }) {
         <MonthCard month={lastMonth.month} defaultExpanded={true} />
       </div>
 
-      {/* Placeholder de los meses históricos */}
       {totalHidden > 0 && (
         <LockedSection.Placeholder
           feature="reportes.historicos"
@@ -204,25 +282,30 @@ function ReportsFreeTeaser({ yearGroups }) {
   )
 }
 
-// ─── Year tabs ───────────────────────────────────────────────────────────────
+// ─── Period tabs ─────────────────────────────────────────────────────────────
 
-function YearTabs({ years, value, onChange }) {
-  if (years.length <= 1) return null
+const LABELS = {
+  day:   'Día',
+  week:  'Semana',
+  month: 'Mes',
+  year:  'Año',
+}
+
+function PeriodTabs({ value, onChange }) {
+  const tabs = ['day', 'week', 'month', 'year']
   return (
-    <div className="flex items-center gap-2 mb-3">
-      <span className="text-[10px] font-mono uppercase tracking-label text-ink-3">Año</span>
+    <div className="flex items-center gap-2 mb-4">
+      <span className="text-[10px] font-mono uppercase tracking-label text-ink-3 mr-1">Período</span>
       <div className="inline-flex bg-bg-2 border border-line rounded-sm p-0.5">
-        {years.map(y => (
+        {tabs.map(t => (
           <button
-            key={y}
-            onClick={() => onChange(y)}
-            className={`px-3 py-1 text-xs font-mono tabular tracking-tight rounded-sm transition-colors ${
-              value === y
-                ? 'bg-bg-3 text-ink-0'
-                : 'text-ink-2 hover:text-ink-0'
+            key={t}
+            onClick={() => onChange(t)}
+            className={`px-3.5 py-1.5 text-xs font-mono uppercase tracking-label rounded-sm transition-colors ${
+              value === t ? 'bg-bg-3 text-ink-0' : 'text-ink-2 hover:text-ink-0'
             }`}
           >
-            {y}
+            {LABELS[t]}
           </button>
         ))}
       </div>
@@ -230,149 +313,393 @@ function YearTabs({ years, value, onChange }) {
   )
 }
 
-// ─── Monthly table ───────────────────────────────────────────────────────────
+// ─── Lista de períodos ───────────────────────────────────────────────────────
 
-function MonthlyTable({ year, months, expandedKey, onToggle }) {
-  // Lista ordenada cronológicamente con todos los slots del año (1..12),
-  // ya sean activos o "—".
-  const rows = useMemo(() => {
-    const byNum = new Map(months.map(m => [monthNum(m.period_key), m]))
-    const list = []
-    for (let i = 1; i <= 12; i++) {
-      const m = byNum.get(i)
-      list.push({ num: i, name: MONTH_NAMES[i - 1], month: m })
-    }
-    // Ocultar meses futuros que no existen (después del último relevante)
-    const lastIdx = list.reduceRight((acc, r, idx) => acc === -1 && r.month ? idx : acc, -1)
-    return list.slice(0, lastIdx === -1 ? 0 : lastIdx + 1)
-  }, [months])
+function PeriodList({ items, loading, expandedKey, onToggle }) {
+  if (loading && items.length === 0) {
+    return (
+      <div className="p-10 text-center text-ink-3">
+        <Loader2 size={18} className="animate-spin mx-auto mb-2" aria-hidden="true" />
+        <p className="text-sm">Cargando…</p>
+      </div>
+    )
+  }
 
-  if (rows.length === 0) return null
+  if (!items || items.length === 0) {
+    return (
+      <div className="p-10 text-center text-ink-3 border border-line/40 rounded bg-bg-1/40">
+        <p className="text-sm">No hay datos para este período todavía.</p>
+      </div>
+    )
+  }
 
   return (
-    <div className="border border-line rounded bg-bg-1 overflow-hidden">
-      <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
-          <span className="text-[11px] font-mono uppercase tracking-label text-ink-0">Tabla mensual</span>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 ml-1">/ {year}</span>
-        </div>
-        <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
-          {months.length} {months.length === 1 ? 'mes' : 'meses'} con actividad
-        </span>
-      </header>
-
-      <table className="w-full">
-        <thead>
-          <tr className="text-[10px] font-mono uppercase tracking-label text-ink-3 border-b border-line/60">
-            <th className="text-left  px-4 py-2 font-medium">Mes</th>
-            <th className="text-right px-3 py-2 font-medium">Rendimiento</th>
-            <th className="text-right px-3 py-2 font-medium">P&amp;L USD</th>
-            <th className="text-right px-3 py-2 font-medium">Trades</th>
-            <th className="text-right px-3 py-2 font-medium">Win&nbsp;rate</th>
-            <th className="text-right px-3 py-2 font-medium">vs S&amp;P</th>
-            <th className="text-left  px-3 py-2 font-medium hidden lg:table-cell">Headline</th>
-            <th className="px-2 py-2 w-[34px] font-medium" title="Analizar con IA"></th>
-            <th className="px-3 py-2 w-[40px]"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(({ num, name, month }) => {
-            const empty = !month || !month.is_relevant
-            const isCurrent = month?.is_current
-            const isExpanded = month && expandedKey === month.period_key
-            const m = month?.metrics
-            const status = month
-              ? (isCurrent
-                  ? 'en curso'
-                  : 'cerrado')
-              : 'sin datos'
-            const pct = m?.delta_pct
-            const usd = m?.delta_usd
-            const toneRow = isExpanded
-              ? 'bg-bg-2'
-              : (pct != null && pct >= 0
-                  ? 'hover:bg-rendi-pos/[0.04]'
-                  : pct != null
-                    ? 'hover:bg-rendi-neg/[0.04]'
-                    : 'hover:bg-bg-2/40')
-            return (
-              <Fragment key={num}>
-                <tr
-                  onClick={() => month && onToggle(month.period_key)}
-                  className={`border-b border-line/30 text-sm transition-colors ${
-                    empty ? 'text-ink-3 cursor-default' : 'cursor-pointer'
-                  } ${toneRow}`}
-                >
-                  <td className="px-4 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-ink-1 min-w-[36px]">{name}</span>
-                      {isCurrent && (
-                        <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm">
-                          En curso
-                        </span>
-                      )}
-                      {!isCurrent && !empty && (
-                        <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3">
-                          {status}
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className={`px-3 py-2.5 text-right font-mono tabular text-sm ${
-                    pct == null ? 'text-ink-3' : (pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
-                  }`}>
-                    {fmtPct(pct)}
-                  </td>
-                  <td className={`px-3 py-2.5 text-right font-mono tabular text-xs ${
-                    usd == null ? 'text-ink-3' : (usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
-                  }`}>
-                    {fmtUsd(usd)}
-                  </td>
-                  <td className="px-3 py-2.5 text-right font-mono tabular text-xs text-ink-1">
-                    {m?.trades_count != null ? m.trades_count : '—'}
-                  </td>
-                  <td className="px-3 py-2.5 text-right font-mono tabular text-xs text-ink-1">
-                    {m?.win_rate != null ? `${m.win_rate.toFixed(0)}%` : '—'}
-                  </td>
-                  <td className={`px-3 py-2.5 text-right font-mono tabular text-xs ${
-                    m?.vs_sp500_pct == null ? 'text-ink-3' : (m.vs_sp500_pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
-                  }`}>
-                    {m?.vs_sp500_pct != null ? `${m.vs_sp500_pct >= 0 ? '+' : ''}${m.vs_sp500_pct.toFixed(1)}pp` : '—'}
-                  </td>
-                  <td className="px-3 py-2.5 text-xs text-ink-2 truncate max-w-[260px] hidden lg:table-cell">
-                    {month?.headline || ''}
-                  </td>
-                  <td className="px-2 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
-                    {month && !empty && (
-                      <InlineAIButton
-                        topic="monthly"
-                        params={{
-                          year: parseInt((month.period_key || '').slice(0, 4), 10),
-                          month: parseInt((month.period_key || '').slice(5, 7), 10),
-                        }}
-                        subtitle={`Mes ${month.period_label}`}
-                      />
-                    )}
-                  </td>
-                  <td className="px-2 py-2.5 text-ink-3 text-right">
-                    {month && (isExpanded
-                      ? <ChevronUp size={14} strokeWidth={1.75} aria-hidden="true" />
-                      : <ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" />)}
-                  </td>
-                </tr>
-                {isExpanded && (
-                  <tr className="border-b border-line">
-                    <td colSpan={9} className="bg-bg-0 p-4">
-                      <MonthCard month={month} defaultExpanded={true} />
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            )
-          })}
-        </tbody>
-      </table>
+    <div className="space-y-2">
+      {items.map(period => (
+        <PeriodRow
+          key={period.period_key}
+          period={period}
+          expanded={expandedKey === period.period_key}
+          onToggle={() => onToggle(period.period_key)}
+        />
+      ))}
     </div>
   )
+}
+
+function PeriodRow({ period, expanded, onToggle }) {
+  const empty = !period.is_relevant && !period.is_current
+  const pct = period?.metrics?.delta_pct
+  const usd = period?.metrics?.delta_usd
+  const pctColor = pct == null
+    ? 'text-ink-3'
+    : pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+
+  return (
+    <div className={`border rounded bg-bg-1/60 overflow-hidden transition-colors ${
+      expanded ? 'border-data-violet/30' : 'border-line hover:border-line-3'
+    }`}>
+      <button
+        onClick={onToggle}
+        className="w-full px-4 py-3 flex items-center justify-between gap-4 text-left"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="font-medium text-ink-0 text-sm min-w-[110px]">
+            {period.period_label}
+          </span>
+          {period.is_current && (
+            <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm">
+              En curso
+            </span>
+          )}
+          {!empty && period.headline && (
+            <span className="text-xs text-ink-3 truncate hidden md:inline">
+              {period.headline}
+            </span>
+          )}
+          {empty && (
+            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+              Sin actividad
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-4 flex-shrink-0">
+          {pct != null && (
+            <span className={`text-sm font-mono font-semibold tabular ${pctColor}`}>
+              {pct >= 0 ? '+' : ''}{pct.toFixed(pct >= 10 || pct <= -10 ? 1 : 2)}%
+            </span>
+          )}
+          {usd != null && (
+            <span className={`text-xs font-mono tabular ${pctColor} hidden sm:inline`}>
+              {usd >= 0 ? '+' : '−'}US$ {Math.abs(usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+            </span>
+          )}
+          {expanded
+            ? <ChevronUp size={14} strokeWidth={1.75} className="text-ink-3" />
+            : <ChevronDown size={14} strokeWidth={1.75} className="text-ink-3" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-line/40 bg-bg-0">
+          <MonthCard period={period} defaultExpanded={true} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── CurrentPeriodView — vista del período en curso con KPIs ricos ──────────
+//
+// Usado en tabs Día y Mes. Reemplaza la lista clickeable por un solo card
+// expandido con un KPI strip arriba y el MonthCard completo abajo.
+
+function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
+  if (loading) {
+    return (
+      <div className="p-10 text-center text-ink-3">
+        <Loader2 size={18} className="animate-spin mx-auto mb-2" aria-hidden="true" />
+        <p className="text-sm">Armando el período…</p>
+      </div>
+    )
+  }
+  if (!period) {
+    return (
+      <div className="p-10 text-center text-ink-3 border border-line/40 rounded bg-bg-1/40">
+        <p className="text-sm">No hay datos para el período en curso.</p>
+      </div>
+    )
+  }
+
+  const m = period.metrics || {}
+  const snap = period.portfolio_snapshot || {}
+  const pct = m.delta_pct
+  const usd = m.delta_usd
+  const isPos = (pct ?? 0) >= 0
+  const colorClass = isPos ? 'text-rendi-pos' : 'text-rendi-neg'
+
+  // Detección de "período flat" — sin movimientos, sin trades.
+  // En ese caso no mostramos P&L del período (sería engañoso "+US$ 0"),
+  // sino que pivot a KPIs estáticos del portfolio actual.
+  const isFlat = (
+    (m.delta_usd === 0 || m.delta_usd == null) &&
+    (m.trades_count === 0 || m.trades_count == null) &&
+    !m.deposits && !m.withdrawals
+  )
+
+  // KPIs del strip — incluye métricas estáticas del portfolio (cap actual,
+  // aportado, # posiciones, # brokers) además del P&L del período.
+  const kpis = []
+
+  // Capital actual: snapshot total si lo tenemos, sino end_value del período
+  const capitalNow = snap.latest_value != null ? snap.latest_value : m.end_value
+  kpis.push({
+    label: 'Capital actual',
+    value: capitalNow != null ? `US$ ${fmtNum(capitalNow)}` : '—',
+    sub: snap.latest_date ? `Al ${formatDateShort(snap.latest_date)}` : null,
+  })
+
+  // P&L del período (solo si NO es flat — sino confunde con "+US$ 0")
+  if (!isFlat) {
+    const periodLabel = tab === 'day' ? 'del día'
+    : tab === 'week' ? 'de la semana'
+    : tab === 'year' ? 'del año'
+    : 'del mes'
+    kpis.push({
+      label: `P&L ${periodLabel}`,
+      value: usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : '—',
+      sub: pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : null,
+      tone: isPos ? 'pos' : 'neg',
+    })
+  }
+
+  if (m.realized_pnl != null && (m.realized_pnl !== 0 || m.trades_count > 0)) {
+    kpis.push({
+      label: 'P&L realizado',
+      value: `${m.realized_pnl >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(m.realized_pnl))}`,
+      sub: m.trades_count != null ? `${m.trades_count} op${m.trades_count !== 1 ? 's' : ''} cerrada${m.trades_count !== 1 ? 's' : ''}` : 'operaciones cerradas',
+      tone: m.realized_pnl >= 0 ? 'pos' : 'neg',
+    })
+  }
+
+  if (!isFlat && m.unrealized_pnl != null && m.unrealized_pnl !== 0) {
+    kpis.push({
+      label: 'P&L no realizado',
+      value: `${m.unrealized_pnl >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(m.unrealized_pnl))}`,
+      sub: 'mark-to-market',
+      tone: m.unrealized_pnl >= 0 ? 'pos' : 'neg',
+    })
+  }
+
+  // Win rate cuando hay trades
+  if (m.trades_count > 0 && m.win_rate != null) {
+    kpis.push({
+      label: 'Win rate',
+      value: `${m.win_rate.toFixed(0)}%`,
+      sub: `${m.win_count || 0} ganadas · ${m.loss_count || 0} perdidas`,
+      tone: m.win_rate >= 50 ? 'pos' : 'neg',
+    })
+  }
+
+  // Capital aportado neto (cumulative) — solo en tab Año.
+  // El sub-label aclara que el % es sobre lo aportado (NO TWRR), para evitar
+  // confusión con el delta_pct del período que sí neutraliza flujos.
+  if (tab === 'year' && snap.cum_deposited != null && snap.cum_deposited > 0) {
+    kpis.push({
+      label: 'Capital aportado',
+      value: `US$ ${fmtNum(snap.cum_deposited)}`,
+      sub: capitalNow != null
+        ? `Retorno sobre aportes: ${capitalNow > snap.cum_deposited ? '+' : '−'}${(((capitalNow - snap.cum_deposited) / snap.cum_deposited) * 100).toFixed(1)}%`
+        : 'depósitos netos',
+      tone: capitalNow != null
+        ? (capitalNow >= snap.cum_deposited ? 'pos' : 'neg')
+        : undefined,
+    })
+  }
+
+  // # posiciones abiertas
+  if (snap.positions_count != null && snap.positions_count > 0) {
+    kpis.push({
+      label: 'Posiciones',
+      value: String(snap.positions_count),
+      sub: snap.brokers_count > 0 ? `en ${snap.brokers_count} broker${snap.brokers_count !== 1 ? 's' : ''}` : null,
+    })
+  }
+
+  // Variación vs último cierre — USD arriba (más relevante para retail),
+  // % + fecha del snapshot anterior en el subtítulo.
+  if (snap.delta_1d) {
+    const d = snap.delta_1d
+    const pctStr = `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2)}%`
+    const fechaStr = d.prev_date ? ` · vs ${formatDateShort(d.prev_date)}` : ''
+    kpis.push({
+      label: 'Δ último cierre',
+      value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
+      sub: pctStr + fechaStr,
+      tone: d.pct >= 0 ? 'pos' : 'neg',
+    })
+  }
+
+  // Variación 7 días — USD arriba, % en sub
+  if (snap.delta_7d) {
+    const d = snap.delta_7d
+    kpis.push({
+      label: 'Δ 7 días',
+      value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
+      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2)}%`,
+      tone: d.pct >= 0 ? 'pos' : 'neg',
+    })
+  }
+
+  // Variación 30 días — USD arriba, % en sub
+  if (snap.delta_30d) {
+    const d = snap.delta_30d
+    kpis.push({
+      label: 'Δ 30 días',
+      value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
+      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2)}%`,
+      tone: d.pct >= 0 ? 'pos' : 'neg',
+    })
+  }
+
+  // YTD — rendimiento del año en curso (solo en tab Año)
+  if (tab === 'year' && snap.ytd) {
+    const MESES_FULL = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']
+    const partial = snap.ytd.is_partial_year && snap.ytd.since_month
+    const label = partial
+      ? `Desde ${MESES_FULL[snap.ytd.since_month - 1]} ${snap.ytd.since_year}`
+      : `YTD ${snap.ytd.since_year}`
+    kpis.push({
+      label,
+      value: `${snap.ytd.pct >= 0 ? '+' : ''}${snap.ytd.pct.toFixed(2)}%`,
+      sub: `${snap.ytd.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(snap.ytd.usd))}`,
+      tone: snap.ytd.pct >= 0 ? 'pos' : 'neg',
+    })
+  }
+
+  // Última operación cerrada
+  if (snap.last_op && snap.last_op.pnl_usd != null) {
+    const op = snap.last_op
+    kpis.push({
+      label: 'Última op cerrada',
+      value: `${op.asset} ${op.pnl_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(op.pnl_usd))}`,
+      sub: formatDateShort(op.date),
+      tone: op.pnl_usd >= 0 ? 'pos' : 'neg',
+    })
+  }
+
+  // Top holding
+  if (snap.top_holdings && snap.top_holdings.length > 0) {
+    const t = snap.top_holdings[0]
+    kpis.push({
+      label: 'Top holding',
+      value: t.asset,
+      sub: t.broker || null,
+    })
+  }
+
+  // vs S&P 500 (solo si aplica — mes tiene benchmark)
+  if (m.vs_sp500_pct != null) {
+    const vs = m.vs_sp500_pct
+    kpis.push({
+      label: 'vs S&P 500',
+      value: `${vs >= 0 ? '+' : ''}${vs.toFixed(1)}pp`,
+      sub: vs >= 0 ? 'por encima' : 'por debajo',
+      tone: vs >= 0 ? 'pos' : 'neg',
+    })
+  }
+
+  // Flujos netos
+  if ((m.deposits || m.withdrawals) && (m.deposits + m.withdrawals) > 0) {
+    const net = (m.deposits || 0) - (m.withdrawals || 0)
+    kpis.push({
+      label: 'Flujos netos',
+      value: `${net >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(net))}`,
+      sub: `Aportes US$ ${fmtNum(m.deposits || 0)}`,
+    })
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Header del período */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h3 className="text-lg font-semibold text-ink-0 tracking-tight">{period.period_label}</h3>
+          {period.is_current && (
+            <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm">
+              En curso
+            </span>
+          )}
+          {isFlat && (
+            <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 border border-line/60 px-1.5 py-0.5 rounded-sm">
+              Sin movimientos
+            </span>
+          )}
+        </div>
+        {!isFlat && (
+          <div className="flex items-baseline gap-2">
+            <span className={`text-2xl font-mono font-semibold tabular ${colorClass}`}>
+              {pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '—'}
+            </span>
+            <span className={`text-sm font-mono tabular ${colorClass}`}>
+              {usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : ''}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {isFlat && (
+        <div className="border border-line/40 bg-bg-1/40 rounded px-4 py-3 text-xs text-ink-2 leading-relaxed">
+          {(m.trades_count === 0 || m.trades_count == null)
+            ? `Sin operaciones cerradas en ${tab === 'day' ? 'el día' : tab === 'week' ? 'la semana' : tab === 'year' ? 'el año' : 'el período'}. `
+            : 'Sin variación en el valor del portfolio. '}
+          Esperando próxima actualización (snapshot diario al cierre del mercado o al
+          registrar una operación).
+        </div>
+      )}
+
+      {broker !== 'global' && (
+        <div className="border border-line/40 bg-bg-1/30 rounded px-4 py-2 text-[11px] text-ink-3 leading-relaxed">
+          Vista filtrada por broker — algunos KPIs históricos (Δ vs cierres, YTD,
+          última op de otros brokers) solo están disponibles en vista global.
+        </div>
+      )}
+
+      {/* KPI strip */}
+      <div className="border border-line rounded bg-bg-1 overflow-hidden">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 divide-x divide-y md:divide-y-0 divide-line/40">
+          {kpis.map((k, i) => (
+            <div key={i} className="px-4 py-3 min-w-0">
+              <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-1.5">{k.label}</div>
+              <div className={`text-base font-medium tabular truncate ${
+                k.tone === 'pos' ? 'text-rendi-pos' : k.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
+              }`}>
+                {k.value}
+              </div>
+              {k.sub && (
+                <div className="text-[10px] font-mono text-ink-3 mt-1 truncate" title={k.sub}>{k.sub}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Card completo con narrativa, drivers, highlights, insights */}
+      <div className="border border-line rounded bg-bg-1 overflow-hidden">
+        <MonthCard period={period} defaultExpanded={true} />
+      </div>
+    </div>
+  )
+}
+
+// Formato compacto de números — agrupador es-AR con punto.
+function fmtNum(n) {
+  return Math.round(n).toLocaleString('es-AR', { maximumFractionDigits: 0 })
+}
+
+function formatDateShort(iso) {
+  const d = new Date(iso + 'T00:00:00')
+  const MES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']
+  return `${d.getDate()} ${MES[d.getMonth()]}`
 }

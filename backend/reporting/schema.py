@@ -79,6 +79,7 @@ class PeriodReport:
     highlights: List[Highlight] = field(default_factory=list)
     drivers: List[AssetContribution] = field(default_factory=list)
     children: List["PeriodReport"] = field(default_factory=list)  # weeks dentro de month, etc.
+    narrative: Optional[str] = None    # descripción narrativa larga (qué pasó)
 
 
 def report_to_dict(r: PeriodReport) -> Dict[str, Any]:

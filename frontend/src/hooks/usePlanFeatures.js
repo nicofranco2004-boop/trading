@@ -91,9 +91,14 @@ export function usePlanFeatures() {
     can: (featureId) => access[featureId] === true,
     limit: (key) => limits[key],
     isFree: tier === 'free',
+    isPlus: tier === 'plus',
     isPro: tier === 'pro',
     isAdmin: tier === 'admin',
-    // Convenience: cualquier tier pago/admin tiene "features completas"
+    // Convenience flags
+    isPaid: tier === 'plus' || tier === 'pro' || tier === 'admin',
+    // hasFullAccess es Pro o Admin — Plus tiene features parciales (sin IA
+    // avanzada). Componentes que gateaban con `hasFullAccess` siguen
+    // bloqueando Plus en features Pro-only (ai.followup, ai.hub).
     hasFullAccess: tier === 'pro' || tier === 'admin',
   }
 }

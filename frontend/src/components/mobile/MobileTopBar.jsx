@@ -70,10 +70,10 @@ export default function MobileTopBar({ onRefresh }) {
         className="sticky top-0 z-30 bg-bg-0/95 backdrop-blur-md border-b border-line"
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
       >
-        <div className="flex items-center justify-between h-12 px-3">
-          <Link to="/" className="flex items-center gap-1.5">
-            <RendiLogo size={18} />
-            <span className="text-sm font-semibold text-ink-0 tracking-tight">rendi</span>
+        <div className="flex items-center justify-between h-16 px-3">
+          <Link to="/" className="flex items-center gap-2">
+            <RendiLogo size={36} />
+            <span className="text-lg font-semibold text-ink-0 tracking-tight">rendi</span>
           </Link>
           <Link
             to="/buscar"

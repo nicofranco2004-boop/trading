@@ -88,9 +88,9 @@ export default function Sidebar() {
           className="flex items-center gap-2.5 flex-1 px-2 overflow-hidden"
           title={collapsed ? 'Rendi' : undefined}
         >
-          <RendiLogo size={20} />
+          <RendiLogo size={40} />
           {!collapsed && (
-            <span className="font-semibold text-base tracking-tight text-ink-0">rendi</span>
+            <span className="font-semibold text-xl tracking-tight text-ink-0">rendi</span>
           )}
         </NavLink>
         <button
@@ -137,13 +137,13 @@ export default function Sidebar() {
                       {isActive && !collapsed && (
                         <span
                           aria-hidden
-                          className="absolute left-0 top-1 bottom-1 w-0.5 bg-rendi-pos rounded-full"
+                          className="absolute left-0 top-1 bottom-1 w-0.5 bg-data-violet rounded-full"
                         />
                       )}
                       {isActive && collapsed && (
                         <span
                           aria-hidden
-                          className="absolute left-0 top-1 bottom-1 w-0.5 bg-rendi-pos rounded-full"
+                          className="absolute left-0 top-1 bottom-1 w-0.5 bg-data-violet rounded-full"
                         />
                       )}
                     </>
@@ -221,6 +221,7 @@ function PlanBadge({ tier, compact = false }) {
   const t = tier || 'free'
   const styles = {
     free:  { label: 'FREE',  bg: 'bg-bg-2',                 text: 'text-ink-2',         dot: 'bg-ink-3' },
+    plus:  { label: 'PLUS',  bg: 'bg-data-cyan/15',         text: 'text-data-cyan',     dot: 'bg-data-cyan' },
     pro:   { label: 'PRO',   bg: 'bg-data-violet/15',       text: 'text-data-violet',   dot: 'bg-data-violet' },
     admin: { label: 'ADMIN', bg: 'bg-rendi-pos/15',         text: 'text-rendi-pos',     dot: 'bg-rendi-pos' },
   }

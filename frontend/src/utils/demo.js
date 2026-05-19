@@ -110,7 +110,7 @@ const POSITIONS = [
   { id: 201, broker: 'Cocos',   asset: 'GGAL',     is_cash: 0, buy_price: 4250,  quantity: 200, invested: 850000,  tc_compra: 1050, price_override: null, entry_date: '2024-04-10', commissions: 0 },
   { id: 202, broker: 'Cocos',   asset: 'YPFD',    is_cash: 0, buy_price: 28500, quantity: 30,  invested: 855000,  tc_compra: 1180, price_override: null, entry_date: '2024-10-22', commissions: 0 },
   { id: 203, broker: 'Cocos',   asset: 'AAPL.BA', is_cash: 0, buy_price: 18800, quantity: 40,  invested: 752000,  tc_compra: 1240, price_override: null, entry_date: '2025-01-15', commissions: 0 },
-  { id: 204, broker: 'Cocos',   asset: 'AL30',    is_cash: 0, buy_price: 72500, quantity: 10,  invested: 725000,  tc_compra: 1320, price_override: null, entry_date: '2025-03-08', commissions: 0 },
+  { id: 204, broker: 'Cocos',   asset: 'AL30',    is_cash: 0, buy_price: 78200, quantity: 60,  invested: 4692000,  tc_compra: 1400, price_override: null, entry_date: '2026-03-15', commissions: 0 },
   { id: 299, broker: 'Cocos',   asset: 'ARS',     is_cash: 1, buy_price: null,  quantity: 180000, invested: 180000, tc_compra: null, price_override: null, entry_date: null,        commissions: 0 },
 
   // ── Binance crypto ──
@@ -249,34 +249,326 @@ const REPORTS_TIMELINE = (() => {
     else if (delta_pct < -3) headline = 'Mes difícil — corrección del mercado afectó la cartera.'
     else if (delta_pct < 0) headline = 'Mes ligeramente negativo, sin caídas relevantes.'
 
+    // Narrativa "qué pasó" — texto largo determinístico
+    const direction = delta_pct >= 0 ? 'ganaste' : 'perdiste'
+    const startValueFmt = m.capital_inicio.toLocaleString('es-AR', { maximumFractionDigits: 0 })
+    const deltaUsdFmt = Math.abs(Math.round(pnlTotal)).toLocaleString('es-AR', { maximumFractionDigits: 0 })
+    const sampleAssets = delta_pct >= 0
+      ? ['NVDA', 'MSFT', 'BTC', 'GGAL'][Math.floor(Math.random() * 4)]
+      : ['TSLA', 'YPFD', 'SOL', 'AMD'][Math.floor(Math.random() * 4)]
+    const vsSpStr = Math.abs(vsSp) >= 0.5
+      ? ` Quedaste ${Math.abs(vsSp).toFixed(1)} puntos ${vsSp > 0 ? 'encima' : 'debajo'} del S&P 500.`
+      : ''
+    const narrative = (isRelevant || isCurrent)
+      ? `En ${MONTH_NAMES_ES[m.month - 1].toLowerCase()} ${m.year} ${direction} US$ ${deltaUsdFmt} (${delta_pct >= 0 ? '+' : ''}${delta_pct.toFixed(1)}%) sobre un capital inicial de US$ ${startValueFmt}. ${delta_pct >= 0 ? `${sampleAssets} fue el aporte más relevante del período.` : `${sampleAssets} concentró las pérdidas del mes.`} Cerraste ${trades} operaciones con ${winRate.toFixed(0)}% de win rate, sumando US$ ${(pnlTotal >= 0 ? '+' : '−') + Math.abs(m.pnl_realized).toLocaleString('es-AR', { maximumFractionDigits: 0 })} de P&L realizado.${vsSpStr}`
+      : null
+
     return {
+      period_type: 'month',
       period_key: `${m.year}-${String(m.month).padStart(2, '0')}`,
       period_label: `${MONTH_NAMES_ES[m.month - 1]} ${m.year}`,
+      period_start: `${m.year}-${String(m.month).padStart(2, '0')}-01`,
       period_end: new Date(m.year, m.month, 0).toISOString().slice(0, 10),
       is_current: isCurrent,
       is_relevant: isRelevant || isCurrent,
-      metrics: {
-        start_value: m.capital_inicio,
-        end_value: m.capital_final,
-        delta_pct: +delta_pct.toFixed(2),
-        delta_usd: Math.round(pnlTotal),
-        realized_pnl: m.pnl_realized,
-        unrealized_pnl: m.pnl_unrealized,
-        deposits: m.deposits,
-        withdrawals: m.withdrawals,
-        trades_count: trades,
-        win_rate: +winRate.toFixed(0),
-        vs_sp500_pct: +vsSp.toFixed(1),
-        vs_inflation_pct: +(delta_pct - 5).toFixed(1),
-      },
+      metrics: (() => {
+        const wins = Math.round(trades * (winRate / 100))
+        const losses = trades - wins
+        const cumAportado = Math.max(m.capital_inicio, 1)
+        const overContrib = +((pnlTotal / cumAportado) * 100).toFixed(2)
+        return {
+          start_value: m.capital_inicio,
+          end_value: m.capital_final,
+          delta_pct: +delta_pct.toFixed(2),
+          delta_usd: Math.round(pnlTotal),
+          delta_pct_over_contrib: overContrib,
+          realized_pnl: m.pnl_realized,
+          unrealized_pnl: m.pnl_unrealized,
+          deposits: m.deposits,
+          withdrawals: m.withdrawals,
+          trades_count: trades,
+          win_count: wins,
+          loss_count: losses,
+          win_rate: +winRate.toFixed(0),
+          vs_sp500_pct: +vsSp.toFixed(1),
+          vs_inflation_pct: +(delta_pct - 5).toFixed(1),
+        }
+      })(),
       headline,
       subheadline: null,
+      narrative,
       highlights: [],
       insights: [],
       children: [],
     }
   }).reverse()  // descendente — mes en curso primero
 })()
+
+// ─── Reports period — generator on-demand para day/week/year ────────────────
+// El frontend pide /reports/period/{day|week|month|year}/{key} en la página
+// Reportes nueva (tabs). Para 'month' devolvemos el ítem precomputado de
+// REPORTS_TIMELINE; para day/week/year sintetizamos al vuelo a partir del
+// monthly data.
+
+function buildDemoPeriodReport(periodType, periodKey) {
+  // 'month' — buscamos en REPORTS_TIMELINE
+  if (periodType === 'month') {
+    const existing = REPORTS_TIMELINE.find(r => r.period_key === periodKey)
+    if (existing) return existing
+  }
+
+  // 'year' — agregamos los meses del año
+  if (periodType === 'year') {
+    const y = parseInt(periodKey, 10)
+    const yearMonths = REPORTS_TIMELINE.filter(r => r.period_key.startsWith(`${y}-`))
+    if (yearMonths.length === 0) return _emptyDemoPeriod(periodType, periodKey, `Año ${y}`)
+    const first = yearMonths[yearMonths.length - 1]  // más viejo (timeline está descendente)
+    const last  = yearMonths[0]                       // más reciente
+    const startV = first.metrics.start_value
+    const endV   = last.metrics.end_value
+    const deposits   = yearMonths.reduce((s, m) => s + (m.metrics.deposits || 0), 0)
+    const withdrawals = yearMonths.reduce((s, m) => s + (m.metrics.withdrawals || 0), 0)
+    const realized   = yearMonths.reduce((s, m) => s + (m.metrics.realized_pnl || 0), 0)
+    const trades     = yearMonths.reduce((s, m) => s + (m.metrics.trades_count || 0), 0)
+    const flows = deposits - withdrawals
+    const deltaUsd = endV - startV - flows
+    const avg = startV + 0.5 * flows
+    const deltaPct = avg > 0 ? (deltaUsd / avg) * 100 : 0
+    const today = new Date()
+    const isCurrent = today.getFullYear() === y
+    const direction = deltaPct >= 0 ? 'ganaste' : 'perdiste'
+    const narrative = `En ${periodKey} ${direction} US$ ${Math.abs(deltaUsd).toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%) sobre un capital inicial de US$ ${startV.toLocaleString('es-AR', { maximumFractionDigits: 0 })}. Aportaste US$ ${Math.abs(flows).toLocaleString('es-AR', { maximumFractionDigits: 0 })} netos en el año. Cerraste ${trades} operaciones, sumando US$ ${realized.toLocaleString('es-AR', { maximumFractionDigits: 0 })} de P&L realizado.`
+    return {
+      period_type: 'year',
+      period_key: periodKey,
+      period_label: `Año ${y}`,
+      period_start: `${y}-01-01`,
+      period_end: `${y}-12-31`,
+      is_current: isCurrent,
+      is_relevant: Math.abs(deltaUsd) >= 100 || trades > 0,
+      metrics: (() => {
+        const wins = Math.round(trades * 0.56)
+        return {
+          start_value: startV,
+          end_value: endV,
+          delta_usd: Math.round(deltaUsd),
+          delta_pct: +deltaPct.toFixed(2),
+          delta_pct_over_contrib: startV > 0 ? +((deltaUsd / startV) * 100).toFixed(2) : null,
+          realized_pnl: Math.round(realized),
+          unrealized_pnl: 0,
+          deposits: Math.round(deposits),
+          withdrawals: Math.round(withdrawals),
+          trades_count: trades,
+          win_count: wins,
+          loss_count: trades - wins,
+          win_rate: 56,
+          vs_sp500_pct: +(deltaPct - 12).toFixed(1),
+          vs_inflation_pct: +(deltaPct - 80).toFixed(1),
+        }
+      })(),
+      headline: deltaPct > 10 ? `Año sólido — +${deltaPct.toFixed(1)}%.`
+        : deltaPct < -3 ? `Año difícil — ${deltaPct.toFixed(1)}%.`
+        : `Año mixto — ${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%.`,
+      subheadline: null,
+      narrative,
+      highlights: [],
+      insights: [],
+      children: [],
+      portfolio_snapshot: _demoPortfolioSnapshot(),
+    }
+  }
+
+  // 'week' o 'day' — sintetizamos a partir del rendimiento mensual con noise
+  // Capital base: último valuation conocido
+  const base = MONTHLY_LAST_VALUATION
+  const isWeek = periodType === 'week'
+  const periodReturn = isWeek
+    ? 0.003 + (Math.random() - 0.5) * 0.025  // ~0.3% mean ± 1.2%
+    : 0.0006 + (Math.random() - 0.5) * 0.012  // ~0.06% mean ± 0.6%
+  const startV = Math.round(base * (1 - periodReturn * 0.5))
+  const endV   = Math.round(base * (1 + periodReturn * 0.5))
+  const deltaUsd = endV - startV
+  const deltaPct = +(periodReturn * 100).toFixed(2)
+  const trades = isWeek ? (Math.random() > 0.4 ? 1 + Math.floor(Math.random() * 3) : 0)
+                        : (Math.random() > 0.85 ? 1 : 0)
+
+  // Determinar fechas del período
+  let periodStart, periodEnd, periodLabel, isCurrent
+  if (isWeek) {
+    // weekKey: YYYY-Wnn
+    const [yStr, wStr] = periodKey.split('-W')
+    const y = parseInt(yStr, 10), w = parseInt(wStr, 10)
+    const jan4 = new Date(Date.UTC(y, 0, 4))
+    const monday = new Date(jan4)
+    monday.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() + 6) % 7))
+    monday.setUTCDate(monday.getUTCDate() + (w - 1) * 7)
+    const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6)
+    periodStart = monday.toISOString().slice(0, 10)
+    periodEnd = sunday.toISOString().slice(0, 10)
+    periodLabel = `Semana ${w}`
+    // current = la semana que contiene hoy
+    const todayIso = new Date().toISOString().slice(0, 10)
+    isCurrent = todayIso >= periodStart && todayIso <= periodEnd
+  } else {
+    periodStart = periodKey
+    periodEnd = periodKey
+    const d = new Date(periodKey + 'T00:00:00Z')
+    const DIA = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
+    const MES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']
+    periodLabel = `${DIA[d.getUTCDay()]} ${d.getUTCDate()} ${MES[d.getUTCMonth()]}`
+    isCurrent = periodKey === new Date().toISOString().slice(0, 10)
+  }
+
+  const isRelevant = Math.abs(deltaUsd) >= (isWeek ? 80 : 30) || trades > 0
+  const direction = deltaPct >= 0 ? 'ganaste' : 'perdiste'
+  const periodWord = isWeek ? 'esta semana' : 'este día'
+  const narrative = isRelevant
+    ? `En ${periodWord.toLowerCase()} ${direction} US$ ${Math.abs(deltaUsd).toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%). ${trades > 0 ? `Cerraste ${trades} operación${trades !== 1 ? 'es' : ''} en el período.` : 'Sin operaciones cerradas.'}`
+    : null
+  const headline = !isRelevant
+    ? `${isWeek ? 'Semana' : 'Día'} sin grandes movimientos.`
+    : deltaPct >= 1 ? `${isWeek ? 'Semana sólida' : 'Día sólido'} — +${deltaPct.toFixed(2)}%.`
+    : deltaPct <= -1 ? `${isWeek ? 'Semana difícil' : 'Día difícil'} — ${deltaPct.toFixed(2)}%.`
+    : `${isWeek ? 'Semana mixta' : 'Día mixto'} — ${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(2)}%.`
+
+  return {
+    period_type: periodType,
+    period_key: periodKey,
+    period_label: periodLabel,
+    period_start: periodStart,
+    period_end: periodEnd,
+    is_current: isCurrent,
+    is_relevant: isRelevant,
+    metrics: {
+      start_value: startV,
+      end_value: endV,
+      delta_usd: deltaUsd,
+      delta_pct: deltaPct,
+      delta_pct_over_contrib: null,
+      realized_pnl: 0,
+      unrealized_pnl: deltaUsd,
+      deposits: 0,
+      withdrawals: 0,
+      trades_count: trades,
+      win_count: 0,
+      loss_count: 0,
+      win_rate: null,
+      vs_sp500_pct: null,
+      vs_inflation_pct: null,
+    },
+    headline,
+    subheadline: null,
+    narrative,
+    highlights: [],
+    insights: [],
+    children: [],
+    portfolio_snapshot: _demoPortfolioSnapshot(),
+  }
+}
+
+function _demoPortfolioSnapshot() {
+  // Capital aportado: baseline + deposits acumulados, capado a 85% del valor
+  // actual para que el ratio "retorno acumulado" sea positivo en demo.
+  let deposits = 0
+  for (const m of MONTHLY) deposits += (m.deposits || 0) - (m.withdrawals || 0)
+  const baseline = MONTHLY.length ? MONTHLY[0].capital_inicio : 0
+  const rawCum = baseline + deposits
+  const cumDeposited = Math.min(rawCum, Math.round(MONTHLY_LAST_VALUATION * 0.85))
+
+  // Δ 7d / 30d derivados de SNAPSHOTS (snapshots están sorted DESC en el demo).
+  // "now" = el snapshot más reciente del array (no MONTHLY_LAST_VALUATION,
+  // que puede divergir por el noise random de interpolación).
+  const nowSnap = SNAPSHOTS && SNAPSHOTS.length > 0 ? SNAPSHOTS[0] : null
+  const nowVal = nowSnap ? nowSnap.total_value : MONTHLY_LAST_VALUATION
+  const delta = (daysAgo) => {
+    if (!SNAPSHOTS || SNAPSHOTS.length === 0 || !nowSnap) return null
+    // referencia: fecha = nowSnap.date - N días
+    const ref = new Date(nowSnap.date + 'T00:00:00Z')
+    ref.setUTCDate(ref.getUTCDate() - daysAgo)
+    const targetIso = ref.toISOString().slice(0, 10)
+    // SNAPSHOTS ordenado DESC — find devuelve el primer (más reciente) ≤ target
+    const prev = SNAPSHOTS.find(s => s.date <= targetIso)
+    if (!prev || !prev.total_value || prev.total_value <= 0) return null
+    return {
+      usd: +(nowVal - prev.total_value).toFixed(2),
+      pct: +(((nowVal - prev.total_value) / prev.total_value) * 100).toFixed(2),
+    }
+  }
+
+  // YTD: desde el primer monthly_entry del año actual
+  const curYear = new Date().getFullYear()
+  const firstOfYear = MONTHLY.find(m => m.year === curYear && m.broker === 'global')
+  const ytd = (firstOfYear && firstOfYear.capital_inicio > 0)
+    ? {
+        usd: +(nowVal - firstOfYear.capital_inicio).toFixed(2),
+        pct: +(((nowVal - firstOfYear.capital_inicio) / firstOfYear.capital_inicio) * 100).toFixed(2),
+        since_year: curYear,
+      }
+    : null
+
+  // Última operación cerrada del demo
+  const ops = (typeof OPERATIONS !== 'undefined' && OPERATIONS) ? OPERATIONS : []
+  const closed = ops.filter(o => o.pnl_usd != null).sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  const lastOp = closed.length > 0 ? {
+    date: closed[0].date,
+    asset: closed[0].asset,
+    broker: closed[0].broker,
+    op_type: closed[0].op_type,
+    pnl_usd: closed[0].pnl_usd,
+  } : null
+
+  // Top 3 holdings por invested (no-cash)
+  const nonCashPositions = (typeof POSITIONS !== 'undefined' && POSITIONS)
+    ? POSITIONS.filter(p => !p.is_cash && (p.quantity || 0) > 0)
+    : []
+  const topHoldings = nonCashPositions
+    .sort((a, b) => (b.invested || 0) - (a.invested || 0))
+    .slice(0, 3)
+    .map(p => ({ asset: p.asset, broker: p.broker, invested: p.invested || 0 }))
+
+  return {
+    latest_value: nowVal,
+    latest_date: new Date().toISOString().slice(0, 10),
+    cum_deposited: cumDeposited,
+    positions_count: nonCashPositions.length || 12,
+    brokers_count: 3,
+    // delta_1d sintético determinístico — los SNAPSHOTS del demo son
+    // semanales (sin daily real). Usamos un valor estable derivado de
+    // MONTHLY_LAST_VALUATION para que no cambie en cada render.
+    delta_1d: (() => {
+      // Seed basado en el day-of-year para que sea determinístico hoy.
+      const seed = new Date().getDate() + new Date().getMonth() * 31
+      const r = ((seed % 13) - 6) * 0.0008  // -0.48% a +0.48%, paso fijo
+      return { usd: +(nowVal * r).toFixed(2), pct: +(r * 100).toFixed(2) }
+    })(),
+    delta_7d: delta(7),
+    delta_30d: delta(30),
+    ytd,
+    last_op: lastOp,
+    top_holdings: topHoldings,
+    cash_value: 0,
+  }
+}
+
+function _emptyDemoPeriod(periodType, periodKey, label) {
+  return {
+    period_type: periodType,
+    period_key: periodKey,
+    period_label: label,
+    period_start: periodKey,
+    period_end: periodKey,
+    is_current: false,
+    is_relevant: false,
+    metrics: {
+      start_value: 0, end_value: 0, delta_usd: 0, delta_pct: 0,
+      realized_pnl: 0, unrealized_pnl: 0, deposits: 0, withdrawals: 0,
+      trades_count: 0, win_rate: null, vs_sp500_pct: null, vs_inflation_pct: null,
+    },
+    headline: 'Sin actividad.',
+    subheadline: null, narrative: null,
+    highlights: [], insights: [], children: [],
+  }
+}
 
 // ─── Behavioral insights mock (Sprint 3-4) ──────────────────────────────────
 // Hardcoded para mostrar el flow completo en demo: un sesgo high, otros
@@ -1175,10 +1467,15 @@ const DEMO_CAGR = (() => {
 // Esto evita la inconsistencia del bug previo donde snapshots y monthly se
 // generaban independientes y los flujos del TWR no cerraban.
 const SNAPSHOTS = (() => {
-  if (MONTHLY.length === 0) return []
+  // Solo entries "global" — `MONTHLY` también contiene desagregados por
+  // broker (Schwab/Cocos/Binance), iterar sobre todos produce un zigzag
+  // brutal en el chart porque los valores parciales (ej. Cocos ~$1k vs
+  // global ~$30k) se alternan en la serie temporal.
+  const globals = MONTHLY.filter(m => m.broker === 'global')
+  if (globals.length === 0) return []
   const out = []
-  let cumDeposits = MONTHLY[0].capital_inicio
-  for (const m of MONTHLY) {
+  let cumDeposits = globals[0].capital_inicio
+  for (const m of globals) {
     const capStart = m.capital_inicio
     const capEnd = m.capital_final
     // 4 snapshots por mes (~semanal). Interpolación lineal con noise.
@@ -1501,15 +1798,22 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/reports/timeline') {
       return { reports: REPORTS_TIMELINE, total: REPORTS_TIMELINE.length }
     }
+
+    // Reports period — day / week / month / year (página Reportes tabs)
+    const periodMatch = basePath.match(/^\/reports\/period\/(day|week|month|year)\/(.+)$/)
+    if (periodMatch) {
+      const [, periodType, periodKey] = periodMatch
+      return buildDemoPeriodReport(periodType, periodKey)
+    }
     // Goals + CAGR (Objetivos page) — demo siempre muestra una meta de ejemplo
     // para que el user vea el diagnostic (Sprint 7) sin tener que crear una.
     if (basePath === '/goals') {
       return [{
         id: 1,
-        target_usd: 25000,
+        target_usd: 80000,
         target_date: (() => {
           const d = new Date()
-          d.setFullYear(d.getFullYear() + 2)
+          d.setFullYear(d.getFullYear() + 3)
           return d.toISOString().slice(0, 10)
         })(),
         expected_return_pct: 12,

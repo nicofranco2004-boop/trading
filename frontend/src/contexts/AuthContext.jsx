@@ -35,16 +35,17 @@ export function AuthProvider({ children }) {
       }
       if (isDemoMode()) return DEMO_USER
     }
+    // Hidratación optimista: usamos lo que dejamos en localStorage la última
+    // vez (solo metadata: nombre, email, tier — sin token). En paralelo
+    // /auth/me valida la cookie y refresca los valores.
     try { return JSON.parse(localStorage.getItem('rendi_user')) } catch { return null }
   })
   const [bootstrapped, setBootstrapped] = useState(false)
 
-  // Rehidratación: si hay token, validarlo y traer datos frescos del server.
-  // En modo demo skipeamos la rehidratación (no hay token real).
+  // Rehidratación: si la cookie HttpOnly es válida, /auth/me devuelve el user.
+  // No hay token visible para JS — confiamos en la cookie. En demo skipeamos.
   useEffect(() => {
     if (isDemoMode()) { setBootstrapped(true); return }
-    const token = localStorage.getItem('rendi_token')
-    if (!token) { setBootstrapped(true); return }
     api.get('/auth/me')
       .then(me => {
         const fresh = {
@@ -55,13 +56,10 @@ export function AuthProvider({ children }) {
         }
         localStorage.setItem('rendi_user', JSON.stringify(fresh))
         setUser(fresh)
-        // Invalidamos el cache de plan features — el tier acaba de
-        // refrescarse desde el server, cualquier valor cacheado de
-        // sesión anterior queda stale.
         refreshPlanFeatures()
       })
       .catch(() => {
-        localStorage.removeItem('rendi_token')
+        // 401 / network → no hay sesión válida. Limpiar y ofrecer login.
         localStorage.removeItem('rendi_user')
         setUser(null)
         refreshPlanFeatures()
@@ -69,13 +67,14 @@ export function AuthProvider({ children }) {
       .finally(() => setBootstrapped(true))
   }, [])
 
-  function login(token, name, extra = {}) {
-    localStorage.setItem('rendi_token', token)
+  // El primer arg (`_legacyToken`) se ignora — la cookie ya fue seteada por
+  // el backend en la respuesta de login/register/verify/reset. Lo dejamos
+  // en la firma para no tener que tocar todos los call-sites.
+  function login(_legacyToken, name, extra = {}) {
     const u = { name, ...extra }
     localStorage.setItem('rendi_user', JSON.stringify(u))
     setUser(u)
-    // Identity change → forzar refetch del plan features (no usar el
-    // cache de quien estuvo logueado antes).
+    // Identity change → forzar refetch del plan features.
     refreshPlanFeatures()
   }
 
@@ -91,8 +90,11 @@ export function AuthProvider({ children }) {
     if (user?.demo) {
       track('demo_mode_exited')
       disableDemoMode()
+    } else {
+      // Server-side: borra la cookie HttpOnly. Si falla (network), igual
+      // limpiamos el estado local; la cookie expira en 7d como fallback.
+      api.post('/auth/logout').catch(() => {})
     }
-    localStorage.removeItem('rendi_token')
     localStorage.removeItem('rendi_user')
     setUser(null)
     refreshPlanFeatures()  // limpiamos cache para el próximo login

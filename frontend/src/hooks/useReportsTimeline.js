@@ -4,7 +4,7 @@
 // semanas como children. Acá agrupamos por año para que el frontend pueda
 // renderizar bandas tipo "2026", "2025" entre los meses.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
 
 /**
@@ -41,8 +41,10 @@ export default function useReportsTimeline(broker = 'global', months = 12) {
     return () => { cancelled = true }
   }, [broker, months, trigger])
 
-  // Group por año (cronológico descendente — año en curso arriba)
-  const yearGroups = (() => {
+  // Group por año (cronológico descendente — año en curso arriba).
+  // Memoizado: sin memo se crea una referencia nueva en cada render y
+  // rompe los useEffect downstream con dependencia sobre yearGroups.
+  const yearGroups = useMemo(() => {
     const groups = new Map()
     for (const r of reports) {
       const y = parseInt(r.period_key.slice(0, 4), 10)
@@ -52,7 +54,7 @@ export default function useReportsTimeline(broker = 'global', months = 12) {
     return [...groups.entries()]
       .sort((a, b) => b[0] - a[0])
       .map(([year, months]) => ({ year, months }))
-  })()
+  }, [reports])
 
   return {
     loading,

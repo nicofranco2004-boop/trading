@@ -56,6 +56,24 @@ PLAN_LIMITS = {
             "tax.helper": False,                   # próximamente (no construido)
         },
     },
+    # Plus — tier intermedio. Captura users que necesitan multi-broker,
+    # reportes históricos, distribución por activo, pero no necesitan IA
+    # avanzada. La IA queda igual que Free (Hub y follow-ups son Pro-only)
+    # para preservar el upgrade path por features de IA.
+    "plus": {
+        "brokers_max": 3,
+        "insights_diagnostic_visible": 6,
+        "behavioral_tags_visible": 4,
+        "can_access": {
+            "ai.followup": False,                  # Pro-only
+            "ai.hub": False,                       # Pro-only
+            "comportamiento.full": False,          # mitad (behavioral_tags_visible=4)
+            "insights.distribucion_activo": True,
+            "reportes.historicos": True,
+            "export.csv": True,
+            "tax.helper": False,                   # Pro-only (cuando exista)
+        },
+    },
     "pro": {
         "brokers_max": None,
         "insights_diagnostic_visible": None,

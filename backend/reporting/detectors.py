@@ -173,7 +173,7 @@ def detect_vs_benchmark(report: PeriodReport) -> Optional[Insight]:
     if report.period_type != "month":
         return None
     sp = report.metrics.vs_sp500_pct
-    if sp is None:
+    if sp is None or report.metrics.delta_pct is None:
         return None
     delta = report.metrics.delta_pct - sp
     if abs(delta) < 1.0:
@@ -232,12 +232,12 @@ def detect_streak(report: PeriodReport, prior_deltas: List[float]) -> Optional[I
     if report.period_type != "month":
         return None
     current = report.metrics.delta_pct
-    if abs(current) < 0.5:
+    if current is None or abs(current) < 0.5:
         return None
     sign = 1 if current > 0 else -1
     streak = 1
     for d in reversed(prior_deltas):
-        if abs(d) < 0.5:
+        if d is None or abs(d) < 0.5:
             break
         if (d > 0 and sign > 0) or (d < 0 and sign < 0):
             streak += 1
@@ -296,6 +296,8 @@ def detect_reversal(report: PeriodReport, prior_delta: Optional[float]) -> Optio
     if prior_delta is None:
         return None
     current = report.metrics.delta_pct
+    if current is None:
+        return None
     if (prior_delta * current) >= 0:
         return None  # mismo signo
     if abs(prior_delta) < 2 or abs(current) < 2:
@@ -350,8 +352,8 @@ def detect_consistency(report: PeriodReport) -> Optional[Insight]:
     weeks = [c for c in report.children if c.period_type == "week" and c.is_relevant]
     if len(weeks) < 2:
         return None
-    pos = sum(1 for w in weeks if w.metrics.delta_pct > 0.2)
-    neg = sum(1 for w in weeks if w.metrics.delta_pct < -0.2)
+    pos = sum(1 for w in weeks if (w.metrics.delta_pct or 0) > 0.2)
+    neg = sum(1 for w in weeks if (w.metrics.delta_pct or 0) < -0.2)
     total = len(weeks)
     if pos == total:
         return Insight(

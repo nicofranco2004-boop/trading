@@ -54,6 +54,12 @@ def _send(to: str, subject: str, html: str, text: str) -> bool:
 
     Si no hay provider configurado, loguea a console (modo dev) y retorna
     False — el caller asume que el evento no se notificó pero no falla."""
+    text = (
+        f"{text}\n\n"
+        f"---\n"
+        f"¿Dudas? Escribinos por WhatsApp: +54 9 2914 37-3695\n"
+        f"({SUPPORT_WHATSAPP_URL})"
+    )
     if not _is_configured():
         log.info("=== EMAIL (no provider configured, logging only) ===")
         log.info("  TO:      %s", to)
@@ -108,6 +114,14 @@ def _fmt_date(iso_str: Optional[str]) -> str:
         return iso_str
 
 
+SUPPORT_WHATSAPP_NUMBER = "542914373695"
+SUPPORT_WHATSAPP_DISPLAY = "+54 9 2914 37-3695"
+SUPPORT_WHATSAPP_URL = (
+    f"https://wa.me/{SUPPORT_WHATSAPP_NUMBER}"
+    "?text=Hola%2C%20quer%C3%ADa%20hacer%20una%20consulta%20acerca%20de%20Rendi."
+)
+
+
 def _wrap_html(body: str) -> str:
     """Wrapper HTML mínimo con styles inline (no usamos CSS externo porque
     Gmail/Outlook a veces lo strippean)."""
@@ -118,11 +132,16 @@ def _wrap_html(body: str) -> str:
     <tr><td align="center">
       <table cellpadding="0" cellspacing="0" border="0" width="560" style="background:#ffffff;border-radius:8px;padding:36px;">
         <tr><td>
-          <div style="font-size:20px;font-weight:700;color:#21D07A;margin-bottom:24px;">Rendi</div>
+          <div style="font-size:20px;font-weight:700;color:#8B7BFF;margin-bottom:24px;">Rendi</div>
           {body}
           <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0 20px;">
+          <p style="font-size:12px;color:#4b5563;line-height:1.6;margin:0 0 10px 0;">
+            ¿Dudas o problemas? Escribinos por
+            <a href="{SUPPORT_WHATSAPP_URL}" style="color:#25D366;font-weight:600;text-decoration:none;">WhatsApp ({SUPPORT_WHATSAPP_DISPLAY})</a>
+            — te respondemos enseguida.
+          </p>
           <p style="font-size:11px;color:#9ca3af;line-height:1.6;margin:0;">
-            Este es un email automático de Rendi. Si tenés dudas, respondé a este email
+            Este es un email automático de Rendi. Si preferís email, respondé a este mensaje
             o escribinos a hello@rendi.app.
           </p>
         </td></tr>
@@ -132,23 +151,90 @@ def _wrap_html(body: str) -> str:
 </body></html>"""
 
 
-# ─── Email #1: bienvenida Pro ───────────────────────────────────────────────
+# ─── Plan helpers (Plus / Pro) ─────────────────────────────────────────────
 
-def send_welcome_pro(*, to: str, user_name: str, period: str,
-                    amount_ars: int, next_charge_date: Optional[str]) -> bool:
-    period_label = "mensual" if period == "monthly" else "anual"
-    body_html = f"""
-      <h1 style="font-size:24px;font-weight:700;margin:0 0 16px;">¡Bienvenido a Rendi Pro, {user_name}!</h1>
-      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Tu suscripción <b>{period_label}</b> está activa. Ya tenés acceso completo a:
-      </p>
-      <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
+def _plan_label(plan: str) -> str:
+    """'plus' → 'Plus', anything else → 'Pro'."""
+    return "Plus" if plan == "plus" else "Pro"
+
+
+def _plan_features_html(plan: str) -> str:
+    """Bulleted list HTML de features incluidas en cada plan."""
+    if plan == "plus":
+        return """
+        <li>Hasta <b>3 brokers</b></li>
+        <li><b>Insights diagnóstico completo</b> (6 observaciones)</li>
+        <li><b>4 análisis de comportamiento</b></li>
+        <li><b>Distribución por activo</b></li>
+        <li><b>Reportes históricos completos</b> (todos los meses)</li>
+        <li>Export CSV consolidado para tu contador</li>
+        """
+    return """
         <li><b>60 análisis IA por semana</b> (10× más que Free)</li>
         <li>Respuestas con causalidad y comparaciones</li>
         <li>Follow-ups y AI Hub (próximamente)</li>
         <li>Brokers ilimitados</li>
         <li>Comportamiento + Reportes históricos completos</li>
         <li>Export CSV consolidado para tu contador</li>
+    """
+
+
+def _plan_features_text(plan: str) -> str:
+    """Versión text plano de las features (para el cuerpo plain-text del email)."""
+    if plan == "plus":
+        return ("hasta 3 brokers, insights completo, 4 análisis de comportamiento, "
+                "distribución por activo, reportes históricos y export CSV")
+    return ("60 análisis IA por semana, brokers ilimitados, comportamiento + "
+            "reportes completos, export CSV y más")
+
+
+def _plan_loss_html(plan: str) -> str:
+    """Lista HTML de features que se pierden al expirar/cancelar el plan."""
+    if plan == "plus":
+        return """
+        <li>3 brokers (vas a quedar con 1)</li>
+        <li>Insights diagnóstico completo (vas a quedar con 3 observaciones)</li>
+        <li>4 análisis de comportamiento (vas a quedar con 1)</li>
+        <li>Distribución por activo</li>
+        <li>Reportes históricos completos</li>
+        <li>Export CSV consolidado</li>
+        """
+    return """
+        <li>60 análisis IA por semana (vas a quedar en 6)</li>
+        <li>Follow-ups + AI Hub</li>
+        <li>Brokers múltiples (vas a quedar con 1)</li>
+        <li>Reportes históricos completos</li>
+        <li>Export CSV consolidado</li>
+    """
+
+
+def _plan_loss_text(plan: str) -> str:
+    if plan == "plus":
+        return ("3 brokers (queda 1), insights (queda 3 obs), comportamiento (queda 1), "
+                "distribución por activo, reportes históricos, export CSV")
+    return ("60 análisis IA/sem (vs 6), follow-ups, brokers ilimitados, "
+            "reportes históricos, export CSV")
+
+
+# ─── Email #1: bienvenida (Plus / Pro) ──────────────────────────────────────
+
+def send_welcome_pro(*, to: str, user_name: str, period: str,
+                    amount_ars: int, next_charge_date: Optional[str],
+                    plan: str = "pro") -> bool:
+    """Email de bienvenida al activarse Plus o Pro.
+
+    El nombre histórico es `send_welcome_pro` por back-compat con callers
+    existentes — soporta los 2 planes con el param `plan`.
+    """
+    period_label = "mensual" if period == "monthly" else "anual"
+    plan_label = _plan_label(plan)
+    body_html = f"""
+      <h1 style="font-size:24px;font-weight:700;margin:0 0 16px;">¡Bienvenido a Rendi {plan_label}, {user_name}!</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Tu suscripción <b>{period_label}</b> está activa. Ya tenés acceso a:
+      </p>
+      <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
+        {_plan_features_html(plan)}
       </ul>
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px;margin:20px 0;">
         <p style="font-size:13px;color:#6b7280;margin:0 0 4px;">Detalle de tu suscripción</p>
@@ -161,26 +247,27 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
       </p>
     """
     text = (
-        f"¡Bienvenido a Rendi Pro, {user_name}!\n\n"
+        f"¡Bienvenido a Rendi {plan_label}, {user_name}!\n\n"
         f"Tu suscripción {period_label} está activa.\n\n"
         f"Monto: {_fmt_ars(amount_ars)} · Próxima renovación: {_fmt_date(next_charge_date)}\n\n"
-        f"Acceso completo a 60 análisis IA por semana, brokers ilimitados, "
-        f"comportamiento + reportes completos, export CSV y más.\n\n"
+        f"Acceso a {_plan_features_text(plan)}.\n\n"
         f"Podés cancelar cuando quieras desde Configuración → Mi plan.\n\n"
         f"— Rendi"
     )
-    return _send(to, "¡Bienvenido a Rendi Pro!", _wrap_html(body_html), text)
+    return _send(to, f"¡Bienvenido a Rendi {plan_label}!", _wrap_html(body_html), text)
 
 
 # ─── Email #2: recibo mensual ───────────────────────────────────────────────
 
 def send_receipt(*, to: str, user_name: str, amount_ars: int,
                 payment_date: str, next_charge_date: Optional[str],
-                payment_id: Optional[str] = None) -> bool:
+                payment_id: Optional[str] = None,
+                plan: str = "pro") -> bool:
+    plan_label = _plan_label(plan)
     body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Recibo de pago · Rendi Pro</h1>
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Recibo de pago · Rendi {plan_label}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
-        Hola {user_name}, registramos tu pago de la suscripción mensual.
+        Hola {user_name}, registramos tu pago de la suscripción.
       </p>
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:20px;margin:20px 0;">
         <table cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:14px;">
@@ -195,7 +282,7 @@ def send_receipt(*, to: str, user_name: str, amount_ars: int,
       </p>
     """
     text = (
-        f"Recibo de pago · Rendi Pro\n\n"
+        f"Recibo de pago · Rendi {plan_label}\n\n"
         f"Hola {user_name}, registramos tu pago de la suscripción.\n\n"
         f"Monto: {_fmt_ars(amount_ars)}\n"
         f"Fecha: {_fmt_date(payment_date)}\n"
@@ -203,17 +290,19 @@ def send_receipt(*, to: str, user_name: str, amount_ars: int,
         f"{f'ID: {payment_id}' if payment_id else ''}\n\n"
         f"— Rendi"
     )
-    return _send(to, "Recibo · Rendi Pro", _wrap_html(body_html), text)
+    return _send(to, f"Recibo · Rendi {plan_label}", _wrap_html(body_html), text)
 
 
 # ─── Email #3: pago fallido ─────────────────────────────────────────────────
 
 def send_payment_failed(*, to: str, user_name: str,
-                       retry_date: Optional[str] = None) -> bool:
+                       retry_date: Optional[str] = None,
+                       plan: str = "pro") -> bool:
+    plan_label = _plan_label(plan)
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;color:#dc2626;">No pudimos cobrar tu suscripción</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Hola {user_name}, intentamos cobrar la renovación de tu suscripción Rendi Pro pero el pago fue rechazado por tu banco o tarjeta.
+        Hola {user_name}, intentamos cobrar la renovación de tu suscripción Rendi {plan_label} pero el pago fue rechazado por tu banco o tarjeta.
       </p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
         Causas frecuentes:
@@ -225,36 +314,38 @@ def send_payment_failed(*, to: str, user_name: str,
       </ul>
       <div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:6px;padding:14px;margin:20px 0;">
         <p style="font-size:14px;color:#92400e;margin:0;">
-          ⚠️ <b>Tu cuenta sigue como Pro hasta el {_fmt_date(retry_date)}.</b> Mercado Pago va a reintentar el cobro automáticamente. Si el problema persiste, actualizá tu medio de pago.
+          ⚠️ <b>Tu cuenta sigue como {plan_label} hasta el {_fmt_date(retry_date)}.</b> Mercado Pago va a reintentar el cobro automáticamente. Si el problema persiste, actualizá tu medio de pago.
         </p>
       </div>
       <p style="font-size:14px;color:#374151;line-height:1.6;">
-        Andá a <a href="https://www.mercadopago.com.ar/subscriptions" style="color:#21D07A;text-decoration:none;">tu panel de Mercado Pago</a> para revisar.
+        Andá a <a href="https://www.mercadopago.com.ar/subscriptions" style="color:#8B7BFF;text-decoration:none;">tu panel de Mercado Pago</a> para revisar.
       </p>
     """
     text = (
-        f"No pudimos cobrar tu suscripción Rendi Pro\n\n"
+        f"No pudimos cobrar tu suscripción Rendi {plan_label}\n\n"
         f"Hola {user_name}, el pago fue rechazado por tu banco o tarjeta.\n\n"
-        f"Tu cuenta sigue como Pro hasta el {_fmt_date(retry_date)}. "
+        f"Tu cuenta sigue como {plan_label} hasta el {_fmt_date(retry_date)}. "
         f"Mercado Pago va a reintentar el cobro automáticamente.\n\n"
         f"Andá a mercadopago.com.ar/subscriptions para revisar tu medio de pago.\n\n"
         f"— Rendi"
     )
-    return _send(to, "⚠️ No pudimos cobrar tu suscripción Rendi Pro",
+    return _send(to, f"⚠️ No pudimos cobrar tu suscripción Rendi {plan_label}",
                  _wrap_html(body_html), text)
 
 
 # ─── Email #4: cancelación confirmada ──────────────────────────────────────
 
-def send_cancellation(*, to: str, user_name: str, valid_until: str) -> bool:
+def send_cancellation(*, to: str, user_name: str, valid_until: str,
+                     plan: str = "pro") -> bool:
+    plan_label = _plan_label(plan)
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Cancelación confirmada</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Hola {user_name}, tu suscripción Rendi Pro fue cancelada.
+        Hola {user_name}, tu suscripción Rendi {plan_label} fue cancelada.
       </p>
-      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:16px;margin:20px 0;">
-        <p style="font-size:14px;color:#166534;margin:0;">
-          ✓ Mantenés acceso completo a Pro hasta el <b>{_fmt_date(valid_until)}</b>. Después de esa fecha, tu cuenta vuelve a Free.
+      <div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:6px;padding:16px;margin:20px 0;">
+        <p style="font-size:14px;color:#5b21b6;margin:0;">
+          ✓ Mantenés acceso completo a {plan_label} hasta el <b>{_fmt_date(valid_until)}</b>. Después de esa fecha, tu cuenta vuelve a Free.
         </p>
       </div>
       <p style="font-size:14px;color:#374151;line-height:1.6;">
@@ -266,44 +357,41 @@ def send_cancellation(*, to: str, user_name: str, valid_until: str) -> bool:
     """
     text = (
         f"Cancelación confirmada\n\n"
-        f"Hola {user_name}, tu suscripción Rendi Pro fue cancelada.\n\n"
-        f"Mantenés Pro hasta el {_fmt_date(valid_until)}. "
+        f"Hola {user_name}, tu suscripción Rendi {plan_label} fue cancelada.\n\n"
+        f"Mantenés {plan_label} hasta el {_fmt_date(valid_until)}. "
         f"Después de esa fecha, tu cuenta vuelve a Free.\n\n"
         f"No te vamos a cobrar más. Si cancelaste por error, contestá este email.\n\n"
         f"— Rendi"
     )
-    return _send(to, "Cancelación confirmada · Rendi Pro",
+    return _send(to, f"Cancelación confirmada · Rendi {plan_label}",
                  _wrap_html(body_html), text)
 
 
 # ─── Email #5: recordatorio de expiración (3 días antes) ───────────────────
 
 def send_expiration_reminder(*, to: str, user_name: str,
-                             days_left: int, expires_at: str) -> bool:
+                             days_left: int, expires_at: str,
+                             plan: str = "pro") -> bool:
+    plan_label = _plan_label(plan)
     body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu plan Pro vence en {days_left} {'día' if days_left == 1 else 'días'}</h1>
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu plan {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Hola {user_name}, te avisamos que tu suscripción Rendi Pro va a expirar el <b>{_fmt_date(expires_at)}</b>.
+        Hola {user_name}, te avisamos que tu suscripción Rendi {plan_label} va a expirar el <b>{_fmt_date(expires_at)}</b>.
       </p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
         Después de esa fecha, vas a perder acceso a:
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
-        <li>60 análisis IA por semana (vas a quedar en 6)</li>
-        <li>Follow-ups + AI Hub</li>
-        <li>Brokers múltiples (vas a quedar con 1)</li>
-        <li>Reportes históricos completos</li>
-        <li>Export CSV consolidado</li>
+        {_plan_loss_html(plan)}
       </ul>
       <p style="font-size:14px;color:#374151;line-height:1.6;">
-        Si querés mantener Pro, volvé a suscribirte desde <a href="https://rendi.app/planes" style="color:#21D07A;text-decoration:none;">tu panel</a>.
+        Si querés mantener {plan_label}, volvé a suscribirte desde <a href="https://rendi.app/planes" style="color:#8B7BFF;text-decoration:none;">tu panel</a>.
       </p>
     """
     text = (
-        f"Tu plan Rendi Pro vence en {days_left} días\n\n"
+        f"Tu plan Rendi {plan_label} vence en {days_left} días\n\n"
         f"Hola {user_name}, tu suscripción expira el {_fmt_date(expires_at)}.\n\n"
-        f"Después vas a perder: 60 análisis IA/sem (vs 6), follow-ups, brokers "
-        f"ilimitados, reportes históricos, export CSV.\n\n"
+        f"Después vas a perder: {_plan_loss_text(plan)}.\n\n"
         f"Para renovar: andá a rendi.app/planes\n\n"
         f"— Rendi"
     )
@@ -324,9 +412,9 @@ def send_verification_code(*, to: str, user_name: str, code: str,
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
         Hola {user_name}, ingresá este código en Rendi para terminar de crear tu cuenta:
       </p>
-      <div style="background:#f0fdf4;border:2px solid #21D07A;border-radius:8px;padding:20px;margin:20px 0;text-align:center;">
-        <p style="font-size:11px;color:#166534;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin:0 0 8px;">Tu código</p>
-        <p style="font-family:monospace;font-size:38px;font-weight:700;color:#166534;letter-spacing:8px;margin:0;">{code}</p>
+      <div style="background:#f5f3ff;border:2px solid #8B7BFF;border-radius:8px;padding:20px;margin:20px 0;text-align:center;">
+        <p style="font-size:11px;color:#5b21b6;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin:0 0 8px;">Tu código</p>
+        <p style="font-family:monospace;font-size:38px;font-weight:700;color:#5b21b6;letter-spacing:8px;margin:0;">{code}</p>
       </div>
       <p style="font-size:13px;color:#6b7280;line-height:1.6;margin:12px 0;">
         Vence en <b>{expires_minutes} minutos</b>. Si no fuiste vos quien intentó registrarse,
@@ -362,14 +450,14 @@ def send_password_reset(*, to: str, user_name: str, reset_url: str,
         Hacé click en el botón de abajo para crear una nueva contraseña:
       </p>
       <div style="text-align:center;margin:28px 0;">
-        <a href="{reset_url}" style="display:inline-block;background:#21D07A;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
+        <a href="{reset_url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
           Restablecer contraseña
         </a>
       </div>
       <p style="font-size:13px;color:#6b7280;line-height:1.6;margin:0 0 8px;">
         O copiá y pegá este link en tu navegador:
       </p>
-      <p style="font-size:11px;color:#21D07A;word-break:break-all;font-family:monospace;background:#f9fafb;padding:10px;border-radius:4px;margin:0 0 20px;">
+      <p style="font-size:11px;color:#8B7BFF;word-break:break-all;font-family:monospace;background:#f9fafb;padding:10px;border-radius:4px;margin:0 0 20px;">
         {reset_url}
       </p>
       <p style="font-size:13px;color:#6b7280;line-height:1.6;">
@@ -387,4 +475,46 @@ def send_password_reset(*, to: str, user_name: str, reset_url: str,
         f"— Rendi"
     )
     return _send(to, "Restablecé tu contraseña · Rendi",
+                 _wrap_html(body_html), text)
+
+
+def send_new_login_alert(*, to: str, user_name: str, device: str,
+                         ip: str, when: str) -> bool:
+    """Avisa al usuario que se detectó un inicio de sesión desde un
+    dispositivo nuevo (ua_hash no visto antes). NO se manda en el primer
+    login (esperable, ruido). Si el user no reconoce el dispositivo, debe
+    cambiar la contraseña inmediatamente — eso invalida sesiones viejas."""
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Nuevo inicio de sesión</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Hola {user_name}, detectamos un inicio de sesión en tu cuenta de Rendi
+        desde un dispositivo que no habíamos visto antes.
+      </p>
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:18px;margin:18px 0;">
+        <table cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:14px;">
+          <tr><td style="color:#6b7280;padding:4px 0;">Dispositivo</td><td style="text-align:right;color:#1a1f2e;font-weight:600;">{device}</td></tr>
+          <tr><td style="color:#6b7280;padding:4px 0;">IP</td><td style="text-align:right;color:#1a1f2e;font-family:monospace;">{ip}</td></tr>
+          <tr><td style="color:#6b7280;padding:4px 0;">Fecha</td><td style="text-align:right;color:#1a1f2e;">{when}</td></tr>
+        </table>
+      </div>
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 8px;">
+        <b>¿Fuiste vos?</b> Listo, podés ignorar este email.
+      </p>
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0;">
+        <b>¿No fuiste vos?</b> Cambiá tu contraseña inmediatamente desde
+        Configuración → Contraseña. Eso invalida todas las sesiones abiertas.
+      </p>
+    """
+    text = (
+        f"Nuevo inicio de sesión en tu cuenta de Rendi\n\n"
+        f"Hola {user_name}, registramos un login desde un dispositivo nuevo:\n\n"
+        f"  Dispositivo: {device}\n"
+        f"  IP:          {ip}\n"
+        f"  Fecha:       {when}\n\n"
+        f"¿Fuiste vos? Listo, ignorá este email.\n"
+        f"¿No fuiste vos? Cambiá tu contraseña inmediatamente desde\n"
+        f"Configuración → Contraseña. Eso invalida sesiones abiertas.\n\n"
+        f"— Rendi"
+    )
+    return _send(to, "Nuevo inicio de sesión · Rendi",
                  _wrap_html(body_html), text)

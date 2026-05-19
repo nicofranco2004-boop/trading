@@ -45,83 +45,106 @@ function fmtUsd(v) {
   return `${sign}US$${abs.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
 }
 
-function daysUntilMonthEnd(period_end_iso) {
-  const today = new Date()
-  const end = new Date(period_end_iso + 'T23:59:59')
-  const diff = Math.ceil((end - today) / 86400000)
+function daysUntilPeriodEnd(period_end_iso) {
+  // UTC para consistencia con el backend (que usa _iso_today / utcnow).
+  // Sin esto, usuarios cerca de medianoche local pueden ver "1 día" cuando
+  // el backend ya considera el día actual como pasado.
+  const todayMs = Date.UTC(
+    new Date().getUTCFullYear(),
+    new Date().getUTCMonth(),
+    new Date().getUTCDate(),
+  )
+  const [y, m, d] = period_end_iso.split('-').map(Number)
+  const endMs = Date.UTC(y, m - 1, d)
+  const diff = Math.ceil((endMs - todayMs) / 86400000)
   return Math.max(0, diff)
 }
 
-export default function MonthCard({ month, defaultExpanded = false }) {
+// Acepta `period` (recibe day/week/month/year). `month` se mantiene como
+// alias por back-compat con callers existentes.
+export default function MonthCard({ period, month, defaultExpanded = false }) {
+  const p = period || month
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [weeksOpen, setWeeksOpen] = useState(false)
   const [metricsOpen, setMetricsOpen] = useState(false)
-  const positive = month.metrics.delta_pct >= 0
+  const deltaPct = p.metrics?.delta_pct
+  const positive = (deltaPct ?? 0) >= 0
 
-  // Caso minimal: mes sin actividad y no en curso → colapsado a 1 línea sticky
-  if (!month.is_relevant && !month.is_current) {
+  // Caso minimal: período sin actividad y no en curso → colapsado a 1 línea sticky
+  if (!p.is_relevant && !p.is_current) {
     return (
       <div className="px-4 py-2.5 rounded-sm border border-line/50 bg-bg-2/20 flex items-center gap-4 text-sm">
-        <span className="font-display text-base text-ink-2 min-w-[90px]">{month.period_label}</span>
+        <span className="font-display text-base text-ink-2 min-w-[90px]">{p.period_label}</span>
         <span className="text-ink-3 text-xs flex-1">Sin actividad relevante</span>
       </div>
     )
   }
 
-  // Extracción year/month del period_key (YYYY-MM) para los topics de IA.
-  const [yyyy, mm] = (month.period_key || '').split('-')
-  const aiParams = {
-    year: parseInt(yyyy, 10) || null,
-    month: parseInt(mm, 10) || null,
-  }
+  // Extracción year/month del period_key para los topics de IA.
+  // Soporta keys de tipo "YYYY-MM" (month) o "YYYY" (year). Para week/day,
+  // period_key tiene otra forma — el ai_topic no aplica.
+  const periodKey = p.period_key || ''
+  const aiParams = (() => {
+    if (p.period_type === 'month' || /^\d{4}-\d{2}$/.test(periodKey)) {
+      const [yyyy, mm] = periodKey.split('-')
+      return { year: parseInt(yyyy, 10) || null, month: parseInt(mm, 10) || null }
+    }
+    if (p.period_type === 'year' || /^\d{4}$/.test(periodKey)) {
+      return { year: parseInt(periodKey, 10) || null, month: null }
+    }
+    return {}
+  })()
 
   return (
     <AskAIAbout
       topic="monthly"
       params={aiParams}
-      subtitle={`Mes ${month.period_label}`}
+      subtitle={p.period_label}
     >
     <article className="rounded border border-line bg-bg-1 overflow-hidden">
       {/* HERO */}
       <header className="px-5 py-4">
         <div className="flex items-baseline justify-between gap-4 mb-2">
           <div className="flex items-baseline gap-3 flex-wrap">
-            <h3 className="font-display text-xl text-ink-0 tracking-tight">{month.period_label}</h3>
-            {month.is_current && <Pill tone="signal" dot>En curso</Pill>}
+            <h3 className="font-display text-xl text-ink-0 tracking-tight">{p.period_label}</h3>
+            {p.is_current && <Pill tone="signal" dot>En curso</Pill>}
           </div>
           <div className="flex items-baseline gap-2 flex-shrink-0">
             <span className={`text-2xl font-semibold tabular ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-              {fmtPct(month.metrics.delta_pct)}
+              {fmtPct(deltaPct)}
             </span>
             <span className="text-xs tabular text-ink-3">
-              {fmtUsd(month.metrics.delta_usd)}
+              {fmtUsd(p.metrics?.delta_usd)}
             </span>
           </div>
         </div>
 
-        <p className="text-sm text-ink-1 leading-snug">{month.headline}</p>
-        {month.subheadline && (
-          <p className="text-xs text-ink-2 leading-relaxed mt-0.5">{month.subheadline}</p>
+        <p className="text-sm text-ink-1 leading-snug">{p.headline}</p>
+        {p.subheadline && (
+          <p className="text-xs text-ink-2 leading-relaxed mt-0.5">{p.subheadline}</p>
+        )}
+        {p.narrative && (
+          <p className="text-xs text-ink-2 leading-relaxed mt-3 max-w-3xl">{p.narrative}</p>
         )}
 
-        {month.is_current && (
+        {p.is_current && p.period_end && (
           <p className="text-[11px] text-ink-3 mt-2 font-mono">
-            Faltan {daysUntilMonthEnd(month.period_end)} días para el cierre
+            Faltan {daysUntilPeriodEnd(p.period_end)} días para el cierre
           </p>
         )}
       </header>
 
       {/* HIGHLIGHTS */}
-      {month.highlights && month.highlights.length > 0 && (
+      {p.highlights && p.highlights.length > 0 && (
         <div className="px-5 pb-3">
-          <HighlightsRail highlights={month.highlights} />
+          <HighlightsRail highlights={p.highlights} />
         </div>
       )}
 
       {/* INSIGHTS — cada chip wrappeada con AskAIAbout (monthly.insight) */}
-      {month.insights && month.insights.length > 0 && (
+      {p.insights && p.insights.length > 0 && (
         <div className="px-5 pb-4 space-y-1.5">
-          {month.insights.map((ins, i) => (
+          {p.insights.map((ins, i) => (
             <AskAIAbout
               key={ins.code + i}
               topic="monthly.insight"
@@ -131,7 +154,7 @@ export default function MonthCard({ month, defaultExpanded = false }) {
                 text: ins.text,
                 severity: ins.severity,
               }}
-              subtitle={`Insight · ${month.period_label}`}
+              subtitle={`Insight · ${p.period_label}`}
             >
               <InsightChip insight={ins} />
             </AskAIAbout>
@@ -139,22 +162,22 @@ export default function MonthCard({ month, defaultExpanded = false }) {
         </div>
       )}
 
-      {/* TOGGLE: SEMANAS */}
-      {month.children && month.children.length > 0 && (
+      {/* TOGGLE: SEMANAS — solo aplica cuando es mes con children */}
+      {p.period_type === 'month' && p.children && p.children.length > 0 && (
         <div className="border-t border-line/50">
           <button
             onClick={() => setWeeksOpen(o => !o)}
             className="w-full px-5 py-2.5 flex items-center justify-between text-xs text-ink-2 hover:text-ink-1 hover:bg-bg-2/30 transition-colors"
             aria-expanded={weeksOpen}
           >
-            <span>Ver semanas ({month.children.filter(w => w.is_relevant).length})</span>
+            <span>Ver semanas ({p.children.filter(w => w.is_relevant).length})</span>
             {weeksOpen
               ? <ChevronUp size={12} strokeWidth={1.75} aria-hidden="true" />
               : <ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />}
           </button>
           {weeksOpen && (
             <div className="px-5 pb-4 space-y-1.5">
-              {month.children.map(w => (
+              {p.children.map(w => (
                 <WeekCard key={w.period_key} week={w} />
               ))}
             </div>
@@ -177,7 +200,7 @@ export default function MonthCard({ month, defaultExpanded = false }) {
             ? <ChevronUp size={12} strokeWidth={1.75} aria-hidden="true" />
             : <ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />}
         </button>
-        {metricsOpen && <MetricsGrid metrics={month.metrics} />}
+        {metricsOpen && <MetricsGrid metrics={p.metrics} />}
       </div>
     </article>
     </AskAIAbout>

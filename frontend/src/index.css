@@ -215,3 +215,80 @@ body {
 /* Scrollbar invisible (para tickers/scroll horizontal puro touch) */
 .scrollbar-none::-webkit-scrollbar { display: none; }
 .scrollbar-none { scrollbar-width: none; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Landing — animaciones para hero/futuristic intro
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Cursor de terminal blink — para hero typewriter */
+@keyframes terminal-cursor {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.terminal-cursor { animation: terminal-cursor 1s steps(2) infinite; }
+
+/* Grid de fondo con shimmer diagonal sutil */
+@keyframes grid-shimmer {
+  0%   { background-position: 0 0; }
+  100% { background-position: 40px 40px; }
+}
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(38, 46, 64, 0.35) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(38, 46, 64, 0.35) 1px, transparent 1px);
+  background-size: 40px 40px;
+  animation: grid-shimmer 18s linear infinite;
+}
+
+/* Spotlight verde que pulsa lentamente — para "alive" hero */
+@keyframes spotlight-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(1.05); }
+}
+.spotlight-pulse { animation: spotlight-pulse 6s ease-in-out infinite; }
+
+/* Reveal up con fade — usado por IntersectionObserver al scroll */
+@keyframes reveal-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.reveal-up { opacity: 0; }
+.reveal-up.in { animation: reveal-up 720ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+/* Glow sutil verde — para métricas live/positivas en el mock */
+@keyframes value-pulse {
+  0%, 100% { color: #21D07A; }
+  50%      { color: #5FE19D; }
+}
+.value-pulse { animation: value-pulse 3s ease-in-out infinite; }
+
+/* Ticker horizontal — para strip de brokers */
+@keyframes ticker-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.ticker-scroll { animation: ticker-scroll 30s linear infinite; }
+.ticker-scroll:hover { animation-play-state: paused; }
+
+/* Headline gradient sweep — Geist grande con barrido verde */
+@keyframes gradient-sweep {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+.headline-sweep {
+  background: linear-gradient(120deg, #E6EAF2 0%, #E6EAF2 35%, #8B7DFF 50%, #E6EAF2 65%, #E6EAF2 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: gradient-sweep 7s ease-in-out infinite;
+}
+
+/* Respeta reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .grid-bg, .spotlight-pulse, .value-pulse, .ticker-scroll, .headline-sweep,
+  .terminal-cursor {
+    animation: none !important;
+  }
+  .reveal-up { opacity: 1; }
+}

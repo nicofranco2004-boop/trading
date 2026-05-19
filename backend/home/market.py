@@ -268,6 +268,38 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
                 log.warning(f"_fetch_batch_quotes parsing {yf_sym} (orig {orig_sym}): {ex}")
     except Exception as ex:
         log.error(f"_fetch_batch_quotes batch download falló: {ex}")
+
+    # Fallback individual: para símbolos que el batch NO devolvió,
+    # retry uno a uno con yf.Ticker.history. Más lento pero más confiable —
+    # cubre casos donde yfinance bulk falla parcialmente (típico con
+    # tickers .BA del Merval o cripto con sufijo -USD).
+    missing = [s for s in to_fetch if s not in out]
+    if missing:
+        log.info(f"_fetch_batch_quotes retry individual: {len(missing)} símbolos faltantes")
+        for orig_sym in missing:
+            try:
+                yf_sym = yf_for.get(orig_sym, orig_sym)
+                t = yf.Ticker(yf_sym)
+                hist = t.history(period="5d", auto_adjust=False)
+                if hist is None or hist.empty:
+                    continue
+                closes = hist["Close"].dropna()
+                if len(closes) < 2:
+                    continue
+                prev = float(closes.iloc[-2])
+                last = float(closes.iloc[-1])
+                if prev <= 0:
+                    continue
+                entry = {
+                    "symbol": orig_sym,
+                    "price": round(last, 2),
+                    "prev_close": round(prev, 2),
+                    "change_pct": round(((last / prev) - 1) * 100, 2),
+                }
+                out[orig_sym] = entry
+                _QUOTE_CACHE[orig_sym] = {**entry, "_ts": now}
+            except Exception as ex:
+                log.warning(f"_fetch_batch_quotes single-fallback {orig_sym} falló: {ex}")
     return out
 
 

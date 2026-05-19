@@ -6,9 +6,11 @@ import Sidebar from './components/Sidebar'
 import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
 import DemoBanner from './components/DemoBanner'
+import SupportWhatsAppFab from './components/SupportWhatsAppFab'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import Login from './pages/Login'
+import Landing from './pages/Landing'
 import VerifyEmail from './pages/VerifyEmail'
 import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
@@ -90,6 +92,8 @@ function Layout() {
   if (!user) {
     return (
       <Routes>
+        {/* Landing pública — primer punto de contacto sin login */}
+        <Route path="/" element={<Landing />} />
         {/* Rutas accesibles SIN login — el user pasa por acá tras registrarse
             o tras clickear un magic link de password reset. */}
         <Route path="/verify-email" element={<VerifyEmail />} />
@@ -110,6 +114,7 @@ function Layout() {
           <AppRoutes />
         </main>
         <MobileTabBar />
+        <SupportWhatsAppFab />
       </>
     )
   }
@@ -128,6 +133,7 @@ function Layout() {
         <DemoBanner />
         <AppRoutes />
       </main>
+      <SupportWhatsAppFab />
     </>
   )
 }

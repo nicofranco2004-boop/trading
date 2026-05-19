@@ -49,7 +49,7 @@ from __future__ import annotations
 from typing import Literal
 from datetime import date, timedelta
 
-Tier = Literal["free", "pro", "admin"]
+Tier = Literal["free", "plus", "pro", "admin"]
 
 # Cap semanal. Cambiar acá afecta UI, mensaje 429, demo mock, tests.
 #
@@ -67,6 +67,13 @@ LIMITS = {
     "free": {
         "analyses_per_week": 6,
         "hub_queries_per_week": 0,     # Hub es Pro-only — gate en endpoint
+    },
+    # Plus = features desbloqueadas pero IA igual que Free. El upgrade path
+    # a Pro queda accionable por mejor IA + features avanzadas (follow-ups,
+    # Hub, ilimitados).
+    "plus": {
+        "analyses_per_week": 6,
+        "hub_queries_per_week": 0,
     },
     "pro": {
         "analyses_per_week": 60,        # 10× Free
@@ -97,7 +104,7 @@ def get_tier(conn, user_id: int) -> Tier:
         ).fetchone()
         if row:
             override = (row["tier"] or "").strip().lower()
-            if override in ("pro", "free"):
+            if override in ("pro", "plus", "free"):
                 return override  # type: ignore[return-value]
             if row["is_admin"]:
                 return "admin"

@@ -57,14 +57,36 @@ export default function VerifyEmail() {
   }, [digits])
 
   function handleDigitChange(i, v) {
-    // Solo aceptar dígitos
-    const clean = v.replace(/\D/g, '').slice(0, 1)
-    const next = [...digits]
-    next[i] = clean
-    setDigits(next)
-    setError('')
-    // Auto-focus siguiente
-    if (clean && i < 5) inputs.current[i + 1]?.focus()
+    // Soporta tanto tipeo de 1 char como autofill/paste de varios chars
+    // (Safari iOS suele meter el código entero en un input cuando viene de SMS).
+    const cleanAll = (v || '').replace(/\D/g, '')
+    if (!cleanAll) {
+      // Borraron el char — limpiar este box
+      const next = [...digits]
+      next[i] = ''
+      setDigits(next)
+      setError('')
+      return
+    }
+    if (cleanAll.length === 1) {
+      // Caso normal: 1 dígito tipeado
+      const next = [...digits]
+      next[i] = cleanAll
+      setDigits(next)
+      setError('')
+      if (i < 5) inputs.current[i + 1]?.focus()
+    } else {
+      // Llegaron varios chars (autofill o paste-no-en-primera-caja).
+      // Distribuir en las cajas siguientes.
+      const next = [...digits]
+      for (let k = 0; k < cleanAll.length && (i + k) < 6; k++) {
+        next[i + k] = cleanAll[k]
+      }
+      setDigits(next)
+      setError('')
+      const focusIdx = Math.min(i + cleanAll.length, 5)
+      setTimeout(() => inputs.current[focusIdx]?.focus(), 0)
+    }
   }
 
   function handleKeyDown(i, e) {
@@ -80,7 +102,6 @@ export default function VerifyEmail() {
     if (!pasted) return
     const next = pasted.padEnd(6, '').slice(0, 6).split('')
     setDigits(next)
-    // Focus en la última caja con contenido (o la última si está completo)
     const lastIdx = Math.min(pasted.length, 5)
     setTimeout(() => inputs.current[lastIdx]?.focus(), 50)
   }

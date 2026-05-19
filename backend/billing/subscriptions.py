@@ -162,7 +162,8 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
 
 def _downgrade_expired_cancellations(conn) -> int:
     """Encuentra subs canceladas cuyo `current_period_end` ya pasó y baja
-    al user a tier='free'. Devuelve count de users degradados."""
+    al user a tier='free' (limpiando el override de plus o pro).
+    Devuelve count de users degradados."""
     now = datetime.utcnow().isoformat()
     rows = conn.execute(
         """SELECT s.id, s.user_id, s.mp_subscription_id, s.current_period_end
@@ -170,7 +171,7 @@ def _downgrade_expired_cancellations(conn) -> int:
            WHERE s.status = 'cancelled'
              AND s.current_period_end IS NOT NULL
              AND s.current_period_end < ?
-             AND s.user_id IN (SELECT id FROM users WHERE tier = 'pro')""",
+             AND s.user_id IN (SELECT id FROM users WHERE tier IN ('pro', 'plus'))""",
         (now,),
     ).fetchall()
     if not rows:

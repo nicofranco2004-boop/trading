@@ -94,6 +94,7 @@ def create_preapproval(
     user_id: int,
     user_email: str,
     period: Period = "monthly",
+    plan: str = "pro",
     *,
     reason: Optional[str] = None,
 ) -> dict:
@@ -103,18 +104,20 @@ def create_preapproval(
     al user. Tras pagar, MP nos llama vía webhook (preapproval_authorized).
 
     `external_reference` es CRÍTICO: lo usamos en el webhook para identificar
-    al user de Rendi. Encodeamos `user_id:period` así no necesitamos lookup
-    extra cuando llega el evento.
+    al user de Rendi. Encodeamos `user_id:plan:period` así no necesitamos
+    lookup extra cuando llega el evento (compat: 'rendi-{uid}-{period}' viejo
+    todavía resuelve a plan=pro).
     """
-    p = pricing.get_pricing(period)
+    p = pricing.get_pricing(plan, period)
     amount = p["total_ars"]
+    plan_label = "Plus" if plan == "plus" else "Pro"
 
     # Frecuencia MP: 'months' con frequency=1 para mensual, frequency=12 anual.
     # OJO: MP NO tiene type='years' nativo — se simula con months × 12.
     frequency = 1 if period == "monthly" else 12
     payload = {
-        "reason": reason or f"Rendi Pro · {period}",
-        "external_reference": f"rendi-{user_id}-{period}",
+        "reason": reason or f"Rendi {plan_label} · {period}",
+        "external_reference": f"rendi-{user_id}-{plan}-{period}",
         "payer_email": user_email,
         "auto_recurring": {
             "frequency": frequency,
@@ -128,7 +131,7 @@ def create_preapproval(
         "status": "pending",  # se autoriza tras el pago exitoso
     }
 
-    log.info("MP create_preapproval user=%s period=%s amount=%s", user_id, period, amount)
+    log.info("MP create_preapproval user=%s plan=%s period=%s amount=%s", user_id, plan, period, amount)
     r = httpx.post(
         f"{MP_BASE_URL}/preapproval",
         headers={
@@ -228,16 +231,44 @@ def _iso_now() -> str:
 
 
 def parse_external_reference(ref: str) -> Optional[tuple[int, Period]]:
-    """Decodifica 'rendi-{user_id}-{period}' del external_reference.
-    Devuelve None si no matchea el formato esperado."""
+    """Decodifica el external_reference. Soporta 2 formatos:
+      • 'rendi-{uid}-{period}'        (legacy, plan implícito='pro')
+      • 'rendi-{uid}-{plan}-{period}' (multi-plan: plan ∈ {plus, pro})
+
+    Devuelve (uid, period). El plan se infiere con `parse_external_reference_full`
+    si el caller lo necesita; este helper queda para back-compat.
+    """
+    full = parse_external_reference_full(ref)
+    if full is None:
+        return None
+    uid, _plan, period = full
+    return uid, period
+
+
+def parse_external_reference_full(ref: str) -> Optional[tuple[int, str, Period]]:
+    """Decodifica el external_reference completo. Devuelve (uid, plan, period).
+    Plan default = 'pro' para el formato legacy de 3 partes."""
     try:
         parts = ref.split("-")
-        if len(parts) != 3 or parts[0] != "rendi":
+        if parts[0] != "rendi":
             return None
-        uid = int(parts[1])
-        period = parts[2]
-        if period not in ("monthly", "annual"):
-            return None
-        return uid, period  # type: ignore[return-value]
+        if len(parts) == 3:
+            # Legacy: rendi-{uid}-{period}
+            uid = int(parts[1])
+            period = parts[2]
+            if period not in ("monthly", "annual"):
+                return None
+            return uid, "pro", period  # type: ignore[return-value]
+        if len(parts) == 4:
+            # Multi-plan: rendi-{uid}-{plan}-{period}
+            uid = int(parts[1])
+            plan = parts[2]
+            period = parts[3]
+            if plan not in ("plus", "pro"):
+                return None
+            if period not in ("monthly", "annual"):
+                return None
+            return uid, plan, period  # type: ignore[return-value]
+        return None
     except (ValueError, AttributeError):
         return None

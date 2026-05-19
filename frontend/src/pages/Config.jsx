@@ -18,6 +18,8 @@ import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
+import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -130,11 +132,12 @@ export default function Config() {
       return
     }
     try {
-      const res = await api.post('/auth/change-password', {
+      await api.post('/auth/change-password', {
         current_password: pwForm.current,
         new_password: pwForm.next,
       })
-      if (res.token) localStorage.setItem('rendi_token', res.token)
+      // El backend rota la cookie HttpOnly automáticamente — no hace falta
+      // tocar nada local.
       setPwForm({ current: '', next: '', confirm: '' })
       setPwState({ loading: false, error: '', success: 'Contraseña actualizada correctamente.' })
     } catch (err) {
@@ -349,6 +352,31 @@ export default function Config() {
           </form>
         </Panel>
       </div>
+
+      {/* ── Soporte ─────────────────────────────────────────────────────── */}
+      <Panel padding="none" className="mt-4">
+        <div className="px-4 py-3 border-b border-line/40 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-ink-0">Soporte</h2>
+          <span className="text-[10px] text-ink-3 uppercase tracking-wider">WhatsApp directo</span>
+        </div>
+        <div className="px-4 py-4 flex items-center justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-sm text-ink-1">¿Dudas, problemas o sugerencias?</div>
+            <div className="text-xs text-ink-3 mt-1">
+              Te respondemos por WhatsApp. <span className="font-mono">{SUPPORT_WHATSAPP_DISPLAY}</span>
+            </div>
+          </div>
+          <a
+            href={whatsappUrl()}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="inline-flex items-center gap-1.5 text-xs bg-[#25D366]/10 hover:bg-[#25D366]/15 text-[#25D366] border border-[#25D366]/30 px-3 py-2 rounded-sm transition-colors"
+          >
+            <WhatsAppIcon size={13} />
+            Hablanos por WhatsApp
+          </a>
+        </div>
+      </Panel>
 
       {showImport && (
         <ImportWizard
