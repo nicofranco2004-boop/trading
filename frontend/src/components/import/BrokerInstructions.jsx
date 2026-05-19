@@ -21,10 +21,13 @@ function CocosLogo({ size = 18 }) {
 }
 
 function BalanzLogo({ size = 18 }) {
+  // Balanz brand: B en mayúscula sobre azul marino. Probamos "BALANZ"
+  // completo pero a este tamaño se cortaba — más limpio quedarse con la
+  // inicial.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <rect width="24" height="24" rx="4" fill="#1F2C8C" />
-      <text x="12" y="15" textAnchor="middle" fontFamily="-apple-system,sans-serif" fontWeight="700" fontSize="6.5" fill="#FFFFFF">BALANZ</text>
+      <text x="12" y="18" textAnchor="middle" fontFamily="-apple-system,sans-serif" fontWeight="800" fontSize="16" fill="#FFFFFF">B</text>
     </svg>
   )
 }
@@ -145,7 +148,7 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos' }) {
                   onClick={() => setSelectedId(b.id)}
                   className={`inline-flex items-center gap-2 px-3 py-2 rounded-md border transition-all text-left ${
                     active
-                      ? 'border-rendi-warn/60 bg-rendi-warn/10 text-rendi-warn'
+                      ? 'border-data-violet/60 bg-data-violet/10 text-data-violet'
                       : 'border-line bg-bg-2/40 hover:border-line-3 text-ink-1'
                   }`}
                 >
@@ -157,7 +160,7 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos' }) {
           </div>
 
           {/* Pasos del broker seleccionado */}
-          <div className="mx-3 mb-3 rounded-md border border-rendi-warn/30 bg-rendi-warn/[0.04] p-3">
+          <div className="mx-3 mb-3 rounded-md border border-data-violet/30 bg-data-violet/[0.04] p-3">
             <div className="flex items-start gap-3">
               <div className="flex-shrink-0 mt-0.5">
                 <SelectedLogo size={28} />
@@ -170,7 +173,7 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos' }) {
             <ol className="mt-3 space-y-2">
               {selected.steps.map((step, i) => (
                 <li key={i} className="flex items-start gap-2.5">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full border border-rendi-warn/40 bg-rendi-warn/10 text-rendi-warn text-[10px] font-mono font-semibold flex items-center justify-center">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full border border-data-violet/40 bg-data-violet/10 text-data-violet text-[10px] font-mono font-semibold flex items-center justify-center">
                     {i + 1}
                   </span>
                   <span className="text-sm text-ink-1 leading-relaxed">{step}</span>

@@ -997,7 +997,7 @@ PASSWORD_RESET_TTL_MINUTES = 30
 def _frontend_url() -> str:
     """Base URL del frontend para construir magic links (password reset, etc).
 
-    Para dev: http://localhost:5173. Para prod: https://rendi.app (cambiar
+    Para dev: http://localhost:5173. Para prod: https://rendi.finance (cambiar
     en el .env vía MP_FRONTEND_BASE_URL — el nombre es histórico, se usa
     también para no-billing)."""
     return (os.environ.get("MP_FRONTEND_BASE_URL") or "http://localhost:5173").rstrip("/")
@@ -2653,7 +2653,7 @@ def _fetch_google_news_rss(query: str, lang: str = "en", limit: int = 15):
     try:
         from urllib.parse import urlencode
         url = "https://news.google.com/rss/search?" + urlencode(params)
-        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; RendiBot/1.0; +https://rendi.app/bot)", "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; RendiBot/1.0; +https://rendi.finance/bot)", "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
         if r.status_code != 200:
             return []
         return _parse_google_news_rss(r.content, limit=limit)
@@ -2726,7 +2726,7 @@ def _fetch_investing_rss(url: str, limit: int = 15):
     Falla gracefully con [] si HTTP no-200 o parseo falla.
     """
     try:
-        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; RendiBot/1.0; +https://rendi.app/bot)", "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; RendiBot/1.0; +https://rendi.finance/bot)", "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
         if r.status_code != 200:
             return []
         return _parse_rss_feed(r.content, limit=limit)
@@ -8290,7 +8290,7 @@ def _send_push_to_user(uid: int, payload: dict) -> int:
         return 0
     pub = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
     priv = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
-    subject = os.environ.get("VAPID_SUBJECT", "mailto:hola@rendi.app").strip()
+    subject = os.environ.get("VAPID_SUBJECT", "mailto:hola@rendi.finance").strip()
     if not pub or not priv:
         return 0
 

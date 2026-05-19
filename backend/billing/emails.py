@@ -40,7 +40,7 @@ def _api_key() -> Optional[str]:
 
 
 def _from_address() -> str:
-    return os.environ.get("EMAIL_FROM", "Rendi <hello@rendi.app>")
+    return os.environ.get("EMAIL_FROM", "Rendi <hello@rendi.finance>")
 
 
 def _is_configured() -> bool:
@@ -142,7 +142,7 @@ def _wrap_html(body: str) -> str:
           </p>
           <p style="font-size:11px;color:#9ca3af;line-height:1.6;margin:0;">
             Este es un email automático de Rendi. Si preferís email, respondé a este mensaje
-            o escribinos a hello@rendi.app.
+            o escribinos a hello@rendi.finance.
           </p>
         </td></tr>
       </table>
@@ -385,14 +385,14 @@ def send_expiration_reminder(*, to: str, user_name: str,
         {_plan_loss_html(plan)}
       </ul>
       <p style="font-size:14px;color:#374151;line-height:1.6;">
-        Si querés mantener {plan_label}, volvé a suscribirte desde <a href="https://rendi.app/planes" style="color:#8B7BFF;text-decoration:none;">tu panel</a>.
+        Si querés mantener {plan_label}, volvé a suscribirte desde <a href="https://rendi.finance/planes" style="color:#8B7BFF;text-decoration:none;">tu panel</a>.
       </p>
     """
     text = (
         f"Tu plan Rendi {plan_label} vence en {days_left} días\n\n"
         f"Hola {user_name}, tu suscripción expira el {_fmt_date(expires_at)}.\n\n"
         f"Después vas a perder: {_plan_loss_text(plan)}.\n\n"
-        f"Para renovar: andá a rendi.app/planes\n\n"
+        f"Para renovar: andá a rendi.finance/planes\n\n"
         f"— Rendi"
     )
     return _send(to, f"⏰ Tu Rendi Pro vence en {days_left} días",

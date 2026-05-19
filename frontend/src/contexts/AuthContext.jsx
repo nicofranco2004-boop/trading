@@ -10,7 +10,7 @@ const AuthContext = createContext(null)
 // son interceptadas por handleDemoRequest en api.js.
 const DEMO_USER = {
   name: 'Inversor Demo',
-  email: 'demo@rendi.app',
+  email: 'demo@rendi.finance',
   is_admin: false,
   tier: 'pro',  // Demo siempre simula Pro para mostrar todas las features
   demo: true,

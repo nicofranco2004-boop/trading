@@ -33,10 +33,10 @@ def _make_db():
     # Cuatro users: 1=admin, 2=free, 3=free (sin uso aún), 4=pro (admin con override)
     conn.executescript("""
         INSERT INTO users (id, email, is_admin, tier) VALUES
-            (1, 'admin@rendi.app', 1, NULL),
-            (2, 'free@rendi.app', 0, NULL),
-            (3, 'newuser@rendi.app', 0, NULL),
-            (4, 'admin-pro@rendi.app', 1, 'pro');
+            (1, 'admin@rendi.finance', 1, NULL),
+            (2, 'free@rendi.finance', 0, NULL),
+            (3, 'newuser@rendi.finance', 0, NULL),
+            (4, 'admin-pro@rendi.finance', 1, 'pro');
     """)
     return conn
 

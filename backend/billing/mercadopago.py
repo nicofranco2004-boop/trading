@@ -53,16 +53,16 @@ def _frontend_base() -> str:
     'Invalid value for back_url, must be a valid URL'. Necesita HTTPS
     + dominio público.
 
-    Workaround para dev local: si la base es localhost, usamos rendi.app
+    Workaround para dev local: si la base es localhost, usamos rendi.finance
     como placeholder. MP acepta el formato; tras pagar, el browser intenta
-    ir a rendi.app/billing/success (puede dar 404) y el user vuelve
+    ir a rendi.finance/billing/success (puede dar 404) y el user vuelve
     manualmente a localhost:5173/billing/success — que llama a /sync y
     confirma el pago.
 
     Para deploys con dominio real, el .env apunta directo al dominio."""
     base = (os.environ.get("MP_FRONTEND_BASE_URL") or "http://localhost:5173").rstrip("/")
     if base.startswith("http://localhost") or "://127.0.0.1" in base or base.startswith("http://0.0.0.0"):
-        return "https://rendi.app"
+        return "https://rendi.finance"
     return base
 
 
