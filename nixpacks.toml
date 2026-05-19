@@ -10,6 +10,10 @@
 
 [phases.setup]
 nixPkgs = ["python311", "gcc"]
+# libstdc++ tiene que estar en LD_LIBRARY_PATH para que numpy (que viene con
+# yfinance) pueda cargar sus C-extensions en runtime. Sin esto, el container
+# arranca y crashea con "libstdc++.so.6: cannot open shared object file".
+nixLibs = ["stdenv.cc.cc.lib"]
 
 [phases.install]
 cmds = [
