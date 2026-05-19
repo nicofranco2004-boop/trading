@@ -150,15 +150,23 @@ SUPPORT_WHATSAPP_URL = (
 
 def _wrap_html(body: str) -> str:
     """Wrapper HTML mínimo con styles inline (no usamos CSS externo porque
-    Gmail/Outlook a veces lo strippean)."""
+    Gmail/Outlook a veces lo strippean).
+
+    Header dark con el logo R sobre fondo casi-negro (#0A0B0E) — matchea el
+    branding dark-mode de la app. El logo es el PNG en el CDN de Vercel."""
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Rendi</title></head>
 <body style="margin:0;padding:0;background:#f5f7fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1f2e;">
   <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f5f7fa;padding:40px 0;">
     <tr><td align="center">
-      <table cellpadding="0" cellspacing="0" border="0" width="560" style="background:#ffffff;border-radius:8px;padding:36px;">
-        <tr><td>
-          <div style="font-size:20px;font-weight:700;color:#8B7BFF;margin-bottom:24px;">Rendi</div>
+      <table cellpadding="0" cellspacing="0" border="0" width="560" style="background:#ffffff;border-radius:8px;overflow:hidden;">
+        <tr>
+          <td style="background:#0A0B0E;padding:28px 36px;text-align:left;">
+            <img src="https://rendi.finance/brand/rendi-mark-email.png" alt="Rendi" width="48" height="48" style="display:inline-block;vertical-align:middle;border:0;">
+            <span style="display:inline-block;vertical-align:middle;margin-left:12px;font-size:22px;font-weight:700;color:#FFFFFF;letter-spacing:-0.02em;">Rendi</span>
+          </td>
+        </tr>
+        <tr><td style="padding:36px;">
           {body}
           <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0 20px;">
           <p style="font-size:12px;color:#4b5563;line-height:1.6;margin:0 0 10px 0;">
