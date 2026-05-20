@@ -86,33 +86,39 @@ export default function AskAIAbout({
       {/* Children — el componente real (chart, tabla, etc.) */}
       {children}
 
-      {/* Botón flotante ✦ — top-right del wrapper */}
+      {/* Botón flotante — top-right del wrapper.
+          Desktop: solo ícono que aparece al hover (UX minimalista).
+          Mobile:  pill "✦ Analizar" siempre visible, más prominente —
+                   no hay hover, hay que dar señal visual clara. */}
       <button
         type="button"
         onClick={(e) => {
           e.stopPropagation()
           openDrawer('hover_button')
         }}
-        aria-label="Preguntar a la IA sobre esto"
-        title="Preguntar a la IA"
+        aria-label="Analizar con IA"
+        title="Analizar con IA"
         className={[
           'absolute z-10 inline-flex items-center justify-center',
           'top-2 right-2',
-          rounded ? 'w-7 h-7 rounded-sm' : 'w-6 h-6 rounded-sm',
-          'bg-bg-1/90 backdrop-blur-sm border text-data-violet',
+          'bg-bg-1/95 backdrop-blur-sm border text-data-violet',
           'transition-all duration-150',
-          // Pre-descubrimiento: visible siempre con border más fuerte + pulse.
-          // Post-descubrimiento: fade al hover (mobile siempre visible chico).
-          !discovered
-            ? 'opacity-100 border-data-violet/70 shadow-md shadow-data-violet/20 hover:bg-data-violet/15 ai-discover-pulse'
-            : isMobile
-              ? 'opacity-90 border-data-violet/40 hover:bg-data-violet/15 hover:border-data-violet/60'
-              : hovered
-                ? 'opacity-100 translate-y-0 border-data-violet/40 hover:bg-data-violet/15 hover:border-data-violet/60'
-                : 'opacity-0 -translate-y-1 pointer-events-none border-data-violet/40',
+          isMobile
+            // Mobile: pill con icono + label, mayor área tappable
+            ? 'h-8 px-2.5 gap-1 rounded-sm border-data-violet/45 shadow-sm shadow-data-violet/10 active:bg-data-violet/15 text-[11px] font-medium'
+            // Desktop: solo icono, hover-reveal (o always-on en pre-discovery)
+            : [
+              rounded ? 'w-7 h-7 rounded-sm' : 'w-6 h-6 rounded-sm',
+              !discovered
+                ? 'opacity-100 border-data-violet/70 shadow-md shadow-data-violet/20 hover:bg-data-violet/15 ai-discover-pulse'
+                : hovered
+                  ? 'opacity-100 translate-y-0 border-data-violet/40 hover:bg-data-violet/15 hover:border-data-violet/60'
+                  : 'opacity-0 -translate-y-1 pointer-events-none border-data-violet/40',
+            ].join(' '),
         ].join(' ')}
       >
         <Sparkles size={isMobile ? 12 : 13} strokeWidth={1.75} />
+        {isMobile && <span>Analizar</span>}
       </button>
 
       {/* Pulse animation para pre-discovery */}

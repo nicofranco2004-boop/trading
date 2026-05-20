@@ -9,10 +9,11 @@
 
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Search, RefreshCcw } from 'lucide-react'
+import { Search, RefreshCcw, Sparkles } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
 import { api } from '../../utils/api'
 import { usePullToRefresh } from '../../hooks/usePullToRefresh'
+import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 
 const TICKER_KEYS = ['^GSPC', '^IXIC', 'MERVAL', 'BLUE', 'BTC-USD']
 const TICKER_LABELS = {
@@ -25,6 +26,7 @@ const TICKER_LABELS = {
 
 export default function MobileTopBar({ onRefresh }) {
   const [items, setItems] = useState([])
+  const coachDrawer = useCoachDrawer()
 
   useEffect(() => { loadTickers() }, [])
 
@@ -75,13 +77,24 @@ export default function MobileTopBar({ onRefresh }) {
             <RendiLogo size={36} />
             <span className="text-lg font-semibold text-ink-0 tracking-tight">rendi</span>
           </Link>
-          <Link
-            to="/buscar"
-            aria-label="Buscar"
-            className="p-2 rounded-sm text-ink-2 hover:text-ink-0 hover:bg-bg-2/60 transition-colors"
-          >
-            <Search size={16} strokeWidth={1.75} />
-          </Link>
+          <div className="flex items-center gap-1">
+            {/* Coach IA — botón siempre visible para abrir el drawer global */}
+            <button
+              type="button"
+              onClick={() => coachDrawer.open()}
+              aria-label="Coach IA"
+              className="p-2 rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
+            >
+              <Sparkles size={16} strokeWidth={1.75} />
+            </button>
+            <Link
+              to="/buscar"
+              aria-label="Buscar"
+              className="p-2 rounded-sm text-ink-2 hover:text-ink-0 hover:bg-bg-2/60 transition-colors"
+            >
+              <Search size={16} strokeWidth={1.75} />
+            </Link>
+          </div>
         </div>
 
         {/* Ticker bar */}

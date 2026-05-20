@@ -24,6 +24,8 @@ import Watchlist from '../components/home/Watchlist'
 import NewsPreview from '../components/home/NewsPreview'
 import EventsPreview from '../components/home/EventsPreview'
 import Eyebrow from '../components/Eyebrow'
+import AnalyzeButton from '../components/ai/AnalyzeButton'
+import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import { fmtUsd, pctSigned, colorClass } from '../utils/format'
@@ -144,16 +146,23 @@ export default function HomeMobile() {
     <div className="pb-8">
       {/* ── 1. Hero balance ─────────────────────────────────────────── */}
       <section className="px-4 pt-5 pb-4">
-        <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center justify-between mb-3">
           <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
             Tu portfolio
           </div>
-          {totals.pct != null && (
-            <div className={`text-[10px] font-mono uppercase tracking-caps tabular ${colorClass(totals.pct)}`}>
-              {pctSigned(totals.pct)} histórico
-            </div>
-          )}
+          {/* Botón primario de análisis del portfolio — siempre visible
+              y prominente (no es hover-reveal porque mobile). */}
+          <AnalyzeButton
+            screen="home"
+            subtitle="El mercado y tu portfolio hoy"
+            label="Analizar"
+          />
         </div>
+        {totals.pct != null && (
+          <div className={`text-[10px] font-mono uppercase tracking-caps tabular mb-1.5 ${colorClass(totals.pct)}`}>
+            {pctSigned(totals.pct)} histórico
+          </div>
+        )}
 
         {/* Balance grande */}
         <div className="text-5xl font-medium tabular tracking-tight text-ink-0 leading-none mb-3">
@@ -272,10 +281,14 @@ export default function HomeMobile() {
 
       {/* ── 7. Noticias + Eventos (apilados en mobile) ─────────────── */}
       <section className="px-4 mb-5">
-        <NewsPreview />
+        <AskAIAbout topic="news" subtitle="Tus noticias del período">
+          <NewsPreview />
+        </AskAIAbout>
       </section>
       <section className="px-4">
-        <EventsPreview />
+        <AskAIAbout topic="events" subtitle="Tus eventos próximos">
+          <EventsPreview />
+        </AskAIAbout>
       </section>
     </div>
   )

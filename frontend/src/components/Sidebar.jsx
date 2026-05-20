@@ -21,6 +21,7 @@ import {
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
+import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 
 const SIDEBAR_W_EXPANDED = '220px'
 const SIDEBAR_W_COLLAPSED = '56px'
@@ -58,6 +59,7 @@ const GROUPS = [
 export default function Sidebar() {
   const { user, logout } = useAuth()
   const { dark, toggle } = useTheme()
+  const coachDrawer = useCoachDrawer()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
 
   // Persistir + setear CSS var consumida por <main> (margin dinámico)
@@ -105,6 +107,26 @@ export default function Sidebar() {
 
       {/* Navegación */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-2">
+        {/* Coach IA — botón especial que abre drawer (no navega).
+            Va arriba de todo con su propio bloque visualmente diferenciado
+            (acento violet) para que se note como feature distintivo. */}
+        <div className="mb-3">
+          {!collapsed && (
+            <p className="px-2.5 mb-1 font-mono text-[10px] uppercase tracking-label text-ink-3 font-medium">
+              Asistente
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => coachDrawer.open()}
+            title={collapsed ? 'Coach IA' : undefined}
+            className={`relative w-full flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors text-data-violet hover:bg-data-violet/10`}
+          >
+            <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
+            {!collapsed && <span>Coach IA</span>}
+          </button>
+        </div>
+
         {allGroups.map((group, gi) => (
           <div key={group.label} className={gi > 0 ? 'mt-4' : ''}>
             {!collapsed && (

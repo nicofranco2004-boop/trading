@@ -2,11 +2,13 @@ import { useEffect, useRef } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
+import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import Sidebar from './components/Sidebar'
 import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
 import DemoBanner from './components/DemoBanner'
 import SupportWhatsAppFab from './components/SupportWhatsAppFab'
+import AICoachDrawer from './components/ai/AICoachDrawer'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import Login from './pages/Login'
@@ -142,9 +144,14 @@ export default function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <div className="min-h-screen bg-bg-0 text-ink-0">
-          <Layout />
-        </div>
+        <CoachDrawerProvider>
+          <div className="min-h-screen bg-bg-0 text-ink-0">
+            <Layout />
+            {/* Drawer global del Coach IA — mounted una vez al nivel de App,
+                cualquier componente lo abre via useCoachDrawer().open() */}
+            <AICoachDrawer />
+          </div>
+        </CoachDrawerProvider>
       </AuthProvider>
     </ThemeProvider>
   )

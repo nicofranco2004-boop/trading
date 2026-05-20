@@ -1985,10 +1985,8 @@ function InsightsDesktop() {
         )}
       </Section>
 
-      {/* ── Coach IA — colapsado por defecto para no robar foco ─────────────── */}
-      <Section title="Coach IA" subtitle="Asistente con contexto sobre tu portfolio. Las observaciones son orientativas, no constituyen recomendaciones de inversión.">
-        <CollapsibleCoach snapshot={aiSnapshot} suggested={aiSuggested} />
-      </Section>
+      {/* Coach IA movido al sidebar (botón "Coach IA" arriba de todo) — abre
+          un drawer global accesible desde cualquier página. */}
 
     </div>
   )
@@ -2163,33 +2161,6 @@ function ContribList({ tone, title, items, fmt }) {
         </ul>
       )}
     </div>
-  )
-}
-
-function CollapsibleCoach({ snapshot, suggested }) {
-  // El AICoach consume créditos de la API por consulta, así que arranca
-  // colapsado: el usuario decide cuándo abrirlo. Se abre con un click y
-  // queda abierto el resto de la sesión.
-  const [open, setOpen] = useState(false)
-  if (open) return <AICoach snapshot={snapshot} suggested={suggested} />
-  return (
-    <button
-      onClick={() => setOpen(true)}
-      className="w-full text-left bg-white dark:bg-bg-1 border border-line rounded px-5 py-4 hover:border-rendi-accent/40 hover:bg-rendi-accent/[0.02] dark:hover:bg-rendi-accent/[0.04] transition group"
-    >
-      <div className="flex items-center gap-3">
-        <div className="p-2 rounded-lg bg-bg-3 border border-line text-rendi-accent flex-shrink-0">
-          <Sparkles size={18} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="font-semibold text-ink-0">Activar Coach IA</p>
-          <p className="text-xs text-ink-3 mt-0.5">
-            Conversá con un asistente que tiene contexto completo sobre tus números. Click para abrir.
-          </p>
-        </div>
-        <ChevronDown size={16} className="text-ink-3 group-hover:text-ink-2 dark:group-hover:text-ink-1 flex-shrink-0" />
-      </div>
-    </button>
   )
 }
 
