@@ -6167,6 +6167,55 @@ Evitar cerradas sí/no tipo "¿pensás vender?" — cierran reflexión.
 Tenés el snapshot del portfolio del usuario en el contexto. Usá los números concretos cuando sean relevantes. El snapshot incluye benchmarks (S&P 500, inflación AR, dólar blue) para comparar la performance del usuario contra referencias de mercado."""
 
 
+# Prompt FREE — version stripped del coach. Diseño deliberado: descriptivo,
+# breve, sin interpretación. La diferenciación con Pro está en el contenido,
+# no en el modelo (mismo Haiku para los dos tiers — más barato y consistente).
+_AI_CHAT_SYSTEM_FREE = """Sos el asistente de Rendi para usuarios del plan Free. Tu rol es responder preguntas del usuario sobre su portfolio con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
+
+ROL
+- Respondés con DATOS, no con análisis. Si el snapshot tiene el número, lo decís. Si no, decís "no tengo ese dato" sin elaborar.
+- Sin recomendaciones operativas (comprá/vendé). Si insisten, redirigí: "no doy recomendaciones, podés revisar la sección de Posiciones".
+
+ESTILO — REGLAS HARD
+- Español rioplatense (vos, tenés). Profesional, sin familiaridad falsa.
+- Sin emojis, sin asteriscos, sin signos de exclamación.
+- 1 o 2 ORACIONES MÁXIMO por respuesta. Una sola idea. Sin párrafos múltiples, sin secciones, sin listas, sin bullets.
+- CERO markdown. Sin **bold**, sin guiones de listas, sin headers con #. La UI muestra el texto plano.
+- Describir, NO interpretar. Decís "el portfolio bajó 8%", no "el retroceso del 8% sugiere...". La interpretación es del plan Pro.
+
+CONTEXTO ARGENTINO MÍNIMO
+- Mediciones en USD (CCL/MEP).
+- CEDEAR = certificado AR de una acción US.
+
+UPSELL — IMPORTANTE
+Si el usuario pide análisis profundo, comparación extendida con benchmarks, atribución de causa, sesgos, o pregunta "¿por qué...?": respondé con el dato más simple del snapshot Y agregá al final UNA frase: "Para análisis con causalidad, comparaciones y profundidad, pasate a Pro desde Configuración."
+
+HERRAMIENTAS
+Tenés get_current_prices, get_asset_operations, get_monthly_detail disponibles. Usalas SOLO si el snapshot no tiene la respuesta. Una tool call por respuesta, máximo.
+
+DIFERENCIACIÓN CON PRO
+El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y profundidad analítica. Vos (Free) das el dato puro, brevísimo. Es deliberado — no inventes interpretación para "ayudar"."""
+
+
+# Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos
+# server-side como red de seguridad (sobre todo Free, que no debe tener bold).
+_MD_BOLD_RE = __import__('re').compile(r'\*\*(.+?)\*\*')
+_MD_ITALIC_RE = __import__('re').compile(r'\*([^*\n]+?)\*')
+_MD_LIST_RE = __import__('re').compile(r'^\s*[-*+]\s+', flags=__import__('re').MULTILINE)
+_MD_HEADER_RE = __import__('re').compile(r'^\s*#{1,6}\s+', flags=__import__('re').MULTILINE)
+
+
+def _strip_markdown(text: str) -> str:
+    """Quita bold, italic, listas con guión y headers. Conservamos el contenido."""
+    if not text:
+        return text
+    text = _MD_BOLD_RE.sub(r'\1', text)
+    text = _MD_ITALIC_RE.sub(r'\1', text)
+    text = _MD_LIST_RE.sub('', text)
+    text = _MD_HEADER_RE.sub('', text)
+    return text
+
+
 class ChatMsg(BaseModel):
     role: str = Field(..., max_length=20)
     content: str = Field(..., min_length=1, max_length=4000)
@@ -7102,20 +7151,41 @@ def ai_invalidate_cache(screen: str, uid: int = Depends(get_current_user)):
 
 @app.post("/api/ai/chat")
 def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_user)):
-    """[DEPRECATED] Chat libre con el coach IA — reemplazado por /api/ai/analyze.
-    Mantenido temporalmente para compat con el frontend viejo durante la
-    migración del Sprint AI v2. Se eliminará después de Phase 4.
+    """Chat libre con el coach IA — usa snapshot + historial como contexto.
 
-    Usa el historial + snapshot rico como contexto.
-    Soporta tool_use: el modelo puede pedir precios en tiempo real u otro dato de DB."""
+    Tier-aware:
+    - Free → _AI_CHAT_SYSTEM_FREE (descriptivo, 1-2 oraciones, no interpreta,
+      upsell a Pro cuando piden análisis profundo). max_tokens=300 para forzar
+      brevedad incluso si el modelo intentara más largo.
+    - Plus → mismo prompt que Free por ahora (Plus es upgrade de cuota +
+      multi-broker, no diferencial de IA).
+    - Pro / Admin → _AI_CHAT_SYSTEM completo (research note, profundidad,
+      causalidad). max_tokens=1000.
+
+    Soporta tool_use: el modelo puede pedir precios en tiempo real u otro dato.
+    Output sanitizado server-side para quitar markdown (red de seguridad para
+    cuando el modelo lo inyecta a pesar del prompt)."""
     _check_rate_limit(request, max_calls=40, window_seconds=3600, suffix=f"ai_chat:{uid}")
 
     client = _get_anthropic_client()
     if client is None:
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
 
+    # Resolver tier ANTES de elegir prompt (la diferenciación es el punto)
+    conn = get_db()
+    try:
+        from ai import quota
+        tier = quota.get_tier(conn, uid)
+    finally:
+        conn.close()
+
+    is_premium = tier in ("pro", "admin")
+    base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
+    max_tokens = 1000 if is_premium else 300
+    max_tokens_fallback = 800 if is_premium else 250
+
     portfolio_json = json.dumps(data.snapshot, indent=2, ensure_ascii=False, default=str)
-    system_text = f"""{_AI_CHAT_SYSTEM}
+    system_text = f"""{base_system}
 
 DATOS COMPLETOS DEL USUARIO
 El snapshot incluye: summary (métricas agregadas: total USD, PnL, drawdown, win rate, etc.), positions (posiciones abiertas con broker, activo, cantidad, valor USD, PnL, % del portfolio), cash, operations (operaciones cerradas), monthly (historial mes a mes), brokers, y benchmarks (S&P 500, inflación AR, dólar blue — para comparar la performance del usuario con referencias de mercado).
@@ -7133,7 +7203,7 @@ Cuando el usuario pregunta algo específico ("¿qué % es Tesla?", "¿cuánto pe
         for _ in range(MAX_TOOL_LOOPS + 1):
             response = client.messages.create(
                 model="claude-haiku-4-5",
-                max_tokens=1000,
+                max_tokens=max_tokens,
                 system=[
                     {"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}
                 ],
@@ -7147,7 +7217,7 @@ Cuando el usuario pregunta algo específico ("¿qué % es Tesla?", "¿cuánto pe
                     (b.text for b in response.content if hasattr(b, "text")),
                     ""
                 )
-                return {"reply": text.strip()}
+                return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
             # Hay tool_use: ejecutar cada tool y continuar el loop
             tool_results = []
@@ -7170,12 +7240,12 @@ Cuando el usuario pregunta algo específico ("¿qué % es Tesla?", "¿cuánto pe
         # Si llegó al límite de loops sin respuesta final, forzar respuesta sin tools
         response = client.messages.create(
             model="claude-haiku-4-5",
-            max_tokens=800,
+            max_tokens=max_tokens_fallback,
             system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
             messages=messages_loop,
         )
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
-        return {"reply": text.strip()}
+        return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
     except Exception as ex:
         raise HTTPException(500, f"Error en el chat: {ex}")
