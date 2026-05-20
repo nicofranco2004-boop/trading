@@ -112,13 +112,21 @@ def create_preapproval(
     amount = p["total_ars"]
     plan_label = "Plus" if plan == "plus" else "Pro"
 
+    # MP exige que collector (seller) y payer (buyer) sean ambos test users o
+    # ambos reales. En sandbox usamos las credenciales del test seller → el
+    # payer_email también debe ser de un test buyer. MP_TEST_PAYER_EMAIL es
+    # el override para sandbox; en producción el user paga con su email real.
+    is_sandbox = (os.environ.get("MP_ENV") or "").strip().lower() == "sandbox"
+    test_payer = (os.environ.get("MP_TEST_PAYER_EMAIL") or "").strip()
+    payer_email_to_send = test_payer if (is_sandbox and test_payer) else user_email
+
     # Frecuencia MP: 'months' con frequency=1 para mensual, frequency=12 anual.
     # OJO: MP NO tiene type='years' nativo — se simula con months × 12.
     frequency = 1 if period == "monthly" else 12
     payload = {
         "reason": reason or f"Rendi {plan_label} · {period}",
         "external_reference": f"rendi-{user_id}-{plan}-{period}",
-        "payer_email": user_email,
+        "payer_email": payer_email_to_send,
         "auto_recurring": {
             "frequency": frequency,
             "frequency_type": "months",
