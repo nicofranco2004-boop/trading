@@ -14,6 +14,7 @@ import PageHeader from '../components/PageHeader'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
+import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 
 const GROUPS = [
   {
@@ -43,6 +44,7 @@ const GROUPS = [
 
 export default function More() {
   const { user, logout } = useAuth()
+  const coachDrawer = useCoachDrawer()
 
   const allGroups = [
     ...GROUPS,
@@ -61,6 +63,27 @@ export default function More() {
         title="Más"
         subtitle="Todas las secciones de Rendi."
       />
+
+      {/* Asistente — Coach IA abre el drawer global, no navega a una ruta */}
+      <section>
+        <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
+          Asistente
+        </h2>
+        <div className="bg-bg-1 border border-data-violet/30 rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => coachDrawer.open()}
+            className="w-full flex items-center gap-3 px-4 py-3 hover:bg-data-violet/[0.04] active:bg-data-violet/[0.08] transition-colors text-left"
+          >
+            <Sparkles size={16} strokeWidth={1.75} className="text-data-violet flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-ink-0 leading-tight">Coach IA</div>
+              <div className="text-[11px] text-ink-3 leading-tight mt-0.5">Asistente con contexto de tu portfolio</div>
+            </div>
+            <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
+          </button>
+        </div>
+      </section>
 
       {allGroups.map((group) => (
         <section key={group.label}>
