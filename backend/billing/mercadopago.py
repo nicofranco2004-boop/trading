@@ -132,6 +132,7 @@ def create_preapproval(
     }
 
     log.info("MP create_preapproval user=%s plan=%s period=%s amount=%s", user_id, plan, period, amount)
+    log.info("MP create_preapproval payload: %s", json.dumps(payload, default=str))
     r = httpx.post(
         f"{MP_BASE_URL}/preapproval",
         headers={
