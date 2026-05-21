@@ -642,8 +642,8 @@ async function detectPlatformFromCsv(file) {
     if (/date\(utc\)/.test(firstLines) && /\bpair\b/.test(firstLines)) {
       return 'binance'
     }
-    // Binance generic export con "user_id","time","category","operation"
-    if (/user_id/.test(firstLines) && /\bcategory\b/.test(firstLines)) {
+    // Binance Transaction History: headers "user id","time","account","operation","coin","change"
+    if (/\boperation\b/.test(firstLines) && /\baccount\b/.test(firstLines) && /\bcoin\b/.test(firstLines)) {
       return 'binance'
     }
     // Schwab: header con "Date","Action","Symbol","Description","Quantity","Price"

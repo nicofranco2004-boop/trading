@@ -113,9 +113,7 @@ def _currency_for(coin: str) -> str:
 class BinanceTransactionHistoryParser(Parser):
     format_id = "binance_transaction_history"
     display_name = "Binance Transaction History (completo)"
-    # TEMP: oculto en la UI hasta estabilizar este export. Cuando se rehabilite,
-    # flipear a True.
-    is_supported = False
+    is_supported = True
     platform = "binance"
     platform_label = "Binance"
     export_label = "Asset History → Transaction History (completo)"

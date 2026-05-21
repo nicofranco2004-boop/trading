@@ -776,6 +776,25 @@ function InsightsDesktop() {
     }
   }
 
+  // ── Insight: Comisiones totales (suma de fees declarados en operaciones) ──
+  let commissionsStats = null
+  if (operations.length > 0) {
+    let total = 0
+    let count = 0
+    for (const op of operations) {
+      const c = Number(op.commissions) || 0
+      if (c > 0) {
+        total += c
+        count += 1
+      }
+    }
+    if (total > 0) {
+      const grossWin = profitFactor?.grossWin ?? null
+      const pctOfGrossWin = grossWin && grossWin > 0 ? (total / grossWin) * 100 : null
+      commissionsStats = { total, count, avgPerTrade: total / count, pctOfGrossWin }
+    }
+  }
+
   // ── Insight 6: Concentración (top 3 activos sobre portfolio total) ──
   // Reutiliza assetPieData (ya agregado por activo, excluyendo cash).
   let concentration = null
@@ -1789,6 +1808,38 @@ function InsightsDesktop() {
                   : holdTime.avg < 180
                   ? 'Posiciones de mediano plazo.'
                   : 'Largo plazo: las posiciones se mantienen para capturar tendencias estructurales.'}
+              </p>
+            </>
+          )}
+        </InsightCard>
+
+        {/* Comisiones totales pagadas */}
+        <InsightCard
+          icon={<CircleDollarSign size={18} />}
+          title="Comisiones totales"
+          accent={false}
+          tooltip={
+            <>
+              <p className="font-semibold text-ink-0">Cómo se calcula</p>
+              <p>Suma de las comisiones registradas en todas tus operaciones (compras, ventas, futuros, depósitos y retiros).</p>
+              <p className="text-ink-3">Si tu broker cobra fees embebidos en el precio (spread), esos no aparecen acá — solo se reflejan las comisiones explícitas del CSV.</p>
+            </>
+          }
+        >
+          {!commissionsStats ? (
+            <p className="text-sm text-ink-3">Aún no hay comisiones registradas.</p>
+          ) : (
+            <>
+              <p className="text-2xl font-bold text-ink-0">
+                {amt(commissionsStats.total)}
+              </p>
+              <p className="text-xs text-ink-3 mt-1">
+                Sobre {commissionsStats.count} {commissionsStats.count === 1 ? 'operación' : 'operaciones'} · prom. {amt(commissionsStats.avgPerTrade)}
+              </p>
+              <p className="text-xs text-ink-2 mt-3 leading-snug">
+                {commissionsStats.pctOfGrossWin != null && commissionsStats.pctOfGrossWin >= 1
+                  ? <>Equivalen al <span className="font-semibold text-ink-0 dark:text-white">{commissionsStats.pctOfGrossWin.toFixed(1)}%</span> de tus ganancias brutas. {commissionsStats.pctOfGrossWin >= 20 ? 'Peso alto sobre el resultado — revisá si conviene operar menos o cambiar de broker.' : commissionsStats.pctOfGrossWin >= 10 ? 'Peso moderado: vale la pena monitorear que no crezca.' : 'Costo razonable en relación a lo generado.'}</>
+                  : 'Costo total de operar tu portfolio.'}
               </p>
             </>
           )}
