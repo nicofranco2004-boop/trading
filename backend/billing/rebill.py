@@ -89,6 +89,11 @@ def create_payment_link(
     plan_label = "Plus" if plan == "plus" else "Pro"
     title = f"Rendi {plan_label} · {period}"
 
+    # Payload mínimo según doc oficial de Rebill /v3/payment-links:
+    # required: title, plan, paymentMethods
+    # opcional: isSingleUse, metadata
+    # NO incluidos: successUrl/cancelUrl (configurados en el dashboard por plan),
+    #               customer (no aparece en doc, lo rellena el user en checkout)
     payload = {
         "title": [{"language": "es", "text": title}],
         "plan": {"id": plan_id},
@@ -99,16 +104,9 @@ def create_payment_link(
             "rendi_plan": plan,
             "rendi_period": period,
         },
-        # Métodos de pago aceptados (ARS para AR; agregar más currencies si
-        # se ofrecen los planes en otras monedas)
         "paymentMethods": [
             {"methods": ["card", "bank_transfer"], "currency": "ARS"},
-            {"methods": ["card"], "currency": "USD"},
         ],
-        # Redirect URLs después del pago (Rebill las soporta como query params
-        # o en config del plan/link)
-        "successUrl": f"{_frontend_base()}/billing/success?provider=rebill",
-        "cancelUrl": f"{_frontend_base()}/planes?cancelled=1",
     }
 
     # Idempotency key: si el frontend hace doble-click o el request se pierde
@@ -120,7 +118,7 @@ def create_payment_link(
         "Rebill create_payment_link user=%s plan=%s period=%s plan_id=%s sandbox=%s",
         user_id, plan, period, plan_id, is_sandbox(),
     )
-    log.debug("Rebill payload: %s", json.dumps(payload, default=str))
+    log.info("Rebill payload: %s", json.dumps(payload, default=str))
 
     r = httpx.post(
         f"{REBILL_BASE_URL}/v3/payment-links",
@@ -134,8 +132,15 @@ def create_payment_link(
         timeout=15.0,
     )
     if r.status_code >= 400:
-        log.error("Rebill create_payment_link failed %s: %s", r.status_code, r.text)
-        r.raise_for_status()
+        # Loggear todo lo que dice Rebill — status + body + headers — para
+        # poder debugear sin tener que adivinar
+        log.error(
+            "Rebill create_payment_link FAILED status=%s body=%s headers=%s",
+            r.status_code, r.text, dict(r.headers),
+        )
+        # En lugar de raise (que pierde el body), tiramos una excepción con
+        # el body para que el endpoint lo pueda surface al frontend
+        raise RuntimeError(f"Rebill {r.status_code}: {r.text}")
     return r.json()
 
 
