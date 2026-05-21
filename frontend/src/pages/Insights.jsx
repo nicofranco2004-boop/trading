@@ -615,22 +615,33 @@ function InsightsDesktop() {
     if (currency === 'USD' && bench?.sp500 && globalMonthly.length > 0) {
       let units = 0
       let cumNetDep = 0
+      let peakNetDep = 0
+      // Denominador estable: si el net dep actual cae por debajo del 60% del
+      // peak (señal de un retiro grande), usamos el peak. Sin esto, el ratio
+      // shadow_value / cumNetDep explota cuando cumNetDep se achica — el
+      // mismo bug del % realized de la línea verde, pero en el bench.
+      const stableDenom = (cur, peak) =>
+        (cur >= peak * 0.6 && cur > 1000) ? cur : peak
+
       for (const m of globalMonthly) {
         const mk = monthKey(m.year, m.month)
         const spPrice = spLookup(mk)
         const flow = (m.deposits || 0) - (m.withdrawals || 0)
         cumNetDep += flow
+        if (cumNetDep > peakNetDep) peakNetDep = cumNetDep
         if (spPrice && flow !== 0) units += flow / spPrice
-        if (spPrice && cumNetDep > 0) {
+        const denom = stableDenom(cumNetDep, peakNetDep)
+        if (spPrice && denom > 0) {
           const value = units * spPrice
-          shadowPctByKey.set(mk, +(((value / cumNetDep) - 1) * 100).toFixed(2))
+          shadowPctByKey.set(mk, +(((value / denom) - 1) * 100).toFixed(2))
         }
       }
       // Punto "Hoy" — precio más reciente disponible
       const latestSp = bench.sp500[spKeys[spKeys.length - 1]]
-      if (latestSp && cumNetDep > 0) {
+      const denomToday = stableDenom(cumNetDep, peakNetDep)
+      if (latestSp && denomToday > 0) {
         const value = units * latestSp
-        shadowPctByKey.set('today', +(((value / cumNetDep) - 1) * 100).toFixed(2))
+        shadowPctByKey.set('today', +(((value / denomToday) - 1) * 100).toFixed(2))
       }
     }
 
