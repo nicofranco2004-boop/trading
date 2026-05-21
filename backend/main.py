@@ -1493,14 +1493,26 @@ def me(uid: int = Depends(get_current_user)):
     d["is_admin"] = bool(d["is_admin"])
     d["tier"] = quota.get_tier(conn, uid)
 
-    # Estado de la suscripción más reciente. El frontend lo usa para distinguir
-    # "actively subscribed" vs "cancelled-but-still-in-grace-period":
+    # Estado de la suscripción "relevante". Priorizamos authorized > cancelled
+    # > otros porque cycles previos de subscribe pueden dejar varias rows
+    # pending (intentos abandonados) que un simple ORDER BY created_at DESC
+    # devolvería antes que la authorized o cancelled real.
     #   • status='authorized' → muestra "Cancelar suscripción"
     #   • status='cancelled'  → muestra "Cancelado, vence X" + permite resuscribirse
+    #   • null/pending → user nunca pagó (Free)
     sub = conn.execute(
         """SELECT status, current_period_end, cancelled_at, period FROM subscriptions
-           WHERE user_id = ?
-           ORDER BY created_at DESC LIMIT 1""",
+           WHERE user_id = ? AND status IN ('authorized', 'cancelled', 'paused', 'retrying')
+           ORDER BY
+               CASE status
+                   WHEN 'authorized' THEN 0
+                   WHEN 'retrying' THEN 1
+                   WHEN 'paused' THEN 2
+                   WHEN 'cancelled' THEN 3
+                   ELSE 9
+               END,
+               created_at DESC
+           LIMIT 1""",
         (uid,),
     ).fetchone()
     d["subscription_status"] = sub["status"] if sub else None
