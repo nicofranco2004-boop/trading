@@ -645,18 +645,80 @@ function InsightsDesktop() {
       return found ? bench.sp500[found] : null
     }
 
+    // ── Shadow S&P 500 portfolio — apples-to-apples con la línea verde ─────
+    // Para que la comparación sea justa: si vos depositaste \$100k inicial y
+    // retiraste \$70k en Dic, queremos saber qué hubiese pasado con TUS
+    // FLOWS exactos invertidos en S&P 500. No el "lump sum desde el día 1"
+    // (eso ignora tu timing real de deposits y withdrawals).
+    //
+    // Misma fórmula que el user line:
+    //   gain = shadow_value - investedNow
+    //   pct  = gain / stableInvested(investedNow, peakInvested) × 100
+    //
+    // Safeguards (los que faltaban en el primer intento):
+    //   1. Cap de venta en withdrawal: si retirás más de lo que el shadow
+    //      tiene, sólo "vendemos" hasta cero — no permitimos units negativas.
+    //   2. Tratamos baseline como deposit inicial al precio del primer mes,
+    //      para que el shadow arranque con el capital correcto.
+    const shadowPctByMonth = new Map()
+    if (currency === 'USD' && bench?.sp500 && globalMonthly.length > 0) {
+      const firstM = globalMonthly[0]
+      const firstMk = monthKey(firstM.year, firstM.month)
+      const firstSp = spLookup(firstMk)
+      const baselineUsd = firstM.capital_inicio || 0
+      let shadowUnits = (firstSp && baselineUsd > 0) ? (baselineUsd / firstSp) : 0
+      let netFlows = 0
+      let peakInvested = baselineUsd > 0 ? baselineUsd : 0
+      const stableInv = (cur, peak) => (cur >= peak * 0.6 && cur > 1000) ? cur : peak
+
+      for (const m of globalMonthly) {
+        const mk = monthKey(m.year, m.month)
+        const sp = spLookup(mk)
+        if (!sp) continue
+        const deposit = m.deposits || 0
+        const withdrawal = m.withdrawals || 0
+        if (deposit > 0) shadowUnits += deposit / sp
+        if (withdrawal > 0) {
+          const shadowValAtTime = shadowUnits * sp
+          const sellValue = Math.min(withdrawal, shadowValAtTime)
+          shadowUnits -= sellValue / sp
+          if (shadowUnits < 0) shadowUnits = 0
+        }
+        netFlows += deposit - withdrawal
+        const investedNow = baselineUsd + netFlows
+        if (investedNow > peakInvested) peakInvested = investedNow
+        const denom = stableInv(investedNow, peakInvested)
+        const shadowValue = shadowUnits * sp
+        const gain = shadowValue - investedNow
+        const pct = denom > 0 ? (gain / denom) * 100 : 0
+        shadowPctByMonth.set(mk, +Math.min(Math.max(pct, -99), 200).toFixed(2))
+      }
+      // Punto "Hoy" — usar el precio S&P más reciente disponible
+      const latestSp = bench.sp500[spKeys[spKeys.length - 1]]
+      if (latestSp) {
+        const investedNow = baselineUsd + netFlows
+        const denom = stableInv(investedNow, peakInvested)
+        const shadowValue = shadowUnits * latestSp
+        const gain = shadowValue - investedNow
+        const pct = denom > 0 ? (gain / denom) * 100 : 0
+        shadowPctByMonth.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
+      }
+    }
+
     const withBench = windowSeries.map(s => {
       let benchPct = null
       if (currency === 'USD' && bench?.sp500) {
-        // Cumulative TWR del S&P 500: precio_actual vs precio del inicio del
-        // rango visible. Es el estándar para benchmarks — neutral a los flows
-        // del user (las gestoras profesionales reportan TWR para que sea
-        // comparable contra índices). El shadow portfolio approach que
-        // probamos antes se rompía con withdraws grandes porque generaba
-        // units negativas. Volvemos al TWR simple.
-        const spBase = spLookup(rawFirstKey)
-        const cur = spLookup(s.key)
-        if (spBase && cur) benchPct = +(((cur / spBase) - 1) * 100).toFixed(2)
+        const mk = monthKeyOf(s.key)
+        if (shadowPctByMonth.has(mk)) {
+          benchPct = shadowPctByMonth.get(mk)
+        } else if (shadowPctByMonth.size > 0) {
+          // Fallback: usar el último mes disponible <= mk (cobre snapshots
+          // diarios entre meses).
+          const sortedSk = [...shadowPctByMonth.keys()].filter(k => k !== 'today').sort()
+          let found = null
+          for (const k of sortedSk) { if (k <= mk) found = k; else break }
+          if (found) benchPct = shadowPctByMonth.get(found)
+        }
       } else if (currency === 'ARS' && bench?.inflation_ar) {
         // windowSeries ya es mensual — componer IPC desde el segundo mes.
         let cum = 1
@@ -1563,11 +1625,12 @@ function InsightsDesktop() {
               <p className="font-semibold text-ink-0">Las 3 líneas</p>
               <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>P/L total</strong> (verde sólido): rendimiento de tu cartera, incluye realizado + no realizado (plusvalía abierta).</p>
               <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>P/L realizado</strong> (amarillo punteado): solo lo ya cobrado — ventas, dividendos, intereses. Excluye plusvalía no vendida.</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{currency === 'USD' ? 'S&P 500' : 'Inflación ARS'}</strong>: {currency === 'USD' ? 'rendimiento puro del índice (buy & hold pasivo) como referencia de mercado.' : 'inflación acumulada — para ver si tu cartera ARS está manteniendo poder de compra.'}</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{currency === 'USD' ? 'S&P 500' : 'Inflación ARS'}</strong>: {currency === 'USD' ? 'simulación de qué hubiese pasado si tus mismos depósitos y retiros se hubieran invertido en S&P 500 (shadow portfolio). Cada depósito "compra" S&P al precio de ese mes; cada retiro "vende".' : 'inflación acumulada — para ver si tu cartera ARS está manteniendo poder de compra.'}</p>
               <div className="border-t border-line/60 my-1.5" />
-              <p className="font-semibold text-ink-0">Cómo se calcula tu línea</p>
+              <p className="font-semibold text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">% = (valor actual − aportado neto) / aportado peak × 100</p>
-              <p className="text-ink-3">El "aportado peak" es el máximo histórico de capital neto invertido. Usarlo como denominador evita un bug clásico: si retirás \$70k de \$100k para impuestos, "aportado actual" cae a \$30k y cualquier ganancia chica se vería como spike de +200%. Con peak, el % refleja la performance real sobre el capital que llegó a trabajar.</p>
+              <p className="text-ink-3">Para tu cartera, "valor actual" es el valor real de tus posiciones. Para S&P 500, es el valor del shadow portfolio (units × precio actual). Ambas líneas usan el mismo denominador → comparación apples-to-apples.</p>
+              <p className="text-ink-3">El "aportado peak" es el máximo histórico de capital neto invertido. Usarlo como denominador evita un bug: si retirás \$70k de \$100k, el "aportado actual" cae a \$30k y cualquier ganancia chica se vería como spike de +200%. Con peak, el % refleja la performance real sobre el capital que llegó a trabajar.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="text-ink-3">
                 <strong className="text-ink-1">Puede no coincidir con el Dashboard:</strong> el Dashboard divide por el aportado NETO actual (no por el peak). Si tuviste retiros grandes, el chart muestra un número más conservador. Para flujos normales (depósitos sin retiros importantes), ambos coinciden.
