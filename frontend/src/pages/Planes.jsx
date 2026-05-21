@@ -20,6 +20,7 @@ import { useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import PageHeader from '../components/PageHeader'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import { api } from '../utils/api'
 
@@ -89,6 +90,7 @@ export const PRO_FEATURES = [
 export default function Planes() {
   const navigate = useNavigate()
   const { tier, loading } = usePlanFeatures()
+  const { user } = useAuth()
   const [billingPeriod, setBillingPeriod] = useState('monthly')  // 'monthly' | 'annual'
   const [subscribing, setSubscribing] = useState(false)
   const [tcBlue, setTcBlue] = useState(1415)  // fallback
@@ -98,12 +100,15 @@ export default function Planes() {
       .then(d => { if (d?.blue?.venta) setTcBlue(d.blue.venta) })
       .catch(() => {})
   }, [])
+  // Detectar si la suscripción está cancelada (en grace period). En ese caso
+  // el tier todavía es 'pro' o 'plus' (acceso vigente hasta fin de período)
+  // pero el user PUEDE re-suscribirse — el backend /api/billing/subscribe
+  // permite crear una nueva suscripción porque la actual no está authorized.
+  const subCancelled = user?.subscription_status === 'cancelled'
   const isFree = tier === 'free'
-  const isPlus = tier === 'plus'
-  const isPro = tier === 'pro'
+  const isPlus = tier === 'plus' && !subCancelled
+  const isPro = tier === 'pro' && !subCancelled
   const isAdmin = tier === 'admin'
-  // Admin se trata como pro a efectos del marcador (visualmente está en el
-  // lado Pro de la comparativa).
   const hasProTier = isPro || isAdmin
   const hasPlusOrBetter = isPlus || isPro || isAdmin
 

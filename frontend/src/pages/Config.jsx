@@ -479,14 +479,25 @@ function PlanHeroFree({ usage }) {
 // de cancelar la suscripción. La cancelación llama POST /api/billing/cancel
 // (que pega a Rebill PATCH status='cancelled'). El user mantiene acceso al
 // tier hasta fin del período cobrado.
+//
+// Estados visuales:
+//   • subscription_status=authorized → ACTIVO + botón "Cancelar suscripción"
+//   • subscription_status=cancelled  → CANCELADO, vence X + botón "Reactivar"
+//     (que es un Suscribirse nuevo a /planes, no un undo de la cancelación)
 function PlanHeroPro({ tier = 'pro', usage }) {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const count = usage?.analyses_count ?? 0
   const isPlus = tier === 'plus'
   const tierLabel = isPlus ? 'PLUS' : 'PRO'
   const limit = usage?.analyses_limit ?? (isPlus ? 6 : 60)
   const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
   const [cancelling, setCancelling] = useState(false)
+
+  // Detectar si la suscripción está cancelled-but-grace-period
+  const subStatus = user?.subscription_status
+  const periodEnd = user?.subscription_period_end
+  const isCancelled = subStatus === 'cancelled'
 
   async function handleCancel() {
     if (cancelling) return
@@ -506,25 +517,52 @@ function PlanHeroPro({ tier = 'pro', usage }) {
     }
   }
 
+  // Formato de fecha de expiración (cuando aplica)
+  let periodEndLabel = ''
+  if (periodEnd) {
+    try {
+      const d = new Date(periodEnd)
+      if (!isNaN(d)) periodEndLabel = d.toLocaleDateString('es-AR', { day: '2-digit', month: 'long', year: 'numeric' })
+    } catch {}
+  }
+
   return (
-    <section className="mb-6 border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 flex items-center gap-5 flex-wrap">
+    <section className={`mb-6 border rounded-lg p-5 flex items-center gap-5 flex-wrap ${
+      isCancelled
+        ? 'border-data-amber/40 bg-data-amber/[0.06]'
+        : 'border-data-violet/40 bg-data-violet/[0.06]'
+    }`}>
       <div className="flex-1 min-w-[240px]">
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-data-violet/15 text-data-violet">
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${
+            isCancelled ? 'bg-data-amber/15 text-data-amber' : 'bg-data-violet/15 text-data-violet'
+          }`}>
             {tierLabel}
           </span>
-          <span className="inline-flex items-center gap-1 text-[10px] text-rendi-pos font-mono uppercase tracking-caps">
-            <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" /> Activo
-          </span>
+          {isCancelled ? (
+            <span className="inline-flex items-center gap-1 text-[10px] text-data-amber font-mono uppercase tracking-caps">
+              <span className="w-1.5 h-1.5 rounded-full bg-data-amber" /> Cancelado
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-[10px] text-rendi-pos font-mono uppercase tracking-caps">
+              <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" /> Activo
+            </span>
+          )}
         </div>
         <h2 className="text-base font-semibold text-ink-0 leading-snug">
-          Rendi {isPlus ? 'Plus' : 'Pro'} está activo
+          {isCancelled
+            ? `Rendi ${isPlus ? 'Plus' : 'Pro'} hasta fin de período`
+            : `Rendi ${isPlus ? 'Plus' : 'Pro'} está activo`}
         </h2>
         <p className="text-xs text-ink-2 mt-1">
-          {isPlus
-            ? 'Multi-broker, insights completos, comportamiento avanzado y export CSV.'
-            : 'Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más.'}
+          {isCancelled
+            ? (periodEndLabel
+                ? `Tu suscripción está cancelada. Mantenés acceso hasta el ${periodEndLabel}. Después la cuenta vuelve a Free.`
+                : 'Tu suscripción está cancelada. Mantenés acceso hasta fin del período cobrado. Después la cuenta vuelve a Free.')
+            : (isPlus
+                ? 'Multi-broker, insights completos, comportamiento avanzado y export CSV.'
+                : 'Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más.')}
         </p>
       </div>
 
@@ -534,7 +572,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
         </div>
         <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
-          <div className="h-full transition-all bg-data-violet" style={{ width: `${pct}%` }} />
+          <div className={`h-full transition-all ${isCancelled ? 'bg-data-amber' : 'bg-data-violet'}`} style={{ width: `${pct}%` }} />
         </div>
         <p className="text-[10px] text-ink-3 leading-tight">
           Ventana móvil 7 días
@@ -542,21 +580,33 @@ function PlanHeroPro({ tier = 'pro', usage }) {
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
-        <button
-          type="button"
-          onClick={() => navigate('/planes')}
-          className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
-        >
-          Ver detalles del plan
-        </button>
-        <button
-          type="button"
-          onClick={handleCancel}
-          disabled={cancelling}
-          className="inline-flex items-center gap-1.5 text-xs font-medium bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg border border-rendi-neg/30 rounded-sm px-3 py-2 transition-colors disabled:opacity-50"
-        >
-          {cancelling ? 'Cancelando…' : 'Cancelar suscripción'}
-        </button>
+        {isCancelled ? (
+          <button
+            type="button"
+            onClick={() => navigate('/planes')}
+            className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 rounded-sm px-3 py-2 transition-colors"
+          >
+            Reactivar suscripción
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => navigate('/planes')}
+              className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
+            >
+              Ver detalles del plan
+            </button>
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="inline-flex items-center gap-1.5 text-xs font-medium bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg border border-rendi-neg/30 rounded-sm px-3 py-2 transition-colors disabled:opacity-50"
+            >
+              {cancelling ? 'Cancelando…' : 'Cancelar suscripción'}
+            </button>
+          </>
+        )}
       </div>
     </section>
   )

@@ -1491,9 +1491,23 @@ def me(uid: int = Depends(get_current_user)):
         raise HTTPException(404)
     d = dict(row)
     d["is_admin"] = bool(d["is_admin"])
-    # Tier visible para el frontend (badge en sidebar, sección Plans en Config).
-    # Hoy: admin si is_admin=1, free para el resto. Pro cuando exista paywall.
     d["tier"] = quota.get_tier(conn, uid)
+
+    # Estado de la suscripción más reciente. El frontend lo usa para distinguir
+    # "actively subscribed" vs "cancelled-but-still-in-grace-period":
+    #   • status='authorized' → muestra "Cancelar suscripción"
+    #   • status='cancelled'  → muestra "Cancelado, vence X" + permite resuscribirse
+    sub = conn.execute(
+        """SELECT status, current_period_end, cancelled_at, period FROM subscriptions
+           WHERE user_id = ?
+           ORDER BY created_at DESC LIMIT 1""",
+        (uid,),
+    ).fetchone()
+    d["subscription_status"] = sub["status"] if sub else None
+    d["subscription_period_end"] = sub["current_period_end"] if sub else None
+    d["subscription_cancelled_at"] = sub["cancelled_at"] if sub else None
+    d["subscription_period"] = sub["period"] if sub else None
+
     conn.close()
     return d
 
@@ -7281,18 +7295,23 @@ def billing_cancel(uid: int = Depends(get_current_user)):
         # Cancelar en Rebill (mp_subscription_id ahora guarda el ID de Rebill
         # — field reusado durante la migración para evitar schema change).
         try:
-            rebill.cancel_subscription(sub["mp_subscription_id"])
+            cancel_response = rebill.cancel_subscription(sub["mp_subscription_id"])
         except Exception as ex:
             log.error("Rebill cancel failed for uid=%s: %s", uid, ex)
             raise HTTPException(502, f"Error al cancelar en Rebill: {type(ex).__name__}")
+
+        # Rebill devuelve el subscription object con nextChargeDate — esa es la
+        # fecha en que el user pierde acceso al tier (fin del período cobrado).
+        period_end = cancel_response.get("nextChargeDate") if isinstance(cancel_response, dict) else None
 
         with conn:
             conn.execute(
                 """UPDATE subscriptions
                    SET status = 'cancelled', cancelled_at = datetime('now'),
+                       current_period_end = COALESCE(?, current_period_end),
                        updated_at = datetime('now')
                    WHERE mp_subscription_id = ?""",
-                (sub["mp_subscription_id"],),
+                (period_end, sub["mp_subscription_id"]),
             )
 
         # Email de confirmación de cancelación (idempotente)
