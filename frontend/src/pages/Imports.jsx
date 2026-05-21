@@ -8,6 +8,7 @@ import EmptyState from '../components/EmptyState'
 import Modal from '../components/Modal'
 import ImportWizard from '../components/import/ImportWizard'
 import { api } from '../utils/api'
+import { useAuth } from '../contexts/AuthContext'
 
 // Flag de localStorage: si el user nunca completó un import → al confirmar
 // el primero lo redirigimos a /bienvenida para el "primer insight" en lugar
@@ -16,6 +17,7 @@ const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 
 export default function Imports() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [batches, setBatches] = useState([])
   const [loading, setLoading] = useState(true)
   const [reverting, setReverting] = useState(null) // batch_id en proceso
@@ -106,6 +108,23 @@ export default function Imports() {
     }
   }
 
+  const [wiping, setWiping] = useState(false)
+  async function doWipeBroker() {
+    const name = prompt('Nombre del broker a limpiar (ej: Binance). Esto borra TODAS sus operations, positions y monthly_entries — y no se puede deshacer. El broker en sí queda.')
+    if (!name) return
+    if (!confirm(`¿Confirmás wipe de "${name}"?`)) return
+    setWiping(true); setError(null); setInfo(null)
+    try {
+      const data = await api.post(`/admin/wipe-broker-data?broker=${encodeURIComponent(name)}`, {})
+      setInfo(`Broker "${name}" limpiado: ${data.operations_deleted} operations, ${data.positions_deleted} positions, ${data.monthly_entries_deleted} monthly_entries borrados. ${data.batches_marked_reverted} batches marcados revertidos.`)
+      await load()
+    } catch (ex) {
+      setError(ex.message || 'No se pudo limpiar el broker.')
+    } finally {
+      setWiping(false)
+    }
+  }
+
   return (
     <div className="page-shell">
       <PageHeader
@@ -124,6 +143,19 @@ export default function Imports() {
                 : <RotateCcw size={12} strokeWidth={1.75} />}
               Recalcular aggregates
             </button>
+            {user?.is_admin && (
+              <button
+                onClick={doWipeBroker}
+                disabled={wiping}
+                title="Borra TODAS las operations / positions / monthly_entries de un broker, incluyendo huérfanos de imports viejos. Solo admin."
+                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-rendi-neg/30 bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50"
+              >
+                {wiping
+                  ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
+                  : <Trash2 size={12} strokeWidth={1.75} />}
+                Limpiar broker
+              </button>
+            )}
             <button
               onClick={() => setShowWizard(true)}
               className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-2.5 py-1.5 rounded-sm transition-colors"
