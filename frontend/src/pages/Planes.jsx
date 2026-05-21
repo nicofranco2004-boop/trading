@@ -23,18 +23,31 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { track } from '../utils/track'
 import { api } from '../utils/api'
 
-// Precio Pro en USD/mes — placeholder que vamos a iterar.
-// Cambiar acá afecta toda la app (Config PlanHero, UpgradeModal, etc.).
+// Precios USD/mes — fuente de verdad para Mobbex/dLocal (cobramos en USD,
+// el procesador convierte ARS al day-rate del cliente). El display en Rendi
+// muestra USD como precio principal + conversión ARS live al blue de hoy
+// como subtítulo informativo.
+export const PLUS_PRICE_USD = '5'
 export const PRO_PRICE_USD = '6.99'
-export const PLUS_PRICE_USD = '4'
+// Anual con ~16.5% off vs monthly × 12
+export const PLUS_PRICE_ANNUAL_USD = '50'
+export const PRO_PRICE_ANNUAL_USD = '71'
 
-// Precios ARS (mantener sync con backend/billing/pricing.py)
-export const ARS_PLUS_MONTHLY = '5.990'  // base 4.950 + IVA 21% (~1.040)
-export const ARS_PLUS_ANNUAL = '59.990'  // base 49.580 + IVA 21% (~10.410), 16.5% off
-export const ARS_PLUS_ANNUAL_MONTHLY_EQ = '4.999'  // total anual / 12
-export const ARS_MONTHLY = '12.100'      // base 10.000 + IVA 21%
-const ARS_ANNUAL  = '123.420'     // base 102.000 + IVA 21% (15% descuento)
-const ARS_ANNUAL_MONTHLY_EQ = '10.285'  // total anual / 12
+// Precios ARS legacy (todavía usados en algunos lugares para back-compat
+// con el flow viejo de Mercado Pago). Cuando se complete la migración a
+// USD-first, estos se pueden borrar.
+export const ARS_PLUS_MONTHLY = '5.990'
+export const ARS_PLUS_ANNUAL = '59.990'
+export const ARS_PLUS_ANNUAL_MONTHLY_EQ = '4.999'
+export const ARS_MONTHLY = '12.100'
+const ARS_ANNUAL  = '123.420'
+const ARS_ANNUAL_MONTHLY_EQ = '10.285'
+
+// Formato ARS estilo Argentina (puntos como separador de miles, sin decimales)
+function fmtArsConverted(usdPrice, tcBlue) {
+  const num = Number(usdPrice) * tcBlue
+  return Math.round(num).toLocaleString('es-AR')
+}
 
 // ─── Listas de features por plan ─────────────────────────────────────────────
 
@@ -78,6 +91,13 @@ export default function Planes() {
   const { tier, loading } = usePlanFeatures()
   const [billingPeriod, setBillingPeriod] = useState('monthly')  // 'monthly' | 'annual'
   const [subscribing, setSubscribing] = useState(false)
+  const [tcBlue, setTcBlue] = useState(1415)  // fallback
+
+  useEffect(() => {
+    api.get('/dolar')
+      .then(d => { if (d?.blue?.venta) setTcBlue(d.blue.venta) })
+      .catch(() => {})
+  }, [])
   const isFree = tier === 'free'
   const isPlus = tier === 'plus'
   const isPro = tier === 'pro'
@@ -188,13 +208,13 @@ export default function Planes() {
               variant="plus"
               name="Plus"
               tagline="Multi-broker + features avanzadas"
-              price={billingPeriod === 'annual' ? `ARS ${ARS_PLUS_ANNUAL_MONTHLY_EQ}` : `ARS ${ARS_PLUS_MONTHLY}`}
+              price={billingPeriod === 'annual' ? `USD ${(+PLUS_PRICE_ANNUAL_USD / 12).toFixed(2)}` : `USD ${PLUS_PRICE_USD}`}
               priceSub={billingPeriod === 'annual'
-                ? `por mes · facturado anual (ARS ${ARS_PLUS_ANNUAL})`
-                : 'por mes · precio final'}
+                ? `por mes · facturado anual (USD ${PLUS_PRICE_ANNUAL_USD})`
+                : 'por mes'}
               priceFootnote={billingPeriod === 'annual'
-                ? `Ahorrás ARS 11.890 al año vs mensual`
-                : `Equivalente a USD ${PLUS_PRICE_USD} al blue`}
+                ? `≈ ARS ${fmtArsConverted(+PLUS_PRICE_ANNUAL_USD / 12, tcBlue)} por mes al blue de hoy`
+                : `≈ ARS ${fmtArsConverted(PLUS_PRICE_USD, tcBlue)} al blue de hoy`}
               features={PLUS_FEATURES}
               isCurrent={isPlus}
               ctaLabel={
@@ -216,13 +236,13 @@ export default function Planes() {
               variant="pro"
               name="Pro"
               tagline="IA premium + brokers ilimitados"
-              price={billingPeriod === 'annual' ? `ARS ${ARS_ANNUAL_MONTHLY_EQ}` : `ARS ${ARS_MONTHLY}`}
+              price={billingPeriod === 'annual' ? `USD ${(+PRO_PRICE_ANNUAL_USD / 12).toFixed(2)}` : `USD ${PRO_PRICE_USD}`}
               priceSub={billingPeriod === 'annual'
-                ? `por mes · facturado anual (ARS ${ARS_ANNUAL})`
-                : 'por mes · precio final'}
+                ? `por mes · facturado anual (USD ${PRO_PRICE_ANNUAL_USD})`
+                : 'por mes'}
               priceFootnote={billingPeriod === 'annual'
-                ? `Ahorrás ARS 21.780 al año vs mensual`
-                : `Equivalente a USD ${PRO_PRICE_USD} al blue`}
+                ? `≈ ARS ${fmtArsConverted(+PRO_PRICE_ANNUAL_USD / 12, tcBlue)} por mes al blue de hoy`
+                : `≈ ARS ${fmtArsConverted(PRO_PRICE_USD, tcBlue)} al blue de hoy`}
               features={PRO_FEATURES}
               badge="Más completo"
               isCurrent={hasProTier}
