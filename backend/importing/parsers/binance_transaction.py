@@ -264,6 +264,13 @@ class BinanceTransactionHistoryParser(Parser):
             }))
 
         # ── Futures trades agrupados por TradeID ─────────────
+        # Micro-trades de futuros (|net| < $0.5): los emitimos como COMISION
+        # en vez de FUTURES_PNL. Razón: cuando un trade es chiquito (apertura
+        # rápida + cierre con leverage bajo), el "PnL" termina siendo casi todo
+        # fee, no ganancia/pérdida real de mercado. Tratarlos como comisión
+        # evita que ensucien stats (win rate, profit factor) y el operador no
+        # los percibe como "trades perdidos" — son costos operativos.
+        MICRO_FUTURES_THRESHOLD = 0.5
         for tid, group in futures_groups.items():
             net = 0.0
             time_val = ""
@@ -275,17 +282,26 @@ class BinanceTransactionHistoryParser(Parser):
             if abs(net) < 1e-8:
                 continue
             out_idx += 1
+            is_micro = abs(net) < MICRO_FUTURES_THRESHOLD
+            if is_micro:
+                tipo = "COMISION"
+                monto_str = str(abs(net))
+                notas = f"Futures TradeID {tid} (micro: <${MICRO_FUTURES_THRESHOLD:.2f}, tratado como fee)"
+            else:
+                tipo = "FUTURES_PNL"
+                monto_str = str(net)
+                notas = f"Futures TradeID {tid}"
             result.raw_rows.append(RawRow(row_index=out_idx, data={
                 "fecha": _fix_date(time_val),
-                "tipo": "FUTURES_PNL",
+                "tipo": tipo,
                 "broker": "Binance",
                 "activo": "",
                 "cantidad": "",
                 "precio": "",
-                "monto": str(net),
+                "monto": monto_str,
                 "comisiones": "",
                 "moneda": "USD",
-                "notas": f"Futures TradeID {tid}",
+                "notas": notas,
             }))
 
         # ── Single rows: deposits, withdraws, P2P, funding fees ──
