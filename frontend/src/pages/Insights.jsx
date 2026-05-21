@@ -601,12 +601,53 @@ function InsightsDesktop() {
       return found ? bench.sp500[found] : null
     }
 
+    // ── Shadow S&P 500 portfolio ───────────────────────────────────────────
+    // Simulamos: "qué pasaría si los mismos depósitos/retiros del usuario
+    // hubieran ido a S&P 500 en vez de su cartera real". Para cada mes con
+    // flow != 0, compramos/vendemos units al precio del S&P de ese mes. El
+    // resultado HOY es shadow_value = total_units × precio_actual.
+    //
+    // Esto reemplaza la línea azul "lump sum from day 1" (que comparaba peras
+    // con manzanas: pura apreciación de mercado vs cartera con flows reales).
+    // Con shadow portfolio, ambas líneas reflejan las mismas decisiones de
+    // capital — sólo difieren en QUÉ activos compraron.
+    const shadowPctByKey = new Map()
+    if (currency === 'USD' && bench?.sp500 && globalMonthly.length > 0) {
+      let units = 0
+      let cumNetDep = 0
+      for (const m of globalMonthly) {
+        const mk = monthKey(m.year, m.month)
+        const spPrice = spLookup(mk)
+        const flow = (m.deposits || 0) - (m.withdrawals || 0)
+        cumNetDep += flow
+        if (spPrice && flow !== 0) units += flow / spPrice
+        if (spPrice && cumNetDep > 0) {
+          const value = units * spPrice
+          shadowPctByKey.set(mk, +(((value / cumNetDep) - 1) * 100).toFixed(2))
+        }
+      }
+      // Punto "Hoy" — precio más reciente disponible
+      const latestSp = bench.sp500[spKeys[spKeys.length - 1]]
+      if (latestSp && cumNetDep > 0) {
+        const value = units * latestSp
+        shadowPctByKey.set('today', +(((value / cumNetDep) - 1) * 100).toFixed(2))
+      }
+    }
+
     const withBench = windowSeries.map(s => {
       let benchPct = null
       if (currency === 'USD' && bench?.sp500) {
-        const spBase = spLookup(rawFirstKey)
-        const cur = spLookup(s.key)
-        if (spBase && cur) benchPct = +(((cur / spBase) - 1) * 100).toFixed(2)
+        const mk = monthKeyOf(s.key)
+        if (shadowPctByKey.has(mk)) {
+          benchPct = shadowPctByKey.get(mk)
+        } else if (shadowPctByKey.size > 0) {
+          // Fallback: usar el último mes disponible <= mk (cobre snapshots
+          // diarios entre meses sin entry monthly).
+          const sortedSk = [...shadowPctByKey.keys()].filter(k => k !== 'today').sort()
+          let found = null
+          for (const k of sortedSk) { if (k <= mk) found = k; else break }
+          if (found) benchPct = shadowPctByKey.get(found)
+        }
       } else if (currency === 'ARS' && bench?.inflation_ar) {
         // windowSeries ya es mensual — componer IPC desde el segundo mes.
         let cum = 1
@@ -626,17 +667,25 @@ function InsightsDesktop() {
     const first = withBench[0]
     const baseTotal = first.total ?? 0
     const baseRealized = first.realized ?? 0
+    const baseBench = first.benchPct ?? 0
 
     return withBench.map(s => {
       const rebaseTotal = s.total != null
         ? +((((100 + s.total) / (100 + baseTotal)) - 1) * 100).toFixed(2) : null
       const rebaseRealized = s.realized != null
         ? +((((100 + s.realized) / (100 + baseRealized)) - 1) * 100).toFixed(2) : null
+      // Rebasear el benchmark al inicio del rango visible para que ambas
+      // líneas arranquen en 0%. Sin esto, si el user mira "2A" pero el shadow
+      // portfolio ya acumuló +20% antes del inicio del rango, la línea bench
+      // arrancaría en +20% (inconsistente con la portfolio del user que sí
+      // arranca en 0%).
+      const rebaseBench = s.benchPct != null
+        ? +((((100 + s.benchPct) / (100 + baseBench)) - 1) * 100).toFixed(2) : null
       return {
         label: s.label,
         [`${userName} P/L total`]: rebaseTotal,
         [`${userName} P/L realizado`]: rebaseRealized,
-        [benchmarkKey]: s.benchPct,
+        [benchmarkKey]: rebaseBench,
       }
     })
   })()
