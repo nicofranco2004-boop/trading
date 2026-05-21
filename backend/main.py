@@ -1732,9 +1732,6 @@ def delete_broker(bid: int, uid: int = Depends(get_current_user)):
                 "DELETE FROM monthly_entries WHERE user_id=? AND broker=?", (uid, broker_name),
             )
             conn.execute(
-                "DELETE FROM snapshots WHERE user_id=? AND broker=?", (uid, broker_name),
-            )
-            conn.execute(
                 """UPDATE import_batches
                    SET status='reverted', reverted_at=datetime('now')
                    WHERE user_id=? AND broker=? AND status IN ('confirmed','preview')""",
@@ -6217,11 +6214,6 @@ def admin_wipe_broker_data(broker: str, uid: int = Depends(get_admin_user)):
             counts["monthly_entries_deleted"] = cur.rowcount
 
             cur = conn.execute(
-                "DELETE FROM snapshots WHERE user_id=? AND broker=?", (uid, broker),
-            )
-            counts["snapshots_deleted"] = cur.rowcount
-
-            cur = conn.execute(
                 """UPDATE import_batches
                    SET status='reverted', reverted_at=datetime('now')
                    WHERE user_id=? AND broker=? AND status IN ('confirmed','preview')""",
@@ -6230,7 +6222,7 @@ def admin_wipe_broker_data(broker: str, uid: int = Depends(get_admin_user)):
             counts["batches_marked_reverted"] = cur.rowcount
 
         # Recalcular aggregates globales (afecta el 'global' que sumaba el
-        # broker borrado)
+        # broker borrado). Snapshots se regeneran solas via cron o recalc.
         try:
             with conn:
                 _recalc_pnl_realized_from_ops(conn, uid)
