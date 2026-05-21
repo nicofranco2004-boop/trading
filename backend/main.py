@@ -7108,14 +7108,21 @@ async def rebill_webhook(request: Request):
 
         sub_id = rebill.extract_subscription_id(payload)
 
-        # Routing por evento
+        # Routing por evento — nombres exactos de Rebill API v3:
+        #   subscription.created    → activar (primer pago aprobado)
+        #   subscription.updated    → cambio de status (active/paused/cancelled/...)
+        #   payment.created         → cobro nuevo (recurring renewal)
+        #   payment.updated         → cambio de status del pago
+        #   subscription.renewal_soon → notificación pre-cobro (no actuamos)
         evt = event_type.lower()
-        if any(k in evt for k in ("activated", "created", "authorized", "succeeded")):
+        if evt == "subscription.created":
             _rebill_activate(conn, uid, metadata, sub_id, payload)
-        elif "cancel" in evt or "expired" in evt:
-            _rebill_cancel(conn, uid, sub_id, payload)
-        elif "renewed" in evt or "payment" in evt:
+        elif evt == "subscription.updated":
+            _rebill_subscription_status_change(conn, uid, metadata, sub_id, payload)
+        elif evt == "payment.created" or evt == "payment.updated":
             _rebill_record_payment(conn, uid, sub_id, payload)
+        elif evt == "subscription.renewal_soon":
+            log.info("Rebill renewal_soon para user %s (sub %s) — no actuamos", uid, sub_id)
         else:
             log.info("Rebill evento sin handler específico: %s", event_type)
 
@@ -7169,6 +7176,42 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
             )
 
     log.info("Rebill: user %s activated as %s (sub=%s)", uid, target_tier, sub_id)
+
+
+def _rebill_subscription_status_change(conn, uid: int, metadata: dict, sub_id: str, payload: dict):
+    """Maneja subscription.updated routing por el nuevo status.
+
+    Status lifecycle de Rebill:
+      active     → activar/mantener tier
+      paused     → tier sigue (hasta fin del período cobrado)
+      retrying   → tier sigue (Rebill reintenta el cobro)
+      cancelled  → marcar cancelled (tier sigue hasta cron lifecycle)
+      defaulted  → marcar como cancelled forzado (user fue puesto en default)
+      finished   → todos los ciclos completados (raro para plans sin repetitions)
+    """
+    data = payload.get("data") or payload.get("subscription") or {}
+    new_status = (data.get("status") or "").lower()
+    status_detail = data.get("statusDetail") or ""
+    log.info("Rebill sub.updated user=%s sub=%s status=%s detail=%s",
+             uid, sub_id, new_status, status_detail)
+
+    if new_status == "active":
+        # Re-activación (p.ej. user resolvió un retrying con card update)
+        _rebill_activate(conn, uid, metadata, sub_id, payload)
+    elif new_status in ("cancelled", "defaulted", "finished"):
+        _rebill_cancel(conn, uid, sub_id, payload)
+    elif new_status in ("paused", "retrying"):
+        # Tier sigue activo durante paused/retrying — solo loggeamos
+        with conn:
+            if sub_id:
+                conn.execute(
+                    """UPDATE subscriptions
+                       SET status = ?, updated_at = datetime('now')
+                       WHERE user_id = ? AND mp_subscription_id = ?""",
+                    (new_status, uid, sub_id),
+                )
+    else:
+        log.warning("Rebill sub.updated status desconocido: %r", new_status)
 
 
 def _rebill_cancel(conn, uid: int, sub_id: str, payload: dict):

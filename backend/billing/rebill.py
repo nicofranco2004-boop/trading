@@ -175,14 +175,18 @@ def get_subscription(subscription_id: str) -> dict:
 
 
 def cancel_subscription(subscription_id: str) -> dict:
-    """Cancela una subscription. Rebill NO emite refunds del período ya
-    cobrado — el user mantiene Plus/Pro hasta fin de período."""
+    """Cancela una subscription via PATCH con status=cancelled (terminal).
+    Rebill NO emite refunds del período ya cobrado — el user mantiene
+    Plus/Pro hasta fin de período."""
     log.info("Rebill cancel_subscription %s", subscription_id)
-    # Endpoint según docs: POST /v3/subscriptions/{id}/cancel
-    # (ajustar si la doc final dice otra cosa)
-    r = httpx.post(
-        f"{REBILL_BASE_URL}/v3/subscriptions/{subscription_id}/cancel",
-        headers={"x-api-key": _api_key()},
+    r = httpx.patch(
+        f"{REBILL_BASE_URL}/v3/subscriptions/{subscription_id}",
+        headers={
+            "x-api-key": _api_key(),
+            "accept": "application/json",
+            "content-type": "application/json",
+        },
+        json={"status": "cancelled"},
         timeout=15.0,
     )
     if r.status_code >= 400:
