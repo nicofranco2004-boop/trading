@@ -414,7 +414,7 @@ export default function Config() {
 
 function PlanHero({ tier, usage }) {
   if (tier === 'admin') return <PlanHeroAdmin usage={usage} />
-  if (tier === 'pro') return <PlanHeroPro usage={usage} />
+  if (tier === 'pro' || tier === 'plus') return <PlanHeroPro tier={tier} usage={usage} />
   return <PlanHeroFree usage={usage} />
 }
 
@@ -485,12 +485,36 @@ function PlanHeroFree({ usage }) {
   )
 }
 
-// PlanHero compacto Pro — info del plan activo + link a /planes para ver detalles.
-function PlanHeroPro({ usage }) {
+// PlanHero compacto Pro/Plus — info del plan activo + link a /planes y opción
+// de cancelar la suscripción. La cancelación llama POST /api/billing/cancel
+// (que pega a Rebill PATCH status='cancelled'). El user mantiene acceso al
+// tier hasta fin del período cobrado.
+function PlanHeroPro({ tier = 'pro', usage }) {
   const navigate = useNavigate()
   const count = usage?.analyses_count ?? 0
-  const limit = usage?.analyses_limit ?? 60
+  const isPlus = tier === 'plus'
+  const tierLabel = isPlus ? 'PLUS' : 'PRO'
+  const limit = usage?.analyses_limit ?? (isPlus ? 6 : 60)
   const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
+  const [cancelling, setCancelling] = useState(false)
+
+  async function handleCancel() {
+    if (cancelling) return
+    if (!confirm(`¿Cancelar tu suscripción ${tierLabel}? Mantenés acceso hasta el fin del período actual cobrado. Después tu cuenta vuelve a Free.`)) return
+    setCancelling(true)
+    try {
+      const res = await api.post('/billing/cancel', {})
+      alert(`Suscripción cancelada. Mantenés ${tierLabel} hasta el fin del período cobrado.`)
+      track('subscription_cancelled', { tier, source: 'config_plan_hero' })
+      // Refresca la página para que el badge / KPIs reflejen el nuevo status
+      window.location.reload()
+    } catch (ex) {
+      const msg = ex?.payload?.detail?.error || ex?.message || 'No pudimos cancelar la suscripción.'
+      alert(msg)
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   return (
     <section className="mb-6 border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 flex items-center gap-5 flex-wrap">
@@ -498,17 +522,19 @@ function PlanHeroPro({ usage }) {
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
           <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-data-violet/15 text-data-violet">
-            PRO
+            {tierLabel}
           </span>
           <span className="inline-flex items-center gap-1 text-[10px] text-rendi-pos font-mono uppercase tracking-caps">
             <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" /> Activo
           </span>
         </div>
         <h2 className="text-base font-semibold text-ink-0 leading-snug">
-          Rendi Pro está activo
+          Rendi {isPlus ? 'Plus' : 'Pro'} está activo
         </h2>
         <p className="text-xs text-ink-2 mt-1">
-          Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más.
+          {isPlus
+            ? 'Multi-broker, insights completos, comportamiento avanzado y export CSV.'
+            : 'Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más.'}
         </p>
       </div>
 
@@ -525,13 +551,23 @@ function PlanHeroPro({ usage }) {
         </p>
       </div>
 
-      <button
-        type="button"
-        onClick={() => navigate('/planes')}
-        className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
-      >
-        Ver detalles del plan
-      </button>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={() => navigate('/planes')}
+          className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
+        >
+          Ver detalles del plan
+        </button>
+        <button
+          type="button"
+          onClick={handleCancel}
+          disabled={cancelling}
+          className="inline-flex items-center gap-1.5 text-xs font-medium bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg border border-rendi-neg/30 rounded-sm px-3 py-2 transition-colors disabled:opacity-50"
+        >
+          {cancelling ? 'Cancelando…' : 'Cancelar suscripción'}
+        </button>
+      </div>
     </section>
   )
 }
