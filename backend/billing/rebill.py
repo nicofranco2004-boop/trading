@@ -21,6 +21,7 @@ import hmac
 import hashlib
 import json
 import logging
+import uuid
 from typing import Optional, Literal
 
 import httpx
@@ -110,6 +111,11 @@ def create_payment_link(
         "cancelUrl": f"{_frontend_base()}/planes?cancelled=1",
     }
 
+    # Idempotency key: si el frontend hace doble-click o el request se pierde
+    # y se reintenta, Rebill detecta el duplicado y devuelve el mismo link en
+    # vez de crear uno nuevo. Reserved: prefix recurring_ es interno de Rebill.
+    idempotency_key = f"rendi-{user_id}-{plan}-{period}-{uuid.uuid4().hex[:8]}"
+
     log.info(
         "Rebill create_payment_link user=%s plan=%s period=%s plan_id=%s sandbox=%s",
         user_id, plan, period, plan_id, is_sandbox(),
@@ -120,6 +126,7 @@ def create_payment_link(
         f"{REBILL_BASE_URL}/v3/payment-links",
         headers={
             "x-api-key": _api_key(),
+            "x-idempotency-key": idempotency_key,
             "accept": "application/json",
             "content-type": "application/json",
         },
@@ -130,6 +137,28 @@ def create_payment_link(
         log.error("Rebill create_payment_link failed %s: %s", r.status_code, r.text)
         r.raise_for_status()
     return r.json()
+
+
+def verify_api_key() -> Optional[dict]:
+    """Llama a GET /v3/organizations/me para verificar que la API key está
+    bien cargada y devuelve los datos de la org. Devuelve None si falla.
+
+    Útil como diagnóstico: si arranca Rendi y este llamado falla, sabemos
+    que la API key está mal configurada antes de que un user intente pagar.
+    """
+    try:
+        r = httpx.get(
+            f"{REBILL_BASE_URL}/v3/organizations/me",
+            headers={"x-api-key": _api_key()},
+            timeout=10.0,
+        )
+        if r.status_code == 200:
+            return r.json()
+        log.error("Rebill verify_api_key failed %s: %s", r.status_code, r.text)
+        return None
+    except Exception as ex:
+        log.error("Rebill verify_api_key error: %s", ex)
+        return None
 
 
 # ─── Get + cancel subscription ──────────────────────────────────────────────
