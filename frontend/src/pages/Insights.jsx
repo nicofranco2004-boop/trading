@@ -483,9 +483,16 @@ function InsightsDesktop() {
       if (investedNow > peakInvested) peakInvested = investedNow
       if ((m.capital_final || 0) > peakValue) peakValue = m.capital_final || 0
 
+      // Numerador: gain REAL = value - investedNow (P&L = lo que tenés menos
+      // lo que está aportado neto AHORA). Si retirás \$70k, investedNow baja
+      // y capital_final también — pero la diferencia (el "gain") refleja
+      // correctamente solo las ganancias.
+      // Denominador: stableInvested usa peak cuando investedNow se achicó por
+      // un withdraw, así no inflamos el % al dividir por número chico.
+      const gain = (m.capital_final || 0) - investedNow
       const denom = stableInvested(investedNow, peakInvested)
-      const rawTotal = denom > 0 ? ((m.capital_final - denom) / denom) * 100 : 0
-      const total = Math.min(Math.max(rawTotal, -99), 200)  // cap a ±99/200% por safety
+      const rawTotal = denom > 0 ? (gain / denom) * 100 : 0
+      const total = Math.min(Math.max(rawTotal, -99), 200)
       const real  = denom > 0 ? (cumRealized / denom) * 100 : 0
       const k = monthKey(m.year, m.month)
       out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
@@ -495,8 +502,9 @@ function InsightsDesktop() {
       if (totalPortfolio > peakValue) peakValue = totalPortfolio
       const investedNow = baseline + netFlows
       if (investedNow > peakInvested) peakInvested = investedNow
+      const gain = totalPortfolio - investedNow
       const denom = stableInvested(investedNow, peakInvested)
-      const rawTotal = denom > 0 ? ((totalPortfolio - denom) / denom) * 100 : 0
+      const rawTotal = denom > 0 ? (gain / denom) * 100 : 0
       const total = Math.min(Math.max(rawTotal, -99), 200)
       const real  = denom > 0 ? (cumRealized / denom) * 100 : 0
       out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
@@ -545,8 +553,9 @@ function InsightsDesktop() {
       const investedNowPesos = baselinePesos + netFlowsPesos
       if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
       const denomP = stableInvestedPesos(investedNowPesos, peakInvestedPesos)
-      const valuePesos    = (m.capital_final || 0) * fx
-      const rawTotal   = denomP > 0 ? ((valuePesos - denomP) / denomP) * 100 : 0
+      const valuePesos = (m.capital_final || 0) * fx
+      const gainPesos = valuePesos - investedNowPesos
+      const rawTotal   = denomP > 0 ? (gainPesos / denomP) * 100 : 0
       const total      = Math.min(Math.max(rawTotal, -99), 200)
       const real       = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
@@ -560,7 +569,8 @@ function InsightsDesktop() {
       const investedNowPesos = baselinePesos + netFlowsPesos
       if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
       const denomP = stableInvestedPesos(investedNowPesos, peakInvestedPesos)
-      const rawTotal = denomP > 0 ? ((valueNow - denomP) / denomP) * 100 : 0
+      const gainPesos = valueNow - investedNowPesos
+      const rawTotal = denomP > 0 ? (gainPesos / denomP) * 100 : 0
       const total = Math.min(Math.max(rawTotal, -99), 200)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
