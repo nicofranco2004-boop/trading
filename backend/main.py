@@ -6948,18 +6948,22 @@ class SubscribeIn(BaseModel):
 
 @app.post("/api/billing/subscribe")
 def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
-    """Crea un preapproval en MP para que el user pague la suscripción Pro.
+    """Crea un payment link en Rebill para que el user pague la suscripción.
 
-    Devuelve `init_point` (URL del checkout MP). El frontend redirige al user
-    ahí. Tras pagar, MP llama nuestro webhook que activa el tier='pro'.
+    Devuelve `init_point` (URL del checkout Rebill). El frontend redirige al
+    user ahí. Tras pagar, Rebill llama nuestro webhook que activa el tier.
 
-    Si el user ya tiene una suscripción 'authorized', devolvemos 409. Si tiene
-    una 'pending' previa, reutilizamos el init_point (no creamos duplicado).
+    NOTA: migramos de Mercado Pago a Rebill (commit X). MP queda muerto pero
+    el código está en mercadopago.py por si hay que revertir.
+
+    Si el user ya tiene una suscripción 'authorized', devolvemos 409. No
+    reusamos pending links (Rebill los hace single-use, cada click crea uno
+    nuevo).
     """
-    from billing import mercadopago, pricing
+    from billing import rebill
     conn = get_db()
     try:
-        # 1. Obtener email del user (MP lo necesita para el checkout)
+        # 1. Obtener email del user
         user_row = conn.execute(
             "SELECT email, tier, is_admin FROM users WHERE id = ?", (uid,)
         ).fetchone()
@@ -6969,66 +6973,245 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
 
         # 2. Check si ya tiene suscripción activa
         existing = conn.execute(
-            """SELECT id, mp_subscription_id, status, init_point FROM subscriptions
-               WHERE user_id = ? AND status IN ('authorized', 'pending')
+            """SELECT id, mp_subscription_id, status FROM subscriptions
+               WHERE user_id = ? AND status = 'authorized'
                ORDER BY created_at DESC LIMIT 1""",
             (uid,),
         ).fetchone()
-        if existing and existing["status"] == "authorized":
+        if existing:
             raise HTTPException(409, {
                 "error": "Ya tenés una suscripción activa.",
                 "subscription_id": existing["mp_subscription_id"],
             })
-        if existing and existing["status"] == "pending" and existing["init_point"]:
-            # Reusar el init_point pending (el user puede que abandonó el checkout
-            # y vuelva a clickear "Suscribirme")
-            return {
-                "init_point": existing["init_point"],
-                "subscription_id": existing["mp_subscription_id"],
-                "reused": True,
-            }
 
         plan_id = data.plan if data.plan in ("plus", "pro") else "pro"
         period = data.period
 
-        # 3. Crear preapproval en MP
+        # 3. Crear payment link en Rebill
         try:
-            mp_response = mercadopago.create_preapproval(
+            rb_response = rebill.create_payment_link(
                 user_id=uid,
                 user_email=user_email,
-                period=period,
                 plan=plan_id,
+                period=period,
             )
         except Exception as ex:
-            log.error("MP create_preapproval failed for uid=%s: %s", uid, ex)
-            raise HTTPException(502, f"Error al crear suscripción en MP: {type(ex).__name__}")
+            log.error("Rebill create_payment_link failed for uid=%s: %s", uid, ex)
+            raise HTTPException(502, f"Error al crear suscripción en Rebill: {type(ex).__name__}")
 
-        # 4. Guardar en DB
-        amount = pricing.get_pricing(plan_id, period)["total_ars"]
+        # 4. Guardar en DB. Reusamos mp_subscription_id field para guardar el
+        # payment link ID inicialmente; cuando llegue el webhook con la
+        # subscription real, lo updateamos al subscription_id.
         ext_ref = f"rendi-{uid}-{plan_id}-{period}"
+        link_url = rb_response.get("url") or ""
+        link_id = rb_response.get("id") or ""
+
         with conn:
             conn.execute(
                 """INSERT INTO subscriptions
                        (user_id, mp_subscription_id, external_reference, period,
                         status, amount_ars, init_point, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))""",
-                (
-                    uid,
-                    mp_response.get("id"),
-                    ext_ref,
-                    data.period,
-                    amount,
-                    mp_response.get("init_point"),
-                ),
+                   VALUES (?, ?, ?, ?, 'pending', 0, ?, datetime('now'), datetime('now'))""",
+                (uid, link_id, ext_ref, period, link_url),
             )
 
         return {
-            "init_point": mp_response.get("init_point"),
-            "subscription_id": mp_response.get("id"),
+            "init_point": link_url,
+            "subscription_id": link_id,
             "reused": False,
         }
     finally:
         conn.close()
+
+
+# ─── Rebill webhook ─────────────────────────────────────────────────────────
+
+@app.post("/api/billing/rebill-webhook")
+async def rebill_webhook(request: Request):
+    """Recibe eventos de Rebill server-to-server.
+
+    Eventos esperados (los nombres exactos pueden variar según la doc final
+    — handler defensivo con múltiples paths):
+      • subscription.activated / subscription.created → activar tier
+      • subscription.cancelled / subscription.canceled → marcar como cancelada
+      • payment.succeeded / subscription.renewed → registrar pago recurring
+      • payment.failed → flag (no cambia tier inmediatamente)
+
+    Matching del user: `metadata.rendi_user_id` (lo seteamos en
+    create_payment_link). Si no llega, registramos warning y devolvemos 200
+    para que Rebill no haga retry infinito.
+
+    SECURITY: validar signature con REBILL_WEBHOOK_SECRET. En dev sin secret,
+    pasamos con warning.
+    """
+    from billing import rebill
+    raw = await request.body()
+    sig = request.headers.get("x-rebill-signature") or request.headers.get("rebill-signature") or ""
+
+    try:
+        payload = json.loads(raw or b"{}")
+    except Exception:
+        log.warning("Rebill webhook with non-JSON body")
+        return Response(status_code=400)
+
+    event_type = (
+        payload.get("event")
+        or payload.get("type")
+        or payload.get("eventType")
+        or ""
+    )
+    metadata = rebill.extract_metadata(payload)
+    rendi_user_id = metadata.get("rendi_user_id")
+
+    log.info(
+        "Rebill webhook: event=%s rendi_user_id=%s sig_present=%s",
+        event_type, rendi_user_id, bool(sig),
+    )
+
+    # Validar signature
+    sig_valid = rebill.verify_webhook_signature(raw, sig)
+    if not sig_valid and rebill._webhook_secret():
+        log.warning("Rebill webhook with INVALID signature, rejecting")
+        return Response(status_code=401)
+
+    conn = get_db()
+    try:
+        # Audit log — siempre guardamos el evento (replay/debug)
+        with conn:
+            conn.execute(
+                """INSERT INTO billing_events
+                       (mp_event_id, mp_event_type, mp_data_id, signature_valid,
+                        processed, raw_payload, created_at)
+                   VALUES (?, ?, ?, ?, 0, ?, datetime('now'))""",
+                (
+                    str(payload.get("id", "")),
+                    f"rebill:{event_type}",
+                    str(rendi_user_id or ""),
+                    1 if sig_valid else 0,
+                    json.dumps(payload),
+                ),
+            )
+
+        if not rendi_user_id:
+            log.warning("Rebill webhook sin rendi_user_id en metadata, skipping")
+            return Response(status_code=200)
+
+        try:
+            uid = int(rendi_user_id)
+        except (ValueError, TypeError):
+            log.warning("Rebill rendi_user_id no parseable: %r", rendi_user_id)
+            return Response(status_code=200)
+
+        sub_id = rebill.extract_subscription_id(payload)
+
+        # Routing por evento
+        evt = event_type.lower()
+        if any(k in evt for k in ("activated", "created", "authorized", "succeeded")):
+            _rebill_activate(conn, uid, metadata, sub_id, payload)
+        elif "cancel" in evt or "expired" in evt:
+            _rebill_cancel(conn, uid, sub_id, payload)
+        elif "renewed" in evt or "payment" in evt:
+            _rebill_record_payment(conn, uid, sub_id, payload)
+        else:
+            log.info("Rebill evento sin handler específico: %s", event_type)
+
+        with conn:
+            conn.execute(
+                "UPDATE billing_events SET processed = 1 WHERE raw_payload = ?",
+                (json.dumps(payload),),
+            )
+        return Response(status_code=200)
+    except Exception as ex:
+        log.exception("Rebill webhook processing error: %s", ex)
+        return Response(status_code=200)  # 200 para evitar retry agresivo
+    finally:
+        conn.close()
+
+
+def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict):
+    """Marca al user como Plus/Pro y actualiza/crea la subscription row."""
+    plan = metadata.get("rendi_plan") or "pro"
+    period = metadata.get("rendi_period") or "monthly"
+    target_tier = plan if plan in ("plus", "pro") else "pro"
+
+    with conn:
+        conn.execute("UPDATE users SET tier = ? WHERE id = ?", (target_tier, uid))
+
+        # Buscar la pending subscription que creó /api/billing/subscribe.
+        # Si existe, la actualizamos con el subscription_id real. Si no,
+        # creamos una nueva (race condition: webhook llegó antes que insert).
+        existing = conn.execute(
+            """SELECT id FROM subscriptions
+               WHERE user_id = ? AND status = 'pending'
+               ORDER BY created_at DESC LIMIT 1""",
+            (uid,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE subscriptions
+                   SET status = 'authorized',
+                       mp_subscription_id = ?,
+                       updated_at = datetime('now')
+                   WHERE id = ?""",
+                (sub_id or "", existing["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO subscriptions
+                       (user_id, mp_subscription_id, external_reference, period,
+                        status, amount_ars, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'authorized', 0, datetime('now'), datetime('now'))""",
+                (uid, sub_id or "", f"rendi-{uid}-{plan}-{period}", period),
+            )
+
+    log.info("Rebill: user %s activated as %s (sub=%s)", uid, target_tier, sub_id)
+
+
+def _rebill_cancel(conn, uid: int, sub_id: str, payload: dict):
+    """Marca la subscription como cancelled. No revierte tier inmediatamente
+    (el user mantiene Plus/Pro hasta fin del período cobrado)."""
+    with conn:
+        if sub_id:
+            conn.execute(
+                """UPDATE subscriptions
+                   SET status = 'cancelled', cancelled_at = datetime('now'),
+                       updated_at = datetime('now')
+                   WHERE user_id = ? AND mp_subscription_id = ?""",
+                (uid, sub_id),
+            )
+        else:
+            # Fallback: cancelar la authorized más reciente del user
+            conn.execute(
+                """UPDATE subscriptions
+                   SET status = 'cancelled', cancelled_at = datetime('now'),
+                       updated_at = datetime('now')
+                   WHERE user_id = ? AND status = 'authorized'""",
+                (uid,),
+            )
+    log.info("Rebill: subscription %s cancelled for user %s", sub_id, uid)
+
+
+def _rebill_record_payment(conn, uid: int, sub_id: str, payload: dict):
+    """Registra un cobro recurring exitoso (subscription renewal)."""
+    payment_id = ""
+    data_obj = payload.get("data") or {}
+    for c in (
+        payload.get("payment_id"),
+        data_obj.get("payment_id"),
+        (data_obj.get("payment") or {}).get("id"),
+    ):
+        if c:
+            payment_id = str(c)
+            break
+    with conn:
+        if sub_id:
+            conn.execute(
+                """UPDATE subscriptions
+                   SET last_payment_id = ?, updated_at = datetime('now')
+                   WHERE user_id = ? AND mp_subscription_id = ?""",
+                (payment_id, uid, sub_id),
+            )
+    log.info("Rebill: payment %s recorded for sub %s (user %s)", payment_id, sub_id, uid)
 
 
 @app.post("/api/billing/cancel")
@@ -7041,7 +7224,7 @@ def billing_cancel(uid: int = Depends(get_current_user)):
     de pago, y un cron periódico (o el próximo /auth/me) detectaría que
     pasó current_period_end y bajaría a tier='free'.
     """
-    from billing import mercadopago
+    from billing import rebill
     conn = get_db()
     try:
         sub = conn.execute(
@@ -7053,11 +7236,13 @@ def billing_cancel(uid: int = Depends(get_current_user)):
         if not sub:
             raise HTTPException(404, "No tenés suscripción activa para cancelar.")
 
+        # Cancelar en Rebill (mp_subscription_id ahora guarda el ID de Rebill
+        # — field reusado durante la migración para evitar schema change).
         try:
-            mercadopago.cancel_preapproval(sub["mp_subscription_id"])
+            rebill.cancel_subscription(sub["mp_subscription_id"])
         except Exception as ex:
-            log.error("MP cancel failed for uid=%s: %s", uid, ex)
-            raise HTTPException(502, f"Error al cancelar en MP: {type(ex).__name__}")
+            log.error("Rebill cancel failed for uid=%s: %s", uid, ex)
+            raise HTTPException(502, f"Error al cancelar en Rebill: {type(ex).__name__}")
 
         with conn:
             conn.execute(
