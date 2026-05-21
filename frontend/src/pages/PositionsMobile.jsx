@@ -1,30 +1,42 @@
-// PositionsMobile — lista densa 1-col (Sprint M1, item 02 del audit).
+// PositionsMobile — lista densa agrupada por broker (Sprint M1 + broker grouping).
 // ═══════════════════════════════════════════════════════════════════════════
-// Audit: misma data que la tabla desktop, pero una columna:
-//   avatar + ticker + meta (izq) · sparkline 30d (centro) · precio + Δ (der)
-// Header sticky con "ordenar por" mono caps.
+// Pares con la vista desktop: positions agrupadas por broker, cash al final
+// de cada sección. Filtro por broker (Todos | cada uno) y botón "+ agregar".
 //
-// Swipe izq con acciones rápidas (operar / ocultar / watchlist) viene en M3.
-// Tap por ahora navega a /posiciones (vista desktop / detail pendiente M3).
+// UX por sección:
+//   ┌─ COCOS · ARS · $1,247 total
+//   │  MSFT  44 · ARS    +3.5%    $638
+//   │  AMZN  313 · ARS   +27.6%   $605
+//   │  ...
+//   │  ARS · Cash         —        $947   ← cash siempre al final
+//   └─
+//
+// Filtro: tap en chip "Cocos" filtra a ese broker. "Todos" muestra todo.
+// Botón "+" violeta abre modal de agregar broker (mismo flow que desktop).
 
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles } from 'lucide-react'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import EmptyState from '../components/EmptyState'
 import SwipeRow from '../components/mobile/SwipeRow'
+import Modal from '../components/Modal'
+import UpgradeModal from '../components/plan/UpgradeModal'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
+import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
   { id: 'pnl',    label: 'P&L %' },
   { id: 'alpha',  label: 'A-Z' },
 ]
+
+const ALL_FILTER = '__all__'
 
 export default function PositionsMobile() {
   const [positions, setPositions] = useState([])
@@ -34,6 +46,12 @@ export default function PositionsMobile() {
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState('value')
   const [query, setQuery] = useState('')
+  const [brokerFilter, setBrokerFilter] = useState(ALL_FILTER)
+  // Modales de gestión de broker (mismo flow que el desktop BrokerManager)
+  const [showAddBroker, setShowAddBroker] = useState(false)
+  const [editingBroker, setEditingBroker] = useState(null)
+  const [newBroker, setNewBroker] = useState({ name: '', currency: 'USDT' })
+  const [brokerUpgrade, setBrokerUpgrade] = useState(null)
 
   useEffect(() => { loadAll() }, [])
 
@@ -63,6 +81,45 @@ export default function PositionsMobile() {
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
   }
 
+  async function addBroker(e) {
+    e.preventDefault()
+    if (!newBroker.name.trim()) return
+    try {
+      await api.post('/brokers', { name: newBroker.name.trim(), currency: newBroker.currency })
+      setNewBroker({ name: '', currency: 'USDT' })
+      setShowAddBroker(false)
+      await loadAll()
+      refreshPlanFeatures()
+    } catch (ex) {
+      if (ex?.status === 403 && ex?.payload?.detail?.upgrade) {
+        const detail = ex.payload.detail
+        track('feature_blocked_clicked', { feature: 'brokers.create', source: 'positions_mobile' })
+        setBrokerUpgrade({
+          message: detail.error || 'El plan Free permite 1 broker.',
+          benefits: detail.upgrade?.benefits,
+        })
+        return
+      }
+      alert('No pudimos agregar el broker. Probá de nuevo.')
+    }
+  }
+
+  async function saveEditBroker(e) {
+    e.preventDefault()
+    if (!editingBroker.name.trim()) return
+    await api.put(`/brokers/${editingBroker.id}`, { name: editingBroker.name.trim(), currency: editingBroker.currency })
+    setEditingBroker(null)
+    await loadAll()
+  }
+
+  async function deleteBrokerAction(b) {
+    if (!confirm(`¿Eliminar el broker "${b.name}"? Se van a borrar también TODAS sus posiciones, operaciones y datos mensuales. Esta acción no se puede deshacer.`)) return
+    await api.delete(`/brokers/${b.id}`)
+    if (brokerFilter === b.name) setBrokerFilter(ALL_FILTER)
+    await loadAll()
+    refreshPlanFeatures()
+  }
+
   const tcBlue = dolar?.blue?.venta || 1415
   const arsBrokerSet = useMemo(
     () => new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name)),
@@ -79,8 +136,6 @@ export default function PositionsMobile() {
       let valueUsd = 0
       let priceLocal = null
       if (p.is_cash) {
-        // Cash: el `invested` está en la moneda nativa del broker. Conversión
-        // solo para totalizar en USD. P/L = null (no aplica).
         valueUsd = isAR ? invested / tcBlue : invested
         return { ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null, isAR }
       } else if (isAR) {
@@ -99,22 +154,66 @@ export default function PositionsMobile() {
     })
   }, [positions, prices, arsBrokerSet, tcBlue])
 
-  const filtered = useMemo(() => {
+  // Filtro de búsqueda libre (asset o broker name)
+  const filteredBySearch = useMemo(() => {
     const q = query.trim().toLowerCase()
-    let list = q
-      ? enriched.filter(p => (p.asset || '').toLowerCase().includes(q) || (p.broker || '').toLowerCase().includes(q))
-      : enriched
-    list = [...list]
+    if (!q) return enriched
+    return enriched.filter(p =>
+      (p.asset || '').toLowerCase().includes(q) ||
+      (p.broker || '').toLowerCase().includes(q)
+    )
+  }, [enriched, query])
+
+  // Filtro de broker (chip seleccionado)
+  const filteredByBroker = useMemo(() => {
+    if (brokerFilter === ALL_FILTER) return filteredBySearch
+    return filteredBySearch.filter(p => p.broker === brokerFilter)
+  }, [filteredBySearch, brokerFilter])
+
+  // Comparador interno por sort criterion (cash siempre al final)
+  function comparePositions(a, b) {
+    // Cash al final
+    if (a.is_cash && !b.is_cash) return 1
+    if (!a.is_cash && b.is_cash) return -1
     switch (sortBy) {
-      case 'pnl':   list.sort((a, b) => (b.pnlPct || 0) - (a.pnlPct || 0)); break
-      case 'alpha': list.sort((a, b) => (a.asset || '').localeCompare(b.asset || '')); break
+      case 'pnl':   return (b.pnlPct || 0) - (a.pnlPct || 0)
+      case 'alpha': return (a.asset || '').localeCompare(b.asset || '')
       case 'value':
-      default:      list.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0))
+      default:      return (b.valueUsd || 0) - (a.valueUsd || 0)
     }
-    return list
-  }, [enriched, sortBy, query])
+  }
+
+  // Agrupación por broker (solo cuando filterBroker = ALL).
+  // Cada grupo: { broker: brokerObj, positions: [...], totalUsd }
+  const grouped = useMemo(() => {
+    if (brokerFilter !== ALL_FILTER) return null
+    const map = new Map()
+    for (const p of filteredByBroker) {
+      const b = brokers.find(x => x.name === p.broker)
+      if (!map.has(p.broker)) {
+        map.set(p.broker, { broker: b || { name: p.broker, currency: 'USDT' }, positions: [], totalUsd: 0 })
+      }
+      const g = map.get(p.broker)
+      g.positions.push(p)
+      g.totalUsd += (p.valueUsd || 0)
+    }
+    // Ordenar positions internas (cash al final) + grupos por totalUsd desc
+    const groups = Array.from(map.values())
+    for (const g of groups) g.positions.sort(comparePositions)
+    groups.sort((a, b) => b.totalUsd - a.totalUsd)
+    return groups
+  }, [filteredByBroker, brokerFilter, brokers, sortBy])
+
+  // Lista plana cuando hay filtro de broker activo
+  const flatList = useMemo(() => {
+    if (brokerFilter === ALL_FILTER) return null
+    return [...filteredByBroker].sort(comparePositions)
+  }, [filteredByBroker, brokerFilter, sortBy])
 
   const total = enriched.reduce((s, p) => s + (p.valueUsd || 0), 0)
+  const visibleCount = brokerFilter === ALL_FILTER
+    ? filteredByBroker.length
+    : (flatList?.length || 0)
 
   if (loading) {
     return (
@@ -139,7 +238,7 @@ export default function PositionsMobile() {
             </div>
           </div>
           <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
-            {filtered.length} {filtered.length === 1 ? 'pos' : 'pos'}
+            {visibleCount} {visibleCount === 1 ? 'pos' : 'pos'}
           </span>
         </div>
 
@@ -153,6 +252,34 @@ export default function PositionsMobile() {
             placeholder="Buscar ticker o broker…"
             className="w-full bg-bg-2 border border-line/40 rounded-sm pl-7 pr-3 py-1.5 text-xs text-ink-0 placeholder:text-ink-3 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40"
           />
+        </div>
+
+        {/* Filtro de broker — chips horizontales scrollables */}
+        <div className="-mx-4 px-4 mb-2 overflow-x-auto no-scrollbar">
+          <div className="inline-flex gap-1.5 pb-0.5">
+            <BrokerFilterChip
+              active={brokerFilter === ALL_FILTER}
+              onClick={() => setBrokerFilter(ALL_FILTER)}
+              label="Todos"
+            />
+            {brokers.map(b => (
+              <BrokerFilterChip
+                key={b.id}
+                active={brokerFilter === b.name}
+                onClick={() => setBrokerFilter(b.name)}
+                label={b.name}
+                currency={b.currency}
+              />
+            ))}
+            <button
+              type="button"
+              onClick={() => setShowAddBroker(true)}
+              className="inline-flex items-center gap-1 text-[11px] font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-dashed border-data-violet/40 rounded-sm px-2.5 py-1.5 whitespace-nowrap transition-colors"
+            >
+              <Plus size={11} strokeWidth={2} />
+              Agregar
+            </button>
+          </div>
         </div>
 
         {/* Sort segmented */}
@@ -174,13 +301,13 @@ export default function PositionsMobile() {
         </div>
       </header>
 
-      {/* Lista densa */}
-      {filtered.length === 0 ? (
+      {/* Lista */}
+      {visibleCount === 0 ? (
         <div className="px-4">
           <EmptyState
             icon={<Briefcase size={18} strokeWidth={1.5} />}
             eyebrow="Cartera vacía"
-            title={query ? 'Sin coincidencias' : 'No tenés posiciones cargadas'}
+            title={query ? 'Sin coincidencias' : (brokerFilter !== ALL_FILTER ? `Sin posiciones en ${brokerFilter}` : 'No tenés posiciones cargadas')}
             description={
               query
                 ? 'Probá con otro ticker, broker o limpiá la búsqueda.'
@@ -188,9 +315,24 @@ export default function PositionsMobile() {
             }
           />
         </div>
+      ) : brokerFilter === ALL_FILTER ? (
+        // Vista agrupada por broker
+        <div className="divide-y divide-line/20">
+          {grouped?.map(g => (
+            <BrokerSection
+              key={g.broker.name}
+              broker={g.broker}
+              positions={g.positions}
+              totalUsd={g.totalUsd}
+              onEdit={() => setEditingBroker({ ...g.broker })}
+              onDelete={() => deleteBrokerAction(g.broker)}
+            />
+          ))}
+        </div>
       ) : (
+        // Vista filtrada — lista plana del broker seleccionado
         <ul className="divide-y divide-line/30">
-          {filtered.map(p => (
+          {flatList?.map(p => (
             <PositionRow
               key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
               p={p}
@@ -198,7 +340,186 @@ export default function PositionsMobile() {
           ))}
         </ul>
       )}
+
+      {/* Modal: agregar broker */}
+      {showAddBroker && (
+        <Modal title="Agregar broker" onClose={() => setShowAddBroker(false)}>
+          <form onSubmit={addBroker} className="space-y-3">
+            <div>
+              <label className="block text-xs text-ink-3 mb-1">Nombre del broker</label>
+              <input
+                value={newBroker.name}
+                onChange={e => setNewBroker(b => ({ ...b, name: e.target.value }))}
+                placeholder="Ej.: Binance, Cocos, IOL, IBKR…"
+                className="w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-ink-3 mb-1">Tipo de moneda</label>
+              <select
+                value={newBroker.currency}
+                onChange={e => setNewBroker(b => ({ ...b, currency: e.target.value }))}
+                className="w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:border-ink-2"
+              >
+                <option value="USDT">USDT — Exchange crypto (Binance, Bybit, etc.)</option>
+                <option value="USD">USD — Broker en dólares (IBKR, Schwab, etc.)</option>
+                <option value="ARS">ARS — Broker en pesos (Cocos, IOL, Balanz)</option>
+              </select>
+              <p className="text-[10px] text-ink-3 mt-1 leading-relaxed">
+                Brokers ARS se convierten al blue para el valor total en USD.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAddBroker(false)}
+                className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1.5 text-xs bg-data-violet/10 text-data-violet border border-data-violet/30 hover:bg-data-violet/15 px-4 py-2 rounded-sm transition-colors"
+              >
+                <Plus size={12} strokeWidth={2} /> Agregar
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal: editar broker */}
+      {editingBroker && (
+        <Modal title={`Editar "${editingBroker.name}"`} onClose={() => setEditingBroker(null)}>
+          <form onSubmit={saveEditBroker} className="space-y-3">
+            <div>
+              <label className="block text-xs text-ink-3 mb-1">Nombre del broker</label>
+              <input
+                value={editingBroker.name}
+                onChange={e => setEditingBroker(eb => ({ ...eb, name: e.target.value }))}
+                className="w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:border-ink-2"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-ink-3 mb-1">Tipo de moneda</label>
+              <select
+                value={editingBroker.currency}
+                onChange={e => setEditingBroker(eb => ({ ...eb, currency: e.target.value }))}
+                className="w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:border-ink-2"
+              >
+                <option value="USDT">USDT</option>
+                <option value="USD">USD</option>
+                <option value="ARS">ARS</option>
+              </select>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingBroker(null)}
+                className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="text-xs bg-rendi-pos/10 text-rendi-pos border border-rendi-pos/30 hover:bg-rendi-pos/15 px-4 py-2 rounded-sm transition-colors"
+              >
+                Guardar
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal de upgrade cuando intenta agregar broker n°2 en Free */}
+      {brokerUpgrade && (
+        <UpgradeModal
+          title="Pasate a Rendi Pro para más brokers"
+          message={brokerUpgrade.message}
+          feature="brokers.create"
+          source="positions_mobile"
+          benefits={brokerUpgrade.benefits}
+          onClose={() => setBrokerUpgrade(null)}
+        />
+      )}
     </div>
+  )
+}
+
+// ─── BrokerFilterChip ──────────────────────────────────────────────────────
+
+function BrokerFilterChip({ active, onClick, label, currency }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 text-[11px] font-medium rounded-sm px-2.5 py-1.5 whitespace-nowrap transition-colors ${
+        active
+          ? 'bg-ink-0 text-bg-0 border border-ink-0'
+          : 'bg-bg-2 border border-line/50 text-ink-1 hover:bg-bg-3'
+      }`}
+    >
+      {label}
+      {currency && (
+        <span className={`text-[9px] font-mono uppercase tracking-caps px-1 py-px rounded-sm ${
+          active ? 'bg-bg-0/15 text-bg-0' : 'bg-bg-3 text-ink-3'
+        }`}>
+          {currency}
+        </span>
+      )}
+    </button>
+  )
+}
+
+// ─── BrokerSection ─────────────────────────────────────────────────────────
+// Header con nombre del broker + currency + valor total + acciones edit/delete.
+// Debajo, las positions del broker (cash siempre al final).
+
+function BrokerSection({ broker, positions, totalUsd, onEdit, onDelete }) {
+  return (
+    <section>
+      <div className="sticky top-[252px] z-10 bg-bg-0/95 backdrop-blur-md px-4 py-2 flex items-center justify-between gap-2 border-b border-line/30">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-1 truncate">
+            {broker.name}
+          </span>
+          <span className="text-[9px] font-mono uppercase tracking-caps px-1 py-px rounded-sm bg-bg-2 text-ink-3">
+            {broker.currency}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <span className="text-xs font-medium tabular text-ink-1">
+            ${Math.round(totalUsd).toLocaleString('en-US')}
+          </span>
+          <button
+            type="button"
+            onClick={onEdit}
+            className="p-1 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+            aria-label={`Editar ${broker.name}`}
+          >
+            <Pencil size={10} strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="p-1 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-2 transition-colors"
+            aria-label={`Eliminar ${broker.name}`}
+          >
+            <Trash2 size={10} strokeWidth={1.75} />
+          </button>
+        </div>
+      </div>
+      <ul className="divide-y divide-line/20">
+        {positions.map(p => (
+          <PositionRow
+            key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
+            p={p}
+          />
+        ))}
+      </ul>
+    </section>
   )
 }
 
@@ -219,8 +540,6 @@ function PositionRow({ p }) {
   const [addedToWl, setAddedToWl] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
 
-  // Solo armamos swipe actions para non-cash (cash no tiene operación
-  // ni se agrega a watchlist).
   const actions = p.is_cash ? [] : [
     {
       id: 'ai',
@@ -279,9 +598,6 @@ function PositionRow({ p }) {
         <div className="flex items-baseline gap-1.5">
           <span className="text-sm font-semibold text-ink-0 leading-none truncate">
             {p.asset}
-          </span>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none">
-            {p.broker}
           </span>
         </div>
         <div className="text-[11px] font-mono text-ink-3 leading-none mt-1.5 truncate">
