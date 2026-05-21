@@ -7056,12 +7056,7 @@ async def rebill_webhook(request: Request):
         log.warning("Rebill webhook with non-JSON body. Raw: %r", raw[:500])
         return Response(status_code=400)
 
-    event_type = (
-        payload.get("event")
-        or payload.get("type")
-        or payload.get("eventType")
-        or ""
-    )
+    event_type = rebill.extract_event_name(payload)
     metadata = rebill.extract_metadata(payload)
     rendi_user_id = metadata.get("rendi_user_id")
 

@@ -238,15 +238,39 @@ def verify_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
 
 # ─── Utils ─────────────────────────────────────────────────────────────────
 
-def extract_subscription_id(payload: dict) -> str:
-    """Extrae el subscription_id del webhook payload de Rebill.
-    Probamos múltiples paths posibles (la estructura puede variar por evento).
+def extract_event_name(payload: dict) -> str:
+    """Extrae el event name del webhook. Rebill lo envía en `webhook.event`
+    (anidado), NO en el top-level del payload.
     """
     candidates = [
+        (payload.get("webhook") or {}).get("event"),
+        payload.get("event"),
+        payload.get("type"),
+        payload.get("eventType"),
+    ]
+    for c in candidates:
+        if c and isinstance(c, str):
+            return c
+    return ""
+
+
+def extract_subscription_id(payload: dict) -> str:
+    """Extrae el subscription_id del webhook payload de Rebill.
+
+    Estructura real observada en sandbox:
+      • subscription.* → payload.data.subscription.id
+      • payment.*      → payload.data.payment.id (es payment_id, no sub_id)
+                         + payload.data.payment puede tener subscriptionId al lado
+    """
+    data = payload.get("data") or {}
+    sub = data.get("subscription") or {}
+    pay = data.get("payment") or {}
+    candidates = [
+        sub.get("id"),                          # subscription.* events
+        pay.get("subscriptionId"),              # payment.* events
+        data.get("subscription_id"),
+        data.get("id"),
         payload.get("subscription_id"),
-        (payload.get("data") or {}).get("subscription_id"),
-        (payload.get("data") or {}).get("id"),
-        (payload.get("subscription") or {}).get("id"),
         payload.get("id"),
     ]
     for c in candidates:
@@ -256,10 +280,21 @@ def extract_subscription_id(payload: dict) -> str:
 
 
 def extract_metadata(payload: dict) -> dict:
-    """Extrae el metadata del webhook payload (lugar puede variar)."""
+    """Extrae el metadata del webhook payload de Rebill.
+
+    Estructura real observada en sandbox:
+      • subscription.* → payload.data.subscription.metadata
+      • payment.*      → payload.data.payment.metadata
+
+    Ambos contienen el merged metadata (plan-level + paymentLink-level),
+    incluyendo nuestro rendi_user_id.
+    """
+    data = payload.get("data") or {}
     candidates = [
+        (data.get("subscription") or {}).get("metadata"),
+        (data.get("payment") or {}).get("metadata"),
+        data.get("metadata"),
         payload.get("metadata"),
-        (payload.get("data") or {}).get("metadata"),
         (payload.get("subscription") or {}).get("metadata"),
     ]
     for c in candidates:
