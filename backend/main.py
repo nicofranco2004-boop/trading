@@ -226,6 +226,11 @@ def init_db():
         # retroactivamente para no romper su acceso).
         conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0")
         conn.execute("UPDATE users SET email_verified = 1")
+    if user_cols and 'investor_profile' not in user_cols:
+        # Perfil de inversor (7 respuestas guardadas como JSON). NULL = no completó
+        # el test todavía. Se inyecta en el system prompt del Coach IA cuando hay
+        # un valor, así la IA conoce horizonte/tolerancia/objetivo/estilo/etc.
+        conn.execute("ALTER TABLE users ADD COLUMN investor_profile TEXT")
     # Sincronizar is_admin + approved para usuarios con email admin
     rows = conn.execute("SELECT id, email FROM users").fetchall()
     for r in rows:
@@ -1513,6 +1518,74 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
     token = create_token(uid, pca)
     set_auth_cookie(response, token)
     return {"ok": True, "token": token}
+
+
+# ─── Investor profile (test de 7 preguntas para enriquecer el Coach IA) ─────
+
+# Valores aceptados por cada pregunta. Si el frontend manda algo distinto, lo
+# rechazamos para evitar prompt injection y mantener consistencia con el system
+# prompt de Coach IA.
+_INVESTOR_PROFILE_OPTS = {
+    "horizon":     {"short", "medium", "long"},
+    "drawdown":    {"sell_all", "sell_some", "hold", "buy_more"},
+    "goal":        {"retirement", "freedom", "learn", "hobby", "specific_purchase"},
+    "style":       {"passive", "active", "mixed"},
+    "net_worth":   {"under_10", "10_to_30", "30_to_60", "over_60"},
+    "liquidity":   {"yes", "no", "partial"},
+    "experience":  {"first_time", "under_2", "2_to_5", "over_5"},
+}
+
+
+class InvestorProfileIn(BaseModel):
+    horizon: Optional[str] = None
+    drawdown: Optional[str] = None
+    goal: Optional[str] = None
+    style: Optional[str] = None
+    net_worth: Optional[str] = None
+    liquidity: Optional[str] = None
+    experience: Optional[str] = None
+
+
+@app.get("/api/auth/investor-profile")
+def get_investor_profile(uid: int = Depends(get_current_user)):
+    """Devuelve el perfil de inversor del user (o {} si no completó el test)."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT investor_profile FROM users WHERE id=?", (uid,)
+        ).fetchone()
+        if not row or not row["investor_profile"]:
+            return {}
+        try:
+            return json.loads(row["investor_profile"])
+        except (ValueError, TypeError):
+            return {}
+    finally:
+        conn.close()
+
+
+@app.post("/api/auth/investor-profile")
+def save_investor_profile(data: InvestorProfileIn, uid: int = Depends(get_current_user)):
+    """Guarda/actualiza el perfil. Valida valores contra el whitelist para
+    evitar basura/inyecciones que terminen en el prompt de IA."""
+    payload = data.model_dump(exclude_none=True)
+    clean: Dict[str, str] = {}
+    for key, val in payload.items():
+        allowed = _INVESTOR_PROFILE_OPTS.get(key)
+        if not allowed:
+            continue
+        if isinstance(val, str) and val in allowed:
+            clean[key] = val
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE users SET investor_profile=? WHERE id=?",
+            (json.dumps(clean) if clean else None, uid),
+        )
+        conn.commit()
+        return {"ok": True, "profile": clean}
+    finally:
+        conn.close()
 
 
 # ─── Brokers ─────────────────────────────────────────────────────────────────
@@ -6059,6 +6132,71 @@ def admin_approve_user(user_id: int, uid: int = Depends(get_admin_user)):
     return {"ok": True}
 
 
+@app.post("/api/admin/wipe-broker-data")
+def admin_wipe_broker_data(broker: str, uid: int = Depends(get_admin_user)):
+    """Limpieza nuclear de datos de un broker: borra operations, positions,
+    monthly_entries, snapshots y marca batches asociados como reverted.
+    El broker en sí queda — el user lo sigue viendo en `/posiciones` y puede
+    re-importar limpio.
+
+    Útil cuando imports viejos dejaron huérfanos (operaciones sin
+    import_op_links, commissions infladas por mapeo equivocado del parser
+    genérico, etc.) y el revert estándar no los pudo limpiar.
+
+    Idempotente: correr 2 veces no hace daño.
+    """
+    conn = get_db()
+    try:
+        # Verificar que el broker exista para este admin
+        b = conn.execute(
+            "SELECT id FROM brokers WHERE user_id=? AND name=?", (uid, broker),
+        ).fetchone()
+        if not b:
+            raise HTTPException(404, f"Broker '{broker}' no existe para este usuario")
+
+        counts: Dict[str, int] = {}
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM operations WHERE user_id=? AND broker=?", (uid, broker),
+            )
+            counts["operations_deleted"] = cur.rowcount
+
+            cur = conn.execute(
+                "DELETE FROM positions WHERE user_id=? AND broker=?", (uid, broker),
+            )
+            counts["positions_deleted"] = cur.rowcount
+
+            cur = conn.execute(
+                "DELETE FROM monthly_entries WHERE user_id=? AND broker=?", (uid, broker),
+            )
+            counts["monthly_entries_deleted"] = cur.rowcount
+
+            cur = conn.execute(
+                "DELETE FROM snapshots WHERE user_id=? AND broker=?", (uid, broker),
+            )
+            counts["snapshots_deleted"] = cur.rowcount
+
+            cur = conn.execute(
+                """UPDATE import_batches
+                   SET status='reverted', reverted_at=datetime('now')
+                   WHERE user_id=? AND broker=? AND status IN ('confirmed','preview')""",
+                (uid, broker),
+            )
+            counts["batches_marked_reverted"] = cur.rowcount
+
+        # Recalcular aggregates globales (afecta el 'global' que sumaba el
+        # broker borrado)
+        try:
+            with conn:
+                _recalc_pnl_realized_from_ops(conn, uid)
+        except Exception as ex:
+            log.error("Recalc tras wipe falló: %s", ex)
+
+        return {"ok": True, "broker": broker, **counts}
+    finally:
+        conn.close()
+
+
 @app.delete("/api/admin/users/{user_id}")
 def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
     """Borra un usuario y todos sus datos. No permite borrarse a sí mismo ni a otros admins."""
@@ -6214,6 +6352,94 @@ def _strip_markdown(text: str) -> str:
     text = _MD_LIST_RE.sub('', text)
     text = _MD_HEADER_RE.sub('', text)
     return text
+
+
+# Diccionarios de labels en español para serializar el perfil del inversor
+# (test de 7 preguntas en /config) dentro del system prompt del Coach IA.
+_INVESTOR_LABELS = {
+    "horizon": {
+        "short": "corto plazo (días/semanas)",
+        "medium": "mediano plazo (meses)",
+        "long": "largo plazo (años)",
+    },
+    "drawdown": {
+        "sell_all": "vendería todo el portfolio",
+        "sell_some": "vendería una parte",
+        "hold": "mantendría la posición sin vender",
+        "buy_more": "compraría más para promediar abajo",
+    },
+    "goal": {
+        "retirement": "jubilación",
+        "freedom": "libertad financiera",
+        "learn": "aprender a invertir",
+        "hobby": "hobby / pasatiempo",
+        "specific_purchase": "compra puntual (casa, auto, viaje)",
+    },
+    "style": {
+        "passive": "pasivo (buy & hold)",
+        "active": "activo (trading frecuente)",
+        "mixed": "mixto",
+    },
+    "net_worth": {
+        "under_10": "menos del 10% de su patrimonio total",
+        "10_to_30": "entre 10% y 30% de su patrimonio total",
+        "30_to_60": "entre 30% y 60% de su patrimonio total",
+        "over_60": "más del 60% de su patrimonio total",
+    },
+    "liquidity": {
+        "yes": "necesita parte de esta plata en los próximos 12-24 meses",
+        "no": "no necesita esta plata en los próximos 12-24 meses",
+        "partial": "podría necesitar parte de esta plata en 12-24 meses",
+    },
+    "experience": {
+        "first_time": "primera vez invirtiendo",
+        "under_2": "menos de 2 años de experiencia",
+        "2_to_5": "entre 2 y 5 años de experiencia",
+        "over_5": "más de 5 años de experiencia",
+    },
+}
+
+
+def _format_investor_profile_for_prompt(profile_json: Optional[str]) -> str:
+    """Convierte el JSON del perfil de inversor en un bloque legible para el
+    system prompt de Coach IA. Devuelve '' si el user no completó el test."""
+    if not profile_json:
+        return ""
+    try:
+        profile = json.loads(profile_json) if isinstance(profile_json, str) else profile_json
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(profile, dict) or not profile:
+        return ""
+
+    lines = []
+    label_order = ["horizon", "drawdown", "goal", "style", "net_worth", "liquidity", "experience"]
+    captions = {
+        "horizon": "Horizonte declarado",
+        "drawdown": "Reacción ante drawdown del 30%",
+        "goal": "Objetivo principal",
+        "style": "Estilo declarado",
+        "net_worth": "Peso del portfolio en su patrimonio",
+        "liquidity": "Necesidad de liquidez próxima",
+        "experience": "Experiencia invirtiendo",
+    }
+    for key in label_order:
+        val = profile.get(key)
+        if not val:
+            continue
+        label = _INVESTOR_LABELS.get(key, {}).get(val, val)
+        lines.append(f"- {captions[key]}: {label}")
+
+    if not lines:
+        return ""
+
+    return (
+        "\n\nPERFIL DEL INVERSOR (lo que declaró en el onboarding)\n"
+        "Usá este perfil para calibrar tu respuesta — pero contrastalo con su comportamiento real "
+        "(turnover, concentración, hold time). Si hay mismatch (ej: dice 'long-term holder' pero rota 80% mensual), "
+        "señalalo amablemente como insight, no como reproche.\n"
+        + "\n".join(lines)
+    )
 
 
 class ChatMsg(BaseModel):
@@ -7176,6 +7402,10 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     try:
         from ai import quota
         tier = quota.get_tier(conn, uid)
+        # Perfil de inversor declarado (test 7 preguntas en /config)
+        prof_row = conn.execute(
+            "SELECT investor_profile FROM users WHERE id=?", (uid,)
+        ).fetchone()
     finally:
         conn.close()
 
@@ -7183,6 +7413,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
     max_tokens = 1000 if is_premium else 300
     max_tokens_fallback = 800 if is_premium else 250
+
+    investor_block = _format_investor_profile_for_prompt(prof_row["investor_profile"] if prof_row else None)
 
     portfolio_json = json.dumps(data.snapshot, indent=2, ensure_ascii=False, default=str)
     system_text = f"""{base_system}
@@ -7193,7 +7425,7 @@ Cuando el usuario pregunta algo específico ("¿qué % es Tesla?", "¿cuánto pe
 
 ```json
 {portfolio_json}
-```"""
+```{investor_block}"""
 
     # Construir messages para el loop de tool_use
     messages_loop: list = [m.model_dump() for m in data.messages]

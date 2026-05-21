@@ -17,6 +17,7 @@ import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
+import InvestorProfileForm from '../components/InvestorProfileForm'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
@@ -352,6 +353,15 @@ export default function Config() {
           </form>
         </Panel>
       </div>
+
+      {/* ── Perfil de inversor (test 7 preguntas para Coach IA) ─────────── */}
+      <Panel padding="none" className="mt-4">
+        <div className="px-4 py-3 border-b border-line/40 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-ink-0">Perfil de inversor</h2>
+          <span className="text-[10px] text-ink-3 uppercase tracking-wider">Contexto para el Coach IA</span>
+        </div>
+        <InvestorProfileForm />
+      </Panel>
 
       {/* ── Soporte ─────────────────────────────────────────────────────── */}
       <Panel padding="none" className="mt-4">
