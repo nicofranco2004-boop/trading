@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   Home as HomeIcon, LayoutDashboard, Briefcase, List, Settings, LogOut,
-  Sun, Moon, Compass, Shield, Target, BarChart3, Bell, Upload, Menu, Brain, Sparkles,
+  Sun, Moon, Compass, Shield, Target, BarChart3, Bell, Upload, Menu, Brain, Sparkles, UserRound,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
@@ -50,8 +50,9 @@ const GROUPS = [
   {
     label: 'Personal',
     items: [
-      { to: '/objetivos', label: 'Objetivos', icon: Target },
-      { to: '/wrapped',   label: 'Wrapped',   icon: Sparkles },
+      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
+      { to: '/objetivos',       label: 'Objetivos',          icon: Target },
+      { to: '/wrapped',         label: 'Wrapped',            icon: Sparkles },
     ],
   },
 ]

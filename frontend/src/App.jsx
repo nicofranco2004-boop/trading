@@ -23,6 +23,7 @@ import Config from './pages/Config'
 import Insights from './pages/Insights'
 import Admin from './pages/Admin'
 import Goals from './pages/Goals'
+import PerfilInversor from './pages/PerfilInversor'
 import Imports from './pages/Imports'
 import Reports from './pages/Reports'
 import Novedades from './pages/Novedades'
@@ -69,6 +70,7 @@ function AppRoutes() {
       <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />
       <Route path="/operaciones" element={<Operations />} />
       <Route path="/config" element={<Config />} />
+      <Route path="/perfil-inversor" element={<PerfilInversor />} />
       <Route path="/objetivos" element={<Goals />} />
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />

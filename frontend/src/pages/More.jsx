@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   LayoutDashboard, Bell, BarChart3, Brain, List, Upload,
-  Target, Sparkles, Settings, Shield, ChevronRight, LogOut, BellRing, BellOff, Send,
+  Target, Sparkles, Settings, Shield, ChevronRight, LogOut, BellRing, BellOff, Send, UserRound,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import { useAuth } from '../contexts/AuthContext'
@@ -36,8 +36,9 @@ const GROUPS = [
   {
     label: 'Personal',
     items: [
-      { to: '/objetivos', label: 'Objetivos', icon: Target,    sub: 'Metas financieras' },
-      { to: '/wrapped',   label: 'Wrapped',   icon: Sparkles,  sub: 'Reseña anual' },
+      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound, sub: 'Contexto para el Coach IA' },
+      { to: '/objetivos',       label: 'Objetivos',          icon: Target,    sub: 'Metas financieras' },
+      { to: '/wrapped',         label: 'Wrapped',            icon: Sparkles,  sub: 'Reseña anual' },
     ],
   },
 ]
