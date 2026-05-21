@@ -126,11 +126,19 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
   let prevNetDep = null
   let prevValueArs = null
   let prevBaselineArs = null
+  // Peak portfolio value alcanzado en toda la historia. Sirve como denominador
+  // estable para realized% cuando hay retiros grandes: si la cartera llegó a
+  // \$100k y después retirás \$70k para impuestos, net_deposited puede quedar
+  // chico o negativo. Usar peakValue evita que el ratio (cumRealized / denom)
+  // explote a 90%+ artificialmente — es la base "real" del capital trabajado.
+  let peakValueUsd = 0
+  let peakValueArs = 0
 
   for (const s of sorted) {
     const baselineUsd = (s.net_deposited && s.net_deposited > 0) ? s.net_deposited : s.total_invested
     const value = s.total_value || 0
     const netDep = baselineUsd || 0
+    if (value > peakValueUsd) peakValueUsd = value
 
     // First snapshot → baseline = 0% TWRR
     if (prevValueUsd === null) {
@@ -142,16 +150,21 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
       prevBaselineArs = netDep * fx0
       prevValueArs = value * fx0
     } else {
-      // USD TWRR period return
+      // USD TWRR period return — clamp per-period a ±50% para evitar spikes
+      // por flow approximation cuando hay withdraw + realized en el mismo mes.
       const flows = netDep - prevNetDep
       const pnl = (value - prevValueUsd) - flows
       const avgCap = prevValueUsd + 0.5 * flows
       const rRaw = avgCap > 0 ? pnl / avgCap : 0
-      const r = Math.max(rRaw, -0.99)
+      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
       cumUsd *= (1 + r)
     }
 
-    const realPctUsd = baselineUsd > 0 ? (realizedAt(s.date) / baselineUsd) * 100 : 0
+    // Denominador estable para realized%: el MAYOR de net_deposited actual y
+    // el peak portfolio value histórico. Así un withdrawal grande no infla el
+    // % al achicar el denominador.
+    const denomRealizedUsd = Math.max(baselineUsd, peakValueUsd * 0.8)
+    const realPctUsd = denomRealizedUsd > 0 ? (realizedAt(s.date) / denomRealizedUsd) * 100 : 0
     seriesUsd.push({
       key: s.date,
       label: s.date.slice(5),       // MM-DD
@@ -167,16 +180,18 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
     const fx = lookupHistoricalDolar(bench, y, mo, tcBlue)
     const valueArs    = value * fx
     const baselineArs = netDep * fx
+    if (valueArs > peakValueArs) peakValueArs = valueArs
 
     if (prevValueArs !== null && prevBaselineArs !== null) {
       const flowsArs = baselineArs - prevBaselineArs
       const pnlArs = (valueArs - prevValueArs) - flowsArs
       const avgArs = prevValueArs + 0.5 * flowsArs
       const rRawArs = avgArs > 0 ? pnlArs / avgArs : 0
-      const rArs = Math.max(rRawArs, -0.99)
+      const rArs = Math.min(Math.max(rRawArs, -0.99), 0.5)
       cumArs *= (1 + rArs)
     }
-    const realPctArs = baselineArs > 0 ? ((realizedAt(s.date) * fx) / baselineArs) * 100 : 0
+    const denomRealizedArs = Math.max(baselineArs, peakValueArs * 0.8)
+    const realPctArs = denomRealizedArs > 0 ? ((realizedAt(s.date) * fx) / denomRealizedArs) * 100 : 0
     seriesArs.push({
       key: s.date,
       label: s.date.slice(5),
