@@ -150,11 +150,20 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
       prevBaselineArs = netDep * fx0
       prevValueArs = value * fx0
     } else {
-      // USD TWRR period return — clamp per-period a ±50% para evitar spikes
-      // por flow approximation cuando hay withdraw + realized en el mismo mes.
+      // USD TWRR period return — Modified Dietz con heurística big-withdrawal.
+      //
+      // Cuando |flow| > 30% del capital inicial Y flow < 0, Modified Dietz
+      // (avgCap = ci + 0.5×flow) achica demasiado el denominador y crea
+      // spikes artificiales. Caso real: papá retira \$70k de \$100k de capital
+      // y cierra una posición con +\$20k. Con MD clásico: 20/65 = +30.7%
+      // que compunde a +91% acumulado. La verdad operativa: ganó \$20 sobre
+      // \$100 ≈ +20%. Usamos prevValueUsd directo como denom en esos casos
+      // (asumimos withdraw al final del período).
       const flows = netDep - prevNetDep
       const pnl = (value - prevValueUsd) - flows
-      const avgCap = prevValueUsd + 0.5 * flows
+      const flowRatio = prevValueUsd > 0 ? Math.abs(flows) / prevValueUsd : 0
+      const isBigWithdraw = flows < 0 && flowRatio > 0.3
+      const avgCap = isBigWithdraw ? prevValueUsd : (prevValueUsd + 0.5 * flows)
       const rRaw = avgCap > 0 ? pnl / avgCap : 0
       const r = Math.min(Math.max(rRaw, -0.99), 0.5)
       cumUsd *= (1 + r)
@@ -185,7 +194,9 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcB
     if (prevValueArs !== null && prevBaselineArs !== null) {
       const flowsArs = baselineArs - prevBaselineArs
       const pnlArs = (valueArs - prevValueArs) - flowsArs
-      const avgArs = prevValueArs + 0.5 * flowsArs
+      const flowRatioArs = prevValueArs > 0 ? Math.abs(flowsArs) / prevValueArs : 0
+      const isBigWithdrawArs = flowsArs < 0 && flowRatioArs > 0.3
+      const avgArs = isBigWithdrawArs ? prevValueArs : (prevValueArs + 0.5 * flowsArs)
       const rRawArs = avgArs > 0 ? pnlArs / avgArs : 0
       const rArs = Math.min(Math.max(rRawArs, -0.99), 0.5)
       cumArs *= (1 + rArs)

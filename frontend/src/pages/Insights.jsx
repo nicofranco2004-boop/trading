@@ -346,11 +346,17 @@ function InsightsDesktop() {
       cumNetDeposits += net
       if (cumNetDeposits > peakNetDeposits) peakNetDeposits = cumNetDeposits
 
-      // Modified Dietz USD
+      // Modified Dietz USD con heurística big-withdrawal: cuando el flow
+      // negativo supera 30% del capital inicial, asumimos que pasó al final
+      // del período (usamos ci como denom) en vez de mid-period (avgCap chico
+      // que infla el ratio). Evita spikes artificiales cuando el user retira
+      // plata grande el mismo mes que cierra una posición ganadora.
       const isImportInitial = isFirst && ci === 0 && net > 0
-      const avgCap = isImportInitial ? net : ci + 0.5 * net
+      const flowRatio = ci > 0 ? Math.abs(net) / ci : 0
+      const isBigWithdraw = net < 0 && flowRatio > 0.3
+      const avgCap = isImportInitial ? net : (isBigWithdraw ? ci : ci + 0.5 * net)
       const rRaw = avgCap > 0 ? (cf - ci - net) / avgCap : 0
-      const r = Math.max(rRaw, -0.99)
+      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
       cumIdx *= (1 + r)
 
       const totalPct = +((cumIdx - 1) * 100).toFixed(2)
@@ -601,64 +607,18 @@ function InsightsDesktop() {
       return found ? bench.sp500[found] : null
     }
 
-    // ── Shadow S&P 500 portfolio ───────────────────────────────────────────
-    // Simulamos: "qué pasaría si los mismos depósitos/retiros del usuario
-    // hubieran ido a S&P 500 en vez de su cartera real". Para cada mes con
-    // flow != 0, compramos/vendemos units al precio del S&P de ese mes. El
-    // resultado HOY es shadow_value = total_units × precio_actual.
-    //
-    // Esto reemplaza la línea azul "lump sum from day 1" (que comparaba peras
-    // con manzanas: pura apreciación de mercado vs cartera con flows reales).
-    // Con shadow portfolio, ambas líneas reflejan las mismas decisiones de
-    // capital — sólo difieren en QUÉ activos compraron.
-    const shadowPctByKey = new Map()
-    if (currency === 'USD' && bench?.sp500 && globalMonthly.length > 0) {
-      let units = 0
-      let cumNetDep = 0
-      let peakNetDep = 0
-      // Denominador estable: si el net dep actual cae por debajo del 60% del
-      // peak (señal de un retiro grande), usamos el peak. Sin esto, el ratio
-      // shadow_value / cumNetDep explota cuando cumNetDep se achica — el
-      // mismo bug del % realized de la línea verde, pero en el bench.
-      const stableDenom = (cur, peak) =>
-        (cur >= peak * 0.6 && cur > 1000) ? cur : peak
-
-      for (const m of globalMonthly) {
-        const mk = monthKey(m.year, m.month)
-        const spPrice = spLookup(mk)
-        const flow = (m.deposits || 0) - (m.withdrawals || 0)
-        cumNetDep += flow
-        if (cumNetDep > peakNetDep) peakNetDep = cumNetDep
-        if (spPrice && flow !== 0) units += flow / spPrice
-        const denom = stableDenom(cumNetDep, peakNetDep)
-        if (spPrice && denom > 0) {
-          const value = units * spPrice
-          shadowPctByKey.set(mk, +(((value / denom) - 1) * 100).toFixed(2))
-        }
-      }
-      // Punto "Hoy" — precio más reciente disponible
-      const latestSp = bench.sp500[spKeys[spKeys.length - 1]]
-      const denomToday = stableDenom(cumNetDep, peakNetDep)
-      if (latestSp && denomToday > 0) {
-        const value = units * latestSp
-        shadowPctByKey.set('today', +(((value / denomToday) - 1) * 100).toFixed(2))
-      }
-    }
-
     const withBench = windowSeries.map(s => {
       let benchPct = null
       if (currency === 'USD' && bench?.sp500) {
-        const mk = monthKeyOf(s.key)
-        if (shadowPctByKey.has(mk)) {
-          benchPct = shadowPctByKey.get(mk)
-        } else if (shadowPctByKey.size > 0) {
-          // Fallback: usar el último mes disponible <= mk (cobre snapshots
-          // diarios entre meses sin entry monthly).
-          const sortedSk = [...shadowPctByKey.keys()].filter(k => k !== 'today').sort()
-          let found = null
-          for (const k of sortedSk) { if (k <= mk) found = k; else break }
-          if (found) benchPct = shadowPctByKey.get(found)
-        }
+        // Cumulative TWR del S&P 500: precio_actual vs precio del inicio del
+        // rango visible. Es el estándar para benchmarks — neutral a los flows
+        // del user (las gestoras profesionales reportan TWR para que sea
+        // comparable contra índices). El shadow portfolio approach que
+        // probamos antes se rompía con withdraws grandes porque generaba
+        // units negativas. Volvemos al TWR simple.
+        const spBase = spLookup(rawFirstKey)
+        const cur = spLookup(s.key)
+        if (spBase && cur) benchPct = +(((cur / spBase) - 1) * 100).toFixed(2)
       } else if (currency === 'ARS' && bench?.inflation_ar) {
         // windowSeries ya es mensual — componer IPC desde el segundo mes.
         let cum = 1
