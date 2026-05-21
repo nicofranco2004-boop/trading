@@ -825,7 +825,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
           ) : (
             <div className="text-xs text-amber-600 dark:text-amber-400 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/20">
               Todavía no tenés brokers cargados.
-              <a href="/config" className="ml-1 underline font-medium">Crear uno en Configuración</a>
+              <a href="/posiciones" className="ml-1 underline font-medium">Crear uno en Posiciones</a>
               {' '}o usá <button
                 type="button"
                 onClick={() => setImportMode('general')}
@@ -1359,7 +1359,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             Brokers nuevos creados
           </div>
           <p className="text-xs text-ink-2 mb-1.5">
-            Detectamos brokers en el archivo que no estaban en tu cuenta. Los creamos automáticamente con la moneda inferida (podés cambiarla después en Configuración).
+            Detectamos brokers en el archivo que no estaban en tu cuenta. Los creamos automáticamente con la moneda inferida (podés cambiarla después en Posiciones).
           </p>
           <ul className="text-xs space-y-0.5">
             {preview.new_brokers_created.map(b => (
