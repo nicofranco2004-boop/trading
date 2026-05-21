@@ -461,24 +461,44 @@ function InsightsDesktop() {
     const out = []
     const baseline = globalMonthly[0].capital_inicio || 0
     let netFlows = 0, cumRealized = 0
+    // Peak portfolio value y peak invested capital — usados como denominador
+    // estable cuando hay retiros grandes. Sin esto, un withdraw que achica
+    // `invested` (deposits - withdrawals) hace explotar el ratio
+    // (value - invested) / invested. Caso real: papá retira \$70k de \$100k,
+    // cierra una posición con +\$20k → invested cae a -\$50k → ratio explota.
+    let peakInvested = baseline > 0 ? baseline : 0
+    let peakValue = baseline > 0 ? baseline : 0
+
+    // Si current_invested cae bajo 60% del peak (señal de retiro grande),
+    // usamos el peak como base "real" del capital que llegó a trabajar.
+    const stableInvested = (cur, peak) =>
+      (cur >= peak * 0.6 && cur > 1000) ? cur : peak
+
     const firstMk = monthKey(globalMonthly[0].year, globalMonthly[0].month)
     out.push({ key: firstMk, label: benchLabel(firstMk), total: 0, realized: 0 })
     for (const m of globalMonthly) {
       netFlows += (m.deposits || 0) - (m.withdrawals || 0)
       cumRealized += (m.pnl_realized || 0)
-      const invested = baseline + netFlows
-      const rawTotal = invested > 0 ? ((m.capital_final - invested) / invested) * 100 : 0
-      const total = Math.max(rawTotal, -99)
-      const real  = invested > 0 ? (cumRealized / invested) * 100 : 0
+      const investedNow = baseline + netFlows
+      if (investedNow > peakInvested) peakInvested = investedNow
+      if ((m.capital_final || 0) > peakValue) peakValue = m.capital_final || 0
+
+      const denom = stableInvested(investedNow, peakInvested)
+      const rawTotal = denom > 0 ? ((m.capital_final - denom) / denom) * 100 : 0
+      const total = Math.min(Math.max(rawTotal, -99), 200)  // cap a ±99/200% por safety
+      const real  = denom > 0 ? (cumRealized / denom) * 100 : 0
       const k = monthKey(m.year, m.month)
       out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
     // Punto "Hoy"
     if (totalPortfolio > 0) {
-      const invested = baseline + netFlows
-      const rawTotal = invested > 0 ? ((totalPortfolio - invested) / invested) * 100 : 0
-      const total = Math.max(rawTotal, -99)
-      const real  = invested > 0 ? (cumRealized / invested) * 100 : 0
+      if (totalPortfolio > peakValue) peakValue = totalPortfolio
+      const investedNow = baseline + netFlows
+      if (investedNow > peakInvested) peakInvested = investedNow
+      const denom = stableInvested(investedNow, peakInvested)
+      const rawTotal = denom > 0 ? ((totalPortfolio - denom) / denom) * 100 : 0
+      const total = Math.min(Math.max(rawTotal, -99), 200)
+      const real  = denom > 0 ? (cumRealized / denom) * 100 : 0
       out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
     // Deduplicar por key (el primer mes aparece 2 veces: punto base + primera iteración del loop)
@@ -511,6 +531,10 @@ function InsightsDesktop() {
     const out = []
     const baselinePesos = arsMonths[0][1].capital_inicio * blueBase
     let netFlowsPesos = 0, cumRealizedPesos = 0
+    // Mismo treatment de peak-stable denom que benchSeriesUsd (ver arriba)
+    let peakInvestedPesos = baselinePesos > 0 ? baselinePesos : 0
+    const stableInvestedPesos = (cur, peak) =>
+      (cur >= peak * 0.6 && cur > 1000) ? cur : peak
     out.push({ key: firstKey, label: benchLabel(firstKey), total: 0, realized: 0 })
 
     for (const [k, m] of arsMonths) {
@@ -518,11 +542,13 @@ function InsightsDesktop() {
       const net = (m.deposits || 0) - (m.withdrawals || 0)
       netFlowsPesos += net * fx
       cumRealizedPesos += (m.pnl_realized || 0) * fx
-      const investedPesos = baselinePesos + netFlowsPesos
+      const investedNowPesos = baselinePesos + netFlowsPesos
+      if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
+      const denomP = stableInvestedPesos(investedNowPesos, peakInvestedPesos)
       const valuePesos    = (m.capital_final || 0) * fx
-      const rawTotal   = investedPesos > 0 ? ((valuePesos - investedPesos) / investedPesos) * 100 : 0
-      const total      = Math.max(rawTotal, -99)
-      const real       = investedPesos > 0 ? (cumRealizedPesos / investedPesos) * 100 : 0
+      const rawTotal   = denomP > 0 ? ((valuePesos - denomP) / denomP) * 100 : 0
+      const total      = Math.min(Math.max(rawTotal, -99), 200)
+      const real       = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
     // Punto "Hoy" — valor live de posiciones ARS al blue actual
@@ -531,10 +557,12 @@ function InsightsDesktop() {
       .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue).value, 0)
     if (arsLiveUsd > 0) {
       const valueNow = arsLiveUsd * tcBlue
-      const investedPesos = baselinePesos + netFlowsPesos
-      const rawTotal = investedPesos > 0 ? ((valueNow - investedPesos) / investedPesos) * 100 : 0
-      const total = Math.max(rawTotal, -99)
-      const real  = investedPesos > 0 ? (cumRealizedPesos / investedPesos) * 100 : 0
+      const investedNowPesos = baselinePesos + netFlowsPesos
+      if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
+      const denomP = stableInvestedPesos(investedNowPesos, peakInvestedPesos)
+      const rawTotal = denomP > 0 ? ((valueNow - denomP) / denomP) * 100 : 0
+      const total = Math.min(Math.max(rawTotal, -99), 200)
+      const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
     // Deduplicar
