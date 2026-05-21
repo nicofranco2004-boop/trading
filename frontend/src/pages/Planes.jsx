@@ -28,10 +28,10 @@ import { api } from '../utils/api'
 // muestra USD como precio principal + conversión ARS live al blue de hoy
 // como subtítulo informativo.
 export const PLUS_PRICE_USD = '5'
-export const PRO_PRICE_USD = '6.99'
+export const PRO_PRICE_USD = '8'
 // Anual con ~16.5% off vs monthly × 12
 export const PLUS_PRICE_ANNUAL_USD = '50'
-export const PRO_PRICE_ANNUAL_USD = '71'
+export const PRO_PRICE_ANNUAL_USD = '80'
 
 // Precios ARS legacy (todavía usados en algunos lugares para back-compat
 // con el flow viejo de Mercado Pago). Cuando se complete la migración a
