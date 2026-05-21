@@ -1557,23 +1557,24 @@ function InsightsDesktop() {
               {currency === 'USD' ? 'Portfolio vs S&P 500 (USD)' : 'Portfolio vs Inflación (ARS)'}
             </h2>
             <InfoTooltip>
-              <p className="font-semibold text-ink-0">Time-Weighted Return (TWRR)</p>
-              <p>Rendimiento <strong>independiente del timing</strong> de tus aportes y retiros — mide solamente cómo performeó el capital invertido. Es la métrica estándar de la industria (la que usa el S&P 500 para reportar).</p>
+              <p className="font-semibold text-ink-0">% rendimiento acumulado sobre capital aportado</p>
+              <p>Cada línea muestra cuánto creció (o cayó) sobre lo que pusiste neto. Las 3 arrancan en 0% al inicio del rango visible.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-0">Las 3 líneas</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>P/L total</strong> (verde sólido): rendimiento de tu cartera, incluye realizado + no realizado.</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>P/L realizado</strong> (amarillo punteado): solo lo ya cobrado (ventas + dividendos + intereses), excluye plusvalía no realizada.</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{currency === 'USD' ? 'S&P 500' : 'Inflación ARS'}</strong>: benchmark de comparación.</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>P/L total</strong> (verde sólido): rendimiento de tu cartera, incluye realizado + no realizado (plusvalía abierta).</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>P/L realizado</strong> (amarillo punteado): solo lo ya cobrado — ventas, dividendos, intereses. Excluye plusvalía no vendida.</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{currency === 'USD' ? 'S&P 500' : 'Inflación ARS'}</strong>: {currency === 'USD' ? 'rendimiento puro del índice (buy & hold pasivo) como referencia de mercado.' : 'inflación acumulada — para ver si tu cartera ARS está manteniendo poder de compra.'}</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Cómo se calcula tu línea</p>
+              <p className="text-ink-3 font-mono text-[11px]">% = (valor actual − aportado neto) / aportado peak × 100</p>
+              <p className="text-ink-3">El "aportado peak" es el máximo histórico de capital neto invertido. Usarlo como denominador evita un bug clásico: si retirás \$70k de \$100k para impuestos, "aportado actual" cae a \$30k y cualquier ganancia chica se vería como spike de +200%. Con peak, el % refleja la performance real sobre el capital que llegó a trabajar.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="text-ink-3">
-                Puede no coincidir con "Resultado total / Capital aportado" del Dashboard:
-                el Dashboard mide cuánto creció tu plata neta; el chart compone rendimientos mes a mes
-                — un crash temprano cuesta más en TWRR porque después tenés que recuperar desde una base chica.
+                <strong className="text-ink-1">Puede no coincidir con el Dashboard:</strong> el Dashboard divide por el aportado NETO actual (no por el peak). Si tuviste retiros grandes, el chart muestra un número más conservador. Para flujos normales (depósitos sin retiros importantes), ambos coinciden.
               </p>
-              {currency === 'USD'
-                ? <p className="text-ink-3">Todas las líneas arrancan en 0% al inicio del período seleccionado para comparación directa.</p>
-                : <p className="text-ink-3">Fijado a los últimos 12 meses. Períodos más extensos pierden comparabilidad por la hiperinflación previa.</p>
-              }
+              {currency === 'ARS' && (
+                <p className="text-ink-3">Fijado a los últimos 12 meses. Períodos más extensos pierden comparabilidad por la hiperinflación previa.</p>
+              )}
             </InfoTooltip>
           </div>
 
