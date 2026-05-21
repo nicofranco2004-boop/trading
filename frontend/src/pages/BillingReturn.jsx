@@ -1,12 +1,22 @@
-// BillingReturn — páginas de retorno tras el checkout de Mercado Pago.
+// BillingReturn — páginas de retorno tras el checkout de Rebill.
 // ═══════════════════════════════════════════════════════════════════════════
-// MP redirige al user a una de estas 3 URLs después del checkout:
-//   /billing/success  — pago autorizado (tier='pro' ya seteado por webhook)
-//   /billing/pending  — pago en proceso (ej. transferencia bancaria pendiente)
-//   /billing/failure  — pago rechazado o user canceló el flow
+// Rebill redirige al user a una de estas URLs después del checkout:
+//   /billing/success?provider=rebill — pago confirmado (esperar webhook)
+//   /billing/pending                  — pago en proceso (transferencia)
+//   /billing/failure                  — pago rechazado o user canceló
 //
-// Después de 1-2 segundos refresheamos plan features (por si el webhook ya
-// pegó) y mostramos un mensaje claro con CTA para seguir.
+// Estrategia post-Rebill:
+//   1. Llegamos a la página con el pago ya hecho del lado de Rebill
+//   2. Polleamos /auth/me cada 2s para ver cuándo el webhook nos activa
+//      el tier (users.tier pasa a 'plus' o 'pro')
+//   3. Si llegamos a 'plus' / 'pro' → success absoluto
+//   4. Si pasaron 30s sin update → mensaje "se está procesando"
+//
+// Nota: el migration a Rebill mantiene la URL /billing/success para no romper
+// links viejos. El webhook va a /api/billing/rebill-webhook.
+//
+// (Pre-migración usábamos /api/billing/sync que pegaba a MP — eso quedó
+// muerto pero el endpoint todavía existe en el backend hasta que limpiemos.)
 
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -16,46 +26,89 @@ import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { track } from '../utils/track'
 import { api } from '../utils/api'
 
-// Hook compartido: cada landing page llama a /billing/sync para que el
-// backend pregunte a MP el estado real, y devuelve { status, loading }.
-// Sin esto, la URL de retorno (success/pending/failure) podría mentir.
-function useBillingSync(intent) {
-  const [status, setStatus] = useState('checking')   // 'checking' | mp status
+const POLL_INTERVAL_MS = 2_000   // /auth/me cada 2s
+const POLL_TIMEOUT_MS = 30_000   // hasta 30s totales
+
+// Polleo del tier: refresca /auth/me cada 2s. Devuelve { tier, loading, timedOut, unauthenticated }.
+function useTierPolling(intent) {
+  const [tier, setTier] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [timedOut, setTimedOut] = useState(false)
+  const [unauthenticated, setUnauthenticated] = useState(false)
 
   useEffect(() => {
     track('billing_return', { intent })
     let cancelled = false
-    api.post('/billing/sync')
-      .then(res => {
+    let interval = null
+    const startedAt = Date.now()
+
+    async function poll() {
+      try {
+        const me = await api.get('/auth/me')
         if (cancelled) return
-        setStatus(res.status || 'unknown')
+        const currentTier = me?.tier || 'free'
+        setTier(currentTier)
+        setLoading(false)
         refreshPlanFeatures()
-      })
-      .catch(err => {
+        if (currentTier === 'plus' || currentTier === 'pro' || currentTier === 'admin') {
+          if (interval) clearInterval(interval)
+        } else if (Date.now() - startedAt >= POLL_TIMEOUT_MS) {
+          setTimedOut(true)
+          if (interval) clearInterval(interval)
+        }
+      } catch (ex) {
         if (cancelled) return
-        console.error('Billing sync failed:', err)
-        setStatus('error')
-      })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+        // Si /auth/me devuelve 401, el user no está logueado — parar el poll.
+        // api.js tira `new Error('Unauthorized')` (sin .status), entonces
+        // matcheamos por message.
+        const is401 = ex?.status === 401 || ex?.message === 'Unauthorized'
+        if (is401) {
+          setUnauthenticated(true)
+          setLoading(false)
+          if (interval) clearInterval(interval)
+          return
+        }
+        // Otros errores transitorios: seguimos polleando hasta el timeout.
+        setLoading(false)
+      }
+    }
+
+    poll()
+    interval = setInterval(poll, POLL_INTERVAL_MS)
+
+    return () => {
+      cancelled = true
+      if (interval) clearInterval(interval)
+    }
   }, [intent])
 
-  return { status, loading }
+  return { tier, loading, timedOut, unauthenticated }
 }
 
 export function BillingSuccess() {
   const navigate = useNavigate()
-  const { status, loading } = useBillingSync('success')
-  const isAuthorized = status === 'authorized'
-  const isStillPending = status === 'pending'
+  const { tier, loading, timedOut, unauthenticated } = useTierPolling('success')
+  const isActivated = tier === 'plus' || tier === 'pro' || tier === 'admin'
 
   useEffect(() => {
-    if (isAuthorized) {
-      const t = setTimeout(() => navigate('/dashboard'), 4000)
+    if (isActivated) {
+      const t = setTimeout(() => navigate('/dashboard'), 4500)
       return () => clearTimeout(t)
     }
-  }, [isAuthorized, navigate])
+  }, [isActivated, navigate])
+
+  if (unauthenticated) {
+    return (
+      <ReturnLayout
+        icon={<Clock size={56} className="text-data-amber" strokeWidth={1.5} />}
+        tone="pending"
+        title="Iniciá sesión para ver tu suscripción"
+        description="Tu pago se procesó, pero necesitamos que inicies sesión para confirmar la activación de tu cuenta."
+        cta="Iniciar sesión"
+        onCta={() => navigate('/login')}
+      />
+    )
+  }
 
   if (loading) {
     return (
@@ -63,19 +116,22 @@ export function BillingSuccess() {
         icon={<Loader2 size={56} className="text-data-violet animate-spin" strokeWidth={1.5} />}
         tone="pending"
         title="Confirmando tu pago…"
-        description="Estamos consultando a Mercado Pago el estado de tu suscripción. Tomará solo unos segundos."
+        description="Estamos esperando la confirmación de Rebill. Esto suele tardar 5-15 segundos."
       />
     )
   }
 
-  // MP dice authorized → user es Pro real
-  if (isAuthorized) {
+  if (isActivated) {
+    const tierLabel = tier === 'plus' ? 'Plus' : 'Pro'
     return (
       <ReturnLayout
         icon={<CheckCircle2 size={56} className="text-rendi-pos" strokeWidth={1.5} />}
         tone="success"
-        title="¡Bienvenido a Rendi Pro!"
-        description="Tu suscripción está activa. Ya tenés acceso a todas las features Pro: 60 análisis IA por semana, follow-ups, brokers ilimitados, export CSV y todo lo demás."
+        title={`¡Bienvenido a Rendi ${tierLabel}!`}
+        description={tier === 'pro'
+          ? 'Tu suscripción Pro está activa. Tenés acceso a 60 análisis IA por semana, follow-ups, brokers ilimitados, export CSV y todas las features avanzadas.'
+          : 'Tu suscripción Plus está activa. Tenés multi-broker, insights completos, comportamiento avanzado y export CSV.'
+        }
         cta="Ir al dashboard"
         onCta={() => navigate('/dashboard')}
         footer="Te vamos a redirigir automáticamente en unos segundos…"
@@ -83,36 +139,33 @@ export function BillingSuccess() {
     )
   }
 
-  // MP todavía no autorizó — pago pending (transferencia bancaria, etc.)
-  if (isStillPending) {
+  if (timedOut) {
     return (
       <ReturnLayout
         icon={<Clock size={56} className="text-data-amber" strokeWidth={1.5} />}
         tone="pending"
-        title="Tu pago está en proceso"
-        description="Mercado Pago todavía está procesando el pago. Apenas se acredite, tu cuenta pasa a Pro automáticamente. Refrescá esta página en unos minutos."
-        cta="Ver mi cuenta"
+        title="Tu pago se está procesando"
+        description="Rebill todavía no nos confirmó la activación. Es normal que tarde unos minutos en algunos casos. Refrescá esta página o esperá un email de confirmación."
+        cta="Ir a mi cuenta"
         onCta={() => navigate('/config')}
       />
     )
   }
 
-  // Cancelled, rejected, error
+  // Fallback raro: free todavía, pero no timedOut. Mantener loader visual.
   return (
     <ReturnLayout
-      icon={<XCircle size={56} className="text-rendi-neg" strokeWidth={1.5} />}
-      tone="failure"
-      title="No se completó la suscripción"
-      description={`Estado actual: ${status}. Si pagaste y deberías estar Pro, esperá unos minutos y refrescá. Si el problema persiste, contactanos.`}
-      cta="Volver a /planes"
-      onCta={() => navigate('/planes')}
+      icon={<Loader2 size={56} className="text-data-violet animate-spin" strokeWidth={1.5} />}
+      tone="pending"
+      title="Activando tu suscripción…"
+      description="Esperando confirmación del webhook. Si no se activa en un minuto, refrescá la página."
     />
   )
 }
 
 export function BillingPending() {
   const navigate = useNavigate()
-  const { status, loading } = useBillingSync('pending')
+  const { tier, loading } = useTierPolling('pending')
   return (
     <ReturnLayout
       icon={loading
@@ -122,19 +175,18 @@ export function BillingPending() {
       tone="pending"
       title="Tu pago está en proceso"
       description={loading
-        ? "Consultando estado…"
-        : "Mercado Pago todavía está procesando tu pago. Apenas se acredite, tu cuenta pasa a Pro automáticamente. Esto puede tardar de minutos a 1 día hábil según el medio de pago."
+        ? "Verificando estado…"
+        : "Rebill todavía está procesando tu pago. Apenas se acredite, tu cuenta pasa al tier nuevo automáticamente. Esto puede tardar minutos según el medio de pago elegido."
       }
       cta="Ver mi cuenta"
       onCta={() => navigate('/config')}
-      footer={!loading && `Estado actual según MP: ${status}`}
+      footer={!loading && tier && `Tier actual: ${tier}`}
     />
   )
 }
 
 export function BillingFailure() {
   const navigate = useNavigate()
-  useBillingSync('failure')  // sync por las dudas, no usamos el resultado
   return (
     <ReturnLayout
       icon={<XCircle size={56} className="text-rendi-neg" strokeWidth={1.5} />}
@@ -162,15 +214,17 @@ function ReturnLayout({ icon, tone, title, description, cta, onCta, footer }) {
         <p className="text-sm text-ink-2 leading-relaxed max-w-md mx-auto mb-6">
           {description}
         </p>
-        <button
-          type="button"
-          onClick={onCta}
-          className="inline-flex items-center gap-1.5 text-sm font-medium bg-data-violet hover:bg-data-violet/90 text-white border border-data-violet rounded-sm px-6 py-2.5 transition-colors"
-        >
-          {tone === 'success' && <Sparkles size={13} strokeWidth={1.75} />}
-          {cta}
-          <ArrowRight size={13} strokeWidth={1.75} />
-        </button>
+        {cta && (
+          <button
+            type="button"
+            onClick={onCta}
+            className="inline-flex items-center gap-1.5 text-sm font-medium bg-data-violet hover:bg-data-violet/90 text-white border border-data-violet rounded-sm px-6 py-2.5 transition-colors"
+          >
+            {tone === 'success' && <Sparkles size={13} strokeWidth={1.75} />}
+            {cta}
+            <ArrowRight size={13} strokeWidth={1.75} />
+          </button>
+        )}
         {footer && (
           <p className="text-xs text-ink-3 mt-4">{footer}</p>
         )}
