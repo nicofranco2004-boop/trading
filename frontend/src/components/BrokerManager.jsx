@@ -70,7 +70,7 @@ export default function BrokerManager({ brokers, onChange }) {
   }
 
   async function deleteBroker(b) {
-    if (!confirm(`¿Eliminar el broker "${b.name}"? Las posiciones asociadas quedarán huérfanas y deberás reasignarlas manualmente.`)) return
+    if (!confirm(`¿Eliminar el broker "${b.name}"? Se van a borrar también TODAS sus posiciones, operaciones y datos mensuales. Esta acción no se puede deshacer.`)) return
     await api.delete(`/brokers/${b.id}`)
     onChange?.()
     refreshPlanFeatures()

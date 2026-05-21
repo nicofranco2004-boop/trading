@@ -1702,12 +1702,57 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)
 
 @app.delete("/api/brokers/{bid}")
 def delete_broker(bid: int, uid: int = Depends(get_current_user)):
+    """Borra el broker + cascade delete de toda su data asociada.
+
+    Antes solo borraba el row de brokers, dejando operations / positions /
+    monthly_entries / snapshots huérfanos con `broker = name` (texto) que
+    seguían sumando en aggregates y dashboard. Ahora limpia en cascada.
+
+    Los batches del broker se marcan como 'reverted' (no se borran físicamente
+    para mantener auditoría); las normalized_tx asociadas siguen en disco pero
+    no afectan ningún calculo porque el broker ya no existe.
+    """
     conn = get_db()
-    conn.execute("DELETE FROM brokers WHERE id=? AND user_id=?", (bid, uid))
-    conn.commit()
-    conn.close()
-    _ai_cache_invalidate(uid)
-    return {"ok": True}
+    try:
+        broker_row = conn.execute(
+            "SELECT name FROM brokers WHERE id=? AND user_id=?", (bid, uid),
+        ).fetchone()
+        if not broker_row:
+            return {"ok": True}  # idempotente — no error si ya no existe
+        broker_name = broker_row["name"]
+
+        with conn:
+            conn.execute(
+                "DELETE FROM operations WHERE user_id=? AND broker=?", (uid, broker_name),
+            )
+            conn.execute(
+                "DELETE FROM positions WHERE user_id=? AND broker=?", (uid, broker_name),
+            )
+            conn.execute(
+                "DELETE FROM monthly_entries WHERE user_id=? AND broker=?", (uid, broker_name),
+            )
+            conn.execute(
+                "DELETE FROM snapshots WHERE user_id=? AND broker=?", (uid, broker_name),
+            )
+            conn.execute(
+                """UPDATE import_batches
+                   SET status='reverted', reverted_at=datetime('now')
+                   WHERE user_id=? AND broker=? AND status IN ('confirmed','preview')""",
+                (uid, broker_name),
+            )
+            conn.execute("DELETE FROM brokers WHERE id=? AND user_id=?", (bid, uid))
+
+        # Recalc global aggregates (el broker 'global' sumaba el broker borrado)
+        try:
+            with conn:
+                _recalc_pnl_realized_from_ops(conn, uid)
+        except Exception as ex:
+            log.error("Recalc tras delete_broker falló: %s", ex)
+
+        _ai_cache_invalidate(uid)
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 # ─── Config ──────────────────────────────────────────────────────────────────
