@@ -89,11 +89,16 @@ def create_payment_link(
     plan_label = "Plus" if plan == "plus" else "Pro"
     title = f"Rendi {plan_label} · {period}"
 
-    # Payload mínimo según doc oficial de Rebill /v3/payment-links:
+    # Payload según doc oficial de Rebill /v3/payment-links:
     # required: title, plan, paymentMethods
     # opcional: isSingleUse, metadata
-    # NO incluidos: successUrl/cancelUrl (configurados en el dashboard por plan),
-    #               customer (no aparece en doc, lo rellena el user en checkout)
+    #
+    # IMPORTANTE: paymentMethods.currency DEBE matchear la currency del
+    # plan. Nuestros planes están en USD (creados en dashboard como $4/$9),
+    # por eso acá va USD. Rebill rebota con "All prices must have a payment
+    # method" si la currency no matchea.
+    #
+    # bank_transfer no aplica para USD en AR — solo card.
     payload = {
         "title": [{"language": "es", "text": title}],
         "plan": {"id": plan_id},
@@ -105,7 +110,7 @@ def create_payment_link(
             "rendi_period": period,
         },
         "paymentMethods": [
-            {"methods": ["card", "bank_transfer"], "currency": "ARS"},
+            {"methods": ["card"], "currency": "USD"},
         ],
     }
 
