@@ -636,23 +636,23 @@ async function detectPlatformFromCsv(file) {
 
     // Cocos Capital: incluye "tipo","activo","tc compra" o similar
     if (/tc.{0,4}compra/.test(firstLines) || /\bcocos\b/.test(firstLines)) {
-      return 'cocos'
+      return { platform: 'cocos', format: null }
     }
-    // Binance Spot: "date(utc)","pair","side","executed"
+    // Binance Spot Trade History: "date(utc)","pair","side","executed"
     if (/date\(utc\)/.test(firstLines) && /\bpair\b/.test(firstLines)) {
-      return 'binance'
+      return { platform: 'binance', format: 'binance' }
     }
     // Binance Transaction History: headers "user id","time","account","operation","coin","change"
     if (/\boperation\b/.test(firstLines) && /\baccount\b/.test(firstLines) && /\bcoin\b/.test(firstLines)) {
-      return 'binance'
+      return { platform: 'binance', format: 'binance_transaction_history' }
     }
     // Schwab: header con "Date","Action","Symbol","Description","Quantity","Price"
     if (/^date,action,symbol/.test(firstLines)) {
-      return 'schwab'
+      return { platform: 'schwab', format: null }
     }
     // IBKR: header tipo "ClientAccountID,AccountAlias,Model"
     if (/clientaccountid/.test(firstLines)) {
-      return 'ibkr'
+      return { platform: 'ibkr', format: null }
     }
     return null
   } catch {
@@ -707,12 +707,26 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
     if (valid.length > 0 && (!platform || platform === 'generic')) {
       const detected = await detectPlatformFromCsv(valid[0])
       if (detected) {
-        const group = parserGroups.find(g => g.platform === detected)
+        const group = parserGroups.find(g => g.platform === detected.platform)
         if (group) {
-          setDetection({ platform: detected, label: group.platform_label })
+          setDetection({
+            platform: detected.platform,
+            format: detected.format,
+            label: group.platform_label,
+          })
         }
       } else {
         setDetection(null)
+      }
+    } else if (valid.length > 0) {
+      // Plataforma ya seleccionada → si detectamos un sub-formato distinto
+      // dentro de la misma plataforma (ej: Binance Spot vs Transaction History),
+      // auto-ajustamos el format. Cambio low-risk porque mantiene la plataforma.
+      const detected = await detectPlatformFromCsv(valid[0])
+      if (detected && detected.platform === platform && detected.format && detected.format !== format) {
+        const group = parserGroups.find(g => g.platform === platform)
+        const exportExists = group?.exports.some(e => e.id === detected.format && e.supported)
+        if (exportExists) setFormat(detected.format)
       }
     }
     // Dedup + feedback de duplicates
@@ -942,7 +956,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
               <span className="font-medium text-ink-0">{detection.label}</span>.
               <button
                 type="button"
-                onClick={() => { changePlatform(detection.platform); setDetection(null) }}
+                onClick={() => { changePlatform(detection.platform); if (detection.format) setFormat(detection.format); setDetection(null) }}
                 className="ml-2 text-rendi-pos hover:text-ink-0 underline underline-offset-2"
               >
                 Usar este parser

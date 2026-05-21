@@ -140,7 +140,7 @@ function OperationsDesktop() {
             <ExportCsvButton resource="operations" source="operations_header" variant="compact" />
             <button
               onClick={openAdd}
-              className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"
+              className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors"
             >
               <Plus size={12} strokeWidth={2} /> Nueva operación
             </button>
@@ -261,7 +261,7 @@ function OperationsDesktop() {
                     title="Aún no hay operaciones registradas"
                     description="Las ventas realizadas desde Posiciones quedan registradas automáticamente con su P&L realizado. También podés agregar operaciones manualmente."
                     action={
-                      <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors">
+                      <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors">
                         <Plus size={12} strokeWidth={2} /> Agregar manualmente
                       </button>
                     }

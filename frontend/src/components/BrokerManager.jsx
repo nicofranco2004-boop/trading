@@ -99,7 +99,7 @@ export default function BrokerManager({ brokers, onChange }) {
         <button
           type="button"
           onClick={() => setShowAdd(true)}
-          className="inline-flex items-center gap-1.5 text-xs font-medium bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-dashed border-rendi-pos/40 hover:border-rendi-pos/60 rounded-sm px-3 py-2 transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-dashed border-data-violet/40 hover:border-data-violet/60 rounded-sm px-3 py-2 transition-colors"
         >
           <Plus size={13} strokeWidth={2} /> Agregar broker
         </button>

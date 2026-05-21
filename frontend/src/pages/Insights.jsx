@@ -729,36 +729,47 @@ function InsightsDesktop() {
   }
   const tradeOps = operations.filter(isTradeOp)
 
+  // ── Filtro de micro-trades para las stats de calidad ──────────────────────
+  // Bots de DCA / grid trading / fees parciales de futuros generan decenas o
+  // cientos de trades con |pnl| < $1.5 que no reflejan habilidad del trader y
+  // destruyen el win rate. Para las stats (win rate, profit factor, hold time,
+  // best/worst) excluimos esos micro-trades; siguen visibles en /operaciones
+  // y se cuentan correctamente en el P&L acumulado.
+  const MICRO_TRADE_PNL_THRESHOLD = 1.5
+  const significantTradeOps = tradeOps.filter(o => Math.abs(o.pnl_usd || 0) >= MICRO_TRADE_PNL_THRESHOLD)
+  const microTradeCount = tradeOps.length - significantTradeOps.length
+
   // Mejor operación cerrada individual (la card nueva).
-  const bestWorstOp = computeBestWorstClosedOp(tradeOps)
+  const bestWorstOp = computeBestWorstClosedOp(significantTradeOps)
 
   // ── Insight 5: Win rate + profit factor ──
   // Win rate solo no es suficiente: 5 ganadoras chicas + 2 perdedoras grandes
   // pueden dar 71% WR y aún así perder plata. Profit factor (gross win / gross
   // loss) captura esa asimetría.
   let winRate = null
-  if (tradeOps.length > 0) {
-    const wins = tradeOps.filter(o => (o.pnl_usd || 0) > 0).length
-    const losses = tradeOps.filter(o => (o.pnl_usd || 0) < 0).length
+  if (significantTradeOps.length > 0) {
+    const wins = significantTradeOps.filter(o => (o.pnl_usd || 0) > 0).length
+    const losses = significantTradeOps.filter(o => (o.pnl_usd || 0) < 0).length
     const total = wins + losses
     if (total > 0) {
-      const avgWin = wins > 0 ? tradeOps.filter(o => o.pnl_usd > 0).reduce((s, o) => s + o.pnl_usd, 0) / wins : 0
-      const avgLoss = losses > 0 ? tradeOps.filter(o => o.pnl_usd < 0).reduce((s, o) => s + o.pnl_usd, 0) / losses : 0
+      const avgWin = wins > 0 ? significantTradeOps.filter(o => o.pnl_usd > 0).reduce((s, o) => s + o.pnl_usd, 0) / wins : 0
+      const avgLoss = losses > 0 ? significantTradeOps.filter(o => o.pnl_usd < 0).reduce((s, o) => s + o.pnl_usd, 0) / losses : 0
       winRate = {
         pct: (wins / total) * 100,
         wins, losses, total,
         avgWin, avgLoss,
         ratio: avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : null,
+        microExcluded: microTradeCount,
       }
     }
   }
-  const profitFactor = computeProfitFactor(tradeOps)
+  const profitFactor = computeProfitFactor(significantTradeOps)
 
   // ── Insight: Hold time promedio (días entre entry_date y date de cada operación) ──
   let holdTime = null
-  if (tradeOps.length > 0) {
+  if (significantTradeOps.length > 0) {
     const days = []
-    for (const op of tradeOps) {
+    for (const op of significantTradeOps) {
       if (!op.entry_date || !op.date) continue
       const entry = new Date(op.entry_date)
       const exit = new Date(op.date)
@@ -1690,6 +1701,7 @@ function InsightsDesktop() {
               <p className="font-semibold text-ink-0">Cómo se calcula</p>
               <p><span className="font-medium">Win rate:</span> porcentaje de operaciones cerradas con P&L positivo.</p>
               <p><span className="font-medium">Profit factor:</span> ganancia bruta total dividida por pérdida bruta total.</p>
+              <p className="text-ink-3">Excluimos trades con |P&L| &lt; $1.5 USD para evitar el ruido de bots y fees parciales de futuros que destruyen el win rate sin reflejar decisiones reales del trader.</p>
               <p className="text-ink-3">Un win rate alto con ganancias pequeñas puede tener profit factor &lt; 1 (resultado neto negativo aunque aciertes más seguido). Las dos métricas se interpretan en conjunto.</p>
             </>
           }
@@ -1718,6 +1730,11 @@ function InsightsDesktop() {
                 <span className="text-red-500"> {winRate.losses} perdedoras</span>
                 {winRate.ratio != null && <span className="text-ink-3"> · R/R {winRate.ratio.toFixed(2)}x</span>}
               </p>
+              {winRate.microExcluded > 0 && (
+                <p className="text-[11px] text-ink-3 mt-1 italic">
+                  {winRate.microExcluded} {winRate.microExcluded === 1 ? 'trade chico' : 'trades chicos'} (&lt; $1.5) excluidos del cálculo
+                </p>
+              )}
               <p className="text-xs text-ink-2 mt-3 leading-snug">
                 {profitFactor && profitFactor.profitFactor < 1
                   ? `Profit factor < 1: con ${winRate.pct.toFixed(0)}% de aciertos, las pérdidas brutas superan a las ganancias. Resultado neto negativo.`
