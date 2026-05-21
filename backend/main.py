@@ -7047,11 +7047,13 @@ async def rebill_webhook(request: Request):
     from billing import rebill
     raw = await request.body()
     sig = request.headers.get("x-rebill-signature") or request.headers.get("rebill-signature") or ""
+    # Log de headers (debug — sacar después de confirmar el shape)
+    debug_headers = {k: v for k, v in request.headers.items() if k.lower().startswith(("x-", "rebill", "webhook"))}
 
     try:
         payload = json.loads(raw or b"{}")
     except Exception:
-        log.warning("Rebill webhook with non-JSON body")
+        log.warning("Rebill webhook with non-JSON body. Raw: %r", raw[:500])
         return Response(status_code=400)
 
     event_type = (
@@ -7064,9 +7066,11 @@ async def rebill_webhook(request: Request):
     rendi_user_id = metadata.get("rendi_user_id")
 
     log.info(
-        "Rebill webhook: event=%s rendi_user_id=%s sig_present=%s",
-        event_type, rendi_user_id, bool(sig),
+        "Rebill webhook: event=%r rendi_user_id=%r sig_present=%s headers=%s",
+        event_type, rendi_user_id, bool(sig), debug_headers,
     )
+    log.info("Rebill payload keys: %s", list(payload.keys()))
+    log.info("Rebill payload (truncated): %s", json.dumps(payload, default=str)[:1500])
 
     # Validar signature
     sig_valid = rebill.verify_webhook_signature(raw, sig)
