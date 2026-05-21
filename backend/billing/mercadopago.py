@@ -140,6 +140,14 @@ def create_preapproval(
     }
 
     log.info("MP create_preapproval user=%s plan=%s period=%s amount=%s", user_id, plan, period, amount)
+    _tok = _access_token()
+    log.info(
+        "MP create_preapproval auth — token_prefix=%s url=%s mp_env=%r test_payer_set=%s",
+        _tok[:12] + "…",
+        MP_BASE_URL,
+        os.environ.get("MP_ENV"),
+        bool((os.environ.get("MP_TEST_PAYER_EMAIL") or "").strip()),
+    )
     log.info("MP create_preapproval payload: %s", json.dumps(payload, default=str))
     r = httpx.post(
         f"{MP_BASE_URL}/preapproval",
