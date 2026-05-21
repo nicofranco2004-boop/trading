@@ -5237,6 +5237,54 @@ def get_operations(uid: int = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
+@app.get("/api/insights/commissions")
+def get_commissions_total(uid: int = Depends(get_current_user)):
+    """Suma de las comisiones EXPLÍCITAS importadas (operation_type='FEE' en
+    import_normalized_tx). Convierte ARS→USD usando tc_blue. Ignora el campo
+    `commissions` de operations (que tiene basura de imports viejos con
+    parsers mal mapeados — fuente de inflados crónicos en la card).
+    """
+    conn = get_db()
+    try:
+        tc_blue_row = conn.execute(
+            "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
+        ).fetchone()
+        try:
+            tc_blue = float(tc_blue_row["value"]) if tc_blue_row else 1415.0
+            if tc_blue <= 0:
+                tc_blue = 1415.0
+        except (TypeError, ValueError):
+            tc_blue = 1415.0
+
+        rows = conn.execute(
+            """SELECT n.gross_amount AS amt, n.currency AS cur
+                 FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=?
+                  AND b.status='confirmed'
+                  AND n.operation_type='FEE'""",
+            (uid,),
+        ).fetchall()
+
+        total_usd = 0.0
+        count = 0
+        for r in rows:
+            amt = float(r["amt"] or 0)
+            if amt <= 0:
+                continue
+            cur = (r["cur"] or "").upper()
+            amt_usd = amt / tc_blue if cur == "ARS" else amt
+            total_usd += amt_usd
+            count += 1
+
+        return {
+            "total_usd": round(total_usd, 4),
+            "count": count,
+        }
+    finally:
+        conn.close()
+
+
 # ─── CSV Export (Pro-only) ───────────────────────────────────────────────────
 # Endpoints que serializan tablas a CSV con encabezados en español pensados
 # para que el contador del usuario los pueda procesar sin gimnasia.

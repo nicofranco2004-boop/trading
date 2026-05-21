@@ -142,12 +142,16 @@ function InsightsDesktop() {
   const [currency, setCurrency] = useState('USD')
   const [chartRange, setChartRange] = useState(12) // months; null = MAX
   const [loading, setLoading] = useState(true)
+  // Comisiones: fuente de verdad es el endpoint que suma operation_type='FEE'
+  // de import_normalized_tx (con conversión ARS→USD). No usamos op.commissions
+  // del operations table porque queda contaminado por imports viejos con bugs.
+  const [commissionsApi, setCommissionsApi] = useState(null)
 
   useEffect(() => { loadAll() }, [])
 
   async function loadAll() {
     try {
-      const [mon, pos, bkrs, b, snaps, dol, ops] = await Promise.all([
+      const [mon, pos, bkrs, b, snaps, dol, ops, comm] = await Promise.all([
         api.get('/monthly'),
         api.get('/positions'),
         api.get('/brokers'),
@@ -155,8 +159,9 @@ function InsightsDesktop() {
         api.get('/snapshots?days=30').catch(() => []),
         api.get('/dolar').catch(() => null),
         api.get('/operations').catch(() => []),
+        api.get('/insights/commissions').catch(() => null),
       ])
-      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops)
+      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm)
 
       const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
       // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
@@ -787,23 +792,17 @@ function InsightsDesktop() {
     }
   }
 
-  // ── Insight: Comisiones totales (suma de fees declarados en operaciones) ──
+  // ── Insight: Comisiones totales ──
+  // Fuente: endpoint /api/insights/commissions que suma operation_type='FEE'
+  // de import_normalized_tx (con conversión ARS→USD). Solo cuenta lo que el
+  // CSV trajo EXPLÍCITAMENTE marcado como comisión/fee.
   let commissionsStats = null
-  if (operations.length > 0) {
-    let total = 0
-    let count = 0
-    for (const op of operations) {
-      const c = Number(op.commissions) || 0
-      if (c > 0) {
-        total += c
-        count += 1
-      }
-    }
-    if (total > 0) {
-      const grossWin = profitFactor?.grossWin ?? null
-      const pctOfGrossWin = grossWin && grossWin > 0 ? (total / grossWin) * 100 : null
-      commissionsStats = { total, count, avgPerTrade: total / count, pctOfGrossWin }
-    }
+  if (commissionsApi && commissionsApi.total_usd > 0 && commissionsApi.count > 0) {
+    const total = commissionsApi.total_usd
+    const count = commissionsApi.count
+    const grossWin = profitFactor?.grossWin ?? null
+    const pctOfGrossWin = grossWin && grossWin > 0 ? (total / grossWin) * 100 : null
+    commissionsStats = { total, count, avgPerTrade: total / count, pctOfGrossWin }
   }
 
   // ── Insight 6: Concentración (top 3 activos sobre portfolio total) ──
@@ -1838,8 +1837,8 @@ function InsightsDesktop() {
           tooltip={
             <>
               <p className="font-semibold text-ink-0">Cómo se calcula</p>
-              <p>Suma de las comisiones registradas en todas tus operaciones (compras, ventas, futuros, depósitos y retiros).</p>
-              <p className="text-ink-3">Si tu broker cobra fees embebidos en el precio (spread), esos no aparecen acá — solo se reflejan las comisiones explícitas del CSV.</p>
+              <p>Suma de las filas del CSV importadas explícitamente como "Comisión" / "Fee" (funding fees de futures, withdrawal fees, etc).</p>
+              <p className="text-ink-3">Si tu broker es en ARS, convertimos a USD al tipo de cambio blue. Si el fee va embebido en el precio o en otra fila (spread, fee de un trade), no aparece acá.</p>
             </>
           }
         >
