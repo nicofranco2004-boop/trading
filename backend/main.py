@@ -6059,35 +6059,6 @@ def admin_approve_user(user_id: int, uid: int = Depends(get_admin_user)):
     return {"ok": True}
 
 
-@app.post("/api/admin/users/by-email/{email}/reset-tier")
-def admin_reset_tier_by_email(email: str, uid: int = Depends(get_admin_user)):
-    """Resetea tier de un user (vuelve a Free) y cancela sus suscripciones activas.
-    Útil para re-testear el flujo de upgrade. Por email para no tener que
-    lookupear user_id."""
-    conn = get_db()
-    try:
-        target = conn.execute(
-            "SELECT id FROM users WHERE lower(email)=lower(?)",
-            (email,),
-        ).fetchone()
-        if not target:
-            raise HTTPException(404, "Usuario no existe")
-        target_id = target["id"]
-
-        with conn:
-            conn.execute("UPDATE users SET tier = NULL WHERE id = ?", (target_id,))
-            conn.execute(
-                """UPDATE subscriptions
-                   SET status = 'cancelled', cancelled_at = datetime('now'),
-                       updated_at = datetime('now')
-                   WHERE user_id = ? AND status IN ('authorized','pending')""",
-                (target_id,),
-            )
-        return {"ok": True, "user_id": target_id, "tier": None}
-    finally:
-        conn.close()
-
-
 @app.delete("/api/admin/users/{user_id}")
 def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
     """Borra un usuario y todos sus datos. No permite borrarse a sí mismo ni a otros admins."""

@@ -238,10 +238,6 @@ export default function Planes() {
               onCtaClick={() => onSubscribeClick('pro')}
             />
           </div>
-
-          <p className="text-[11px] text-ink-3 text-center max-w-2xl mx-auto mt-5 leading-relaxed">
-            Por ahora aceptamos solo tarjeta de crédito. Próximamente más medios de pago.
-          </p>
         </>
       )}
 
