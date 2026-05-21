@@ -27,11 +27,11 @@ import { api } from '../utils/api'
 // el procesador convierte ARS al day-rate del cliente). El display en Rendi
 // muestra USD como precio principal + conversión ARS live al blue de hoy
 // como subtítulo informativo.
-export const PLUS_PRICE_USD = '5'
-export const PRO_PRICE_USD = '8'
+export const PLUS_PRICE_USD = '4'
+export const PRO_PRICE_USD = '9'
 // Anual con ~16.5% off vs monthly × 12
-export const PLUS_PRICE_ANNUAL_USD = '50'
-export const PRO_PRICE_ANNUAL_USD = '80'
+export const PLUS_PRICE_ANNUAL_USD = '40'
+export const PRO_PRICE_ANNUAL_USD = '90'
 
 // Precios ARS legacy (todavía usados en algunos lugares para back-compat
 // con el flow viejo de Mercado Pago). Cuando se complete la migración a
