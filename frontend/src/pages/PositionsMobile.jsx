@@ -75,6 +75,12 @@ export default function PositionsMobile() {
   const [prices, setPrices] = useState({})
   const [dolar, setDolar] = useState(null)
   const [loading, setLoading] = useState(true)
+  // Loading separado para precios live — la página se muestra apenas
+  // tenemos positions/brokers (con cost basis), pero los precios cargan en
+  // background. pricesLoading=true muestra un indicador chiquito mientras
+  // yfinance responde, así el user sabe que los % y valores se van a
+  // actualizar en segundos.
+  const [pricesLoading, setPricesLoading] = useState(false)
   const [sortBy, setSortBy] = useState('value')
   const [query, setQuery] = useState('')
   const [brokerFilter, setBrokerFilter] = useState(ALL_FILTER)
@@ -262,6 +268,10 @@ export default function PositionsMobile() {
 
   async function loadAll() {
     try {
+      // 1. Fetchear positions / brokers / dolar en paralelo. Esto es rápido
+      //    (queries locales en SQLite + 1 API call al blue). Tras esto ya
+      //    podemos mostrar la cartera al user con cost basis values —
+      //    NO esperamos los precios live de yfinance.
       const [pos, bkrs, dol] = await Promise.all([
         api.get('/positions').catch(() => []),
         api.get('/brokers').catch(() => []),
@@ -270,8 +280,18 @@ export default function PositionsMobile() {
       setPositions(pos || [])
       setBrokers(bkrs || [])
       setDolar(dol)
-      await loadPrices(pos || [], bkrs || [])
-    } finally {
+      setLoading(false)  // ← Mostrar la página AHORA con cost basis
+
+      // 2. Fetchear precios en background. yfinance puede tardar 5-10s para
+      //    muchos símbolos — no queremos bloquear la primera pintada. Cuando
+      //    los precios lleguen, el state actualiza y las filas re-renderean
+      //    con valores live (memo permite que solo se re-pinten las filas
+      //    cuyos precios cambian).
+      setPricesLoading(true)
+      loadPrices(pos || [], bkrs || []).finally(() => setPricesLoading(false))
+    } catch (ex) {
+      // Si falla la carga base (positions/brokers), igual sacamos el loading
+      // para no quedarnos en skeleton infinito.
       setLoading(false)
     }
   }
@@ -456,6 +476,16 @@ export default function PositionsMobile() {
               entry point DENTRO de Cartera baja la fricción para el user que
               ya está en esta página. */}
           <div className="flex items-center gap-2 flex-shrink-0">
+            {/* Mientras yfinance responde, mostramos un dot pulsante que
+                indica que los valores se van a actualizar — el user entiende
+                que lo que ve ahora es cost basis y los % live están llegando. */}
+            {pricesLoading && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-data-violet animate-pulse"
+                title="Actualizando precios live"
+                aria-label="Actualizando precios"
+              />
+            )}
             <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
               {visibleCount} pos
             </span>
