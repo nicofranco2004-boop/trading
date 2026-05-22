@@ -8,6 +8,7 @@ import {
   ArrowRight, Sparkles, RefreshCw, LineChart, Layers, Coins,
   Zap, Terminal, ChevronDown, Check,
   Upload, ListChecks, BarChart3, Bot, MessageSquare,
+  Pencil, Plus,
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { ARS_MONTHLY, ARS_PLUS_MONTHLY, FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from './Planes'
@@ -600,7 +601,9 @@ function MockPositions() {
       currency: 'USD',
       total: 'US$ 22.480',
       positions: [
-        { asset: 'NVDA', qty: '14', value: 'US$ 7.812', pnlPct: '+38.4%', pos: true },
+        // hasSellBtn: NVDA muestra el botón "Realizar venta" para que el
+        // visitante vea LITERALMENTE de dónde sale la transferencia a Operaciones.
+        { asset: 'NVDA', qty: '14', value: 'US$ 7.812', pnlPct: '+38.4%', pos: true, hasSellBtn: true },
         { asset: 'AAPL', qty: '32', value: 'US$ 6.420', pnlPct: '+12.1%', pos: true },
       ],
     },
@@ -612,7 +615,8 @@ function MockPositions() {
         { asset: 'AL30', qty: '8.500', value: 'US$ 6.120', pnlPct: '+7.2%', pos: true },
         { asset: 'GGAL', qty: '1.200', value: 'US$ 4.860', pnlPct: '+18.5%', pos: true },
         // Cash: saldo de caja editable — la forma de registrar depósitos.
-        { asset: 'Caja', qty: 'ARS', value: 'US$ 4.002', pnlPct: '+ depósito', pos: true, isCash: true },
+        // editable=true muestra icon Pencil que refuerza la acción "editá la caja".
+        { asset: 'Caja', qty: 'ARS', value: 'US$ 4.002', pnlPct: '+ depósito', pos: true, isCash: true, editable: true },
       ],
     },
     {
@@ -628,7 +632,7 @@ function MockPositions() {
   return (
     <MockFrame title="rendi · cartera" footer="3 brokers · 7 ítems · US$ 48.217 · incluye caja editable">
       <div className="space-y-3">
-        {brokers.map(b => (
+        {brokers.map((b, bIdx) => (
           <div key={b.name} className="border border-line/60 rounded bg-bg-2/20 overflow-hidden">
             {/* Header del broker */}
             <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-line/60 bg-bg-2/40">
@@ -637,6 +641,14 @@ function MockPositions() {
                 <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 border border-line/60 px-1.5 py-0.5 rounded-sm">
                   {b.currency}
                 </span>
+                {/* Botón "+ Posición" solo en el primer broker para no saturar.
+                    El visitante ve UNA vez de dónde sale la acción de agregar. */}
+                {bIdx === 0 && (
+                  <span className="text-[9px] font-mono uppercase tracking-caps text-data-violet border border-data-violet/30 bg-data-violet/5 px-1.5 py-0.5 rounded-sm inline-flex items-center gap-0.5">
+                    <Plus size={8} strokeWidth={2.5} />
+                    posición
+                  </span>
+                )}
               </div>
               <span className="text-[11px] font-mono tabular text-ink-1">{b.total}</span>
             </div>
@@ -645,13 +657,28 @@ function MockPositions() {
               {b.positions.map(p => (
                 <div
                   key={p.asset}
-                  className={`grid grid-cols-[60px_60px_1fr_80px] gap-2 py-1 text-[11px] font-mono items-center ${
-                    p.isCash ? 'opacity-80' : ''
+                  className={`grid grid-cols-[60px_50px_1fr_auto_80px] gap-2 py-1 text-[11px] font-mono items-center ${
+                    p.isCash ? 'opacity-90' : ''
                   }`}
                 >
                   <span className={`font-medium ${p.isCash ? 'text-ink-2 italic' : 'text-ink-0'}`}>{p.asset}</span>
                   <span className="text-ink-3 tabular">{p.qty}</span>
                   <span className="text-ink-2 tabular">{p.value}</span>
+                  {/* Acción contextual: "Realizar venta" para NVDA, edit-icon
+                      para Caja. Visible siempre — no es interactivo en el mock
+                      pero comunica el flujo del producto real. */}
+                  <span className="flex items-center justify-end">
+                    {p.hasSellBtn && (
+                      <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-neg border border-rendi-neg/30 bg-rendi-neg/5 px-1.5 py-0.5 rounded-sm whitespace-nowrap">
+                        Realizar venta
+                      </span>
+                    )}
+                    {p.editable && (
+                      <span className="text-data-cyan border border-data-cyan/30 bg-data-cyan/5 p-1 rounded-sm inline-flex" title="Editar caja">
+                        <Pencil size={9} strokeWidth={2} />
+                      </span>
+                    )}
+                  </span>
                   <span className={`text-right tabular font-medium ${
                     p.isCash
                       ? 'text-data-cyan text-[10px]'
