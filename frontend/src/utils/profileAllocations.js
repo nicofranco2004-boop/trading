@@ -144,6 +144,60 @@ export const TYPICAL_CONCENTRATION_TOP3 = {
 }
 
 
+// ─── Drawdown: behavior declarada → tolerancia implícita ───────────────────
+//
+// El test no captura un % numérico de tolerancia — captura una intención
+// de comportamiento ("¿qué harías si tu portfolio cayera 30%?"). Para
+// cruzar con el drawdown histórico real necesitamos un mapeo cualitativo
+// del behavior a un rango aproximado de tolerancia en %.
+//
+// Estos rangos son heurísticos basados en literatura de behavioral finance
+// (Kahneman & Tversky, prospect theory) — usuarios que dicen "vendería
+// todo" típicamente tienen sensibilidad a la pérdida que se dispara entre
+// 5-12% de drawdown realizado. "Buy more" implica mucha más tolerancia,
+// usualmente arriba del 30%.
+//
+// Devolvemos un OBJETO con range (para inequalities) y midpoint (para
+// comparaciones single-value en el UI).
+
+export const DRAWDOWN_TOLERANCE_BY_BEHAVIOR = {
+  sell_all:  { min: 5,  max: 12, mid: 8,  label: 'vendería todo el portfolio' },
+  sell_some: { min: 12, max: 20, mid: 15, label: 'vendería una parte' },
+  hold:      { min: 20, max: 30, mid: 25, label: 'mantendría la posición' },
+  buy_more:  { min: 30, max: 60, mid: 40, label: 'compraría más para promediar abajo' },
+}
+
+
+// ─── Horizonte declarado → tipo de cartera esperada ────────────────────────
+//
+// Para Card 2 (horizonte vs composición). Mapeo qué tipo de cartera "se
+// espera" según el horizonte declarado — orientativo, no normativo.
+
+export const HORIZON_EXPECTATION = {
+  short: {
+    label: 'corto plazo (días/semanas)',
+    expectedBuckets: ['cash', 'fixed_income'],
+    expectedLabel: 'cash y renta fija',
+    riskBuckets: ['equity', 'alternative'],
+    riskLabel: 'renta variable y alternativos',
+  },
+  medium: {
+    label: 'mediano plazo (meses)',
+    expectedBuckets: ['cash', 'fixed_income', 'equity'],
+    expectedLabel: 'mix de cash, renta fija y renta variable',
+    riskBuckets: ['alternative'],
+    riskLabel: 'alternativos (crypto)',
+  },
+  long: {
+    label: 'largo plazo (años)',
+    expectedBuckets: ['equity', 'alternative'],
+    expectedLabel: 'renta variable y alternativos',
+    riskBuckets: ['cash', 'fixed_income'],
+    riskLabel: 'cash y renta fija',
+  },
+}
+
+
 // ─── Clasificación de activos extendida (con bonos AR) ──────────────────────
 //
 // La clasificación que ya existe en insightsModel.js tiene 4 buckets:

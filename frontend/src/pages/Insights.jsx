@@ -52,6 +52,9 @@ import { useAuth } from '../contexts/AuthContext'
 import {
   computeAllocationMatch,
   computeObjectiveCoherence,
+  computeHorizonComposition,
+  computeDrawdownTolerance,
+  computeConcentrationVsProfile,
 } from '../utils/profileMatch'
 
 const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -255,8 +258,12 @@ function InsightsDesktop() {
   // Card data del perfil del inversor — cruzan profile con cartera real.
   // Devuelven status='ready' | 'no_profile' | 'no_portfolio' | 'no_data' y
   // los datos necesarios para que el componente UI renderice texto descriptivo.
+  // El drawdown real lo pasamos como número absoluto (computeDrawdownOnReturns
+  // devuelve negativo); se computa más abajo en `drawdown`.
   const allocationCard = computeAllocationMatch(investorProfile, positionsWithValue, brokers)
   const objectiveCard = computeObjectiveCoherence(investorProfile, positionsWithValue, brokers)
+  const horizonCard = computeHorizonComposition(investorProfile, positionsWithValue, brokers)
+  const concentrationCard = computeConcentrationVsProfile(investorProfile, positionsWithValue, brokers)
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
   const totalCostBasis = brokers.reduce((s, b) => {
@@ -822,6 +829,14 @@ function InsightsDesktop() {
     peakReturnPct: drawdownTwrr.peakReturnPct,
     troughReturnPct: drawdownTwrr.troughReturnPct,
   } : null
+
+  // Card 3 del perfil del inversor — requiere el drawdown ya computado.
+  // Si no hay returnSeries todavía (sin historia mensual) pasamos null y
+  // la card cae a no_portfolio.
+  const drawdownCard = computeDrawdownTolerance(
+    investorProfile,
+    drawdown?.max,  // % negativo; la función hace Math.abs()
+  )
 
   // ── Insight 3: Deposit discipline ──
   let discipline = null
@@ -2042,6 +2057,9 @@ function InsightsDesktop() {
         <ProfileInvestorBlock
           allocationCard={allocationCard}
           objectiveCard={objectiveCard}
+          horizonCard={horizonCard}
+          drawdownCard={drawdownCard}
+          concentrationCard={concentrationCard}
         />
       </Section>
 
@@ -2561,13 +2579,19 @@ function InsightCard({ icon, title, children, accent, tooltip }) {
 //
 // Tono descriptivo estricto. Sin "deberías", "te conviene", "recomendamos".
 
-function ProfileInvestorBlock({ allocationCard, objectiveCard }) {
-  // Si ninguna card tiene perfil utilizable, mostramos un CTA único.
-  const bothNoProfile =
+function ProfileInvestorBlock({
+  allocationCard, objectiveCard, horizonCard, drawdownCard, concentrationCard,
+}) {
+  // Si las cards basadas en perfil NO tienen perfil utilizable, mostramos
+  // un CTA único en vez de 5 empty states duplicados.
+  // Chequeamos las cards que dependen de la categoría derivada (allocation +
+  // concentration) — si esas dos están sin profile, el resto también lo está.
+  const noProfileAtAll =
     (allocationCard?.status === 'no_profile' || allocationCard?.status === 'no_data') &&
-    (objectiveCard?.status === 'no_profile' || objectiveCard?.status === 'no_data')
+    (objectiveCard?.status === 'no_profile' || objectiveCard?.status === 'no_data') &&
+    (horizonCard?.status === 'no_profile' || horizonCard?.status === 'no_data')
 
-  if (bothNoProfile) {
+  if (noProfileAtAll) {
     return (
       <div className="bg-white dark:bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
         <div className="flex items-center gap-2 text-ink-3">
@@ -2590,9 +2614,12 @@ function ProfileInvestorBlock({ allocationCard, objectiveCard }) {
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       <ProfileAllocationCard data={allocationCard} />
       <ProfileObjectiveCard data={objectiveCard} />
+      <ProfileHorizonCard data={horizonCard} />
+      <ProfileDrawdownCard data={drawdownCard} />
+      <ProfileConcentrationCard data={concentrationCard} />
     </div>
   )
 }
@@ -2702,6 +2729,170 @@ function ProfileObjectiveCard({ data }) {
           </div>
           <p className="text-xs text-ink-2 mt-3 leading-snug">
             El restante <span className="text-ink-0 tabular">{data.actual.misalignedPct}%</span> está en {data.declared.misalignedLabel}.
+          </p>
+        </>
+      )}
+    </InsightCard>
+  )
+}
+
+
+// Card 2: Horizonte declarado vs composición.
+function ProfileHorizonCard({ data }) {
+  const tooltip = (
+    <>
+      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+      <p>Toma el horizonte declarado en el test (corto/medio/largo plazo) y muestra qué porcentaje de tu cartera está en buckets consistentes con ese horizonte y qué porcentaje está en buckets que generarían riesgo para ese horizonte.</p>
+      <p className="text-ink-3">Horizonte largo → consistente con renta variable + alternativos (crecimiento). Horizonte corto → consistente con cash + renta fija (preservación). El "riesgo" es relativo al timing, no a la calidad del activo.</p>
+    </>
+  )
+
+  return (
+    <InsightCard
+      icon={<Clock size={18} />}
+      title="Horizonte vs composición"
+      tooltip={tooltip}
+    >
+      {data.status === 'no_portfolio' ? (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Marcaste horizonte <span className="font-semibold text-ink-0">{data.declared.horizonLabel}</span>.
+            La composición consistente con ese horizonte es {data.declared.expectedLabel}.
+          </p>
+          <p className="text-xs text-ink-3 mt-3 leading-snug">
+            Cargá posiciones para ver el porcentaje real.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Marcaste horizonte <span className="font-semibold text-ink-0">{data.declared.horizonLabel}</span>.
+          </p>
+          <div className="mt-3 flex items-baseline gap-3">
+            <p className="text-2xl font-bold text-ink-0 tabular">
+              {data.actual.expectedPct}%
+            </p>
+            <p className="text-xs text-ink-3">
+              de tu cartera está en {data.declared.expectedLabel}
+            </p>
+          </div>
+          <p className="text-xs text-ink-2 mt-3 leading-snug">
+            El restante <span className="text-ink-0 tabular">{data.actual.riskPct}%</span> está en {data.declared.riskLabel}.
+          </p>
+        </>
+      )}
+    </InsightCard>
+  )
+}
+
+
+// Card 3: Tolerancia drawdown declarada vs drawdown real.
+function ProfileDrawdownCard({ data }) {
+  const tooltip = (
+    <>
+      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+      <p>El test pregunta qué harías ante un drawdown del 30% (vender todo / vender una parte / mantener / comprar más). Mapeamos esa respuesta a un rango de tolerancia implícita (vender todo ≈ 5-12%, mantener ≈ 20-30%, etc.) y lo cruzamos con el drawdown máximo real de tu cartera en TWRR.</p>
+      <p className="text-ink-3">Los rangos son heurísticos basados en literatura de behavioral finance — orientativos, no diagnósticos.</p>
+    </>
+  )
+
+  return (
+    <InsightCard
+      icon={<TrendingDown size={18} />}
+      title="Drawdown tolerado vs real"
+      tooltip={tooltip}
+    >
+      {data.status === 'no_portfolio' ? (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Ante un drawdown del 30% marcaste que <span className="font-semibold text-ink-0">{data.declared.behaviorLabel}</span>,
+            lo que implica una tolerancia aproximada de{' '}
+            <span className="text-ink-0 tabular">{data.declared.impliedTolerance.min}-{data.declared.impliedTolerance.max}%</span>.
+          </p>
+          <p className="text-xs text-ink-3 mt-3 leading-snug">
+            Cargá operaciones para ver el drawdown máximo histórico de tu cartera.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Marcaste <span className="font-semibold text-ink-0">{data.declared.behaviorLabel}</span>{' '}
+            (tolerancia aprox <span className="tabular">{data.declared.impliedTolerance.min}-{data.declared.impliedTolerance.max}%</span>).
+          </p>
+          <div className="mt-3 flex items-baseline gap-3">
+            <p className="text-2xl font-bold text-ink-0 tabular">
+              {data.actual.drawdownPct}%
+            </p>
+            <p className="text-xs text-ink-3">
+              drawdown máximo de tu cartera (TWRR)
+            </p>
+          </div>
+          <p className="text-xs text-ink-2 mt-3 leading-snug">
+            {data.comparison === 'within'
+              ? `Dentro del rango de tolerancia que declaraste.`
+              : data.comparison === 'below'
+                ? `Por debajo del rango declarado.`
+                : `Por encima del rango declarado.`}
+          </p>
+        </>
+      )}
+    </InsightCard>
+  )
+}
+
+
+// Card 4: Concentración top 3 vs benchmark del perfil.
+function ProfileConcentrationCard({ data }) {
+  const tooltip = (
+    <>
+      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+      <p>Suma del % que representan tus 3 activos más grandes (por valor en USD, agregando entre brokers) sobre el total del portfolio. Excluye cash.</p>
+      <p className="text-ink-3">Rango típico por perfil: orientativo. Más concentración suele tolerarse en perfiles agresivos (que ya asumen más riesgo). Los rangos son referencia, no diagnóstico.</p>
+    </>
+  )
+
+  return (
+    <InsightCard
+      icon={<Layers size={18} />}
+      title="Concentración vs perfil"
+      tooltip={tooltip}
+    >
+      {data.status === 'no_portfolio' ? (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Tu perfil es <span className="font-semibold text-ink-0">{data.declared.categoryLabel}</span>.
+            La concentración top 3 típica para este perfil está entre{' '}
+            <span className="text-ink-0 tabular">{data.declared.typicalRange.min}-{data.declared.typicalRange.max}%</span>.
+          </p>
+          <p className="text-xs text-ink-3 mt-3 leading-snug">
+            Cargá posiciones para ver tu concentración real.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Tu perfil es <span className="font-semibold text-ink-0">{data.declared.categoryLabel}</span>{' '}
+            (rango típico top 3: <span className="tabular">{data.declared.typicalRange.min}-{data.declared.typicalRange.max}%</span>).
+          </p>
+          <div className="mt-3 flex items-baseline gap-3">
+            <p className="text-2xl font-bold text-ink-0 tabular">
+              {data.actual.top3Pct}%
+            </p>
+            <p className="text-xs text-ink-3">
+              en {data.actual.holdingsCount < 3
+                ? `tus ${data.actual.holdingsCount} ${data.actual.holdingsCount === 1 ? 'activo' : 'activos'}`
+                : 'tus top 3'}
+              {data.actual.top3Assets.length > 0 && (
+                <> ({data.actual.top3Assets.join(', ')})</>
+              )}
+            </p>
+          </div>
+          <p className="text-xs text-ink-2 mt-3 leading-snug">
+            {data.comparison === 'within'
+              ? `Dentro del rango típico para perfil ${data.declared.categoryLabel}.`
+              : data.comparison === 'below'
+                ? `Por debajo del rango típico.`
+                : `Por encima del rango típico.`}
           </p>
         </>
       )}
