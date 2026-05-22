@@ -446,10 +446,10 @@ function HowItWorks() {
     {
       n: '02',
       Icon: ListChecks,
-      meta: 'OPERACIONES · HISTORIAL',
-      title: 'Registrás operaciones',
-      body: 'Cada venta queda en el historial con P&L en USD y %, broker y fecha. Si solo querés anotar cuánto ganaste o perdiste sin precios exactos, dejá los campos vacíos y completá únicamente P&L USD — el atajo para trades viejos o cuentas externas.',
-      chips: ['FIFO', 'P&L USD real', 'Atajo sin precios'],
+      meta: 'OPERACIONES · COMPRAS + VENTAS',
+      title: 'Añadí compras y ventas para seguir tu cartera',
+      body: 'Cada operación queda con su P&L USD, % y broker. Cuando vendés, Rendi aplica FIFO automático — descuenta del lote más viejo primero, igual que la lógica fiscal AR, así el costo de compra se mantiene consistente. Si solo querés anotar cuánto ganaste o perdiste sin recordar precios exactos, completá únicamente P&L USD — atajo para trades viejos o cuentas externas.',
+      chips: ['FIFO automático', 'Compras + ventas', 'Atajo sin precios'],
       Visual: MockOperations,
     },
     {
@@ -623,26 +623,32 @@ function MockImport() {
 }
 
 function MockOperations() {
+  // 5 rows que muestren la mezcla real: compras (sin P&L — apenas suman a la
+  // cartera), ventas con FIFO (P&L automático contra lote más viejo) y
+  // dividendos. Tag pill por tipo para que se distinga visualmente.
   const rows = [
-    { date: '2024-11-15', asset: 'NVDA', type: 'sell', pnl: '+US$320', pnlClass: 'text-rendi-pos' },
-    { date: '2024-10-22', asset: 'AMD', type: 'sell', pnl: '+US$210', pnlClass: 'text-rendi-pos' },
-    { date: '2024-09-08', asset: 'INTC', type: 'sell', pnl: '−US$180', pnlClass: 'text-rendi-neg' },
-    { date: '2024-08-30', asset: 'AAPL', type: 'dividendo', pnl: '+US$45', pnlClass: 'text-rendi-pos' },
+    { date: '2024-11-15', asset: 'NVDA', type: 'venta',   pnl: '+US$320', pnlClass: 'text-rendi-pos', typeClass: 'text-data-violet border-data-violet/30 bg-data-violet/5' },
+    { date: '2024-10-30', asset: 'NVDA', type: 'compra',  pnl: '—',       pnlClass: 'text-ink-3',     typeClass: 'text-data-cyan border-data-cyan/30 bg-data-cyan/5' },
+    { date: '2024-10-22', asset: 'AMD',  type: 'venta',   pnl: '+US$210', pnlClass: 'text-rendi-pos', typeClass: 'text-data-violet border-data-violet/30 bg-data-violet/5' },
+    { date: '2024-09-08', asset: 'INTC', type: 'venta',   pnl: '−US$180', pnlClass: 'text-rendi-neg', typeClass: 'text-data-violet border-data-violet/30 bg-data-violet/5' },
+    { date: '2024-08-30', asset: 'AAPL', type: 'dividendo', pnl: '+US$45', pnlClass: 'text-rendi-pos', typeClass: 'text-data-amber border-data-amber/30 bg-data-amber/5' },
   ]
   return (
-    <MockFrame title="rendi · operaciones" footer="4 trades · win rate 75%">
+    <MockFrame title="rendi · operaciones" footer="FIFO automático · P&L USD calculado">
       <div className="space-y-1">
-        <div className="grid grid-cols-4 gap-2 pb-2 border-b border-line/60 text-[9px] font-mono uppercase tracking-caps text-ink-3">
+        <div className="grid grid-cols-[80px_60px_1fr_80px] gap-2 pb-2 border-b border-line/60 text-[9px] font-mono uppercase tracking-caps text-ink-3">
           <span>Fecha</span>
           <span>Activo</span>
           <span>Tipo</span>
           <span className="text-right">P&L</span>
         </div>
         {rows.map((r, i) => (
-          <div key={i} className="grid grid-cols-4 gap-2 py-1.5 text-[11px] font-mono">
+          <div key={i} className="grid grid-cols-[80px_60px_1fr_80px] gap-2 py-1.5 text-[11px] font-mono items-center">
             <span className="text-ink-3 tabular">{r.date}</span>
             <span className="text-ink-0 font-medium">{r.asset}</span>
-            <span className="text-ink-2 lowercase">{r.type}</span>
+            <span className={`text-[9px] uppercase tracking-caps border px-1.5 py-0.5 rounded-sm inline-flex w-fit ${r.typeClass}`}>
+              {r.type}
+            </span>
             <span className={`${r.pnlClass} text-right tabular font-medium`}>{r.pnl}</span>
           </div>
         ))}
