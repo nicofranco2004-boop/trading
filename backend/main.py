@@ -33,7 +33,12 @@ import logging
 log = logging.getLogger(__name__)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from snapshots_job import run_daily_snapshot, compute_live_portfolio_value
+from snapshots_job import (
+    run_daily_snapshot,
+    compute_live_portfolio_value,
+    fetch_prices_for_symbols,
+    compute_broker_value_usd,
+)
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, date
@@ -634,6 +639,35 @@ def init_db():
             cost_usd_cents INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
+
+        -- ─── ai_user_facts: memoria persistente del coach IA ─────────────────
+        -- "Hechos" textuales que el user le aclara al bot ("AL30 lo compré en
+        -- broker IOL", "mi sueldo en dolares es 2500"), o que el bot infiere y
+        -- confirma. Se inyectan al system prompt del chat para que respuestas
+        -- futuras los respeten sin necesidad de re-explicar.
+        --
+        -- Diseño:
+        --   • content: texto libre (cap 280 chars — bullet point conciso)
+        --   • source: 'user_correction' (el user lo dijo) |
+        --             'ai_inferred' (bot infirió y user confirmó) |
+        --             'manual' (admin lo puso)
+        --   • created_at: ordenamos DESC para usar siempre los más recientes
+        --     si superamos el límite N inyectado al prompt
+        --   • is_active: soft-delete (toggle desde UI). Inactivos no se inyectan.
+        --
+        -- Por qué soft-delete: si el user "olvida" un hecho y luego lo quiere
+        -- de vuelta, lo reactiva sin perder created_at original (auditoría).
+        CREATE TABLE IF NOT EXISTS ai_user_facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'user_correction',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_user_facts_user_active
+            ON ai_user_facts(user_id, is_active, created_at DESC);
 
         -- ─── subscriptions: estado de billing por user ──────────────────────
         -- Una fila por user con suscripción ACTIVA o cancelada (histórica).
@@ -6909,6 +6943,55 @@ _AI_TOOLS = [
             },
         },
     },
+    {
+        "name": "get_realized_vs_unrealized",
+        "description": "Devuelve el desglose preciso de P&L realizado (trades cerrados, USD absoluto) vs P&L unrealized (mark-to-market actual de posiciones abiertas). Usala cuando el usuario pregunta 'cuánto realmente gané/perdí', 'cuánto es sobre papel vs realizado', o cuando necesitás cuantificar el origen de su rendimiento sin confusión. Opcionalmente filtrá por un ticker específico.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "asset": {
+                    "type": "string",
+                    "description": "(Opcional) Ticker para filtrar (ej: NVDA, AL30). Sin sufijo .BA. Si se omite, devuelve totales de TODA la cartera.",
+                }
+            },
+        },
+    },
+    {
+        "name": "get_recent_news_for_assets",
+        "description": "Trae las últimas 3-5 noticias relevantes para uno o más tickers de la cartera del usuario. Usala SOLO si el usuario pregunta específicamente sobre noticias, eventos recientes, o por qué un activo se movió. NO la uses para queries generales — cuesta latencia adicional.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbols": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tickers para los que buscar noticias. Máximo 5.",
+                    "maxItems": 5,
+                }
+            },
+            "required": ["symbols"],
+        },
+    },
+    {
+        "name": "remember_user_fact",
+        "description": (
+            "Persiste un hecho que el usuario te aclara explícitamente y debe sobrevivir a esta conversación. "
+            "Usala SOLO cuando el usuario te pide 'recordá esto', 'la próxima vez tené en cuenta', o cuando te "
+            "corrige un dato y deja claro que debe respetarse en futuras conversaciones. NO la uses para "
+            "preferencias efímeras de la sesión actual, ni para info que ya está en el snapshot."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "El hecho a recordar, en bullet conciso (máx 280 chars). Ej: 'El AL30 lo tengo en IOL, no en Cocos'.",
+                    "maxLength": 280,
+                }
+            },
+            "required": ["content"],
+        },
+    },
 ]
 
 
@@ -6981,6 +7064,255 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
         ).fetchall()
         conn.close()
         return {"entries": [dict(r) for r in rows]}
+
+    elif name == "get_realized_vs_unrealized":
+        # Devuelve breakdown PRECISO de realized (trades cerrados, USD absoluto)
+        # vs unrealized (mark-to-market HOY de posiciones abiertas). Esto cierra
+        # el bug raíz que motivó toda la Ola 2: el LLM confundía operations
+        # (cerradas) con positions (abiertas). Acá no hay confusión posible —
+        # el shape del resultado etiqueta cada bucket.
+        #
+        # Filtro opcional por asset. Si se omite → totales de cartera completa.
+        # SQL parametrizado; igual aplicamos _SYMBOL_RE para rechazar basura.
+        raw_asset = input_data.get("asset")
+        asset_filter = None
+        if raw_asset:
+            asset_filter = str(raw_asset).strip().upper()[:15]
+            if not _SYMBOL_RE.match(asset_filter):
+                log.info("AI tool get_realized_vs_unrealized rejected — invalid asset: %r", raw_asset)
+                return {"error": f"asset '{asset_filter}' no tiene formato válido"}
+        conn = get_db()
+        try:
+            # ─── Realized: sum(pnl_usd) sobre operations CERRADAS ────────────
+            # Filtramos con el MISMO criterio que ai/builders/insights.py
+            # (Compra/Dividendo/Interés/CONVERSION% no son trades). Sin este
+            # filtro el realized incluiría dividendos + conversiones y el
+            # número diverge del que muestra Insights. Bug #2 del deep audit.
+            CLOSED_FILTER = (
+                "pnl_usd IS NOT NULL "
+                "AND op_type NOT IN ('Compra','Dividendo','Interés','') "
+                "AND op_type NOT LIKE 'CONVERSION%' "
+                "AND op_type NOT LIKE 'Conversión%'"
+            )
+            if asset_filter:
+                row = conn.execute(
+                    f"SELECT COALESCE(SUM(pnl_usd),0) AS realized, COUNT(*) AS n "
+                    f"FROM operations WHERE user_id=? AND asset=? AND {CLOSED_FILTER}",
+                    (uid, asset_filter),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    f"SELECT COALESCE(SUM(pnl_usd),0) AS realized, COUNT(*) AS n "
+                    f"FROM operations WHERE user_id=? AND {CLOSED_FILTER}",
+                    (uid,),
+                ).fetchone()
+            realized_usd = float(row["realized"] or 0)
+            closed_count = int(row["n"] or 0)
+
+            # ─── Unrealized: positions × precio HOY − invested (USD) ─────────
+            # Reusamos la misma lógica que `compute_live_portfolio_value` /
+            # `compute_broker_value_usd` para no divergir de cómo el resto de
+            # la app calcula valor. tc_blue desde config del user.
+            brokers = [dict(r) for r in conn.execute(
+                "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
+            ).fetchall()]
+            pos_query = (
+                "SELECT broker, asset, is_cash, invested, quantity, commissions, "
+                "price_override FROM positions WHERE user_id=?"
+            )
+            pos_args: tuple = (uid,)
+            if asset_filter:
+                pos_query += " AND asset=?"
+                pos_args = (uid, asset_filter)
+            positions = [dict(r) for r in conn.execute(pos_query, pos_args).fetchall()]
+
+            tc_blue = _user_tc_blue(conn, uid)
+
+            unrealized_usd = 0.0
+            market_value_usd = 0.0
+            invested_usd = 0.0
+            position_count = 0
+            in_portfolio_now = False
+
+            if brokers and positions:
+                ars_brokers = {b['name'] for b in brokers if b['currency'] == 'ARS'}
+                usd_brokers = {b['name'] for b in brokers if b['currency'] != 'ARS'}
+                ars_symbols = list({
+                    f"{p['asset']}.BA" for p in positions
+                    if p['broker'] in ars_brokers and not p['is_cash']
+                })
+                usd_symbols = list({
+                    p['asset'] for p in positions
+                    if p['broker'] in usd_brokers and not p['is_cash']
+                       and p['asset'] not in ('USDT', 'USD')
+                })
+                all_symbols = ars_symbols + usd_symbols
+                try:
+                    prices = fetch_prices_for_symbols(all_symbols, CRYPTO_YF) if all_symbols else {}
+                except Exception as ex:
+                    log.warning("get_realized_vs_unrealized: fetch_prices failed: %s", ex)
+                    prices = {}
+
+                for b in brokers:
+                    bpos = [p for p in positions if p['broker'] == b['name']]
+                    if not bpos:
+                        continue
+                    try:
+                        r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue)
+                        market_value_usd += r.get('value', 0) or 0
+                        invested_usd += r.get('invested', 0) or 0
+                    except Exception as ex:
+                        log.warning("get_realized_vs_unrealized: broker %s failed: %s", b['name'], ex)
+                        continue
+                # Solo contamos posiciones NO-cash (consistente con el resto del bot)
+                position_count = sum(1 for p in positions if not p.get('is_cash'))
+                in_portfolio_now = position_count > 0
+                unrealized_usd = market_value_usd - invested_usd
+
+            combined_pnl_usd = realized_usd + unrealized_usd
+            total_equity_usd = market_value_usd  # alias para coherencia con insights
+
+            # pnl_source ayuda al LLM a no confundir "realizado" con "no realizado"
+            if asset_filter:
+                if realized_usd != 0 and position_count > 0:
+                    pnl_source = "mixed"
+                elif realized_usd != 0:
+                    pnl_source = "realized_only"
+                elif position_count > 0:
+                    pnl_source = "unrealized_only"
+                else:
+                    pnl_source = "none"
+            else:
+                pnl_source = "portfolio_total"
+
+            result = {
+                "scope": "single_asset" if asset_filter else "portfolio_total",
+                "asset": asset_filter,
+                "realized_pnl_usd": round(realized_usd, 2),
+                "unrealized_pnl_usd": round(unrealized_usd, 2),
+                "combined_pnl_usd": round(combined_pnl_usd, 2),
+                "market_value_usd": round(market_value_usd, 2),
+                "invested_usd": round(invested_usd, 2),
+                "total_equity_usd": round(total_equity_usd, 2),
+                "closed_trades_count": closed_count,
+                "open_positions_count": position_count,
+                "in_portfolio_now": in_portfolio_now,
+                "pnl_source": pnl_source,
+                "_note": (
+                    "realized_pnl_usd = suma de pnl_usd de operations cerradas "
+                    "(USD absoluto, no %). unrealized_pnl_usd = market_value_usd "
+                    "− invested_usd HOY (mark-to-market). combined_pnl_usd los "
+                    "suma. NUNCA mezclar realized con unrealized en una sola "
+                    "afirmación sin etiquetar el bucket."
+                ),
+            }
+            return result
+        finally:
+            conn.close()
+
+    elif name == "get_recent_news_for_assets":
+        # Acepta hasta 5 tickers. NO hace fetch propio — reusa la cache de
+        # noticias que ya viene poblada por _ensure_news_batch_parallel para
+        # endpoints públicos. Si no hay news pre-pobladas, hace un fetch on-demand.
+        raw_symbols = input_data.get("symbols", [])
+        if not isinstance(raw_symbols, list):
+            return {"error": "symbols debe ser lista"}
+        symbols = [str(s).strip().upper()[:15] for s in raw_symbols][:5]
+        valid = [s for s in symbols if _SYMBOL_RE.match(s)]
+        if not valid:
+            log.info("AI tool get_recent_news_for_assets rejected — no valid symbols. Got: %r", raw_symbols[:5])
+            return {"error": "No se proporcionaron símbolos válidos"}
+
+        conn = get_db()
+        try:
+            # Sembrar (o refrescar) por cada ticker — sigue el mismo patrón que
+            # /api/news/portfolio: query "{TICKER} stock" (en/es según AR/US).
+            specs = []
+            for ticker in valid:
+                is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
+                lang = "es" if is_ar else "en"
+                q = f"{ticker} {'acciones' if is_ar else 'stock'}"
+                specs.append((q, lang, 'portfolio'))
+
+            try:
+                _ensure_news_batch_parallel(specs, NEWS_TICKER_TTL)
+            except Exception as ex:
+                log.warning("get_recent_news_for_assets: ensure_news_batch failed: %s", ex)
+
+            # Levantar top 3 por ticker (cap total a 15 para que no infle el contexto del LLM)
+            output = {}
+            for ticker in valid:
+                # query_source LIKE 'TICKER %' (igual que get_portfolio_news)
+                rows = conn.execute(
+                    """SELECT title, summary, url, published_at, source
+                       FROM news
+                       WHERE category='portfolio' AND query_source LIKE ?
+                       ORDER BY published_at DESC LIMIT 3""",
+                    (f"{ticker} %",),
+                ).fetchall()
+                output[ticker] = [
+                    {
+                        "title": r["title"],
+                        "summary": (r["summary"] or "")[:300],  # cap para LLM
+                        "url": r["url"],
+                        "published_at": r["published_at"],
+                        "source": r["source"],
+                    }
+                    for r in rows
+                ]
+            return {
+                "news_by_ticker": output,
+                "_note": (
+                    "Noticias de Google News RSS, máx 3 por ticker. Si un ticker "
+                    "tiene array vacío, no hubo noticias recientes en cache. "
+                    "Usalas para contexto causal — NO inventes catalizadores si "
+                    "no aparecen acá."
+                ),
+            }
+        finally:
+            conn.close()
+
+    elif name == "remember_user_fact":
+        # Persiste un hecho. Solo aceptamos texto sano + cap. Hard-cap 50
+        # activos por user (igual que en POST /api/ai/remember).
+        raw_content = input_data.get("content", "")
+        content = str(raw_content).strip()[:280]
+        if len(content) < 3:
+            return {"error": "content debe tener al menos 3 chars tras strip"}
+        # Anti prompt-injection naive: rechazamos contenido que parezca un
+        # intento de override del system prompt. No es exhaustivo pero corta
+        # el caso obvio. La defensa real es que estos facts se renderizan
+        # dentro de un bloque etiquetado en el system_text.
+        low = content.lower()
+        bad_patterns = ("ignore previous", "ignore prior", "ignora las instrucciones",
+                        "system prompt", "<|", "{{ system", "</system>")
+        if any(p in low for p in bad_patterns):
+            log.info("remember_user_fact rejected — prompt-injection pattern: %r", content[:80])
+            return {"error": "El contenido contiene un patrón no permitido"}
+        conn = get_db()
+        try:
+            # Tx explícita para que count+insert sea atómica (evita race con
+            # tool-loop concurrente del LLM y con POST /api/ai/remember).
+            with conn:
+                n_active = conn.execute(
+                    "SELECT COUNT(*) AS n FROM ai_user_facts WHERE user_id=? AND is_active=1",
+                    (uid,),
+                ).fetchone()["n"]
+                if n_active >= 50:
+                    return {
+                        "error": "Llegaste al máximo de 50 hechos guardados. Pedile al usuario que desactive alguno desde Config.",
+                    }
+                cur = conn.execute(
+                    "INSERT INTO ai_user_facts(user_id, content, source) VALUES (?,?,?)",
+                    (uid, content, "ai_inferred"),
+                )
+            try:
+                _ai_cache_invalidate(uid)
+            except Exception:
+                pass
+            return {"ok": True, "id": cur.lastrowid, "content": content}
+        finally:
+            conn.close()
 
     log.warning("AI tool unknown: %r", name)
     return {"error": f"Tool '{name}' no reconocida"}
@@ -8356,6 +8688,18 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
         prof_row = conn.execute(
             "SELECT investor_profile FROM users WHERE id=?", (uid,)
         ).fetchone()
+        # Memoria persistente del user (Ola 3-L). Levantamos hasta 25 facts
+        # activos más recientes — el bot debe respetarlos como verdad declarada.
+        # 25 está alineado con el hard-cap de inserts (50): el user puede
+        # tener 50 totales pero solo los 25 más recientes se inyectan. Si
+        # queremos rotar facts viejos, basta con desactivar (UI lo permite).
+        # Auditoría Ola 3 — antes era LIMIT 10, causaba "fact forgetting" silente.
+        facts_rows = conn.execute(
+            """SELECT content FROM ai_user_facts
+               WHERE user_id=? AND is_active=1
+               ORDER BY created_at DESC LIMIT 25""",
+            (uid,),
+        ).fetchall()
     finally:
         conn.close()
 
@@ -8379,12 +8723,28 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     # _kind='closed_trade' (defensa anti-confusión inline).
     snapshot_clean = _sanitize_chat_snapshot(data.snapshot)
     portfolio_json = json.dumps(snapshot_clean, indent=2, ensure_ascii=False, default=str)
+
+    # Bloque de hechos persistentes del user (Ola 3-L). Se inyecta ANTES del
+    # snapshot para que el LLM lo lea con prioridad. Vacío si no hay facts.
+    facts_block = ""
+    if facts_rows:
+        bullets = "\n".join(f"- {dict(r)['content']}" for r in facts_rows)
+        facts_block = (
+            f"\n\nHECHOS DECLARADOS POR EL USUARIO (memoria persistente)\n"
+            f"El usuario te aclaró estos puntos en conversaciones previas. "
+            f"Tratalos como VERDAD para esta sesión — no los contradigas y no "
+            f"pidas que los re-explique. Si un dato del snapshot parece chocar "
+            f"con un hecho declarado, asumí que el hecho declarado prevalece "
+            f"(el usuario conoce su realidad mejor que un campo legacy):\n"
+            f"{bullets}"
+        )
+
     system_text = f"""{base_system}
 
 DATOS COMPLETOS DEL USUARIO
 El snapshot incluye: summary (métricas agregadas: total USD, PnL, drawdown, win rate, etc.), positions (posiciones ABIERTAS — cada item marcado _kind='open_position'), operations (operaciones CERRADAS — cada item marcado _kind='closed_trade'), monthly (historial mes a mes), brokers, y benchmarks (S&P 500, inflación AR, dólar blue).
 Cuando el usuario pregunta algo específico ("¿qué % es Tesla?", "¿cuánto perdí en BTC?", "¿mi mejor mes?"), buscá primero en estos datos. Usá las tools para complementar solo si necesitás algo que no está acá.
-El campo `_kind` en cada item te dice si es posición abierta o trade cerrado — usarlo para razonar correctamente sobre riesgo presente (solo open_position) vs P&L histórico (closed_trade).
+El campo `_kind` en cada item te dice si es posición abierta o trade cerrado — usarlo para razonar correctamente sobre riesgo presente (solo open_position) vs P&L histórico (closed_trade).{facts_block}
 
 ```json
 {portfolio_json}
@@ -8444,6 +8804,139 @@ El campo `_kind` en cada item te dice si es posición abierta o trade cerrado �
 
     except Exception as ex:
         raise HTTPException(500, f"Error en el chat: {ex}")
+
+
+# ─── AI memory — ai_user_facts (Ola 3-L) ─────────────────────────────────────
+# CRUD para "hechos" que el user le aclara al bot y deben persistir entre
+# sesiones. El bot los lee en /api/ai/chat al construir el system prompt.
+#
+# UX esperada (frontend, fuera de scope acá): chip "El bot dijo algo mal" →
+# input texto corto → POST /api/ai/remember. Lista en /config con toggle.
+
+class AIRememberIn(BaseModel):
+    """Input para guardar un hecho persistente del user.
+
+    `content` es el texto del hecho (cap 280 chars — bullet conciso, no parrafo).
+    `source` opcional: distingue user-corregido vs ai-inferido. Default
+    'user_correction' porque la mayoría va a venir del chip "corregir bot".
+    """
+    content: str = Field(..., min_length=3, max_length=280)
+    source: Optional[str] = Field(default="user_correction", max_length=32)
+
+    @field_validator('content')
+    @classmethod
+    def strip_and_validate_content(cls, v: str) -> str:
+        s = (v or "").strip()
+        if len(s) < 3:
+            raise ValueError("content debe tener al menos 3 caracteres tras strip")
+        return s
+
+    @field_validator('source')
+    @classmethod
+    def validate_source(cls, v: Optional[str]) -> str:
+        allowed = {"user_correction", "ai_inferred", "manual"}
+        s = (v or "user_correction").strip().lower()
+        if s not in allowed:
+            return "user_correction"
+        return s
+
+
+@app.post("/api/ai/remember")
+def ai_remember(
+    data: AIRememberIn,
+    request: Request,
+    uid: int = Depends(get_current_user),
+):
+    """Persiste un hecho del user para que el bot lo recuerde en chats futuros.
+
+    Hard-cap a 50 facts activos por user — si lo sobrepasa, dejamos de aceptar
+    nuevos hasta que desactive alguno (evita inflar el prompt indefinidamente).
+
+    Rate-limited a 20/hora por user — sin esto, un token comprometido puede
+    spamear inserts y forzar invalidaciones de cache (afecta latencia + costo
+    LLM en re-runs). Hardening del deep audit Ola 3.
+    """
+    _check_rate_limit(request, max_calls=20, window_seconds=3600, suffix=f"ai_remember:{uid}")
+    conn = get_db()
+    try:
+        # Hard cap defensivo (50 activos por user). Lo hacemos dentro de una
+        # transacción explícita para evitar race condition con tool calls
+        # concurrentes del LLM (puede emitir varios remember_user_fact en el
+        # mismo response — sin esto, dos pueden ver n=49 a la vez y meter 51).
+        with conn:
+            n_active = conn.execute(
+                "SELECT COUNT(*) AS n FROM ai_user_facts WHERE user_id=? AND is_active=1",
+                (uid,),
+            ).fetchone()["n"]
+            if n_active >= 50:
+                raise HTTPException(
+                    409,
+                    "Llegaste al máximo de hechos guardados (50). Desactiva alguno antes de agregar más.",
+                )
+            cur = conn.execute(
+                "INSERT INTO ai_user_facts(user_id, content, source) VALUES (?,?,?)",
+                (uid, data.content, data.source),
+            )
+        # Invalidar cache de IA — los facts cambian el system prompt y por
+        # ende la salida de los packets descriptivos también puede cambiar.
+        _ai_cache_invalidate(uid)
+        return {"id": cur.lastrowid, "content": data.content, "source": data.source}
+    finally:
+        conn.close()
+
+
+@app.get("/api/ai/facts")
+def ai_list_facts(
+    include_inactive: bool = False,
+    uid: int = Depends(get_current_user),
+):
+    """Lista facts del user. Por default solo activos (los que se inyectan).
+    `include_inactive=true` trae todo para la UI de gestión."""
+    conn = get_db()
+    try:
+        if include_inactive:
+            rows = conn.execute(
+                """SELECT id, content, source, is_active, created_at, updated_at
+                   FROM ai_user_facts WHERE user_id=?
+                   ORDER BY is_active DESC, created_at DESC""",
+                (uid,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, content, source, is_active, created_at, updated_at
+                   FROM ai_user_facts WHERE user_id=? AND is_active=1
+                   ORDER BY created_at DESC""",
+                (uid,),
+            ).fetchall()
+        return {"facts": [dict(r) for r in rows], "count": len(rows)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/ai/facts/{fact_id}")
+def ai_delete_fact(fact_id: int, uid: int = Depends(get_current_user)):
+    """Soft-delete (toggle is_active=0). No borra la fila — mantiene historial
+    de auditoría. Si el user lo vuelve a querer, lo reactiva (futuro endpoint).
+    """
+    conn = get_db()
+    try:
+        # Verificar ownership ANTES de mutar (defensa contra IDOR)
+        row = conn.execute(
+            "SELECT id FROM ai_user_facts WHERE id=? AND user_id=?",
+            (fact_id, uid),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Hecho no encontrado")
+        conn.execute(
+            "UPDATE ai_user_facts SET is_active=0, updated_at=datetime('now') "
+            "WHERE id=? AND user_id=?",
+            (fact_id, uid),
+        )
+        conn.commit()
+        _ai_cache_invalidate(uid)
+        return {"ok": True, "id": fact_id}
+    finally:
+        conn.close()
 
 
 # ─── CSV Importer ────────────────────────────────────────────────────────────

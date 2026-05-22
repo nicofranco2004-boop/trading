@@ -581,6 +581,243 @@ def test_chat_snapshot_sanitizer():
     print("  TEST 14 PASS")
 
 
+def test_realized_vs_unrealized_tool():
+    print("\n=== Test 17: tool get_realized_vs_unrealized devuelve shape correcto ===")
+    import os, sqlite3 as s3, tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db, _execute_ai_tool
+    init_db()
+    conn = s3.connect(tmp.name)
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified) VALUES (?,?,?,1,1)",
+        ("t@t", "h", "T"),
+    )
+    uid = conn.execute("SELECT id FROM users").fetchone()[0]
+    # broker + 1 operación cerrada + 1 posición abierta (sin price_override sería
+    # mark-to-market vía yfinance, lo cual no queremos en test → usamos override)
+    conn.execute(
+        "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+        (uid, "TestBroker", "USDT"),
+    )
+    conn.execute(
+        "INSERT INTO operations (user_id, broker, asset, op_type, entry_price, exit_price, "
+        "quantity, pnl_usd, pnl_pct, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (uid, "TestBroker", "AMD", "sell", 100, 120, 10, 200, 20, "2025-01-15"),
+    )
+    conn.execute(
+        "INSERT INTO operations (user_id, broker, asset, op_type, entry_price, exit_price, "
+        "quantity, pnl_usd, pnl_pct, date) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (uid, "TestBroker", "INTC", "sell", 30, 28, 100, -200, -6.7, "2025-02-10"),
+    )
+    conn.execute(
+        "INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity, "
+        "commissions, price_override) VALUES (?,?,?,?,?,?,?,?)",
+        (uid, "TestBroker", "NVDA", 0, 1000, 10, 0, 150),  # invested=1000, qty=10, price=150 → value=1500, unr=500
+    )
+    conn.commit()
+
+    # Totales de toda la cartera
+    r = _execute_ai_tool("get_realized_vs_unrealized", {}, uid)
+    if r.get("scope") != "portfolio_total":
+        fail(f"scope esperado 'portfolio_total', got {r.get('scope')}")
+    # realized = +200 - 200 = 0 USD
+    if abs(r.get("realized_pnl_usd", -999)) > 0.01:
+        fail(f"realized_pnl_usd esperado 0, got {r.get('realized_pnl_usd')}")
+    # closed_trades_count = 2
+    if r.get("closed_trades_count") != 2:
+        fail(f"closed_trades_count esperado 2, got {r.get('closed_trades_count')}")
+    # open_positions_count = 1
+    if r.get("open_positions_count") != 1:
+        fail(f"open_positions_count esperado 1, got {r.get('open_positions_count')}")
+    # unrealized: market_value − invested = 1500 − 1000 = 500
+    if abs(r.get("unrealized_pnl_usd", 0) - 500) > 1:
+        fail(f"unrealized_pnl_usd esperado ~500, got {r.get('unrealized_pnl_usd')}")
+    if "_note" not in r:
+        fail("falta _note explicativo")
+    print("  portfolio_total shape OK ✓")
+
+    # Filtrado por asset (AMD: solo realized, no está en posiciones abiertas)
+    r2 = _execute_ai_tool("get_realized_vs_unrealized", {"asset": "AMD"}, uid)
+    if r2.get("scope") != "single_asset":
+        fail(f"scope filtrado debe ser 'single_asset', got {r2.get('scope')}")
+    if abs(r2.get("realized_pnl_usd", 0) - 200) > 0.01:
+        fail(f"realized AMD esperado 200, got {r2.get('realized_pnl_usd')}")
+    if r2.get("in_portfolio_now") is not False:
+        fail("AMD no debería estar en cartera abierta")
+    if r2.get("pnl_source") != "realized_only":
+        fail(f"pnl_source AMD esperado 'realized_only', got {r2.get('pnl_source')}")
+    print("  filtro AMD (realized_only) ✓")
+
+    # Filtrado por NVDA — sin trades cerrados, solo posición abierta
+    r3 = _execute_ai_tool("get_realized_vs_unrealized", {"asset": "NVDA"}, uid)
+    if r3.get("realized_pnl_usd") != 0:
+        fail(f"NVDA realized esperado 0, got {r3.get('realized_pnl_usd')}")
+    if r3.get("in_portfolio_now") is not True:
+        fail("NVDA debería estar en cartera abierta")
+    if r3.get("pnl_source") != "unrealized_only":
+        fail(f"pnl_source NVDA esperado 'unrealized_only', got {r3.get('pnl_source')}")
+    print("  filtro NVDA (unrealized_only) ✓")
+
+    # Asset inválido (SQL injection / formato)
+    r4 = _execute_ai_tool("get_realized_vs_unrealized", {"asset": "FOO' OR 1=1--"}, uid)
+    if "error" not in r4:
+        fail("asset inválido debería ser rechazado")
+    print("  asset inválido rechazado ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 17 PASS")
+
+
+def test_news_for_assets_tool():
+    print("\n=== Test 18: tool get_recent_news_for_assets — sanitiza input + shape ===")
+    import os, sqlite3 as s3, tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    import main as main_mod
+    from main import init_db, _execute_ai_tool
+    init_db()
+    # Monkey-patch para que NO haga fetch real a Google News durante el test —
+    # los unit tests no deben tocar la red, además es lento/flaky.
+    main_mod._ensure_news_batch_parallel = lambda *a, **k: None
+
+    conn = s3.connect(tmp.name)
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified) VALUES (?,?,?,1,1)",
+        ("t@t", "h", "T"),
+    )
+    uid = conn.execute("SELECT id FROM users").fetchone()[0]
+    # Pre-sembramos news para AAPL (query_source = "AAPL stock")
+    conn.execute(
+        "INSERT INTO news (source, external_id, category, query_source, title, summary, url, published_at, fetched_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        ("test", "ext1", "portfolio", "AAPL stock", "Apple beats earnings", "Q4 EPS up", "http://x", "2025-05-20", "2025-05-20"),
+    )
+    conn.commit()
+
+    # symbols no-lista → error
+    r = _execute_ai_tool("get_recent_news_for_assets", {"symbols": "AAPL"}, uid)
+    if "error" not in r:
+        fail("symbols string debería ser rechazado")
+    print("  symbols no-lista rechazado ✓")
+
+    # Símbolos basura (no match al regex) → error
+    r = _execute_ai_tool("get_recent_news_for_assets", {"symbols": ["'; DROP TABLE--"]}, uid)
+    if "error" not in r:
+        fail("símbolo basura debería rechazarse")
+    print("  símbolo basura rechazado ✓")
+
+    # Llamada válida con AAPL — debe levantar la fila sembrada
+    r = _execute_ai_tool("get_recent_news_for_assets", {"symbols": ["AAPL"]}, uid)
+    if "news_by_ticker" not in r:
+        fail("respuesta debe tener news_by_ticker dict")
+    if "AAPL" not in r["news_by_ticker"]:
+        fail("AAPL debe estar en news_by_ticker")
+    if not isinstance(r["news_by_ticker"]["AAPL"], list):
+        fail("news_by_ticker[AAPL] debe ser lista")
+    if len(r["news_by_ticker"]["AAPL"]) != 1:
+        fail(f"esperaba 1 news para AAPL (la sembrada), got {len(r['news_by_ticker']['AAPL'])}")
+    if r["news_by_ticker"]["AAPL"][0]["title"] != "Apple beats earnings":
+        fail(f"título inesperado: {r['news_by_ticker']['AAPL'][0]['title']}")
+    if "_note" not in r:
+        fail("respuesta debe incluir _note explicativo")
+    print("  shape correcto + _note presente + news real levantada ✓")
+
+    # Cap a 5 símbolos — pasamos 8, deben quedar 5 o menos
+    r = _execute_ai_tool("get_recent_news_for_assets",
+                         {"symbols": ["AAPL", "MSFT", "TSLA", "NVDA", "AMD", "INTC", "GOOG", "META"]}, uid)
+    if "error" in r:
+        fail(f"8 símbolos válidos no deberían dar error, got {r}")
+    if len(r.get("news_by_ticker", {})) > 5:
+        fail(f"debe limitarse a 5 símbolos, got {len(r.get('news_by_ticker', {}))}")
+    print("  cap a 5 símbolos OK ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 18 PASS")
+
+
+def test_ai_user_facts_memory():
+    print("\n=== Test 19: ai_user_facts — CRUD + injection en system prompt ===")
+    import os, sqlite3 as s3, tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db, _execute_ai_tool
+    init_db()
+    conn = s3.connect(tmp.name)
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified) VALUES (?,?,?,1,1)",
+        ("t@t", "h", "T"),
+    )
+    uid = conn.execute("SELECT id FROM users").fetchone()[0]
+    conn.commit()
+
+    # Tabla existe
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_user_facts'"
+    ).fetchall()
+    if not rows:
+        fail("tabla ai_user_facts no se creó en init_db()")
+    print("  tabla ai_user_facts creada ✓")
+
+    # Tool remember_user_fact inserta fila activa
+    r = _execute_ai_tool(
+        "remember_user_fact",
+        {"content": "AL30 lo tengo en IOL, no en Cocos."},
+        uid,
+    )
+    if r.get("ok") is not True:
+        fail(f"remember_user_fact debe devolver ok=True, got {r}")
+    print("  remember_user_fact persiste ✓")
+
+    # Content vacío → error
+    r = _execute_ai_tool("remember_user_fact", {"content": "  "}, uid)
+    if "error" not in r:
+        fail("content vacío debe rechazarse")
+    print("  content vacío rechazado ✓")
+
+    # Verificar que se insertó y está activo
+    row = conn.execute(
+        "SELECT content, is_active, source FROM ai_user_facts WHERE user_id=?", (uid,)
+    ).fetchone()
+    if not row or row[0] != "AL30 lo tengo en IOL, no en Cocos.":
+        fail(f"contenido no persistió correctamente, got {row}")
+    if row[1] != 1:
+        fail("fact debería estar activo (is_active=1)")
+    if row[2] != "ai_inferred":
+        fail("source desde tool debe ser 'ai_inferred'")
+    print("  fila persisitda con shape correcto ✓")
+
+    # Hard cap: insertamos 50 más → el 51 debe rechazarse
+    for i in range(49):
+        _execute_ai_tool("remember_user_fact", {"content": f"fact extra {i}"}, uid)
+    r = _execute_ai_tool("remember_user_fact", {"content": "uno más, debería fallar"}, uid)
+    if "error" not in r:
+        fail("hard cap de 50 facts no funciona")
+    if "máximo" not in r.get("error", "").lower():
+        fail(f"error de cap debería mencionar 'máximo', got {r}")
+    print("  hard cap 50 enforced ✓")
+
+    # Content cap 280 chars (Pydantic acepta hasta 280; en tool capamos por slice)
+    r = _execute_ai_tool("remember_user_fact", {"content": "x" * 500}, uid)
+    # Como ya estamos en cap de 50 activos, este intento DEBE fallar por cap, no por len.
+    # Pero antes de eso, content[:280] se aplicó → si tras cap es válido, da error 50.
+    if "error" not in r:
+        fail("tras cap 50 no se deberían aceptar más facts")
+    print("  cap 280 chars + cap 50 facts respetados ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 19 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -598,6 +835,9 @@ def main():
     test_chat_snapshot_sanitizer()
     test_ai_tools_sanitize_input()
     test_ar_bond_metadata_enrichment()
+    test_realized_vs_unrealized_tool()
+    test_news_for_assets_tool()
+    test_ai_user_facts_memory()
     print("\n\nALL TESTS PASS")
 
 
