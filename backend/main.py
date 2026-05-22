@@ -668,6 +668,12 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_ai_user_facts_user_active
             ON ai_user_facts(user_id, is_active, created_at DESC);
+        -- Evita que el LLM (o el user) persista el mismo fact 50 veces.
+        -- INDEX único parcial sobre (user_id, content) cuando is_active=1.
+        -- Soft-deleted no cuenta — el user puede borrar y re-insertar el
+        -- mismo content (re-activación implícita). Auditoría #2 H5.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_user_facts_unique_active
+            ON ai_user_facts(user_id, content) WHERE is_active=1;
 
         -- ─── subscriptions: estado de billing por user ──────────────────────
         -- Una fila por user con suscripción ACTIVA o cancelada (histórica).
@@ -1825,6 +1831,11 @@ def save_investor_profile(data: InvestorProfileIn, uid: int = Depends(get_curren
             (json.dumps(clean) if clean else None, uid),
         )
         conn.commit()
+        # El perfil se inyecta en el system prompt de TODOS los packets de IA.
+        # Sin invalidación, los análisis cacheados (24h TTL) siguen mostrando
+        # interpretación del perfil ANTERIOR aunque el user lo haya cambiado.
+        # Auditoría #2 M1.
+        _ai_cache_invalidate(uid)
         return {"ok": True, "profile": clean}
     finally:
         conn.close()
@@ -3010,7 +3021,11 @@ def _fetch_google_news_rss(query: str, lang: str = "en", limit: int = 15):
     try:
         from urllib.parse import urlencode
         url = "https://news.google.com/rss/search?" + urlencode(params)
-        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; RendiBot/1.0; +https://rendi.finance/bot)", "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
+        # Timeout 6s (antes 10). Google News responde típicamente en 1-2s; si
+        # no respondió en 6, probablemente está caído y no nos sirve esperar
+        # más. Bajar el techo reduce exposición a DoS via tool storm:
+        # 5 tickers × 3 tool loops × 10s = 150s → ×6s = 90s. Auditoría #2.
+        r = requests.get(url, timeout=6, headers={"User-Agent": "Mozilla/5.0 (compatible; RendiBot/1.0; +https://rendi.finance/bot)", "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
         if r.status_code != 200:
             return []
         return _parse_google_news_rss(r.content, limit=limit)
@@ -3214,6 +3229,15 @@ def _has_news_for_categories(conn, categories: list) -> bool:
     return row is not None
 
 
+# Semaphore global para limitar concurrencia process-wide de fetches de news.
+# Sin esto, N usuarios concurrentes × 8 workers cada uno saturan el threadpool
+# de FastAPI (default 40 threads) y todas las demás requests se cuelgan.
+# 16 in-flight a la vez es suficiente para que el batch siga siendo rápido,
+# pero acota el peor caso. Auditoría #2 E5.
+import threading as _threading_news
+_news_fetch_semaphore = _threading_news.BoundedSemaphore(16)
+
+
 def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8):
     """Versión paralelizada: fetcha múltiples feeds en threads concurrentes.
 
@@ -3252,18 +3276,22 @@ def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8):
         return
 
     def _worker(spec):
-        kind, identifier, lang, cat = spec
-        local_conn = get_db()
-        try:
-            if kind == 'google_news':
-                _refresh_news_query(local_conn, identifier, lang, cat)
-            elif kind == 'investing':
-                _refresh_investing_feed(local_conn, identifier, cat)
-            else:
-                return  # source desconocido — skip
-            _news_fetched_at[_cache_key_for(kind, cat, identifier)] = time.time()
-        finally:
-            local_conn.close()
+        # Adquirimos el semaphore global ANTES de hacer el fetch. Si todos los
+        # slots están en uso (16 in-flight process-wide), esperamos. Esto
+        # serializa graciosamente sin saturar el threadpool de FastAPI.
+        with _news_fetch_semaphore:
+            kind, identifier, lang, cat = spec
+            local_conn = get_db()
+            try:
+                if kind == 'google_news':
+                    _refresh_news_query(local_conn, identifier, lang, cat)
+                elif kind == 'investing':
+                    _refresh_investing_feed(local_conn, identifier, cat)
+                else:
+                    return  # source desconocido — skip
+                _news_fetched_at[_cache_key_for(kind, cat, identifier)] = time.time()
+            finally:
+                local_conn.close()
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(_worker, spec) for spec in stale]
@@ -6566,7 +6594,11 @@ def _get_anthropic_client():
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
                 return None
-            _anthropic_client = Anthropic(api_key=api_key)
+            # Timeout explícito 60s — default del SDK es 600s. Sin esto,
+            # un LLM lento + tool storm puede tener un thread del pool de
+            # FastAPI atrapado minutos (DoS exposure). 60s es generoso para
+            # Haiku 4.5 incluso con tool loops + cache miss. Auditoría #2.
+            _anthropic_client = Anthropic(api_key=api_key, timeout=60.0)
         except ImportError:
             return None
     return _anthropic_client
@@ -7278,44 +7310,29 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
             conn.close()
 
     elif name == "remember_user_fact":
-        # Persiste un hecho. Solo aceptamos texto sano + cap. Hard-cap 50
-        # activos por user (igual que en POST /api/ai/remember).
+        # Persiste un hecho. Usa los MISMOS helpers compartidos que el POST
+        # /api/ai/remember (_validate_fact_content + _atomic_insert_fact).
+        # Audit #2 fix: antes había un blocker custom acá que el endpoint
+        # REST no aplicaba — bypasseable. Ahora ambos paths comparten lógica.
         raw_content = input_data.get("content", "")
-        content = str(raw_content).strip()[:280]
-        if len(content) < 3:
-            return {"error": "content debe tener al menos 3 chars tras strip"}
-        # Anti prompt-injection naive: rechazamos contenido que parezca un
-        # intento de override del system prompt. No es exhaustivo pero corta
-        # el caso obvio. La defensa real es que estos facts se renderizan
-        # dentro de un bloque etiquetado en el system_text.
-        low = content.lower()
-        bad_patterns = ("ignore previous", "ignore prior", "ignora las instrucciones",
-                        "system prompt", "<|", "{{ system", "</system>")
-        if any(p in low for p in bad_patterns):
-            log.info("remember_user_fact rejected — prompt-injection pattern: %r", content[:80])
-            return {"error": "El contenido contiene un patrón no permitido"}
+        try:
+            content = _validate_fact_content(raw_content)
+        except ValueError as ex:
+            log.info("remember_user_fact rejected — %s. content=%r", ex, str(raw_content)[:80])
+            return {"error": str(ex)}
         conn = get_db()
         try:
-            # Tx explícita para que count+insert sea atómica (evita race con
-            # tool-loop concurrente del LLM y con POST /api/ai/remember).
-            with conn:
-                n_active = conn.execute(
-                    "SELECT COUNT(*) AS n FROM ai_user_facts WHERE user_id=? AND is_active=1",
-                    (uid,),
-                ).fetchone()["n"]
-                if n_active >= 50:
-                    return {
-                        "error": "Llegaste al máximo de 50 hechos guardados. Pedile al usuario que desactive alguno desde Config.",
-                    }
-                cur = conn.execute(
-                    "INSERT INTO ai_user_facts(user_id, content, source) VALUES (?,?,?)",
-                    (uid, content, "ai_inferred"),
-                )
+            result = _atomic_insert_fact(conn, uid, content, "ai_inferred")
+            if result is None:
+                return {
+                    "error": f"Llegaste al máximo de {MAX_ACTIVE_FACTS} hechos activos o {MAX_TOTAL_FACTS} totales. Pedile al usuario que desactive alguno desde Config.",
+                }
             try:
                 _ai_cache_invalidate(uid)
             except Exception:
                 pass
-            return {"ok": True, "id": cur.lastrowid, "content": content}
+            log.info("remember_user_fact: uid=%d id=%d content=%r", uid, result["id"], content[:80])
+            return {"ok": True, "id": result["id"], "content": content}
         finally:
             conn.close()
 
@@ -8818,6 +8835,109 @@ El campo `_kind` en cada item te dice si es posición abierta o trade cerrado �
 # UX esperada (frontend, fuera de scope acá): chip "El bot dijo algo mal" →
 # input texto corto → POST /api/ai/remember. Lista en /config con toggle.
 
+# Caps a defender:
+#   • MAX_ACTIVE_FACTS: 50 facts is_active=1 — lo que se inyecta al prompt
+#   • MAX_TOTAL_FACTS: 200 facts (activos + inactivos) — evita unbounded
+#     soft-delete growth (ciclo insert→delete→insert llena la tabla)
+MAX_ACTIVE_FACTS = 50
+MAX_TOTAL_FACTS = 200
+
+
+# Patrones prompt-injection. Compilados case-insensitive, después de NFKC
+# normalize (para defensar lookalike unicode tipo cirílico 'і' vs latino 'i').
+# Cubre EN + ES + variantes comunes. Aplicado en BOTH paths (endpoint REST y
+# tool LLM) via el helper _validate_fact_content. Auditoría #2 fix E1+E2.
+_FACT_INJECTION_PATTERNS = (
+    # English
+    "ignore previous", "ignore prior", "ignore all previous",
+    "ignore the above", "disregard previous", "disregard the above",
+    "forget what i said", "forget previous", "new instructions",
+    "system prompt", "system:", "<|", "{{ system", "</system>", "<system>",
+    "as the system", "as the administrator", "you are now",
+    # Español (con y sin acento — el .casefold() no normaliza acentos)
+    "ignora las instrucciones", "ignorá las instrucciones",
+    "ignora lo anterior", "ignorá lo anterior",
+    "olvida lo anterior", "olvidá lo anterior",
+    "olvidate de", "olvidate lo",
+    "desestima las reglas", "ahora sos", "a partir de ahora sos",
+    "nuevas instrucciones", "instrucciones nuevas",
+)
+
+
+def _validate_fact_content(raw: str) -> str:
+    """Sanitiza + valida content de un fact. Devuelve el texto limpio.
+
+    Reglas:
+    1. NFKC normalize (defensa contra unicode lookalikes: 'іgnore' cirílico)
+    2. Reemplaza \\n / \\r / \\t por espacio (defensa contra newline injection
+       que rompería el bullet point en el render del system prompt)
+    3. Strip + cap 280 chars
+    4. min 3 chars
+    5. Rechaza si match con _FACT_INJECTION_PATTERNS
+
+    Raises ValueError con mensaje útil para Pydantic / tool path.
+    """
+    import unicodedata
+    s = unicodedata.normalize("NFKC", str(raw or ""))
+    # Newlines/tabs → espacio. El facts_block se renderiza como bullet
+    # `- {content}` (línea 8736) — un \n dentro del content bypassaría el
+    # bullet y dejaría que el contenido inyecte una línea suelta del prompt.
+    s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    s = s.strip()[:280]
+    if len(s) < 3:
+        raise ValueError("content debe tener al menos 3 caracteres tras strip")
+    low = s.casefold()
+    for pat in _FACT_INJECTION_PATTERNS:
+        if pat in low:
+            raise ValueError(f"content contiene un patrón no permitido: {pat!r}")
+    return s
+
+
+def _atomic_insert_fact(conn, uid: int, content: str, source: str):
+    """Inserta un fact con cap atómico (activos < MAX_ACTIVE_FACTS y total <
+    MAX_TOTAL_FACTS). Usa single-statement INSERT-WHERE — no hay race window
+    porque SQLite serializa el WHERE+INSERT.
+
+    Devuelve:
+      • dict {id, content, source, duplicate: False} si se insertó nuevo
+      • dict {id, content, source, duplicate: True} si ya existía activo
+        con el mismo content (UNIQUE index lo bloqueó — no error, idempotente)
+      • None si chocó con algún cap (activos o total)
+
+    Por qué INSERT-WHERE en vez de BEGIN IMMEDIATE: más simple, menos error-
+    prone, idempotente. El audit anterior usaba `with conn:` que en sqlite3
+    default es BEGIN DEFERRED y el SELECT no toma write lock → TOCTOU.
+    """
+    try:
+        cur = conn.execute(
+            """INSERT INTO ai_user_facts(user_id, content, source)
+               SELECT ?, ?, ?
+               WHERE (SELECT COUNT(*) FROM ai_user_facts
+                      WHERE user_id=? AND is_active=1) < ?
+                 AND (SELECT COUNT(*) FROM ai_user_facts
+                      WHERE user_id=?) < ?""",
+            (uid, content, source, uid, MAX_ACTIVE_FACTS, uid, MAX_TOTAL_FACTS),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # UNIQUE constraint violation — el fact ya existe activo. Idempotente:
+        # devolvemos el id existente como si fuera un INSERT exitoso.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        existing = conn.execute(
+            "SELECT id FROM ai_user_facts WHERE user_id=? AND content=? AND is_active=1",
+            (uid, content),
+        ).fetchone()
+        if existing:
+            return {"id": existing["id"], "content": content, "source": source, "duplicate": True}
+        return None
+    if cur.rowcount == 0:
+        return None
+    return {"id": cur.lastrowid, "content": content, "source": source, "duplicate": False}
+
+
 class AIRememberIn(BaseModel):
     """Input para guardar un hecho persistente del user.
 
@@ -8825,16 +8945,17 @@ class AIRememberIn(BaseModel):
     `source` opcional: distingue user-corregido vs ai-inferido. Default
     'user_correction' porque la mayoría va a venir del chip "corregir bot".
     """
-    content: str = Field(..., min_length=3, max_length=280)
+    # max_length 320 para que el validator pueda truncar/normalizar sin que
+    # Pydantic rechace antes. La validación efectiva la hace el validator a 280.
+    content: str = Field(..., min_length=3, max_length=320)
     source: Optional[str] = Field(default="user_correction", max_length=32)
 
     @field_validator('content')
     @classmethod
     def strip_and_validate_content(cls, v: str) -> str:
-        s = (v or "").strip()
-        if len(s) < 3:
-            raise ValueError("content debe tener al menos 3 caracteres tras strip")
-        return s
+        # Centraliza la lógica: NFKC + strip + cap 280 + prompt-injection
+        # blocker. Misma que aplica el tool path → comportamiento consistente.
+        return _validate_fact_content(v)
 
     @field_validator('source')
     @classmethod
@@ -8854,38 +8975,30 @@ def ai_remember(
 ):
     """Persiste un hecho del user para que el bot lo recuerde en chats futuros.
 
-    Hard-cap a 50 facts activos por user — si lo sobrepasa, dejamos de aceptar
-    nuevos hasta que desactive alguno (evita inflar el prompt indefinidamente).
+    Hard-cap a MAX_ACTIVE_FACTS (50) activos y MAX_TOTAL_FACTS (200) total
+    por user. Cap atómico via INSERT-WHERE (no race window).
 
     Rate-limited a 20/hora por user — sin esto, un token comprometido puede
     spamear inserts y forzar invalidaciones de cache (afecta latencia + costo
-    LLM en re-runs). Hardening del deep audit Ola 3.
+    LLM en re-runs).
     """
     _check_rate_limit(request, max_calls=20, window_seconds=3600, suffix=f"ai_remember:{uid}")
     conn = get_db()
     try:
-        # Hard cap defensivo (50 activos por user). Lo hacemos dentro de una
-        # transacción explícita para evitar race condition con tool calls
-        # concurrentes del LLM (puede emitir varios remember_user_fact en el
-        # mismo response — sin esto, dos pueden ver n=49 a la vez y meter 51).
-        with conn:
-            n_active = conn.execute(
-                "SELECT COUNT(*) AS n FROM ai_user_facts WHERE user_id=? AND is_active=1",
-                (uid,),
-            ).fetchone()["n"]
-            if n_active >= 50:
-                raise HTTPException(
-                    409,
-                    "Llegaste al máximo de hechos guardados (50). Desactiva alguno antes de agregar más.",
-                )
-            cur = conn.execute(
-                "INSERT INTO ai_user_facts(user_id, content, source) VALUES (?,?,?)",
-                (uid, data.content, data.source),
+        result = _atomic_insert_fact(conn, uid, data.content, data.source)
+        if result is None:
+            # Chocó con cap (activos o total). Le devolvemos al user un mensaje
+            # claro — no diferenciamos los dos caps porque la acción del user
+            # es la misma (desactivar/borrar facts viejos).
+            raise HTTPException(
+                409,
+                f"Llegaste al máximo de hechos guardados ({MAX_ACTIVE_FACTS} activos o {MAX_TOTAL_FACTS} totales). Desactiva alguno antes de agregar más.",
             )
         # Invalidar cache de IA — los facts cambian el system prompt y por
         # ende la salida de los packets descriptivos también puede cambiar.
         _ai_cache_invalidate(uid)
-        return {"id": cur.lastrowid, "content": data.content, "source": data.source}
+        log.info("ai_remember: uid=%d id=%d content=%r", uid, result["id"], data.content[:80])
+        return result
     finally:
         conn.close()
 
@@ -8919,10 +9032,19 @@ def ai_list_facts(
 
 
 @app.delete("/api/ai/facts/{fact_id}")
-def ai_delete_fact(fact_id: int, uid: int = Depends(get_current_user)):
+def ai_delete_fact(
+    fact_id: int,
+    request: Request,
+    uid: int = Depends(get_current_user),
+):
     """Soft-delete (toggle is_active=0). No borra la fila — mantiene historial
     de auditoría. Si el user lo vuelve a querer, lo reactiva (futuro endpoint).
+
+    Rate-limited a 60/hora — el user legítimamente puede limpiar varios
+    facts seguidos desde la UI, pero no infinitos (evita ciclo
+    insert→delete→insert que bloataría la tabla).
     """
+    _check_rate_limit(request, max_calls=60, window_seconds=3600, suffix=f"ai_delete_fact:{uid}")
     conn = get_db()
     try:
         # Verificar ownership ANTES de mutar (defensa contra IDOR)

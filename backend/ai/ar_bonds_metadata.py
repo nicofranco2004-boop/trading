@@ -200,18 +200,43 @@ _BOND_METADATA: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _strip_bond_suffix(ticker: str) -> str:
+    """Normaliza un ticker de bono AR al "base" canónico de _BOND_METADATA.
+
+    Strippea:
+      • `.BA` (sufijo BYMA usado por yfinance)
+      • Sufijo final `D` (USD MEP) o `C` (USD CCL) — variantes del mismo bono
+        cotizadas en distinta plaza. AL30D y AL30C son el mismo instrumento
+        que AL30 desde el punto de vista de maturity/law/cupón.
+
+    Devuelve el base en UPPERCASE. Si tras strippear el `D`/`C` NO está en
+    _BOND_METADATA, devolvemos el ticker original (no asumimos que era una
+    variante — `TX` no es AL30 sin la D, por ejemplo).
+    """
+    base = str(ticker or "").upper().strip().replace(".BA", "")
+    if not base:
+        return base
+    # Probar el base directo PRIMERO. Si está, no toquemos sufijos.
+    if base in _BOND_METADATA:
+        return base
+    # Probar strippeando D/C final. Solo si el resultado está en metadata.
+    if base[-1] in ("D", "C") and base[:-1] in _BOND_METADATA:
+        return base[:-1]
+    return base
+
+
 def is_known_ar_bond(ticker: str) -> bool:
     """Devuelve True si el ticker tiene metadata detallada en este módulo.
 
     NO incluye corporates ni todos los bonos AR — solo los soberanos USD
     (AL/GD/AE/AL41) y CER (TX/T2X/TZX). Estos son los más consultados.
 
-    Acepta ticker con o sin sufijo .BA — lo strippea antes del lookup.
+    Acepta ticker con o sin sufijo `.BA` + variantes `D` (USD MEP) y `C`
+    (USD CCL) — todas mapean al mismo base canónico.
     """
     if not ticker:
         return False
-    base = str(ticker).upper().strip().replace(".BA", "")
-    return base in _BOND_METADATA
+    return _strip_bond_suffix(ticker) in _BOND_METADATA
 
 
 def get_bond_metadata(ticker: str) -> Optional[Dict[str, Any]]:
@@ -221,7 +246,7 @@ def get_bond_metadata(ticker: str) -> Optional[Dict[str, Any]]:
     """
     if not ticker:
         return None
-    base = str(ticker).upper().strip().replace(".BA", "")
+    base = _strip_bond_suffix(ticker)
     md = _BOND_METADATA.get(base)
     if md is None:
         return None
@@ -251,8 +276,14 @@ def enrich_bond_holdings(positions: list) -> list:
         md = get_bond_metadata(ticker)
         if not md:
             continue
+        # `ticker_original` preserva la variante real (AL30D vs AL30) para
+        # que el LLM pueda razonar sobre la plaza específica si hace falta,
+        # mientras que `ticker` es el base canónico que matcha la metadata.
+        original = str(ticker).upper().strip().replace(".BA", "")
+        base = _strip_bond_suffix(ticker)
         enriched.append({
-            "ticker": str(ticker).upper().strip().replace(".BA", ""),
+            "ticker": base,
+            "ticker_variant": original if original != base else None,
             "position_qty": float(p.get("quantity") or 0),
             "metadata": md,
         })
