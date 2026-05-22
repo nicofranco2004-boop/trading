@@ -15,7 +15,7 @@
 // Botón "+" violeta abre modal de agregar broker (mismo flow que desktop).
 
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
@@ -23,6 +23,8 @@ import EmptyState from '../components/EmptyState'
 import SwipeRow from '../components/mobile/SwipeRow'
 import Modal from '../components/Modal'
 import UpgradeModal from '../components/plan/UpgradeModal'
+import AddPositionFlow from '../components/AddPositionFlow'
+import { PositionFormModal, EMPTY_POS, today } from './Positions'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
@@ -39,6 +41,8 @@ const SORT_OPTIONS = [
 const ALL_FILTER = '__all__'
 
 export default function PositionsMobile() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
@@ -52,8 +56,36 @@ export default function PositionsMobile() {
   const [editingBroker, setEditingBroker] = useState(null)
   const [newBroker, setNewBroker] = useState({ name: '', currency: 'USDT' })
   const [brokerUpgrade, setBrokerUpgrade] = useState(null)
+  // Modales del flow de Nueva Posición (gatillados por el FAB del mobile tabbar
+  // que navega a /posiciones?action=new). Reusan los mismos componentes que
+  // desktop: AddPositionFlow (asset type → ticker search) → PositionFormModal
+  // (broker, precio, cantidad, comisión, fecha).
+  //
+  //   addModal = null         → ningún modal abierto
+  //              'add-flow'   → picker de tipo de activo + ticker search
+  //              'add'        → form completo con asset preseteado
+  const [addModal, setAddModal] = useState(null)
+  const [addForm, setAddForm] = useState(EMPTY_POS)
 
   useEffect(() => { loadAll() }, [])
+
+  // ?action=new → abrir el flow de Nueva Posición automáticamente.
+  // Limpiamos el query param para que un reload posterior no re-abra el modal.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    if (params.get('action') === 'new') {
+      track('position_add_started', { source: 'mobile_fab' })
+      setAddForm({
+        ...EMPTY_POS,
+        broker: brokers[0]?.name ?? '',
+        entry_date: today(),
+      })
+      setAddModal('add-flow')
+      // Limpiar el param sin recargar
+      navigate('/posiciones', { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search, brokers.length])
 
   async function loadAll() {
     try {
@@ -444,8 +476,63 @@ export default function PositionsMobile() {
           onClose={() => setBrokerUpgrade(null)}
         />
       )}
+
+      {/* Flow de Nueva Posición — gatillado por el FAB del MobileTabBar.
+          Step 1: AddPositionFlow muestra picker de tipo de activo + ticker search.
+          Step 2: tras seleccionar ticker, cerramos el flow y abrimos
+                  PositionFormModal con el asset preseteado. */}
+      {addModal === 'add-flow' && (
+        <AddPositionFlow
+          onClose={() => setAddModal(null)}
+          onAssetSelected={({ asset }) => {
+            setAddForm(f => ({ ...f, asset }))
+            setAddModal('add')
+          }}
+        />
+      )}
+      {addModal === 'add' && (
+        <PositionFormModal
+          mode="add"
+          form={addForm}
+          setForm={setAddForm}
+          brokers={brokers}
+          selectedBrokerCurrency={brokers.find(b => b.name === addForm.broker)?.currency ?? 'USDT'}
+          tcBlue={dolar?.blue?.venta || 1415}
+          onClose={() => setAddModal(null)}
+          onSave={saveNewPosition}
+          onChangeAsset={() => {
+            setAddForm(f => ({ ...f, asset: '' }))
+            setAddModal('add-flow')
+          }}
+        />
+      )}
     </div>
   )
+
+  // Save de Nueva Posición desde mobile — misma normalización que desktop
+  // Positions.save(). La declaramos como inner function porque accede al state
+  // del componente padre via closure.
+  async function saveNewPosition() {
+    const body = {
+      ...addForm,
+      buy_price:   addForm.buy_price   !== '' ? +addForm.buy_price   : null,
+      quantity:    addForm.quantity    !== '' ? +addForm.quantity    : null,
+      invested:    addForm.invested    !== '' ? +addForm.invested    : null,
+      tc_compra:   addForm.tc_compra   !== '' ? +addForm.tc_compra   : null,
+      commissions: addForm.commissions !== '' ? +addForm.commissions : 0,
+      entry_date:  addForm.entry_date  || null,
+    }
+    try {
+      await api.post('/positions', body)
+      track('position_add_completed', { source: 'mobile_fab', asset: addForm.asset })
+      setAddModal(null)
+      setAddForm(EMPTY_POS)
+      await loadAll()
+    } catch (ex) {
+      console.error('Save position error:', ex)
+      alert('No pudimos guardar la posición. ' + (ex?.message || 'Probá de nuevo.'))
+    }
+  }
 }
 
 // ─── BrokerFilterChip ──────────────────────────────────────────────────────

@@ -33,9 +33,9 @@ import { useIsMobile } from '../hooks/useIsMobile'
 
 const REFRESH_MS = 90_000
 
-const today = () => new Date().toISOString().slice(0, 10)
+export const today = () => new Date().toISOString().slice(0, 10)
 
-const EMPTY_POS = {
+export const EMPTY_POS = {
   broker: '', asset: '', is_cash: false,
   buy_price: '', quantity: '', invested: '', tc_compra: '', commissions: '', notes: '',
   entry_date: '',
@@ -2108,7 +2108,7 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
 //  • Sin "Precio override" — quien quiera editar el precio actual lo hace
 //    directo en el campo principal.
 //  • Comisiones: campo opcional. Real cost = invertido + comisiones.
-function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcBlue, onClose, onSave, onChangeAsset }) {
+export function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcBlue, onClose, onSave, onChangeAsset }) {
   const isARS = selectedBrokerCurrency === 'ARS'
   const [lastEdited, setLastEdited] = useState('invested') // 'invested' | 'quantity'
   const [pricesFetched, setPricesFetched] = useState(false)

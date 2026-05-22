@@ -21,10 +21,10 @@ import { usd, pctSigned, colorClass } from '../utils/format'
 import { track } from '../utils/track'
 
 const PERIOD_OPTIONS = [
+  { id: 'all', label: 'Todo',          days: null },
   { id: '30d', label: 'Último mes',   days: 30 },
   { id: '90d', label: 'Últimos 3M',   days: 90 },
   { id: '1y',  label: 'Último año',   days: 365 },
-  { id: 'all', label: 'Todo',          days: null },
 ]
 const RESULT_OPTIONS = [
   { id: 'all',    label: 'Todas' },
@@ -37,7 +37,10 @@ export default function OperationsMobile() {
   const [brokers, setBrokers] = useState([])
   const [loading, setLoading] = useState(true)
   const [filtersOpen, setFiltersOpen] = useState(false)
-  const [period, setPeriod] = useState('90d')
+  // Default 'all' — el user puede acotar a 30d / 90d / 1y desde el sheet de
+  // filtros si quiere. Antes default era 90d, pero esto escondía operaciones
+  // viejas en users que recién aterrizan y no entendían por qué faltaban.
+  const [period, setPeriod] = useState('all')
   const [result, setResult] = useState('all')
   const [broker, setBroker] = useState('all')
 
