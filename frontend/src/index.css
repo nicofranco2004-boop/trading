@@ -37,6 +37,26 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* iOS auto-zoom fix — Safari/Chrome mobile hacen zoom automático al
+   enfocar inputs con font-size < 16px (intentando "ayudar" al user).
+   Eso causa el "mini zoom" raro al abrir la app y al tocar cualquier
+   input/select. Forzamos 16px en mobile (≤ 768px) para frenarlo;
+   desktop sigue heredando el tamaño del componente.
+
+   `!important` necesario porque las classes Tailwind (.text-xs, .text-sm)
+   tienen mayor especificidad que un selector de tipo. Es behavioral fix,
+   no styling preference — justificado.
+
+   NO usar `maximum-scale=1` en el meta viewport — eso bloquearía
+   pinch-zoom de accesibilidad, anti-pattern. */
+@media (max-width: 768px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
 /* ── Page shell — wrapper consistente para toda página ────────────────── */
 @layer components {
   .page-shell {
