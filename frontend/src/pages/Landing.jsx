@@ -437,11 +437,11 @@ function HowItWorks() {
     {
       n: '01',
       Icon: Upload,
-      meta: 'INGEST · CSV o MANUAL',
+      meta: 'CARTERA · CSV o MANUAL',
       title: 'Cargá tu cartera',
-      body: 'Importás CSV de Cocos, IOL, Schwab, Binance, Wise, Balanz o BullMarket — el parser detecta el formato y mapea cada movimiento. Si preferís control total, agregás posiciones a mano broker por broker.',
-      chips: ['CSV importer', 'Multi-broker', 'TC blue auto'],
-      Visual: MockImport,
+      body: 'Importás CSV de Cocos, IOL, Schwab, Binance, Wise, Balanz o BullMarket — el parser detecta el formato y mapea cada movimiento. Si preferís control total, agregás posiciones a mano broker por broker. Cada activo queda agrupado por broker con su moneda original, valor live en USD y P&L.',
+      chips: ['CSV importer', 'Multi-broker', 'P&L USD live'],
+      Visual: MockPositions,
     },
     {
       n: '02',
@@ -590,33 +590,69 @@ function MockFrame({ title, children, footer }) {
   )
 }
 
-function MockImport() {
-  const files = [
-    { name: 'cocos_2024.csv', rows: '127 mov.', ok: true },
-    { name: 'iol_2024.csv', rows: '84 mov.', ok: true },
-    { name: 'binance_2024.csv', rows: '203 mov.', ok: true },
+function MockPositions() {
+  // Cartera agrupada por broker — matchea el patrón visual del /cartera real.
+  // Cada broker es un mini-card con su moneda + valor total. Adentro, 2-3
+  // posiciones representativas con qty + valor USD live + P&L %.
+  const brokers = [
+    {
+      name: 'Schwab',
+      currency: 'USD',
+      total: 'US$ 22.480',
+      positions: [
+        { asset: 'NVDA', qty: '14', value: 'US$ 7.812', pnlPct: '+38.4%', pos: true },
+        { asset: 'AAPL', qty: '32', value: 'US$ 6.420', pnlPct: '+12.1%', pos: true },
+      ],
+    },
+    {
+      name: 'Cocos',
+      currency: 'ARS',
+      total: 'US$ 14.982',
+      positions: [
+        { asset: 'AL30', qty: '8.500', value: 'US$ 6.120', pnlPct: '+7.2%', pos: true },
+        { asset: 'GGAL', qty: '1.200', value: 'US$ 4.860', pnlPct: '+18.5%', pos: true },
+      ],
+    },
+    {
+      name: 'Binance',
+      currency: 'USDT',
+      total: 'US$ 10.755',
+      positions: [
+        { asset: 'BTC', qty: '0.12', value: 'US$ 8.220', pnlPct: '+24.0%', pos: true },
+        { asset: 'ETH', qty: '0.9', value: 'US$ 2.535', pnlPct: '−3.4%', pos: false },
+      ],
+    },
   ]
   return (
-    <MockFrame title="rendi · importar CSV" footer="3 archivos · 414 movimientos detectados">
-      <div className="space-y-2">
-        {files.map(f => (
-          <div key={f.name} className="flex items-center gap-3 p-2 border border-line/60 rounded bg-bg-2/30">
-            <div className="w-7 h-7 rounded bg-data-violet/10 border border-data-violet/30 flex items-center justify-center text-data-violet">
-              <Upload size={12} strokeWidth={2} />
+    <MockFrame title="rendi · cartera" footer="3 brokers · 6 posiciones · US$ 48.217 total">
+      <div className="space-y-3">
+        {brokers.map(b => (
+          <div key={b.name} className="border border-line/60 rounded bg-bg-2/20 overflow-hidden">
+            {/* Header del broker */}
+            <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-line/60 bg-bg-2/40">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-ink-0 font-medium">{b.name}</span>
+                <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 border border-line/60 px-1.5 py-0.5 rounded-sm">
+                  {b.currency}
+                </span>
+              </div>
+              <span className="text-[11px] font-mono tabular text-ink-1">{b.total}</span>
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-xs text-ink-0 font-medium truncate">{f.name}</div>
-              <div className="text-[10px] font-mono text-ink-3">{f.rows}</div>
+            {/* Posiciones del broker */}
+            <div className="px-2.5 py-1">
+              {b.positions.map(p => (
+                <div key={p.asset} className="grid grid-cols-[60px_60px_1fr_60px] gap-2 py-1 text-[11px] font-mono items-center">
+                  <span className="text-ink-0 font-medium">{p.asset}</span>
+                  <span className="text-ink-3 tabular">{p.qty}</span>
+                  <span className="text-ink-2 tabular">{p.value}</span>
+                  <span className={`text-right tabular font-medium ${p.pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                    {p.pnlPct}
+                  </span>
+                </div>
+              ))}
             </div>
-            <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/5 px-1.5 py-0.5 rounded-sm flex items-center gap-1">
-              <Check size={9} strokeWidth={2.5} />
-              ok
-            </span>
           </div>
         ))}
-        <div className="mt-3 text-[10px] font-mono text-ink-3 leading-relaxed">
-          → mapeo automático: <span className="text-data-violet">activo</span>, <span className="text-data-violet">tipo</span>, <span className="text-data-violet">precio</span>, <span className="text-data-violet">P&L</span>
-        </div>
       </div>
     </MockFrame>
   )
