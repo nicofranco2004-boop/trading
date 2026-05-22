@@ -153,6 +153,15 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     return {
         "screen": "reports",
+        # _field_docs — descripciones inline para el LLM (Ola 2-E).
+        "_field_docs": {
+            "twr_year_pct": "TWR del año compoundeado mensual. Combina realized de meses cerrados + unrealized mark-to-market del mes en curso.",
+            "realized_pnl_year_usd": "USD ABSOLUTO de P&L REALIZADO del año (suma pnl_realized de monthly_entries). Solo trades cerrados.",
+            "pnl_year_usd": "Alias back-compat de realized_pnl_year_usd. Mismo valor.",
+            "trades_year": "Cantidad de operaciones CERRADAS en el año.",
+            "winrate_monthly": "% de meses con delta positivo (TWRR > 0).",
+            "best_month / worst_month": "Mejor/peor mes por delta_pct del TWRR mensual. Incluye realized + unrealized de cada mes.",
+        },
         "year": year,
         "total_months_active": used,
         "winrate_monthly": winrate_monthly,

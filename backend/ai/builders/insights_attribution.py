@@ -202,6 +202,20 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     return {
         "screen": "insights.attribution",
+        # _field_docs — descripciones inline para el LLM (Ola 2-E).
+        # Documentamos solo los fields ambiguos.
+        "_field_docs": {
+            "total_realized_usd": "USD de P&L de trades CERRADOS, sumado all-time. SOLO realized.",
+            "total_unrealized_usd": "USD mark-to-market HOY de posiciones abiertas, sumado. SOLO unrealized.",
+            "total_pnl_usd": "Suma de realized + unrealized. Es contexto, no exposure.",
+            "top_contributors[].realized_usd": "USD realized del ticker (trades cerrados).",
+            "top_contributors[].unrealized_usd": "USD unrealized del ticker (posiciones abiertas, mark-to-market).",
+            "top_contributors[].combined_pnl_usd": "realized + unrealized del ticker. Es el field usado para sortear.",
+            "top_contributors[].pnl_source": "De dónde viene el P&L: 'realized_only'=trades cerrados (histórico), 'unrealized_only'=posición abierta sin trades cerrados, 'mixed'=ambos. Para riesgo presente, mirar solo unrealized_only/mixed con in_portfolio_now=true.",
+            "top_contributors[].in_portfolio_now": "true si el ticker tiene posición abierta hoy. false si solo apareció en operations cerradas.",
+            "concentration_flag": "True si el top1 explica >50% del combined P&L. NO implica exposure concentrada — chequear concentration_source.",
+            "concentration_source": "Si top1.pnl_source='realized_only', la concentración es HISTÓRICA (un trade cerrado puntual). Si 'unrealized_only' o 'mixed' con in_portfolio_now=true, es exposure PRESENTE real (riesgo).",
+        },
         "total_realized_usd": round(total_realized, 2),
         "total_unrealized_usd": round(total_unrealized, 2),
         "total_pnl_usd": round(total_pnl, 2),

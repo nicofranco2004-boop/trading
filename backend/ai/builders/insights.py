@@ -531,6 +531,20 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     return {
         "screen": "insights",
+        # _field_docs — descripciones inline para el LLM (Ola 2-E del audit).
+        # No es metadata interna; el LLM lo lee con el packet y desambigua
+        # cada field sin tener que inferir del nombre. Solo documentamos los
+        # campos ambiguos donde históricamente confundió scope.
+        "_field_docs": {
+            "twr_pct": "TWR del período. Compuesto via monthly_entries. Combina P&L realizado de meses cerrados + unrealized mark-to-market del mes en curso. NO descompone realizado vs unrealized — usar realized_pnl_usd + unrealized_pnl_total_usd para eso.",
+            "realized_pnl_usd": "USD ABSOLUTO sumado de trades CERRADOS. No es %, no es vs invested. Si negativo, perdiste en operaciones cerradas. Si chico vs total_equity_usd, casi todo el resultado está en unrealized.",
+            "realized_avg_pct_per_trade": "Promedio simple de pnl_pct por trade cerrado. NO acumulado, NO compounded. Solo describe performance media por operación.",
+            "unrealized_pnl_total_usd": "USD mark-to-market HOY de TODAS las posiciones abiertas. Cambia con el mercado. Si twr_pct alto y realized_pnl_usd bajo, este campo explica la diferencia.",
+            "total_equity_usd": "Valor TOTAL de la cartera HOY (holdings con market value live + cash). Referencia absoluta para cuantificar % en USD.",
+            "realized_attribution.top_contributors": "Trades CERRADOS por contribución de P&L. status='closed' siempre. in_portfolio_now indica si el ticker sigue abierto. NUNCA inferir riesgo presente desde acá — el P&L ya está realizado.",
+            "realized_attribution.top_detractors": "Idem contributors pero negativos.",
+            "current_holdings_top": "Posiciones ABIERTAS por market value en USD. status='open' siempre. Para razonar riesgo presente, exposure, concentración: usar SOLO esto.",
+        },
         "window_days": window_days,
         "twr_pct": twr_pct,
         # Métricas de trades cerrados — REPLACE del viejo twr_realized_pct

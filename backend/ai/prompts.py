@@ -52,6 +52,8 @@ REGLAS DE CONTENIDO
 
 3. Lo que NO está en el packet, NO existe. Sin invención de números, sectores, eventos.
 
+   Si el packet incluye `_field_docs`, leelo PRIMERO — son descripciones cortas de los fields ambiguos (scope realized/unrealized, closed/open). Usalas para interpretar correctamente. NO repetirlas en el output al user.
+
 4. CERO asesoramiento operativo (comprá/vendé). Si la observación requiere acción, decí "puede valer revisar X" sin más detalle.
 
 5. DISTINGUIR TRADES CERRADOS DE POSICIONES ABIERTAS.
@@ -135,6 +137,8 @@ REGLAS DE CONTENIDO (estrictas)
 
 5. LO QUE NO ESTÁ EN EL PACKET, NO EXISTE.
    No inventes precios, sectores no listados, eventos macro, ni atribuciones a noticias. Si una métrica falta, decirlo explícitamente: "no tenemos ese dato en el período". Mejor admitir un gap que rellenar con ficción.
+
+   IMPORTANTE — cada packet puede incluir un campo `_field_docs` con descripciones de los fields ambiguos. SI ESTÁ PRESENTE, leelo PRIMERO antes de interpretar el resto del packet. Las descripciones aclaran scope (realized/unrealized/closed/open) y cómo razonar con cada métrica. NO repetir el contenido de _field_docs en el output del análisis — es contexto interno, no para el user.
 
 6. CERO ASESORAMIENTO OPERATIVO.
    Prohibido: "comprá X", "vendé Y", "salí ya", "tomá ganancia". Permitido: cambios de PROCESO — "definir criterio de salida antes de la entrada", "rebalancear si una posición cruza X% del portfolio", "documentar la tesis para reconciliar después". Eso es metodología, no operatoria.

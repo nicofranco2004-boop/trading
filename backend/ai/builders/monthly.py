@@ -143,6 +143,19 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     return {
         "screen": "monthly",
+        # _field_docs — descripciones inline para el LLM (Ola 2-E del audit).
+        # El builder reusa build_period_report pero el LLM no sabe qué
+        # significan internamente los fields. Documentamos los ambiguos.
+        "_field_docs": {
+            "metrics.delta_pct": "TWRR del mes — combina realized + unrealized.",
+            "metrics.delta_usd": "P&L absoluto USD del mes — combina realized + unrealized.",
+            "metrics.realized_pnl": "USD de trades CERRADOS en el mes. Solo realized.",
+            "metrics.unrealized_pnl": "USD mark-to-market de posiciones abiertas. Cambia día a día.",
+            "metrics.trades_count": "Cantidad de operaciones CERRADAS en el mes (no incluye Compra/Dividendo/Interés).",
+            "best_trade": "Operación CERRADA del mes con mayor P&L USD. kind='closed_trade'. NO es la posición abierta más grande.",
+            "worst_trade": "Operación CERRADA del mes con menor P&L USD. kind='closed_trade'.",
+            "top_drivers": "Top 3 activos por contribución al P&L REALIZADO del mes. kind='closed_trade' por item. NO mezcla unrealized. Para concentración presente real, usar dashboard.top_holdings o insights.current_holdings_top.",
+        },
         "period": {
             "year": year,
             "month": month,

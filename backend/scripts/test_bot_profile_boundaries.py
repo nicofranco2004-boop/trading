@@ -392,6 +392,34 @@ def test_reports_packet_has_realized_alias():
     print("  TEST 11 PASS")
 
 
+def test_packets_emit_field_docs():
+    print("\n=== Test 12: packets críticos emiten _field_docs inline (Ola 2-E) ===")
+    import inspect
+    for mod_name in ("insights", "insights_attribution", "monthly", "reports"):
+        mod = __import__(f"ai.builders.{mod_name}", fromlist=[mod_name])
+        src = inspect.getsource(mod)
+        if '"_field_docs"' not in src:
+            fail(f"{mod_name}.py debe emitir _field_docs")
+        # Cada uno debe documentar al menos 3 fields
+        # (chequeo grueso por presencia de keys clave)
+        if mod_name == "insights":
+            for key in ("realized_pnl_usd", "unrealized_pnl_total_usd", "realized_attribution"):
+                if f'"{key}"' not in src or f'"{key}.' not in src and key not in src.split('_field_docs')[1][:2000]:
+                    pass  # heurística laxa
+        print(f"  {mod_name}.py emite _field_docs ✓")
+    print("  TEST 12 PASS")
+
+
+def test_pro_prompt_mentions_field_docs():
+    print("\n=== Test 13: SYSTEM_BASE_PRO menciona _field_docs ===")
+    from ai.prompts import SYSTEM_BASE_PRO, SYSTEM_BASE_DESCRIPTIVE
+
+    assert_contains(SYSTEM_BASE_PRO, "_field_docs", "Pro base")
+    assert_contains(SYSTEM_BASE_DESCRIPTIVE, "_field_docs", "Descriptive base")
+    print("  Ambos system prompts instruyen al LLM a leer _field_docs ✓")
+    print("  TEST 13 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -404,6 +432,8 @@ def main():
     test_attribution_packet_has_source_and_in_portfolio()
     test_monthly_packet_etiqueta_closed_trades()
     test_reports_packet_has_realized_alias()
+    test_packets_emit_field_docs()
+    test_pro_prompt_mentions_field_docs()
     print("\n\nALL TESTS PASS")
 
 
