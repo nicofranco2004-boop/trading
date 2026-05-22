@@ -180,6 +180,8 @@ export default function Login() {
                 autoComplete="email"
                 inputMode="email"
                 spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="off"
                 value={email}
                 onChange={e => { setEmail(e.target.value); if (emailExists) setEmailExists(false) }}
                 placeholder="tu@email.com"
@@ -204,6 +206,9 @@ export default function Login() {
                 type="password"
                 name="password"
                 autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 minLength={mode === 'register' ? 10 : undefined}

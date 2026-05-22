@@ -98,6 +98,9 @@ export default function ResetPassword() {
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 autoComplete="new-password"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 placeholder="Mínimo 10 caracteres"
                 className={inputClass}
                 autoFocus
@@ -116,6 +119,9 @@ export default function ResetPassword() {
                 value={confirm}
                 onChange={e => setConfirm(e.target.value)}
                 autoComplete="new-password"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 placeholder="Repetí la misma"
                 className={inputClass}
               />
