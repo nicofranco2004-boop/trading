@@ -529,20 +529,20 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   return (
     <section className={`mb-6 border rounded-lg p-5 flex items-center gap-5 flex-wrap ${
       isCancelled
-        ? 'border-data-amber/40 bg-data-amber/[0.06]'
+        ? 'border-line-2/70 bg-bg-2/30'
         : 'border-data-violet/40 bg-data-violet/[0.06]'
     }`}>
       <div className="flex-1 min-w-[240px]">
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${
-            isCancelled ? 'bg-data-amber/15 text-data-amber' : 'bg-data-violet/15 text-data-violet'
+            isCancelled ? 'bg-ink-3/15 text-ink-2' : 'bg-data-violet/15 text-data-violet'
           }`}>
             {tierLabel}
           </span>
           {isCancelled ? (
-            <span className="inline-flex items-center gap-1 text-[10px] text-data-amber font-mono uppercase tracking-caps">
-              <span className="w-1.5 h-1.5 rounded-full bg-data-amber" /> Cancelado
+            <span className="inline-flex items-center gap-1 text-[10px] text-ink-2 font-mono uppercase tracking-caps">
+              <span className="w-1.5 h-1.5 rounded-full bg-ink-3" /> Cancelado
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 text-[10px] text-rendi-pos font-mono uppercase tracking-caps">
@@ -572,7 +572,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
         </div>
         <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
-          <div className={`h-full transition-all ${isCancelled ? 'bg-data-amber' : 'bg-data-violet'}`} style={{ width: `${pct}%` }} />
+          <div className={`h-full transition-all ${isCancelled ? 'bg-ink-3' : 'bg-data-violet'}`} style={{ width: `${pct}%` }} />
         </div>
         <p className="text-[10px] text-ink-3 leading-tight">
           Ventana móvil 7 días
