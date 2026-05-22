@@ -20,7 +20,12 @@ import ExportCsvButton from '../components/plan/ExportCsvButton'
 
 const PAGE_SIZE = 50
 
-const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: 0, pnl_pct: '', commissions: '' }
+// pnl_usd arranca como string vacío (no 0) para que el form distinga
+// "no completado" de "0 USD" — sin esto, el user que quiere cargar un trade
+// rápido SÓLO con P&L (sin precios) y deja el campo en blanco, termina
+// guardando 0 sin darse cuenta porque el value=0 era el default y "parece
+// completado". Lo manejamos abajo en save(): vacío → null al backend.
+const EMPTY = { date: new Date().toISOString().slice(0, 10), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '' }
 
 function prettyOpType(raw) {
   if (!raw) return '—'
@@ -60,7 +65,17 @@ function OperationsDesktop() {
     setModal('add')
   }
   function openEdit(op) {
-    setForm({ ...op, entry_price: op.entry_price ?? '', exit_price: op.exit_price ?? '', quantity: op.quantity ?? '', pnl_pct: op.pnl_pct ?? '', commissions: op.commissions ?? '' })
+    // pnl_usd: si la op vino con null, lo mostramos como '' (no como "null"
+    // string). Si es 0 deliberado, queda 0 visible en el input.
+    setForm({
+      ...op,
+      entry_price: op.entry_price ?? '',
+      exit_price: op.exit_price ?? '',
+      quantity: op.quantity ?? '',
+      pnl_usd: op.pnl_usd ?? '',
+      pnl_pct: op.pnl_pct ?? '',
+      commissions: op.commissions ?? '',
+    })
     setModal('edit')
   }
 
@@ -70,7 +85,10 @@ function OperationsDesktop() {
       entry_price: form.entry_price !== '' ? +form.entry_price : null,
       exit_price: form.exit_price !== '' ? +form.exit_price : null,
       quantity: form.quantity !== '' ? +form.quantity : null,
-      pnl_usd: +form.pnl_usd,
+      // P&L USD: si el user lo deja vacío, mandamos null (no 0) — eso
+      // significa "no registré la ganancia/pérdida". Backend distingue
+      // null vs 0 explícito (un trade flat sí puede tener pnl_usd=0).
+      pnl_usd: form.pnl_usd !== '' && form.pnl_usd !== null ? +form.pnl_usd : null,
       pnl_pct: form.pnl_pct !== '' ? +form.pnl_pct : null,
       commissions: form.commissions !== '' ? +form.commissions : 0,
     }
@@ -288,7 +306,9 @@ function OperationsDesktop() {
                     <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
                     <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.quantity ?? '—'}</td>
                     <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)}`}>
-                      {op.pnl_usd > 0 ? '+' : op.pnl_usd < 0 ? '−' : ''}US${usd(Math.abs(op.pnl_usd || 0))}
+                      {op.pnl_usd == null
+                        ? '—'
+                        : `${op.pnl_usd > 0 ? '+' : op.pnl_usd < 0 ? '−' : ''}US$${usd(Math.abs(op.pnl_usd))}`}
                     </td>
                     <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)}`}>
                       {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
@@ -454,13 +474,23 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className={labelClass}>P&L (USD)</label>
-            <input type="number" step="any" value={form.pnl_usd} onChange={e => setForm(f => ({ ...f, pnl_usd: e.target.value }))} className={inputClass} />
+            <input
+              type="number"
+              step="any"
+              value={form.pnl_usd}
+              onChange={e => setForm(f => ({ ...f, pnl_usd: e.target.value }))}
+              className={inputClass}
+              placeholder="Ej: 150 o -80"
+            />
           </div>
           <div>
             <label className={labelClass}>Comisiones</label>
             <input type="number" step="any" value={form.commissions} onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))} className={inputClass} placeholder="0" />
           </div>
         </div>
+        <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-tight">
+          Atajo: si solo querés registrar la ganancia/pérdida (sin precios ni cantidad), completá únicamente P&L USD.
+        </p>
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-3 py-1.5 transition-colors">
             Cancelar

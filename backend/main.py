@@ -5447,7 +5447,12 @@ class OperationIn(BaseModel):
     entry_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
     exit_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
     quantity: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
-    pnl_usd: float = Field(0, ge=-_FINITE_BOUND, le=_FINITE_BOUND)
+    # pnl_usd OPCIONAL — distingue null ("no registré la ganancia/pérdida")
+    # de 0 ("trade flat, ni gané ni perdí"). Sin esto, el form tenía que
+    # forzar siempre un número y el caso "atajo: solo registrar P&L sin
+    # detalles" se confundía con un trade en cero. Los builders de IA y los
+    # filtros downstream ya cheack `pnl_usd is not None` (insights.py:257).
+    pnl_usd: Optional[float] = Field(None, ge=-_FINITE_BOUND, le=_FINITE_BOUND)
     pnl_pct: Optional[float] = Field(None, ge=-1e6, le=1e6)
     commissions: Optional[float] = Field(0, ge=0, le=_FINITE_BOUND)
 
