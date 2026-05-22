@@ -39,7 +39,7 @@ class AnalysisSection(BaseModel):
             "final, sin signos de pregunta. Ejemplos: 'Dinámica reciente', "
             "'Factores impulsores', 'Riesgo asimétrico', 'Insight clave'."
         ),
-        max_length=80,
+        max_length=120,  # 80→120: margen para títulos descriptivos
     )
     body: str = Field(
         ...,
@@ -74,18 +74,18 @@ class AnalysisResult(BaseModel):
             "análisis muestra'). Que sea afirmación contextual, no "
             "resumen descriptivo de métricas."
         ),
-        max_length=360,
+        max_length=500,  # 360→500: tldr puede ser 2 oraciones densas
     )
     sections: List[AnalysisSection] = Field(
         ...,
         description=(
-            "3-5 secciones tipo research note. Orden típico (adaptable): "
-            "dinámica → factores probables → lectura comparativa → riesgo "
-            "actual → insight clave / cambio de proceso. La última section "
-            "idealmente lleva el insight memorable, no un cierre genérico."
+            "2-3 secciones tipo research note (máx 3, presión del prompt). "
+            "Orden típico: dinámica + factores → lectura comparativa → "
+            "riesgo presente / insight clave. La última section idealmente "
+            "lleva el insight memorable."
         ),
         min_length=1,
-        max_length=5,
+        max_length=6,  # 5→6: schema lax, prompt restringe a 3
     )
     follow_ups: List[str] = Field(
         default_factory=list,
@@ -98,7 +98,9 @@ class AnalysisResult(BaseModel):
             "no por relleno. Cada follow_up clickeado dispara otra "
             "llamada al LLM."
         ),
-        max_length=1,
+        max_length=3,  # 1→3: schema permite hasta 3, prompt restringe a 1
     )
 
-    model_config = {"json_schema_extra": {"additionalProperties": False}}
+    # Permitir extras del LLM sin levantar ValidationError. Pydantic los
+    # ignora silenciosamente; mejor un análisis parcial que un error visible.
+    model_config = {"extra": "ignore"}

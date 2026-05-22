@@ -207,6 +207,7 @@ def analyze(
         )
 
     last_error = None
+    last_raw_output = None
     for attempt in range(max_retries + 1):
         try:
             # client.messages.parse() valida automáticamente contra el
@@ -227,9 +228,24 @@ def analyze(
                 output_format=output_model,
                 extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
             )
+            # Capturar raw output ANTES de parsed_output — si parse falla, lo
+            # necesitamos para diagnosticar.
+            try:
+                if response.content:
+                    last_raw_output = "".join(
+                        block.text for block in response.content
+                        if hasattr(block, "text") and block.text
+                    )[:2000]  # truncar a 2KB para no llenar logs
+            except Exception:
+                last_raw_output = "<failed to extract>"
+
             output = response.parsed_output
             if output is None:
-                raise ValueError("parsed_output is None — schema parse failed")
+                raise ValueError(
+                    f"parsed_output is None — schema parse failed. "
+                    f"stop_reason={getattr(response, 'stop_reason', '?')}, "
+                    f"raw_first_500={last_raw_output[:500] if last_raw_output else 'empty'!r}"
+                )
 
             u = response.usage
             return LLMResult(
@@ -260,8 +276,9 @@ def analyze(
             except Exception:
                 pass
             log.warning(
-                "AI parse fallo (intento %d/%d, model=%s): %s",
+                "AI parse fallo (intento %d/%d, model=%s): %s\nRAW OUTPUT (primeros 1500 chars): %s",
                 attempt + 1, max_retries + 1, model, error_detail,
+                last_raw_output[:1500] if last_raw_output else "<no raw output>",
             )
     # Tras retries, propaga el último error al caller
     raise last_error if last_error else RuntimeError("AI parse falló sin error")
