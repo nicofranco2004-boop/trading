@@ -1625,21 +1625,22 @@ def me(uid: int = Depends(get_current_user)):
     d["tier"] = quota.get_tier(conn, uid)
 
     # Estado de la suscripción "relevante". Priorizamos authorized > cancelled
-    # > otros porque cycles previos de subscribe pueden dejar varias rows
+    # > superseded > otros porque cycles previos pueden dejar varias rows
     # pending (intentos abandonados) que un simple ORDER BY created_at DESC
-    # devolvería antes que la authorized o cancelled real.
-    #   • status='authorized' → muestra "Cancelar suscripción"
-    #   • status='cancelled'  → muestra "Cancelado, vence X" + permite resuscribirse
-    #   • null/pending → user nunca pagó (Free)
+    # devolvería antes que la authorized real.
+    #   • status='authorized' → user con sub Rebill activa, autorrenovable
+    #   • status='cancelled'  → user canceló manualmente, en grace period
+    #   • status='superseded' → user cambió de plan; vive en modo crédito
     sub = conn.execute(
         """SELECT status, current_period_end, cancelled_at, period FROM subscriptions
-           WHERE user_id = ? AND status IN ('authorized', 'cancelled', 'paused', 'retrying')
+           WHERE user_id = ? AND status IN ('authorized', 'cancelled', 'superseded', 'paused', 'retrying')
            ORDER BY
                CASE status
                    WHEN 'authorized' THEN 0
                    WHEN 'retrying' THEN 1
                    WHEN 'paused' THEN 2
                    WHEN 'cancelled' THEN 3
+                   WHEN 'superseded' THEN 4
                    ELSE 9
                END,
                created_at DESC
@@ -1670,6 +1671,36 @@ def me(uid: int = Depends(get_current_user)):
         d["credit_remaining_usd"]  = 0
         d["credit_anchor_plan"]    = None
         d["credit_anchor_period"]  = None
+
+    # access_mode: estado canónico del acceso del user al tier. Single source
+    # of truth para el frontend — evita lógica condicional duplicada en cada
+    # página. Valores posibles:
+    #   • 'authorized'  → user con sub Rebill activa que se va a renovar sola
+    #   • 'credit_only' → user accedió a tier vía change-plan / cancel; sin
+    #                     sub Rebill que renueve, vive del crédito hasta que
+    #                     se acabe (entonces va a 'free' o tiene que re-sub)
+    #   • 'cancelled'   → user canceló manualmente, sigue en grace period
+    #                     hasta credit_active_until
+    #   • 'free'        → tier = free (o anulado)
+    sub_status = d.get("subscription_status")
+    cred_active = bool(d.get("credit_days_remaining", 0) > 0)
+    tier = d.get("tier")
+    if tier in (None, "free"):
+        d["access_mode"] = "free"
+    elif sub_status == "authorized":
+        d["access_mode"] = "authorized"
+    elif sub_status == "cancelled" and cred_active:
+        d["access_mode"] = "cancelled"
+    elif sub_status == "superseded" and cred_active:
+        d["access_mode"] = "credit_only"
+    elif cred_active:
+        # Edge case: tiene crédito pero no hay sub trackeable (legacy?)
+        d["access_mode"] = "credit_only"
+    else:
+        # Sin crédito + sin sub authorized → en transición; cron va a bajar
+        # a free en próximo run. Trato como cancelled visualmente para que
+        # el user vea "expirado" sin sorpresas.
+        d["access_mode"] = "cancelled"
 
     conn.close()
     return d
@@ -7272,9 +7303,14 @@ def billing_change_plan(data: ChangePlanIn, uid: int = Depends(get_current_user)
                     cancelled_sub_id, uid, ex,
                 )
             with conn:
+                # status='superseded' diferencia este caso (cambio de plan) de
+                # un cancel manual del user (que va a status='cancelled').
+                # El cron lifecycle trata ambos igual para downgrade, pero la
+                # UI muestra mensajes distintos: "en período de crédito" vs
+                # "cancelado, vence X".
                 conn.execute(
                     """UPDATE subscriptions
-                       SET status = 'cancelled',
+                       SET status = 'superseded',
                            cancelled_at = datetime('now'),
                            updated_at = datetime('now')
                        WHERE id = ?""",
@@ -7559,14 +7595,21 @@ def _rebill_subscription_status_change(conn, uid: int, metadata: dict, sub_id: s
 
 def _rebill_cancel(conn, uid: int, sub_id: str, payload: dict):
     """Marca la subscription como cancelled. No revierte tier inmediatamente
-    (el user mantiene Plus/Pro hasta fin del período cobrado)."""
+    (el user mantiene Plus/Pro hasta fin del período cobrado).
+
+    NO pisa subs que ya están en status='superseded' — esas fueron canceladas
+    por un /api/billing/change-plan y la intención semántica (el user cambió
+    de plan, no canceló) tiene que preservarse para que la UI muestre el
+    mensaje correcto.
+    """
     with conn:
         if sub_id:
             conn.execute(
                 """UPDATE subscriptions
                    SET status = 'cancelled', cancelled_at = datetime('now'),
                        updated_at = datetime('now')
-                   WHERE user_id = ? AND mp_subscription_id = ?""",
+                   WHERE user_id = ? AND mp_subscription_id = ?
+                     AND status NOT IN ('superseded')""",
                 (uid, sub_id),
             )
         else:
@@ -7705,6 +7748,19 @@ def billing_cancel(uid: int = Depends(get_current_user)):
             (uid,),
         ).fetchone()
         if not sub:
+            # Caso credit-only: el user no tiene sub Rebill activa porque ya
+            # cambió de plan y está viviendo del crédito. No hay nada que
+            # cancelar en Rebill — el crédito vence solo. Devolvemos un
+            # mensaje explicativo para que el frontend muestre el estado real.
+            from billing import credits as billing_credits
+            cstate = billing_credits.get_credit_state(conn, uid)
+            if cstate["is_active"]:
+                raise HTTPException(409, {
+                    "error": "No tenés una sub Rebill activa para cancelar; estás en modo crédito.",
+                    "hint": "credit_only_no_cancel_needed",
+                    "credit_active_until": cstate["active_until"],
+                    "days_remaining": cstate["days_remaining"],
+                })
             raise HTTPException(404, "No tenés suscripción activa para cancelar.")
 
         # Cancelar en Rebill (mp_subscription_id ahora guarda el ID de Rebill

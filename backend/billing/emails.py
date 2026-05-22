@@ -433,7 +433,7 @@ def send_expiration_reminder(*, to: str, user_name: str,
         f"Para renovar: andá a rendi.finance/planes\n\n"
         f"— Rendi"
     )
-    return _send(to, f"⏰ Tu Rendi Pro vence en {days_left} días",
+    return _send(to, f"⏰ Tu Rendi {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}",
                  _wrap_html(body_html), text,
                  from_addr=_from_noreply())
 

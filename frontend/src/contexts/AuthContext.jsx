@@ -13,6 +13,12 @@ const DEMO_USER = {
   email: 'demo@rendi.finance',
   is_admin: false,
   tier: 'pro',  // Demo siempre simula Pro para mostrar todas las features
+  // En demo simulamos una sub authorized — Config muestra "Activo" + opción
+  // de cancelar (que no haría nada real porque las llamadas a la API
+  // están interceptadas en api.js).
+  access_mode: 'authorized',
+  subscription_status: 'authorized',
+  subscription_period: 'monthly',
   demo: true,
   id: 0,
   created_at: '2024-04-01T00:00:00Z',
@@ -68,6 +74,11 @@ export function AuthProvider({ children }) {
           credit_remaining_usd:  me.credit_remaining_usd ?? 0,
           credit_anchor_plan:    me.credit_anchor_plan || null,
           credit_anchor_period:  me.credit_anchor_period || null,
+          // access_mode: single source of truth para el estado del acceso.
+          // Valores: 'authorized' (sub Rebill renovable) | 'credit_only'
+          // (cambió plan, vive del crédito) | 'cancelled' (canceló manual,
+          // grace period) | 'free'.
+          access_mode:           me.access_mode || 'free',
         }
         localStorage.setItem('rendi_user', JSON.stringify(fresh))
         setUser(fresh)

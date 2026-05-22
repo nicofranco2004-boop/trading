@@ -494,10 +494,20 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
   const [cancelling, setCancelling] = useState(false)
 
-  // Detectar si la suscripción está cancelled-but-grace-period
+  // Single source of truth: access_mode viene calculado del backend.
+  //   'authorized'  → sub Rebill activa, autorenovable. Botones: cambiar / cancelar.
+  //   'credit_only' → vive del crédito post-cambio de plan. Botones: cambiar / configurar pago.
+  //   'cancelled'   → canceló manualmente. Botones: reactivar.
+  //   'free'        → tier free.
+  // Fallback: si el user tiene tier=pro|plus pero no access_mode (demo o
+  // legacy pre-deploy), asumimos 'authorized' — es lo seguro para no mostrar
+  // "cancelado" cuando en realidad el user sí tiene acceso activo.
+  const accessMode = user?.access_mode || (tier === 'pro' || tier === 'plus' ? 'authorized' : 'free')
   const subStatus = user?.subscription_status
   const periodEnd = user?.subscription_period_end
-  const isCancelled = subStatus === 'cancelled'
+  const isCancelled = accessMode === 'cancelled'
+  const isCreditOnly = accessMode === 'credit_only'
+  const isAuthorized = accessMode === 'authorized'
 
   // Estado del crédito (modelo Rendi-managed proration). Cuando el user
   // cambió de plan mid-período o cancela mid-período, el acceso al tier
@@ -539,44 +549,60 @@ function PlanHeroPro({ tier = 'pro', usage }) {
     } catch {}
   }
 
+  // Estilos por modo: authorized usa violet (autorrenovable), credit_only usa
+  // cyan (en período de gracia activo), cancelled usa neutrales (en transición
+  // a Free). Single source of truth: accessMode.
+  const containerStyle = isAuthorized
+    ? 'border-data-violet/40 bg-data-violet/[0.06]'
+    : isCreditOnly
+      ? 'border-data-cyan/40 bg-data-cyan/[0.05]'
+      : 'border-line-2/70 bg-bg-2/30'
+
+  const badgeStyle = isAuthorized
+    ? 'bg-data-violet/15 text-data-violet'
+    : isCreditOnly
+      ? 'bg-data-cyan/15 text-data-cyan'
+      : 'bg-ink-3/15 text-ink-2'
+
+  const statusPill = isAuthorized
+    ? { dotCls: 'bg-rendi-pos', textCls: 'text-rendi-pos', label: 'Activo' }
+    : isCreditOnly
+      ? { dotCls: 'bg-data-cyan', textCls: 'text-data-cyan', label: 'En crédito' }
+      : { dotCls: 'bg-ink-3', textCls: 'text-ink-2', label: 'Cancelado' }
+
+  const title = isAuthorized
+    ? `Rendi ${isPlus ? 'Plus' : 'Pro'} está activo`
+    : isCreditOnly
+      ? `Rendi ${isPlus ? 'Plus' : 'Pro'} con tu crédito convertido`
+      : `Rendi ${isPlus ? 'Plus' : 'Pro'} hasta fin de período`
+
+  const descriptionText = isAuthorized
+    ? (isPlus
+        ? 'Multi-broker, insights completos, comportamiento avanzado y export CSV. Se renueva automáticamente.'
+        : 'Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más. Se renueva automáticamente.')
+    : isCreditOnly
+      ? (periodEndLabel
+          ? `Cambiaste de plan: tenés acceso a ${isPlus ? 'Plus' : 'Pro'} hasta el ${periodEndLabel} con el crédito convertido. Después te avisamos para que configures el pago si querés seguir.`
+          : `Cambiaste de plan: tenés acceso a ${isPlus ? 'Plus' : 'Pro'} con el crédito convertido del plan anterior. Cuando se acabe te avisamos para que configures el pago si querés seguir.`)
+      : (periodEndLabel
+          ? `Tu suscripción está cancelada. Mantenés acceso hasta el ${periodEndLabel}. Después la cuenta vuelve a Free.`
+          : 'Tu suscripción está cancelada. Mantenés acceso hasta fin del período cobrado. Después la cuenta vuelve a Free.')
+
   return (
-    <section className={`mb-6 border rounded-lg p-5 flex items-center gap-5 flex-wrap ${
-      isCancelled
-        ? 'border-line-2/70 bg-bg-2/30'
-        : 'border-data-violet/40 bg-data-violet/[0.06]'
-    }`}>
+    <section className={`mb-6 border rounded-lg p-5 flex items-center gap-5 flex-wrap ${containerStyle}`}>
       <div className="flex-1 min-w-[240px]">
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${
-            isCancelled ? 'bg-ink-3/15 text-ink-2' : 'bg-data-violet/15 text-data-violet'
-          }`}>
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${badgeStyle}`}>
             {tierLabel}
           </span>
-          {isCancelled ? (
-            <span className="inline-flex items-center gap-1 text-[10px] text-ink-2 font-mono uppercase tracking-caps">
-              <span className="w-1.5 h-1.5 rounded-full bg-ink-3" /> Cancelado
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-[10px] text-rendi-pos font-mono uppercase tracking-caps">
-              <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" /> Activo
-            </span>
-          )}
+          <span className={`inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-caps ${statusPill.textCls}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${statusPill.dotCls}`} />
+            {statusPill.label}
+          </span>
         </div>
-        <h2 className="text-base font-semibold text-ink-0 leading-snug">
-          {isCancelled
-            ? `Rendi ${isPlus ? 'Plus' : 'Pro'} hasta fin de período`
-            : `Rendi ${isPlus ? 'Plus' : 'Pro'} está activo`}
-        </h2>
-        <p className="text-xs text-ink-2 mt-1">
-          {isCancelled
-            ? (periodEndLabel
-                ? `Tu suscripción está cancelada. Mantenés acceso hasta el ${periodEndLabel}. Después la cuenta vuelve a Free.`
-                : 'Tu suscripción está cancelada. Mantenés acceso hasta fin del período cobrado. Después la cuenta vuelve a Free.')
-            : (isPlus
-                ? 'Multi-broker, insights completos, comportamiento avanzado y export CSV.'
-                : 'Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más.')}
-        </p>
+        <h2 className="text-base font-semibold text-ink-0 leading-snug">{title}</h2>
+        <p className="text-xs text-ink-2 mt-1">{descriptionText}</p>
       </div>
 
       <div className="min-w-[180px]">
@@ -585,7 +611,9 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
         </div>
         <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
-          <div className={`h-full transition-all ${isCancelled ? 'bg-ink-3' : 'bg-data-violet'}`} style={{ width: `${pct}%` }} />
+          <div className={`h-full transition-all ${
+            isAuthorized ? 'bg-data-violet' : isCreditOnly ? 'bg-data-cyan' : 'bg-ink-3'
+          }`} style={{ width: `${pct}%` }} />
         </div>
         <p className="text-[10px] text-ink-3 leading-tight">
           Ventana móvil 7 días
@@ -617,7 +645,9 @@ function PlanHeroPro({ tier = 'pro', usage }) {
       )}
 
       <div className="flex items-center gap-2 flex-wrap">
-        {isCancelled ? (
+        {isCancelled && (
+          // Cancelled (user-initiated): mostrar reactivar — los va a llevar a
+          // /planes donde hace "Suscribirme" normal.
           <button
             type="button"
             onClick={() => navigate('/planes')}
@@ -625,7 +655,32 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           >
             Reactivar suscripción
           </button>
-        ) : (
+        )}
+        {isCreditOnly && (
+          // Credit-only: el user no tiene sub Rebill activa — el "Cancelar
+          // suscripción" no aplica. Mostrar "Cambiar plan" (puede convertir
+          // crédito al otro tier) y "Configurar pago" (subscribe normal,
+          // que ADEMÁS extiende el crédito por +30/+365 días). No mostramos
+          // un botón rojo de cancel porque no hay nada que cancelar — el
+          // crédito vence solo.
+          <>
+            <button
+              type="button"
+              onClick={() => navigate('/planes')}
+              className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 rounded-sm px-3 py-2 transition-colors"
+            >
+              Cambiar plan
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/planes')}
+              className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
+            >
+              Configurar pago
+            </button>
+          </>
+        )}
+        {isAuthorized && (
           <>
             <button
               type="button"

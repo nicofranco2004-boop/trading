@@ -101,15 +101,22 @@ export default function Planes() {
       .then(d => { if (d?.blue?.venta) setTcBlue(d.blue.venta) })
       .catch(() => {})
   }, [])
-  // Detectar si la suscripción está cancelada (en grace period). En ese caso
-  // el tier todavía es 'pro' o 'plus' (acceso vigente hasta fin de período)
-  // pero el user PUEDE cambiar de plan vía /api/billing/change-plan
-  // (convierte el crédito remanente al daily_rate del plan nuevo).
-  const subCancelled = user?.subscription_status === 'cancelled'
-  const subAuthorized = user?.subscription_status === 'authorized'
+  // Single source of truth: access_mode viene del backend.
+  // Fallback: user con tier!=free pero sin access_mode (demo / legacy) → 'authorized'.
+  const accessMode = user?.access_mode || (
+    tier === 'pro' || tier === 'plus' ? 'authorized' : 'free'
+  )
+  const isAuthorizedMode = accessMode === 'authorized'
+  const isCreditOnlyMode = accessMode === 'credit_only'
+  const isCancelledMode = accessMode === 'cancelled'
+
+  // Para back-compat con la lógica de cards: el user tiene tier vigente si
+  // está en authorized o credit_only (en cancelled todavía mantiene acceso,
+  // pero queremos ofrecerle "Reactivar" en vez de "Cambiar").
+  const subCancelled = isCancelledMode
   const isFree = tier === 'free'
-  const isPlus = tier === 'plus' && !subCancelled
-  const isPro = tier === 'pro' && !subCancelled
+  const isPlus = tier === 'plus' && !isCancelledMode
+  const isPro = tier === 'pro' && !isCancelledMode
   const isAdmin = tier === 'admin'
   const hasProTier = isPro || isAdmin
   const hasPlusOrBetter = isPlus || isPro || isAdmin
@@ -125,7 +132,9 @@ export default function Planes() {
   // Un user puede cambiar de plan si tiene crédito activo (la conversión
   // re-acomoda el remaining al daily_rate nuevo). Si es free puro o nunca
   // pagó, el cambio se hace como subscribe nuevo.
-  const canChangePlan = hasCredit && anchorPlan && anchorPeriod
+  // Si está cancelled (manual), ofrecemos "Reactivar" en lugar de "Cambiar"
+  // — el flujo de subscribe normal porque la intención del user fue parar.
+  const canChangePlan = hasCredit && anchorPlan && anchorPeriod && !isCancelledMode
 
   useEffect(() => {
     track('planes_viewed', { from_tier: tier })
@@ -242,16 +251,41 @@ export default function Planes() {
         subtitle="Empezá gratis. Mejorá cuando necesites análisis más profundos, más brokers o features pro."
       />
 
-      {/* Banner de crédito activo — solo si el user tiene crédito sin haberse
-          ido a free todavía. Muestra cuántos días le quedan y a qué rate. */}
-      {hasCredit && anchorPlan && (
-        <div className="max-w-3xl mx-auto mb-6 flex items-center gap-3 border border-line-2/70 bg-bg-2/40 rounded-lg px-4 py-3">
-          <Clock size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
+      {/* Banner contextual según access_mode. Cada estado tiene mensaje propio:
+          - authorized: nada (auto-renueva, no hay que avisar)
+          - credit_only: "tenés acceso por crédito, cambiá o configurá pago"
+          - cancelled: "cancelaste, vence X, reactivá si querés seguir" */}
+      {isCreditOnlyMode && hasCredit && anchorPlan && (
+        <div className="max-w-3xl mx-auto mb-6 flex items-center gap-3 border border-data-cyan/40 bg-data-cyan/[0.06] rounded-lg px-4 py-3">
+          <Clock size={16} strokeWidth={1.75} className="text-data-cyan flex-shrink-0" />
           <div className="flex-1 min-w-0 text-sm text-ink-1 leading-snug">
             Tu acceso a <span className="font-medium capitalize">{anchorPlan}</span>
             {' '}({anchorPeriod === 'annual' ? 'anual' : 'mensual'}) está garantizado por{' '}
-            <span className="font-mono tabular text-ink-0">{Math.round(creditDays)} días más</span>.
-            {' '}Si cambiás de plan, el crédito se reconvierte automáticamente al rate nuevo.
+            <span className="font-mono tabular text-ink-0">{Math.round(creditDays)} días más</span>
+            {' '}usando el crédito de tu plan anterior.
+            {' '}Si cambiás de plan, el crédito se reconvierte automáticamente.
+          </div>
+        </div>
+      )}
+      {isCancelledMode && hasCredit && anchorPlan && (
+        <div className="max-w-3xl mx-auto mb-6 flex items-center gap-3 border border-line-2/70 bg-bg-2/40 rounded-lg px-4 py-3">
+          <Clock size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
+          <div className="flex-1 min-w-0 text-sm text-ink-1 leading-snug">
+            Cancelaste tu suscripción.
+            {' '}Mantenés acceso a <span className="font-medium capitalize">{anchorPlan}</span>
+            {' '}por <span className="font-mono tabular text-ink-0">{Math.round(creditDays)} días más</span>
+            {' '}— después la cuenta vuelve a Free. Suscribite de nuevo para seguir.
+          </div>
+        </div>
+      )}
+      {isAuthorizedMode && hasCredit && anchorPlan && (
+        <div className="max-w-3xl mx-auto mb-6 flex items-center gap-3 border border-data-violet/30 bg-data-violet/[0.05] rounded-lg px-4 py-3">
+          <Clock size={16} strokeWidth={1.75} className="text-data-violet flex-shrink-0" />
+          <div className="flex-1 min-w-0 text-sm text-ink-1 leading-snug">
+            Tu <span className="font-medium capitalize">{anchorPlan}</span>
+            {' '}({anchorPeriod === 'annual' ? 'anual' : 'mensual'}) se renueva en{' '}
+            <span className="font-mono tabular text-ink-0">{Math.round(creditDays)} días</span>.
+            {' '}Si cambiás de plan, el crédito se reconvierte sin cobrarte de nuevo.
           </div>
         </div>
       )}

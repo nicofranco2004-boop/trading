@@ -185,6 +185,7 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
                 user_name=(r["name"] or r["email"].split("@")[0]),
                 days_left=days_left,
                 expires_at=r["credit_active_until"],
+                plan=r["credit_anchor_plan"] or "pro",
             )
             # Marcar idempotencia en la sub más reciente del user
             with conn:
@@ -250,11 +251,16 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
     """Manda recordatorio a users cuya sub cancelada está por expirar en N días.
 
     Solo afecta a subs `cancelled` (no a `authorized` activas — esas se renuevan
-    automáticamente). Idempotente vía expiration_reminder_sent_at."""
+    automáticamente). Idempotente vía expiration_reminder_sent_at.
+
+    Nota: 'superseded' subs (cambio de plan) NO entran acá porque su current_period_end
+    ya no es el source of truth — usamos users.credit_active_until en
+    _send_credit_expiring_reminders.
+    """
     from billing import emails
     rows = conn.execute(
         """SELECT s.id, s.mp_subscription_id, s.current_period_end,
-                  u.email, u.name
+                  u.email, u.name, u.tier
            FROM subscriptions s
            JOIN users u ON u.id = s.user_id
            WHERE s.status = 'cancelled'
@@ -284,6 +290,7 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
                 user_name=(r["name"] or r["email"].split("@")[0]),
                 days_left=days_left,
                 expires_at=r["current_period_end"],
+                plan=r["tier"] or "pro",
             )
             with conn:
                 conn.execute(
