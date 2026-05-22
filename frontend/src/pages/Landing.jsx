@@ -439,8 +439,8 @@ function HowItWorks() {
       Icon: Upload,
       meta: 'CARTERA · CSV o MANUAL',
       title: 'Cargá tu cartera',
-      body: 'Importás CSV de Cocos, IOL, Schwab, Binance, Wise, Balanz o BullMarket — el parser detecta el formato y mapea cada movimiento. Si preferís control total, agregás posiciones a mano broker por broker. Cada activo queda agrupado por broker con su moneda original, valor live en USD y P&L.',
-      chips: ['CSV importer', 'Multi-broker', 'P&L USD live'],
+      body: 'Importás el CSV de Cocos, IOL, Schwab, Binance, Wise, Balanz o BullMarket — el parser detecta el formato y mapea cada movimiento. Si preferís control total, desde Cartera tocás "Agregar posición", elegís broker, activo, cantidad y precio de entrada. Los depósitos los registrás editando la caja del broker (el efectivo USD/ARS/USDT queda como saldo y se suma al capital aportado). Cada activo queda agrupado por broker, con moneda original, valor live en USD y P&L.',
+      chips: ['CSV importer', 'Agregar posición', 'Editar caja · depósitos'],
       Visual: MockPositions,
     },
     {
@@ -448,8 +448,8 @@ function HowItWorks() {
       Icon: ListChecks,
       meta: 'OPERACIONES · COMPRAS + VENTAS',
       title: 'Añadí compras y ventas para seguir tu cartera',
-      body: 'Cada operación queda con su P&L USD, % y broker. Cuando vendés, Rendi aplica FIFO automático — descuenta del lote más viejo primero, igual que la lógica fiscal AR, así el costo de compra se mantiene consistente. Si solo querés anotar cuánto ganaste o perdiste sin recordar precios exactos, completá únicamente P&L USD — atajo para trades viejos o cuentas externas.',
-      chips: ['FIFO automático', 'Compras + ventas', 'Atajo sin precios'],
+      body: 'Las compras se agregan desde Cartera — si ya tenés esa posición, suma al lote existente. Para vender, abrís la posición y tocás "Realizar venta": Rendi aplica FIFO automático contra los lotes más viejos (la lógica fiscal AR), calcula el P&L USD y % real, y transfiere la operación al historial de Operaciones. Si querés anotar un trade viejo sin precios exactos, dejás los campos vacíos y completás solamente P&L USD — atajo para cuentas externas.',
+      chips: ['FIFO automático', 'Venta → Operaciones', 'Atajo sin precios'],
       Visual: MockOperations,
     },
     {
@@ -611,6 +611,8 @@ function MockPositions() {
       positions: [
         { asset: 'AL30', qty: '8.500', value: 'US$ 6.120', pnlPct: '+7.2%', pos: true },
         { asset: 'GGAL', qty: '1.200', value: 'US$ 4.860', pnlPct: '+18.5%', pos: true },
+        // Cash: saldo de caja editable — la forma de registrar depósitos.
+        { asset: 'Caja', qty: 'ARS', value: 'US$ 4.002', pnlPct: '+ depósito', pos: true, isCash: true },
       ],
     },
     {
@@ -624,7 +626,7 @@ function MockPositions() {
     },
   ]
   return (
-    <MockFrame title="rendi · cartera" footer="3 brokers · 6 posiciones · US$ 48.217 total">
+    <MockFrame title="rendi · cartera" footer="3 brokers · 7 ítems · US$ 48.217 · incluye caja editable">
       <div className="space-y-3">
         {brokers.map(b => (
           <div key={b.name} className="border border-line/60 rounded bg-bg-2/20 overflow-hidden">
@@ -641,11 +643,20 @@ function MockPositions() {
             {/* Posiciones del broker */}
             <div className="px-2.5 py-1">
               {b.positions.map(p => (
-                <div key={p.asset} className="grid grid-cols-[60px_60px_1fr_60px] gap-2 py-1 text-[11px] font-mono items-center">
-                  <span className="text-ink-0 font-medium">{p.asset}</span>
+                <div
+                  key={p.asset}
+                  className={`grid grid-cols-[60px_60px_1fr_80px] gap-2 py-1 text-[11px] font-mono items-center ${
+                    p.isCash ? 'opacity-80' : ''
+                  }`}
+                >
+                  <span className={`font-medium ${p.isCash ? 'text-ink-2 italic' : 'text-ink-0'}`}>{p.asset}</span>
                   <span className="text-ink-3 tabular">{p.qty}</span>
                   <span className="text-ink-2 tabular">{p.value}</span>
-                  <span className={`text-right tabular font-medium ${p.pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                  <span className={`text-right tabular font-medium ${
+                    p.isCash
+                      ? 'text-data-cyan text-[10px]'
+                      : (p.pos ? 'text-rendi-pos' : 'text-rendi-neg')
+                  }`}>
                     {p.pnlPct}
                   </span>
                 </div>
@@ -670,7 +681,7 @@ function MockOperations() {
     { date: '2024-08-30', asset: 'AAPL', type: 'dividendo', pnl: '+US$45', pnlClass: 'text-rendi-pos', typeClass: 'text-data-amber border-data-amber/30 bg-data-amber/5' },
   ]
   return (
-    <MockFrame title="rendi · operaciones" footer="FIFO automático · P&L USD calculado">
+    <MockFrame title="rendi · operaciones" footer="Auto-generadas desde Cartera al ‘Realizar venta’ · FIFO + P&L USD">
       <div className="space-y-1">
         <div className="grid grid-cols-[80px_60px_1fr_80px] gap-2 pb-2 border-b border-line/60 text-[9px] font-mono uppercase tracking-caps text-ink-3">
           <span>Fecha</span>
