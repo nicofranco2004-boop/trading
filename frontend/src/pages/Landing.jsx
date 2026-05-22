@@ -476,8 +476,8 @@ function HowItWorks() {
       Icon: MessageSquare,
       meta: 'IA · CHAT CONVERSACIONAL',
       title: 'Le preguntás lo que necesites',
-      body: 'Chat libre con tu coach IA. Preguntas puntuales: "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL, no en Cocos". Tiene memoria persistente — los hechos que le aclarás los respeta entre sesiones.',
-      chips: ['Memoria persistente', 'Noticias', 'P&L preciso'],
+      body: 'En todos los planes accedés al Coach IA con 12 preguntas guiadas (6 consultas por semana). Con Pro desbloqueás chat libre: preguntá lo que quieras — "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.',
+      chips: ['12 preguntas en Free', 'Chat libre en Pro', 'Memoria persistente'],
       Visual: MockChat,
     },
   ]

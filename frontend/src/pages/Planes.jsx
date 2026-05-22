@@ -55,6 +55,7 @@ function fmtArsConverted(usdPrice, tcBlue) {
 export const FREE_FEATURES = [
   'Dashboard completo (4 KPIs + curva de evolución)',
   '6 análisis IA por semana',
+  'Coach IA con 12 preguntas guiadas · 6 consultas/sem',
   'Hasta 1 broker',
   'Insights básicos (TWR + benchmark + drawdown)',
   'Diagnóstico con 3 observaciones',
@@ -72,11 +73,13 @@ export const PLUS_FEATURES = [
   { label: 'Reportes históricos completos (todos los meses)' },
   { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
   { label: '6 análisis IA por semana', sub: 'Misma cuota que Free (Pro multiplica 10×)' },
+  { label: 'Coach IA con 12 preguntas guiadas', sub: 'Mismas 6 consultas/sem que Free' },
 ]
 
 export const PRO_FEATURES = [
   { label: 'Todo lo del Plus' },
   { label: '60 análisis IA por semana', sub: '10× más que Free/Plus' },
+  { label: 'Chat libre con Coach IA', sub: '60 consultas/sem · preguntá lo que quieras (vs 12 guiadas en Free/Plus)' },
   { label: 'Respuestas con causalidad y comparaciones', sub: 'No solo descripción' },
   { label: 'Follow-ups: profundizá cada análisis con preguntas libres' },
   { label: 'Brokers ilimitados' },

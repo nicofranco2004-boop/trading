@@ -67,21 +67,32 @@ LIMITS = {
     "free": {
         "analyses_per_week": 6,
         "hub_queries_per_week": 0,     # Hub es Pro-only — gate en endpoint
+        # chat_per_week: cuántas consultas al Coach IA por ventana 7d.
+        # Free/Plus tienen acceso pero SOLO a las 12 preguntas pre-fijadas
+        # (whitelist en el endpoint /api/ai/chat). No pueden tipear libre.
+        "chat_per_week": 6,
     },
     # Plus = features desbloqueadas pero IA igual que Free. El upgrade path
     # a Pro queda accionable por mejor IA + features avanzadas (follow-ups,
-    # Hub, ilimitados).
+    # Hub, chat libre, ilimitados).
     "plus": {
         "analyses_per_week": 6,
         "hub_queries_per_week": 0,
+        "chat_per_week": 6,
     },
     "pro": {
         "analyses_per_week": 60,        # 10× Free
         "hub_queries_per_week": 60,
+        # Pro desbloquea CHAT LIBRE — pueden tipear cualquier pregunta.
+        # 60/sem alineado con el resto de los caps Pro. Costo proyectado:
+        # ~$1.20-2.40/Pro/mes con prompt cache activo (system_text estable
+        # por tier, snapshot va al user message → cache hit ~80%).
+        "chat_per_week": 60,
     },
     "admin": {
         "analyses_per_week": 1000,
         "hub_queries_per_week": 1000,
+        "chat_per_week": 1000,
     },
 }
 
@@ -143,23 +154,28 @@ def get_current_usage(conn, user_id: int) -> dict:
 
     # SQL hace el cálculo de resets_on directamente con date(MIN(date), '+7 days')
     # para evitar dependencias del módulo `date` de Python (más limpio + testeable).
+    # COALESCE(chat_count, 0) defensa por si la columna no existe aún en DBs
+    # legacy que no corrieron migración (init_db lo agrega en el próximo boot).
     row = conn.execute(
         """SELECT COALESCE(SUM(analyses_count), 0) AS a,
                   COALESCE(SUM(hub_queries_count), 0) AS h,
+                  COALESCE(SUM(chat_count), 0) AS c,
                   date(MIN(date), '+7 days') AS resets_on
              FROM ai_usage_daily
             WHERE user_id = ? AND date >= ?
-              AND (analyses_count > 0 OR hub_queries_count > 0)""",
+              AND (analyses_count > 0 OR hub_queries_count > 0 OR chat_count > 0)""",
         (user_id, window_start.isoformat()),
     ).fetchone()
     analyses = int(row["a"] or 0) if row else 0
     hub = int(row["h"] or 0) if row else 0
+    chat = int(row["c"] or 0) if row else 0
     resets_on = row["resets_on"] if row else None
 
     tier = get_tier(conn, user_id)
     limits = LIMITS[tier]
     a_limit = limits["analyses_per_week"]
     h_limit = limits["hub_queries_per_week"]
+    c_limit = limits.get("chat_per_week", 0)
 
     return {
         "tier": tier,
@@ -170,6 +186,9 @@ def get_current_usage(conn, user_id: int) -> dict:
         "hub_queries_count": hub,
         "hub_queries_limit": h_limit,
         "hub_queries_remaining": max(0, h_limit - hub),
+        "chat_count": chat,
+        "chat_limit": c_limit,
+        "chat_remaining": max(0, c_limit - chat),
         "resets_on": resets_on,
         "window_starts_on": window_start.isoformat(),
         # Alias back-compat para callers viejos.
@@ -191,6 +210,12 @@ def can_analyze(conn, user_id: int) -> tuple[bool, dict]:
 def can_hub_query(conn, user_id: int) -> tuple[bool, dict]:
     usage = get_current_usage(conn, user_id)
     return usage["hub_queries_remaining"] > 0, usage
+
+
+def can_chat(conn, user_id: int) -> tuple[bool, dict]:
+    """(allowed, usage_dict) para /api/ai/chat. Si False → 429."""
+    usage = get_current_usage(conn, user_id)
+    return usage["chat_remaining"] > 0, usage
 
 
 def record_analysis(conn, user_id: int, cost_usd_cents: int = 0) -> None:
@@ -216,6 +241,22 @@ def record_hub_query(conn, user_id: int, cost_usd_cents: int = 0) -> None:
                VALUES (?, ?, 1, ?)
                ON CONFLICT(user_id, date) DO UPDATE SET
                  hub_queries_count = hub_queries_count + 1,
+                 cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
+            (user_id, today, cost_usd_cents),
+        )
+
+
+def record_chat(conn, user_id: int, cost_usd_cents: int = 0) -> None:
+    """Suma 1 al contador chat del día (cap semanal se computa al leer).
+    Llamarlo DESPUÉS del response exitoso del LLM, no antes — si el LLM
+    falla, no consumimos cuota."""
+    today = date.today().isoformat()
+    with conn:
+        conn.execute(
+            """INSERT INTO ai_usage_daily (user_id, date, chat_count, cost_usd_cents)
+               VALUES (?, ?, 1, ?)
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 chat_count = chat_count + 1,
                  cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
             (user_id, today, cost_usd_cents),
         )

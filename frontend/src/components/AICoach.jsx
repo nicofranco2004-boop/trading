@@ -1,21 +1,23 @@
-// AICoach — preguntas pre-fijadas con contexto del portfolio.
+// AICoach — chat tiered: Free/Plus solo preguntas pre-armadas, Pro chat libre.
 // ═══════════════════════════════════════════════════════════════════════════
-// Decisión de producto (AI v2 — post audit):
-// El chat libre fue retirado. El user NO escribe libremente, solo elige
-// entre preguntas pre-fijadas que el backend sabe responder con calidad
-// consistente. Esto:
-//   1) Elimina el riesgo de respuestas pobres ante preguntas vagas.
-//   2) Reduce el costo (queries acotadas, prompts cacheables).
-//   3) Alinea con la filosofía del manifiesto editorial: el LLM
-//      interpreta datos pre-calculados, no improvisa.
+// Decisión de producto (chat tiered post-Ola 3 audit):
+// - Free/Plus: SOLO eligen entre 12 preguntas pre-armadas (whitelist). NO
+//   pueden tipear libre. Cuota 6/sem (rolling 7d) compartida con analyses.
+//   Razón: control de costos + diferenciación clara para upgrade a Pro.
+// - Pro/Admin: TEXTO LIBRE + chips como sugerencia. Cuota 60/sem.
+//
+// Backend valida la whitelist server-side (gating /api/ai/chat) — el frontend
+// solo aplica feature flag visual. Si Free intenta tipear, el botón Enviar
+// no aparece. Si por algún bug envía igual, el backend devuelve 403.
 //
 // Si el user quiere análisis profundo de algo específico, el botón ✦ en
 // cada sección del producto (AskAIAbout) le da contextual analysis con
 // el tono research-note.
 
 import { useState, useRef, useEffect } from 'react'
-import { Sparkles, AlertCircle, RotateCcw } from 'lucide-react'
+import { Sparkles, AlertCircle, RotateCcw, Send, Lock } from 'lucide-react'
 import { api } from '../utils/api'
+import { usePlanFeatures } from '../hooks/usePlanFeatures'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -37,11 +39,26 @@ const DEFAULT_SUGGESTED = [
 ]
 
 export default function AICoach({ snapshot, suggested }) {
+  const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
+  const canChatFree = isPro || isAdmin  // chat libre = solo Pro/Admin
   const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 12) : DEFAULT_SUGGESTED
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [freeText, setFreeText] = useState('')
+  // Usage: { chat_count, chat_limit, chat_remaining, resets_on }
+  const [usage, setUsage] = useState(null)
   const scrollRef = useRef(null)
+
+  // Cargar cuota inicial — solo lectura, sin gating front (el server tiene la
+  // verdad). Si falla, no rompemos UX — el server devolverá 429 si excede.
+  useEffect(() => {
+    let cancelled = false
+    api.get('/ai/usage').then(u => {
+      if (!cancelled) setUsage(u)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   // Auto-scroll al final cuando llegan mensajes nuevos
   useEffect(() => {
@@ -66,13 +83,32 @@ export default function AICoach({ snapshot, suggested }) {
         snapshot,
       })
       setMessages(m => [...m, { role: 'assistant', content: res.reply }])
+      // Refrescar cuota tras success — no es crítico, best-effort.
+      api.get('/ai/usage').then(u => setUsage(u)).catch(() => {})
     } catch (e) {
-      setError(e.message || 'No pudimos completar la consulta. Intentalo nuevamente.')
+      // Mensaje específico si es cuota agotada (429) o gate Free (403).
+      // El backend devuelve detail con shape { error, message, usage? }.
+      let msg = e?.message || 'No pudimos completar la consulta. Intentalo nuevamente.'
+      const detail = e?.detail || e?.response?.data?.detail
+      if (detail && typeof detail === 'object' && detail.message) {
+        msg = detail.message
+        if (detail.usage) setUsage(detail.usage)
+      }
+      setError(msg)
       // Sacar el último user msg si falló — el user puede reintentar con otro chip
       setMessages(m => m.slice(0, -1))
     } finally {
       setLoading(false)
     }
+  }
+
+  function handleFreeSubmit(e) {
+    e.preventDefault()
+    if (!canChatFree) return  // safety: Free no debería ver el input
+    const text = freeText.trim()
+    if (!text) return
+    setFreeText('')
+    send(text)
   }
 
   function reset() {
@@ -96,20 +132,42 @@ export default function AICoach({ snapshot, suggested }) {
             <Sparkles size={16} strokeWidth={1.5} className="text-rendi-accent" />
           </div>
           <div>
-            <h2 className="font-semibold text-ink-0">Coach IA</h2>
-            <p className="text-[11px] text-ink-3">Preguntas con contexto de tu portfolio</p>
+            <h2 className="font-semibold text-ink-0">
+              Coach IA
+              {canChatFree && (
+                <span className="ml-2 text-[9px] font-mono uppercase tracking-caps text-data-violet border border-data-violet/40 bg-data-violet/5 px-1.5 py-0.5 rounded-sm align-middle">
+                  Pro · libre
+                </span>
+              )}
+            </h2>
+            <p className="text-[11px] text-ink-3">
+              {canChatFree
+                ? 'Preguntale lo que quieras sobre tu cartera'
+                : 'Preguntas con contexto de tu portfolio'}
+            </p>
           </div>
         </div>
-        {messages.length > 0 && (
-          <button
-            onClick={reset}
-            className="text-xs text-ink-3 hover:text-ink-1 dark:hover:text-ink-0 flex items-center gap-1"
-            title="Empezar de nuevo"
-            aria-label="Empezar conversación de nuevo"
-          >
-            <RotateCcw size={12} /> Nuevo
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {/* Cuota — visible para todos los tiers cuando ya cargó */}
+          {usage && usage.chat_limit > 0 && (
+            <span
+              className="text-[10px] font-mono text-ink-3 tabular hidden sm:inline"
+              title={usage.resets_on ? `Se renueva el ${usage.resets_on}` : 'Cuota semanal'}
+            >
+              {usage.chat_count}/{usage.chat_limit} esta semana
+            </span>
+          )}
+          {messages.length > 0 && (
+            <button
+              onClick={reset}
+              className="text-xs text-ink-3 hover:text-ink-1 dark:hover:text-ink-0 flex items-center gap-1"
+              title="Empezar de nuevo"
+              aria-label="Empezar conversación de nuevo"
+            >
+              <RotateCcw size={12} /> Nuevo
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Mensajes */}
@@ -183,7 +241,7 @@ export default function AICoach({ snapshot, suggested }) {
         </div>
       )}
 
-      {availableQuestions.length === 0 && messages.length > 0 && (
+      {availableQuestions.length === 0 && messages.length > 0 && !canChatFree && (
         <div className="border-t border-line/70 dark:border-line/40 px-3 py-3 bg-bg-1/40 text-center">
           <p className="text-xs text-ink-3 mb-2">Ya recorriste todas las preguntas sugeridas.</p>
           <button
@@ -192,6 +250,51 @@ export default function AICoach({ snapshot, suggested }) {
           >
             <RotateCcw size={11} /> Empezar de nuevo
           </button>
+        </div>
+      )}
+
+      {/* Input libre — SOLO Pro/Admin. Free/Plus ven los chips o el upsell. */}
+      {canChatFree && (
+        <form
+          onSubmit={handleFreeSubmit}
+          className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40 flex items-center gap-2"
+        >
+          <input
+            type="text"
+            value={freeText}
+            onChange={e => setFreeText(e.target.value)}
+            disabled={loading}
+            placeholder="Preguntale lo que quieras sobre tu cartera…"
+            className="flex-1 bg-bg-2 dark:bg-bg-2/60 border border-line text-sm text-ink-0 placeholder:text-ink-3 rounded-sm px-3 py-2 focus:outline-none focus:border-data-violet/60 disabled:opacity-50"
+            maxLength={500}
+            aria-label="Pregunta libre al coach IA"
+          />
+          <button
+            type="submit"
+            disabled={loading || !freeText.trim()}
+            className="bg-data-violet hover:bg-data-violet/90 text-white rounded-sm p-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center"
+            title="Enviar"
+            aria-label="Enviar pregunta"
+          >
+            <Send size={14} strokeWidth={2} />
+          </button>
+        </form>
+      )}
+
+      {/* Upsell Free/Plus → Pro: visible cuando NO tiene chat libre. Muestra
+          qué desbloquea Pro sin ser intrusivo (un slot debajo de los chips). */}
+      {!canChatFree && !tierLoading && (
+        <div className="border-t border-line/70 dark:border-line/40 px-3 py-2 bg-data-violet/5 flex items-center gap-2">
+          <Lock size={11} className="text-data-violet flex-shrink-0" />
+          <p className="text-[10px] text-ink-2 leading-snug flex-1">
+            ¿Querés preguntar libre? Pro desbloquea chat sin restricciones (60 consultas/sem).
+          </p>
+          <a
+            href="/planes"
+            className="text-[10px] font-mono uppercase tracking-caps text-data-violet hover:underline whitespace-nowrap"
+          >
+            Ver Pro →
+          </a>
         </div>
       )}
 

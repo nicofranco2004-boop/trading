@@ -636,6 +636,11 @@ def init_db():
             date TEXT NOT NULL,
             analyses_count INTEGER NOT NULL DEFAULT 0,
             hub_queries_count INTEGER NOT NULL DEFAULT 0,
+            -- chat_count: consultas al /api/ai/chat (cuota separada de analyses).
+            -- Free/Plus tienen acceso solo a whitelist de 12 preguntas pre-armadas
+            -- (cap 6/sem). Pro desbloquea chat libre (cap 60/sem). Agregada en
+            -- migración post-launch de chat tiered.
+            chat_count INTEGER NOT NULL DEFAULT 0,
             cost_usd_cents INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
@@ -1004,6 +1009,12 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_import_op_links_batch ON import_op_links(batch_id);
     """)
+
+    # Migración: ai_usage_daily.chat_count (agregada al introducir chat tiered).
+    # DBs prod existentes no tienen esta columna — ADD COLUMN con default 0.
+    ai_usage_cols = _table_cols(conn, 'ai_usage_daily')
+    if ai_usage_cols and 'chat_count' not in ai_usage_cols:
+        conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN chat_count INTEGER NOT NULL DEFAULT 0")
 
     # Migración: columna broker en import_normalized_tx (agregada después de la
     # versión inicial de las tablas).
@@ -8679,43 +8690,98 @@ def ai_invalidate_cache(screen: str, uid: int = Depends(get_current_user)):
         conn.close()
 
 
+# ─── Whitelist de preguntas pre-armadas (Free/Plus tier) ─────────────────────
+# Sincronizada con frontend/src/components/AICoach.jsx::DEFAULT_SUGGESTED.
+# Free/Plus solo pueden mandar mensajes que matcheen una de estas 12
+# (normalización NFKC + casefold). Pro/Admin pueden mandar texto libre.
+# Si actualizás esta lista, hay que actualizar el frontend en paralelo.
+
+_FREE_QUESTIONS_WHITELIST = (
+    "¿Cómo está mi portfolio en general?",
+    "¿Qué riesgos detectás en mi cartera?",
+    "¿Mi nivel de concentración es elevado?",
+    "¿Cómo evalúo mi win rate?",
+    "¿Mi diversificación está bien?",
+    "¿Detectás algún sesgo en mi forma de operar?",
+    "¿Mi exposure por sector/región está equilibrado?",
+    "¿Qué métrica debería empezar a monitorear y todavía no miro?",
+    "Si tuvieras que mejorar UNA cosa de mi cartera, ¿cuál sería?",
+    "¿Cómo voy vs el S&P 500?",
+    "¿Le estoy ganando a la inflación argentina?",
+    "¿Qué activo es el que más riesgo me agrega?",
+)
+
+
+def _normalize_question(s: str) -> str:
+    """Normaliza una pregunta para comparación: NFKC + casefold + collapse
+    whitespace + strip. Permite que el frontend mande variantes leves
+    (mayúsculas/acentos perdidos) sin romper el matching."""
+    import unicodedata
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", str(s))
+    s = " ".join(s.split())  # collapse whitespace
+    return s.casefold().strip()
+
+
+_FREE_QUESTIONS_NORMALIZED = frozenset(_normalize_question(q) for q in _FREE_QUESTIONS_WHITELIST)
+
+
+def _is_whitelisted_question(text: str) -> bool:
+    """True si `text` matchea alguna pregunta de la whitelist (case + accent
+    insensitive). Free/Plus solo pueden mandar éstas."""
+    return _normalize_question(text) in _FREE_QUESTIONS_NORMALIZED
+
+
 @app.post("/api/ai/chat")
 def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_user)):
-    """Chat libre con el coach IA — usa snapshot + historial como contexto.
+    """Chat con el coach IA — tier-aware.
 
-    Tier-aware:
-    - Free → _AI_CHAT_SYSTEM_FREE (descriptivo, 1-2 oraciones, no interpreta,
-      upsell a Pro cuando piden análisis profundo). max_tokens=300 para forzar
-      brevedad incluso si el modelo intentara más largo.
-    - Plus → mismo prompt que Free por ahora (Plus es upgrade de cuota +
-      multi-broker, no diferencial de IA).
-    - Pro / Admin → _AI_CHAT_SYSTEM completo (research note, profundidad,
-      causalidad). max_tokens=1000.
+    Free/Plus:
+    - Solo aceptan mensajes en _FREE_QUESTIONS_WHITELIST (12 preguntas).
+    - Cuota 6/semana (rolling 7d) vía ai_usage_daily.chat_count.
+    - Prompt descriptivo, max_tokens=300, sin causalidad ni recomendaciones.
 
-    Soporta tool_use: el modelo puede pedir precios en tiempo real u otro dato.
-    Output sanitizado server-side para quitar markdown (red de seguridad para
-    cuando el modelo lo inyecta a pesar del prompt)."""
-    _check_rate_limit(request, max_calls=40, window_seconds=3600, suffix=f"ai_chat:{uid}")
+    Pro/Admin:
+    - Texto libre permitido (chat libre real).
+    - Cuota 60/semana.
+    - Prompt completo causal, max_tokens=1000, tools habilitadas.
 
+    Prompt-cache fix (audit #1/2 HIGH):
+    - system_text = SOLO manifiesto estable por tier → cache hit ~99%.
+    - snapshot + facts + investor_block van como bloque en el PRIMER user
+      message con cache_control → cache hit alto entre turnos de la misma
+      sesión (snapshot del cliente cacheado 60s).
+
+    Output sanitizado server-side (markdown strip) — red de seguridad.
+    """
     client = _get_anthropic_client()
     if client is None:
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
 
-    # Resolver tier ANTES de elegir prompt (la diferenciación es el punto)
+    from ai import quota
+
+    # Resolver tier + cuota + perfil + facts en una sola conexión.
     conn = get_db()
     try:
-        from ai import quota
         tier = quota.get_tier(conn, uid)
-        # Perfil de inversor declarado (test 7 preguntas en /config)
+        # Cuota semanal por tier (Free/Plus=6, Pro=60, Admin=1000). Bloqueo
+        # ANTES de procesar — barato + claro mensaje al usuario.
+        allowed, usage = quota.can_chat(conn, uid)
+        if not allowed:
+            raise HTTPException(
+                429,
+                detail={
+                    "error": "chat_quota_exceeded",
+                    "message": f"Llegaste al máximo de consultas ({usage['chat_limit']}) de esta semana. Se renueva el {usage.get('resets_on') or 'próximo lunes'}.",
+                    "usage": usage,
+                },
+            )
         prof_row = conn.execute(
             "SELECT investor_profile FROM users WHERE id=?", (uid,)
         ).fetchone()
         # Memoria persistente del user (Ola 3-L). Levantamos hasta 25 facts
         # activos más recientes — el bot debe respetarlos como verdad declarada.
-        # 25 está alineado con el hard-cap de inserts (50): el user puede
-        # tener 50 totales pero solo los 25 más recientes se inyectan. Si
-        # queremos rotar facts viejos, basta con desactivar (UI lo permite).
-        # Auditoría Ola 3 — antes era LIMIT 10, causaba "fact forgetting" silente.
         facts_rows = conn.execute(
             """SELECT content FROM ai_user_facts
                WHERE user_id=? AND is_active=1
@@ -8726,6 +8792,28 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
         conn.close()
 
     is_premium = tier in ("pro", "admin")
+
+    # Gating Free/Plus: solo whitelist. Pro/Admin: libre.
+    # Tomamos el ÚLTIMO user message del array (el actual). Los previos
+    # son historia y ya pasaron por esta misma validación cuando se enviaron.
+    if not is_premium:
+        last_user_msg = ""
+        for m in reversed(data.messages):
+            if m.role == "user":
+                last_user_msg = str(m.content or "")
+                break
+        if not _is_whitelisted_question(last_user_msg):
+            log.info("ai_chat rejected non-whitelisted msg, tier=%s uid=%s msg=%r",
+                     tier, uid, last_user_msg[:80])
+            raise HTTPException(
+                403,
+                detail={
+                    "error": "free_chat_not_allowed",
+                    "message": "El chat libre está disponible solo en el plan Pro. Elegí una de las preguntas guiadas o actualizá tu plan.",
+                    "tier": tier,
+                },
+            )
+
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
     max_tokens = 1000 if is_premium else 300
     max_tokens_fallback = 800 if is_premium else 250
@@ -8738,16 +8826,11 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
         mode=profile_mode,
     )
 
-    # Sanitizar el snapshot ANTES de serializarlo al LLM — el frontend
-    # puede mandar listas como None, objetos con shape inesperado, o
-    # campos sin etiqueta open/closed. El sanitizer normaliza todo y
-    # marca positions con _kind='open_position' / operations con
-    # _kind='closed_trade' (defensa anti-confusión inline).
+    # Sanitizar el snapshot ANTES de serializarlo al LLM.
     snapshot_clean = _sanitize_chat_snapshot(data.snapshot)
     portfolio_json = json.dumps(snapshot_clean, indent=2, ensure_ascii=False, default=str)
 
-    # Bloque de hechos persistentes del user (Ola 3-L). Se inyecta ANTES del
-    # snapshot para que el LLM lo lea con prioridad. Vacío si no hay facts.
+    # Bloque de hechos persistentes del user (Ola 3-L).
     facts_block = ""
     if facts_rows:
         bullets = "\n".join(f"- {dict(r)['content']}" for r in facts_rows)
@@ -8756,25 +8839,53 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
             f"El usuario te aclaró estos puntos en conversaciones previas. "
             f"Tratalos como VERDAD para esta sesión — no los contradigas y no "
             f"pidas que los re-explique. Si un dato del snapshot parece chocar "
-            f"con un hecho declarado, asumí que el hecho declarado prevalece "
-            f"(el usuario conoce su realidad mejor que un campo legacy):\n"
+            f"con un hecho declarado, asumí que el hecho declarado prevalece:\n"
             f"{bullets}"
         )
 
+    # ─── system_text estable por tier (cache target ~99%) ────────────────────
+    # Audit #1/2 HIGH fix: ANTES system_text incluía snapshot dinámico → cache
+    # muerto. AHORA system_text es solo el manifiesto + reglas de _kind, que
+    # es idéntico entre requests del mismo tier.
     system_text = f"""{base_system}
 
-DATOS COMPLETOS DEL USUARIO
-El snapshot incluye: summary (métricas agregadas: total USD, PnL, drawdown, win rate, etc.), positions (posiciones ABIERTAS — cada item marcado _kind='open_position'), operations (operaciones CERRADAS — cada item marcado _kind='closed_trade'), monthly (historial mes a mes), brokers, y benchmarks (S&P 500, inflación AR, dólar blue).
-Cuando el usuario pregunta algo específico ("¿qué % es Tesla?", "¿cuánto perdí en BTC?", "¿mi mejor mes?"), buscá primero en estos datos. Usá las tools para complementar solo si necesitás algo que no está acá.
-El campo `_kind` en cada item te dice si es posición abierta o trade cerrado — usarlo para razonar correctamente sobre riesgo presente (solo open_position) vs P&L histórico (closed_trade).{facts_block}
+REGLA CRÍTICA sobre los datos del usuario que vienen en el primer user message:
+El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly, brokers y benchmarks. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
+
+    # ─── Context block dinámico — al PRIMER user message ─────────────────────
+    # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
+    # loops dentro de UN MISMO request, queda cacheado. Y entre requests
+    # consecutivos del mismo user (snapshot suele estar cacheado 60s en el
+    # frontend), Anthropic puede reusar el cache.
+    context_block_text = f"""--- CONTEXTO DE TU CARTERA (snapshot del momento) ---{facts_block}
 
 ```json
 {portfolio_json}
-```{investor_block}"""
+```{investor_block}
+--- FIN CONTEXTO ---"""
 
-    # Construir messages para el loop de tool_use
-    messages_loop: list = [m.model_dump() for m in data.messages]
+    # Construir messages enriqueciendo el PRIMER user message con el context.
+    incoming = [m.model_dump() for m in data.messages]
+    messages_loop: list = []
+    context_injected = False
+    for m in incoming:
+        if not context_injected and m.get("role") == "user":
+            # Primer user message: lleva contexto + pregunta real, ambos
+            # como content blocks. cache_control sobre el contexto.
+            user_content = m.get("content", "")
+            messages_loop.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": context_block_text, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": str(user_content) if user_content else ""},
+                ],
+            })
+            context_injected = True
+        else:
+            messages_loop.append(m)
+
     MAX_TOOL_LOOPS = 3  # límite de rondas para evitar loops infinitos
+    last_response = None  # capturamos el response final para record_chat con tokens
 
     try:
         for _ in range(MAX_TOOL_LOOPS + 1):
@@ -8787,6 +8898,7 @@ El campo `_kind` en cada item te dice si es posición abierta o trade cerrado �
                 tools=_AI_TOOLS,
                 messages=messages_loop,
             )
+            last_response = response
 
             if response.stop_reason != "tool_use":
                 # Respuesta final en texto
@@ -8794,6 +8906,15 @@ El campo `_kind` en cada item te dice si es posición abierta o trade cerrado �
                     (b.text for b in response.content if hasattr(b, "text")),
                     ""
                 )
+                # Registrar consumo de cuota (solo en éxito — si falló no descontamos).
+                try:
+                    conn2 = get_db()
+                    try:
+                        quota.record_chat(conn2, uid)
+                    finally:
+                        conn2.close()
+                except Exception as ex:
+                    log.warning("record_chat failed for uid=%s: %s", uid, ex)
                 return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
             # Hay tool_use: ejecutar cada tool y continuar el loop
@@ -8822,8 +8943,18 @@ El campo `_kind` en cada item te dice si es posición abierta o trade cerrado �
             messages=messages_loop,
         )
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
+        try:
+            conn2 = get_db()
+            try:
+                quota.record_chat(conn2, uid)
+            finally:
+                conn2.close()
+        except Exception as ex:
+            log.warning("record_chat failed for uid=%s: %s", uid, ex)
         return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
+    except HTTPException:
+        raise
     except Exception as ex:
         raise HTTPException(500, f"Error en el chat: {ex}")
 

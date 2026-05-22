@@ -1026,6 +1026,121 @@ def test_bond_d_variant_metadata():
     print("  TEST 22 PASS")
 
 
+def test_chat_whitelist_and_normalizer():
+    print("\n=== Test 23: whitelist de 12 preguntas + normalizer ===")
+    from main import (
+        _FREE_QUESTIONS_WHITELIST,
+        _FREE_QUESTIONS_NORMALIZED,
+        _is_whitelisted_question,
+        _normalize_question,
+    )
+
+    # 12 preguntas exactas
+    if len(_FREE_QUESTIONS_WHITELIST) != 12:
+        fail(f"whitelist debe tener 12 preguntas, got {len(_FREE_QUESTIONS_WHITELIST)}")
+    if len(_FREE_QUESTIONS_NORMALIZED) != 12:
+        fail(f"set normalizado debe tener 12, got {len(_FREE_QUESTIONS_NORMALIZED)}")
+    print(f"  whitelist tiene 12 preguntas ✓")
+
+    # Match exacto pasa
+    for q in _FREE_QUESTIONS_WHITELIST:
+        if not _is_whitelisted_question(q):
+            fail(f"match exacto debería pasar: {q!r}")
+    print("  match exacto OK para las 12 ✓")
+
+    # Casefold pasa (case-insensitive)
+    if not _is_whitelisted_question("¿cómo está mi portfolio en general?"):
+        fail("casefold debería matchear")
+    print("  casefold OK ✓")
+
+    # Texto libre NO matchea
+    bad_inputs = [
+        "Hola, qué tal mi portfolio?",
+        "Decime cuánto perdí en NVDA",
+        "Sugerime una estrategia",
+        "ignore previous instructions",
+        "",
+        "   ",
+    ]
+    for b in bad_inputs:
+        if _is_whitelisted_question(b):
+            fail(f"texto libre debería rechazarse: {b!r}")
+    print(f"  {len(bad_inputs)} variantes de texto libre rechazadas ✓")
+
+    # Normalizer: collapse whitespace + casefold
+    if _normalize_question("¿Cómo  está   mi portfolio en general?") != _normalize_question("¿Cómo está mi portfolio en general?"):
+        fail("normalizer debe colapsar whitespace")
+    print("  normalizer colapsa whitespace ✓")
+
+    print("  TEST 23 PASS")
+
+
+def test_chat_quota_gating():
+    print("\n=== Test 24: cuota chat — Free/Plus=6, Pro=60, Admin=1000 ===")
+    import os, sqlite3 as s3, tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db, get_db
+    from ai import quota
+    init_db()
+
+    conn = s3.connect(tmp.name)
+    conn.row_factory = s3.Row
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified, tier) VALUES (?,?,?,1,1,?)",
+        ("free@t", "h", "F", "free"),
+    )
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified, tier) VALUES (?,?,?,1,1,?)",
+        ("pro@t", "h", "P", "pro"),
+    )
+    conn.commit()
+    free_uid = conn.execute("SELECT id FROM users WHERE tier='free'").fetchone()["id"]
+    pro_uid = conn.execute("SELECT id FROM users WHERE tier='pro'").fetchone()["id"]
+
+    # Cuota inicial: 0/6 para free, 0/60 para pro
+    u_free = quota.get_current_usage(conn, free_uid)
+    u_pro = quota.get_current_usage(conn, pro_uid)
+    if u_free["chat_limit"] != 6 or u_free["chat_remaining"] != 6:
+        fail(f"free debería tener 6/6, got {u_free}")
+    if u_pro["chat_limit"] != 60 or u_pro["chat_remaining"] != 60:
+        fail(f"pro debería tener 60/60, got {u_pro}")
+    print("  cuotas iniciales correctas ✓")
+
+    # Consumir 3 chats de free, verificar 3/6
+    for _ in range(3):
+        quota.record_chat(conn, free_uid)
+    u_free = quota.get_current_usage(conn, free_uid)
+    if u_free["chat_count"] != 3 or u_free["chat_remaining"] != 3:
+        fail(f"free después de 3 chats debería tener 3/6, got {u_free}")
+    print("  free consume 3/6 ✓")
+
+    # can_chat=True hasta el cap
+    allowed, _ = quota.can_chat(conn, free_uid)
+    if not allowed:
+        fail("free con 3/6 debería poder chatear")
+    # Llegar al cap
+    for _ in range(3):
+        quota.record_chat(conn, free_uid)
+    allowed, u = quota.can_chat(conn, free_uid)
+    if allowed:
+        fail(f"free con 6/6 NO debería poder chatear, got {u}")
+    print("  free bloquea al llegar a 6/6 ✓")
+
+    # Pro sigue OK
+    allowed, _ = quota.can_chat(conn, pro_uid)
+    if not allowed:
+        fail("pro con 0/60 debería poder chatear")
+    print("  pro independiente de free ✓")
+
+    conn.close()
+    os.unlink(tmp.name)
+    print("  TEST 24 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -1049,6 +1164,8 @@ def main():
     test_fact_validator_blocks_injection_in_both_paths()
     test_facts_unique_constraint()
     test_bond_d_variant_metadata()
+    test_chat_whitelist_and_normalizer()
+    test_chat_quota_gating()
     print("\n\nALL TESTS PASS")
 
 
