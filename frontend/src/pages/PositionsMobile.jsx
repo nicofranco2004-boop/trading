@@ -14,17 +14,20 @@
 // Filtro: tap en chip "Cocos" filtra a ese broker. "Todos" muestra todo.
 // Botón "+" violeta abre modal de agregar broker (mismo flow que desktop).
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, lazy, Suspense, memo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X } from 'lucide-react'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import EmptyState from '../components/EmptyState'
 import SwipeRow from '../components/mobile/SwipeRow'
 import Modal from '../components/Modal'
 import UpgradeModal from '../components/plan/UpgradeModal'
-import AddPositionFlow from '../components/AddPositionFlow'
-import { PositionFormModal, EMPTY_POS, today } from './Positions'
+// AddPositionFlow es un chunk pesado (~600 tickers de CRYPTO/STOCKS_US/CEDEARs/
+// ETFs/INDICES/AR_LIDER/AR_GENERAL/BONDS_*). Lazy-load para que el primer
+// render de /cartera no espere a parsearlo — solo cuando el user abre el flow.
+const AddPositionFlow = lazy(() => import('../components/AddPositionFlow'))
+import { PositionFormModal, SellModal, EMPTY_POS, today } from './Positions'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
@@ -80,16 +83,25 @@ export default function PositionsMobile() {
   const [editingBroker, setEditingBroker] = useState(null)
   const [newBroker, setNewBroker] = useState({ name: '', currency: 'USDT' })
   const [brokerUpgrade, setBrokerUpgrade] = useState(null)
-  // Modales del flow de Nueva Posición (gatillados por el FAB del mobile tabbar
-  // que navega a /posiciones?action=new). Reusan los mismos componentes que
-  // desktop: AddPositionFlow (asset type → ticker search) → PositionFormModal
-  // (broker, precio, cantidad, comisión, fecha).
+  // Modales unificados del flow de gestión de posiciones.
   //
   //   addModal = null         → ningún modal abierto
-  //              'add-flow'   → picker de tipo de activo + ticker search
-  //              'add'        → form completo con asset preseteado
+  //              'add-flow'   → picker de tipo de activo + ticker search (Nueva pos)
+  //              'add'        → form completo, modo nueva posición
+  //              'edit'       → form completo, modo edición
+  //              'sell'       → modal de venta con FIFO preview
+  //              'cashflow'   → depositar / retirar (solo cash positions)
   const [addModal, setAddModal] = useState(null)
   const [addForm, setAddForm] = useState(EMPTY_POS)
+  // Venta FIFO: reusa el SellModal de desktop (form shape compartido).
+  const [sellForm, setSellForm] = useState({
+    broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '',
+    tc_venta: '', date: '', commissions: '',
+  })
+  // Depósito / retiro de cash. direction: 'deposit' | 'withdraw'.
+  const [cashFlowForm, setCashFlowForm] = useState({
+    broker: '', currency: 'USDT', direction: 'deposit', amount: '', available: 0,
+  })
 
   useEffect(() => { loadAll() }, [])
 
@@ -104,6 +116,137 @@ export default function PositionsMobile() {
       entry_date: today(),
     })
     setAddModal('add-flow')
+  }
+
+  // ─── Handlers de acciones por posición ──────────────────────────────────
+  // Estos callbacks se pasan a PositionRow (memoizado) para que pueda
+  // gatillar la acción correspondiente desde el swipe sheet.
+
+  function openSell(p) {
+    if (p.is_cash) return
+    const broker = brokers.find(b => b.name === p.broker)
+    const isARS = broker?.currency === 'ARS'
+    const price = prices[isARS ? `${p.asset}.BA` : p.asset]
+    const suggested = price ?? p.buy_price ?? ''
+    setSellForm({
+      broker: p.broker,
+      asset: p.asset,
+      currency: broker?.currency || 'USDT',
+      quantity: '',
+      exit_price: suggested ? +(+suggested).toFixed(4) : '',
+      tc_venta: isARS ? +(dolar?.blue?.venta || 1415).toFixed(2) : '',
+      date: today(),
+      commissions: '',
+    })
+    setAddModal('sell')
+  }
+
+  async function confirmSell() {
+    const body = {
+      broker: sellForm.broker,
+      asset: sellForm.asset,
+      quantity: +sellForm.quantity,
+      exit_price: +sellForm.exit_price,
+      date: sellForm.date,
+      commissions: sellForm.commissions !== '' ? +sellForm.commissions : 0,
+      ...(sellForm.currency === 'ARS' && sellForm.tc_venta ? { tc_venta: +sellForm.tc_venta } : {}),
+    }
+    if (!body.quantity || body.quantity <= 0) {
+      return alert('La cantidad ingresada no es válida.')
+    }
+    if (body.exit_price == null || body.exit_price < 0) {
+      return alert('El precio ingresado no es válido.')
+    }
+    try {
+      await api.post('/positions/sell', body)
+      track('position_sold', { asset: sellForm.asset, broker: sellForm.broker })
+      setAddModal(null)
+      await loadAll()
+    } catch (ex) {
+      alert('No se pudo registrar la venta: ' + (ex?.message || 'Error'))
+    }
+  }
+
+  function openCashFlow(p, direction) {
+    const broker = brokers.find(b => b.name === p.broker)
+    setCashFlowForm({
+      broker: p.broker,
+      currency: broker?.currency || 'USDT',
+      direction,
+      amount: '',
+      available: p.invested || p.quantity || 0,
+    })
+    setAddModal('cashflow')
+  }
+
+  async function confirmCashFlow() {
+    const amount = +cashFlowForm.amount
+    if (!amount || amount <= 0) return alert('Ingresá un monto válido.')
+    if (cashFlowForm.direction === 'withdraw' && amount > cashFlowForm.available + 0.001) {
+      return alert(`Saldo insuficiente. Disponible: ${cashFlowForm.available.toFixed(2)} ${cashFlowForm.currency}.`)
+    }
+    try {
+      await api.post('/cash/flow', {
+        broker_name: cashFlowForm.broker,
+        direction: cashFlowForm.direction,
+        amount,
+        currency: cashFlowForm.currency,
+      })
+      track('cash_flow_recorded', {
+        broker: cashFlowForm.broker,
+        direction: cashFlowForm.direction,
+      })
+      setAddModal(null)
+      await loadAll()
+    } catch (ex) {
+      alert(`No se pudo registrar el ${cashFlowForm.direction === 'deposit' ? 'depósito' : 'retiro'}: ${ex?.message || 'Error'}`)
+    }
+  }
+
+  function openEditPosition(p) {
+    setAddForm({
+      ...p,
+      is_cash: !!p.is_cash,
+      buy_price: p.buy_price ?? '',
+      quantity: p.quantity ?? '',
+      invested: p.invested ?? '',
+      tc_compra: p.tc_compra ?? '',
+      commissions: p.commissions ?? '',
+      notes: p.notes ?? '',
+      entry_date: p.entry_date ?? '',
+    })
+    setAddModal('edit')
+  }
+
+  async function saveEditPosition() {
+    const body = {
+      ...addForm,
+      buy_price:   addForm.buy_price   !== '' ? +addForm.buy_price   : null,
+      quantity:    addForm.quantity    !== '' ? +addForm.quantity    : null,
+      invested:    addForm.invested    !== '' ? +addForm.invested    : null,
+      tc_compra:   addForm.tc_compra   !== '' ? +addForm.tc_compra   : null,
+      commissions: addForm.commissions !== '' ? +addForm.commissions : 0,
+      entry_date:  addForm.entry_date  || null,
+    }
+    try {
+      await api.put(`/positions/${addForm.id}`, body)
+      setAddModal(null)
+      setAddForm(EMPTY_POS)
+      await loadAll()
+    } catch (ex) {
+      alert('No pudimos guardar los cambios. ' + (ex?.message || 'Probá de nuevo.'))
+    }
+  }
+
+  async function deletePosition(p) {
+    if (!confirm(`¿Eliminar la posición ${p.asset} en ${p.broker}? La acción no se puede deshacer.`)) return
+    try {
+      await api.delete(`/positions/${p.id}`)
+      track('position_deleted', { asset: p.asset, broker: p.broker })
+      await loadAll()
+    } catch (ex) {
+      alert('No se pudo eliminar la posición: ' + (ex?.message || 'Error'))
+    }
   }
 
   // ?action=new → abrir el flow automáticamente. Limpiamos el query param
@@ -278,9 +421,18 @@ export default function PositionsMobile() {
     : (flatList?.length || 0)
 
   if (loading) {
+    // Skeleton mínimo en lugar de texto plano — el user ve inmediatamente
+    // que la página está cargando contenido (perceived performance), no
+    // un mensaje genérico que parpadea.
     return (
-      <div className="px-4 py-8 text-center text-ink-3 text-sm" aria-live="polite">
-        Cargando posiciones…
+      <div className="px-4 py-6 space-y-3" aria-live="polite" aria-busy="true">
+        <div className="h-7 w-40 bg-bg-2 rounded-sm animate-pulse" />
+        <div className="h-9 w-full bg-bg-2 rounded-sm animate-pulse" />
+        <div className="space-y-2 pt-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-14 w-full bg-bg-1 rounded-sm animate-pulse" />
+          ))}
+        </div>
       </div>
     )
   }
@@ -403,6 +555,10 @@ export default function PositionsMobile() {
               totalUsd={g.totalUsd}
               onEdit={() => setEditingBroker({ ...g.broker })}
               onDelete={() => deleteBrokerAction(g.broker)}
+              onSellPosition={openSell}
+              onCashFlowPosition={openCashFlow}
+              onEditPosition={openEditPosition}
+              onDeletePosition={deletePosition}
             />
           ))}
         </div>
@@ -413,6 +569,10 @@ export default function PositionsMobile() {
             <PositionRow
               key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
               p={p}
+              onSell={openSell}
+              onCashFlow={openCashFlow}
+              onEditPos={openEditPosition}
+              onDeletePos={deletePosition}
             />
           ))}
         </ul>
@@ -525,15 +685,25 @@ export default function PositionsMobile() {
       {/* Flow de Nueva Posición — gatillado por el FAB del MobileTabBar.
           Step 1: AddPositionFlow muestra picker de tipo de activo + ticker search.
           Step 2: tras seleccionar ticker, cerramos el flow y abrimos
-                  PositionFormModal con el asset preseteado. */}
+                  PositionFormModal con el asset preseteado.
+
+          AddPositionFlow se lazy-loadea para no bloquear el primer render
+          de /cartera con ~600 tickers parseados. Mientras carga el chunk,
+          mostramos un placeholder neutro (no flicker). */}
       {addModal === 'add-flow' && (
-        <AddPositionFlow
-          onClose={() => setAddModal(null)}
-          onAssetSelected={({ asset }) => {
-            setAddForm(f => ({ ...f, asset }))
-            setAddModal('add')
-          }}
-        />
+        <Suspense fallback={
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center">
+            <div className="text-ink-2 text-sm">Cargando…</div>
+          </div>
+        }>
+          <AddPositionFlow
+            onClose={() => setAddModal(null)}
+            onAssetSelected={({ asset }) => {
+              setAddForm(f => ({ ...f, asset }))
+              setAddModal('add')
+            }}
+          />
+        </Suspense>
       )}
       {addModal === 'add' && (
         <PositionFormModal
@@ -550,6 +720,91 @@ export default function PositionsMobile() {
             setAddModal('add-flow')
           }}
         />
+      )}
+
+      {/* Edit posición — mismo PositionFormModal, mode='edit' */}
+      {addModal === 'edit' && (
+        <PositionFormModal
+          mode="edit"
+          form={addForm}
+          setForm={setAddForm}
+          brokers={brokers}
+          selectedBrokerCurrency={brokers.find(b => b.name === addForm.broker)?.currency ?? 'USDT'}
+          tcBlue={dolar?.blue?.venta || 1415}
+          onClose={() => setAddModal(null)}
+          onSave={saveEditPosition}
+        />
+      )}
+
+      {/* Vender posición — SellModal de Positions.jsx con preview FIFO */}
+      {addModal === 'sell' && (
+        <SellModal
+          form={sellForm}
+          setForm={setSellForm}
+          positions={positions}
+          tcBlue={dolar?.blue?.venta || 1415}
+          onClose={() => setAddModal(null)}
+          onConfirm={confirmSell}
+        />
+      )}
+
+      {/* Depositar / Retirar — modal simple para posiciones cash */}
+      {addModal === 'cashflow' && (
+        <Modal
+          title={`${cashFlowForm.direction === 'deposit' ? 'Depositar en' : 'Retirar de'} ${cashFlowForm.broker}`}
+          onClose={() => setAddModal(null)}
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-ink-2 leading-snug">
+              {cashFlowForm.direction === 'deposit'
+                ? 'Se acreditará al cash del broker y se registrará como aporte del mes en curso.'
+                : 'Se debitará del cash del broker y se registrará como retiro del mes en curso.'}
+            </p>
+            {cashFlowForm.direction === 'withdraw' && (
+              <p className="text-xs text-ink-3">
+                Disponible: <span className="font-medium text-ink-1">
+                  {cashFlowForm.available.toFixed(2)} {cashFlowForm.currency}
+                </span>
+              </p>
+            )}
+            <div>
+              <label className="block text-xs text-ink-3 mb-1">
+                Monto ({cashFlowForm.currency})
+              </label>
+              <input
+                type="number"
+                step="any"
+                inputMode="decimal"
+                autoFocus
+                value={cashFlowForm.amount}
+                onChange={e => setCashFlowForm(f => ({ ...f, amount: e.target.value }))}
+                placeholder="0"
+                className="w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setAddModal(null)}
+                className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmCashFlow}
+                disabled={!+cashFlowForm.amount}
+                className={`px-4 py-2 text-sm rounded-md font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed transition ${
+                  cashFlowForm.direction === 'deposit'
+                    ? 'bg-rendi-pos hover:bg-rendi-pos/90'
+                    : 'bg-data-amber hover:bg-data-amber/90'
+                }`}
+              >
+                Confirmar {cashFlowForm.direction === 'deposit' ? 'depósito' : 'retiro'}
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   )
@@ -609,7 +864,10 @@ function BrokerFilterChip({ active, onClick, label, currency }) {
 // Header con nombre del broker + currency + valor total + acciones edit/delete.
 // Debajo, las positions del broker (cash siempre al final).
 
-function BrokerSection({ broker, positions, totalUsd, onEdit, onDelete }) {
+const BrokerSection = memo(function BrokerSection({
+  broker, positions, totalUsd, onEdit, onDelete,
+  onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition,
+}) {
   // Color asignado por nombre — estable entre re-renders. Antes el header
   // de cada broker era casi invisible (text-[11px] mono sobre bg-0). Ahora
   // cada sección tiene identidad visual clara: avatar circular con la
@@ -620,7 +878,11 @@ function BrokerSection({ broker, positions, totalUsd, onEdit, onDelete }) {
 
   return (
     <section className="mt-3 first:mt-0">
-      <div className={`sticky top-[252px] z-10 px-3 py-2.5 flex items-center justify-between gap-2 ${color.bg} border-y ${color.border} backdrop-blur-md`}>
+      {/* Sticky header con identidad visual del broker. Sin backdrop-blur
+          (es caro en mobile durante scroll). Usamos bg-bg-1 sólido (elevated
+          surface) + border-y del color del broker para que el tinte venga
+          del borde, el avatar y el texto — no del background semi-trans. */}
+      <div className={`sticky top-[252px] z-10 px-3 py-2.5 flex items-center justify-between gap-2 bg-bg-1 border-y ${color.border}`}>
         <div className="flex items-center gap-2.5 min-w-0">
           {/* Avatar circular con la inicial del broker */}
           <span
@@ -665,12 +927,16 @@ function BrokerSection({ broker, positions, totalUsd, onEdit, onDelete }) {
           <PositionRow
             key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
             p={p}
+            onSell={onSellPosition}
+            onCashFlow={onCashFlowPosition}
+            onEditPos={onEditPosition}
+            onDeletePos={onDeletePosition}
           />
         ))}
       </ul>
     </section>
   )
-}
+})
 
 // ─── Row ──────────────────────────────────────────────────────────────────
 // Layout en 3 columnas para aprovechar el ancho:
@@ -678,57 +944,109 @@ function BrokerSection({ broker, positions, totalUsd, onEdit, onDelete }) {
 //             qty · CUR              +X.X%         USD
 // Cash: NO muestra P/L (no tiene sentido la variación %). Solo value.
 //
-// Sprint M3 item 12: swipe izquierda revela 2 acciones rápidas:
-//   - Operar: navega a /operaciones?action=new&asset=X
-//   - Watchlist: agrega el símbolo a la watchlist
+// Swipe izquierda revela acciones contextuales:
+//   • No-cash: Analizar / Vender (FIFO) / Editar / Eliminar
+//   • Cash:    Depositar / Retirar / Editar / Eliminar
+//
+// Las acciones gatillan callbacks del padre — el padre maneja los modales
+// (SellModal, CashFlowModal, PositionFormModal). Esto evita que la fila
+// arme su propio state y mantiene un único punto de truth.
+//
+// Componente MEMOIZADO — props (p + callbacks) son estables entre renders
+// porque los callbacks se definen en el padre con closure sobre el state.
+// Esto corta los re-render de la fila cada vez que prices cambia.
 
-function PositionRow({ p }) {
-  const navigate = useNavigate()
-  const toast = useToast()
+const PositionRow = memo(function PositionRow({ p, onSell, onCashFlow, onEditPos, onDeletePos }) {
   const cur = p.isAR ? 'ARS' : 'USD'
-  const [addedToWl, setAddedToWl] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
 
-  const actions = p.is_cash ? [] : [
-    {
-      id: 'ai',
-      label: 'Analizar',
-      icon: Sparkles,
-      tone: 'accent',
-      onClick: () => {
-        track('mobile_swipe_action', { code: 'analyze', asset: p.asset })
-        setAiOpen(true)
-      },
-    },
-    {
-      id: 'op',
-      label: 'Operar',
-      icon: Repeat,
-      tone: 'accent',
-      onClick: () => {
-        track('mobile_swipe_action', { code: 'operate', asset: p.asset })
-        navigate(`/operaciones?action=new&asset=${encodeURIComponent(p.asset)}&broker=${encodeURIComponent(p.broker)}`)
-      },
-    },
-    {
-      id: 'wl',
-      label: addedToWl ? 'Listo' : 'Watchlist',
-      icon: addedToWl ? Check : Star,
-      tone: addedToWl ? 'pos' : 'warn',
-      onClick: async () => {
-        if (addedToWl) return
-        track('mobile_swipe_action', { code: 'watchlist', asset: p.asset })
-        try {
-          await api.post('/watchlist', { symbol: p.asset })
-          setAddedToWl(true)
-          notifyWatchlistChanged({ symbol: p.asset, added: true })
-          toast?.show?.({ kind: 'success', text: `${p.asset} agregado a watchlist` })
-        } catch (ex) {
-          toast?.show?.({ kind: 'error', text: ex?.message || 'Error al agregar' })
-        }
-      },
-    },
-  ]
+  const actions = p.is_cash
+    ? [
+        // Posición cash → depositar / retirar
+        onCashFlow && {
+          id: 'deposit',
+          label: 'Depositar',
+          icon: ArrowDownLeft,
+          tone: 'pos',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'cash_deposit', broker: p.broker })
+            onCashFlow(p, 'deposit')
+          },
+        },
+        onCashFlow && {
+          id: 'withdraw',
+          label: 'Retirar',
+          icon: ArrowUpRight,
+          tone: 'warn',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'cash_withdraw', broker: p.broker })
+            onCashFlow(p, 'withdraw')
+          },
+        },
+        onEditPos && {
+          id: 'edit',
+          label: 'Editar',
+          icon: Pencil,
+          tone: 'accent',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'edit_cash', broker: p.broker })
+            onEditPos(p)
+          },
+        },
+        onDeletePos && {
+          id: 'delete',
+          label: 'Eliminar',
+          icon: Trash2,
+          tone: 'neg',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'delete_cash', broker: p.broker })
+            onDeletePos(p)
+          },
+        },
+      ].filter(Boolean)
+    : [
+        // Posición normal (acción / bono / cripto) → analizar / vender / editar / eliminar
+        {
+          id: 'ai',
+          label: 'Analizar',
+          icon: Sparkles,
+          tone: 'accent',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'analyze', asset: p.asset })
+            setAiOpen(true)
+          },
+        },
+        onSell && {
+          id: 'sell',
+          label: 'Vender',
+          icon: TrendingDown,
+          tone: 'neg',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'sell', asset: p.asset })
+            onSell(p)
+          },
+        },
+        onEditPos && {
+          id: 'edit',
+          label: 'Editar',
+          icon: Pencil,
+          tone: 'accent',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'edit', asset: p.asset })
+            onEditPos(p)
+          },
+        },
+        onDeletePos && {
+          id: 'delete',
+          label: 'Eliminar',
+          icon: Trash2,
+          tone: 'neg',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'delete', asset: p.asset })
+            onDeletePos(p)
+          },
+        },
+      ].filter(Boolean)
 
   return (
     <>
@@ -789,7 +1107,7 @@ function PositionRow({ p }) {
     )}
     </>
   )
-}
+})
 
 function formatQty(q) {
   if (q == null || isNaN(q)) return '—'

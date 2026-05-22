@@ -1869,7 +1869,7 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSer
   )
 }
 
-function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
+export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm }) {
   // Posiciones FIFO del par (broker, asset)
   const lots = positions
     .filter(p => p.broker === form.broker && p.asset === form.asset && !p.is_cash && (p.quantity || 0) > 0)
