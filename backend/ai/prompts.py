@@ -693,7 +693,9 @@ def render_insights_prompt(tier: str = "pro") -> str:
         "trades YA CERRADOS, scope='closed_trades', cada item con "
         "status='closed' e in_portfolio_now bool), CURRENT_HOLDINGS_TOP "
         "(top 3 posiciones ABIERTAS por market value, con unrealized P&L), "
-        "exposure mix (cash/AR/US/crypto)."
+        "exposure mix (cash/AR/US/crypto), AR_BOND_HOLDINGS (metadata "
+        "enriquecida si hay bonos AR — maturity, ley local vs ley NY, "
+        "mecánica CER vs step-up USD)."
     )
     free = _maybe_free("insights", view, pkt, tier)
     if free:
@@ -714,6 +716,8 @@ def render_insights_prompt(tier: str = "pro") -> str:
             "Le ganaste a la inflación AR pero quedaste debajo del SPY — combinación típica de portfolios diversificados con cash grande: ganan la batalla local pero pierden contra el bench dominante.",
             "NVDA pesa 57% del portfolio actual con +117% unrealized — una corrección del 25% en NVDA implica caída de ~14% del portfolio total. Concentración alta, riesgo idiosincrásico real.",
             "El 59% del año descansa casi enteramente en mark-to-market: realized_pnl_usd suma sólo $50 USD tras 68 trades cerrados, mientras unrealized_pnl_total_usd suma $24K — el resultado es sobre papel. Si las posiciones corrigen 20% sin cerrar, ese 59% se reduce materialmente.",
+            "Tu cartera tiene 35% en AL30 + GD30 — ambos vencen julio 2030 con cupón step-up. Esa duplicación captura el spread ley local vs ley NY (~3-5pp), pero NO diversifica riesgo crédito argentino: si AR reestructura, ambos caen juntos. Para diversificar ese riesgo, hay que ir a otro tramo (AE38) o instrumentos no soberanos.",
+            "Tenés TX26 (CER) en pesos ajustando por inflación AR — eso protege capital real en ARS pero no del FX. Si el dólar sube más rápido que el CER en el corto plazo, el valor en USD del TX26 baja aunque el capital ARS crezca. Cobertura inflación ≠ cobertura FX.",
         ],
         pitfalls=[
             "NUNCA decir 'si X cae, tu portfolio cae' refiriéndote a un ticker de realized_attribution. Esos son trades cerrados — su P&L ya está realizado, no se 're-pierde'. Si querés razonar sobre riesgo a la baja, usar SOLO current_holdings_top.",

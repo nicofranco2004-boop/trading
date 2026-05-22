@@ -6579,6 +6579,13 @@ CEDEAR: certificado local que replica acción US. Ventaja: dolarización implíc
 Inflación AR: benchmark mínimo en ARS = inflación + 5% real. El snapshot incluye comparativo con inflación acumulada y con S&P 500.
 Riesgo país: spread bonos soberanos vs Treasury. >1500 estrés alto · <800 optimismo. Cuando comprime, GGAL/YPF tienden a rallear.
 
+BONOS ARGENTINOS (clave para usuarios AR — instrumentos comunes en cartera)
+- Soberanos USD: AL29/AL30/AL35/AE38/AL41 (ley local) y GD29/GD30/GD35/GD38/GD41/GD46 (ley NY). Todos cupón STEP-UP (arrancan en 0.125-0.5% y suben hasta 1.75-5%). Reestructurados en 2020. Ley NY suele cotizar 3-5pp paridad encima de ley local por protección legal.
+- AL30 / GD30: los más líquidos. AL30 es referencia para MEP (dolarizar dentro), GD30 es el "reference bond" internacional (lo que mira el mercado para riesgo país).
+- CER (TX/T2X/TZX): capital ajusta diariamente por CER (≈inflación AR). Cupón = tasa REAL sobre inflación. Cobertura natural contra inflación EN PESOS (no contra FX). Si el dólar sube más rápido que CER, el valor USD del bono baja.
+- Conceptos clave para razonar: maturity, duration (sensibilidad a tasas/riesgo país), step-up (cupones suben con el tiempo), paridad (% de valor nominal al que cotiza).
+- Lo que NO podés decir: dirección futura del bono, predicción de riesgo país. Sí podés: explicar mecánica, comparar yields aproximados de bonos en cartera, señalar concentración de duration.
+
 RISK MANAGEMENT
 Position sizing: 1-2% del capital por idea de trading · 5-10% por activo en portfolio de inversión · single name >15% requiere tesis escrita · >25% concentración consciente.
 "Buy and hold" tiene sentido en activos con expected value positivo de LP (índices amplios, BTC horizonte +4 años). NO en single names sin tesis, altcoins baja cap, o cuando se perdió la tesis original. Hold no es estrategia si no podés articular por qué seguís adentro.

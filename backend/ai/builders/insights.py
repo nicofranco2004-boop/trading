@@ -529,6 +529,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         ),
     }
 
+    # ── 4. Metadata de bonos AR (Ola 3-K) — enriquece cuando hay bonos
+    # en cartera. Inyectamos descripción + maturity + ley + mecánica CER
+    # para que la IA narre con contexto real. Solo aparece si hay bonos.
+    from ai.ar_bonds_metadata import enrich_bond_holdings
+    ar_bond_holdings = enrich_bond_holdings(positions)
+
     return {
         "screen": "insights",
         # _field_docs — descripciones inline para el LLM (Ola 2-E del audit).
@@ -544,6 +550,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "realized_attribution.top_contributors": "Trades CERRADOS por contribución de P&L. status='closed' siempre. in_portfolio_now indica si el ticker sigue abierto. NUNCA inferir riesgo presente desde acá — el P&L ya está realizado.",
             "realized_attribution.top_detractors": "Idem contributors pero negativos.",
             "current_holdings_top": "Posiciones ABIERTAS por market value en USD. status='open' siempre. Para razonar riesgo presente, exposure, concentración: usar SOLO esto.",
+            "ar_bond_holdings": "Metadata enriquecida de bonos AR en cartera (solo si hay). Cada item: ticker, position_qty, metadata={kind, maturity, law, indexed_by, step_up, description}. USAR para narrar bonos con contexto específico (maturity, ley aplicable, mecánica CER vs USD step-up). Sin esto, NO tratar bonos como acciones genéricas.",
         },
         "window_days": window_days,
         "twr_pct": twr_pct,
@@ -586,4 +593,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # (nunca realized_attribution).
         "current_holdings_top": current_holdings_top,
         "exposure": exposure,
+        # Metadata enriquecida de bonos AR (Ola 3-K). Solo aparece si el
+        # user tiene bonos AR conocidos en cartera. Cada item: ticker,
+        # cantidad, y metadata con maturity/kind/law/indexed_by/description.
+        # Usar para que el LLM razone correctamente sobre yields, duration,
+        # ley aplicable, mecánica CER. Sin este bloque la IA trata bonos
+        # como acciones genéricas.
+        "ar_bond_holdings": ar_bond_holdings,
     }

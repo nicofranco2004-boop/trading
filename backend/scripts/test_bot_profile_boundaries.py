@@ -420,6 +420,57 @@ def test_pro_prompt_mentions_field_docs():
     print("  TEST 13 PASS")
 
 
+def test_ar_bond_metadata_enrichment():
+    print("\n=== Test 16: insights packet incluye ar_bond_holdings cuando hay bonos AR ===")
+    import os, sqlite3 as s3, tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db
+    init_db()
+    conn = s3.connect(tmp.name); conn.row_factory = s3.Row
+    conn.execute("INSERT INTO users (email,password_hash,name,approved,email_verified) VALUES (?,?,?,1,1)", ("t@t","h","T"))
+    uid = conn.execute("SELECT id FROM users").fetchone()["id"]
+    conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)", (uid,"Cocos","ARS"))
+    # Bonos AR conocidos + un asset que NO es bono
+    conn.execute("INSERT INTO positions (user_id,broker,asset,buy_price,quantity,invested,is_cash) VALUES (?,?,?,?,?,?,0)",
+                 (uid,"Cocos","AL30",60,100,6000))
+    conn.execute("INSERT INTO positions (user_id,broker,asset,buy_price,quantity,invested,is_cash) VALUES (?,?,?,?,?,?,0)",
+                 (uid,"Cocos","TX26",100,50,5000))
+    conn.execute("INSERT INTO positions (user_id,broker,asset,buy_price,quantity,invested,is_cash) VALUES (?,?,?,?,?,?,0)",
+                 (uid,"Cocos","GGAL",2000,10,20000))  # acción AR, no bono
+    conn.commit()
+
+    from ai.builders.insights import build
+    packet = build(conn, uid)
+
+    if "ar_bond_holdings" not in packet:
+        fail("packet missing ar_bond_holdings field")
+    holdings = packet["ar_bond_holdings"]
+    if len(holdings) != 2:
+        fail(f"expected 2 bond holdings (AL30, TX26), got {len(holdings)}: {[h.get('ticker') for h in holdings]}")
+    tickers = {h["ticker"] for h in holdings}
+    if tickers != {"AL30", "TX26"}:
+        fail(f"expected {{AL30, TX26}}, got {tickers}")
+    print(f"  ar_bond_holdings detecta AL30 + TX26 (excluye GGAL) ✓")
+
+    al30 = next(h for h in holdings if h["ticker"] == "AL30")
+    assert al30["metadata"]["kind"] == "soberano_usd"
+    assert al30["metadata"]["law"] == "ley_local"
+    assert "2030" in al30["metadata"]["maturity"]
+    print(f"  AL30: kind=soberano_usd, law=ley_local, maturity={al30['metadata']['maturity']} ✓")
+
+    tx26 = next(h for h in holdings if h["ticker"] == "TX26")
+    assert tx26["metadata"]["kind"] == "cer"
+    assert tx26["metadata"]["indexed_by"] == "CER"
+    print(f"  TX26: kind=cer, indexed_by=CER ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 16 PASS")
+
+
 def test_ai_tools_sanitize_input():
     print("\n=== Test 15: tools del chat sanitizan input (anti-hallucination + defensa SQL) ===")
     import os, sqlite3 as s3, tempfile
@@ -546,6 +597,7 @@ def main():
     test_pro_prompt_mentions_field_docs()
     test_chat_snapshot_sanitizer()
     test_ai_tools_sanitize_input()
+    test_ar_bond_metadata_enrichment()
     print("\n\nALL TESTS PASS")
 
 
