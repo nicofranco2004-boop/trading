@@ -86,13 +86,39 @@ export default function AICoach({ snapshot, suggested }) {
       // Refrescar cuota tras success — no es crítico, best-effort.
       api.get('/ai/usage').then(u => setUsage(u)).catch(() => {})
     } catch (e) {
-      // Mensaje específico si es cuota agotada (429) o gate Free (403).
-      // El backend devuelve detail con shape { error, message, usage? }.
-      let msg = e?.message || 'No pudimos completar la consulta. Intentalo nuevamente.'
-      const detail = e?.detail || e?.response?.data?.detail
-      if (detail && typeof detail === 'object' && detail.message) {
+      // Manejo de errores tier-aware. El backend devuelve `detail` de 3 formas:
+      //   1. dict { error, message, usage? }  → 403 gate, 429 cuota (shape custom)
+      //   2. array [{ type, loc, msg, input }] → 422 validation Pydantic
+      //   3. string  → 500 genérico
+      // Renderear el array Pydantic crudo es UX inaceptable (JSON técnico al
+      // usuario). Detectamos cada caso y damos mensaje amigable.
+      //
+      // El api.js wrapper guarda el detail crudo en `err.payload.detail`
+      // (línea 89 de api.js). El `e.message` que prepara el wrapper para
+      // arrays Pydantic es JSON.stringify del detail — feo, no lo usamos
+      // como fallback si tenemos algo mejor.
+      let msg = 'No pudimos completar la consulta. Intentalo nuevamente.'
+      const detail = e?.payload?.detail ?? e?.detail ?? e?.response?.data?.detail
+
+      if (detail && typeof detail === 'object' && !Array.isArray(detail) && detail.message) {
+        // Caso 1: error estructurado del backend (gate Free, cuota agotada)
         msg = detail.message
         if (detail.usage) setUsage(detail.usage)
+      } else if (Array.isArray(detail) && detail.length > 0) {
+        // Caso 2: array Pydantic — no lo mostramos crudo. Inferimos el tipo.
+        const firstErr = detail[0] || {}
+        const errType = String(firstErr.type || '').toLowerCase()
+        if (errType === 'string_too_long' || errType.includes('too_long')) {
+          // Causa típica: la conversación acumuló muchos turnos y el history
+          // del bot superó el cap. Tras subir el cap a 5000 esto no debería
+          // pasar normalmente, pero mantenemos el mensaje como red de
+          // seguridad si el assistant genera output extraordinariamente largo.
+          msg = 'La conversación se hizo muy larga. Tocá "Nuevo" para empezar de cero y volvé a preguntar.'
+        } else {
+          msg = 'El mensaje no pasó la validación del servidor. Tocá "Nuevo" para refrescar el chat.'
+        }
+      } else if (typeof detail === 'string') {
+        msg = detail
       }
       setError(msg)
       // Sacar el último user msg si falló — el user puede reintentar con otro chip

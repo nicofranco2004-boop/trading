@@ -6864,10 +6864,16 @@ def _format_investor_profile_for_prompt(profile_json: Optional[str], mode: str =
 
 class ChatMsg(BaseModel):
     role: str = Field(..., max_length=20)
-    # max_length 1000: alineado con maxLength=500 del input del frontend +
-    # margen para clientes custom. Antes 4000 → Pro vía API directa podía
-    # mandar 8× más texto y multiplicar costo input. Audit #3 B7.
-    content: str = Field(..., min_length=1, max_length=1000)
+    # max_length 5000: cubre AMBOS roles del array de history.
+    # - user: limitado a 500 por el frontend (input field maxLength=500).
+    # - assistant: respuestas del bot Pro pueden ser hasta 800 tokens output
+    #   ≈ 3200 chars típicos. 5000 deja margen 50% por output denso o
+    #   markdown que infla.
+    # Audit #3 B7 bajó a 1000 sin considerar que assistant history también
+    # se validaba — segundo turno explotaba con string_too_long porque la
+    # respuesta previa del bot superaba el cap. Restaurado a 5000 (no 4000
+    # original) — alineado con el cap real del modelo.
+    content: str = Field(..., min_length=1, max_length=5000)
 
     @field_validator('role')
     @classmethod
