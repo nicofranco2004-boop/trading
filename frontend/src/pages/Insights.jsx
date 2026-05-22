@@ -5,7 +5,7 @@ import {
   PieChart, Pie, Cell, Legend, Tooltip, LineChart, Line,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target, Layers, Clock, Stethoscope, BarChart3, Scale, PiggyBank, Wallet, CircleDollarSign, Building2, BarChart2 } from 'lucide-react'
+import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target, Layers, Clock, Stethoscope, BarChart3, Scale, PiggyBank, Wallet, CircleDollarSign, Building2, BarChart2, UserRound } from 'lucide-react'
 import AICoach from '../components/AICoach'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
@@ -49,6 +49,10 @@ import {
 import { selectDiagnostics } from '../utils/diagnostics'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
+import {
+  computeAllocationMatch,
+  computeObjectiveCoherence,
+} from '../utils/profileMatch'
 
 const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 const monthName = (m) => MONTH_NAMES[(m - 1) % 12] || ''
@@ -142,6 +146,11 @@ function InsightsDesktop() {
   const [currency, setCurrency] = useState('USD')
   const [chartRange, setChartRange] = useState(12) // months; null = MAX
   const [loading, setLoading] = useState(true)
+  // Investor profile — perfil del test (7 preguntas). Lo usamos para cruzarlo
+  // contra la cartera real y mostrar match/objective coherence cards.
+  // Si el user no completó el test, es {} (no null) — eso permite distinguir
+  // "no data yet" de "skipped the test".
+  const [investorProfile, setInvestorProfile] = useState({})
   // Comisiones: fuente de verdad es el endpoint que suma operation_type='FEE'
   // de import_normalized_tx (con conversión ARS→USD). No usamos op.commissions
   // del operations table porque queda contaminado por imports viejos con bugs.
@@ -151,7 +160,7 @@ function InsightsDesktop() {
 
   async function loadAll() {
     try {
-      const [mon, pos, bkrs, b, snaps, dol, ops, comm] = await Promise.all([
+      const [mon, pos, bkrs, b, snaps, dol, ops, comm, prof] = await Promise.all([
         api.get('/monthly'),
         api.get('/positions'),
         api.get('/brokers'),
@@ -160,8 +169,9 @@ function InsightsDesktop() {
         api.get('/dolar').catch(() => null),
         api.get('/operations').catch(() => []),
         api.get('/insights/commissions').catch(() => null),
+        api.get('/auth/investor-profile').catch(() => ({})),
       ])
-      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm)
+      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm); setInvestorProfile(prof || {})
 
       const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
       // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
@@ -215,6 +225,38 @@ function InsightsDesktop() {
       .filter(x => x.value > 0)
       .sort((a, b) => b.value - a.value)
   })()
+
+  // Positions con value_usd resuelto — necesario para los cards de perfil
+  // del inversor (classifyAssetBucket + computeAllocationBuckets). Misma
+  // lógica de valuación que assetPieData arriba.
+  const positionsWithValue = (() => {
+    return positions.map(p => {
+      if (p.is_cash) {
+        // Cash: el value es la quantity directamente (en la currency del broker).
+        // Si broker ARS, convertimos a USD.
+        const broker = brokers.find(b => b.name === p.broker)
+        const qty = p.quantity || 0
+        const val = broker?.currency === 'ARS' ? qty / tcBlue : qty
+        return { ...p, value_usd: val }
+      }
+      const broker = brokers.find(b => b.name === p.broker)
+      let val = 0
+      if (broker?.currency === 'ARS') {
+        const priceArs = p.price_override ?? prices[p.asset + '.BA']
+        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
+      } else {
+        const price = p.price_override ?? prices[p.asset]
+        val = price != null ? price * (p.quantity || 0) : (p.invested || 0)
+      }
+      return { ...p, value_usd: val }
+    })
+  })()
+
+  // Card data del perfil del inversor — cruzan profile con cartera real.
+  // Devuelven status='ready' | 'no_profile' | 'no_portfolio' | 'no_data' y
+  // los datos necesarios para que el componente UI renderice texto descriptivo.
+  const allocationCard = computeAllocationMatch(investorProfile, positionsWithValue, brokers)
+  const objectiveCard = computeObjectiveCoherence(investorProfile, positionsWithValue, brokers)
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
   const totalCostBasis = brokers.reduce((s, b) => {
@@ -1987,6 +2029,22 @@ function InsightsDesktop() {
 
       </Section>
 
+      {/* ══════════════════════════════════════════════════════════════════════
+          C2. PERFIL DEL INVERSOR — cruza el test (perfil declarado) con la
+              cartera real. Solo descriptivo: presenta el dato, no juzga.
+              Si el user no completó el test → un solo CTA al test (no 2
+              empty states duplicados).
+          ══════════════════════════════════════════════════════════════════════ */}
+      <Section
+        title="Perfil del inversor"
+        subtitle="Cómo se alinea tu cartera real con lo que declaraste en el test."
+      >
+        <ProfileInvestorBlock
+          allocationCard={allocationCard}
+          objectiveCard={objectiveCard}
+        />
+      </Section>
+
       {/* Diagnóstico se renderiza arriba como hero — ver bloque al inicio. */}
 
       {/* Qué explica tu resultado — top contributors + detractors */}
@@ -2489,6 +2547,207 @@ function InsightCard({ icon, title, children, accent, tooltip }) {
         {tooltip && <InfoTooltip>{tooltip}</InfoTooltip>}
       </div>
       {children}
+    </div>
+  )
+}
+
+
+// ─── Profile Investor Block ─────────────────────────────────────────────────
+// Renderiza las cards del perfil del inversor. Maneja 3 estados globales:
+//   • Sin profile (no_profile / no_data): un solo CTA al test (no 2 cards
+//     vacías). Mejor UX que duplicar empty states.
+//   • Sin cartera: cards muestran lo declarado + CTA a conectar broker.
+//   • Ready: 2 cards con datos cruzados.
+//
+// Tono descriptivo estricto. Sin "deberías", "te conviene", "recomendamos".
+
+function ProfileInvestorBlock({ allocationCard, objectiveCard }) {
+  // Si ninguna card tiene perfil utilizable, mostramos un CTA único.
+  const bothNoProfile =
+    (allocationCard?.status === 'no_profile' || allocationCard?.status === 'no_data') &&
+    (objectiveCard?.status === 'no_profile' || objectiveCard?.status === 'no_data')
+
+  if (bothNoProfile) {
+    return (
+      <div className="bg-white dark:bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
+        <div className="flex items-center gap-2 text-ink-3">
+          <UserRound size={18} />
+          <span className="text-xs font-medium uppercase tracking-wide">Completá el test de inversor</span>
+        </div>
+        <p className="text-sm text-ink-1 leading-snug max-w-xl">
+          El test de 7 preguntas define tu perfil (conservador / moderado / agresivo) y nos permite
+          mostrarte cómo se alinea tu cartera real con lo que declarás.
+        </p>
+        <Link
+          to="/perfil-inversor"
+          className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 rounded-sm px-3 py-2 transition-colors"
+        >
+          Hacer el test
+          <ArrowRight size={13} strokeWidth={1.75} />
+        </Link>
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <ProfileAllocationCard data={allocationCard} />
+      <ProfileObjectiveCard data={objectiveCard} />
+    </div>
+  )
+}
+
+
+// Card 1: Match perfil vs cartera (allocation por bucket).
+function ProfileAllocationCard({ data }) {
+  const tooltip = (
+    <>
+      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+      <p>Cruza tu perfil declarado en el test (conservador / moderado / agresivo) con la asignación real de tu cartera dividida en 4 buckets: cash, renta fija (bonos AR + LECAPs), renta variable (acciones + CEDEARs + ETFs) y alternativos (crypto).</p>
+      <p className="text-ink-3">Asignación sugerida = mediana de lo que publican brokers/bancos AR (Balanz, IOL, Cocos, BBVA, Santander) para cada perfil. Orientativo, no normativo.</p>
+    </>
+  )
+
+  return (
+    <InsightCard
+      icon={<Scale size={18} />}
+      title="Match perfil vs cartera"
+      tooltip={tooltip}
+    >
+      {data.status === 'no_portfolio' ? (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Tu perfil es <span className="font-semibold text-ink-0">{data.declared.categoryLabel}</span>.
+            La asignación de referencia es{' '}
+            <span className="text-ink-0">
+              {data.declared.suggested.cash}% cash · {data.declared.suggested.fixed_income}% renta fija ·{' '}
+              {data.declared.suggested.equity}% renta variable
+              {data.declared.suggested.alternative > 0 && (
+                <> · {data.declared.suggested.alternative}% alternativos</>
+              )}
+            </span>.
+          </p>
+          <p className="text-xs text-ink-3 mt-3 leading-snug">
+            Cargá posiciones para ver cómo se compara tu cartera real.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Tu perfil es <span className="font-semibold text-ink-0">{data.declared.categoryLabel}</span>.
+          </p>
+          <div className="mt-3 space-y-1.5">
+            <AllocationRow
+              label="Sugerida"
+              buckets={data.declared.suggested}
+              tone="muted"
+            />
+            <AllocationRow
+              label="Tu cartera"
+              buckets={data.actual.buckets}
+              tone="primary"
+            />
+          </div>
+          <p className="text-xs text-ink-3 mt-3 leading-snug">
+            Desvío total: <span className="text-ink-1 font-semibold">{Math.round(data.comparison.driftPct)}%</span>{' '}
+            de tu cartera está en buckets distintos a la asignación de referencia.
+          </p>
+        </>
+      )}
+    </InsightCard>
+  )
+}
+
+
+// Card 5: Coherencia objetivo declarado.
+function ProfileObjectiveCard({ data }) {
+  const tooltip = (
+    <>
+      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+      <p>Cruza el objetivo declarado en el test (jubilación, libertad financiera, compra puntual, etc.) con la composición real de tu cartera.</p>
+      <p className="text-ink-3">Para objetivos de corto plazo (compra puntual, jubilación cercana) se considera "alineado" lo que está en cash + renta fija. Para objetivos de crecimiento a largo plazo (libertad, aprender, hobby) se considera alineado lo que está en renta variable + alternativos.</p>
+    </>
+  )
+
+  return (
+    <InsightCard
+      icon={<Target size={18} />}
+      title="Coherencia objetivo declarado"
+      tooltip={tooltip}
+    >
+      {data.status === 'no_portfolio' ? (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Tu objetivo declarado es <span className="font-semibold text-ink-0">{data.declared.goalLabel}</span>{' '}
+            ({data.declared.timeframe}). La asignación alineada con ese objetivo es en{' '}
+            <span className="text-ink-0">{data.declared.alignedLabel}</span>.
+          </p>
+          <p className="text-xs text-ink-3 mt-3 leading-snug">
+            Cargá posiciones para ver el porcentaje real.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Marcaste <span className="font-semibold text-ink-0">{data.declared.goalLabel}</span> como objetivo
+            principal ({data.declared.timeframe}).
+          </p>
+          <div className="mt-3 flex items-baseline gap-3">
+            <p className="text-2xl font-bold text-ink-0 tabular">
+              {data.actual.alignedPct}%
+            </p>
+            <p className="text-xs text-ink-3">
+              de tu cartera está en {data.declared.alignedLabel}
+            </p>
+          </div>
+          <p className="text-xs text-ink-2 mt-3 leading-snug">
+            El restante <span className="text-ink-0 tabular">{data.actual.misalignedPct}%</span> está en {data.declared.misalignedLabel}.
+          </p>
+        </>
+      )}
+    </InsightCard>
+  )
+}
+
+
+// Helper visual: barra horizontal con los 4 buckets de allocation.
+// Usado en Card 1 (Match perfil vs cartera) para comparar sugerida vs real
+// con jerarquía clara (sugerida = muted, tu cartera = primary).
+function AllocationRow({ label, buckets, tone = 'muted' }) {
+  const colorByBucket = {
+    cash:         tone === 'muted' ? 'bg-ink-3/30' : 'bg-rendi-pos/70',
+    fixed_income: tone === 'muted' ? 'bg-ink-3/30' : 'bg-data-blue/70',
+    equity:       tone === 'muted' ? 'bg-ink-3/30' : 'bg-data-violet/70',
+    alternative:  tone === 'muted' ? 'bg-ink-3/30' : 'bg-data-amber/70',
+  }
+  const labelByBucket = {
+    cash: 'Cash',
+    fixed_income: 'Renta fija',
+    equity: 'R. variable',
+    alternative: 'Alt.',
+  }
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-0.5">
+        <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">{label}</span>
+        <span className="text-[10px] font-mono text-ink-3 tabular">
+          {buckets.cash}/{buckets.fixed_income}/{buckets.equity}{buckets.alternative > 0 ? `/${buckets.alternative}` : ''}
+        </span>
+      </div>
+      <div className="h-2 flex rounded-sm overflow-hidden bg-bg-2">
+        {['cash', 'fixed_income', 'equity', 'alternative'].map((b) => {
+          const pct = buckets[b] || 0
+          if (pct === 0) return null
+          return (
+            <div
+              key={b}
+              className={`${colorByBucket[b]} transition-all`}
+              style={{ width: `${pct}%` }}
+              title={`${labelByBucket[b]}: ${pct}%`}
+            />
+          )
+        })}
+      </div>
     </div>
   )
 }

@@ -1760,6 +1760,20 @@ export function handleDemoRequest(method, path, body) {
     }
     if (basePath === '/dolar')       return DOLAR
     if (basePath === '/benchmarks')  return BENCHMARKS
+    if (basePath === '/auth/investor-profile') {
+      // Demo user es un Moderado típico — horizonte medio, hold ante drawdown,
+      // objetivo libertad financiera, estilo mixto. Sirve para mostrar las
+      // cards de perfil del inversor con datos reales en lugar del empty CTA.
+      return {
+        horizon: 'medium',
+        drawdown: 'hold',
+        goal: 'freedom',
+        style: 'mixed',
+        net_worth: '10_to_30',
+        liquidity: 'no',
+        experience: '2_to_5',
+      }
+    }
     if (basePath === '/imports')     return []
     if (basePath === '/config')      return { tc_mep: 1424, tc_blue: 1415 }
     if (basePath === '/home/personal') {
