@@ -237,6 +237,13 @@ def test_insights_packet_has_separated_open_closed():
     if "twr_realized_pct" not in packet:
         print("  twr_realized_pct removed from packet ✓")
 
+    # Campos nuevos para entender origen del twr_pct (realized vs unrealized)
+    for field in ("unrealized_pnl_total_usd", "unrealized_pnl_total_pct", "total_equity_usd"):
+        if field not in packet:
+            fail(f"packet missing {field}")
+    print(f"  unrealized_pnl_total_usd = ${packet['unrealized_pnl_total_usd']} ✓")
+    print(f"  total_equity_usd = ${packet['total_equity_usd']} ✓")
+
     if "realized_attribution" not in packet:
         fail("packet missing realized_attribution")
     ra = packet["realized_attribution"]

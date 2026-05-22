@@ -679,14 +679,17 @@ def render_dashboard_events_prompt(tier: str = "pro") -> str:
 def render_insights_prompt(tier: str = "pro") -> str:
     view = "Insights — análisis profundo del portfolio (vista completa)"
     pkt = (
-        "TWR del período (compuesto via monthly_entries), realized_pnl_usd "
-        "(P&L absoluto de trades cerrados en USD), realized_avg_pct_per_trade "
-        "(% promedio por trade), vs benchmarks con deltas en pp, drawdown "
-        "actual y máximo, stats de trades, REALIZED_ATTRIBUTION (top "
-        "contributors/detractors de trades YA CERRADOS, scope='closed_trades', "
-        "cada item con status='closed' e in_portfolio_now bool), "
-        "CURRENT_HOLDINGS_TOP (top 3 posiciones ABIERTAS por market value, con "
-        "unrealized P&L), exposure mix (cash/AR/US/crypto)."
+        "TWR del período (twr_pct, compuesto via monthly_entries), "
+        "REALIZED_PNL_USD (P&L absoluto de trades cerrados en USD), "
+        "realized_avg_pct_per_trade (% promedio por trade), "
+        "UNREALIZED_PNL_TOTAL_USD (mark-to-market USD de TODAS las posiciones "
+        "abiertas — el 'sobre papel' actual), total_equity_usd (valor cartera "
+        "HOY), vs benchmarks con deltas en pp, drawdown actual y máximo, "
+        "stats de trades, REALIZED_ATTRIBUTION (top contributors/detractors de "
+        "trades YA CERRADOS, scope='closed_trades', cada item con "
+        "status='closed' e in_portfolio_now bool), CURRENT_HOLDINGS_TOP "
+        "(top 3 posiciones ABIERTAS por market value, con unrealized P&L), "
+        "exposure mix (cash/AR/US/crypto)."
     )
     free = _maybe_free("insights", view, pkt, tier)
     if free:
@@ -695,23 +698,24 @@ def render_insights_prompt(tier: str = "pro") -> str:
         view_name=view,
         packet_summary=pkt,
         focus=[
-            "SEPARACIÓN CRÍTICA realized_attribution vs current_holdings_top — el primero es P&L histórico de trades CERRADOS (pasado, no afecta exposure presente). El segundo son posiciones VIVAS (exposure actual, sensible al mercado). JAMÁS razonar 'si X cae el portfolio cae' usando realized_attribution — esos trades ya cerraron.",
-            "Origen del resultado — twr_pct es el resultado TOTAL (realized + unrealized). realized_pnl_usd dice cuánto se ganó/perdió neto cerrando trades. Si realized_pnl_usd es chico vs el equity total, casi todo el resultado viene de unrealized (posiciones abiertas que subieron).",
+            "SEPARACIÓN CRÍTICA realized_attribution vs current_holdings_top — el primero es P&L histórico de trades CERRADOS (pasado, no afecta exposure presente). El segundo son posiciones VIVAS (exposure actual, sensible al mercado). JAMÁS razonar 'si X cae el portfolio cae' usando realized_attribution.",
+            "ORIGEN DEL RESULTADO (twr_pct) — descomposición obligatoria: el twr_pct combina P&L realizado (trades cerrados) con unrealized (mark-to-market posiciones abiertas). Usar SIEMPRE realized_pnl_usd y unrealized_pnl_total_usd EN USD para cuantificar. Ej: 'TWR año 59% = realized_pnl_usd $X + unrealized_pnl_total_usd $Y'. Si $Y >> $X, el resultado vive en posiciones abiertas y se evapora si corrigen sin cerrar.",
             "Performance neta en términos absolutos y relativos — outperform vs SPY > 5pp es destacable, < -5pp es underperform real.",
             "Concentración real — la exposure HOY es current_holdings_top, no los contributors históricos. Si top1 > 40% del portfolio, flag de concentración.",
             "Win rate vs payoff — un sistema sostenible se sostiene en uno o ambos. realized_avg_pct_per_trade es promedio simple por trade (no return acumulado) — útil junto con win_rate.",
             "Exposure flags — cash > 25% (cash drag), ar > 60% (home bias / exposición FX).",
         ],
         insight_examples=[
-            "El 60% del P&L total viene de TRADES CERRADOS en INTC (+500 USD realizado, ya no está en cartera). Sin ese trade ya cerrado, el realized_pnl_usd cae al neutro. La exposure presente está en NVDA y AAPL — el riesgo a mañana depende de ellos, no de INTC.",
+            "El 60% del P&L total viene de TRADES CERRADOS en INTC (+500 USD realized, ya no está en cartera). Sin ese trade ya cerrado, el realized_pnl_usd cae al neutro. La exposure presente está en NVDA y AAPL.",
             "Le ganaste a la inflación AR pero quedaste debajo del SPY — combinación típica de portfolios diversificados con cash grande: ganan la batalla local pero pierden contra el bench dominante.",
             "NVDA pesa 57% del portfolio actual con +117% unrealized — una corrección del 25% en NVDA implica caída de ~14% del portfolio total. Concentración alta, riesgo idiosincrásico real.",
-            "El 59% del año descansa casi enteramente en posiciones abiertas — realized_pnl_usd suma sólo USD X tras 68 trades cerrados. El resultado del año es unrealized, no realizado: si las posiciones corrigen, ese 59% se evapora antes de cerrar.",
+            "El 59% del año descansa casi enteramente en mark-to-market: realized_pnl_usd suma sólo $50 USD tras 68 trades cerrados, mientras unrealized_pnl_total_usd suma $24K — el resultado es sobre papel. Si las posiciones corrigen 20% sin cerrar, ese 59% se reduce materialmente.",
         ],
         pitfalls=[
             "NUNCA decir 'si X cae, tu portfolio cae' refiriéndote a un ticker de realized_attribution. Esos son trades cerrados — su P&L ya está realizado, no se 're-pierde'. Si querés razonar sobre riesgo a la baja, usar SOLO current_holdings_top.",
             "Si un ticker está en realized_attribution con in_portfolio_now=true, ACLARARLO: 'INTC contribuyó +500 en trades cerrados; mantenés posición abierta — riesgo presente acá'. Es un caso especial.",
-            "JAMÁS expresar realized_pnl_usd como porcentaje sobre 'capital invertido' (sum entry_price × qty) — ese cálculo infla el denominador por capital rotativo y da % minúsculos engañosos. Usá el USD absoluto, o el realized_avg_pct_per_trade que es promedio honesto.",
+            "JAMÁS expresar realized_pnl_usd como porcentaje sobre 'capital invertido' — ese cálculo infla el denominador por capital rotativo y da % minúsculos engañosos. Usá el USD absoluto, o realized_avg_pct_per_trade.",
+            "NUNCA decir 'tu performance realizada es 0%/casi nula' SIN cuantificar en USD. Si realized_pnl_usd es bajo PERO unrealized_pnl_total_usd es alto, decir 'el realized USD fue $X, el grueso del resultado vive en unrealized $Y'. El user necesita el USD absoluto para entender — porcentajes solos confunden.",
             "No predecir dirección futura.",
             "Si benchmarks son None, decirlo — no inventar comparación.",
             "No repetir el mismo número/ticker en dos sections distintas — densidad sobre redundancia.",

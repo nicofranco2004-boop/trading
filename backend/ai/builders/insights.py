@@ -23,11 +23,23 @@ Shape:
 {
   "screen": "insights",
   "window_days": 365,
-  "twr_pct": float | null,           # rendimiento acumulado total (real + unrealized)
+  "twr_pct": float | null,           # rendimiento acumulado total del período
+                                     # (compuesto via monthly_entries — combina P&L
+                                     #  realizado por mes + unrealized del mes en curso)
   "realized_pnl_usd": float | null,  # P&L USD absoluto sumado de trades cerrados
   "realized_avg_pct_per_trade": float | null,  # promedio simple de pnl_pct por trade
                                      # (NO es return sobre capital — es la performance
                                      #  promedio por operación cerrada)
+  "unrealized_pnl_total_usd": float | null,  # USD mark-to-market actual de TODAS
+                                     # las posiciones abiertas (mv - invested), sumado.
+                                     # Null si no hay precios live. CRÍTICO para
+                                     # explicar el origen del twr_pct: si twr_pct
+                                     # alto pero realized_pnl_usd bajo, casi todo
+                                     # viene de este número (P&L "sobre papel").
+  "unrealized_pnl_total_pct": float | null,  # % sobre el costo de las posiciones
+                                     # abiertas con precio live.
+  "total_equity_usd": float,         # Valor TOTAL de la cartera HOY en USD
+                                     # (holdings con mv live + cash).
   "vs_benchmarks": {
     "sp500_pct": float | null,
     "inflation_ar_pct": float | null,
@@ -382,6 +394,34 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "crypto_pct": round(geo_value["crypto"] / total_exposure * 100, 1),
     }
 
+    # ── 3.5 Unrealized P&L total — agregado de TODAS las posiciones abiertas
+    # (no solo top 3). Crítico para explicar el origen del twr_pct: si el TWR
+    # del año es 59% pero realized_pnl_usd es bajo, casi todo viene de
+    # unrealized — ese campo permite que la IA cuantifique cuánto sería el
+    # P&L "sobre papel" si el user cerrara todo hoy.
+    unrealized_pnl_total_usd = 0.0
+    cost_total_for_unr = 0.0
+    has_any_live_price = False
+    for h in holdings_agg.values():
+        if h["has_live_price"]:
+            unrealized_pnl_total_usd += h["market_value_usd"] - h["invested_usd"]
+            cost_total_for_unr += h["invested_usd"]
+            has_any_live_price = True
+    # Si NO tenemos precios live para ninguna posición, devolvemos None en
+    # lugar de 0 (que sería engañoso — sugeriría que no hay unrealized).
+    if not has_any_live_price:
+        unrealized_pnl_total_usd = None
+        unrealized_pnl_total_pct = None
+    else:
+        unrealized_pnl_total_usd = round(unrealized_pnl_total_usd, 2)
+        unrealized_pnl_total_pct = round(
+            unrealized_pnl_total_usd / cost_total_for_unr * 100, 2
+        ) if cost_total_for_unr > 0 else None
+
+    # Total equity USD: market value de holdings abiertos (con prices live) +
+    # cash. Es el valor de la cartera HOY.
+    total_equity_usd = round(total_exposure, 2)
+
     # ── 3b. Current holdings top — top 3 por market value en USD ─────────────
     # Es la exposure ACTUAL real al mercado. Usar para razonar sobre riesgo
     # presente (si X cae 20%, mi cartera pierde Y). Esto es lo que faltaba
@@ -499,6 +539,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # - realized_avg_pct_per_trade: % promedio por trade (no acumulado)
         "realized_pnl_usd": realized_pnl_usd,
         "realized_avg_pct_per_trade": realized_avg_pct,
+        # P&L unrealized total — la pieza que faltaba para entender el twr_pct.
+        # Si twr_pct=59% pero realized_pnl_usd es chico, este campo dice
+        # cuánto del 59% es mark-to-market vivo (sobre papel, sin realizar).
+        "unrealized_pnl_total_usd": unrealized_pnl_total_usd,
+        "unrealized_pnl_total_pct": unrealized_pnl_total_pct,
+        # Equity total HOY — referencia absoluta para que la IA cuantifique.
+        # Si "+59%" y total_equity_usd=$160K, era $100K hace 12 meses.
+        "total_equity_usd": total_equity_usd,
         "vs_benchmarks": vs_benchmarks,
         "drawdown": drawdown,
         "trades": {
