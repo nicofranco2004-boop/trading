@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
     <!-- Primary SEO -->
-    <title>Rendi — Entendé tu inversión | Tracker de portafolio personal</title>
-    <meta name="description" content="Rendi transforma datos financieros complejos en insights claros. Seguí tu portafolio, rendimiento real vs inflación y dólar, y operaciones cerradas en un solo lugar." />
-    <meta name="keywords" content="tracker inversiones, portafolio, rendimiento real, inflacion, dolar blue, MEP, acciones, cedear, crypto, trading argentina" />
+    <title>Rendi — Tu portfolio, con Coach IA | Tracker multi-broker para Argentina</title>
+    <meta name="description" content="Seguí tu cartera de acciones, CEDEARs, bonos AR y crypto en un solo lugar. P&L real en USD, FIFO automático, Coach IA con memoria. Multi-broker: Cocos, IOL, Schwab, Binance, Balanz." />
+    <meta name="keywords" content="tracker inversiones, portafolio argentina, coach ia inversiones, FIFO automatico, P&L USD real, multi-broker, Cocos, IOL, Schwab, Binance, Balanz, CEDEARs, bonos AR, AL30, inflacion, dolar blue, MEP" />
     <meta name="author" content="Rendi" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <meta name="theme-color" content="#0A0B0E" />
@@ -22,17 +22,19 @@
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Rendi" />
-    <meta property="og:title" content="Rendi — Entendé tu inversión" />
-    <meta property="og:description" content="Tracker de portafolio personal con rendimiento real vs inflación y dólar. Datos reales, decisiones mejores." />
+    <meta property="og:title" content="Rendi — Tu portfolio, con Coach IA" />
+    <meta property="og:description" content="Seguí tu cartera multi-broker (Cocos, Schwab, Binance, Balanz). P&L real en USD, FIFO automático, Coach IA con memoria. Para inversores argentinos." />
     <meta property="og:url" content="https://rendi.finance/" />
-    <meta property="og:image" content="https://rendi.finance/favicon.svg" />
+    <meta property="og:image" content="https://rendi.finance/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
     <meta property="og:locale" content="es_AR" />
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Rendi — Entendé tu inversión" />
-    <meta name="twitter:description" content="Tracker de portafolio personal con rendimiento real vs inflación y dólar." />
-    <meta name="twitter:image" content="https://rendi.finance/favicon.svg" />
+    <meta name="twitter:title" content="Rendi — Tu portfolio, con Coach IA" />
+    <meta name="twitter:description" content="Tracker multi-broker para Argentina. P&L USD real, FIFO automático, Coach IA con memoria." />
+    <meta name="twitter:image" content="https://rendi.finance/og-image.png" />
 
     <!-- Fonts — sistema editorial:
          · Instrument Serif → display headings + hero numbers (italic)
@@ -43,17 +45,72 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
-    <!-- Structured data -->
+    <!-- Structured data: SoftwareApplication (qué es Rendi) -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
       "name": "Rendi",
-      "description": "Tracker de portafolio personal con rendimiento real ajustado a inflación y dólar.",
+      "description": "Tracker de portafolio multi-broker con Coach IA. Seguí acciones, CEDEARs, bonos AR y crypto con P&L real en USD, FIFO automático y análisis con IA.",
       "applicationCategory": "FinanceApplication",
       "operatingSystem": "Web",
       "inLanguage": "es-AR",
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      "offers": [
+        { "@type": "Offer", "name": "Free", "price": "0", "priceCurrency": "USD" },
+        { "@type": "Offer", "name": "Plus", "price": "5", "priceCurrency": "USD", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } },
+        { "@type": "Offer", "name": "Pro", "price": "7", "priceCurrency": "USD", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } }
+      ]
+    }
+    </script>
+
+    <!-- Structured data: HowTo (cómo se usa Rendi — feeds rich results en
+         Google + ayuda al SEO de la sección /#como-funciona).
+         Sincronizado con HowItWorks en Landing.jsx (5 pasos). -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "HowTo",
+      "name": "Cómo funciona Rendi — Tracker de inversiones con IA",
+      "description": "Llevá el control de tu cartera multi-broker en 5 pasos: cargá, registrás operaciones, mirás insights, analizás con IA y le preguntás al coach.",
+      "totalTime": "PT5M",
+      "estimatedCost": { "@type": "MonetaryAmount", "currency": "USD", "value": "0" },
+      "step": [
+        {
+          "@type": "HowToStep",
+          "position": 1,
+          "name": "Cargá tu cartera",
+          "text": "Importás el CSV de Cocos, Schwab, Binance o Balanz, o agregás posiciones manualmente. Cada activo queda agrupado por broker con su moneda original, valor live en USD y P&L. Los depósitos y retiros se registran desde la caja de cada broker.",
+          "url": "https://rendi.finance/#como-funciona"
+        },
+        {
+          "@type": "HowToStep",
+          "position": 2,
+          "name": "Registrás compras y ventas",
+          "text": "Cada operación queda con su P&L en USD y % por broker. Las ventas aplican FIFO automático (criterio fiscal AR), descontando del lote más viejo primero, y se transfieren al historial de Operaciones.",
+          "url": "https://rendi.finance/#como-funciona"
+        },
+        {
+          "@type": "HowToStep",
+          "position": 3,
+          "name": "Mirás tus Insights",
+          "text": "Allocation por geografía, win rate, drawdown real, perfil de inversor declarado vs cartera real, concentración top 3. Datos limpios sobre cómo decidís.",
+          "url": "https://rendi.finance/#como-funciona"
+        },
+        {
+          "@type": "HowToStep",
+          "position": 4,
+          "name": "Analizás con IA cada pantalla",
+          "text": "En Dashboard, Insights, Operaciones y Reportes, un botón Analizar genera un informe estructurado: qué funcionó, qué cambió, dónde hay riesgo, qué decisión podrías tomar. Usa el snapshot real de tu cartera.",
+          "url": "https://rendi.finance/#como-funciona"
+        },
+        {
+          "@type": "HowToStep",
+          "position": 5,
+          "name": "Le preguntás al Coach IA",
+          "text": "En todos los planes accedés a 12 preguntas guiadas (6 consultas/semana). En Pro desbloqueás chat libre (40 consultas/semana) con memoria persistente: los hechos que le aclarás al bot los respeta entre sesiones.",
+          "url": "https://rendi.finance/#como-funciona"
+        }
+      ]
     }
     </script>
 

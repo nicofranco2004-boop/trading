@@ -542,6 +542,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # cada field sin tener que inferir del nombre. Solo documentamos los
         # campos ambiguos donde históricamente confundió scope.
         "_field_docs": {
+            # _doc_scope explica al LLM que la ausencia de doc NO indica
+            # incertidumbre del campo — solo documentamos los AMBIGUOS donde
+            # confundió scope históricamente. Campos auto-descriptivos por
+            # nombre (window_days, drawdown, vs_benchmarks, trades.*) son
+            # confiables sin doc. Audit #3 B9.
+            "_doc_scope": "Solo documentamos campos ambiguos donde el nombre no basta. Los demás (window_days, drawdown, vs_benchmarks, trades, attribution, monthly_summary, geo_distribution, behavioral) son explícitos por su nombre — confiá en ellos.",
             "twr_pct": "TWR del período. Compuesto via monthly_entries. Combina P&L realizado de meses cerrados + unrealized mark-to-market del mes en curso. NO descompone realizado vs unrealized — usar realized_pnl_usd + unrealized_pnl_total_usd para eso.",
             "realized_pnl_usd": "USD ABSOLUTO sumado de trades CERRADOS. No es %, no es vs invested. Si negativo, perdiste en operaciones cerradas. Si chico vs total_equity_usd, casi todo el resultado está en unrealized.",
             "realized_avg_pct_per_trade": "Promedio simple de pnl_pct por trade cerrado. NO acumulado, NO compounded. Solo describe performance media por operación.",

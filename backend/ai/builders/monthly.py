@@ -147,6 +147,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # El builder reusa build_period_report pero el LLM no sabe qué
         # significan internamente los fields. Documentamos los ambiguos.
         "_field_docs": {
+            "_doc_scope": "Solo documentamos campos ambiguos donde el nombre no basta. Los demás (period, broker, monthly_insights, sections, highlights) son explícitos por su nombre — confiá en ellos.",
             "metrics.delta_pct": "TWRR del mes — combina realized + unrealized.",
             "metrics.delta_usd": "P&L absoluto USD del mes — combina realized + unrealized.",
             "metrics.realized_pnl": "USD de trades CERRADOS en el mes. Solo realized.",

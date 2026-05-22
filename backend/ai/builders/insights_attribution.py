@@ -205,6 +205,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # _field_docs — descripciones inline para el LLM (Ola 2-E).
         # Documentamos solo los fields ambiguos.
         "_field_docs": {
+            "_doc_scope": "Solo documentamos campos ambiguos donde el nombre no basta. Los demás (period, ticker, asset, broker) son explícitos por su nombre — confiá en ellos.",
             "total_realized_usd": "USD de P&L de trades CERRADOS, sumado all-time. SOLO realized.",
             "total_unrealized_usd": "USD mark-to-market HOY de posiciones abiertas, sumado. SOLO unrealized.",
             "total_pnl_usd": "Suma de realized + unrealized. Es contexto, no exposure.",

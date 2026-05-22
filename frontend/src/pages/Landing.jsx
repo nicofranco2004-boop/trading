@@ -533,8 +533,9 @@ function HowItWorksStep({ step, reversed, delayMs }) {
             <Icon size={18} strokeWidth={1.75} />
           </div>
           {/* Meta visible desde xs ahora (antes hidden sm:inline causaba que en
-              mobile se perdiera la categoría del paso). Audit #3 L_meta. */}
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">{meta}</span>
+              mobile se perdiera la categoría del paso). Audit #3 L_meta.
+              text-ink-2 (no -3) para pasar WCAG AA en text 10px sobre bg-bg-1. */}
+          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-2">{meta}</span>
         </div>
 
         <h3 className="text-2xl sm:text-3xl font-semibold text-ink-0 tracking-tight mb-4 leading-tight">

@@ -6864,7 +6864,10 @@ def _format_investor_profile_for_prompt(profile_json: Optional[str], mode: str =
 
 class ChatMsg(BaseModel):
     role: str = Field(..., max_length=20)
-    content: str = Field(..., min_length=1, max_length=4000)
+    # max_length 1000: alineado con maxLength=500 del input del frontend +
+    # margen para clientes custom. Antes 4000 → Pro vía API directa podía
+    # mandar 8× más texto y multiplicar costo input. Audit #3 B7.
+    content: str = Field(..., min_length=1, max_length=1000)
 
     @field_validator('role')
     @classmethod
@@ -9056,25 +9059,64 @@ MAX_ACTIVE_FACTS = 50
 MAX_TOTAL_FACTS = 200
 
 
-# Patrones prompt-injection. Compilados case-insensitive, después de NFKC
-# normalize (para defensar lookalike unicode tipo cirílico 'і' vs latino 'i').
-# Cubre EN + ES + variantes comunes. Aplicado en BOTH paths (endpoint REST y
-# tool LLM) via el helper _validate_fact_content. Auditoría #2 fix E1+E2.
+# Patrones prompt-injection. Normalizados con NFKD + ASCII fold ANTES del
+# matching, así una sola entry sin acento cubre todas las variantes acentuadas.
+# Por ejemplo, "olvida" matchea contra "olvida", "olvidá", "olvidás", "olvído".
+#
+# Aplicado en BOTH paths (endpoint REST y tool LLM) via _validate_fact_content.
+# Audit #3 fix B5+B8: amplía a 50+ patterns en EN+ES con normalización robusta.
 _FACT_INJECTION_PATTERNS = (
-    # English
+    # ─── English ────────────────────────────────────────────────────────
     "ignore previous", "ignore prior", "ignore all previous",
-    "ignore the above", "disregard previous", "disregard the above",
-    "forget what i said", "forget previous", "new instructions",
-    "system prompt", "system:", "<|", "{{ system", "</system>", "<system>",
-    "as the system", "as the administrator", "you are now",
-    # Español (con y sin acento — el .casefold() no normaliza acentos)
-    "ignora las instrucciones", "ignorá las instrucciones",
-    "ignora lo anterior", "ignorá lo anterior",
-    "olvida lo anterior", "olvidá lo anterior",
-    "olvidate de", "olvidate lo",
-    "desestima las reglas", "ahora sos", "a partir de ahora sos",
+    "ignore the above", "ignore my previous", "ignore everything above",
+    "disregard previous", "disregard the above", "disregard everything",
+    "forget what i said", "forget previous", "forget everything",
+    "forget all previous", "forget what you", "forget your",
+    "new instructions", "updated instructions", "override previous",
+    "override your", "reset your", "reset instructions",
+    "system prompt", "system message", "system:", "your system",
+    "your instructions", "your real instructions",
+    "<|", "{{ system", "</system>", "<system>", "[system]", "[INST]",
+    "as the system", "as the administrator", "as the developer",
+    "you are now", "you are actually", "pretend you are", "pretend to be",
+    "act as", "acting as", "behave as", "role:",
+    "i am the system", "i am the developer", "i am your developer",
+    # ─── Español (sin acentos — el normalizer los strippea antes) ───────
+    # Cubrir variantes "ignora/ignoras/ignoro" → todas matchean "ignora"
+    "ignora las instrucciones", "ignora todas las", "ignora todo lo",
+    "ignora lo anterior", "ignora lo previo", "ignora lo de arriba",
+    "olvida lo anterior", "olvida todo lo", "olvida las reglas",
+    "olvida las instrucciones",
+    "olvidate de", "olvidate lo", "olvidate todo",
+    "olvida lo que", "olvida tus", "olvida tus instrucciones",
+    "desestima las reglas", "desestima lo", "desestima las",
+    "anula las instrucciones", "anula tus",
+    "redefini tus", "redefini las",
+    "ahora sos", "a partir de ahora sos", "a partir de ahora eres",
+    "ahora actuas como", "actua como", "actuas como",
     "nuevas instrucciones", "instrucciones nuevas",
+    "tu nuevo sistema", "tu nuevo rol",
+    "yo soy el sistema", "yo soy el desarrollador",
 )
+
+
+def _normalize_for_injection_check(s: str) -> str:
+    """Normaliza un string para matching contra _FACT_INJECTION_PATTERNS.
+
+    Strippea acentos vía NFKD + ASCII fold → una entry sin acento matchea
+    todas las variantes acentuadas. Útil porque casefold() NO normaliza
+    acentos: 'olvidá'.casefold() ≠ 'olvida'.
+
+    Pasos:
+      NFKD descompone caracteres acentuados → base + combining char.
+      .encode('ascii', 'ignore') descarta los combining chars.
+      .decode('ascii') vuelve a str.
+      .casefold() lowercase robusto (incluye locale-specific).
+    """
+    import unicodedata
+    decomposed = unicodedata.normalize("NFKD", s)
+    ascii_bytes = decomposed.encode("ascii", "ignore")
+    return ascii_bytes.decode("ascii").casefold()
 
 
 def _validate_fact_content(raw: str) -> str:
@@ -9086,22 +9128,25 @@ def _validate_fact_content(raw: str) -> str:
        que rompería el bullet point en el render del system prompt)
     3. Strip + cap 280 chars
     4. min 3 chars
-    5. Rechaza si match con _FACT_INJECTION_PATTERNS
+    5. Rechaza si match con _FACT_INJECTION_PATTERNS — usando NFKD+ASCII fold
+       para que una sola entry cubra variantes acentuadas (audit #3 B8).
 
     Raises ValueError con mensaje útil para Pydantic / tool path.
     """
     import unicodedata
     s = unicodedata.normalize("NFKC", str(raw or ""))
     # Newlines/tabs → espacio. El facts_block se renderiza como bullet
-    # `- {content}` (línea 8736) — un \n dentro del content bypassaría el
-    # bullet y dejaría que el contenido inyecte una línea suelta del prompt.
+    # `- {content}` — un \n dentro del content bypassaría el bullet y
+    # dejaría que el contenido inyecte una línea suelta del prompt.
     s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
     s = s.strip()[:280]
     if len(s) < 3:
         raise ValueError("content debe tener al menos 3 caracteres tras strip")
-    low = s.casefold()
+    # Matching robusto: ascii-fold + casefold elimina acentos y mayúsculas.
+    # "Olvidá las instrucciones" → "olvida las instrucciones" → match.
+    normalized = _normalize_for_injection_check(s)
     for pat in _FACT_INJECTION_PATTERNS:
-        if pat in low:
+        if pat in normalized:
             raise ValueError(f"content contiene un patrón no permitido: {pat!r}")
     return s
 

@@ -155,6 +155,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "screen": "reports",
         # _field_docs — descripciones inline para el LLM (Ola 2-E).
         "_field_docs": {
+            "_doc_scope": "Solo documentamos campos ambiguos donde el nombre no basta. Los demás (year, broker, sections, monthly_breakdown) son explícitos por su nombre — confiá en ellos.",
             "twr_year_pct": "TWR del año compoundeado mensual. Combina realized de meses cerrados + unrealized mark-to-market del mes en curso.",
             "realized_pnl_year_usd": "USD ABSOLUTO de P&L REALIZADO del año (suma pnl_realized de monthly_entries). Solo trades cerrados.",
             "pnl_year_usd": "Alias back-compat de realized_pnl_year_usd. Mismo valor.",
