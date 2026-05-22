@@ -858,22 +858,19 @@ function MockChat() {
 }
 
 // ─── Pricing ─────────────────────────────────────────────────────────────────
+// Mismo template que /planes (3 secciones: cuotas + esenciales + diff/roadmap).
+// Importamos los datasets desde Planes.jsx para mantener fuente única — si
+// cambia una feature ahí, se refleja acá automáticamente.
 
 function Pricing() {
   const ref = useReveal()
-  // Tomamos las top features de cada plan — la página /planes muestra la lista
-  // completa para usuarios logueados. Acá lo que importa es la lectura rápida.
-  const freeTop = FREE_FEATURES.slice(0, 5)
-  const plusTop = PLUS_FEATURES.slice(0, 6).map(f => typeof f === 'string' ? f : f.label)
-  const proTop  = PRO_FEATURES.slice(0, 6).map(f => typeof f === 'string' ? f : f.label)
-
   return (
     <section id="pricing" ref={ref} className="reveal-up relative max-w-6xl mx-auto px-4 sm:px-6 pb-24">
       <div className="text-center mb-12">
         <div className="text-[11px] font-mono uppercase tracking-label text-ink-3 mb-3">/ pricing</div>
         <h2 className="display-heading mb-2">Empezá gratis. Subí cuando lo necesites.</h2>
         <p className="text-sm text-ink-3 max-w-2xl mx-auto">
-          Free para empezar. Plus para sumar brokers, reportes históricos y distribución por activo.
+          Cobramos en pesos al TC blue del día. Free para empezar. Plus para sumar brokers, reportes históricos y export.
           Pro para IA premium y features avanzadas.
         </p>
       </div>
@@ -886,20 +883,22 @@ function Pricing() {
           tagline="Para empezar a entender tu portfolio"
           price="Gratis"
           priceSub="Para siempre"
-          features={freeTop}
+          features={FREE_FEATURES}
           ctaLabel="Empezar gratis"
           ctaTo="/login?mode=register"
         />
 
-        {/* Plus — cyan distintivo */}
+        {/* Plus — cyan distintivo. Precio ARS calculado del USD × TC blue
+            (1415 fallback en landing pública — no llamamos /api/tc/blue acá
+            para no agregar fetch innecesario antes de login). */}
         <PlanCard
           variant="plus"
           name="Plus"
           tagline="Multi-broker + reportes completos"
           price={`ARS ${ARS_PLUS_MONTHLY}`}
           priceSub="/ mes"
-          priceFootnote="Precio final · Plan anual con 15% off"
-          features={plusTop}
+          priceFootnote={`≈ USD ${PLUS_PRICE_USD} · pago en pesos al blue de hoy`}
+          features={PLUS_FEATURES}
           ctaLabel="Empezar con Plus"
           ctaTo="/login?mode=register"
         />
@@ -912,8 +911,8 @@ function Pricing() {
           tagline="IA premium + brokers ilimitados"
           price={`ARS ${ARS_MONTHLY}`}
           priceSub="/ mes"
-          priceFootnote="Precio final · Plan anual con 15% off"
-          features={proTop}
+          priceFootnote={`≈ USD ${PRO_PRICE_USD} · pago en pesos al blue de hoy`}
+          features={PRO_FEATURES}
           ctaLabel="Empezar con Pro"
           ctaTo="/login?mode=register"
         />
@@ -928,6 +927,9 @@ function Pricing() {
 
 // variant: 'free' | 'plus' | 'pro'
 // Jerarquía visual: free=gris, plus=cyan distintivo, pro=violet premium (más fuerte)
+// Features acepta DOS shapes (back-compat + nueva estructura):
+//   - Array de strings — render simple legacy
+//   - { essentials, diff?, quotas, roadmap? } — template 3-secciones nuevo
 function PlanCard({ name, tagline, price, priceSub, priceFootnote, features, ctaLabel, ctaTo, variant = 'free', badge }) {
   const isPlus = variant === 'plus'
   const isPro  = variant === 'pro'
@@ -938,13 +940,15 @@ function PlanCard({ name, tagline, price, priceSub, priceFootnote, features, cta
     : isPlus
       ? 'border border-data-cyan/30 bg-bg-1/80 group-hover:border-data-cyan/60 group-hover:shadow-[0_0_40px_-12px_rgba(70,198,224,0.35)]'
       : 'border border-line bg-bg-1/60 group-hover:border-line-3 group-hover:shadow-[0_0_30px_-12px_rgba(255,255,255,0.08)]'
-  const checkColor = isPro ? 'text-data-violet' : isPlus ? 'text-data-cyan' : 'text-ink-2'
+  const accent = isPro ? 'data-violet' : isPlus ? 'data-cyan' : 'rendi-pos'
+  const checkColor = `text-${accent}`
   const ctaClass = isPro
     ? 'bg-data-violet hover:bg-data-violet/90 text-white hover:shadow-[0_0_32px_-4px_rgba(139,125,255,0.7)] shadow-md shadow-data-violet/30'
     : isPlus
       ? 'bg-data-cyan/10 hover:bg-data-cyan/20 text-data-cyan border border-data-cyan/40'
       : 'border border-line-3 hover:border-ink-2 hover:bg-bg-2/50 text-ink-0'
   const titleColor = isPro ? 'text-data-violet' : isPlus ? 'text-data-cyan' : 'text-ink-0'
+  const isLegacy = Array.isArray(features)
 
   return (
     // Wrapper externo: NO overflow-hidden (badge tiene que poder salirse).
@@ -986,22 +990,87 @@ function PlanCard({ name, tagline, price, priceSub, priceFootnote, features, cta
         )}
         {!priceFootnote && <div className="mb-5" />}
 
-        <ul className="space-y-2.5 mb-6">
-          {features.map((f, i) => (
-            <li key={i} className="flex items-start gap-2 text-xs text-ink-1 leading-relaxed">
-              <Check size={13} strokeWidth={2.5} className={`mt-0.5 flex-shrink-0 ${checkColor}`} />
-              <span>{f}</span>
-            </li>
-          ))}
-        </ul>
-
+        {/* CTA antes de las features → conversión: el botón siempre por
+            encima del fold sin importar largo de la lista. */}
         <Link
           to={ctaTo}
-          className={`block w-full text-center font-medium rounded-sm py-2.5 transition-all inline-flex items-center justify-center gap-1.5 ${ctaClass}`}
+          className={`block w-full text-center font-medium rounded-sm py-2.5 mb-6 transition-all inline-flex items-center justify-center gap-1.5 ${ctaClass}`}
         >
           {ctaLabel}
           <ArrowRight size={13} strokeWidth={2} />
         </Link>
+
+        {/* Features — shape detectada */}
+        {isLegacy ? (
+          <ul className="space-y-2.5">
+            {features.map((f, i) => {
+              const label = typeof f === 'string' ? f : f.label
+              return (
+                <li key={i} className="flex items-start gap-2 text-xs text-ink-1 leading-relaxed">
+                  <Check size={13} strokeWidth={2.5} className={`mt-0.5 flex-shrink-0 ${checkColor}`} />
+                  <span>{label}</span>
+                </li>
+              )
+            })}
+          </ul>
+        ) : (
+          <div className="space-y-5">
+            {/* Cuotas — grid mini ARRIBA para escaneo rápido */}
+            {features.quotas && features.quotas.length > 0 && (
+              <div>
+                <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">Cuotas semanales</div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {features.quotas.map((q, i) => (
+                    <div key={i} className="border border-line/60 rounded bg-bg-2/30 px-2 py-1.5 text-center">
+                      <div className={`text-base font-bold tabular leading-none mb-0.5 ${checkColor}`}>
+                        {q.value}
+                      </div>
+                      <div className="text-[8px] font-mono uppercase tracking-caps text-ink-3 leading-tight">
+                        {q.label}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Esenciales */}
+            {features.essentials && features.essentials.length > 0 && (
+              <div>
+                <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">Lo que incluye</div>
+                <ul className="space-y-2">
+                  {features.essentials.slice(0, 6).map((f, i) => {
+                    const isObj = typeof f === 'object'
+                    const label = isObj ? f.label : f
+                    return (
+                      <li key={i} className="flex items-start gap-2 text-xs text-ink-1 leading-relaxed">
+                        <Check size={12} strokeWidth={2.5} className={`mt-0.5 flex-shrink-0 ${checkColor}`} />
+                        <span>{label}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {/* Diff — el AHA del upgrade */}
+            {features.diff && (
+              <div>
+                <div className={`text-[10px] font-mono uppercase tracking-caps mb-2 ${checkColor}`}>
+                  {features.diff.title}
+                </div>
+                <ul className="space-y-1.5">
+                  {features.diff.items.map((t, i) => (
+                    <li key={i} className="flex items-start gap-2 text-xs text-ink-2 leading-relaxed">
+                      <Check size={12} strokeWidth={2.5} className={`mt-0.5 flex-shrink-0 ${checkColor}`} />
+                      <span>{t}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
         </div>
       </div>
     </div>

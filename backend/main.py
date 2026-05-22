@@ -5611,17 +5611,17 @@ def _gate_export(uid: int):
         if not plan.can_access(conn, uid, "export.csv"):
             tier = plan.quota.get_tier(conn, uid)
             raise HTTPException(403, {
-                "error": "Export CSV es exclusivo del plan Rendi Pro.",
+                "error": "Export CSV está disponible en los planes Plus y Pro.",
                 "upgrade": {
                     "available": tier == "free",
                     "current_tier": tier,
-                    "target_tier": "pro",
+                    "target_tier": "plus",
                     "feature": "export.csv",
                     "benefits": [
-                        "Export CSV para tu contador",
-                        "10× más análisis IA (60/sem vs 6/sem)",
-                        "Brokers ilimitados",
-                        "Comportamiento + Reportes históricos completos",
+                        "Export CSV consolidado para tu contador",
+                        "Hasta 3 brokers (vs 1 en Free)",
+                        "Reportes históricos completos",
+                        "Distribución por activo desbloqueada",
                     ],
                 },
             })
@@ -7448,9 +7448,11 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
         tier = quota.get_tier(conn, uid)
 
         # Follow-ups son exclusivos Pro — el diferencial real del paywall.
-        # Free tier que intenta follow-up recibe 403 con upgrade payload
-        # (el frontend lo surface via UpgradePromoCard).
-        if followup_question and tier == "free":
+        # Free Y Plus que intentan follow-up reciben 403 con upgrade payload
+        # (el frontend lo surface via UpgradePromoCard). Audit #4 fix G:
+        # antes solo bloqueaba Free, Plus tenía un agujero silencioso que
+        # diluía el incentivo a pasarse a Pro.
+        if followup_question and tier in ("free", "plus"):
             raise HTTPException(403, {
                 "error": (
                     "Los follow-ups son exclusivos de Rendi Pro. "
@@ -7511,24 +7513,31 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
         # Cache MISS o follow-up → chequeamos cupo (la llamada al LLM cuesta)
         allowed, usage_now = quota.can_analyze(conn, uid)
         if not allowed:
+            # Mensaje 429 dinámico por tier — antes hardcodeaba "plan Free"
+            # aunque el user fuera Plus (mismo cap 6) y daba confusión.
+            tier_label = {"free": "Free", "plus": "Plus", "pro": "Pro", "admin": "Admin"}.get(tier, "Free")
+            limit_n = usage_now.get("analyses_limit", 6)
+            upgrade_available = tier in ("free", "plus")
+            error_msg = (
+                f"Llegaste al límite del plan {tier_label} ({limit_n} análisis en los "
+                "últimos 7 días). Tu próximo análisis se libera al "
+                "expirar el más antiguo."
+            )
+            if upgrade_available:
+                error_msg += " Para 10× más análisis con respuestas profundas, pasate a Rendi Pro."
             raise HTTPException(429, {
-                "error": (
-                    "Llegaste al límite del plan Free (6 análisis en los "
-                    "últimos 7 días). Tu próximo análisis se libera al "
-                    "expirar el más antiguo. Para 10× más análisis con "
-                    "respuestas profundas, pasate a Rendi Pro."
-                ),
+                "error": error_msg,
                 "usage": usage_now,
                 "upgrade": {
-                    "available": tier == "free",
+                    "available": upgrade_available,
                     "current_tier": tier,
                     "target_tier": "pro",
                     "resets_on": usage_now.get("resets_on"),
                     "benefits": [
                         "10× más análisis IA (60/sem vs 6/sem)",
                         "Respuestas con causalidad y comparaciones",
+                        "Chat libre con el Coach IA (40 consultas/sem)",
                         "Follow-ups: profundizá con preguntas libres",
-                        "AI Hub: exploración libre sobre tu portfolio (próximamente)",
                     ],
                 },
             })

@@ -97,7 +97,7 @@ export default function ExportCsvButton({
 
       {showUpgrade && (
         <UpgradeModal
-          title="Export CSV es exclusivo de Pro"
+          title="Export CSV disponible en Plus y Pro"
           message="Descargá tus operaciones, posiciones y resumen mensual en CSV — listo para mandárselo a tu contador."
           feature="export.csv"
           source={source || `export_${resource}`}

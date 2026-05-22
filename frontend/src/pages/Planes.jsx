@@ -24,69 +24,137 @@ import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import { api } from '../utils/api'
 
-// Precios USD/mes — fuente de verdad para Mobbex/dLocal (cobramos en USD,
-// el procesador convierte ARS al day-rate del cliente). El display en Rendi
-// muestra USD como precio principal + conversión ARS live al blue de hoy
-// como subtítulo informativo.
+// Precios USD/mes — fuente de "valor" del producto. El COBRO real se hace
+// en ARS calculado con TC blue del día, redondeado a la centena más cercana
+// (Math.round(price / 100) * 100). Ejemplo Pro USD 9 × 1415 = 12735 → 12700 ARS.
+// El display en cards muestra ARS principal + USD como ref menor.
 export const PLUS_PRICE_USD = '4'
 export const PRO_PRICE_USD = '9'
 // Anual con ~16.5% off vs monthly × 12
 export const PLUS_PRICE_ANNUAL_USD = '40'
 export const PRO_PRICE_ANNUAL_USD = '90'
 
-// Precios ARS legacy (todavía usados en algunos lugares para back-compat
-// con el flow viejo de Mercado Pago). Cuando se complete la migración a
-// USD-first, estos se pueden borrar.
-export const ARS_PLUS_MONTHLY = '5.990'
-export const ARS_PLUS_ANNUAL = '59.990'
-export const ARS_PLUS_ANNUAL_MONTHLY_EQ = '4.999'
-export const ARS_MONTHLY = '12.100'
-const ARS_ANNUAL  = '123.420'
-const ARS_ANNUAL_MONTHLY_EQ = '10.285'
+// Precios ARS legacy (usados como fallback si TC no carga). Calculados a
+// TC 1415 con la regla del redondeo: Plus 4×1415=5660→5700, Pro 9×1415=12735→12700.
+// Cuando TC carga del backend, estos no se usan. fallback only.
+export const ARS_PLUS_MONTHLY = '5.700'
+export const ARS_PLUS_ANNUAL = '56.600'  // 40 × 1415 = 56600 → 56600 (ya en centena)
+export const ARS_PLUS_ANNUAL_MONTHLY_EQ = '4.717'
+export const ARS_MONTHLY = '12.700'
+const ARS_ANNUAL  = '127.400'  // 90 × 1415 = 127350 → 127400
+const ARS_ANNUAL_MONTHLY_EQ = '10.617'
 
-// Formato ARS estilo Argentina (puntos como separador de miles, sin decimales)
-function fmtArsConverted(usdPrice, tcBlue) {
-  const num = Number(usdPrice) * tcBlue
-  return Math.round(num).toLocaleString('es-AR')
+/**
+ * Calcula el precio ARS a mostrar para un USD dado.
+ *
+ * Regla del cobro: el pago se hace en ARS, calculado con TC blue del día y
+ * redondeado a la centena más cercana. Mismo helper para Plus, Pro, mensual,
+ * anual — un solo lugar para la regla de pricing.
+ *
+ *   USD 4 × 1415 = 5660  → round(5660/100)*100 = 5700
+ *   USD 9 × 1415 = 12735 → round(12735/100)*100 = 12700
+ *   USD 40 × 1415 = 56600 → 56600 (ya centena)
+ *   USD 90 × 1415 = 127350 → 127400
+ *
+ * Devuelve string formateado tipo argentino: "5.700" / "12.700" / "127.400".
+ */
+export function arsPriceRounded(usdAmount, tcBlue) {
+  const raw = Number(usdAmount) * Number(tcBlue || 1415)
+  const rounded = Math.round(raw / 100) * 100
+  return rounded.toLocaleString('es-AR')
 }
 
-// ─── Listas de features por plan ─────────────────────────────────────────────
+// Back-compat helper — alias del de arriba con nombre legacy.
+function fmtArsConverted(usdPrice, tcBlue) {
+  return arsPriceRounded(usdPrice, tcBlue)
+}
 
-export const FREE_FEATURES = [
-  'Dashboard completo (4 KPIs + curva de evolución)',
-  '6 análisis IA por semana',
-  'Coach IA con 12 preguntas guiadas · 6 consultas/sem',
-  'Hasta 1 broker',
-  'Insights básicos (TWR + benchmark + drawdown)',
-  'Diagnóstico con 3 observaciones',
-  '1 análisis de comportamiento',
-  'Posiciones, Operaciones, Wrapped, Objetivos',
-  'Reportes: vista previa del último mes',
-]
+// ─── Listas de features por plan (template 3-secciones) ──────────────────────
+// Cada feature es { label, sub? } — sub es la nota chica abajo (opcional).
+// El template separa visualmente:
+//   1. essentials: lo CORE del plan (4-5 items)
+//   2. diff: el AHA del upgrade vs el plan anterior (Plus vs Free, Pro vs Plus)
+//   3. quotas: grid mini de números (análisis/sem, chat/sem, brokers)
+// Sin emojis (decisión de producto: ASCII + tipografía + color, no glyph).
 
-export const PLUS_FEATURES = [
-  { label: 'Todo lo del Free' },
-  { label: 'Hasta 3 brokers', sub: '3× más' },
-  { label: 'Insights diagnóstico completo (6 obs)' },
-  { label: '4 análisis de comportamiento', sub: 'la mitad de los detectores' },
-  { label: 'Distribución por activo' },
-  { label: 'Reportes históricos completos (todos los meses)' },
-  { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
-  { label: '6 análisis IA por semana', sub: 'Misma cuota que Free (Pro multiplica 10×)' },
-  { label: 'Coach IA con 12 preguntas guiadas', sub: 'Mismas 6 consultas/sem que Free' },
-]
+export const FREE_FEATURES = {
+  essentials: [
+    { label: 'Dashboard completo con 4 KPIs + curva de evolución' },
+    { label: 'Posiciones, Operaciones, Wrapped anual y Objetivos' },
+    { label: 'Insights con TWR, benchmarks (S&P, inflación AR, dólar) y drawdown' },
+    { label: '3 observaciones diagnósticas + 1 detector de comportamiento' },
+    { label: 'Coach IA con 12 preguntas guiadas' },
+    { label: 'Reportes: vista previa del último mes' },
+  ],
+  // Free no tiene "diff" — es el baseline.
+  diff: null,
+  quotas: [
+    { label: 'Análisis IA / sem', value: '6' },
+    { label: 'Chat Coach IA / sem', value: '6' },
+    { label: 'Brokers', value: '1' },
+  ],
+}
 
-export const PRO_FEATURES = [
-  { label: 'Todo lo del Plus' },
-  { label: '60 análisis IA por semana', sub: '10× más que Free/Plus' },
-  { label: 'Chat libre con Coach IA', sub: '40 consultas/sem · preguntá lo que quieras (vs 12 guiadas en Free/Plus)' },
-  { label: 'Respuestas con causalidad y comparaciones', sub: 'No solo descripción' },
-  { label: 'Follow-ups: profundizá cada análisis con preguntas libres' },
-  { label: 'Brokers ilimitados' },
-  { label: 'Comportamiento completo', sub: 'Todos los detectores (8+)' },
-  { label: 'AI Hub: exploración libre sobre tu portfolio', comingSoon: true },
-  { label: 'Tax helper AFIP: cálculo FIFO + reporte fiscal', comingSoon: true },
-]
+export const PLUS_FEATURES = {
+  essentials: [
+    { label: 'Todo lo del Free' },
+    { label: 'Diagnóstico de Insights completo con 6 observaciones' },
+    { label: '4 detectores de comportamiento visibles (de 12 disponibles)' },
+    { label: 'Distribución por activo desbloqueada' },
+    { label: 'Reportes históricos completos (todos los meses)' },
+    { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
+  ],
+  diff: {
+    title: 'Vs Free',
+    items: [
+      'Hasta 3 brokers (3× más)',
+      '6 observaciones de diagnóstico (2× más)',
+      '4 detectores de comportamiento (4× más)',
+      'Reportes históricos + Export CSV',
+    ],
+  },
+  quotas: [
+    { label: 'Análisis IA / sem', value: '6', note: 'igual que Free' },
+    { label: 'Chat Coach IA / sem', value: '6', note: 'igual que Free' },
+    { label: 'Brokers', value: '3' },
+  ],
+}
+
+export const PRO_FEATURES = {
+  essentials: [
+    { label: 'Todo lo del Plus' },
+    { label: '60 análisis IA / semana', sub: '10× más que Free y Plus' },
+    { label: 'Chat libre con el Coach IA', sub: '40 consultas/sem · texto libre, sin restricción de preguntas' },
+    { label: 'Respuestas con causalidad y comparaciones', sub: 'Modo research-note: no solo describe, infiere por qué' },
+    { label: 'Follow-ups: profundizá cualquier análisis con preguntas libres' },
+    { label: 'Memoria persistente del Coach', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
+    { label: 'Brokers ilimitados' },
+    { label: '12 detectores de comportamiento completos' },
+    { label: 'Diagnóstico de Insights ilimitado' },
+  ],
+  diff: {
+    title: 'Vs Plus',
+    items: [
+      '10× más análisis IA (60/sem vs 6/sem)',
+      'Chat libre del Coach (vs 12 preguntas guiadas)',
+      'IA con causalidad y memoria persistente',
+      'Brokers ilimitados, comportamiento completo',
+    ],
+  },
+  quotas: [
+    { label: 'Análisis IA / sem', value: '60' },
+    { label: 'Chat Coach IA / sem', value: '40' },
+    { label: 'Brokers', value: '∞' },
+  ],
+  // Roadmap visible — features prometidas que están en construcción.
+  // Diferenciadas visualmente del resto (no son CHECKS, son CLOCKS).
+  // Decisión de producto: mantenerlas para señalizar dirección, pero NUNCA
+  // mezcladas con las features activas.
+  roadmap: [
+    'AI Hub: exploración libre sobre tu portfolio',
+    'Tax helper AFIP: cálculo FIFO + reporte fiscal',
+  ],
+}
 
 // ─── Página ──────────────────────────────────────────────────────────────────
 
@@ -341,7 +409,7 @@ export default function Planes() {
               tagline="Lo esencial para empezar"
               price="Gratis"
               priceSub="Para siempre"
-              features={FREE_FEATURES.map(label => ({ label }))}
+              features={FREE_FEATURES}
               isCurrent={isFree}
               ctaLabel={isFree ? 'Tu plan actual' : 'Tu plan base'}
               ctaDisabled
@@ -359,18 +427,22 @@ export default function Planes() {
                 subscribing,
                 hasCredit,
               })
+              // Pricing ARS-first: el cobro real se hace en ARS, calculado
+              // con TC blue del día y redondeado a centena (arsPriceRounded).
+              // El USD aparece como referencia menor en el footnote.
+              const monthlyUsd = billingPeriod === 'annual' ? (+PLUS_PRICE_ANNUAL_USD / 12) : +PLUS_PRICE_USD
+              const arsMonthly = arsPriceRounded(monthlyUsd, tcBlue)
+              const arsAnnualTotal = billingPeriod === 'annual' ? arsPriceRounded(PLUS_PRICE_ANNUAL_USD, tcBlue) : null
               return (
                 <PlanCard
                   variant="plus"
                   name="Plus"
                   tagline="Multi-broker + features avanzadas"
-                  price={billingPeriod === 'annual' ? `USD ${(+PLUS_PRICE_ANNUAL_USD / 12).toFixed(2)}` : `USD ${PLUS_PRICE_USD}`}
+                  price={`ARS ${arsMonthly}`}
                   priceSub={billingPeriod === 'annual'
-                    ? `por mes · facturado anual (USD ${PLUS_PRICE_ANNUAL_USD})`
+                    ? `por mes · facturado anual (ARS ${arsAnnualTotal})`
                     : 'por mes'}
-                  priceFootnote={billingPeriod === 'annual'
-                    ? `≈ ARS ${fmtArsConverted(+PLUS_PRICE_ANNUAL_USD / 12, tcBlue)} por mes al blue de hoy`
-                    : `≈ ARS ${fmtArsConverted(PLUS_PRICE_USD, tcBlue)} al blue de hoy`}
+                  priceFootnote={`≈ USD ${billingPeriod === 'annual' ? PLUS_PRICE_ANNUAL_USD + ' anual' : PLUS_PRICE_USD} · pago en pesos al blue de hoy`}
                   features={PLUS_FEATURES}
                   isCurrent={plusIsCurrent || isPlus}
                   ctaLabel={plusCtaInfo.label}
@@ -399,18 +471,19 @@ export default function Planes() {
                 subscribing,
                 hasCredit,
               })
+              const monthlyUsd = billingPeriod === 'annual' ? (+PRO_PRICE_ANNUAL_USD / 12) : +PRO_PRICE_USD
+              const arsMonthly = arsPriceRounded(monthlyUsd, tcBlue)
+              const arsAnnualTotal = billingPeriod === 'annual' ? arsPriceRounded(PRO_PRICE_ANNUAL_USD, tcBlue) : null
               return (
                 <PlanCard
                   variant="pro"
                   name="Pro"
                   tagline="IA premium + brokers ilimitados"
-                  price={billingPeriod === 'annual' ? `USD ${(+PRO_PRICE_ANNUAL_USD / 12).toFixed(2)}` : `USD ${PRO_PRICE_USD}`}
+                  price={`ARS ${arsMonthly}`}
                   priceSub={billingPeriod === 'annual'
-                    ? `por mes · facturado anual (USD ${PRO_PRICE_ANNUAL_USD})`
+                    ? `por mes · facturado anual (ARS ${arsAnnualTotal})`
                     : 'por mes'}
-                  priceFootnote={billingPeriod === 'annual'
-                    ? `≈ ARS ${fmtArsConverted(+PRO_PRICE_ANNUAL_USD / 12, tcBlue)} por mes al blue de hoy`
-                    : `≈ ARS ${fmtArsConverted(PRO_PRICE_USD, tcBlue)} al blue de hoy`}
+                  priceFootnote={`≈ USD ${billingPeriod === 'annual' ? PRO_PRICE_ANNUAL_USD + ' anual' : PRO_PRICE_USD} · pago en pesos al blue de hoy`}
                   features={PRO_FEATURES}
                   badge="Más completo"
                   isCurrent={proIsCurrent || hasProTier}
@@ -463,8 +536,7 @@ export default function Planes() {
       </div>
 
       <p className="text-[11px] text-ink-3 text-center max-w-2xl mx-auto mt-4 leading-relaxed">
-        Suscribite cuando te conviene y cancelá cuando quieras.
-        Pro está actualmente en desarrollo — cuando esté disponible te avisamos por email.
+        Suscribite cuando te conviene y cancelá cuando quieras. Cobramos en pesos al TC blue del día.
       </p>
     </div>
   )
@@ -689,29 +761,107 @@ function PlanCard({
         {!ctaDisabled && !ctaLoading && <ArrowRight size={13} strokeWidth={1.75} />}
       </button>
 
-      {/* Feature list */}
-      <ul className="space-y-2.5 flex-1">
-        {features.map((f, i) => {
-          // Item puede ser string o {label, sub, comingSoon}
+      {/* ─── Features estructuradas en 3 secciones ──────────────────────── */}
+      {/* Soporta dos shapes para back-compat:                                */}
+      {/* - Array de strings/objs (legacy)                                    */}
+      {/* - Object {essentials, diff?, quotas, roadmap?} (nuevo template)    */}
+      {Array.isArray(features) ? (
+        <PlanFeatureListLegacy items={features} variant={variant} />
+      ) : (
+        <div className="flex-1 flex flex-col gap-5">
+          {/* Cuotas — grid mini de números arriba para escaneo rápido */}
+          {features.quotas && features.quotas.length > 0 && (
+            <PlanQuotaGrid quotas={features.quotas} variant={variant} />
+          )}
+
+          {/* Esenciales — features core del plan */}
+          {features.essentials && features.essentials.length > 0 && (
+            <PlanFeatureSection
+              title="Lo que incluye"
+              items={features.essentials}
+              variant={variant}
+            />
+          )}
+
+          {/* Diferenciadores — el AHA del upgrade vs el plan anterior */}
+          {features.diff && (
+            <PlanFeatureSection
+              title={features.diff.title}
+              items={features.diff.items.map(t => ({ label: t }))}
+              variant={variant}
+              accent
+            />
+          )}
+
+          {/* Roadmap — features prometidas, visualmente DISTINTAS */}
+          {features.roadmap && features.roadmap.length > 0 && (
+            <PlanRoadmapSection items={features.roadmap} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ─── Sub-componentes del PlanCard (nuevo template 3-secciones) ──────────────
+
+function variantAccent(variant) {
+  if (variant === 'pro')  return 'data-violet'
+  if (variant === 'plus') return 'data-cyan'
+  return 'rendi-pos'  // free → verde
+}
+
+/**
+ * Grid mini de cuotas — 3 celdas con número grande + label pequeño.
+ * Sirve para escaneo rápido del "qué tan grande es esto" de un plan.
+ * Sin emojis (regla de producto), solo número + texto.
+ */
+function PlanQuotaGrid({ quotas, variant }) {
+  const accent = variantAccent(variant)
+  return (
+    <div>
+      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">Cuotas semanales</div>
+      <div className="grid grid-cols-3 gap-2">
+        {quotas.map((q, i) => (
+          <div key={i} className="border border-line/60 rounded bg-bg-2/30 px-2 py-2 text-center">
+            <div className={`text-xl font-bold tabular leading-none mb-1 text-${accent}`}>
+              {q.value}
+            </div>
+            <div className="text-[9px] font-mono uppercase tracking-caps text-ink-3 leading-tight">
+              {q.label}
+            </div>
+            {q.note && (
+              <div className="text-[9px] text-ink-3 mt-1 leading-tight italic">{q.note}</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Sección de features con título mono uppercase + lista de items con check.
+ * `accent=true` cambia el color del título al accent del plan (diff/AHA section).
+ */
+function PlanFeatureSection({ title, items, variant, accent = false }) {
+  const accentColor = variantAccent(variant)
+  return (
+    <div>
+      <div className={`text-[10px] font-mono uppercase tracking-caps mb-2 ${accent ? `text-${accentColor}` : 'text-ink-3'}`}>
+        {title}
+      </div>
+      <ul className="space-y-2">
+        {items.map((f, i) => {
           const isObj = typeof f === 'object'
           const label = isObj ? f.label : f
           const sub = isObj ? f.sub : null
-          const comingSoon = isObj ? f.comingSoon : false
           return (
             <li key={i} className="flex items-start gap-2 text-sm">
-              {comingSoon
-                ? <Lock size={12} strokeWidth={2} className="text-data-amber mt-0.5 flex-shrink-0" />
-                : <Check size={12} strokeWidth={2.5} className={`mt-0.5 flex-shrink-0 ${isPro ? 'text-data-violet' : isPlus ? 'text-data-cyan' : 'text-rendi-pos'}`} />
-              }
+              <Check size={12} strokeWidth={2.5} className={`mt-0.5 flex-shrink-0 text-${accentColor}`} />
               <div className="leading-snug">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className={comingSoon ? 'text-ink-2' : 'text-ink-1'}>{label}</span>
-                  {comingSoon && (
-                    <span className="font-mono text-[9px] uppercase tracking-caps px-1 py-px rounded-sm bg-data-amber/15 text-data-amber">
-                      Próximamente
-                    </span>
-                  )}
-                </div>
+                <div className="text-ink-1">{label}</div>
                 {sub && <div className="text-[11px] text-ink-3 mt-0.5">{sub}</div>}
               </div>
             </li>
@@ -719,5 +869,67 @@ function PlanCard({
         })}
       </ul>
     </div>
+  )
+}
+
+/**
+ * Sección "Roadmap" — features prometidas en construcción.
+ * Visualmente distinta: clock en vez de check, color ámbar, mensaje "En construcción".
+ * Decisión de producto: mantener visible para señalizar dirección, pero
+ * SIN mezclar con las features activas (evita bait).
+ */
+function PlanRoadmapSection({ items }) {
+  return (
+    <div className="border-t border-line/40 pt-4 mt-2">
+      <div className="text-[10px] font-mono uppercase tracking-caps text-data-amber mb-2 flex items-center gap-1.5">
+        <Clock size={10} strokeWidth={2} />
+        En construcción
+      </div>
+      <ul className="space-y-1.5">
+        {items.map((label, i) => (
+          <li key={i} className="text-[12px] text-ink-3 leading-snug pl-4 border-l border-data-amber/30">
+            {label}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/**
+ * Legacy: renderiza features cuando vienen como array (back-compat).
+ * Mantenido por si algún caller externo todavía pasa shape viejo. La nueva
+ * estructura {essentials, diff, quotas} se renderiza desde PlanCard directo.
+ */
+function PlanFeatureListLegacy({ items, variant }) {
+  const accent = variantAccent(variant)
+  return (
+    <ul className="space-y-2.5 flex-1">
+      {items.map((f, i) => {
+        const isObj = typeof f === 'object'
+        const label = isObj ? f.label : f
+        const sub = isObj ? f.sub : null
+        const comingSoon = isObj ? f.comingSoon : false
+        return (
+          <li key={i} className="flex items-start gap-2 text-sm">
+            {comingSoon
+              ? <Lock size={12} strokeWidth={2} className="text-data-amber mt-0.5 flex-shrink-0" />
+              : <Check size={12} strokeWidth={2.5} className={`mt-0.5 flex-shrink-0 text-${accent}`} />
+            }
+            <div className="leading-snug">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className={comingSoon ? 'text-ink-2' : 'text-ink-1'}>{label}</span>
+                {comingSoon && (
+                  <span className="font-mono text-[9px] uppercase tracking-caps px-1 py-px rounded-sm bg-data-amber/15 text-data-amber">
+                    Próximamente
+                  </span>
+                )}
+              </div>
+              {sub && <div className="text-[11px] text-ink-3 mt-0.5">{sub}</div>}
+            </div>
+          </li>
+        )
+      })}
+    </ul>
   )
 }

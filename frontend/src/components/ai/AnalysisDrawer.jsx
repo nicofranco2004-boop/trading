@@ -63,11 +63,14 @@ export default function AnalysisDrawer({
     try { await refresh() } finally { setRefreshing(false) }
   }
 
-  // Badge weekly: free=X/10 esta semana, pro=X/200 esta semana, admin=sin tope.
+  // Badge weekly: free/plus=X/6 esta semana, pro=X/60 · Pro, admin=sin tope.
+  // Lee el limit dinámico del usage.analyses_limit (no hardcoded) para que
+  // cambios futuros de cuota se reflejen automáticamente.
   function renderUsageBadge() {
     if (!usage) return null
     if (usage.tier === 'admin') return 'Admin · sin tope'
     if (usage.tier === 'pro') return `${usage.analyses_count}/${usage.analyses_limit} · Pro`
+    if (usage.tier === 'plus') return `${usage.analyses_count}/${usage.analyses_limit} · Plus`
     // Free
     return `${usage.analyses_count}/${usage.analyses_limit} esta semana`
   }
