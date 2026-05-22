@@ -23,8 +23,11 @@ Shape:
 {
   "screen": "insights",
   "window_days": 365,
-  "twr_pct": float | null,           # rendimiento acumulado del período
-  "twr_realized_pct": float | null,  # solo P/L cerrado
+  "twr_pct": float | null,           # rendimiento acumulado total (real + unrealized)
+  "realized_pnl_usd": float | null,  # P&L USD absoluto sumado de trades cerrados
+  "realized_avg_pct_per_trade": float | null,  # promedio simple de pnl_pct por trade
+                                     # (NO es return sobre capital — es la performance
+                                     #  promedio por operación cerrada)
   "vs_benchmarks": {
     "sp500_pct": float | null,
     "inflation_ar_pct": float | null,
@@ -270,12 +273,19 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Top contributors/detractors construidos abajo (necesitan tickers_open
     # para cruzar con posiciones abiertas — se completa después de la sección 3).
 
-    twr_realized_pct = None
-    invested_sum = sum(float(o.get("entry_price") or 0) * float(o.get("quantity") or 0)
-                       for o in closed)
-    pnl_sum = sum(float(o.get("pnl_usd") or 0) for o in closed)
-    if invested_sum > 0:
-        twr_realized_pct = round((pnl_sum / invested_sum) * 100, 2)
+    # P&L absoluto de trades cerrados — métrica honesta sin distorsión por
+    # capital rotativo. Antes computábamos twr_realized_pct como
+    # pnl_sum / sum(entry_price * qty) — pero eso sumaba el MISMO capital
+    # rotando entre trades, inflando el denominador y produciendo % minúsculos
+    # (ej. 0.01%) que confundían al LLM y al user.
+    realized_pnl_usd = round(sum(float(o.get("pnl_usd") or 0) for o in closed), 2) if closed else None
+
+    # Promedio simple de pnl_pct por trade — performance promedio operación,
+    # independiente del capital total. No es un return acumulado.
+    realized_avg_pct = None
+    pcts = [float(o.get("pnl_pct") or 0) for o in closed if o.get("pnl_pct") is not None]
+    if pcts:
+        realized_avg_pct = round(sum(pcts) / len(pcts), 2)
 
     # ── 3. Posiciones ABIERTAS: exposure + current_holdings_top + market value
     # Cargamos posiciones (incluye is_cash=1) + brokers para conocer la currency
@@ -483,7 +493,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "screen": "insights",
         "window_days": window_days,
         "twr_pct": twr_pct,
-        "twr_realized_pct": twr_realized_pct,
+        # Métricas de trades cerrados — REPLACE del viejo twr_realized_pct
+        # que era engañoso (denominador inflado por capital rotativo). Ahora:
+        # - realized_pnl_usd: cuánto se ganó/perdió neto en USD (claro)
+        # - realized_avg_pct_per_trade: % promedio por trade (no acumulado)
+        "realized_pnl_usd": realized_pnl_usd,
+        "realized_avg_pct_per_trade": realized_avg_pct,
         "vs_benchmarks": vs_benchmarks,
         "drawdown": drawdown,
         "trades": {

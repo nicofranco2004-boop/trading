@@ -222,6 +222,21 @@ def test_insights_packet_has_separated_open_closed():
     from ai.builders.insights import build
     packet = build(conn, uid)
 
+    # NUEVOS campos: realized_pnl_usd reemplaza al engañoso twr_realized_pct
+    if "realized_pnl_usd" not in packet:
+        fail("packet missing realized_pnl_usd (replaces twr_realized_pct)")
+    if "twr_realized_pct" in packet:
+        fail("packet still has twr_realized_pct — should be removed (matemáticamente engañoso)")
+    if "realized_avg_pct_per_trade" not in packet:
+        fail("packet missing realized_avg_pct_per_trade")
+    expected_pnl = 500 + 320  # INTC +500, AMD +320
+    if packet["realized_pnl_usd"] != expected_pnl:
+        fail(f"realized_pnl_usd should be {expected_pnl}, got {packet['realized_pnl_usd']}")
+    print(f"  realized_pnl_usd = ${expected_pnl} (USD absoluto, no % engañoso) ✓")
+    print(f"  realized_avg_pct_per_trade = {packet['realized_avg_pct_per_trade']}% ✓")
+    if "twr_realized_pct" not in packet:
+        print("  twr_realized_pct removed from packet ✓")
+
     if "realized_attribution" not in packet:
         fail("packet missing realized_attribution")
     ra = packet["realized_attribution"]
