@@ -40,6 +40,30 @@ const SORT_OPTIONS = [
 
 const ALL_FILTER = '__all__'
 
+// Paleta para distinguir brokers visualmente en la vista agrupada. Usamos
+// los data accents del design system Rendi (no neón, no decorativo —
+// función de identificación, no de jerarquía).
+//
+// La asignación es DETERMINÍSTICA por el nombre del broker (hash) — así
+// "Schwab" siempre cae al mismo color entre re-renders y entre sesiones,
+// y dos brokers con nombres distintos no compiten por el mismo color
+// salvo colisión de hash.
+const BROKER_PALETTE = [
+  { dot: 'bg-data-violet', text: 'text-data-violet', bg: 'bg-data-violet/[0.10]', border: 'border-data-violet/30', ring: 'ring-data-violet/40' },
+  { dot: 'bg-data-cyan',   text: 'text-data-cyan',   bg: 'bg-data-cyan/[0.10]',   border: 'border-data-cyan/30',   ring: 'ring-data-cyan/40' },
+  { dot: 'bg-data-blue',   text: 'text-data-blue',   bg: 'bg-data-blue/[0.10]',   border: 'border-data-blue/30',   ring: 'ring-data-blue/40' },
+  { dot: 'bg-data-amber',  text: 'text-data-amber',  bg: 'bg-data-amber/[0.10]',  border: 'border-data-amber/30',  ring: 'ring-data-amber/40' },
+  { dot: 'bg-rendi-pos',   text: 'text-rendi-pos',   bg: 'bg-rendi-pos/[0.10]',   border: 'border-rendi-pos/30',   ring: 'ring-rendi-pos/40' },
+]
+
+function brokerColor(name) {
+  if (!name) return BROKER_PALETTE[0]
+  // djb2-ish hash — estable, sin Math.random, cero deps
+  let h = 5381
+  for (let i = 0; i < name.length; i++) h = ((h << 5) + h + name.charCodeAt(i)) | 0
+  return BROKER_PALETTE[Math.abs(h) % BROKER_PALETTE.length]
+}
+
 export default function PositionsMobile() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -69,19 +93,25 @@ export default function PositionsMobile() {
 
   useEffect(() => { loadAll() }, [])
 
-  // ?action=new → abrir el flow de Nueva Posición automáticamente.
-  // Limpiamos el query param para que un reload posterior no re-abra el modal.
+  // Handler reusable para abrir el flow de Nueva Posición. Usado por:
+  //   1. El useEffect del query ?action=new (FAB del MobileTabBar)
+  //   2. El botón "+ Nueva" del header de la página
+  function openNewPositionFlow(source) {
+    track('position_add_started', { source: source || 'unknown' })
+    setAddForm({
+      ...EMPTY_POS,
+      broker: brokers[0]?.name ?? '',
+      entry_date: today(),
+    })
+    setAddModal('add-flow')
+  }
+
+  // ?action=new → abrir el flow automáticamente. Limpiamos el query param
+  // para que un reload posterior no re-abra el modal.
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     if (params.get('action') === 'new') {
-      track('position_add_started', { source: 'mobile_fab' })
-      setAddForm({
-        ...EMPTY_POS,
-        broker: brokers[0]?.name ?? '',
-        entry_date: today(),
-      })
-      setAddModal('add-flow')
-      // Limpiar el param sin recargar
+      openNewPositionFlow('mobile_fab')
       navigate('/posiciones', { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,8 +289,8 @@ export default function PositionsMobile() {
     <div className="pb-8">
       {/* Header con total + sort */}
       <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-2">
-        <div className="flex items-baseline justify-between mb-2">
-          <div>
+        <div className="flex items-baseline justify-between mb-2 gap-2">
+          <div className="min-w-0">
             <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1">
               Cartera total
             </div>
@@ -269,9 +299,24 @@ export default function PositionsMobile() {
               <span className="text-xs text-ink-3 ml-1 font-normal">USD</span>
             </div>
           </div>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
-            {visibleCount} {visibleCount === 1 ? 'pos' : 'pos'}
-          </span>
+          {/* Acciones derechas: count + botón rápido para agregar posición.
+              El FAB central del MobileTabBar sigue funcionando, pero tener un
+              entry point DENTRO de Cartera baja la fricción para el user que
+              ya está en esta página. */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+              {visibleCount} pos
+            </span>
+            <button
+              type="button"
+              onClick={() => openNewPositionFlow('mobile_cartera_header')}
+              className="inline-flex items-center gap-1 text-xs font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm px-2.5 py-1.5 transition-colors whitespace-nowrap"
+              aria-label="Nueva posición"
+            >
+              <Plus size={12} strokeWidth={2.5} />
+              Nueva
+            </button>
+          </div>
         </div>
 
         {/* Search input compacto */}
@@ -565,36 +610,53 @@ function BrokerFilterChip({ active, onClick, label, currency }) {
 // Debajo, las positions del broker (cash siempre al final).
 
 function BrokerSection({ broker, positions, totalUsd, onEdit, onDelete }) {
+  // Color asignado por nombre — estable entre re-renders. Antes el header
+  // de cada broker era casi invisible (text-[11px] mono sobre bg-0). Ahora
+  // cada sección tiene identidad visual clara: avatar circular con la
+  // inicial, nombre en text-sm semibold, currency chip coloreado, y bg
+  // sutil del color del broker.
+  const color = brokerColor(broker.name)
+  const initial = (broker.name || '?').charAt(0).toUpperCase()
+
   return (
-    <section>
-      <div className="sticky top-[252px] z-10 bg-bg-0/95 backdrop-blur-md px-4 py-2 flex items-center justify-between gap-2 border-b border-line/30">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-1 truncate">
-            {broker.name}
+    <section className="mt-3 first:mt-0">
+      <div className={`sticky top-[252px] z-10 px-3 py-2.5 flex items-center justify-between gap-2 ${color.bg} border-y ${color.border} backdrop-blur-md`}>
+        <div className="flex items-center gap-2.5 min-w-0">
+          {/* Avatar circular con la inicial del broker */}
+          <span
+            className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold tabular flex-shrink-0 ${color.text} ${color.bg} border ${color.border}`}
+            aria-hidden="true"
+          >
+            {initial}
           </span>
-          <span className="text-[9px] font-mono uppercase tracking-caps px-1 py-px rounded-sm bg-bg-2 text-ink-3">
-            {broker.currency}
-          </span>
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className={`text-sm font-semibold ${color.text} truncate`}>
+              {broker.name}
+            </span>
+            <span className={`text-[9px] font-mono uppercase tracking-caps px-1.5 py-0.5 rounded-sm ${color.bg} ${color.text} border ${color.border} flex-shrink-0`}>
+              {broker.currency}
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          <span className="text-xs font-medium tabular text-ink-1">
+          <span className="text-sm font-semibold tabular text-ink-0">
             ${Math.round(totalUsd).toLocaleString('en-US')}
           </span>
           <button
             type="button"
             onClick={onEdit}
-            className="p-1 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+            className="p-1.5 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
             aria-label={`Editar ${broker.name}`}
           >
-            <Pencil size={10} strokeWidth={1.75} />
+            <Pencil size={12} strokeWidth={1.75} />
           </button>
           <button
             type="button"
             onClick={onDelete}
-            className="p-1 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-2 transition-colors"
+            className="p-1.5 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-2 transition-colors"
             aria-label={`Eliminar ${broker.name}`}
           >
-            <Trash2 size={10} strokeWidth={1.75} />
+            <Trash2 size={12} strokeWidth={1.75} />
           </button>
         </div>
       </div>
