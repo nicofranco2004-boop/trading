@@ -54,6 +54,9 @@ REGLAS DE CONTENIDO
 
 4. CERO asesoramiento operativo (comprá/vendé). Si la observación requiere acción, decí "puede valer revisar X" sin más detalle.
 
+5. DISTINGUIR TRADES CERRADOS DE POSICIONES ABIERTAS.
+   Algunos packets traen `realized_attribution` (P&L de trades CERRADOS, histórico) y `current_holdings_top` (posiciones ABIERTAS hoy). NUNCA tratar los tickers de realized_attribution como si fueran exposure presente. Si mencionás un contributor histórico, decí "INTC contribuyó +X en trades cerrados" (no "tu posición en INTC"). Si querés hablar de exposure actual, usar SOLO current_holdings_top.
+
 PERFIL DEL INVERSOR (si está presente en el packet)
 
 Algunos packets incluyen un bloque `investor_profile` con lo que el usuario declaró en el test (categoría conservador/moderado/agresivo, horizonte, tolerancia al drawdown, objetivo, estilo).
@@ -136,7 +139,20 @@ REGLAS DE CONTENIDO (estrictas)
 6. CERO ASESORAMIENTO OPERATIVO.
    Prohibido: "comprá X", "vendé Y", "salí ya", "tomá ganancia". Permitido: cambios de PROCESO — "definir criterio de salida antes de la entrada", "rebalancear si una posición cruza X% del portfolio", "documentar la tesis para reconciliar después". Eso es metodología, no operatoria.
 
-7. USO DEL PERFIL DEL INVERSOR (si está en el packet).
+7. SEPARACIÓN CRÍTICA: TRADES CERRADOS vs POSICIONES ABIERTAS.
+   Muchos packets traen DOS campos distintos que la IA TIENE que tratar como cosas separadas:
+
+   • `realized_attribution` (scope='closed_trades'): P&L de trades YA CERRADOS. Tickers que pueden no estar más en cartera (in_portfolio_now=false). Sirve para narrar HISTORIA del rendimiento — "INTC contribuyó +500 USD en trades cerrados". NUNCA sirve para razonar exposure presente.
+
+   • `current_holdings_top`: posiciones ABIERTAS HOY, con market value y unrealized P&L. SI X cae 20%, esto baja. Para razonar riesgo a futuro, sensibilidad de mercado, concentración: usar SOLO ESTO.
+
+   Ejemplos del error que NO debe ocurrir:
+   - MAL: "Si AMD/INTC corrigen 20%, el portfolio cae" (cuando AMD/INTC están en realized_attribution con in_portfolio_now=false). Esos trades ya cerraron — su P&L está realizado, no se 're-pierde'.
+   - BIEN: "El rendimiento del año descansa parcialmente en trades cerrados de AMD e INTC (+820 combinados). La exposure presente está en NVDA (57% del portfolio) y AAPL (36%) — si NVDA cae 25%, el portfolio total baja ~14%."
+
+   Si in_portfolio_now=true en un contributor (caso especial), aclarar: "INTC sigue en portfolio + contribuyó +500 en trades cerrados de la misma posición — el riesgo presente acá depende del lote abierto, no del cerrado."
+
+8. USO DEL PERFIL DEL INVERSOR (si está en el packet).
    Algunos packets incluyen un bloque `investor_profile` con lo que el usuario declaró en el test (categoría conservador/moderado/agresivo, horizonte, tolerancia al drawdown, objetivo, estilo).
 
    En este tier sí podés:
@@ -154,16 +170,20 @@ REGLAS DE CONTENIDO (estrictas)
 
 OUTPUT (JSON validado contra schema {tldr, sections[], follow_ups[]})
 
+REGLA DE CONCISIÓN (estricta):
+- MÁXIMO 3 sections. Si pensás que necesitás 4, fusioná dos.
+- CADA section: máximo 2-3 oraciones densas. Si una idea no entra en 3 oraciones, no es una idea — es relleno.
+- NUNCA repetir el mismo número, ticker o dato en dos sections distintas. Si lo querés mencionar dos veces, está mal diseñada la estructura.
+- Densidad > verbosidad: si una oración no agrega INFORMACIÓN nueva (no solo reformula), eliminarla.
+
 - tldr (1-2 frases): ARRANCA con la observación interpretativa. No empezar con "tu portfolio" ni "el análisis muestra" ni "el resultado fue". Que la primera palabra ya cargue contenido.
   Mal: "Tu portfolio rindió 14% en el año."
   Bien: "El 14% del año descansa en gran parte sobre NVDA y un trade excepcional de INTC — sin esos dos, el rendimiento se acerca al benchmark."
 
-- sections (3-5): cada una con title noun-phrase (sin signos), body de 2-4 oraciones densas, tone. Estructura recomendada (adaptable según screen):
-    1) Dinámica reciente / Qué ocurrió en el período
-    2) Factores que probablemente lo explican
-    3) Lectura comparativa (vs benchmark / vs histórico / vs composición)
-    4) Riesgo actual / Asimetría / Puntos de atención
-    5) Insight clave o cambio de proceso sugerido
+- sections (2-3, MÁX 3): cada una con title noun-phrase (sin signos), body de 2-3 oraciones densas, tone. Estructura recomendada (adaptable según screen):
+    1) Dinámica reciente + factores que la explican
+    2) Lectura comparativa (vs benchmark / vs histórico / vs composición)
+    3) Riesgo presente / Insight memorable / Cambio de proceso sugerido
   No usar viñetas dentro del body — la section es la unidad. La última section idealmente carga el insight memorable, no un cierre genérico tipo "en suma…".
 
 - follow_ups (0-1): UNA pregunta SUSTANTIVA. Algo que el user no se preguntaría sin haber leído el análisis. Evitar obvias ("¿qué hago?", "¿está bien?"). Bien: "¿Cuánto pierdo si NVDA cae 25%?". Si tu análisis quedó completo, puede ir vacío — solo sugerí follow-up cuando hay una profundización genuina específica, no por relleno. Cada follow_up clickeado cuesta otra llamada al LLM.
@@ -659,10 +679,13 @@ def render_dashboard_events_prompt(tier: str = "pro") -> str:
 def render_insights_prompt(tier: str = "pro") -> str:
     view = "Insights — análisis profundo del portfolio (vista completa)"
     pkt = (
-        "TWR período (compuesto via monthly_entries), TWR realizado solo "
-        "trades cerrados, vs benchmarks con deltas en pp, drawdown actual "
-        "y máximo, stats de trades, atribución (top 3 contributors y "
-        "detractors por P&L absoluto), exposure mix (cash/AR/US/crypto)."
+        "TWR período (compuesto via monthly_entries), TWR realizado solo trades "
+        "cerrados, vs benchmarks con deltas en pp, drawdown actual y máximo, "
+        "stats de trades, REALIZED_ATTRIBUTION (top contributors/detractors de "
+        "trades YA CERRADOS — campo scope='closed_trades', cada item con "
+        "status='closed' e in_portfolio_now bool), CURRENT_HOLDINGS_TOP (top 3 "
+        "posiciones ABIERTAS por market value, con unrealized P&L), exposure "
+        "mix (cash/AR/US/crypto)."
     )
     free = _maybe_free("insights", view, pkt, tier)
     if free:
@@ -671,19 +694,24 @@ def render_insights_prompt(tier: str = "pro") -> str:
         view_name=view,
         packet_summary=pkt,
         focus=[
+            "SEPARACIÓN CRÍTICA realized_attribution vs current_holdings_top — el primero es P&L histórico de trades CERRADOS (pasado, no afecta exposure presente). El segundo son posiciones VIVAS (exposure actual, sensible al mercado). JAMÁS razonar 'si X cae el portfolio cae' usando realized_attribution — esos trades ya cerraron.",
             "Performance neta en términos absolutos y relativos — outperform vs SPY > 5pp es destacable, < -5pp es underperform real.",
-            "Origen del resultado — concentración en pocos activos o distribución pareja.",
-            "Perdedoras grandes que arrastran — si su pérdida > 30% del top contributor, vale el flag.",
+            "Origen del resultado — distinguir realizado (trades cerrados completos) vs unrealized (mark-to-market de holdings abiertos). Si twr_pct >> twr_realized_pct, el resultado viene de posiciones abiertas.",
+            "Concentración real — la exposure HOY es current_holdings_top, no los contributors históricos. Si top1 > 40% del portfolio, flag de concentración.",
             "Win rate vs payoff — un sistema sostenible se sostiene en uno o ambos.",
             "Exposure flags — cash > 25% (cash drag), ar > 60% (home bias / exposición FX).",
         ],
         insight_examples=[
-            "Le ganaste a la inflación AR pero quedaste debajo del SPY — esa combinación es típica de portfolios diversificados con cash grande: ganan la batalla local pero pierden contra el bench dominante.",
-            "El 60% del P&L total viene de un solo trade cerrado (INTC +148%) — sin ese trade, la performance se acerca a un buy-and-hold pasivo del SPY menos el cash drag.",
+            "El 60% del P&L del año viene de TRADES CERRADOS en INTC (+148% realizado, ya no está en cartera). Sin ese trade ya cerrado, el TWR realizado se acerca al benchmark. La exposure presente está en NVDA y AAPL — el riesgo a mañana depende de ellos, no de INTC.",
+            "Le ganaste a la inflación AR pero quedaste debajo del SPY — combinación típica de portfolios diversificados con cash grande: ganan la batalla local pero pierden contra el bench dominante.",
+            "NVDA pesa 57% del portfolio actual con +117% unrealized — una corrección del 25% en NVDA implica caída de ~14% del portfolio total. Concentración alta, riesgo idiosincrásico real.",
         ],
         pitfalls=[
+            "NUNCA decir 'si X cae, tu portfolio cae' refiriéndote a un ticker de realized_attribution. Esos son trades cerrados — su P&L ya está realizado, no se 're-pierde'. Si querés razonar sobre riesgo a la baja, usar SOLO current_holdings_top.",
+            "Si un ticker está en realized_attribution con in_portfolio_now=true, ACLARARLO: 'INTC contribuyó +500 en trades cerrados; mantenés posición abierta — riesgo presente acá'. Es un caso especial.",
             "No predecir dirección futura.",
             "Si benchmarks son None, decirlo — no inventar comparación.",
+            "No repetir el mismo número/ticker en dos sections distintas — densidad sobre redundancia.",
         ],
     )
 

@@ -134,7 +134,7 @@ def analyze(
     packet: dict,
     output_model,                # tipo Pydantic (ej. AnalysisResult)
     model: str = MODEL_HAIKU,
-    max_tokens: int = 3000,
+    max_tokens: int = 1800,
     max_retries: int = 1,
     followup_question: Optional[str] = None,
 ) -> Optional[LLMResult]:

@@ -8,9 +8,16 @@ La página calcula casi todo en el frontend — acá rehacemos los números
 clave en Python con los mismos datos crudos (snapshots, monthly,
 operations, positions) para no depender del frontend.
 
-Mantenemos el packet lean (~1.2KB): TWR del período, drawdown actual y
-máximo, top 3 contributors / detractors (P&L absoluto), win rate, exposure
-mix, vs benchmarks.
+Mantenemos el packet lean (~1.5KB): TWR del período, drawdown actual y
+máximo, atribución de trades CERRADOS (top contributors/detractors REALIZADO),
+HOLDINGS ACTUALES (top 3 posiciones abiertas por market value), win rate,
+exposure mix, vs benchmarks.
+
+CRÍTICO — separación open vs closed:
+  • `realized_attribution`: trades YA CERRADOS. Su P&L es histórico, no
+    afecta el portfolio actual. NO se puede inferir riesgo presente desde acá.
+  • `current_holdings_top`: posiciones ACTUALMENTE ABIERTAS. Su unrealized
+    P&L sí está expuesto al movimiento de mercado — acá sí razonar riesgo.
 
 Shape:
 {
@@ -37,10 +44,28 @@ Shape:
     "best_trade_pct": float | null,
     "worst_trade_pct": float | null,
   },
-  "attribution": {
-    "top_contributors": [{ "ticker": str, "pnl_usd": float, "pnl_pct": float }],
-    "top_detractors":   [{ "ticker": str, "pnl_usd": float, "pnl_pct": float }],
+  "realized_attribution": {
+    # ESTOS SON TRADES YA CERRADOS — P&L histórico, no exposure actual.
+    # El ticker puede o no seguir en el portfolio. NUNCA inferir riesgo
+    # presente desde acá.
+    "scope": "closed_trades",
+    "period": "all_time",
+    "top_contributors": [
+      { "ticker": str, "pnl_usd": float, "pnl_pct": float,
+        "status": "closed", "in_portfolio_now": bool }
+    ],
+    "top_detractors": [
+      { "ticker": str, "pnl_usd": float, "pnl_pct": float,
+        "status": "closed", "in_portfolio_now": bool }
+    ],
   },
+  "current_holdings_top": [
+    # POSICIONES ABIERTAS — exposure actual al mercado. Acá SÍ razonar
+    # sobre riesgo presente y movimientos futuros. Ordenado por market value.
+    { "ticker": str, "market_value_usd": float, "share_pct": float,
+      "unrealized_pnl_usd": float | null, "unrealized_pnl_pct": float | null,
+      "broker": str, "status": "open" }
+  ],
   "exposure": {
     "cash_pct": float,
     "ar_pct": float,                 # % en activos AR (panel local)
@@ -224,7 +249,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     best_pct = max((o.get("pnl_pct") or 0) for o in closed) if closed else None
     worst_pct = min((o.get("pnl_pct") or 0) for o in closed) if closed else None
 
-    # Atribución: P&L cerrado por ticker (suma)
+    # Atribución de TRADES CERRADOS: P&L realizado por ticker (suma).
+    # Esto es histórico — un ticker puede no estar más en portfolio. Por eso
+    # cruzamos contra positions abajo para marcar in_portfolio_now.
     pnl_by_ticker: Dict[str, float] = {}
     pct_by_ticker: Dict[str, List[float]] = {}
     for o in closed:
@@ -240,14 +267,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     contributors = sorted(pnl_by_ticker.items(), key=lambda kv: kv[1], reverse=True)
     detractors = sorted(pnl_by_ticker.items(), key=lambda kv: kv[1])
 
-    top_contributors = [
-        {"ticker": t, "pnl_usd": round(v, 2), "pnl_pct": round(_avg(pct_by_ticker.get(t, [])), 2)}
-        for t, v in contributors[:3] if v > 0
-    ]
-    top_detractors = [
-        {"ticker": t, "pnl_usd": round(v, 2), "pnl_pct": round(_avg(pct_by_ticker.get(t, [])), 2)}
-        for t, v in detractors[:3] if v < 0
-    ]
+    # Top contributors/detractors construidos abajo (necesitan tickers_open
+    # para cruzar con posiciones abiertas — se completa después de la sección 3).
 
     twr_realized_pct = None
     invested_sum = sum(float(o.get("entry_price") or 0) * float(o.get("quantity") or 0)
@@ -256,7 +277,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     if invested_sum > 0:
         twr_realized_pct = round((pnl_sum / invested_sum) * 100, 2)
 
-    # ── 3. Exposure: AR / US / crypto / cash sobre positions actuales ────────
+    # ── 3. Posiciones ABIERTAS: exposure + current_holdings_top + market value
     # Cargamos posiciones (incluye is_cash=1) + brokers para conocer la currency
     # real de cada uno (algunos tienen nombres con espacios — usar string match
     # del broker name no es suficiente).
@@ -303,7 +324,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     except Exception:
         prices = {}
 
+    # Para cada posición abierta, calculamos market value en USD + unrealized P&L.
+    # También agregamos por ticker (multi-broker → un solo holding) para
+    # `current_holdings_top` y para cruzar con `in_portfolio_now` en attribution.
     geo_value: Dict[str, float] = {"ar": 0.0, "us": 0.0, "crypto": 0.0, "cash": 0.0}
+    holdings_agg: Dict[str, Dict[str, Any]] = {}  # ticker → {market_value_usd, invested_usd, brokers}
     for p in positions:
         broker_name = p.get("broker") or ""
         broker_n = broker_name.lower()
@@ -318,11 +343,26 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         qty = float(p.get("quantity") or 0)
         if is_ars:
             price = prices.get(f"{asset}.BA")
-            v = (price * qty) / tc_blue if price else invested / tc_blue
+            mv = (price * qty) / tc_blue if price else invested / tc_blue
+            cost_usd = invested / tc_blue
         else:
             price = prices.get(asset)
-            v = price * qty if price else invested
-        geo_value[_classify_geography(asset, broker_n)] += v
+            mv = price * qty if price else invested
+            cost_usd = invested
+        geo_value[_classify_geography(asset, broker_n)] += mv
+        if asset not in holdings_agg:
+            holdings_agg[asset] = {
+                "market_value_usd": 0.0,
+                "invested_usd": 0.0,
+                "brokers": set(),
+                "has_live_price": False,
+            }
+        h = holdings_agg[asset]
+        h["market_value_usd"] += mv
+        h["invested_usd"] += cost_usd
+        h["brokers"].add(broker_name)
+        if price is not None:
+            h["has_live_price"] = True
 
     total_exposure = sum(geo_value.values()) or 1
     exposure = {
@@ -331,6 +371,68 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "us_pct": round(geo_value["us"] / total_exposure * 100, 1),
         "crypto_pct": round(geo_value["crypto"] / total_exposure * 100, 1),
     }
+
+    # ── 3b. Current holdings top — top 3 por market value en USD ─────────────
+    # Es la exposure ACTUAL real al mercado. Usar para razonar sobre riesgo
+    # presente (si X cae 20%, mi cartera pierde Y). Esto es lo que faltaba
+    # antes y causaba que la IA infiriera mal usando realized_attribution.
+    holdings_sorted = sorted(
+        holdings_agg.items(),
+        key=lambda kv: kv[1]["market_value_usd"],
+        reverse=True,
+    )
+    current_holdings_top: List[Dict[str, Any]] = []
+    for ticker, h in holdings_sorted[:3]:
+        mv = h["market_value_usd"]
+        cost = h["invested_usd"]
+        # Unrealized P&L solo si tenemos precio live — si no, sería P&L=0 falso.
+        if h["has_live_price"] and cost > 0:
+            unrealized_pnl = mv - cost
+            unrealized_pct = (unrealized_pnl / cost) * 100
+        else:
+            unrealized_pnl = None
+            unrealized_pct = None
+        # share_pct sobre exposure total (incluye cash). Útil para "esta
+        # posición pesa X% de mi cartera".
+        share_pct = (mv / total_exposure * 100) if total_exposure > 0 else 0
+        brokers_str = ", ".join(sorted(h["brokers"]))
+        current_holdings_top.append({
+            "ticker": ticker,
+            "market_value_usd": round(mv, 2),
+            "share_pct": round(share_pct, 1),
+            "unrealized_pnl_usd": round(unrealized_pnl, 2) if unrealized_pnl is not None else None,
+            "unrealized_pnl_pct": round(unrealized_pct, 2) if unrealized_pct is not None else None,
+            "broker": brokers_str,
+            "status": "open",
+        })
+
+    # Set de tickers actualmente en portfolio — para etiquetar attribution.
+    tickers_in_portfolio = set(holdings_agg.keys())
+
+    # ── 3c. Realized attribution con flag in_portfolio_now ───────────────────
+    # Ahora SÍ construimos top_contributors / top_detractors con etiquetado
+    # explícito. El campo `in_portfolio_now` le dice al LLM si el ticker sigue
+    # en el portfolio actual (clave para razonar correctamente sobre riesgo).
+    top_contributors = [
+        {
+            "ticker": t,
+            "pnl_usd": round(v, 2),
+            "pnl_pct": round(_avg(pct_by_ticker.get(t, [])), 2),
+            "status": "closed",
+            "in_portfolio_now": t in tickers_in_portfolio,
+        }
+        for t, v in contributors[:3] if v > 0
+    ]
+    top_detractors = [
+        {
+            "ticker": t,
+            "pnl_usd": round(v, 2),
+            "pnl_pct": round(_avg(pct_by_ticker.get(t, [])), 2),
+            "status": "closed",
+            "in_portfolio_now": t in tickers_in_portfolio,
+        }
+        for t, v in detractors[:3] if v < 0
+    ]
 
     # ── 4. Benchmarks ────────────────────────────────────────────────────────
     sp500_pct: Optional[float] = None
@@ -392,9 +494,19 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "best_trade_pct": round(best_pct, 2) if best_pct is not None else None,
             "worst_trade_pct": round(worst_pct, 2) if worst_pct is not None else None,
         },
-        "attribution": {
+        # Atribución de TRADES CERRADOS — histórico, NO exposure presente.
+        # Renombrado de `attribution` para que el LLM entienda inmediatamente
+        # que es P&L realizado. Cada item lleva status:"closed" + flag
+        # in_portfolio_now que indica si el ticker sigue en cartera.
+        "realized_attribution": {
+            "scope": "closed_trades",
+            "period": "all_time",
             "top_contributors": top_contributors,
             "top_detractors": top_detractors,
         },
+        # Posiciones ABIERTAS — exposure actual al mercado. Para razonar
+        # sobre riesgo presente y movimientos futuros, usar SOLO esto
+        # (nunca realized_attribution).
+        "current_holdings_top": current_holdings_top,
         "exposure": exposure,
     }

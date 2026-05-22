@@ -165,6 +165,124 @@ def test_analyze_endpoint_injects_profile():
     print("  Inyección ocurre antes del cache check (cache key incluye perfil) ✓")
 
 
+def test_insights_packet_has_separated_open_closed():
+    print("\n=== Test 7: insights packet separa realized vs current_holdings ===")
+    import os, sqlite3 as s3, tempfile
+    from datetime import datetime
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+
+    # Limpiar caches
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db
+    init_db()
+
+    conn = s3.connect(tmp.name)
+    conn.row_factory = s3.Row
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified, tier) "
+        "VALUES (?, ?, ?, 1, 1, ?)",
+        ("t@test", "h", "T", "pro"),
+    )
+    uid = conn.execute("SELECT id FROM users").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO brokers (user_id, name, currency) VALUES (?, ?, ?)",
+        (uid, "Schwab", "USD"),
+    )
+    # Operations cerradas en INTC y AMD (los del bug original)
+    conn.execute(
+        "INSERT INTO operations (user_id, broker, asset, op_type, entry_price, exit_price, "
+        "quantity, pnl_usd, pnl_pct, date) "
+        "VALUES (?, 'Schwab', 'INTC', 'Venta', 20, 30, 100, 500, 50, '2024-08-01')",
+        (uid,),
+    )
+    conn.execute(
+        "INSERT INTO operations (user_id, broker, asset, op_type, entry_price, exit_price, "
+        "quantity, pnl_usd, pnl_pct, date) "
+        "VALUES (?, 'Schwab', 'AMD', 'Venta', 100, 130, 20, 320, 30, '2024-09-01')",
+        (uid,),
+    )
+    # Positions abiertas en NVDA + AAPL (las que el portfolio realmente tiene)
+    conn.execute(
+        "INSERT INTO positions (user_id, broker, asset, buy_price, quantity, invested, is_cash) "
+        "VALUES (?, ?, ?, ?, ?, ?, 0)",
+        (uid, "Schwab", "NVDA", 100, 50, 5000),
+    )
+    conn.execute(
+        "INSERT INTO positions (user_id, broker, asset, buy_price, quantity, invested, is_cash) "
+        "VALUES (?, ?, ?, ?, ?, ?, 0)",
+        (uid, "Schwab", "AAPL", 180, 22, 3960),
+    )
+    conn.commit()
+
+    from ai.builders.insights import build
+    packet = build(conn, uid)
+
+    if "realized_attribution" not in packet:
+        fail("packet missing realized_attribution")
+    ra = packet["realized_attribution"]
+    if ra.get("scope") != "closed_trades":
+        fail(f"realized_attribution.scope should be 'closed_trades', got {ra.get('scope')}")
+    print("  realized_attribution.scope = 'closed_trades' ✓")
+
+    contributors = ra.get("top_contributors", [])
+    if not contributors:
+        fail("expected at least 1 top_contributor")
+    for c in contributors:
+        if c.get("status") != "closed":
+            fail(f"contributor {c.get('ticker')} status should be 'closed', got {c.get('status')}")
+        if "in_portfolio_now" not in c:
+            fail(f"contributor {c.get('ticker')} missing in_portfolio_now flag")
+    print(f"  {len(contributors)} contributors etiquetados con status='closed' + in_portfolio_now ✓")
+
+    # INTC/AMD vendidos, no están en positions → in_portfolio_now=false
+    intc = next((c for c in contributors if c["ticker"] == "INTC"), None)
+    amd = next((c for c in contributors if c["ticker"] == "AMD"), None)
+    if not intc or intc.get("in_portfolio_now") is not False:
+        fail(f"INTC should have in_portfolio_now=False, got {intc}")
+    if not amd or amd.get("in_portfolio_now") is not False:
+        fail(f"AMD should have in_portfolio_now=False, got {amd}")
+    print("  INTC + AMD marcados in_portfolio_now=false (sold trades) ✓")
+
+    # current_holdings_top debe tener NVDA + AAPL con status='open'
+    if "current_holdings_top" not in packet:
+        fail("packet missing current_holdings_top")
+    holdings = packet["current_holdings_top"]
+    if len(holdings) < 2:
+        fail(f"expected at least 2 current holdings, got {len(holdings)}")
+    for h in holdings:
+        if h.get("status") != "open":
+            fail(f"holding {h.get('ticker')} status should be 'open'")
+        if "market_value_usd" not in h or "share_pct" not in h:
+            fail(f"holding {h.get('ticker')} missing market_value_usd or share_pct")
+    print(f"  {len(holdings)} current_holdings etiquetados status='open' con market_value + share_pct ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 7 PASS")
+
+
+def test_pro_prompt_has_open_closed_rule():
+    print("\n=== Test 8: prompt Pro tiene la regla anti-confusion open/closed ===")
+    from ai.prompts import SYSTEM_BASE_PRO, render_insights_prompt
+
+    assert_contains(SYSTEM_BASE_PRO, "TRADES CERRADOS vs POSICIONES ABIERTAS", "Pro base")
+    assert_contains(SYSTEM_BASE_PRO, "realized_attribution", "Pro base")
+    assert_contains(SYSTEM_BASE_PRO, "current_holdings_top", "Pro base")
+    assert_contains(SYSTEM_BASE_PRO, "in_portfolio_now", "Pro base")
+    print("  SYSTEM_BASE_PRO menciona la separación open/closed explícitamente ✓")
+
+    insights_prompt = render_insights_prompt(tier="pro")
+    assert_contains(insights_prompt, "realized_attribution", "insights pro prompt")
+    assert_contains(insights_prompt, "current_holdings_top", "insights pro prompt")
+    assert_contains(insights_prompt, "MÁXIMO 3 sections", "insights pro prompt")
+    print("  render_insights_prompt incluye reglas de separación + concisión ✓")
+    print("  TEST 8 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -172,6 +290,8 @@ def main():
     test_helper_modes()
     test_chat_prompts_have_operational_prohibition()
     test_analyze_endpoint_injects_profile()
+    test_insights_packet_has_separated_open_closed()
+    test_pro_prompt_has_open_closed_rule()
     print("\n\nALL TESTS PASS")
 
 
