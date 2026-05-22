@@ -13,7 +13,7 @@
 // → redirigimos al user al checkout de MP. Tras pagar, MP nos vuelve a
 // /billing/success y el webhook activa tier='pro'.
 
-import { Sparkles, Check, ArrowRight, Lock, Loader2 } from 'lucide-react'
+import { Sparkles, Check, ArrowRight, Lock, Loader2, Clock } from 'lucide-react'
 import { whatsappUrl } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { useNavigate } from 'react-router-dom'
@@ -94,6 +94,7 @@ export default function Planes() {
   const [billingPeriod, setBillingPeriod] = useState('monthly')  // 'monthly' | 'annual'
   const [subscribing, setSubscribing] = useState(false)
   const [tcBlue, setTcBlue] = useState(1415)  // fallback
+  const [changeModal, setChangeModal] = useState(null)  // null | { plan, period, preview, loading }
 
   useEffect(() => {
     api.get('/dolar')
@@ -102,9 +103,10 @@ export default function Planes() {
   }, [])
   // Detectar si la suscripción está cancelada (en grace period). En ese caso
   // el tier todavía es 'pro' o 'plus' (acceso vigente hasta fin de período)
-  // pero el user PUEDE re-suscribirse — el backend /api/billing/subscribe
-  // permite crear una nueva suscripción porque la actual no está authorized.
+  // pero el user PUEDE cambiar de plan vía /api/billing/change-plan
+  // (convierte el crédito remanente al daily_rate del plan nuevo).
   const subCancelled = user?.subscription_status === 'cancelled'
+  const subAuthorized = user?.subscription_status === 'authorized'
   const isFree = tier === 'free'
   const isPlus = tier === 'plus' && !subCancelled
   const isPro = tier === 'pro' && !subCancelled
@@ -112,23 +114,51 @@ export default function Planes() {
   const hasProTier = isPro || isAdmin
   const hasPlusOrBetter = isPlus || isPro || isAdmin
 
+  // Estado del crédito (modelo Rendi-managed proration)
+  const creditDays = Number(user?.credit_days_remaining || 0)
+  const hasCredit = creditDays > 0
+  const anchorPlan = user?.credit_anchor_plan || null
+  const anchorPeriod = user?.credit_anchor_period || null
+  const creditUsd = Number(user?.credit_remaining_usd || 0)
+  const creditUntil = user?.credit_active_until || null
+
+  // Un user puede cambiar de plan si tiene crédito activo (la conversión
+  // re-acomoda el remaining al daily_rate nuevo). Si es free puro o nunca
+  // pagó, el cambio se hace como subscribe nuevo.
+  const canChangePlan = hasCredit && anchorPlan && anchorPeriod
+
   useEffect(() => {
     track('planes_viewed', { from_tier: tier })
   }, [tier])
 
+  // Match exacto entre el plan que el user tiene anclado y el plan de la card.
+  // Si no hay anchor (user legacy o demo que nunca pasó por Rebill), caemos a
+  // tier para que la UI no diga "Suscribirme" cuando el user ya tiene ese tier.
+  function isCurrentAnchor(cardPlan, cardPeriod) {
+    if (anchorPlan) {
+      return anchorPlan === cardPlan && anchorPeriod === cardPeriod
+    }
+    // Fallback: si tier === cardPlan, lo marcamos como current SOLO si el
+    // billing period matchea — los users legacy no tienen period info, pero
+    // su subscription si lo tiene.
+    if (tier !== cardPlan) return false
+    const subPeriod = user?.subscription_period
+    if (!subPeriod) return cardPeriod === 'monthly'  // default monthly para subs sin period
+    return subPeriod === cardPeriod
+  }
+
   async function onSubscribeClick(planId) {
     if (subscribing) return
+    const targetPeriod = planId === 'plus' ? billingPeriod : billingPeriod
     track('upgrade_subscribe_clicked', {
       from_tier: tier,
       source: 'planes_page',
       plan: planId,
-      period: planId === 'plus' ? 'monthly' : billingPeriod,
+      period: targetPeriod,
     })
     setSubscribing(true)
     try {
-      const body = planId === 'plus'
-        ? { plan: 'plus', period: 'monthly' }
-        : { plan: 'pro', period: billingPeriod }
+      const body = { plan: planId, period: targetPeriod }
       const res = await api.post('/billing/subscribe', body)
       if (res.init_point) {
         window.location.href = res.init_point
@@ -136,6 +166,12 @@ export default function Planes() {
         alert('No pudimos generar el checkout. Probá de nuevo en unos minutos.')
       }
     } catch (ex) {
+      // 409 con hint=use_change_plan: el user tiene sub activa, debería
+      // usar el flujo de cambio de plan (no este). Abrimos el modal directamente.
+      if (ex?.status === 409 && ex?.payload?.detail?.hint === 'use_change_plan') {
+        await onChangePlanClick(planId, targetPeriod)
+        return
+      }
       if (ex?.status === 409) {
         alert('Ya tenés una suscripción activa. Revisá tu estado en Configuración.')
         navigate('/config')
@@ -143,6 +179,56 @@ export default function Planes() {
       }
       console.error('Subscribe error:', ex)
       alert('No pudimos iniciar la suscripción. ' + (ex?.message || 'Probá de nuevo más tarde.'))
+    } finally {
+      setSubscribing(false)
+    }
+  }
+
+  // Cambio de plan con crédito proporcional. Pide preview al backend para
+  // mostrar al user cuántos días le van a quedar con el plan nuevo antes
+  // de confirmar.
+  async function onChangePlanClick(planId, period) {
+    if (subscribing) return
+    track('upgrade_subscribe_clicked', {
+      from_tier: tier,
+      source: 'planes_page_change',
+      plan: planId,
+      period,
+    })
+    setChangeModal({ plan: planId, period, preview: null, loading: true })
+    try {
+      const preview = await api.get(
+        `/billing/preview-change-plan?plan=${planId}&period=${period}`,
+      )
+      setChangeModal({ plan: planId, period, preview, loading: false })
+    } catch (ex) {
+      console.error('Preview change plan error:', ex)
+      setChangeModal(null)
+      alert('No pudimos calcular el cambio. ' + (ex?.message || 'Probá de nuevo.'))
+    }
+  }
+
+  async function confirmChangePlan() {
+    if (!changeModal || subscribing) return
+    setSubscribing(true)
+    try {
+      await api.post('/billing/change-plan', {
+        plan: changeModal.plan,
+        period: changeModal.period,
+      })
+      track('subscription_plan_changed', {
+        from_plan: anchorPlan,
+        from_period: anchorPeriod,
+        to_plan: changeModal.plan,
+        to_period: changeModal.period,
+      })
+      setChangeModal(null)
+      // Reload para refrescar /auth/me con el nuevo tier + credit window
+      window.location.reload()
+    } catch (ex) {
+      console.error('Change plan error:', ex)
+      const msg = ex?.payload?.detail?.error || ex?.message || 'Probá de nuevo.'
+      alert('No pudimos cambiar el plan. ' + msg)
     } finally {
       setSubscribing(false)
     }
@@ -156,13 +242,29 @@ export default function Planes() {
         subtitle="Empezá gratis. Mejorá cuando necesites análisis más profundos, más brokers o features pro."
       />
 
+      {/* Banner de crédito activo — solo si el user tiene crédito sin haberse
+          ido a free todavía. Muestra cuántos días le quedan y a qué rate. */}
+      {hasCredit && anchorPlan && (
+        <div className="max-w-3xl mx-auto mb-6 flex items-center gap-3 border border-line-2/70 bg-bg-2/40 rounded-lg px-4 py-3">
+          <Clock size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
+          <div className="flex-1 min-w-0 text-sm text-ink-1 leading-snug">
+            Tu acceso a <span className="font-medium capitalize">{anchorPlan}</span>
+            {' '}({anchorPeriod === 'annual' ? 'anual' : 'mensual'}) está garantizado por{' '}
+            <span className="font-mono tabular text-ink-0">{Math.round(creditDays)} días más</span>.
+            {' '}Si cambiás de plan, el crédito se reconvierte automáticamente al rate nuevo.
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="text-center py-12 text-ink-3 text-sm">Cargando planes…</div>
       ) : (
         <>
-          {/* Toggle mensual / anual — afecta a Plus y Pro. Ocultamos si el
-              user ya es Pro/Admin (no le mostramos opciones de upgrade). */}
-          {!hasProTier && (
+          {/* Toggle mensual / anual — afecta a Plus y Pro. Si el user ya es
+              Pro/Admin SIN crédito, lo ocultamos (nada que cambiar). Si tiene
+              crédito (modelo proration), lo mostramos siempre porque puede
+              elegir un nuevo plan/period y convertir el crédito. */}
+          {(!hasProTier || canChangePlan) && (
             <div className="flex justify-center mb-6">
               <div className="inline-flex bg-bg-2 border border-line/60 rounded-sm p-0.5">
                 <button
@@ -209,61 +311,97 @@ export default function Planes() {
             />
 
             {/* ── Plus card — cyan distintivo (tier intermedio) ─── */}
-            <PlanCard
-              variant="plus"
-              name="Plus"
-              tagline="Multi-broker + features avanzadas"
-              price={billingPeriod === 'annual' ? `USD ${(+PLUS_PRICE_ANNUAL_USD / 12).toFixed(2)}` : `USD ${PLUS_PRICE_USD}`}
-              priceSub={billingPeriod === 'annual'
-                ? `por mes · facturado anual (USD ${PLUS_PRICE_ANNUAL_USD})`
-                : 'por mes'}
-              priceFootnote={billingPeriod === 'annual'
-                ? `≈ ARS ${fmtArsConverted(+PLUS_PRICE_ANNUAL_USD / 12, tcBlue)} por mes al blue de hoy`
-                : `≈ ARS ${fmtArsConverted(PLUS_PRICE_USD, tcBlue)} al blue de hoy`}
-              features={PLUS_FEATURES}
-              isCurrent={isPlus}
-              ctaLabel={
-                isPlus
-                  ? 'Tu plan actual'
-                  : hasProTier
-                    ? 'Ya tenés Pro'
-                    : subscribing
-                      ? 'Redirigiendo…'
-                      : (billingPeriod === 'annual' ? 'Suscribirme anual' : 'Suscribirme a Plus')
-              }
-              ctaDisabled={isPlus || hasProTier || subscribing}
-              ctaLoading={subscribing}
-              onCtaClick={() => onSubscribeClick('plus')}
-            />
+            {(() => {
+              const plusIsCurrent = isCurrentAnchor('plus', billingPeriod)
+              const plusCtaInfo = ctaForPlan({
+                cardPlan: 'plus',
+                cardPeriod: billingPeriod,
+                isCurrent: plusIsCurrent,
+                otherTier: hasProTier && !canChangePlan,
+                canChangePlan,
+                subscribing,
+                hasCredit,
+              })
+              return (
+                <PlanCard
+                  variant="plus"
+                  name="Plus"
+                  tagline="Multi-broker + features avanzadas"
+                  price={billingPeriod === 'annual' ? `USD ${(+PLUS_PRICE_ANNUAL_USD / 12).toFixed(2)}` : `USD ${PLUS_PRICE_USD}`}
+                  priceSub={billingPeriod === 'annual'
+                    ? `por mes · facturado anual (USD ${PLUS_PRICE_ANNUAL_USD})`
+                    : 'por mes'}
+                  priceFootnote={billingPeriod === 'annual'
+                    ? `≈ ARS ${fmtArsConverted(+PLUS_PRICE_ANNUAL_USD / 12, tcBlue)} por mes al blue de hoy`
+                    : `≈ ARS ${fmtArsConverted(PLUS_PRICE_USD, tcBlue)} al blue de hoy`}
+                  features={PLUS_FEATURES}
+                  isCurrent={plusIsCurrent || isPlus}
+                  ctaLabel={plusCtaInfo.label}
+                  ctaDisabled={plusCtaInfo.disabled}
+                  ctaLoading={subscribing}
+                  onCtaClick={() => {
+                    if (plusCtaInfo.action === 'change') {
+                      onChangePlanClick('plus', billingPeriod)
+                    } else {
+                      onSubscribeClick('plus')
+                    }
+                  }}
+                />
+              )
+            })()}
 
             {/* ── Pro card — VIOLET PREMIUM con badge "Más completo" ─── */}
-            <PlanCard
-              variant="pro"
-              name="Pro"
-              tagline="IA premium + brokers ilimitados"
-              price={billingPeriod === 'annual' ? `USD ${(+PRO_PRICE_ANNUAL_USD / 12).toFixed(2)}` : `USD ${PRO_PRICE_USD}`}
-              priceSub={billingPeriod === 'annual'
-                ? `por mes · facturado anual (USD ${PRO_PRICE_ANNUAL_USD})`
-                : 'por mes'}
-              priceFootnote={billingPeriod === 'annual'
-                ? `≈ ARS ${fmtArsConverted(+PRO_PRICE_ANNUAL_USD / 12, tcBlue)} por mes al blue de hoy`
-                : `≈ ARS ${fmtArsConverted(PRO_PRICE_USD, tcBlue)} al blue de hoy`}
-              features={PRO_FEATURES}
-              badge="Más completo"
-              isCurrent={hasProTier}
-              ctaLabel={
-                hasProTier
-                  ? 'Tu plan actual'
-                  : subscribing
-                    ? 'Redirigiendo…'
-                    : (billingPeriod === 'annual' ? 'Suscribirme anual' : 'Suscribirme a Pro')
-              }
-              ctaDisabled={hasProTier || subscribing}
-              ctaLoading={subscribing}
-              onCtaClick={() => onSubscribeClick('pro')}
-            />
+            {(() => {
+              const proIsCurrent = isCurrentAnchor('pro', billingPeriod)
+              const proCtaInfo = ctaForPlan({
+                cardPlan: 'pro',
+                cardPeriod: billingPeriod,
+                isCurrent: proIsCurrent,
+                otherTier: false,  // pro nunca es "Ya tenés un tier superior"
+                canChangePlan,
+                subscribing,
+                hasCredit,
+              })
+              return (
+                <PlanCard
+                  variant="pro"
+                  name="Pro"
+                  tagline="IA premium + brokers ilimitados"
+                  price={billingPeriod === 'annual' ? `USD ${(+PRO_PRICE_ANNUAL_USD / 12).toFixed(2)}` : `USD ${PRO_PRICE_USD}`}
+                  priceSub={billingPeriod === 'annual'
+                    ? `por mes · facturado anual (USD ${PRO_PRICE_ANNUAL_USD})`
+                    : 'por mes'}
+                  priceFootnote={billingPeriod === 'annual'
+                    ? `≈ ARS ${fmtArsConverted(+PRO_PRICE_ANNUAL_USD / 12, tcBlue)} por mes al blue de hoy`
+                    : `≈ ARS ${fmtArsConverted(PRO_PRICE_USD, tcBlue)} al blue de hoy`}
+                  features={PRO_FEATURES}
+                  badge="Más completo"
+                  isCurrent={proIsCurrent || hasProTier}
+                  ctaLabel={proCtaInfo.label}
+                  ctaDisabled={proCtaInfo.disabled}
+                  ctaLoading={subscribing}
+                  onCtaClick={() => {
+                    if (proCtaInfo.action === 'change') {
+                      onChangePlanClick('pro', billingPeriod)
+                    } else {
+                      onSubscribeClick('pro')
+                    }
+                  }}
+                />
+              )
+            })()}
           </div>
         </>
+      )}
+
+      {/* Modal de confirmación de cambio de plan con preview del crédito */}
+      {changeModal && (
+        <ChangePlanModal
+          state={changeModal}
+          subscribing={subscribing}
+          onConfirm={confirmChangePlan}
+          onClose={() => setChangeModal(null)}
+        />
       )}
 
       <div className="text-center mt-8 space-y-3">
@@ -294,6 +432,142 @@ export default function Planes() {
     </div>
   )
 }
+
+// ─── CTA logic: decide label + action según estado del user ────────────────
+//
+// Estados posibles para una card:
+//   - Es el plan que el user tiene anchored (mismo plan + período): "Tu plan actual"
+//   - User tiene crédito (puede cambiar): "Cambiar a X" → /api/billing/change-plan
+//   - User es free sin crédito: "Suscribirme a X" → /api/billing/subscribe
+//   - User tiene Pro sin crédito y la card es Plus: "Ya tenés Pro" (downgrade
+//     no implementado vía subscribe — solo via cancel)
+function ctaForPlan({ cardPlan, cardPeriod, isCurrent, otherTier, canChangePlan, subscribing, hasCredit }) {
+  if (isCurrent) {
+    return { label: 'Tu plan actual', disabled: true, action: 'none' }
+  }
+  if (otherTier) {
+    return { label: 'Ya tenés Pro', disabled: true, action: 'none' }
+  }
+  if (subscribing) {
+    return { label: 'Redirigiendo…', disabled: true, action: 'none' }
+  }
+  if (canChangePlan) {
+    const planLabel = cardPlan === 'pro' ? 'Pro' : 'Plus'
+    const periodLabel = cardPeriod === 'annual' ? ' anual' : ''
+    return { label: `Cambiar a ${planLabel}${periodLabel}`, disabled: false, action: 'change' }
+  }
+  const periodLabel = cardPeriod === 'annual' ? ' anual' : ''
+  return { label: `Suscribirme${periodLabel}`, disabled: false, action: 'subscribe' }
+}
+
+
+// ─── Modal de confirmación con preview del cambio ──────────────────────────
+function ChangePlanModal({ state, subscribing, onConfirm, onClose }) {
+  const { plan, period, preview, loading } = state
+  const planLabel = plan === 'pro' ? 'Pro' : 'Plus'
+  const periodLabel = period === 'annual' ? 'anual' : 'mensual'
+
+  // Preview puede ser eligible:false si hay error de validación del backend
+  const eligible = preview?.eligible
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-bg-1 border border-line-2/70 rounded-lg max-w-md w-full p-6 shadow-[0_20px_60px_-10px_rgba(0,0,0,0.6)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-semibold text-ink-0 mb-2">
+          Cambiar a {planLabel} {periodLabel}
+        </h2>
+
+        {loading && (
+          <div className="text-sm text-ink-2 py-4 flex items-center gap-2">
+            <Loader2 size={14} strokeWidth={1.75} className="animate-spin" />
+            Calculando tu nuevo crédito…
+          </div>
+        )}
+
+        {!loading && preview && eligible && (
+          <>
+            <p className="text-sm text-ink-2 leading-relaxed mb-4">
+              No te vamos a cobrar de nuevo. Convertimos tus{' '}
+              <span className="font-mono tabular text-ink-0">${preview.remaining_usd}</span>
+              {' '}de crédito (de tu plan {preview.from_plan} {preview.from_period === 'annual' ? 'anual' : 'mensual'})
+              al rate del nuevo plan.
+            </p>
+
+            <div className="bg-bg-2/60 border border-line/40 rounded-md px-4 py-3 mb-5 space-y-2">
+              <div className="flex items-baseline justify-between text-sm">
+                <span className="text-ink-3 text-xs font-mono uppercase tracking-caps">
+                  Antes ({preview.from_plan} {preview.from_period === 'annual' ? 'anual' : 'mensual'})
+                </span>
+                <span className="tabular text-ink-1">{Math.round(preview.current_days)} días</span>
+              </div>
+              <div className="flex items-baseline justify-between text-sm border-t border-line/40 pt-2">
+                <span className="text-ink-3 text-xs font-mono uppercase tracking-caps">
+                  Después ({planLabel} {periodLabel})
+                </span>
+                <span className={`tabular font-semibold ${
+                  preview.new_days >= preview.current_days ? 'text-rendi-pos' : 'text-data-violet'
+                }`}>
+                  {Math.round(preview.new_days)} días
+                </span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-ink-3 leading-relaxed mb-5">
+              Cuando se te acabe el crédito te avisamos por email para que te re-suscribas.
+              Podés volver a cambiar de plan en cualquier momento.
+            </p>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={subscribing}
+                className="flex-1 inline-flex items-center justify-center text-sm font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm py-2 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={onConfirm}
+                disabled={subscribing}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet text-white hover:bg-data-violet/90 border border-data-violet rounded-sm py-2 transition-colors disabled:opacity-60"
+              >
+                {subscribing
+                  ? <Loader2 size={13} strokeWidth={1.75} className="animate-spin" />
+                  : <Sparkles size={13} strokeWidth={1.75} />}
+                <span>Confirmar cambio</span>
+              </button>
+            </div>
+          </>
+        )}
+
+        {!loading && preview && !eligible && (
+          <>
+            <p className="text-sm text-ink-2 mb-4">
+              {preview?.reason === 'same_plan'
+                ? 'Ya estás en este plan.'
+                : 'No podemos cambiar de plan en este momento. Probá suscribirte normal.'}
+            </p>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-full text-sm font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm py-2 transition-colors"
+            >
+              Cerrar
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 
 // ─── Card individual ────────────────────────────────────────────────────────
 

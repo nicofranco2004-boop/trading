@@ -60,6 +60,14 @@ export function AuthProvider({ children }) {
           subscription_period_end: me.subscription_period_end || null,
           subscription_cancelled_at: me.subscription_cancelled_at || null,
           subscription_period: me.subscription_period || null,
+          // Crédito (modelo Rendi-managed proration). Si credit_active_until
+          // > NOW el user tiene acceso al tier sin necesidad de tener una
+          // sub Rebill autorizada — viene de un upgrade/downgrade mid-período.
+          credit_active_until:   me.credit_active_until || null,
+          credit_days_remaining: me.credit_days_remaining ?? 0,
+          credit_remaining_usd:  me.credit_remaining_usd ?? 0,
+          credit_anchor_plan:    me.credit_anchor_plan || null,
+          credit_anchor_period:  me.credit_anchor_period || null,
         }
         localStorage.setItem('rendi_user', JSON.stringify(fresh))
         setUser(fresh)

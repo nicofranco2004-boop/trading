@@ -32,13 +32,28 @@ def run_lifecycle_job(conn) -> dict:
     """Corre el job completo del ciclo de vida. Devuelve dict con counts
     de cada operación para que el caller pueda loguear / monitorear."""
     result = {
+        "credit_expired_downgraded": 0,
         "downgraded": 0,
         "stale_pending_cancelled": 0,
         "synced_from_mp": 0,
         "expiration_reminders_sent": 0,
+        "credit_expiring_reminders_sent": 0,
         "unverified_accounts_deleted": 0,
         "errors": 0,
     }
+    # Source of truth = users.credit_active_until (modelo de crédito tiempo-based).
+    # El downgrade post-cancelación queda como fallback para subs viejas que
+    # nunca pasaron por el nuevo modelo.
+    try:
+        result["credit_expired_downgraded"] = _downgrade_expired_credit(conn)
+    except Exception as ex:
+        log.error("credit expiration downgrade failed: %s", ex)
+        result["errors"] += 1
+    try:
+        result["credit_expiring_reminders_sent"] = _send_credit_expiring_reminders(conn)
+    except Exception as ex:
+        log.error("credit expiring reminders failed: %s", ex)
+        result["errors"] += 1
     try:
         result["downgraded"] = _downgrade_expired_cancellations(conn)
     except Exception as ex:
@@ -48,11 +63,6 @@ def run_lifecycle_job(conn) -> dict:
         result["stale_pending_cancelled"] = _cancel_stale_pending(conn)
     except Exception as ex:
         log.error("stale pending cleanup failed: %s", ex)
-        result["errors"] += 1
-    try:
-        result["synced_from_mp"] = _sync_authorized_with_mp(conn)
-    except Exception as ex:
-        log.error("MP sync step failed: %s", ex)
         result["errors"] += 1
     try:
         result["expiration_reminders_sent"] = _send_expiration_reminders(conn)
@@ -65,6 +75,134 @@ def run_lifecycle_job(conn) -> dict:
         log.error("Unverified accounts cleanup failed: %s", ex)
         result["errors"] += 1
     return result
+
+
+def _downgrade_expired_credit(conn) -> int:
+    """Baja a Free a users cuya credit_active_until ya pasó.
+
+    Solo afecta a users que NO tienen una suscripción 'authorized' activa.
+    Si tienen authorized → el próximo cobro de Rebill va a refillar el
+    crédito, así que dejamos pasar.
+
+    Devuelve count de users degradados."""
+    now = datetime.utcnow().isoformat()
+    rows = conn.execute(
+        """SELECT u.id, u.email, u.tier, u.credit_active_until
+           FROM users u
+           WHERE u.tier IN ('pro', 'plus')
+             AND u.credit_active_until IS NOT NULL
+             AND u.credit_active_until < ?
+             AND NOT EXISTS (
+                SELECT 1 FROM subscriptions s
+                WHERE s.user_id = u.id AND s.status = 'authorized'
+             )""",
+        (now,),
+    ).fetchall()
+    if not rows:
+        return 0
+    count = 0
+    with conn:
+        for r in rows:
+            conn.execute(
+                "UPDATE users SET tier = NULL WHERE id = ?",
+                (r["id"],),
+            )
+            # Audit en el ledger para que se pueda reconstruir el "por qué"
+            conn.execute(
+                """INSERT INTO credit_ledger
+                       (user_id, kind, amount_usd, days_delta,
+                        from_plan, from_period, to_plan, to_period,
+                        active_until_before, active_until_after,
+                        note)
+                   VALUES (?, 'expiration', 0, 0, ?, NULL, NULL, NULL, ?, ?, ?)""",
+                (
+                    r["id"], r["tier"], r["credit_active_until"], r["credit_active_until"],
+                    "Credit window expired — downgraded to free",
+                ),
+            )
+            count += 1
+            log.info(
+                "Credit expired for user %s (was %s, active_until=%s) — downgraded to free",
+                r["id"], r["tier"], r["credit_active_until"],
+            )
+    return count
+
+
+def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
+    """Email "tu crédito se acaba en N días" a users sin sub autorizada.
+
+    Idempotente: reusamos expiration_reminder_sent_at en la subscription más
+    reciente del user. Si el user nunca tuvo sub (caso raro), creamos un
+    placeholder no-op (skip).
+
+    NOTA: Si en el futuro queremos un canal separado por crédito vs cancel,
+    se puede agregar una col `credit_reminder_sent_at` en users.
+    """
+    from billing import emails
+    today = datetime.utcnow().date()
+    target_str = (datetime.utcnow() + timedelta(days=days_before)).isoformat()
+    today_str = datetime.utcnow().isoformat()
+    rows = conn.execute(
+        """SELECT u.id as user_id, u.email, u.name, u.credit_active_until,
+                  u.credit_anchor_plan, u.credit_anchor_period
+           FROM users u
+           WHERE u.tier IN ('pro', 'plus')
+             AND u.credit_active_until IS NOT NULL
+             AND u.credit_active_until BETWEEN ? AND ?
+             AND NOT EXISTS (
+                SELECT 1 FROM subscriptions s
+                WHERE s.user_id = u.id AND s.status = 'authorized'
+             )""",
+        (today_str, target_str),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    sent = 0
+    for r in rows:
+        try:
+            # Idempotencia: chequear si la última subscription cancelled ya recibió
+            # el reminder para este window.
+            existing_sent = conn.execute(
+                """SELECT id FROM subscriptions
+                   WHERE user_id = ? AND expiration_reminder_sent_at IS NOT NULL
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (r["user_id"],),
+            ).fetchone()
+            if existing_sent:
+                continue  # ya mandado
+
+            try:
+                period_end = datetime.fromisoformat(
+                    r["credit_active_until"].replace("Z", "").split(".")[0]
+                )
+                days_left = max(0, (period_end - datetime.utcnow()).days)
+            except Exception:
+                days_left = days_before
+
+            emails.send_expiration_reminder(
+                to=r["email"],
+                user_name=(r["name"] or r["email"].split("@")[0]),
+                days_left=days_left,
+                expires_at=r["credit_active_until"],
+            )
+            # Marcar idempotencia en la sub más reciente del user
+            with conn:
+                conn.execute(
+                    """UPDATE subscriptions
+                       SET expiration_reminder_sent_at = datetime('now')
+                       WHERE user_id = ?
+                       AND id = (SELECT id FROM subscriptions
+                                 WHERE user_id = ?
+                                 ORDER BY created_at DESC LIMIT 1)""",
+                    (r["user_id"], r["user_id"]),
+                )
+            sent += 1
+            log.info("Credit expiring reminder enviado a user %s (days_left=%s)",
+                     r["user_id"], days_left)
+        except Exception as ex:
+            log.error("Credit expiring reminder falló para user %s: %s", r["user_id"], ex)
+    return sent
 
 
 def _delete_unverified_accounts(conn, stale_days: int = 7) -> int:

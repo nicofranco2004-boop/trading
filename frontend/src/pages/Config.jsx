@@ -499,6 +499,16 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   const periodEnd = user?.subscription_period_end
   const isCancelled = subStatus === 'cancelled'
 
+  // Estado del crédito (modelo Rendi-managed proration). Cuando el user
+  // cambió de plan mid-período o cancela mid-período, el acceso al tier
+  // viene del crédito remanente, no de la sub Rebill.
+  const creditDays = Number(user?.credit_days_remaining || 0)
+  const creditUsd = Number(user?.credit_remaining_usd || 0)
+  const creditUntil = user?.credit_active_until || null
+  const anchorPlan = user?.credit_anchor_plan || null
+  const anchorPeriod = user?.credit_anchor_period || null
+  const hasCredit = creditDays > 0
+
   async function handleCancel() {
     if (cancelling) return
     if (!confirm(`¿Cancelar tu suscripción ${tierLabel}? Mantenés acceso hasta el fin del período actual cobrado. Después tu cuenta vuelve a Free.`)) return
@@ -517,11 +527,14 @@ function PlanHeroPro({ tier = 'pro', usage }) {
     }
   }
 
-  // Formato de fecha de expiración (cuando aplica)
+  // Formato de fecha de expiración. Si tenemos credit_active_until lo
+  // preferimos (es nuestro source of truth post-migración); si no,
+  // fallback a current_period_end de la sub Rebill.
+  const expiryRaw = creditUntil || periodEnd
   let periodEndLabel = ''
-  if (periodEnd) {
+  if (expiryRaw) {
     try {
-      const d = new Date(periodEnd)
+      const d = new Date(expiryRaw)
       if (!isNaN(d)) periodEndLabel = d.toLocaleDateString('es-AR', { day: '2-digit', month: 'long', year: 'numeric' })
     } catch {}
   }
@@ -579,6 +592,30 @@ function PlanHeroPro({ tier = 'pro', usage }) {
         </p>
       </div>
 
+      {/* Bloque de crédito — sólo si el user tiene crédito activo y un anchor.
+          Muestra cuántos días quedan + el valor en USD para que el user
+          entienda exactamente qué tiene "comprado". */}
+      {hasCredit && anchorPlan && anchorPeriod && (
+        <div className="min-w-[180px] border-l border-line/40 pl-5">
+          <div className="flex items-baseline justify-between gap-3 mb-1">
+            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Crédito</span>
+            <span className="font-mono text-xs text-ink-1 tabular">
+              {Math.round(creditDays)} días
+            </span>
+          </div>
+          <div className="text-[10px] text-ink-3 leading-tight">
+            Acceso a <span className="text-ink-2 capitalize">{anchorPlan}</span>{' '}
+            ({anchorPeriod === 'annual' ? 'anual' : 'mensual'}){' '}
+            equivale a <span className="text-ink-2 tabular">${creditUsd.toFixed(2)}</span>
+          </div>
+          {periodEndLabel && (
+            <div className="text-[10px] text-ink-3 leading-tight mt-0.5">
+              Vence el <span className="text-ink-2">{periodEndLabel}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex items-center gap-2 flex-wrap">
         {isCancelled ? (
           <button
@@ -595,7 +632,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
               onClick={() => navigate('/planes')}
               className="inline-flex items-center gap-1.5 text-xs font-medium bg-bg-2/60 hover:bg-bg-2 text-ink-1 border border-line/60 rounded-sm px-3 py-2 transition-colors"
             >
-              Ver detalles del plan
+              {hasCredit && anchorPlan ? 'Cambiar plan' : 'Ver detalles del plan'}
             </button>
             <button
               type="button"

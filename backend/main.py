@@ -761,6 +761,63 @@ def init_db():
                 'expiration_reminder_sent_at']:
         if sub_cols and col not in sub_cols:
             conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col} TEXT")
+    # subscriptions: amount_usd para tracking del valor real cobrado (los planes
+    # son USD desde la migración a Rebill — amount_ars queda como legacy).
+    if sub_cols and 'amount_usd' not in sub_cols:
+        conn.execute("ALTER TABLE subscriptions ADD COLUMN amount_usd REAL")
+    conn.commit()
+
+    # ─── Credit window model (Rendi-managed proration) ──────────────────────
+    # Cuando un user cambia de plan (Plus ↔ Pro) o cancela mid-período, NO
+    # le cobramos de nuevo ni le devolvemos plata. Convertimos el tiempo no
+    # consumido en una "ventana de crédito" tracked en `users`:
+    #
+    #   credit_active_until: timestamp hasta el que el user mantiene tier ≠ free
+    #   credit_anchor_*:     plan/period/amount que originó el último anchor
+    #
+    # Funcionamiento:
+    #  • Rebill cobra → grant credit (extend credit_active_until por X días al
+    #    daily_rate del plan)
+    #  • User cambia plan → convert: remaining_credit_usd al daily_rate nuevo
+    #    extiende o acorta credit_active_until
+    #  • credit_active_until vence → cron baja a free + email re-suscribirse
+    #
+    # NULL en estas cols = user nunca tuvo crédito (free o pre-migración).
+    user_cols_after = _table_cols(conn, 'users')
+    if user_cols_after and 'credit_active_until' not in user_cols_after:
+        conn.execute("ALTER TABLE users ADD COLUMN credit_active_until TEXT")
+    if user_cols_after and 'credit_anchor_plan' not in user_cols_after:
+        conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_plan TEXT")
+    if user_cols_after and 'credit_anchor_period' not in user_cols_after:
+        conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_period TEXT")
+    if user_cols_after and 'credit_anchor_amount_usd' not in user_cols_after:
+        conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_amount_usd REAL")
+    if user_cols_after and 'credit_anchor_at' not in user_cols_after:
+        conn.execute("ALTER TABLE users ADD COLUMN credit_anchor_at TEXT")
+    conn.commit()
+
+    # Ledger de movimientos de crédito — audit trail completo de cada
+    # grant / consume / plan_change. Permite debuggear "por qué este user
+    # tiene X días de crédito" y reconstruir el historial.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS credit_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,                  -- 'payment' | 'plan_change' | 'manual_adjust' | 'expiration'
+            amount_usd REAL NOT NULL,            -- positivo: crédito agregado; negativo: consumido
+            days_delta REAL NOT NULL,            -- positivo: tiempo agregado; negativo: tiempo removido
+            from_plan TEXT,                      -- 'plus' | 'pro' | NULL
+            from_period TEXT,                    -- 'monthly' | 'annual' | NULL
+            to_plan TEXT,
+            to_period TEXT,
+            active_until_before TEXT,            -- ISO ts antes del cambio
+            active_until_after TEXT,             -- ISO ts después del cambio
+            source_subscription_id TEXT,         -- Rebill subscription_id si aplica
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, created_at DESC);
+    """)
     conn.commit()
 
     # ─── CSV Importer ────────────────────────────────────────────────────────
@@ -1519,6 +1576,26 @@ def me(uid: int = Depends(get_current_user)):
     d["subscription_period_end"] = sub["current_period_end"] if sub else None
     d["subscription_cancelled_at"] = sub["cancelled_at"] if sub else None
     d["subscription_period"] = sub["period"] if sub else None
+
+    # Estado del crédito (modelo Rendi-managed proration). Source of truth
+    # para acceso al tier — si credit_active_until vence y no hay sub
+    # authorized, el cron baja a free. El frontend usa esto para mostrar
+    # "Tu plan vence en X días" y la UI de cambio de plan con preview.
+    try:
+        from billing import credits as billing_credits
+        cstate = billing_credits.get_credit_state(conn, uid)
+        d["credit_active_until"]   = cstate["active_until"]
+        d["credit_days_remaining"] = cstate["days_remaining"]
+        d["credit_remaining_usd"]  = cstate["remaining_usd"]
+        d["credit_anchor_plan"]    = cstate["anchor_plan"]
+        d["credit_anchor_period"]  = cstate["anchor_period"]
+    except Exception as ex:
+        log.warning("credits.get_credit_state failed for user %s: %s", uid, ex)
+        d["credit_active_until"]   = None
+        d["credit_days_remaining"] = 0
+        d["credit_remaining_usd"]  = 0
+        d["credit_anchor_plan"]    = None
+        d["credit_anchor_period"]  = None
 
     conn.close()
     return d
@@ -6979,12 +7056,16 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
     Devuelve `init_point` (URL del checkout Rebill). El frontend redirige al
     user ahí. Tras pagar, Rebill llama nuestro webhook que activa el tier.
 
+    Semántica:
+      • User Free (sin sub authorized): crea sub nueva → checkout.
+      • User con sub `authorized` para CUALQUIER plan: 409. Tiene que usar
+        /api/billing/change-plan para cambiar (eso convierte el crédito).
+      • User en modo crédito (sin sub authorized, con credit_active_until
+        en el futuro): puede crear sub nueva — la nueva se va a sumar a
+        su crédito existente cuando Rebill cobre.
+
     NOTA: migramos de Mercado Pago a Rebill (commit X). MP queda muerto pero
     el código está en mercadopago.py por si hay que revertir.
-
-    Si el user ya tiene una suscripción 'authorized', devolvemos 409. No
-    reusamos pending links (Rebill los hace single-use, cada click crea uno
-    nuevo).
     """
     from billing import rebill
     conn = get_db()
@@ -6997,7 +7078,8 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
             raise HTTPException(404, "User not found")
         user_email = user_row["email"]
 
-        # 2. Check si ya tiene suscripción activa
+        # 2. Check si ya tiene suscripción activa. Si la tiene → 409 con hint
+        # de usar change-plan.
         existing = conn.execute(
             """SELECT id, mp_subscription_id, status FROM subscriptions
                WHERE user_id = ? AND status = 'authorized'
@@ -7008,6 +7090,7 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
             raise HTTPException(409, {
                 "error": "Ya tenés una suscripción activa.",
                 "subscription_id": existing["mp_subscription_id"],
+                "hint": "use_change_plan",
             })
 
         plan_id = data.plan if data.plan in ("plus", "pro") else "pro"
@@ -7046,6 +7129,134 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
             "subscription_id": link_id,
             "reused": False,
         }
+    finally:
+        conn.close()
+
+
+# ─── Plan change (upgrade / downgrade con crédito proporcional) ─────────────
+
+class ChangePlanIn(BaseModel):
+    plan: str = Field(..., pattern="^(plus|pro)$")
+    period: str = Field(..., pattern="^(monthly|annual)$")
+
+
+@app.post("/api/billing/change-plan")
+def billing_change_plan(data: ChangePlanIn, uid: int = Depends(get_current_user)):
+    """Cambia el plan del user manteniendo el crédito remanente.
+
+    Flujo:
+      1. Verifica que el user tenga crédito activo (active_until > NOW).
+      2. Cancela la suscripción Rebill actual (no más cobros automáticos).
+      3. Convierte el crédito remanente al daily_rate del plan nuevo →
+         credit_active_until se reajusta (más días si el nuevo es más
+         barato, menos si es más caro).
+      4. Actualiza user.tier y anchor.
+
+    Resultado: el user accede al tier nuevo SIN pagar de nuevo. Cuando
+    se le acabe el crédito, el cron lifecycle lo baja a Free y se le
+    pide re-suscribirse.
+
+    Errores:
+      • 400 si quiere cambiar al mismo plan (no-op).
+      • 404 si no tiene crédito activo (debe usar /subscribe en su lugar).
+    """
+    from billing import rebill
+    from billing import credits as billing_credits
+
+    conn = get_db()
+    try:
+        # 1. Validar que tenga crédito activo
+        state = billing_credits.get_credit_state(conn, uid)
+        if not state["is_active"]:
+            raise HTTPException(404, {
+                "error": "No tenés crédito activo para convertir.",
+                "hint": "use_subscribe",
+            })
+        if state["anchor_plan"] == data.plan and state["anchor_period"] == data.period:
+            raise HTTPException(400, {
+                "error": "Ya estás en este plan.",
+            })
+
+        # 2. Cancelar la subscription Rebill actual (si hay)
+        # No falla si no existe — el user puede estar ya en modo crédito puro.
+        existing_sub = conn.execute(
+            """SELECT id, mp_subscription_id FROM subscriptions
+               WHERE user_id = ? AND status = 'authorized'
+               ORDER BY created_at DESC LIMIT 1""",
+            (uid,),
+        ).fetchone()
+        cancelled_sub_id = None
+        if existing_sub and existing_sub["mp_subscription_id"]:
+            cancelled_sub_id = existing_sub["mp_subscription_id"]
+            try:
+                rebill.cancel_subscription(cancelled_sub_id)
+            except Exception as ex:
+                # Si Rebill rechaza el cancel (ej. ya cancelada), seguimos.
+                # El crédito local es nuestra fuente de verdad.
+                log.warning(
+                    "Rebill cancel_subscription falló para %s (uid %s): %s. Sigo con el cambio local.",
+                    cancelled_sub_id, uid, ex,
+                )
+            with conn:
+                conn.execute(
+                    """UPDATE subscriptions
+                       SET status = 'cancelled',
+                           cancelled_at = datetime('now'),
+                           updated_at = datetime('now')
+                       WHERE id = ?""",
+                    (existing_sub["id"],),
+                )
+
+        # 3. Convertir crédito al plan nuevo
+        try:
+            result = billing_credits.convert_plan(
+                conn,
+                user_id=uid,
+                new_plan=data.plan,
+                new_period=data.period,
+                cancelled_subscription_id=cancelled_sub_id,
+                note=f"User-initiated plan change from /api/billing/change-plan",
+            )
+        except Exception as ex:
+            log.exception("convert_plan falló para user %s: %s", uid, ex)
+            raise HTTPException(500, f"Error al convertir crédito: {type(ex).__name__}")
+
+        track_event = "subscription_plan_changed"  # también lo loggeamos del lado server
+        log.info(
+            "%s user=%s from=%s/%s to=%s/%s new_days=%.2f",
+            track_event, uid, state["anchor_plan"], state["anchor_period"],
+            data.plan, data.period, result["days_remaining"],
+        )
+
+        return {
+            "status":         "ok",
+            "new_plan":       data.plan,
+            "new_period":     data.period,
+            "active_until":   result["active_until"],
+            "days_remaining": result["days_remaining"],
+            "cancelled_subscription_id": cancelled_sub_id,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/billing/preview-change-plan")
+def billing_preview_change_plan(
+    plan: str,
+    period: str,
+    uid: int = Depends(get_current_user),
+):
+    """Devuelve lo que pasaría si el user cambia a (plan, period) sin
+    ejecutarlo. Usado por el frontend para confirmar el cambio mostrando
+    "Vas a tener X días de Pro con tu crédito actual"."""
+    from billing import credits as billing_credits
+    if plan not in ("plus", "pro"):
+        raise HTTPException(400, "plan inválido")
+    if period not in ("monthly", "annual"):
+        raise HTTPException(400, "period inválido")
+    conn = get_db()
+    try:
+        return billing_credits.preview_plan_change(conn, uid, plan, period)
     finally:
         conn.close()
 
@@ -7161,10 +7372,28 @@ async def rebill_webhook(request: Request):
 
 
 def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict):
-    """Marca al user como Plus/Pro y actualiza/crea la subscription row."""
+    """Marca al user como Plus/Pro, actualiza/crea la subscription row, y
+    otorga crédito por el período cobrado.
+
+    El crédito (credit_active_until + anchor) es lo que valida el acceso
+    del user al tier — el daily cron baja a Free cuando vence.
+    """
+    from billing import credits as billing_credits
     plan = metadata.get("rendi_plan") or "pro"
     period = metadata.get("rendi_period") or "monthly"
     target_tier = plan if plan in ("plus", "pro") else "pro"
+
+    # Monto cobrado: si Rebill lo manda, usamos eso; si no, usamos el catálogo.
+    amount_usd = None
+    data_obj = payload.get("data") or {}
+    payment_obj = data_obj.get("payment") or {}
+    for c in (payment_obj.get("amount"), data_obj.get("amount"), payload.get("amount")):
+        try:
+            if c is not None:
+                amount_usd = float(c)
+                break
+        except (TypeError, ValueError):
+            continue
 
     with conn:
         conn.execute("UPDATE users SET tier = ? WHERE id = ?", (target_tier, uid))
@@ -7183,20 +7412,39 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
                 """UPDATE subscriptions
                    SET status = 'authorized',
                        mp_subscription_id = ?,
+                       amount_usd = COALESCE(?, amount_usd),
                        updated_at = datetime('now')
                    WHERE id = ?""",
-                (sub_id or "", existing["id"]),
+                (sub_id or "", amount_usd, existing["id"]),
             )
         else:
             conn.execute(
                 """INSERT INTO subscriptions
                        (user_id, mp_subscription_id, external_reference, period,
-                        status, amount_ars, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'authorized', 0, datetime('now'), datetime('now'))""",
-                (uid, sub_id or "", f"rendi-{uid}-{plan}-{period}", period),
+                        status, amount_ars, amount_usd, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'authorized', 0, ?, datetime('now'), datetime('now'))""",
+                (uid, sub_id or "", f"rendi-{uid}-{plan}-{period}", period, amount_usd),
             )
 
-    log.info("Rebill: user %s activated as %s (sub=%s)", uid, target_tier, sub_id)
+    # Conceder crédito por el período cobrado (fuera del with por simplicidad —
+    # credits.grant_payment_credit maneja su propia tx).
+    try:
+        billing_credits.grant_payment_credit(
+            conn,
+            user_id=uid,
+            plan=plan,
+            period=period,
+            amount_usd=amount_usd,  # None → usa catálogo
+            subscription_id=sub_id or None,
+        )
+    except Exception as ex:
+        # No fallar el activate si el ledger falla — loggear y seguir.
+        # El user igual queda con tier asignado; el cron va a detectar
+        # ausencia de credit_active_until pero ya está autorizado en Rebill.
+        log.error("credits.grant_payment_credit falló para user %s: %s", uid, ex)
+
+    log.info("Rebill: user %s activated as %s (sub=%s, amount=%s)",
+             uid, target_tier, sub_id, amount_usd)
 
 
 def _rebill_subscription_status_change(conn, uid: int, metadata: dict, sub_id: str, payload: dict):
@@ -7260,7 +7508,13 @@ def _rebill_cancel(conn, uid: int, sub_id: str, payload: dict):
 
 
 def _rebill_record_payment(conn, uid: int, sub_id: str, payload: dict):
-    """Registra un cobro recurring exitoso (subscription renewal)."""
+    """Registra un cobro recurring exitoso (subscription renewal).
+
+    Además de registrar el payment_id, extiende la ventana de crédito del
+    user — Rebill cobró un nuevo período, así que el user obtiene los días
+    correspondientes al plan/period que tiene anchored.
+    """
+    from billing import credits as billing_credits
     payment_id = ""
     data_obj = payload.get("data") or {}
     for c in (
@@ -7271,15 +7525,90 @@ def _rebill_record_payment(conn, uid: int, sub_id: str, payload: dict):
         if c:
             payment_id = str(c)
             break
+
+    # Solo procesamos `payment.created` con status approved (o equivalente).
+    # Rebill puede mandar payment.updated con status=failed/pending — en esos
+    # casos no extendemos crédito.
+    payment_status = ""
+    for c in (
+        (data_obj.get("payment") or {}).get("status"),
+        data_obj.get("status"),
+        payload.get("status"),
+    ):
+        if c:
+            payment_status = str(c).lower()
+            break
+    is_successful = payment_status in ("approved", "succeeded", "paid", "completed", "")
+
+    # Monto cobrado
+    amount_usd = None
+    payment_obj = data_obj.get("payment") or {}
+    for c in (payment_obj.get("amount"), data_obj.get("amount"), payload.get("amount")):
+        try:
+            if c is not None:
+                amount_usd = float(c)
+                break
+        except (TypeError, ValueError):
+            continue
+
     with conn:
         if sub_id:
             conn.execute(
                 """UPDATE subscriptions
-                   SET last_payment_id = ?, updated_at = datetime('now')
+                   SET last_payment_id = ?,
+                       amount_usd = COALESCE(?, amount_usd),
+                       updated_at = datetime('now')
                    WHERE user_id = ? AND mp_subscription_id = ?""",
-                (payment_id, uid, sub_id),
+                (payment_id, amount_usd, uid, sub_id),
             )
-    log.info("Rebill: payment %s recorded for sub %s (user %s)", payment_id, sub_id, uid)
+
+    if is_successful:
+        # Necesitamos plan/period — los recuperamos del anchor del user o de
+        # la subscription. El payload de payment.created rara vez incluye
+        # metadata, así que el anchor es la fuente más confiable.
+        anchor_row = conn.execute(
+            """SELECT credit_anchor_plan, credit_anchor_period FROM users WHERE id = ?""",
+            (uid,),
+        ).fetchone()
+        anchor_plan = (anchor_row["credit_anchor_plan"] if anchor_row else None)
+        anchor_period = (anchor_row["credit_anchor_period"] if anchor_row else None)
+
+        # Fallback: leer de la subscription row (period siempre se guarda al crear)
+        if not anchor_plan or not anchor_period:
+            sub_row = conn.execute(
+                """SELECT period, external_reference FROM subscriptions
+                   WHERE user_id = ? AND mp_subscription_id = ?""",
+                (uid, sub_id or ""),
+            ).fetchone()
+            if sub_row:
+                anchor_period = anchor_period or sub_row["period"]
+                # external_reference es 'rendi-{uid}-{plan}-{period}'
+                ext = sub_row["external_reference"] or ""
+                parts = ext.split("-")
+                if not anchor_plan and len(parts) >= 4:
+                    anchor_plan = parts[2] if parts[2] in ("plus", "pro") else None
+
+        if anchor_plan and anchor_period:
+            try:
+                billing_credits.grant_payment_credit(
+                    conn,
+                    user_id=uid,
+                    plan=anchor_plan,
+                    period=anchor_period,
+                    amount_usd=amount_usd,
+                    subscription_id=sub_id or None,
+                    note=f"Rebill renewal payment {payment_id}",
+                )
+            except Exception as ex:
+                log.error("credits.grant_payment_credit (renewal) falló para user %s: %s", uid, ex)
+        else:
+            log.warning(
+                "Rebill payment para user %s sin anchor_plan/period — no se otorga crédito (sub=%s)",
+                uid, sub_id,
+            )
+
+    log.info("Rebill: payment %s recorded for sub %s (user %s, status=%s, amount=%s)",
+             payment_id, sub_id, uid, payment_status, amount_usd)
 
 
 @app.post("/api/billing/cancel")
