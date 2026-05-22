@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom'
 import {
   ArrowRight, Sparkles, RefreshCw, LineChart, Layers, Coins,
   Zap, Terminal, ChevronDown, Check,
+  Upload, ListChecks, BarChart3, Bot, MessageSquare,
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { ARS_MONTHLY, ARS_PLUS_MONTHLY, FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from './Planes'
@@ -65,6 +66,9 @@ function NavBar() {
           </a>
           <a href="#live" className="hidden sm:inline-flex text-xs font-mono uppercase tracking-label text-ink-3 hover:text-ink-1 px-3 py-1.5 transition-colors">
             Live
+          </a>
+          <a href="#como-funciona" className="hidden md:inline-flex text-xs font-mono uppercase tracking-label text-ink-3 hover:text-ink-1 px-3 py-1.5 transition-colors">
+            Cómo funciona
           </a>
           <a href="#pricing" className="hidden sm:inline-flex text-xs font-mono uppercase tracking-label text-ink-3 hover:text-ink-1 px-3 py-1.5 transition-colors">
             Pricing
@@ -422,6 +426,337 @@ function BrokerTicker() {
   )
 }
 
+// ─── How it works — guía visual del flujo del producto ──────────────────────
+// 5 pasos numerados, layout alternado (desktop) / stack vertical (mobile).
+// Cada paso lleva un mock visual hecho con HTML/CSS coherente con LivePreview
+// (no son screenshots — escalan con cambios de producto sin re-capturar).
+
+function HowItWorks() {
+  const ref = useReveal()
+  const steps = [
+    {
+      n: '01',
+      Icon: Upload,
+      meta: 'INGEST · CSV o MANUAL',
+      title: 'Cargá tu cartera',
+      body: 'Importás CSV de Cocos, IOL, Schwab, Binance, Wise, Balanz o BullMarket — el parser detecta el formato y mapea cada movimiento. Si preferís control total, agregás posiciones a mano broker por broker.',
+      chips: ['CSV importer', 'Multi-broker', 'TC blue auto'],
+      Visual: MockImport,
+    },
+    {
+      n: '02',
+      Icon: ListChecks,
+      meta: 'OPERACIONES · HISTORIAL',
+      title: 'Registrás operaciones',
+      body: 'Cada venta queda en el historial con P&L en USD y %, broker y fecha. Si solo querés anotar cuánto ganaste o perdiste sin precios exactos, dejá los campos vacíos y completá únicamente P&L USD — el atajo para trades viejos o cuentas externas.',
+      chips: ['FIFO', 'P&L USD real', 'Atajo sin precios'],
+      Visual: MockOperations,
+    },
+    {
+      n: '03',
+      Icon: BarChart3,
+      meta: 'INSIGHTS · COMPORTAMIENTO',
+      title: 'Mirás tus Insights',
+      body: 'Allocation por geografía (US, AR, cripto, cash), win rate, drawdown real, comparativa de tu perfil declarado vs tu cartera real, concentración top 3. Datos limpios sobre cómo decidís — no sobre cuánto te divierte mirar el gráfico.',
+      chips: ['Allocation', 'Drawdown', 'Perfil vs cartera'],
+      Visual: MockInsights,
+    },
+    {
+      n: '04',
+      Icon: Bot,
+      meta: 'IA · ANÁLISIS PROFUNDO',
+      title: 'Analizás con IA cada pantalla',
+      body: 'En Dashboard, Insights, Operaciones, Reportes y más — un botón "Analizar con IA" genera un informe estructurado: qué funcionó, qué cambió, dónde hay riesgo, qué decisión podrías tomar. Usa el snapshot real de tu cartera, no respuestas en abstracto.',
+      chips: ['Por pantalla', 'Estructurado', 'Con tus datos'],
+      Visual: MockAnalyze,
+    },
+    {
+      n: '05',
+      Icon: MessageSquare,
+      meta: 'IA · CHAT CONVERSACIONAL',
+      title: 'Le preguntás lo que necesites',
+      body: 'Chat libre con tu coach IA. Preguntas puntuales: "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL, no en Cocos". Tiene memoria persistente — los hechos que le aclarás los respeta entre sesiones.',
+      chips: ['Memoria persistente', 'Noticias', 'P&L preciso'],
+      Visual: MockChat,
+    },
+  ]
+
+  return (
+    <section
+      id="como-funciona"
+      ref={ref}
+      className="reveal-up relative max-w-7xl mx-auto px-4 sm:px-6 pb-32 pt-12"
+    >
+      {/* Eyebrow + headline */}
+      <div className="text-center mb-16">
+        <div className="text-[11px] font-mono uppercase tracking-label text-ink-3 mb-3">/ cómo funciona</div>
+        <h2 className="display-heading mb-3 max-w-2xl mx-auto">
+          De cargar tu cartera a entender tus decisiones, <span className="text-ink-3">en 5 pasos.</span>
+        </h2>
+        <p className="text-sm text-ink-3 max-w-xl mx-auto">
+          Cada paso suma una capa de claridad sobre lo que ya tenés. No te pide que cambies nada — te muestra lo que el Excel no.
+        </p>
+      </div>
+
+      {/* Pasos */}
+      <div className="space-y-20 lg:space-y-28">
+        {steps.map((s, i) => (
+          <HowItWorksStep key={s.n} step={s} reversed={i % 2 === 1} delayMs={i * 60} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function HowItWorksStep({ step, reversed, delayMs }) {
+  const ref = useReveal()
+  const { n, Icon, meta, title, body, chips, Visual } = step
+  return (
+    <div
+      ref={ref}
+      className="reveal-up grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-16 items-center"
+      style={{ animationDelay: `${delayMs}ms` }}
+    >
+      {/* Texto */}
+      <div className={reversed ? 'lg:order-2' : ''}>
+        {/* Número grande + ícono */}
+        <div className="flex items-center gap-4 mb-5">
+          <span
+            className="font-mono text-5xl sm:text-6xl font-light text-ink-3 leading-none tabular"
+            style={{ letterSpacing: '-0.04em' }}
+          >
+            {n}
+          </span>
+          <div className="w-10 h-10 rounded bg-bg-2 border border-line flex items-center justify-center text-data-violet">
+            <Icon size={18} strokeWidth={1.75} />
+          </div>
+          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 hidden sm:inline">{meta}</span>
+        </div>
+
+        <h3 className="text-2xl sm:text-3xl font-semibold text-ink-0 tracking-tight mb-4 leading-tight">
+          {title}
+        </h3>
+        <p className="text-base text-ink-2 leading-relaxed mb-5">
+          {body}
+        </p>
+
+        {/* Chips */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {chips.map(c => (
+            <span
+              key={c}
+              className="text-[10px] font-mono uppercase tracking-caps text-ink-2 border border-line bg-bg-1/60 px-2 py-1 rounded-sm"
+            >
+              {c}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Visual */}
+      <div className={reversed ? 'lg:order-1' : ''}>
+        <div className="relative">
+          {/* Glow sutil detrás del frame */}
+          <div className="absolute -inset-4 bg-data-violet/5 blur-3xl rounded-3xl pointer-events-none" aria-hidden="true" />
+          <Visual />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Mocks visuales de cada paso ────────────────────────────────────────────
+// Todos siguen la misma estética: border-line, bg-bg-1, header mono.
+// Mantenidos chicos: el mensaje es "así se ve", no "esto es real".
+
+function MockFrame({ title, children, footer }) {
+  return (
+    <div className="relative border border-line rounded-lg bg-bg-1/80 backdrop-blur-sm overflow-hidden shadow-[0_20px_60px_-30px_rgba(139,125,255,0.4)]">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-line/60 bg-bg-2/40">
+        <div className="flex gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-rendi-neg/40" />
+          <span className="w-2 h-2 rounded-full bg-rendi-warn/40" />
+          <span className="w-2 h-2 rounded-full bg-rendi-pos/40" />
+        </div>
+        <span className="ml-2 text-[10px] font-mono text-ink-3">{title}</span>
+      </div>
+      <div className="p-4">{children}</div>
+      {footer && (
+        <div className="px-3 py-2 border-t border-line/60 bg-bg-2/30 text-[10px] font-mono text-ink-3">
+          {footer}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MockImport() {
+  const files = [
+    { name: 'cocos_2024.csv', rows: '127 mov.', ok: true },
+    { name: 'iol_2024.csv', rows: '84 mov.', ok: true },
+    { name: 'binance_2024.csv', rows: '203 mov.', ok: true },
+  ]
+  return (
+    <MockFrame title="rendi · importar CSV" footer="3 archivos · 414 movimientos detectados">
+      <div className="space-y-2">
+        {files.map(f => (
+          <div key={f.name} className="flex items-center gap-3 p-2 border border-line/60 rounded bg-bg-2/30">
+            <div className="w-7 h-7 rounded bg-data-violet/10 border border-data-violet/30 flex items-center justify-center text-data-violet">
+              <Upload size={12} strokeWidth={2} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-ink-0 font-medium truncate">{f.name}</div>
+              <div className="text-[10px] font-mono text-ink-3">{f.rows}</div>
+            </div>
+            <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/5 px-1.5 py-0.5 rounded-sm flex items-center gap-1">
+              <Check size={9} strokeWidth={2.5} />
+              ok
+            </span>
+          </div>
+        ))}
+        <div className="mt-3 text-[10px] font-mono text-ink-3 leading-relaxed">
+          → mapeo automático: <span className="text-data-violet">activo</span>, <span className="text-data-violet">tipo</span>, <span className="text-data-violet">precio</span>, <span className="text-data-violet">P&L</span>
+        </div>
+      </div>
+    </MockFrame>
+  )
+}
+
+function MockOperations() {
+  const rows = [
+    { date: '2024-11-15', asset: 'NVDA', type: 'sell', pnl: '+US$320', pnlClass: 'text-rendi-pos' },
+    { date: '2024-10-22', asset: 'AMD', type: 'sell', pnl: '+US$210', pnlClass: 'text-rendi-pos' },
+    { date: '2024-09-08', asset: 'INTC', type: 'sell', pnl: '−US$180', pnlClass: 'text-rendi-neg' },
+    { date: '2024-08-30', asset: 'AAPL', type: 'dividendo', pnl: '+US$45', pnlClass: 'text-rendi-pos' },
+  ]
+  return (
+    <MockFrame title="rendi · operaciones" footer="4 trades · win rate 75%">
+      <div className="space-y-1">
+        <div className="grid grid-cols-4 gap-2 pb-2 border-b border-line/60 text-[9px] font-mono uppercase tracking-caps text-ink-3">
+          <span>Fecha</span>
+          <span>Activo</span>
+          <span>Tipo</span>
+          <span className="text-right">P&L</span>
+        </div>
+        {rows.map((r, i) => (
+          <div key={i} className="grid grid-cols-4 gap-2 py-1.5 text-[11px] font-mono">
+            <span className="text-ink-3 tabular">{r.date}</span>
+            <span className="text-ink-0 font-medium">{r.asset}</span>
+            <span className="text-ink-2 lowercase">{r.type}</span>
+            <span className={`${r.pnlClass} text-right tabular font-medium`}>{r.pnl}</span>
+          </div>
+        ))}
+      </div>
+    </MockFrame>
+  )
+}
+
+function MockInsights() {
+  const cards = [
+    { label: 'Allocation US', value: '62%', sub: 'meta 55%', neutral: true },
+    { label: 'Win rate', value: '68%', sub: '34 trades', pos: true },
+    { label: 'Drawdown máx', value: '−14.2%', sub: 'jul-24', neg: true },
+    { label: 'Concentración top 3', value: '41%', sub: 'NVDA · BTC · AL30', neutral: true },
+  ]
+  return (
+    <MockFrame title="rendi · insights" footer="actualizado: hoy 09:42">
+      <div className="grid grid-cols-2 gap-2">
+        {cards.map(c => (
+          <div key={c.label} className="border border-line/60 rounded bg-bg-2/30 p-2.5">
+            <div className="text-[9px] font-mono uppercase tracking-label text-ink-3 mb-1.5">{c.label}</div>
+            <div className={`text-lg font-semibold leading-none mb-1 tabular ${c.pos ? 'text-rendi-pos' : c.neg ? 'text-rendi-neg' : 'text-ink-0'}`}>
+              {c.value}
+            </div>
+            <div className="text-[10px] font-mono text-ink-3 truncate">{c.sub}</div>
+          </div>
+        ))}
+      </div>
+    </MockFrame>
+  )
+}
+
+function MockAnalyze() {
+  return (
+    <MockFrame title="rendi · análisis con IA" footer="generado en 4.2s · Pro">
+      <div className="space-y-3">
+        {/* Header */}
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded bg-data-violet/20 border border-data-violet/40 flex items-center justify-center text-data-violet">
+            <Sparkles size={11} strokeWidth={2} />
+          </div>
+          <span className="text-xs font-medium text-ink-0">Análisis de Insights</span>
+          <span className="ml-auto text-[9px] font-mono uppercase tracking-caps text-ink-3">DRAWER</span>
+        </div>
+
+        {/* TLDR */}
+        <div className="border-l-2 border-data-violet pl-3 py-1">
+          <div className="text-[9px] font-mono uppercase tracking-label text-data-violet mb-1">TL;DR</div>
+          <p className="text-[11px] text-ink-1 leading-snug">
+            Tu cartera está sobre-expuesta a US tech (62% vs meta 55%). El win rate es alto pero proviene mayormente de NVDA — sin ella, el realizado sería negativo.
+          </p>
+        </div>
+
+        {/* Secciones */}
+        <div className="space-y-2">
+          <div className="border border-line/60 rounded p-2 bg-bg-2/20">
+            <div className="text-[10px] font-mono uppercase tracking-caps text-rendi-pos mb-1">✓ Funcionando</div>
+            <p className="text-[11px] text-ink-2 leading-snug">Disciplina de toma de ganancia en NVDA — saliste 3 veces en máximos relativos.</p>
+          </div>
+          <div className="border border-line/60 rounded p-2 bg-bg-2/20">
+            <div className="text-[10px] font-mono uppercase tracking-caps text-rendi-warn mb-1">⚠ Riesgo</div>
+            <p className="text-[11px] text-ink-2 leading-snug">Top 3 concentrado 41% — un drawdown del 20% en una sola posición arrastra ~8% del total.</p>
+          </div>
+        </div>
+      </div>
+    </MockFrame>
+  )
+}
+
+function MockChat() {
+  return (
+    <MockFrame title="rendi · coach IA · chat" footer="memoria activa · 12 hechos guardados">
+      <div className="space-y-3">
+        {/* User msg */}
+        <div className="flex justify-end">
+          <div className="max-w-[85%] bg-data-violet/10 border border-data-violet/30 rounded-lg px-3 py-2">
+            <p className="text-[12px] text-ink-0 leading-snug">¿Cuánto realmente gané en NVDA?</p>
+          </div>
+        </div>
+
+        {/* Bot msg */}
+        <div className="flex justify-start">
+          <div className="max-w-[90%] bg-bg-2/40 border border-line/60 rounded-lg px-3 py-2">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <div className="w-4 h-4 rounded bg-data-violet/20 border border-data-violet/40 flex items-center justify-center text-data-violet">
+                <Sparkles size={8} strokeWidth={2.5} />
+              </div>
+              <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3">coach IA</span>
+            </div>
+            <p className="text-[12px] text-ink-1 leading-snug">
+              <span className="text-rendi-pos font-medium">+US$ 1.840 realizado</span> sobre 3 ventas (NVDA en 480, 510 y 545). Tu posición abierta tiene <span className="text-rendi-pos font-medium">+US$ 920 sin realizar</span> a precio de hoy.
+            </p>
+          </div>
+        </div>
+
+        {/* User msg corta */}
+        <div className="flex justify-end">
+          <div className="max-w-[80%] bg-data-violet/10 border border-data-violet/30 rounded-lg px-3 py-2">
+            <p className="text-[12px] text-ink-0 leading-snug">recordá que el AL30 lo tengo en IOL</p>
+          </div>
+        </div>
+
+        {/* Bot confirma memoria */}
+        <div className="flex justify-start">
+          <div className="max-w-[75%] bg-bg-2/40 border border-line/60 rounded-lg px-3 py-2 flex items-center gap-2">
+            <Check size={12} strokeWidth={2.5} className="text-rendi-pos shrink-0" />
+            <p className="text-[12px] text-ink-2 leading-snug">Guardado. Lo voy a usar en futuras respuestas.</p>
+          </div>
+        </div>
+      </div>
+    </MockFrame>
+  )
+}
+
 // ─── Pricing ─────────────────────────────────────────────────────────────────
 
 function Pricing() {
@@ -658,6 +993,7 @@ export default function Landing() {
       <BrokerTicker />
       <LivePreview />
       <Features />
+      <HowItWorks />
       <Pricing />
       <CtaFinal />
       <Footer />
