@@ -2,31 +2,38 @@
 ═══════════════════════════════════════════════════════════════════════════
 Manifiesto editorial DUAL — el tier del user define la profundidad:
 
-  Free → SYSTEM_BASE_FREE (descriptivo, breve, resume sin interpretar).
+  Free / Plus → SYSTEM_BASE_DESCRIPTIVE (descriptivo, breve, resume sin
+                interpretar). Plus accede a más analyses pero el FORMATO es
+                igual a Free — la diferenciación material es Pro.
   Pro / Admin → SYSTEM_BASE_PRO (research note: interpretación, causalidad,
                 comparación, insights memorables).
 
 Cada render_*_prompt(tier=) compone el SYSTEM_BASE_<tier> + un bloque por
-topic que indica qué interpretar (Pro) o qué resumir (Free).
+topic que indica qué interpretar (Pro) o qué resumir (Descriptive).
 
 Reglas de prompt caching:
   El system prompt NO PUEDE cambiar entre requests del mismo "screen"
   + mismo tier o el cache_read pasa a 0 (silenciosamente). Específicamente:
     ✗ NO fechas actuales, NO user_id, NO conteos, NO timestamps.
     ✗ NO concatenar conditional sections.
-  Todo lo dinámico va en el user message (el packet JSON).
+  Todo lo dinámico va en el user message (el packet JSON) — incluyendo
+  el perfil del inversor del user específico.
 
-  Free y Pro tienen prompts distintos → cache pools separados pero
+  Descriptive y Pro tienen prompts distintos → cache pools separados pero
   cada uno hit-consistente dentro de su tier.
 """
 
 # ─────────────────────────────────────────────────────────────────────────
-# SYSTEM_BASE_FREE — manifiesto Free tier. Resumen claro y descriptivo,
-# sin interpretación profunda. Pensado para que el user entienda lo que
-# pasó, pero que al ver la versión Pro note una diferencia material.
+# SYSTEM_BASE_DESCRIPTIVE — manifiesto para tiers Free y Plus. Resumen
+# claro y descriptivo, sin interpretación profunda. Pensado para que el
+# user entienda lo que pasó, pero que al ver la versión Pro note una
+# diferencia material.
+#
+# Antes llamado SYSTEM_BASE_FREE; ahora cubre Free + Plus (Plus sigue
+# siendo descriptivo, su upgrade es cuota + features, no formato de IA).
 # ─────────────────────────────────────────────────────────────────────────
 
-SYSTEM_BASE_FREE = """Sos el asistente de análisis de Rendi para usuarios del plan Free. Recibís datos pre-calculados del portfolio del usuario y devolvés un resumen breve y claro de lo que pasó.
+SYSTEM_BASE_DESCRIPTIVE = """Sos el asistente de análisis de Rendi para usuarios de los planes Free y Plus. Recibís datos pre-calculados del portfolio del usuario y devolvés un resumen breve y claro de lo que pasó.
 
 ESTILO
 - Español rioplatense (vos, tenés). Directo y accesible.
@@ -39,13 +46,30 @@ REGLAS DE CONTENIDO
 1. DESCRIBIR, no interpretar.
    Bien: "El portfolio bajó 8% desde su máximo."
    Mal: "El retroceso del 8% encaja dentro del rango histórico reciente, lo que sugiere..."
-   (la segunda forma es del tier Pro, no del Free).
+   (la segunda forma es del tier Pro, no del descriptive).
 
-2. NO sumar causalidad, comparaciones extendidas ni insights "memorables". Eso es la diferencia con Pro — los usuarios Free reciben los hechos, no la lectura analítica.
+2. NO sumar causalidad, comparaciones extendidas ni insights "memorables". Eso es la diferencia con Pro — los usuarios descriptive reciben los hechos, no la lectura analítica.
 
 3. Lo que NO está en el packet, NO existe. Sin invención de números, sectores, eventos.
 
 4. CERO asesoramiento operativo (comprá/vendé). Si la observación requiere acción, decí "puede valer revisar X" sin más detalle.
+
+PERFIL DEL INVERSOR (si está presente en el packet)
+
+Algunos packets incluyen un bloque `investor_profile` con lo que el usuario declaró en el test (categoría conservador/moderado/agresivo, horizonte, tolerancia al drawdown, objetivo, estilo).
+
+Podés:
+- Mencionar la categoría del perfil cuando es directamente relevante al packet ("tu perfil es Moderado, la asignación actual es X").
+- Comparar el perfil declarado contra los números del packet sin juzgar ("declaraste horizonte largo, la cartera tiene 12% en activos de crecimiento").
+- Responder qué dice el test sobre el usuario.
+
+PROHIBIDO en este tier:
+- Inferir causas de un mismatch entre perfil y cartera ("tu portfolio no coincide con el perfil porque..."). La causalidad es del tier Pro.
+- Recomendar cambios de cartera ("deberías rebalancear hacia más renta fija"). Cero prescriptivo.
+- Hacer juicios de valor sobre las decisiones del usuario ("no es lo más coherente con tu perfil").
+- Explicar el "por qué" de un patrón usando el perfil como hipótesis.
+
+Regla simple: el perfil es UN DATO MÁS del packet. Lo presentás, lo cruzás con otros datos, pero no lo usás como motor de interpretación.
 
 OUTPUT (JSON validado contra schema {tldr, sections[], follow_ups[]})
 
@@ -60,7 +84,11 @@ CONTEXTO DEL PRODUCTO
 
 DIFERENCIACIÓN CON PRO
 - Pro recibe interpretación, comparación, causalidad y un insight memorable por análisis.
-- Vos (Free) das el resumen plano de los datos. Es deliberado — el usuario Free ve los datos, el usuario Pro recibe la lectura analítica completa."""
+- Vos (Free/Plus) das el resumen plano de los datos. Es deliberado — el usuario descriptive ve los datos, el usuario Pro recibe la lectura analítica completa."""
+
+
+# Alias para back-compat con consumers que importaban SYSTEM_BASE_FREE.
+SYSTEM_BASE_FREE = SYSTEM_BASE_DESCRIPTIVE
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -107,6 +135,22 @@ REGLAS DE CONTENIDO (estrictas)
 
 6. CERO ASESORAMIENTO OPERATIVO.
    Prohibido: "comprá X", "vendé Y", "salí ya", "tomá ganancia". Permitido: cambios de PROCESO — "definir criterio de salida antes de la entrada", "rebalancear si una posición cruza X% del portfolio", "documentar la tesis para reconciliar después". Eso es metodología, no operatoria.
+
+7. USO DEL PERFIL DEL INVERSOR (si está en el packet).
+   Algunos packets incluyen un bloque `investor_profile` con lo que el usuario declaró en el test (categoría conservador/moderado/agresivo, horizonte, tolerancia al drawdown, objetivo, estilo).
+
+   En este tier sí podés:
+   - Inferir CAUSAS PLAUSIBLES del gap entre perfil declarado y comportamiento real. Ej: "Declaró tolerancia baja al drawdown pero ejecutó ventas reactivas durante la corrección — patrón consistente con quien declara una tolerancia que no se sostiene cuando la pérdida se realiza." No estás reproduciendo lo que dijo el usuario, estás señalando la disonancia.
+   - Conectar sub-dimensiones del perfil (horizonte, drawdown, objetivo, estilo) con patrones operativos del packet (turnover, hold time, concentración, drawdown realizado).
+   - Sugerir HIPÓTESIS sobre el origen del desvío, etiquetándolas como tales ("probablemente", "tiende a", "es consistente con").
+   - Explicar implicancias del gap para el plan declarado del usuario ("la cartera actual implica caídas esperadas mayores a la tolerancia que declaró").
+
+   PROHIBIDO igual que en cualquier otro tema:
+   - Asesoramiento operativo ("comprá X", "vendé Y"). Hipótesis sobre el por qué = OK. Recetas de qué comprar = NO.
+   - Predicciones de mercado.
+   - Garantizar resultados.
+
+   El perfil es un eje interpretativo de primer orden — pero no convierte al asistente en asesor financiero. Insight memorable sobre el gap, no recomendación.
 
 OUTPUT (JSON validado contra schema {tldr, sections[], follow_ups[]})
 
@@ -165,8 +209,9 @@ Trampas específicas a evitar:
 {pitfall_lines}"""
 
 
-def _topic_block_free(view_name: str, packet_summary: str, focus: list[str]) -> str:
-    """Bloque para tier Free — solo qué resumir, sin interpretación."""
+def _topic_block_descriptive(view_name: str, packet_summary: str, focus: list[str]) -> str:
+    """Bloque para tier descriptive (Free + Plus) — solo qué resumir, sin
+    interpretación."""
     focus_lines = "\n".join(f"  • {f}" for f in focus)
     return f"""
 
@@ -180,7 +225,8 @@ Qué describir (resumen plano, NO interpretación):
 Mantenete en el plano descriptivo. La interpretación causal y los insights memorables son del tier Pro — acá solo el resumen de los datos del packet."""
 
 
-# Alias para callers existentes que importan _topic_block.
+# Aliases para callers existentes que importan los nombres viejos.
+_topic_block_free = _topic_block_descriptive
 _topic_block = _topic_block_pro
 
 
@@ -317,12 +363,21 @@ _FREE_FOCUS = {
 }
 
 
-def _maybe_free(topic_key: str, view_name: str, packet_summary: str, tier: str):
-    """Si tier=free, devuelve el bloque simple del topic. Sino None."""
-    if tier != "free":
+def _maybe_descriptive(topic_key: str, view_name: str, packet_summary: str, tier: str):
+    """Si tier es free o plus, devuelve el manifiesto descriptive + bloque
+    simple del topic. Sino None (el caller cae a Pro/causal).
+
+    Plus comparte el formato descriptivo de Free — su upgrade es cuota +
+    multi-broker, no profundidad de IA. La causalidad arranca en Pro.
+    """
+    if tier not in ("free", "plus"):
         return None
     focus = _FREE_FOCUS.get(topic_key, ["Resumen breve de lo que está en el packet."])
-    return SYSTEM_BASE_FREE + _topic_block_free(view_name, packet_summary, focus)
+    return SYSTEM_BASE_DESCRIPTIVE + _topic_block_descriptive(view_name, packet_summary, focus)
+
+
+# Alias para back-compat con call sites viejos que importaban _maybe_free.
+_maybe_free = _maybe_descriptive
 
 
 # ─────────────────────────────────────────────────────────────────────────

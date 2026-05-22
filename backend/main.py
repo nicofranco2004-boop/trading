@@ -6693,9 +6693,20 @@ _INVESTOR_LABELS = {
 }
 
 
-def _format_investor_profile_for_prompt(profile_json: Optional[str]) -> str:
+def _format_investor_profile_for_prompt(profile_json: Optional[str], mode: str = "causal") -> str:
     """Convierte el JSON del perfil de inversor en un bloque legible para el
-    system prompt de Coach IA. Devuelve '' si el user no completó el test."""
+    system prompt de Coach IA. Devuelve '' si el user no completó el test.
+
+    El parámetro `mode` controla qué instrucciones acompañan al bloque:
+      • 'descriptive' (Free + Plus): permite mencionar y cruzar, prohíbe
+        inferir causa o recomendar.
+      • 'causal' (Pro + Admin): permite inferencia causal probable del gap
+        entre perfil y comportamiento real, manteniendo prohibido el
+        asesoramiento operativo específico.
+
+    El default es 'causal' por back-compat — call sites viejos (si quedan)
+    siguen funcionando, y se ajustan cuando los modernicemos.
+    """
     if not profile_json:
         return ""
     try:
@@ -6726,11 +6737,24 @@ def _format_investor_profile_for_prompt(profile_json: Optional[str]) -> str:
     if not lines:
         return ""
 
+    if mode == "descriptive":
+        instruction = (
+            "Podés mencionar y cruzar este perfil con los datos del snapshot. "
+            "PROHIBIDO inferir causas del gap perfil-cartera, recomendar cambios, "
+            "o explicar el 'por qué' usando el perfil como hipótesis. Si hay "
+            "mismatch, presentá el dato (\"declaró X, la cartera tiene Y\") sin "
+            "interpretarlo."
+        )
+    else:
+        instruction = (
+            "Podés inferir causas plausibles del gap perfil-cartera y conectar "
+            "patrones operativos con sub-dimensiones del perfil. Hipótesis sí, "
+            "recetas específicas (\"comprá X / vendé Y\") no."
+        )
+
     return (
         "\n\nPERFIL DEL INVERSOR (lo que declaró en el onboarding)\n"
-        "Usá este perfil para calibrar tu respuesta — pero contrastalo con su comportamiento real "
-        "(turnover, concentración, hold time). Si hay mismatch (ej: dice 'long-term holder' pero rota 80% mensual), "
-        "señalalo amablemente como insight, no como reproche.\n"
+        + instruction + "\n"
         + "\n".join(lines)
     )
 
@@ -6972,6 +6996,22 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
         except Exception as ex:
             log.exception(f"AI builder fallo (uid={uid}, screen={screen})")
             raise HTTPException(500, f"Error construyendo packet: {type(ex).__name__}")
+
+        # Enriquecer el packet con el perfil del inversor (test de 7 preguntas).
+        # Lo metemos en el packet — NO en el system prompt — para que el
+        # cache key incluya el perfil (cambios al test invalidan el cache de
+        # análisis del user, que es lo correcto). El system prompt ya tiene
+        # reglas sobre cómo usar el bloque `investor_profile`.
+        prof_row = conn.execute(
+            "SELECT investor_profile FROM users WHERE id=?", (uid,)
+        ).fetchone()
+        if prof_row and prof_row["investor_profile"]:
+            try:
+                profile_dict = json.loads(prof_row["investor_profile"])
+                if isinstance(profile_dict, dict) and profile_dict:
+                    packet["investor_profile"] = profile_dict
+            except (ValueError, TypeError):
+                pass  # JSON corrupto — seguimos sin perfil
 
         # Cache HIT? → solo para análisis principales. Follow-ups NUNCA se
         # cachean (cada pregunta es única).
@@ -8216,7 +8256,13 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     max_tokens = 1000 if is_premium else 300
     max_tokens_fallback = 800 if is_premium else 250
 
-    investor_block = _format_investor_profile_for_prompt(prof_row["investor_profile"] if prof_row else None)
+    # Modo del bloque de perfil: Pro/Admin → causal (infiere causas plausibles).
+    # Free/Plus → descriptive (solo presenta el dato, no interpreta).
+    profile_mode = "causal" if is_premium else "descriptive"
+    investor_block = _format_investor_profile_for_prompt(
+        prof_row["investor_profile"] if prof_row else None,
+        mode=profile_mode,
+    )
 
     portfolio_json = json.dumps(data.snapshot, indent=2, ensure_ascii=False, default=str)
     system_text = f"""{base_system}
