@@ -6800,6 +6800,61 @@ class AIChatIn(BaseModel):
         return v
 
 
+def _sanitize_chat_snapshot(raw: dict) -> dict:
+    """Normaliza el snapshot que viene del frontend antes de pasarlo al LLM.
+
+    El frontend manda `{summary, positions, monthly, brokers, ...}` pero
+    nada garantiza que los campos sean del tipo esperado (None vs lista,
+    objetos con shape distinto, etc.). Si llega basura, el LLM puede
+    confundirse silenciosamente.
+
+    Estrategia: NO rechazar (lax) — normalizar:
+      - keys no esperadas: se preservan tal cual (el LLM las puede ignorar)
+      - listas que vienen None → []
+      - objetos críticos con shape inesperado → loggear + dejar tal cual
+      - inyectar marca '_kind' a positions ('open') y operations ('closed_trade')
+        SI vienen sin etiqueta — defensa para que el LLM no las confunda
+        aunque el frontend olvide marcarlas.
+
+    Devolvemos un dict nuevo (no muta el input).
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    sanitized: dict = dict(raw)  # shallow copy
+
+    # 1. Listas top-level — si vienen None, convertimos a []
+    for list_key in ("positions", "operations", "monthly", "brokers"):
+        v = sanitized.get(list_key)
+        if v is None:
+            sanitized[list_key] = []
+        elif not isinstance(v, list):
+            # Type mismatch — loggear y forzar a []
+            log.warning("Chat snapshot field %r is not a list (got %s) — coerced to []",
+                        list_key, type(v).__name__)
+            sanitized[list_key] = []
+
+    # 2. summary debe ser dict (o se omite)
+    if "summary" in sanitized and not isinstance(sanitized["summary"], dict):
+        log.warning("Chat snapshot.summary is not a dict — removed")
+        sanitized.pop("summary", None)
+
+    # 3. Defensa anti-confusión open/closed: cada position lleva
+    # `_kind: 'open_position'`, cada operation lleva `_kind: 'closed_trade'`.
+    # El LLM lo ve inline y desambigua incluso si el frontend no marcó.
+    for p in sanitized.get("positions", []):
+        if isinstance(p, dict) and "_kind" not in p:
+            p["_kind"] = "open_position"
+    for o in sanitized.get("operations", []):
+        if isinstance(o, dict) and "_kind" not in o:
+            o["_kind"] = "closed_trade"
+
+    # 4. Marca top-level que el snapshot ya pasó por sanitizer (debug)
+    sanitized["_sanitized"] = True
+
+    return sanitized
+
+
 # ── Tool definitions para el coach IA ────────────────────────────────────────
 
 _AI_TOOLS = [
@@ -8278,12 +8333,19 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
         mode=profile_mode,
     )
 
-    portfolio_json = json.dumps(data.snapshot, indent=2, ensure_ascii=False, default=str)
+    # Sanitizar el snapshot ANTES de serializarlo al LLM — el frontend
+    # puede mandar listas como None, objetos con shape inesperado, o
+    # campos sin etiqueta open/closed. El sanitizer normaliza todo y
+    # marca positions con _kind='open_position' / operations con
+    # _kind='closed_trade' (defensa anti-confusión inline).
+    snapshot_clean = _sanitize_chat_snapshot(data.snapshot)
+    portfolio_json = json.dumps(snapshot_clean, indent=2, ensure_ascii=False, default=str)
     system_text = f"""{base_system}
 
 DATOS COMPLETOS DEL USUARIO
-El snapshot incluye: summary (métricas agregadas: total USD, PnL, drawdown, win rate, etc.), positions (posiciones abiertas con broker, activo, cantidad, valor USD, PnL, % del portfolio), cash, operations (operaciones cerradas), monthly (historial mes a mes), brokers, y benchmarks (S&P 500, inflación AR, dólar blue — para comparar la performance del usuario con referencias de mercado).
+El snapshot incluye: summary (métricas agregadas: total USD, PnL, drawdown, win rate, etc.), positions (posiciones ABIERTAS — cada item marcado _kind='open_position'), operations (operaciones CERRADAS — cada item marcado _kind='closed_trade'), monthly (historial mes a mes), brokers, y benchmarks (S&P 500, inflación AR, dólar blue).
 Cuando el usuario pregunta algo específico ("¿qué % es Tesla?", "¿cuánto perdí en BTC?", "¿mi mejor mes?"), buscá primero en estos datos. Usá las tools para complementar solo si necesitás algo que no está acá.
+El campo `_kind` en cada item te dice si es posición abierta o trade cerrado — usarlo para razonar correctamente sobre riesgo presente (solo open_position) vs P&L histórico (closed_trade).
 
 ```json
 {portfolio_json}

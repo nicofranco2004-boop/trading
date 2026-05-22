@@ -420,6 +420,61 @@ def test_pro_prompt_mentions_field_docs():
     print("  TEST 13 PASS")
 
 
+def test_chat_snapshot_sanitizer():
+    print("\n=== Test 14: _sanitize_chat_snapshot normaliza shape + inyecta _kind ===")
+    from main import _sanitize_chat_snapshot
+
+    # None → {}
+    if _sanitize_chat_snapshot(None) != {}:
+        fail("None input should return {}")
+    print("  None → {} ✓")
+
+    # Listas None → []
+    r = _sanitize_chat_snapshot({"positions": None, "operations": None, "monthly": None})
+    for key in ("positions", "operations", "monthly"):
+        if r[key] != []:
+            fail(f"{key}=None should coerce to []")
+    print("  None lists → [] (positions, operations, monthly) ✓")
+
+    # Lista no-lista (string) → [] con warning
+    r = _sanitize_chat_snapshot({"positions": "not a list"})
+    if r["positions"] != []:
+        fail("non-list positions should coerce to []")
+    print("  Non-list type-coerce: positions string → [] ✓")
+
+    # Positions sin _kind → marcado open_position
+    r = _sanitize_chat_snapshot({"positions": [{"asset": "AAPL", "quantity": 10}]})
+    if r["positions"][0].get("_kind") != "open_position":
+        fail("position should get _kind='open_position'")
+    print("  positions[] inject _kind='open_position' ✓")
+
+    # Operations sin _kind → marcado closed_trade
+    r = _sanitize_chat_snapshot({"operations": [{"asset": "INTC", "pnl_usd": 500}]})
+    if r["operations"][0].get("_kind") != "closed_trade":
+        fail("operation should get _kind='closed_trade'")
+    print("  operations[] inject _kind='closed_trade' ✓")
+
+    # _kind preserved si ya está
+    r = _sanitize_chat_snapshot({"positions": [{"_kind": "custom", "asset": "X"}]})
+    if r["positions"][0]["_kind"] != "custom":
+        fail("existing _kind should not be overwritten")
+    print("  _kind preserved si existe ✓")
+
+    # summary no-dict se remueve
+    r = _sanitize_chat_snapshot({"summary": "string-not-dict"})
+    if "summary" in r:
+        fail("non-dict summary should be removed")
+    print("  summary non-dict removed ✓")
+
+    # _sanitized flag presente
+    r = _sanitize_chat_snapshot({})
+    if r.get("_sanitized") is not True:
+        fail("sanitized snapshot should have _sanitized=True flag")
+    print("  _sanitized flag inyectado ✓")
+
+    print("  TEST 14 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -434,6 +489,7 @@ def main():
     test_reports_packet_has_realized_alias()
     test_packets_emit_field_docs()
     test_pro_prompt_mentions_field_docs()
+    test_chat_snapshot_sanitizer()
     print("\n\nALL TESTS PASS")
 
 
