@@ -820,6 +820,80 @@ def init_db():
     """)
     conn.commit()
 
+    # ─── Backfill de crédito para subs pre-proration ───────────────────────
+    # Users que pagaron antes del commit a09891a no tienen credit_active_until
+    # poblado — el _rebill_activate viejo no llamaba a grant_payment_credit.
+    # Inferimos la ventana desde:
+    #   • subscriptions.current_period_end si está
+    #   • sino, subscriptions.created_at + period_days
+    # Idempotente: solo aplica si credit_active_until IS NULL.
+    rows = conn.execute(
+        """SELECT u.id AS user_id, u.tier,
+                  s.id AS sub_id, s.mp_subscription_id, s.period,
+                  s.current_period_end, s.created_at AS sub_created_at,
+                  s.external_reference
+           FROM users u
+           JOIN subscriptions s ON s.user_id = u.id
+           WHERE u.tier IN ('plus', 'pro')
+             AND u.credit_active_until IS NULL
+             AND s.status = 'authorized'
+        """
+    ).fetchall()
+    if rows:
+        from datetime import datetime as _dt, timedelta as _td
+        _period_days = {'monthly': 30.0, 'annual': 365.0}
+        _prices = {('plus','monthly'): 4.0, ('plus','annual'): 40.0,
+                   ('pro','monthly'): 9.0, ('pro','annual'): 90.0}
+        seen_users = set()
+        for r in rows:
+            uid = r['user_id']
+            if uid in seen_users:
+                continue
+            seen_users.add(uid)
+            plan = r['tier']
+            period = r['period'] or 'monthly'
+            # Determinar active_until: si tenemos current_period_end usamos eso;
+            # si no, asumimos que el período arrancó en sub.created_at.
+            until_iso = None
+            if r['current_period_end']:
+                until_iso = r['current_period_end']
+            else:
+                try:
+                    started = _dt.fromisoformat(
+                        (r['sub_created_at'] or '').replace('Z','').split('.')[0]
+                    )
+                    period_days = _period_days.get(period, 30.0)
+                    until_iso = (started + _td(days=period_days)).isoformat()
+                except Exception:
+                    # Fallback: NOW + period_days (peor caso, el user igual no pierde nada)
+                    until_iso = (_dt.utcnow() + _td(days=_period_days.get(period, 30.0))).isoformat()
+            amount = _prices.get((plan, period), 0.0)
+            now_iso = _dt.utcnow().isoformat()
+            conn.execute(
+                """UPDATE users
+                   SET credit_active_until = ?,
+                       credit_anchor_plan = ?,
+                       credit_anchor_period = ?,
+                       credit_anchor_amount_usd = ?,
+                       credit_anchor_at = ?
+                   WHERE id = ?""",
+                (until_iso, plan, period, amount, now_iso, uid),
+            )
+            conn.execute(
+                """INSERT INTO credit_ledger
+                       (user_id, kind, amount_usd, days_delta,
+                        from_plan, from_period, to_plan, to_period,
+                        active_until_before, active_until_after,
+                        source_subscription_id, note)
+                   VALUES (?, 'manual_adjust', ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, ?)""",
+                (
+                    uid, amount, plan, period, until_iso,
+                    r['mp_subscription_id'] or None,
+                    f"Backfill pre-proration: inferido desde sub {r['mp_subscription_id']}",
+                ),
+            )
+        conn.commit()
+
     # ─── CSV Importer ────────────────────────────────────────────────────────
     # import_batches: cada upload (en estado 'preview' es la sesión; al confirm
     # pasa a 'confirmed'; al revert pasa a 'reverted').
