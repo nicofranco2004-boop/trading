@@ -79,7 +79,7 @@ export const PLUS_FEATURES = [
 export const PRO_FEATURES = [
   { label: 'Todo lo del Plus' },
   { label: '60 análisis IA por semana', sub: '10× más que Free/Plus' },
-  { label: 'Chat libre con Coach IA', sub: '60 consultas/sem · preguntá lo que quieras (vs 12 guiadas en Free/Plus)' },
+  { label: 'Chat libre con Coach IA', sub: '40 consultas/sem · preguntá lo que quieras (vs 12 guiadas en Free/Plus)' },
   { label: 'Respuestas con causalidad y comparaciones', sub: 'No solo descripción' },
   { label: 'Follow-ups: profundizá cada análisis con preguntas libres' },
   { label: 'Brokers ilimitados' },

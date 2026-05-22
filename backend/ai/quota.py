@@ -84,10 +84,10 @@ LIMITS = {
         "analyses_per_week": 60,        # 10× Free
         "hub_queries_per_week": 60,
         # Pro desbloquea CHAT LIBRE — pueden tipear cualquier pregunta.
-        # 60/sem alineado con el resto de los caps Pro. Costo proyectado:
-        # ~$1.20-2.40/Pro/mes con prompt cache activo (system_text estable
-        # por tier, snapshot va al user message → cache hit ~80%).
-        "chat_per_week": 60,
+        # Cap 40/sem (down de 60) tras audit #3 — un Pro user real usa
+        # ~40% de la cuota → 16 chats/sem promedio, 40 deja headroom 2.5×.
+        # Worst case proyectado: ~$3.50/Pro/mes (chat + analyses + hub).
+        "chat_per_week": 40,
     },
     "admin": {
         "analyses_per_week": 1000,

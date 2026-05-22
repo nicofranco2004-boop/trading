@@ -170,7 +170,7 @@ def _table_cols(conn, table: str) -> set:
     # Table name is always hardcoded in callers — never user-supplied
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
-               'import_mappings', 'news', 'subscriptions'}
+               'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -8733,6 +8733,60 @@ def _is_whitelisted_question(text: str) -> bool:
     return _normalize_question(text) in _FREE_QUESTIONS_NORMALIZED
 
 
+# Pricing Haiku 4.5 (USD por 1M tokens). Actualizar si Anthropic cambia.
+# https://docs.anthropic.com/en/docs/about-claude/pricing
+_HAIKU_PRICE = {
+    "input": 1.0,          # input no cacheado
+    "cache_write": 1.25,   # cache_creation
+    "cache_read": 0.10,    # cache_read
+    "output": 5.0,
+}
+
+
+def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> int:
+    """Estima costo de un response del LLM y loggea cache hit/create.
+
+    Devuelve costo en centésimos de USD (int) para persistir en
+    ai_usage_daily.cost_usd_cents. Si usage_obj es None (versión vieja del
+    SDK, mock test), devuelve 0 sin romper.
+
+    Audit #3 fix B4: sin este log, una caída del cache hit rate de 50%→25%
+    duplica el costo y solo nos enteramos por la factura mensual.
+    """
+    if usage_obj is None:
+        return 0
+    try:
+        # SDK Anthropic v0.34+: usage tiene input_tokens, output_tokens,
+        # cache_creation_input_tokens, cache_read_input_tokens.
+        inp = int(getattr(usage_obj, "input_tokens", 0) or 0)
+        out = int(getattr(usage_obj, "output_tokens", 0) or 0)
+        cw = int(getattr(usage_obj, "cache_creation_input_tokens", 0) or 0)
+        cr = int(getattr(usage_obj, "cache_read_input_tokens", 0) or 0)
+
+        cost_usd = (
+            inp * _HAIKU_PRICE["input"]
+            + cw * _HAIKU_PRICE["cache_write"]
+            + cr * _HAIKU_PRICE["cache_read"]
+            + out * _HAIKU_PRICE["output"]
+        ) / 1_000_000
+
+        total_input = inp + cw + cr
+        cache_hit_pct = (cr / total_input * 100) if total_input > 0 else 0.0
+
+        log.info(
+            "ai_chat_usage tier=%s uid=%s stage=%s input=%d cache_write=%d cache_read=%d "
+            "output=%d cache_hit=%.1f%% cost_usd=%.5f",
+            tier, uid, stage, inp, cw, cr, out, cache_hit_pct, cost_usd,
+        )
+        # Convertir a centésimos (1 USD = 100 cents). Round mínimo 0 — si la
+        # llamada fue gratis (todo cache_read y resultó <0.5 cent), no perdemos
+        # el log pero tampoco contaminamos la DB con ceros engañosos.
+        return max(0, round(cost_usd * 100))
+    except Exception as ex:
+        log.warning("ai_chat_usage logging failed: %s", ex)
+        return 0
+
+
 @app.post("/api/ai/chat")
 def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_user)):
     """Chat con el coach IA — tier-aware.
@@ -8794,14 +8848,21 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     is_premium = tier in ("pro", "admin")
 
     # Gating Free/Plus: solo whitelist. Pro/Admin: libre.
-    # Tomamos el ÚLTIMO user message del array (el actual). Los previos
-    # son historia y ya pasaron por esta misma validación cuando se enviaron.
+    #
+    # Audit #3 fix B2: ANTES validábamos solo el último user msg, pero un
+    # cliente Free podía mandar history fabricado [user:ataque, assistant:OK,
+    # user:whitelisted] → el ataque se colaba al LLM. AHORA:
+    #   1. Validamos el último user msg contra whitelist (= gate).
+    #   2. En PATH Free, IGNORAMOS toda historia y mandamos SOLO el último
+    #      mensaje validado al LLM. Free no tiene memoria conversacional —
+    #      cada pregunta es one-shot. Eso elimina el vector de injection.
+    last_user_msg = ""
+    for m in reversed(data.messages):
+        if m.role == "user":
+            last_user_msg = str(m.content or "")
+            break
+
     if not is_premium:
-        last_user_msg = ""
-        for m in reversed(data.messages):
-            if m.role == "user":
-                last_user_msg = str(m.content or "")
-                break
         if not _is_whitelisted_question(last_user_msg):
             log.info("ai_chat rejected non-whitelisted msg, tier=%s uid=%s msg=%r",
                      tier, uid, last_user_msg[:80])
@@ -8815,8 +8876,11 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
             )
 
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
-    max_tokens = 1000 if is_premium else 300
-    max_tokens_fallback = 800 if is_premium else 250
+    # Pro chat max_tokens bajado de 1000 → 800 tras audit #3 (cost control).
+    # 800 tokens output mantiene respuestas profundas (~600 palabras) y baja
+    # output cost del worst case ~20%.
+    max_tokens = 800 if is_premium else 300
+    max_tokens_fallback = 600 if is_premium else 250
 
     # Modo del bloque de perfil: Pro/Admin → causal (infiere causas plausibles).
     # Free/Plus → descriptive (solo presenta el dato, no interpreta).
@@ -8865,7 +8929,17 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
 --- FIN CONTEXTO ---"""
 
     # Construir messages enriqueciendo el PRIMER user message con el context.
-    incoming = [m.model_dump() for m in data.messages]
+    #
+    # Audit #3 fix B2: en path Free/Plus mandamos SOLO el último user msg
+    # (ya validado por whitelist arriba). Sin historia → no hay vector de
+    # injection vía history fabricado. Pro/Admin sí preserva la historia
+    # (chat conversacional real).
+    if is_premium:
+        incoming = [m.model_dump() for m in data.messages]
+    else:
+        # Free/Plus: one-shot. Mandamos al LLM SOLO el mensaje validado.
+        incoming = [{"role": "user", "content": last_user_msg}]
+
     messages_loop: list = []
     context_injected = False
     for m in incoming:
@@ -8906,11 +8980,17 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
                     (b.text for b in response.content if hasattr(b, "text")),
                     ""
                 )
+                # Audit #3 fix B4: loggear cache hit rate + tokens reales.
+                # Sin esto no podemos detectar regresiones del cache (cuando
+                # cache_read cae a 0, el costo se multiplica por ~10× y solo
+                # nos enteramos por la factura mensual de Anthropic).
+                usage_obj = getattr(response, "usage", None)
+                cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "final")
                 # Registrar consumo de cuota (solo en éxito — si falló no descontamos).
                 try:
                     conn2 = get_db()
                     try:
-                        quota.record_chat(conn2, uid)
+                        quota.record_chat(conn2, uid, cost_usd_cents=cost_cents)
                     finally:
                         conn2.close()
                 except Exception as ex:
@@ -8943,10 +9023,12 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
             messages=messages_loop,
         )
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
+        usage_obj = getattr(response, "usage", None)
+        cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "fallback")
         try:
             conn2 = get_db()
             try:
-                quota.record_chat(conn2, uid)
+                quota.record_chat(conn2, uid, cost_usd_cents=cost_cents)
             finally:
                 conn2.close()
         except Exception as ex:

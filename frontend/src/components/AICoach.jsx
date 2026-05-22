@@ -287,7 +287,7 @@ export default function AICoach({ snapshot, suggested }) {
         <div className="border-t border-line/70 dark:border-line/40 px-3 py-2 bg-data-violet/5 flex items-center gap-2">
           <Lock size={11} className="text-data-violet flex-shrink-0" />
           <p className="text-[10px] text-ink-2 leading-snug flex-1">
-            ¿Querés preguntar libre? Pro desbloquea chat sin restricciones (60 consultas/sem).
+            ¿Querés preguntar libre? Pro desbloquea chat sin restricciones (40 consultas/sem).
           </p>
           <a
             href="/planes"

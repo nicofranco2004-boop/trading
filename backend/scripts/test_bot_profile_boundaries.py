@@ -1076,7 +1076,7 @@ def test_chat_whitelist_and_normalizer():
 
 
 def test_chat_quota_gating():
-    print("\n=== Test 24: cuota chat — Free/Plus=6, Pro=60, Admin=1000 ===")
+    print("\n=== Test 24: cuota chat — Free/Plus=6, Pro=40, Admin=1000 ===")
     import os, sqlite3 as s3, tempfile
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
     os.environ["DB_PATH"] = tmp.name
@@ -1101,13 +1101,13 @@ def test_chat_quota_gating():
     free_uid = conn.execute("SELECT id FROM users WHERE tier='free'").fetchone()["id"]
     pro_uid = conn.execute("SELECT id FROM users WHERE tier='pro'").fetchone()["id"]
 
-    # Cuota inicial: 0/6 para free, 0/60 para pro
+    # Cuota inicial: 0/6 para free, 0/40 para pro (cap Pro bajado audit #3)
     u_free = quota.get_current_usage(conn, free_uid)
     u_pro = quota.get_current_usage(conn, pro_uid)
     if u_free["chat_limit"] != 6 or u_free["chat_remaining"] != 6:
         fail(f"free debería tener 6/6, got {u_free}")
-    if u_pro["chat_limit"] != 60 or u_pro["chat_remaining"] != 60:
-        fail(f"pro debería tener 60/60, got {u_pro}")
+    if u_pro["chat_limit"] != 40 or u_pro["chat_remaining"] != 40:
+        fail(f"pro debería tener 40/40, got {u_pro}")
     print("  cuotas iniciales correctas ✓")
 
     # Consumir 3 chats de free, verificar 3/6
@@ -1141,6 +1141,51 @@ def test_chat_quota_gating():
     print("  TEST 24 PASS")
 
 
+def test_chat_cost_logger():
+    print("\n=== Test 25: _log_and_estimate_chat_cost cuenta tokens correctamente ===")
+    from main import _log_and_estimate_chat_cost
+    import types
+
+    # Mock usage object (estilo Anthropic SDK)
+    def make_usage(input_t, output_t, cache_create=0, cache_read=0):
+        u = types.SimpleNamespace()
+        u.input_tokens = input_t
+        u.output_tokens = output_t
+        u.cache_creation_input_tokens = cache_create
+        u.cache_read_input_tokens = cache_read
+        return u
+
+    # Caso 1: sin cache, 1000 input + 500 output
+    # Cost: 1000 * 1 + 500 * 5 = 1000 + 2500 = 3500 USD micro = 0.0035 USD = 0 cents (round)
+    cents = _log_and_estimate_chat_cost(make_usage(1000, 500), "pro", 1, "test")
+    if cents != 0:  # 0.0035 USD = 0.35 cents → round = 0
+        fail(f"caso 1 esperado 0 cents, got {cents}")
+    print("  caso 1 (sin cache, 1K+500): 0 cents ✓")
+
+    # Caso 2: chat típico con cache hit
+    # 200 input nuevo + 8000 cache_read + 600 output
+    # = 200*1 + 8000*0.1 + 600*5 = 200 + 800 + 3000 = 4000 USD micro = 0.004 USD = 0 cents
+    cents = _log_and_estimate_chat_cost(make_usage(200, 600, 0, 8000), "pro", 1, "test")
+    if cents != 0:
+        fail(f"caso 2 esperado 0 cents, got {cents}")
+    print("  caso 2 (cache hit 80%): 0 cents ✓")
+
+    # Caso 3: chat caro — cache write inicial + output máximo
+    # 200 + 10000 cache_write + 800 output = 200 + 12500 + 4000 = 16700 = 0.0167 USD = 2 cents
+    cents = _log_and_estimate_chat_cost(make_usage(200, 800, 10000, 0), "pro", 1, "test")
+    if cents != 2:
+        fail(f"caso 3 esperado 2 cents (0.0167 USD round), got {cents}")
+    print("  caso 3 (cache write inicial): 2 cents ✓")
+
+    # Caso 4: None usage → 0 sin romper
+    cents = _log_and_estimate_chat_cost(None, "pro", 1, "test")
+    if cents != 0:
+        fail(f"None usage debería devolver 0, got {cents}")
+    print("  caso 4 (None usage): 0 cents sin romper ✓")
+
+    print("  TEST 25 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -1166,6 +1211,7 @@ def main():
     test_bond_d_variant_metadata()
     test_chat_whitelist_and_normalizer()
     test_chat_quota_gating()
+    test_chat_cost_logger()
     print("\n\nALL TESTS PASS")
 
 

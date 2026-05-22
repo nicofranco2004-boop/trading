@@ -8,7 +8,7 @@ import {
   ArrowRight, Sparkles, RefreshCw, LineChart, Layers, Coins,
   Zap, Terminal, ChevronDown, Check,
   Upload, ListChecks, BarChart3, Bot, MessageSquare,
-  Pencil, Plus,
+  Plus,
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { ARS_MONTHLY, ARS_PLUS_MONTHLY, FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from './Planes'
@@ -68,7 +68,7 @@ function NavBar() {
           <a href="#live" className="hidden sm:inline-flex text-xs font-mono uppercase tracking-label text-ink-3 hover:text-ink-1 px-3 py-1.5 transition-colors">
             Live
           </a>
-          <a href="#como-funciona" className="hidden md:inline-flex text-xs font-mono uppercase tracking-label text-ink-3 hover:text-ink-1 px-3 py-1.5 transition-colors">
+          <a href="#como-funciona" className="hidden sm:inline-flex text-xs font-mono uppercase tracking-label text-ink-3 hover:text-ink-1 px-3 py-1.5 transition-colors">
             Cómo funciona
           </a>
           <a href="#pricing" className="hidden sm:inline-flex text-xs font-mono uppercase tracking-label text-ink-3 hover:text-ink-1 px-3 py-1.5 transition-colors">
@@ -440,8 +440,8 @@ function HowItWorks() {
       Icon: Upload,
       meta: 'CARTERA · CSV o MANUAL',
       title: 'Cargá tu cartera',
-      body: 'Importás el CSV de Cocos, IOL, Schwab, Binance, Wise, Balanz o BullMarket — el parser detecta el formato y mapea cada movimiento. Si preferís control total, desde Cartera tocás "Agregar posición", elegís broker, activo, cantidad y precio de entrada. Los depósitos los registrás editando la caja del broker (el efectivo USD/ARS/USDT queda como saldo y se suma al capital aportado). Cada activo queda agrupado por broker, con moneda original, valor live en USD y P&L.',
-      chips: ['CSV importer', 'Agregar posición', 'Editar caja · depósitos'],
+      body: 'Importás el CSV de Cocos, Schwab, Binance o Balanz — el parser detecta el formato y mapea cada movimiento (o usá el formato genérico para otros brokers). Si preferís control total, desde Cartera tocás "Agregar posición", elegís broker, activo, cantidad y precio de entrada. Los depósitos y retiros se registran desde la caja de cada broker. Cada activo queda agrupado por broker, con moneda original, valor live en USD y P&L.',
+      chips: ['CSV importer', 'Agregar posición', 'Depósitos y retiros'],
       Visual: MockPositions,
     },
     {
@@ -449,7 +449,7 @@ function HowItWorks() {
       Icon: ListChecks,
       meta: 'OPERACIONES · COMPRAS + VENTAS',
       title: 'Añadí compras y ventas para seguir tu cartera',
-      body: 'Las compras se agregan desde Cartera — si ya tenés esa posición, suma al lote existente. Para vender, abrís la posición y tocás "Realizar venta": Rendi aplica FIFO automático contra los lotes más viejos (la lógica fiscal AR), calcula el P&L USD y % real, y transfiere la operación al historial de Operaciones. Si querés anotar un trade viejo sin precios exactos, dejás los campos vacíos y completás solamente P&L USD — atajo para cuentas externas.',
+      body: 'Las compras se agregan desde Cartera — si ya tenés esa posición, suma al lote existente. Para vender, abrís la posición y tocás "Registrar venta": Rendi aplica FIFO automático contra los lotes más viejos (criterio FIFO requerido por AFIP), calcula el P&L USD y % real, y transfiere la operación al historial de Operaciones. Si querés anotar un trade viejo sin precios exactos, dejás los campos vacíos y completás solamente P&L USD — atajo para cuentas externas.',
       chips: ['FIFO automático', 'Venta → Operaciones', 'Atajo sin precios'],
       Visual: MockOperations,
     },
@@ -467,7 +467,7 @@ function HowItWorks() {
       Icon: Bot,
       meta: 'IA · ANÁLISIS PROFUNDO',
       title: 'Analizás con IA cada pantalla',
-      body: 'En Dashboard, Insights, Operaciones, Reportes y más — un botón "Analizar con IA" genera un informe estructurado: qué funcionó, qué cambió, dónde hay riesgo, qué decisión podrías tomar. Usa el snapshot real de tu cartera, no respuestas en abstracto.',
+      body: 'En Dashboard, Insights, Operaciones, Reportes y más — un botón "Analizar" genera un informe estructurado: qué funcionó, qué cambió, dónde hay riesgo, qué decisión podrías tomar. Usa el snapshot real de tu cartera, no respuestas en abstracto.',
       chips: ['Por pantalla', 'Estructurado', 'Con tus datos'],
       Visual: MockAnalyze,
     },
@@ -477,8 +477,9 @@ function HowItWorks() {
       meta: 'IA · CHAT CONVERSACIONAL',
       title: 'Le preguntás lo que necesites',
       body: 'En todos los planes accedés al Coach IA con 12 preguntas guiadas (6 consultas por semana). Con Pro desbloqueás chat libre: preguntá lo que quieras — "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.',
-      chips: ['12 preguntas en Free', 'Chat libre en Pro', 'Memoria persistente'],
+      chips: ['12 guiadas · 6/sem (Free)', 'Chat libre · 40/sem (Pro)', 'Memoria persistente'],
       Visual: MockChat,
+      cta: { label: 'Ver plan Pro', to: '/planes' },
     },
   ]
 
@@ -511,7 +512,7 @@ function HowItWorks() {
 
 function HowItWorksStep({ step, reversed, delayMs }) {
   const ref = useReveal()
-  const { n, Icon, meta, title, body, chips, Visual } = step
+  const { n, Icon, meta, title, body, chips, Visual, cta } = step
   return (
     <div
       ref={ref}
@@ -531,7 +532,9 @@ function HowItWorksStep({ step, reversed, delayMs }) {
           <div className="w-10 h-10 rounded bg-bg-2 border border-line flex items-center justify-center text-data-violet">
             <Icon size={18} strokeWidth={1.75} />
           </div>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 hidden sm:inline">{meta}</span>
+          {/* Meta visible desde xs ahora (antes hidden sm:inline causaba que en
+              mobile se perdiera la categoría del paso). Audit #3 L_meta. */}
+          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">{meta}</span>
         </div>
 
         <h3 className="text-2xl sm:text-3xl font-semibold text-ink-0 tracking-tight mb-4 leading-tight">
@@ -552,13 +555,29 @@ function HowItWorksStep({ step, reversed, delayMs }) {
             </span>
           ))}
         </div>
+
+        {/* CTA opcional — se muestra solo si el step lo declara (Paso 5 →
+            Plan Pro). El visitor que terminó de leer la propuesta tiene
+            intención caliente, no pierde el momento yendo al Pricing. */}
+        {cta && (
+          <div className="mt-5">
+            <Link
+              to={cta.to}
+              className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps text-data-violet hover:text-data-violet/80 border border-data-violet/40 hover:border-data-violet/70 bg-data-violet/5 hover:bg-data-violet/10 px-3 py-1.5 rounded-sm transition-colors"
+            >
+              {cta.label}
+              <ArrowRight size={11} strokeWidth={2} />
+            </Link>
+          </div>
+        )}
       </div>
 
-      {/* Visual */}
-      <div className={reversed ? 'lg:order-1' : ''}>
+      {/* Visual: aria-hidden porque es decorativo (no contiene info que el
+          screen reader necesite leer — el texto del step ya describe todo). */}
+      <div className={reversed ? 'lg:order-1' : ''} aria-hidden="true">
         <div className="relative">
           {/* Glow sutil detrás del frame */}
-          <div className="absolute -inset-4 bg-data-violet/5 blur-3xl rounded-3xl pointer-events-none" aria-hidden="true" />
+          <div className="absolute -inset-4 bg-data-violet/5 blur-3xl rounded-3xl pointer-events-none" />
           <Visual />
         </div>
       </div>
@@ -601,8 +620,9 @@ function MockPositions() {
       currency: 'USD',
       total: 'US$ 22.480',
       positions: [
-        // hasSellBtn: NVDA muestra el botón "Realizar venta" para que el
-        // visitante vea LITERALMENTE de dónde sale la transferencia a Operaciones.
+        // hasSellBtn: NVDA muestra el botón "Registrar venta" — el mismo
+        // label que usa Positions.jsx en producto. Conecta visualmente: el
+        // visitante ve la acción exacta que va a encontrar al loguearse.
         { asset: 'NVDA', qty: '14', value: 'US$ 7.812', pnlPct: '+38.4%', pos: true, hasSellBtn: true },
         { asset: 'AAPL', qty: '32', value: 'US$ 6.420', pnlPct: '+12.1%', pos: true },
       ],
@@ -615,7 +635,7 @@ function MockPositions() {
         { asset: 'AL30', qty: '8.500', value: 'US$ 6.120', pnlPct: '+7.2%', pos: true },
         { asset: 'GGAL', qty: '1.200', value: 'US$ 4.860', pnlPct: '+18.5%', pos: true },
         // Cash: saldo de caja editable — la forma de registrar depósitos.
-        // editable=true muestra icon Pencil que refuerza la acción "editá la caja".
+        // editable=true muestra chip "+ depósito" que refleja el modal real de cash flow.
         { asset: 'Caja', qty: 'ARS', value: 'US$ 4.002', pnlPct: '+ depósito', pos: true, isCash: true, editable: true },
       ],
     },
@@ -657,29 +677,28 @@ function MockPositions() {
               {b.positions.map(p => (
                 <div
                   key={p.asset}
-                  className={`grid grid-cols-[60px_50px_1fr_auto_80px] gap-2 py-1 text-[11px] font-mono items-center ${
+                  className={`flex items-center gap-2 py-1 text-[11px] font-mono ${
                     p.isCash ? 'opacity-90' : ''
                   }`}
                 >
-                  <span className={`font-medium ${p.isCash ? 'text-ink-2 italic' : 'text-ink-0'}`}>{p.asset}</span>
-                  <span className="text-ink-3 tabular">{p.qty}</span>
-                  <span className="text-ink-2 tabular">{p.value}</span>
-                  {/* Acción contextual: "Realizar venta" para NVDA, edit-icon
-                      para Caja. Visible siempre — no es interactivo en el mock
-                      pero comunica el flujo del producto real. */}
-                  <span className="flex items-center justify-end">
-                    {p.hasSellBtn && (
-                      <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-neg border border-rendi-neg/30 bg-rendi-neg/5 px-1.5 py-0.5 rounded-sm whitespace-nowrap">
-                        Realizar venta
-                      </span>
-                    )}
-                    {p.editable && (
-                      <span className="text-data-cyan border border-data-cyan/30 bg-data-cyan/5 p-1 rounded-sm inline-flex" title="Editar caja">
-                        <Pencil size={9} strokeWidth={2} />
-                      </span>
-                    )}
-                  </span>
-                  <span className={`text-right tabular font-medium ${
+                  <span className={`font-medium w-[52px] shrink-0 ${p.isCash ? 'text-ink-2 italic' : 'text-ink-0'}`}>{p.asset}</span>
+                  <span className="text-ink-3 tabular w-[44px] shrink-0">{p.qty}</span>
+                  <span className="text-ink-2 tabular flex-1 min-w-0 truncate">{p.value}</span>
+                  {/* Acción contextual: "Registrar venta" para NVDA, chip
+                      "+ depósito" para Caja. Visible siempre — no es interactivo
+                      en el mock pero comunica el flujo real. Solo visible sm+
+                      para que en mobile <360px no haya overflow del row. */}
+                  {p.hasSellBtn && (
+                    <span className="hidden sm:inline text-[9px] font-mono uppercase tracking-caps text-rendi-neg border border-rendi-neg/30 bg-rendi-neg/5 px-1.5 py-0.5 rounded-sm whitespace-nowrap shrink-0">
+                      Registrar venta
+                    </span>
+                  )}
+                  {p.editable && (
+                    <span className="hidden sm:inline text-[9px] font-mono uppercase tracking-caps text-data-cyan border border-data-cyan/30 bg-data-cyan/5 px-1.5 py-0.5 rounded-sm whitespace-nowrap shrink-0" title="Depositá o retirá efectivo">
+                      + depósito
+                    </span>
+                  )}
+                  <span className={`text-right tabular font-medium w-[64px] shrink-0 ${
                     p.isCash
                       ? 'text-data-cyan text-[10px]'
                       : (p.pos ? 'text-rendi-pos' : 'text-rendi-neg')
@@ -708,7 +727,7 @@ function MockOperations() {
     { date: '2024-08-30', asset: 'AAPL', type: 'dividendo', pnl: '+US$45', pnlClass: 'text-rendi-pos', typeClass: 'text-data-amber border-data-amber/30 bg-data-amber/5' },
   ]
   return (
-    <MockFrame title="rendi · operaciones" footer="Auto-generadas desde Cartera al ‘Realizar venta’ · FIFO + P&L USD">
+    <MockFrame title="rendi · operaciones" footer="Auto-generadas desde Cartera al ‘Registrar venta’ · FIFO + P&L USD">
       <div className="space-y-1">
         <div className="grid grid-cols-[80px_60px_1fr_80px] gap-2 pb-2 border-b border-line/60 text-[9px] font-mono uppercase tracking-caps text-ink-3">
           <span>Fecha</span>

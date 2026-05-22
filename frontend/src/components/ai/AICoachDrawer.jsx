@@ -36,13 +36,21 @@ export default function AICoachDrawer() {
       api.get('/positions'),
       api.get('/monthly'),
       api.get('/brokers'),
+      // Audit #3 fix B3: incluir operations al snapshot. Sin esto, el system
+      // prompt declara que existen pero llegan undefined → toda la sección
+      // anti-confusión open/closed (Ola 2) queda vacía. El bot terminaría
+      // invocando get_asset_operations tool por cada pregunta histórica.
+      api.get('/operations').catch(() => []),  // no crítico si falla
     ])
-      .then(([positions, monthly, brokers]) => {
-        // Snapshot mínimo — datos crudos, el modelo deriva lo que necesite
-        // con sus tools si la pregunta lo requiere.
+      .then(([positions, monthly, brokers, operations]) => {
+        // Snapshot — datos crudos, el modelo deriva lo que necesite.
+        // Operations capeadas a 100 más recientes para no inflar el snapshot
+        // (200KB hard cap del backend; user con 500+ ops cae sin esto).
+        const opsCapped = Array.isArray(operations) ? operations.slice(0, 100) : []
         const snap = {
           summary: buildSummary(positions, monthly),
           positions: positions || [],
+          operations: opsCapped,
           monthly: monthly || [],
           brokers: brokers || [],
         }
