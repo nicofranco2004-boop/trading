@@ -53,6 +53,13 @@ export function AuthProvider({ children }) {
           email: me.email,
           is_admin: !!me.is_admin,
           tier: me.tier || 'free',
+          // Estado de la suscripción Rebill — usado por Config/Planes para
+          // distinguir authorized (mostrar "Cancelar") de cancelled
+          // (mostrar "Reactivar" + permitir re-suscribirse).
+          subscription_status: me.subscription_status || null,
+          subscription_period_end: me.subscription_period_end || null,
+          subscription_cancelled_at: me.subscription_cancelled_at || null,
+          subscription_period: me.subscription_period || null,
         }
         localStorage.setItem('rendi_user', JSON.stringify(fresh))
         setUser(fresh)
