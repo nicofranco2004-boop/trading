@@ -305,6 +305,93 @@ def test_pro_prompt_has_open_closed_rule():
     print("  TEST 8 PASS")
 
 
+def test_attribution_packet_has_source_and_in_portfolio():
+    print("\n=== Test 9: insights.attribution etiqueta pnl_source + in_portfolio_now ===")
+    import os, sqlite3 as s3, tempfile
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db
+    init_db()
+    conn = s3.connect(tmp.name); conn.row_factory = s3.Row
+    conn.execute("INSERT INTO users (email, password_hash, name, approved, email_verified) VALUES (?,?,?,1,1)", ("t@t","h","T"))
+    uid = conn.execute("SELECT id FROM users").fetchone()["id"]
+    conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,?)", (uid,"Schwab","USD"))
+    # Fixtures: INTC closed-only / AMD mixed / NVDA open-only
+    conn.execute("INSERT INTO operations (user_id,broker,asset,op_type,pnl_usd,date) VALUES (?,'Schwab','INTC','Venta',500,'2024-08-01')", (uid,))
+    conn.execute("INSERT INTO operations (user_id,broker,asset,op_type,pnl_usd,date) VALUES (?,'Schwab','AMD','Venta',200,'2024-09-01')", (uid,))
+    conn.execute("INSERT INTO positions (user_id,broker,asset,buy_price,quantity,invested,is_cash) VALUES (?,?,?,?,?,?,0)",
+                 (uid,"Schwab","AMD",100,5,500))
+    conn.execute("INSERT INTO positions (user_id,broker,asset,buy_price,quantity,invested,is_cash) VALUES (?,?,?,?,?,?,0)",
+                 (uid,"Schwab","NVDA",100,10,1000))
+    conn.commit()
+
+    from ai.builders.insights_attribution import build
+    packet = build(conn, uid)
+
+    if "concentration_source" not in packet:
+        fail("attribution missing concentration_source")
+    print(f"  concentration_source = {packet['concentration_source']} ✓")
+
+    sources_found = set()
+    by_ticker = {c["ticker"]: c for c in packet["top_contributors"]}
+    for t in ("INTC", "AMD", "NVDA"):
+        if t not in by_ticker:
+            continue
+        c = by_ticker[t]
+        for key in ("pnl_source", "in_portfolio_now", "combined_pnl_usd"):
+            if key not in c:
+                fail(f"contributor {t} missing {key}")
+        sources_found.add(c["pnl_source"])
+        print(f"  {t}: source={c['pnl_source']}, in_portfolio={c['in_portfolio_now']} ✓")
+
+    expected_sources = {"realized_only", "mixed", "unrealized_only"}
+    missing = expected_sources - sources_found
+    if missing:
+        fail(f"Missing pnl_source values: {missing}")
+    print(f"  Los 3 pnl_source aparecen (realized_only/mixed/unrealized_only) ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 9 PASS")
+
+
+def test_monthly_packet_etiqueta_closed_trades():
+    print("\n=== Test 10: monthly.py etiqueta best_trade/top_drivers como closed_trade ===")
+    import inspect
+    from ai.builders import monthly as monthly_mod
+
+    src = inspect.getsource(monthly_mod)
+    # Verificar que el código emite kind='closed_trade' tanto en _trade como
+    # en top_drivers.
+    if src.count('"closed_trade"') < 2:
+        fail("monthly.py debe emitir 'closed_trade' en _trade y top_drivers")
+    if '"kind": "closed_trade"' not in src:
+        fail("monthly.py no etiqueta items con kind:'closed_trade'")
+    print("  best_trade, worst_trade, top_drivers etiquetados kind='closed_trade' ✓")
+    # Docstring documenta la separación
+    if "SOLO TRADES CERRADOS" not in src and "SOLO trades cerrados" not in src:
+        fail("monthly.py docstring debe aclarar que top_drivers es SOLO trades cerrados")
+    print("  Docstring aclara que top_drivers son trades cerrados ✓")
+    print("  TEST 10 PASS")
+
+
+def test_reports_packet_has_realized_alias():
+    print("\n=== Test 11: reports.py emite realized_pnl_year_usd además de pnl_year_usd ===")
+    import inspect
+    from ai.builders import reports as reports_mod
+
+    src = inspect.getsource(reports_mod)
+    if '"realized_pnl_year_usd"' not in src:
+        fail("reports.py debe emitir realized_pnl_year_usd")
+    if '"pnl_year_usd"' not in src:
+        fail("reports.py debe mantener pnl_year_usd como alias back-compat")
+    print("  reports.py expone realized_pnl_year_usd + alias pnl_year_usd ✓")
+    print("  TEST 11 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -314,6 +401,9 @@ def main():
     test_analyze_endpoint_injects_profile()
     test_insights_packet_has_separated_open_closed()
     test_pro_prompt_has_open_closed_rule()
+    test_attribution_packet_has_source_and_in_portfolio()
+    test_monthly_packet_etiqueta_closed_trades()
+    test_reports_packet_has_realized_alias()
     print("\n\nALL TESTS PASS")
 
 

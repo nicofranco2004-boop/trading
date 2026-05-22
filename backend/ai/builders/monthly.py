@@ -19,23 +19,37 @@ Shape (~1KB):
   "is_relevant": bool,           # tuvo actividad
   "headline": str,               # narrativa breve del backend
   "metrics": {
-    "delta_pct": float,         # TWRR del mes
-    "delta_usd": float,         # P&L absoluto
+    "delta_pct": float,         # TWRR del mes (combina realized + unrealized)
+    "delta_usd": float,         # P&L absoluto del mes (combina ambos)
     "start_value": float,
     "end_value": float,
     "deposits": float,
     "withdrawals": float,
-    "realized_pnl": float,
-    "unrealized_pnl": float,
-    "trades_count": int,
-    "win_rate": float | null,
+    "realized_pnl": float,      # P&L USD de trades CERRADOS en el mes
+    "unrealized_pnl": float,    # P&L USD mark-to-market de posiciones abiertas
+    "trades_count": int,        # cantidad de trades CERRADOS en el mes
+    "win_rate": float | null,   # win rate sobre los trades cerrados del mes
     "vs_sp500_pct": float | null,
     "vs_inflation_pct": float | null,
   },
-  "best_trade": { "asset": str, "pnl_usd": float, "pnl_pct": float } | null,
-  "worst_trade": { "asset": str, "pnl_usd": float, "pnl_pct": float } | null,
-  "top_drivers": [               # top 3 activos por contribución
-    { "asset": str, "contribution_pct": float, "pnl_usd": float }
+  "best_trade": {               # CERRADO — operación con mayor P&L USD del mes
+    "asset": str, "pnl_usd": float, "pnl_pct": float, "kind": "closed_trade"
+  } | null,
+  "worst_trade": {              # CERRADO — operación con menor P&L USD del mes
+    "asset": str, "pnl_usd": float, "pnl_pct": float, "kind": "closed_trade"
+  } | null,
+  "top_drivers": [              # top 3 activos por contribución a P&L
+                                # SOLO TRADES CERRADOS — el contribution_pct
+                                # es sobre el realized del mes, NO mark-to-market.
+                                # Si querés concentración presente real, usar
+                                # dashboard.top_holdings o current_holdings_top
+                                # del insights.
+    {
+      "asset": str,
+      "contribution_pct": float,
+      "pnl_usd": float,
+      "kind": "closed_trade"    # explícito para el LLM
+    }
   ],
   "insights_count": int,         # cuántas señales detectó el backend
 }
@@ -107,6 +121,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "asset": item.get("asset"),
             "pnl_usd": round(float(item.get("pnl_usd") or 0), 2),
             "pnl_pct": round(float(item.get("pnl_pct") or 0), 2),
+            # Etiqueta explícita para el LLM: estos son trades CERRADOS
+            # del mes (filtrados de operations con pnl_usd no null y
+            # op_type != Compra/Dividendo). No son posiciones abiertas.
+            "kind": "closed_trade",
         }
 
     top_drivers = []
@@ -117,6 +135,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "asset": d.get("asset"),
             "contribution_pct": round(float(d.get("contribution_pct") or 0), 2),
             "pnl_usd": round(float(d.get("pnl_usd") or 0), 2),
+            # Top drivers se computan SOLO sobre operations cerradas en
+            # `compute_drivers` (reporting/builder.py:355). El campo
+            # `contribution_pct` es % de realized — NO mezcla unrealized.
+            "kind": "closed_trade",
         })
 
     return {

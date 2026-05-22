@@ -17,9 +17,14 @@ Shape (~900 bytes):
   "year": int,
   "total_months_active": int,    # meses con actividad real
   "winrate_monthly": float,       # % meses positivos
-  "twr_year_pct": float | null,   # TWR compoundeado del año
-  "pnl_year_usd": float,          # P&L realizado del año
-  "trades_year": int,
+  "twr_year_pct": float | null,   # TWR compoundeado del año (combina P&L
+                                  # realizado de meses cerrados + unrealized
+                                  # mark-to-market del mes en curso)
+  "realized_pnl_year_usd": float, # P&L REALIZADO del año (suma pnl_realized
+                                  # de monthly_entries del año) — SOLO trades
+                                  # cerrados, NO mark-to-market
+  "pnl_year_usd": float,          # ALIAS de realized_pnl_year_usd (back-compat)
+  "trades_year": int,             # # de operaciones cerradas en el año
   "best_month": { "month": str, "delta_pct": float } | null,
   "worst_month": { "month": str, "delta_pct": float } | null,
   "vs_sp500_pp": float | null,    # promedio de vs_sp500_pct mensual
@@ -152,6 +157,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "total_months_active": used,
         "winrate_monthly": winrate_monthly,
         "twr_year_pct": twr_year_pct,
+        # realized_pnl_year_usd es el nombre claro — suma pnl_realized de
+        # monthly_entries (solo trades cerrados). pnl_year_usd queda como
+        # alias para back-compat (mismo valor) hasta migrar consumers.
+        "realized_pnl_year_usd": pnl_year_usd,
         "pnl_year_usd": pnl_year_usd,
         "trades_year": trades_year,
         "best_month": best,

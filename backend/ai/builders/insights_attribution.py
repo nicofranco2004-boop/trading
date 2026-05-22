@@ -10,7 +10,17 @@ Combina:
 - P&L cerrado (operations con pnl_usd) por ticker.
 - P&L no realizado (precio actual vs invested) por posición abierta.
 
-Shape (~900 bytes):
+CRÍTICO — separación de scope por item:
+  Cada contributor/detractor lleva BOTH realized_usd Y unrealized_usd
+  separados. Además agregamos `pnl_source` y `in_portfolio_now` para que
+  el LLM razone correctamente:
+    • pnl_source='realized_only': solo trades cerrados, ya no en cartera
+    • pnl_source='unrealized_only': posición abierta sin trades cerrados
+    • pnl_source='mixed': tiene ambos (closed + open lots del mismo ticker)
+  El LLM debe inferir riesgo PRESENTE solo de unrealized_usd
+  (cuando in_portfolio_now=true).
+
+Shape (~1100 bytes):
 {
   "screen": "insights.attribution",
   "total_realized_usd": float,
@@ -18,14 +28,21 @@ Shape (~900 bytes):
   "total_pnl_usd": float,
   "top_contributors": [
     { "ticker": str, "realized_usd": float, "unrealized_usd": float,
-      "total_usd": float, "share_pct": float }
+      "combined_pnl_usd": float,           # realized + unrealized (back-compat: total_usd)
+      "total_usd": float,                  # alias de combined_pnl_usd
+      "share_pct": float,                  # % del |total_pnl| que explica este ticker
+      "pnl_source": "realized_only"|"unrealized_only"|"mixed",
+      "in_portfolio_now": bool }
   ],
-  "top_detractors": [
-    { "ticker": str, "realized_usd": float, "unrealized_usd": float,
-      "total_usd": float, "share_pct": float }
-  ],
-  "top1_share_pct": float,   # qué % del P&L total explica el top1 contributor
-  "concentration_flag": bool, # True si top1 > 50%
+  "top_detractors": [ ... same shape ],
+  "top1_share_pct": float,                 # qué % del P&L explica el top1
+  "concentration_flag": bool,              # True si top1 > 50% del combined
+  "concentration_source": "realized_only"|"unrealized_only"|"mixed"|null,
+                                           # de dónde viene la concentración:
+                                           # importante para distinguir
+                                           # concentración HISTÓRICA (realized
+                                           # de un trade cerrado puntual) de
+                                           # concentración PRESENTE (riesgo).
 }
 """
 from __future__ import annotations
@@ -119,17 +136,45 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             continue
         unrealized_by_ticker[asset] = unrealized_by_ticker.get(asset, 0) + pnl
 
+    # Tickers presentes EN CARTERA HOY (positions con quantity > 0). Sirve
+    # para el flag in_portfolio_now de cada item de attribution.
+    tickers_in_portfolio = {
+        (p.get("asset") or "").upper()
+        for p in positions
+        if p.get("asset") and float(p.get("quantity") or 0) > 0
+    }
+
     # ── Combinar realized + unrealized por ticker ────────────────────────────
     all_tickers = set(realized_by_ticker.keys()) | set(unrealized_by_ticker.keys())
     combined: List[Dict[str, Any]] = []
     for t in all_tickers:
         r = realized_by_ticker.get(t, 0)
         u = unrealized_by_ticker.get(t, 0)
+        combined_pnl = r + u
+
+        # pnl_source: clasifica de dónde viene el P&L de este ticker.
+        # Umbral pequeño para considerar "tiene presencia" en cada lado.
+        has_realized = abs(r) > 0.5
+        has_unrealized = abs(u) > 0.5
+        if has_realized and has_unrealized:
+            source = "mixed"
+        elif has_realized:
+            source = "realized_only"
+        elif has_unrealized:
+            source = "unrealized_only"
+        else:
+            source = "realized_only"  # fallback — ambos cero, irrelevante
+
         combined.append({
             "ticker": t,
             "realized_usd": round(r, 2),
             "unrealized_usd": round(u, 2),
-            "total_usd": round(r + u, 2),
+            "combined_pnl_usd": round(combined_pnl, 2),
+            # total_usd: alias de combined_pnl_usd para back-compat con
+            # consumers viejos. Idéntico al nuevo.
+            "total_usd": round(combined_pnl, 2),
+            "pnl_source": source,
+            "in_portfolio_now": t in tickers_in_portfolio,
         })
 
     total_realized = sum(c["realized_usd"] for c in combined)
@@ -140,16 +185,20 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     def with_share(items):
         return [
-            {**c, "share_pct": round(c["total_usd"] / abs_total * 100, 1)}
+            {**c, "share_pct": round(c["combined_pnl_usd"] / abs_total * 100, 1)}
             for c in items
         ]
 
-    sorted_desc = sorted(combined, key=lambda c: c["total_usd"], reverse=True)
-    sorted_asc = sorted(combined, key=lambda c: c["total_usd"])
-    contributors = with_share([c for c in sorted_desc if c["total_usd"] > 0][:5])
-    detractors = with_share([c for c in sorted_asc if c["total_usd"] < 0][:5])
+    sorted_desc = sorted(combined, key=lambda c: c["combined_pnl_usd"], reverse=True)
+    sorted_asc = sorted(combined, key=lambda c: c["combined_pnl_usd"])
+    contributors = with_share([c for c in sorted_desc if c["combined_pnl_usd"] > 0][:5])
+    detractors = with_share([c for c in sorted_asc if c["combined_pnl_usd"] < 0][:5])
 
     top1_share = contributors[0]["share_pct"] if contributors else 0.0
+    # Origen de la concentración: si el top1 es realized_only (trade cerrado
+    # único), la "concentración" es histórica, no exposure presente. Si es
+    # unrealized_only/mixed con in_portfolio_now=true, sí es riesgo presente.
+    concentration_source = contributors[0]["pnl_source"] if contributors else None
 
     return {
         "screen": "insights.attribution",
@@ -160,4 +209,5 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "top_detractors": detractors,
         "top1_share_pct": top1_share,
         "concentration_flag": top1_share > 50.0,
+        "concentration_source": concentration_source,
     }
