@@ -420,6 +420,61 @@ def test_pro_prompt_mentions_field_docs():
     print("  TEST 13 PASS")
 
 
+def test_ai_tools_sanitize_input():
+    print("\n=== Test 15: tools del chat sanitizan input (anti-hallucination + defensa SQL) ===")
+    import os, sqlite3 as s3, tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db, _execute_ai_tool
+    init_db()
+    conn = s3.connect(tmp.name)
+    conn.execute("INSERT INTO users (email, password_hash, name, approved, email_verified) VALUES (?,?,?,1,1)", ("t@t","h","T"))
+    uid = conn.execute("SELECT id FROM users").fetchone()[0]
+    conn.commit()
+
+    # SQL injection attempt en asset
+    r = _execute_ai_tool("get_asset_operations", {"asset": "AAPL' OR 1=1--"}, uid)
+    if "error" not in r:
+        fail("SQL injection attempt should be rejected")
+    print("  SQL-inj asset rejected ✓")
+
+    # months negativo
+    r = _execute_ai_tool("get_monthly_detail", {"months": -5}, uid)
+    if "entries" not in r:
+        fail("negative months should clamp, not error")
+    print("  months negativo → clamp ✓")
+
+    # months no-numeric
+    r = _execute_ai_tool("get_monthly_detail", {"months": "mucho"}, uid)
+    if "entries" not in r:
+        fail("non-numeric months should fallback to 12")
+    print("  months string → default ✓")
+
+    # symbols no-list
+    r = _execute_ai_tool("get_current_prices", {"symbols": "AAPL"}, uid)
+    if "error" not in r:
+        fail("non-list symbols should be rejected")
+    print("  symbols non-list rejected ✓")
+
+    # tool name desconocida
+    r = _execute_ai_tool("hack_db", {}, uid)
+    if "no reconocida" not in r.get("error", ""):
+        fail("unknown tool should return error")
+    print("  unknown tool rejected ✓")
+
+    # input_data no-dict
+    r = _execute_ai_tool("get_current_prices", "not a dict", uid)
+    if "debe ser dict" not in r.get("error", ""):
+        fail("non-dict input should be rejected")
+    print("  non-dict input rejected ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 15 PASS")
+
+
 def test_chat_snapshot_sanitizer():
     print("\n=== Test 14: _sanitize_chat_snapshot normaliza shape + inyecta _kind ===")
     from main import _sanitize_chat_snapshot
@@ -490,6 +545,7 @@ def main():
     test_packets_emit_field_docs()
     test_pro_prompt_mentions_field_docs()
     test_chat_snapshot_sanitizer()
+    test_ai_tools_sanitize_input()
     print("\n\nALL TESTS PASS")
 
 

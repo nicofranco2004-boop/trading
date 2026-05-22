@@ -6906,11 +6906,29 @@ _AI_TOOLS = [
 
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
-    """Ejecuta una tool del coach IA y devuelve el resultado como dict."""
+    """Ejecuta una tool del coach IA y devuelve el resultado como dict.
+
+    Sanitización defensiva: validar TODO input del LLM antes de hit DB o
+    API externa. SQL es parametrizado (no hay risk de SQL injection) pero
+    igual validamos forma + length per defensa en profundidad. Loggeamos
+    tool calls con input crudo para auditoría / detección de alucinaciones.
+    """
+    log.info("AI tool call: name=%r input_keys=%s uid=%s",
+             name, list(input_data.keys()) if isinstance(input_data, dict) else 'non-dict', uid)
+
+    if not isinstance(input_data, dict):
+        return {"error": "input_data debe ser dict"}
+
     if name == "get_current_prices":
-        symbols = [str(s).strip().upper() for s in input_data.get("symbols", [])][:10]
+        raw_symbols = input_data.get("symbols", [])
+        if not isinstance(raw_symbols, list):
+            return {"error": "symbols debe ser lista"}
+        # Cap defensivo de length (LLM puede alucinar strings largos) +
+        # uppercase + strip. _SYMBOL_RE valida formato: [A-Z0-9]{1,10}(.BA)?
+        symbols = [str(s).strip().upper()[:15] for s in raw_symbols][:10]
         valid = [s for s in symbols if _SYMBOL_RE.match(s)]
         if not valid:
+            log.info("AI tool get_current_prices rejected — no valid symbols. Got: %r", raw_symbols[:10])
             return {"error": "No se proporcionaron símbolos válidos"}
         result = {}
         for sym in valid:
@@ -6919,9 +6937,16 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
         return {"prices": result, "note": "Precios en USD (o ARS para .BA)"}
 
     elif name == "get_asset_operations":
-        asset = str(input_data.get("asset", "")).strip().upper()
+        raw_asset = input_data.get("asset", "")
+        asset = str(raw_asset).strip().upper()[:15]  # cap defensivo
         if not asset:
             return {"error": "asset requerido"}
+        # Mismo regex que get_current_prices — alphanumeric + opcional .BA.
+        # Aunque SQL es parametrizado, rechazamos basura para no hacer query
+        # innecesaria y para detectar alucinaciones del LLM.
+        if not _SYMBOL_RE.match(asset):
+            log.info("AI tool get_asset_operations rejected — invalid asset format: %r", raw_asset)
+            return {"error": f"asset '{asset}' no tiene formato válido (alphanumeric A-Z0-9, max 10 chars, opcional .BA)"}
         conn = get_db()
         rows = conn.execute(
             """SELECT date, op_type, entry_price, exit_price, quantity,
@@ -6933,7 +6958,13 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
         return {"asset": asset, "operations": [dict(r) for r in rows], "count": len(rows)}
 
     elif name == "get_monthly_detail":
-        months = min(int(input_data.get("months", 12)), 24)
+        # months debe ser int [1, 24]. El LLM puede mandar string o número
+        # negativo — clampamos. Si manda algo no convertible, default 12.
+        try:
+            months_raw = int(input_data.get("months", 12))
+        except (TypeError, ValueError):
+            months_raw = 12
+        months = max(1, min(months_raw, 24))
         conn = get_db()
         rows = conn.execute(
             """SELECT year, month, broker, deposits, withdrawals,
@@ -6944,6 +6975,7 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
         conn.close()
         return {"entries": [dict(r) for r in rows]}
 
+    log.warning("AI tool unknown: %r", name)
     return {"error": f"Tool '{name}' no reconocida"}
 
 
