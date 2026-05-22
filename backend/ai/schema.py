@@ -44,13 +44,13 @@ class AnalysisSection(BaseModel):
     body: str = Field(
         ...,
         description=(
-            "Cuerpo interpretativo en español rioplatense. 2-4 oraciones "
+            "Cuerpo interpretativo en español rioplatense. 2-3 oraciones "
             "densas. INTERPRETAR (no describir) los datos del packet: "
             "conectar métricas, sugerir causalidad probabilística, "
             "comparar vs benchmark/histórico/composición. Solo afirmar "
             "cosas presentes en el packet."
         ),
-        max_length=800,
+        max_length=1000,  # 800→1000: margen para que oraciones densas no fallen ValidationError
     )
     tone: Tone = Field(
         "neutral",

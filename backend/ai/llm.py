@@ -134,7 +134,12 @@ def analyze(
     packet: dict,
     output_model,                # tipo Pydantic (ej. AnalysisResult)
     model: str = MODEL_HAIKU,
-    max_tokens: int = 1800,
+    # 2500 es el sweet spot: suficiente headroom para JSON estructurado
+    # con 3 sections densas (~500 chars cada una) + tldr + follow_ups +
+    # overhead del schema. Bajarlo más causa truncamiento del JSON y
+    # ValidationError ("AI procesamiento fallo"). El prompt sigue
+    # pidiendo concisión vía reglas explícitas, no vía max_tokens.
+    max_tokens: int = 2500,
     max_retries: int = 1,
     followup_question: Optional[str] = None,
 ) -> Optional[LLMResult]:
@@ -244,9 +249,19 @@ def analyze(
             )
         except Exception as ex:
             last_error = ex
+            # Log con detalle del error — ValidationError genérico no nos dice
+            # qué campo falló. ex.errors() de pydantic devuelve detalle por
+            # field. Importante para diagnosticar truncamiento JSON vs schema
+            # violations vs LLM hallucinating fields.
+            error_detail = str(ex)
+            try:
+                if hasattr(ex, "errors") and callable(ex.errors):
+                    error_detail = f"{type(ex).__name__}: {ex.errors()}"
+            except Exception:
+                pass
             log.warning(
-                "AI parse fallo (intento %d/%d): %s",
-                attempt + 1, max_retries + 1, ex,
+                "AI parse fallo (intento %d/%d, model=%s): %s",
+                attempt + 1, max_retries + 1, model, error_detail,
             )
     # Tras retries, propaga el último error al caller
     raise last_error if last_error else RuntimeError("AI parse falló sin error")
