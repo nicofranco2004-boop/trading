@@ -8,24 +8,21 @@
   ],
   "headers": [
     {
-      "//": "Critical fix: NO cachear el index.html en el CDN. Vercel por default cacheaba el HTML hasta 10min, pero el HTML referencia chunks JS con hash dinámico (Vite). Cuando hacés un deploy nuevo, el HTML viejo cacheado seguía apuntando a chunks que ya no existen — el browser pedía ese .js, Vercel devolvía index.html como SPA fallback, el browser intentaba ejecutar HTML como JS y crasheaba. Pantalla negra para todos los visitantes con CDN cache stale. Con max-age=0 + must-revalidate, el CDN revalida en cada request.",
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
       "source": "/",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
       ]
     },
     {
-      "//": "Mismo header para cualquier ruta SPA que termine cayendo al index.html via rewrite.",
-      "source": "/((?!api|assets).*)",
+      "source": "/index.html",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
-      ]
-    },
-    {
-      "//": "Assets con hash en el filename son immutable: el hash cambia con el contenido, así que un viejo .js NUNCA va a tener contenido distinto. Cacheamos 1 año.",
-      "source": "/assets/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
       ]
     }
   ]
