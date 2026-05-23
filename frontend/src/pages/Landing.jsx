@@ -11,7 +11,11 @@ import {
   Plus,
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
-import { ARS_MONTHLY, ARS_PLUS_MONTHLY, FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from './Planes'
+import {
+  ARS_MONTHLY, ARS_PLUS_MONTHLY,
+  FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES,
+  PLUS_PRICE_USD, PRO_PRICE_USD,
+} from './Planes'
 import { whatsappUrl } from '../utils/support'
 import SupportWhatsAppFab, { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 
