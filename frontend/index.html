@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
+    <!-- Safari (especialmente iOS) ignora `Cache-Control: max-age=0` del HTTP
+         header en muchos casos y se queda con HTML viejo en su bfcache. Esto
+         rompe SPAs con code splitting: el HTML cached referencia chunks JS
+         con hashes que ya no existen tras un deploy nuevo. Solución: meta
+         http-equiv como red de seguridad — Safari respeta esto mejor que
+         el header (no siempre, pero ayuda). Ver también vercel.json. -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+
     <!-- Primary SEO -->
     <title>Rendi — Tu portfolio, con Coach IA | Tracker multi-broker para Argentina</title>
     <meta name="description" content="Seguí tu cartera de acciones, CEDEARs, bonos AR y crypto en un solo lugar. P&L real en USD, FIFO automático, Coach IA con memoria. Multi-broker: Cocos, IOL, Schwab, Binance, Balanz." />
