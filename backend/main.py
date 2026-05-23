@@ -487,6 +487,10 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
         CREATE INDEX IF NOT EXISTS idx_news_category ON news(category);
+        -- /news/portfolio filtra con `category='portfolio' AND query_source LIKE '{ticker} %'`
+        -- contra 20 tickers a la vez (20 LIKE ORs). Sin este index es full scan.
+        -- query_source es el primer field para aprovechar el prefix match del LIKE.
+        CREATE INDEX IF NOT EXISTS idx_news_qsource_cat ON news(query_source, category);
     """)
     # news — migración: agregar columna `tags` si existía la tabla pero sin ella
     news_cols = _table_cols(conn, 'news')
@@ -3303,6 +3307,27 @@ def _has_news_for_categories(conn, categories: list) -> bool:
     return row is not None
 
 
+def _has_news_for_tickers(conn, tickers: list) -> bool:
+    """Quick check: ¿hay news para AL MENOS uno de los tickers del user?
+
+    Más granular que `_has_news_for_categories(['portfolio'])`: esa devuelve
+    True si CUALQUIER user tiene portfolio news, pero los tickers del user
+    activo pueden no estar fetcheados. Esta función chequea per-ticker para
+    decidir si bloquear (cold cache del user) o ir directo a SWR.
+    """
+    if not tickers:
+        return False
+    # Pattern matches `_persist_news_items` query_source: "{TICKER} stock" o
+    # "{TICKER} acciones". Usamos LIKE con prefix porque ticker es lo primero.
+    like_clauses = ' OR '.join(['query_source LIKE ?'] * len(tickers))
+    like_params = [f'{t} %' for t in tickers]
+    row = conn.execute(
+        f"SELECT 1 FROM news WHERE category='portfolio' AND ({like_clauses}) LIMIT 1",
+        like_params,
+    ).fetchone()
+    return row is not None
+
+
 # Semaphore global para limitar concurrencia process-wide de fetches de news.
 # Sin esto, N usuarios concurrentes × 8 workers cada uno saturan el threadpool
 # de FastAPI (default 40 threads) y todas las demás requests se cuelgan.
@@ -3311,14 +3336,29 @@ def _has_news_for_categories(conn, categories: list) -> bool:
 import threading as _threading_news
 _news_fetch_semaphore = _threading_news.BoundedSemaphore(16)
 
+# Pool dedicado para news fetches (no usar with — global, lifetime = proceso).
+# Cuando un batch llama con max_wait_seconds y se llega al timeout, los workers
+# pendientes quedan en este pool corriendo en background — el caller libera
+# pero el thread persiste hasta terminar su fetch + persist a DB.
+# Sin esto, crear un nuevo executor por batch leakea memoria (cada batch
+# acumula ~16 workers que no se reciclan).
+_news_fetch_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="news-fetch")
 
-def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8):
+
+def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8, max_wait_seconds=None):
     """Versión paralelizada: fetcha múltiples feeds en threads concurrentes.
 
     `specs`: iterable de:
        • 3-tuplas (query, lang, category) — Google News (legacy, back-compat)
        • 4-tuplas (kind, identifier, lang_or_None, category) — multi-source
          con `kind ∈ {'google_news', 'investing'}`.
+
+    `max_wait_seconds`: opcional. Si está set, la función NO espera más allá
+    de ese tiempo total — los workers que no terminaron quedan corriendo en
+    background (sus resultados se persisten cuando terminen). Sirve para que
+    el endpoint que llama no se quede colgado en cold cache. Sin esto, con
+    20 tickers + max_workers=8 + 6s timeout per fetch = hasta 18s blocking.
+    Con `max_wait_seconds=4`, devolvemos a los 4s con lo que haya en DB.
 
     Cada worker:
       • Hace HTTP al source correspondiente (I/O-bound).
@@ -3367,15 +3407,47 @@ def _ensure_news_batch_parallel(specs, ttl_seconds, max_workers=8):
             finally:
                 local_conn.close()
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [pool.submit(_worker, spec) for spec in stale]
-        for fut in as_completed(futures):
-            try:
-                fut.result()
-            except Exception as e:
-                logging.getLogger(__name__).warning(
-                    "news batch worker failed: %s", e
-                )
+    # IMPORTANTE: usamos el _news_fetch_executor GLOBAL (no `with` local) —
+    # cuando hay max_wait_seconds, los futures que no terminan al timeout
+    # quedan corriendo en background y persisten resultados a DB cuando
+    # terminan. Un executor local con `with` bloquearía en __exit__,
+    # defeats el timeout. Patrón idéntico al de _yf_executor.
+    futures = [_news_fetch_executor.submit(_worker, spec) for spec in stale]
+
+    if max_wait_seconds is not None:
+        # Path con timeout: capper total tiempo de espera.
+        deadline = time.time() + max_wait_seconds
+        completed = 0
+        try:
+            for fut in as_completed(futures, timeout=max_wait_seconds + 0.5):
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break  # tiempo agotado — el resto sigue en bg
+                try:
+                    fut.result(timeout=max(remaining, 0.1))
+                    completed += 1
+                except Exception as e:
+                    logging.getLogger(__name__).debug(
+                        "news batch worker failed/timeout: %s", e
+                    )
+        except TimeoutError:
+            pass  # as_completed timeout — esperado, no es error
+        if completed < len(stale):
+            logging.getLogger(__name__).info(
+                "news batch returned early: %d/%d completed (max_wait=%ss). "
+                "Resto sigue corriendo en background.",
+                completed, len(stale), max_wait_seconds,
+            )
+        return
+
+    # Path sin timeout — esperamos a TODOS los workers.
+    for fut in as_completed(futures):
+        try:
+            fut.result()
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "news batch worker failed: %s", e
+            )
 
 
 @app.get("/api/news/market")
@@ -3398,13 +3470,14 @@ def get_market_news(
     conn = get_db()
     try:
         # Stale-while-revalidate: si hay data en DB la devolvemos al instante
-        # y refrescamos en background. Si NO hay nada (primer boot), bloqueamos
-        # para no devolver una lista vacía.
+        # y refrescamos en background. Si NO hay nada (primer boot tras
+        # restart de Railway antes que _prewarm_news_cache termine), bloqueamos
+        # con cap de 4s — el resto sigue en bg.
         if _has_news_for_categories(conn, ['market', 'macro']):
             _refresh_news_in_background(specs, NEWS_MARKET_TTL)
         else:
             try:
-                _ensure_news_batch_parallel(specs, NEWS_MARKET_TTL)
+                _ensure_news_batch_parallel(specs, NEWS_MARKET_TTL, max_wait_seconds=4)
             except Exception:
                 pass
 
@@ -3456,13 +3529,20 @@ def get_portfolio_news(
             query = f"{ticker} {'acciones' if is_ar else 'stock'}"
             queries_batch.append((query, lang, 'portfolio'))
 
-        # SWR: si ya tenemos news para 'portfolio' en DB, refresh en background.
-        # Si es la primera vez, bloqueamos para no devolver lista vacía.
-        if _has_news_for_categories(conn, ['portfolio']):
+        # SWR per-ticker: si tenemos news para AL MENOS un ticker del user,
+        # refresh en background y devolvemos lo que hay. Si NINGÚN ticker
+        # tiene news (cold cache real del user), bloqueamos pero con cap
+        # tight de 4s — el resto continúa fetcheando en background, el user
+        # ve lo que hayamos juntado y la próxima carga ya está caliente.
+        #
+        # Antes: `_has_news_for_categories(['portfolio'])` era category-wide,
+        # un user con tickers únicos veía respuesta vacía (otros users habían
+        # poblado la categoría pero no SUS tickers) → mala UX silenciosa.
+        if _has_news_for_tickers(conn, tickers):
             _refresh_news_in_background(queries_batch, NEWS_TICKER_TTL)
         else:
             try:
-                _ensure_news_batch_parallel(queries_batch, NEWS_TICKER_TTL)
+                _ensure_news_batch_parallel(queries_batch, NEWS_TICKER_TTL, max_wait_seconds=4)
             except Exception:
                 pass
 
@@ -8712,7 +8792,11 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
                 specs.append((q, lang, 'portfolio'))
 
             try:
-                _ensure_news_batch_parallel(specs, NEWS_TICKER_TTL)
+                # max_wait=4s: este tool corre dentro del chat IA (timeout SDK
+                # 25s, proxy Vercel 30s). Sin cap, 20 tickers × 6s timeout =
+                # hasta 18s — pegaríamos el límite. 4s es suficiente para
+                # 1-2 rondas con cache parcial; el resto sigue en bg.
+                _ensure_news_batch_parallel(specs, NEWS_TICKER_TTL, max_wait_seconds=4)
             except Exception as ex:
                 log.warning("get_recent_news_for_assets: ensure_news_batch failed: %s", ex)
 
