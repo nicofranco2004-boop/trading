@@ -83,14 +83,14 @@ export const FREE_FEATURES = {
     { label: 'Posiciones, Operaciones, Wrapped anual y Objetivos' },
     { label: 'Insights con TWR, benchmarks (S&P, inflación AR, dólar) y drawdown' },
     { label: '3 observaciones diagnósticas + 1 detector de comportamiento' },
-    { label: 'Coach IA con 12 preguntas guiadas' },
+    { label: 'Coach IA con 12 preguntas guiadas (taster)' },
     { label: 'Reportes: vista previa del último mes' },
   ],
   // Free no tiene "diff" — es el baseline.
   diff: null,
   quotas: [
     { label: 'Análisis IA / sem', value: '6' },
-    { label: 'Chat Coach IA / sem', value: '6' },
+    { label: 'Chat Coach IA / sem', value: '3' },
     { label: 'Brokers', value: '1' },
   ],
 }
@@ -103,11 +103,13 @@ export const PLUS_FEATURES = {
     { label: 'Distribución por activo desbloqueada' },
     { label: 'Reportes históricos completos (todos los meses)' },
     { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
+    { label: '3× más Chat Coach IA que Free', sub: '9 consultas/semana vs 3 en Free' },
   ],
   diff: {
     title: 'Vs Free',
     items: [
       'Hasta 3 brokers (3× más)',
+      '3× más Chat Coach IA (9 vs 3 /sem)',
       '6 observaciones de diagnóstico (2× más)',
       '4 detectores de comportamiento (4× más)',
       'Reportes históricos + Export CSV',
@@ -115,7 +117,7 @@ export const PLUS_FEATURES = {
   },
   quotas: [
     { label: 'Análisis IA / sem', value: '6', note: 'igual que Free' },
-    { label: 'Chat Coach IA / sem', value: '6', note: 'igual que Free' },
+    { label: 'Chat Coach IA / sem', value: '9', note: '3× Free' },
     { label: 'Brokers', value: '3' },
   ],
 }

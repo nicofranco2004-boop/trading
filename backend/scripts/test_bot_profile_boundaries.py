@@ -1076,7 +1076,7 @@ def test_chat_whitelist_and_normalizer():
 
 
 def test_chat_quota_gating():
-    print("\n=== Test 24: cuota chat — Free/Plus=6, Pro=40, Admin=1000 ===")
+    print("\n=== Test 24: cuota chat — Free=3, Plus=9, Pro=40, Admin=1000 ===")
     import os, sqlite3 as s3, tempfile
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
     os.environ["DB_PATH"] = tmp.name
@@ -1095,46 +1095,62 @@ def test_chat_quota_gating():
     )
     conn.execute(
         "INSERT INTO users (email, password_hash, name, approved, email_verified, tier) VALUES (?,?,?,1,1,?)",
+        ("plus@t", "h", "PL", "plus"),
+    )
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified, tier) VALUES (?,?,?,1,1,?)",
         ("pro@t", "h", "P", "pro"),
     )
     conn.commit()
     free_uid = conn.execute("SELECT id FROM users WHERE tier='free'").fetchone()["id"]
+    plus_uid = conn.execute("SELECT id FROM users WHERE tier='plus'").fetchone()["id"]
     pro_uid = conn.execute("SELECT id FROM users WHERE tier='pro'").fetchone()["id"]
 
-    # Cuota inicial: 0/6 para free, 0/40 para pro (cap Pro bajado audit #3)
+    # Cuota inicial: 0/3 free, 0/9 plus, 0/40 pro (tiering Free→Plus→Pro
+    # diferenciado, audit #4: Plus dejó de ser idéntico a Free en chat).
     u_free = quota.get_current_usage(conn, free_uid)
+    u_plus = quota.get_current_usage(conn, plus_uid)
     u_pro = quota.get_current_usage(conn, pro_uid)
-    if u_free["chat_limit"] != 6 or u_free["chat_remaining"] != 6:
-        fail(f"free debería tener 6/6, got {u_free}")
+    if u_free["chat_limit"] != 3 or u_free["chat_remaining"] != 3:
+        fail(f"free debería tener 3/3, got {u_free}")
+    if u_plus["chat_limit"] != 9 or u_plus["chat_remaining"] != 9:
+        fail(f"plus debería tener 9/9 (3× Free), got {u_plus}")
     if u_pro["chat_limit"] != 40 or u_pro["chat_remaining"] != 40:
         fail(f"pro debería tener 40/40, got {u_pro}")
-    print("  cuotas iniciales correctas ✓")
+    print("  cuotas iniciales correctas (3/9/40) ✓")
 
-    # Consumir 3 chats de free, verificar 3/6
-    for _ in range(3):
+    # Consumir 2 chats de free, verificar 2/3
+    for _ in range(2):
         quota.record_chat(conn, free_uid)
     u_free = quota.get_current_usage(conn, free_uid)
-    if u_free["chat_count"] != 3 or u_free["chat_remaining"] != 3:
-        fail(f"free después de 3 chats debería tener 3/6, got {u_free}")
-    print("  free consume 3/6 ✓")
+    if u_free["chat_count"] != 2 or u_free["chat_remaining"] != 1:
+        fail(f"free después de 2 chats debería tener 2/3 (rem=1), got {u_free}")
+    print("  free consume 2/3 ✓")
 
     # can_chat=True hasta el cap
     allowed, _ = quota.can_chat(conn, free_uid)
     if not allowed:
-        fail("free con 3/6 debería poder chatear")
-    # Llegar al cap
-    for _ in range(3):
-        quota.record_chat(conn, free_uid)
+        fail("free con 2/3 debería poder chatear")
+    # Llegar al cap (1 más → 3/3)
+    quota.record_chat(conn, free_uid)
     allowed, u = quota.can_chat(conn, free_uid)
     if allowed:
-        fail(f"free con 6/6 NO debería poder chatear, got {u}")
-    print("  free bloquea al llegar a 6/6 ✓")
+        fail(f"free con 3/3 NO debería poder chatear, got {u}")
+    print("  free bloquea al llegar a 3/3 ✓")
 
-    # Pro sigue OK
+    # Plus tiene su propia cuota — consumir 9, bloquear a 9/9.
+    for _ in range(9):
+        quota.record_chat(conn, plus_uid)
+    allowed, u_plus = quota.can_chat(conn, plus_uid)
+    if allowed:
+        fail(f"plus con 9/9 NO debería poder chatear, got {u_plus}")
+    print("  plus bloquea al llegar a 9/9 ✓")
+
+    # Pro independiente — sigue OK aunque Free y Plus estén bloqueados
     allowed, _ = quota.can_chat(conn, pro_uid)
     if not allowed:
-        fail("pro con 0/60 debería poder chatear")
-    print("  pro independiente de free ✓")
+        fail("pro con 0/40 debería poder chatear")
+    print("  pro independiente de free/plus ✓")
 
     conn.close()
     os.unlink(tmp.name)

@@ -68,24 +68,26 @@ LIMITS = {
         "analyses_per_week": 6,
         "hub_queries_per_week": 0,     # Hub es Pro-only — gate en endpoint
         # chat_per_week: cuántas consultas al Coach IA por ventana 7d.
-        # Free/Plus tienen acceso pero SOLO a las 12 preguntas pre-fijadas
+        # Free/Plus tienen acceso SOLO a las 12 preguntas pre-fijadas
         # (whitelist en el endpoint /api/ai/chat). No pueden tipear libre.
-        "chat_per_week": 6,
+        # Free=3 (taster — engancha pero empuja a upgrade), Plus=9 (3× Free).
+        "chat_per_week": 3,
     },
-    # Plus = features desbloqueadas pero IA igual que Free. El upgrade path
-    # a Pro queda accionable por mejor IA + features avanzadas (follow-ups,
-    # Hub, chat libre, ilimitados).
+    # Plus diferencial IA: 3× más chat que Free (9 vs 3). Mismos análisis 6
+    # (que se cachean 24h → uso efectivo similar). Plus es upgrade de
+    # "más broker + algo más de IA descriptiva". Pro sigue siendo el motor
+    # IA premium real (chat libre + causalidad + 60 análisis).
     "plus": {
         "analyses_per_week": 6,
         "hub_queries_per_week": 0,
-        "chat_per_week": 6,
+        "chat_per_week": 9,             # 3× Free
     },
     "pro": {
         "analyses_per_week": 60,        # 10× Free
         "hub_queries_per_week": 60,
         # Pro desbloquea CHAT LIBRE — pueden tipear cualquier pregunta.
-        # Cap 40/sem (down de 60) tras audit #3 — un Pro user real usa
-        # ~40% de la cuota → 16 chats/sem promedio, 40 deja headroom 2.5×.
+        # Cap 40/sem tras audit #3 (down de 60) — Pro user real usa ~40%
+        # de la cuota = 16 chats/sem promedio, 40 deja headroom 2.5×.
         # Worst case proyectado: ~$3.50/Pro/mes (chat + analyses + hub).
         "chat_per_week": 40,
     },
