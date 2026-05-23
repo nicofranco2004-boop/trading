@@ -18,6 +18,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Sparkles, AlertCircle, RotateCcw, Send, Lock } from 'lucide-react'
 import { api } from '../utils/api'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import UpgradePromoCard from './ai/UpgradePromoCard'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -48,6 +49,9 @@ export default function AICoach({ snapshot, suggested }) {
   const [freeText, setFreeText] = useState('')
   // Usage: { chat_count, chat_limit, chat_remaining, resets_on }
   const [usage, setUsage] = useState(null)
+  // Upgrade payload — solo se setea cuando llega un 429 con upgrade.available.
+  // Si está seteado, mostramos UpgradePromoCard en lugar del banner rojo.
+  const [upgradeInfo, setUpgradeInfo] = useState(null)
   const scrollRef = useRef(null)
 
   // Cargar cuota inicial — solo lectura, sin gating front (el server tiene la
@@ -104,6 +108,12 @@ export default function AICoach({ snapshot, suggested }) {
         // Caso 1: error estructurado del backend (gate Free, cuota agotada)
         msg = detail.message
         if (detail.usage) setUsage(detail.usage)
+        // Si el backend mandó upgrade.available=true (429 chat_quota_exceeded
+        // o 403 free_chat_not_allowed), seteamos upgradeInfo → render de
+        // UpgradePromoCard reemplaza al banner rojo de error. Audit #4.
+        if (detail.upgrade && detail.upgrade.available) {
+          setUpgradeInfo(detail.upgrade)
+        }
       } else if (Array.isArray(detail) && detail.length > 0) {
         // Caso 2: array Pydantic — no lo mostramos crudo. Inferimos el tipo.
         const firstErr = detail[0] || {}
@@ -140,6 +150,7 @@ export default function AICoach({ snapshot, suggested }) {
   function reset() {
     setMessages([])
     setError(null)
+    setUpgradeInfo(null)
   }
 
   // Cuál chips mostrar: si todavía no hay mensajes, las 4-6 iniciales.
@@ -232,7 +243,20 @@ export default function AICoach({ snapshot, suggested }) {
           </div>
         )}
 
-        {error && (
+        {/* Upgrade promo: cuando hubo 429 con upgrade.available=true,
+            reemplaza el banner rojo con la card promocional. Tono explicativo
+            + CTA a /planes. Si NO hay upgrade (ej. error 500 genérico),
+            cae al banner rojo de abajo. */}
+        {upgradeInfo && !loading && (
+          <UpgradePromoCard
+            usage={usage}
+            upgrade={upgradeInfo}
+            kind="chat"
+            source="coach_drawer_429"
+          />
+        )}
+
+        {error && !upgradeInfo && (
           <div className="flex items-start gap-2 p-2.5 bg-red-500/10 border border-red-500/30 rounded-md text-xs text-red-600 dark:text-red-400">
             <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
             <span className="break-all">{error}</span>

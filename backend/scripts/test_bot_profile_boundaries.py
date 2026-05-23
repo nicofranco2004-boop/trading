@@ -1250,6 +1250,145 @@ def test_injection_patterns_nfkd_accents():
     print("  TEST 26 PASS")
 
 
+def test_chat_429_returns_upgrade_payload():
+    print("\n=== Test 27: chat 429 incluye upgrade payload con target_tier dinámico ===")
+    import os, sqlite3 as s3, tempfile, json
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import app, init_db
+    from ai import quota
+    from fastapi.testclient import TestClient
+
+    init_db()
+    client = TestClient(app)
+
+    # Crear free + plus + pro users en la DB
+    conn = s3.connect(tmp.name)
+    conn.row_factory = s3.Row
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified, tier) "
+        "VALUES (?,?,?,1,1,?)",
+        ("free429@t", "h", "F", "free"),
+    )
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified, tier) "
+        "VALUES (?,?,?,1,1,?)",
+        ("plus429@t", "h", "PL", "plus"),
+    )
+    conn.commit()
+    free_uid = conn.execute("SELECT id FROM users WHERE email='free429@t'").fetchone()["id"]
+    plus_uid = conn.execute("SELECT id FROM users WHERE email='plus429@t'").fetchone()["id"]
+
+    # Consumir cuota chat de ambos hasta agotarla (Free=3, Plus=9)
+    for _ in range(3):
+        quota.record_chat(conn, free_uid)
+    for _ in range(9):
+        quota.record_chat(conn, plus_uid)
+    conn.close()
+
+    # ─── Helper: hacer POST /api/ai/chat con token de un user ─────────────
+    from main import create_token
+    free_token = create_token(free_uid)
+    plus_token = create_token(plus_uid)
+
+    payload = {
+        "messages": [{"role": "user", "content": "¿Cómo está mi portfolio en general?"}],
+        "snapshot": {"positions": [], "operations": [], "monthly": [], "brokers": []},
+    }
+
+    # ─── Free agotado: 429 con upgrade.target_tier='plus' ─────────────────
+    r = client.post(
+        "/api/ai/chat",
+        json=payload,
+        headers={"Authorization": f"Bearer {free_token}"},
+    )
+    if r.status_code != 429:
+        fail(f"Free agotado debería dar 429, got {r.status_code}: {r.text[:200]}")
+    body = r.json()
+    detail = body.get("detail", {})
+    if not isinstance(detail, dict):
+        fail(f"detail debería ser dict, got {type(detail)}")
+    if detail.get("error") != "chat_quota_exceeded":
+        fail(f"error debería ser chat_quota_exceeded, got {detail.get('error')}")
+    upgrade = detail.get("upgrade")
+    if not upgrade or not isinstance(upgrade, dict):
+        fail(f"detail.upgrade debería existir como dict, got {upgrade}")
+    if upgrade.get("available") is not True:
+        fail(f"upgrade.available debería ser True para Free, got {upgrade.get('available')}")
+    if upgrade.get("target_tier") != "plus":
+        fail(f"Free → target_tier debería ser 'plus' (cheap upgrade), got {upgrade.get('target_tier')}")
+    if not upgrade.get("benefits") or len(upgrade["benefits"]) < 3:
+        fail(f"upgrade.benefits debería tener >= 3 items, got {upgrade.get('benefits')}")
+    # Sanity: benefits del Plus deben mencionar "3×" / "brokers"
+    plus_benefits_text = " ".join(upgrade["benefits"]).lower()
+    if "3×" not in plus_benefits_text and "broker" not in plus_benefits_text:
+        fail(f"benefits para upgrade Plus deberían mencionar 3× chat o brokers, got {upgrade['benefits']}")
+    print(f"  Free 429 → upgrade.target_tier='plus' con benefits Plus ✓")
+
+    # ─── Plus agotado: 429 con upgrade.target_tier='pro' ──────────────────
+    r = client.post(
+        "/api/ai/chat",
+        json=payload,
+        headers={"Authorization": f"Bearer {plus_token}"},
+    )
+    if r.status_code != 429:
+        fail(f"Plus agotado debería dar 429, got {r.status_code}: {r.text[:200]}")
+    detail = r.json().get("detail", {})
+    upgrade = detail.get("upgrade")
+    if not upgrade or upgrade.get("target_tier") != "pro":
+        fail(f"Plus → target_tier debería ser 'pro', got {upgrade.get('target_tier') if upgrade else None}")
+    pro_benefits_text = " ".join(upgrade["benefits"]).lower()
+    if "chat libre" not in pro_benefits_text:
+        fail(f"benefits para upgrade Pro deberían mencionar 'chat libre', got {upgrade['benefits']}")
+    print(f"  Plus 429 → upgrade.target_tier='pro' con benefits Pro ✓")
+
+    # ─── Mensaje claro y sin "próximo lunes" ──────────────────────────────
+    if "próximo lunes" in detail.get("message", "").lower():
+        fail("mensaje 429 no debería decir 'próximo lunes' (es rolling 7d, no semanal)")
+    if "lib" not in detail.get("message", "").lower() and "renueva" not in detail.get("message", "").lower():
+        fail(f"mensaje debería mencionar cuándo se libera, got {detail.get('message')}")
+    print("  mensaje libre de 'próximo lunes' bug ✓")
+
+    # ─── 403 Free texto libre también trae upgrade payload ────────────────
+    # Para esto necesitamos que Free NO esté agotado todavía. Creamos otro user.
+    conn = s3.connect(tmp.name)
+    conn.row_factory = s3.Row
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified, tier) "
+        "VALUES (?,?,?,1,1,?)",
+        ("free403@t", "h", "F3", "free"),
+    )
+    conn.commit()
+    free403_uid = conn.execute("SELECT id FROM users WHERE email='free403@t'").fetchone()["id"]
+    conn.close()
+    free403_token = create_token(free403_uid)
+
+    payload_libre = {
+        "messages": [{"role": "user", "content": "Decime cuánto perdí en BTC el año pasado"}],
+        "snapshot": {"positions": [], "operations": [], "monthly": [], "brokers": []},
+    }
+    r = client.post(
+        "/api/ai/chat",
+        json=payload_libre,
+        headers={"Authorization": f"Bearer {free403_token}"},
+    )
+    if r.status_code != 403:
+        fail(f"Free con texto libre debería dar 403, got {r.status_code}: {r.text[:200]}")
+    detail = r.json().get("detail", {})
+    upgrade = detail.get("upgrade")
+    if not upgrade or upgrade.get("target_tier") != "pro":
+        fail(f"403 free_chat_not_allowed → upgrade.target_tier='pro', got {upgrade.get('target_tier') if upgrade else None}")
+    if upgrade.get("available") is not True:
+        fail(f"upgrade.available=True en 403, got {upgrade.get('available')}")
+    print("  403 free_chat_not_allowed trae upgrade payload completo ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 27 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -1277,6 +1416,7 @@ def main():
     test_chat_quota_gating()
     test_chat_cost_logger()
     test_injection_patterns_nfkd_accents()
+    test_chat_429_returns_upgrade_payload()
     print("\n\nALL TESTS PASS")
 
 

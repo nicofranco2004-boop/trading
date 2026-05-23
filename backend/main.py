@@ -8841,12 +8841,51 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
         # ANTES de procesar — barato + claro mensaje al usuario.
         allowed, usage = quota.can_chat(conn, uid)
         if not allowed:
+            # Shape consistente con /api/ai/analyze: incluye `upgrade` payload
+            # para que el frontend renderee UpgradePromoCard con CTA a Pro/Plus
+            # en lugar de un banner de error plano. Audit #4.
+            #
+            # Target del upgrade:
+            #   - Free → Plus (3 → 9 chats = 3× más, upgrade barato)
+            #   - Plus → Pro (9 → 40 chats + chat libre + IA causal)
+            #   - Pro/Admin: no aplica, no debería llegar acá pero por las dudas
+            upgrade_available = tier in ("free", "plus")
+            target_tier = "plus" if tier == "free" else "pro"
+            if target_tier == "plus":
+                benefits = [
+                    "3× más Chat Coach IA (9 consultas/sem vs 3)",
+                    "Hasta 3 brokers (vs 1 en Free)",
+                    "Reportes históricos + Export CSV",
+                    "Diagnóstico completo + 4 detectores de comportamiento",
+                ]
+            else:  # plus → pro
+                benefits = [
+                    "Chat libre con el Coach IA (40 consultas/sem)",
+                    "10× más análisis IA (60/sem vs 6/sem)",
+                    "Respuestas con causalidad y memoria persistente",
+                    "Brokers ilimitados + comportamiento completo",
+                ]
+            # resets_on dinámico del usage (calculado por quota.get_current_usage
+            # como date(MIN(date), '+7 days') del slot más viejo). Si null,
+            # texto genérico — la cuota es rolling 7d, NUNCA decir "lunes".
+            resets_on = usage.get("resets_on")
+            if resets_on:
+                msg = f"Llegaste al máximo de consultas ({usage['chat_count']}/{usage['chat_limit']}) de esta semana. Tu próxima consulta se libera el {resets_on}."
+            else:
+                msg = f"Llegaste al máximo de consultas ({usage['chat_count']}/{usage['chat_limit']}) de esta semana. Tu próxima consulta se libera cuando expira el slot más antiguo (ventana móvil de 7 días)."
             raise HTTPException(
                 429,
                 detail={
                     "error": "chat_quota_exceeded",
-                    "message": f"Llegaste al máximo de consultas ({usage['chat_limit']}) de esta semana. Se renueva el {usage.get('resets_on') or 'próximo lunes'}.",
+                    "message": msg,
                     "usage": usage,
+                    "upgrade": {
+                        "available": upgrade_available,
+                        "current_tier": tier,
+                        "target_tier": target_tier,
+                        "resets_on": resets_on,
+                        "benefits": benefits,
+                    },
                 },
             )
         prof_row = conn.execute(
@@ -8884,12 +8923,27 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
         if not _is_whitelisted_question(last_user_msg):
             log.info("ai_chat rejected non-whitelisted msg, tier=%s uid=%s msg=%r",
                      tier, uid, last_user_msg[:80])
+            # 403 con upgrade payload — para que el frontend muestre la card
+            # promocional con CTA en lugar de un banner de error rojo. El
+            # target Pro porque chat libre = Pro-only (Plus también está
+            # limitado a la whitelist de 12 preguntas).
             raise HTTPException(
                 403,
                 detail={
                     "error": "free_chat_not_allowed",
                     "message": "El chat libre está disponible solo en el plan Pro. Elegí una de las preguntas guiadas o actualizá tu plan.",
                     "tier": tier,
+                    "upgrade": {
+                        "available": True,
+                        "current_tier": tier,
+                        "target_tier": "pro",
+                        "benefits": [
+                            "Chat libre con el Coach IA — preguntá lo que quieras",
+                            "40 consultas/semana (vs 12 preguntas guiadas)",
+                            "Respuestas con causalidad y memoria persistente",
+                            "10× más análisis IA + brokers ilimitados",
+                        ],
+                    },
                 },
             )
 

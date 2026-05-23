@@ -1,22 +1,29 @@
 // UpgradePromoCard — card que se muestra en el drawer cuando el user Free
-// llega al cap semanal de análisis.
+// o Plus llega al cap semanal de IA (análisis o chat).
 // ═══════════════════════════════════════════════════════════════════════════
 // UX:
 //   - Reemplaza el banner de error rojo (que sale por defecto en 429).
 //   - Tono explicativo, no agresivo. Muestra cap actual + fecha de reset +
 //     beneficios concretos del upgrade.
-//   - El CTA (por ahora) trackea el intent y vuelve a la app — el flujo de
-//     pago real se conecta cuando exista.
+//   - kind="analyses" o "chat" cambia los labels (de qué se quedó sin cuota).
+//   - target_tier del backend define a qué plan upsell: Free→Plus o Plus→Pro.
 
 import { Sparkles, Calendar, Check } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { track } from '../../utils/track'
 
-const DEFAULT_BENEFITS = [
+const DEFAULT_BENEFITS_PRO = [
   '10× más análisis IA (60/sem vs 6/sem)',
-  'Respuestas con causalidad y comparaciones, no solo descripción',
-  'Follow-ups: profundizá cualquier análisis con preguntas libres',
-  'AI Hub: exploración libre sobre tu portfolio (próximamente)',
+  'Chat libre con el Coach IA (40 consultas/sem)',
+  'Respuestas con causalidad y memoria persistente',
+  'Brokers ilimitados + comportamiento completo',
+]
+
+const DEFAULT_BENEFITS_PLUS = [
+  '3× más Chat Coach IA (9 consultas/sem vs 3)',
+  'Hasta 3 brokers (vs 1 en Free)',
+  'Reportes históricos + Export CSV',
+  'Diagnóstico completo + 4 detectores',
 ]
 
 function fmtReset(iso) {
@@ -33,23 +40,52 @@ function fmtReset(iso) {
   }
 }
 
+const TIER_LABEL = { free: 'Free', plus: 'Plus', pro: 'Pro', admin: 'Admin' }
+
+/**
+ * @param {object} props
+ * @param {object} props.usage - { analyses_count?, analyses_limit?, chat_count?, chat_limit?, resets_on? }
+ * @param {object} props.upgrade - { available, current_tier, target_tier, benefits, resets_on? }
+ * @param {'analyses'|'chat'} [props.kind='analyses'] - de qué cuota se quedó sin
+ * @param {string} [props.source='drawer_429']
+ */
 export default function UpgradePromoCard({
   usage,
   upgrade,
+  kind = 'analyses',
   source = 'drawer_429',
 }) {
+  const isChat = kind === 'chat'
+
+  // Resolver count/limit según el tipo de cuota agotada
+  const count = isChat
+    ? (usage?.chat_count ?? '—')
+    : (usage?.analyses_count ?? '—')
+  const limit = isChat
+    ? (usage?.chat_limit ?? '—')
+    : (usage?.analyses_limit ?? '—')
+
+  // Resolver tier actual y target del upgrade
+  const currentTier = upgrade?.current_tier || 'free'
+  const targetTier = upgrade?.target_tier || 'pro'
+  const currentLabel = TIER_LABEL[currentTier] || 'Free'
+  const targetLabel = TIER_LABEL[targetTier] || 'Pro'
+
+  // Benefits: backend > default según target
+  const defaultBenefits = targetTier === 'plus' ? DEFAULT_BENEFITS_PLUS : DEFAULT_BENEFITS_PRO
   const benefits = (upgrade && upgrade.benefits && upgrade.benefits.length > 0)
     ? upgrade.benefits
-    : DEFAULT_BENEFITS
+    : defaultBenefits
+
   const resetsOn = upgrade?.resets_on || usage?.resets_on
   const resetLabel = fmtReset(resetsOn)
-  const count = usage?.analyses_count ?? '—'
-  const limit = usage?.analyses_limit ?? '—'
+  const resourceLabel = isChat ? 'consultas al Coach IA' : 'análisis'
+  const resourceShort = isChat ? 'consulta' : 'análisis'
 
   const navigate = useNavigate()
 
   function onUpgradeClick() {
-    track('upgrade_promo_clicked', { source })
+    track('upgrade_promo_clicked', { source, kind, current_tier: currentTier, target_tier: targetTier })
     navigate('/planes')
   }
 
@@ -60,10 +96,10 @@ export default function UpgradePromoCard({
         <Sparkles size={14} strokeWidth={1.75} className="text-data-violet mt-0.5 flex-shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-[10px] font-mono uppercase tracking-caps text-data-violet leading-none mb-1">
-            Llegaste al límite del plan Free
+            Llegaste al límite del plan {currentLabel}
           </p>
           <h3 className="text-sm font-medium text-ink-0 leading-snug">
-            Usaste {count} de {limit} análisis del plan Free
+            Usaste {count} de {limit} {resourceLabel} esta semana
           </h3>
         </div>
       </div>
@@ -72,14 +108,14 @@ export default function UpgradePromoCard({
       {resetLabel && (
         <div className="flex items-center gap-1.5 text-xs text-ink-2">
           <Calendar size={11} strokeWidth={1.75} className="text-ink-3" />
-          <span>Tu próximo análisis se libera el <span className="text-ink-0">{resetLabel}</span>.</span>
+          <span>Tu próxima {resourceShort} se libera el <span className="text-ink-0">{resetLabel}</span>.</span>
         </div>
       )}
 
-      {/* Pro pitch */}
+      {/* Pitch al target tier */}
       <div className="pt-3 border-t border-line/40 space-y-2.5">
         <p className="text-xs text-ink-2">
-          Para uso ilimitado con respuestas más profundas, pasate a <span className="text-data-violet font-medium">Rendi Pro</span>:
+          Para más cuota{isChat ? ' y chat libre sin restricción' : ' y respuestas más profundas'}, pasate a <span className="text-data-violet font-medium">Rendi {targetLabel}</span>:
         </p>
         <ul className="space-y-1.5">
           {benefits.map((b, i) => (
@@ -99,10 +135,6 @@ export default function UpgradePromoCard({
         <Sparkles size={12} strokeWidth={1.75} />
         Ver planes y mejorar
       </button>
-
-      <p className="text-[10px] text-ink-3 text-center">
-        Pro está en desarrollo — te avisamos cuando esté listo.
-      </p>
     </div>
   )
 }
