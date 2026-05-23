@@ -9899,10 +9899,14 @@ _FREE_QUESTIONS_WHITELIST = (
     "¿Qué riesgos detectás en mi cartera?",
     "¿Mi nivel de concentración es elevado?",
     "¿Cómo evalúo mi win rate?",
-    "¿Mi diversificación está bien?",
+    # Slot #5: dispara get_value_scorecard sobre el top holding del user.
+    # Pack A v2 onboarding chip — sin esto, Free/Plus jamás descubren
+    # la tool nueva (whitelist es un cap rígido para Free).
+    "¿Está cara mi posición más grande?",
     "¿Detectás algún sesgo en mi forma de operar?",
     "¿Mi exposure por sector/región está equilibrado?",
-    "¿Qué métrica debería empezar a monitorear y todavía no miro?",
+    # Slot #8: dispara get_earnings_history sobre activos en cartera.
+    "¿Cuándo reportan earnings los activos de mi cartera?",
     "Si tuvieras que mejorar UNA cosa de mi cartera, ¿cuál sería?",
     "¿Cómo voy vs el S&P 500?",
     "¿Le estoy ganando a la inflación argentina?",

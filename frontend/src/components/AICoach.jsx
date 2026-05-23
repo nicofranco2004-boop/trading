@@ -24,15 +24,20 @@ import UpgradePromoCard from './ai/UpgradePromoCard'
 // Insights genera dinámicamente preguntas data-driven basadas en el
 // snapshot real (drawdown actual, win rate, concentración, etc.) y
 // puede sumar hasta 12.
+// Las 12 deben matchear la _FREE_QUESTIONS_WHITELIST del backend
+// (case-insensitive, NFKC). Si cambiás una acá, cambiá también allá.
+// Slots #5 y #8 introducidos en Pack A v2 — disparan get_value_scorecard y
+// get_earnings_history respectivamente. Buscan que el user descubra
+// orgánicamente las nuevas tools de mercado al elegir el chip.
 const DEFAULT_SUGGESTED = [
   '¿Cómo está mi portfolio en general?',
   '¿Qué riesgos detectás en mi cartera?',
   '¿Mi nivel de concentración es elevado?',
   '¿Cómo evalúo mi win rate?',
-  '¿Mi diversificación está bien?',
+  '¿Está cara mi posición más grande?',
   '¿Detectás algún sesgo en mi forma de operar?',
   '¿Mi exposure por sector/región está equilibrado?',
-  '¿Qué métrica debería empezar a monitorear y todavía no miro?',
+  '¿Cuándo reportan earnings los activos de mi cartera?',
   'Si tuvieras que mejorar UNA cosa de mi cartera, ¿cuál sería?',
   '¿Cómo voy vs el S&P 500?',
   '¿Le estoy ganando a la inflación argentina?',
