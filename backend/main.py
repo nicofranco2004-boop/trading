@@ -423,6 +423,26 @@ def init_db():
         conn.execute("ALTER TABLE operations ADD COLUMN cost_basis_consumed REAL")
     conn.commit()
 
+    # ─── Índices secundarios — positions / operations / monthly_entries ────
+    # Históricamente solo había PK por `id`. Cada query filtra por `user_id`
+    # → full table scan. Con 1k+ rows acumulados cross-user, eso son 20-80ms
+    # perdidos por query. En endpoints como /api/insights que pegan a las 3
+    # tablas en paralelo, llegamos a 60-240ms perdidos por request.
+    #
+    # `idx_operations_user_date` es compuesto (user, date DESC) porque casi
+    # todas las queries del módulo operations ordenan por fecha desc:
+    #   /operations, reports/period, monthly aggregation, wrapped/year.
+    # Compuesto = index range scan + sort eliminado.
+    #
+    # `idx_monthly_user_period` (user, year, month) acelera /monthly,
+    # /reports/timeline (12 meses × user) y monthly_entries lookups.
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_operations_user_date ON operations(user_id, date DESC);
+        CREATE INDEX IF NOT EXISTS idx_monthly_user_period ON monthly_entries(user_id, year, month);
+    """)
+    conn.commit()
+
     # ─── bond_indices_daily ────────────────────────────────────────────────
     # Cache de índices financieros publicados diariamente (CER, UVA, A3500).
     # Tabla shared cross-user — los índices son datos públicos macro, no
@@ -3616,6 +3636,50 @@ def _resolve_ar_bond_price(symbol):
     return raw / 100.0
 
 
+# ─── Cache in-memory para /api/prices ────────────────────────────────────────
+# Endpoint más caliente del stack: Dashboard, Positions, Insights, HomeMobile,
+# Goals y Events lo pegan en cada page-mount con sets de símbolos casi
+# idénticos (las posiciones del user). Sin cache, cada navegación entre
+# páginas re-ejecuta yf.download() — 1-4s contra Yahoo Finance.
+#
+# Cache PER-SYMBOL (no per-set) — más granular. Si Dashboard pide 15 syms y
+# Positions pide 18 syms con 13 overlap, el 2° hit solo fetchea los 5 nuevos.
+#
+# TTL 60s: igual que _QUOTE_CACHE en home/market.py. Los precios intraday
+# cambian seguido pero 60s es aceptable para UX (LCP < 200ms) — la mayoría
+# de queries dentro de una sesión activa hit cache.
+#
+# Thread-safe con Lock (FastAPI ejecuta requests en threadpool por default).
+import threading as _threading_prices
+_PRICE_CACHE: dict = {}  # symbol → (timestamp_epoch, price_or_None)
+_PRICE_CACHE_TTL_S = 60
+_PRICE_CACHE_LOCK = _threading_prices.Lock()
+
+
+def _prices_cache_get(symbols: list[str]) -> tuple[dict, list[str]]:
+    """Returns (cached_results, uncached_symbols). Cached incluye None values."""
+    now = time.time()
+    cached: dict = {}
+    uncached: list[str] = []
+    with _PRICE_CACHE_LOCK:
+        for sym in symbols:
+            entry = _PRICE_CACHE.get(sym)
+            if entry is not None and (now - entry[0]) < _PRICE_CACHE_TTL_S:
+                cached[sym] = entry[1]
+            else:
+                uncached.append(sym)
+    return cached, uncached
+
+
+def _prices_cache_set(prices: dict) -> None:
+    """Persiste resultados en cache. Cachea AMBOS hits y misses (None) — si
+    yfinance no devolvió price, no insistimos en re-fetchear durante 60s."""
+    now = time.time()
+    with _PRICE_CACHE_LOCK:
+        for sym, price in prices.items():
+            _PRICE_CACHE[sym] = (now, price)
+
+
 @app.get("/api/prices")
 def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     raw = [s.strip().upper() for s in symbols.split(",") if s.strip()]
@@ -3629,7 +3693,19 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     if not sym_list:
         return {}
 
-    result = {sym: None for sym in sym_list}
+    # ─── Layer 1: cache hit fast path ───────────────────────────────────────
+    # Si TODOS los símbolos están cacheados frescos (< 60s), devolvemos sin
+    # tocar data912 ni yfinance. Típico de navegación entre páginas: 2do hit
+    # en < 5ms.
+    cached_results, uncached_symbols = _prices_cache_get(sym_list)
+    if not uncached_symbols:
+        return cached_results
+
+    # Hay misses — procesamos solo los uncached. Resultado base incluye lo
+    # que ya teníamos cacheado para no perderlo en el merge final.
+    result = dict(cached_results)
+    for sym in uncached_symbols:
+        result[sym] = None
 
     # Phase 3F: prefetch de bonos AR via data912.com (precio live de BYMA).
     # Para tickers conocidos como bonos AR canje 2020 o CER, resolvemos acá
@@ -3637,7 +3713,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     # ETFs, crypto, ONs corporativas con tickers exactos no cubiertos) cae
     # al path yfinance de abajo.
     yf_targets = []
-    for sym in sym_list:
+    for sym in uncached_symbols:
         ar_price = _resolve_ar_bond_price(sym)
         if ar_price is not None:
             result[sym] = ar_price
@@ -3645,6 +3721,8 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
             yf_targets.append(sym)
 
     if not yf_targets:
+        # Solo había símbolos resolved por data912 — persistir y salir.
+        _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
         return result
 
     sym_to_yf = {}
@@ -3688,6 +3766,9 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
             price = _fetch_one(f"{sym}-USD")
         result[sym] = price
 
+    # Persistir todos los uncached que acabamos de fetchear (incluyendo None
+    # para los que fallaron — evita retry storm si Yahoo está down).
+    _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
     return result
 
 

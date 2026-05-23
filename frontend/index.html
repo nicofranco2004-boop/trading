@@ -43,6 +43,10 @@
          Solo se cargan los pesos necesarios (display=swap para no bloquear render). -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Preconnect al backend Railway — abre el handshake TLS en paralelo al
+         download del JS, ahorra 100-200ms en la primera llamada API (mobile 3G).
+         La URL coincide con vercel.json:6 (rewrite a Railway). -->
+    <link rel="preconnect" href="https://trading-production-143b.up.railway.app" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
     <!-- Structured data: SoftwareApplication (qué es Rendi) -->
