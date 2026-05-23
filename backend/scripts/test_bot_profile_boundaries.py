@@ -1898,6 +1898,122 @@ def test_pack_a_v2_cedear_currency_guard():
     print("  TEST 37 PASS")
 
 
+def test_pack_a_v2_executor_timeout_real():
+    print("\n=== Test 38: timeout yfinance NO espera al thread hung (fix B1) ===")
+    import os, sqlite3 as s3, tempfile, time
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db, _yf_fetch_cached, YF_FETCH_TIMEOUT_SECONDS
+    init_db()
+
+    # Fetcher que duerme 30s — el caller NO debe esperar 30s gracias al timeout
+    def hung_fetcher(ticker):
+        time.sleep(30)
+        return {"oops": True}
+
+    start = time.time()
+    result = _yf_fetch_cached("HUNGTEST", "fundamentals", hung_fetcher)
+    elapsed = time.time() - start
+
+    # Debe completar en ~10s (timeout) + small overhead — NO en 30s (thread hung)
+    if elapsed > YF_FETCH_TIMEOUT_SECONDS + 5:
+        fail(f"timeout no funcionó — esperó {elapsed:.1f}s (esperado ~{YF_FETCH_TIMEOUT_SECONDS}s)")
+    if elapsed < YF_FETCH_TIMEOUT_SECONDS - 1:
+        fail(f"timeout muy rápido — {elapsed:.1f}s")
+    if result.get("available") is not False:
+        fail(f"timeout debería devolver available=false, got {result}")
+    print(f"  caller liberado en {elapsed:.2f}s (timeout {YF_FETCH_TIMEOUT_SECONDS}s) ✓")
+
+    # Sanidad: si llamamos otra vez, el semáforo debería estar libre
+    # (no estancado por el thread hung de la llamada anterior).
+    start2 = time.time()
+    result2 = _yf_fetch_cached("HUNGTEST2", "fundamentals", lambda t: {"quick": True})
+    elapsed2 = time.time() - start2
+    if elapsed2 > 2:
+        fail(f"semáforo bloqueado por thread hung previo — 2da call tardó {elapsed2:.1f}s")
+    print(f"  semáforo NO bloqueado — 2da call rápida ({elapsed2:.3f}s) ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 38 PASS")
+
+
+def test_pack_a_v2_cer_no_variant():
+    print("\n=== Test 39: TX26D NO devuelve variant=D (CER no tiene MEP) — fix B3 ===")
+    import os, sqlite3 as s3, tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db, _execute_ai_tool
+    init_db()
+    import sqlite3
+    conn = sqlite3.connect(tmp.name)
+    conn.execute("INSERT INTO users (email, password_hash, name, approved, email_verified) VALUES (?,?,?,1,1)",
+                 ("t39@t", "h", "T"))
+    uid = conn.execute("SELECT id FROM users").fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    # AL30D → variant="D" (es soberano USD)
+    r1 = _execute_ai_tool("get_ar_bond_metadata", {"ticker": "AL30D"}, uid)
+    if r1.get("variant") != "D":
+        fail(f"AL30D debe tener variant='D' (soberano USD), got {r1.get('variant')}")
+    print(f"  AL30D → variant='D' (soberano USD) ✓")
+
+    # TX26D → NO variant (es CER, no aplica MEP)
+    # Pero igual matchea is_known_ar_bond porque _strip_bond_suffix devuelve TX26
+    r2 = _execute_ai_tool("get_ar_bond_metadata", {"ticker": "TX26D"}, uid)
+    if r2.get("available") is not True:
+        fail(f"TX26D igual debería matchear (base TX26 es válido), got {r2}")
+    if r2.get("variant") is not None:
+        fail(f"TX26D NO debe tener variant (CER no tiene MEP), got {r2.get('variant')}")
+    print(f"  TX26D → variant=None (CER, no aplica MEP) ✓")
+
+    os.unlink(tmp.name)
+    print("  TEST 39 PASS")
+
+
+def test_pack_a_v2_prompt_bond_consistency():
+    print("\n=== Test 40: prompts consistentes sobre tools de bonos AR (fix I1+I2) ===")
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import _AI_CHAT_SYSTEM, _AI_CHAT_SYSTEM_FREE
+
+    # Pro: debe mencionar get_ar_bond_metadata como tool de mercado Pack A v2
+    if "get_ar_bond_metadata" not in _AI_CHAT_SYSTEM:
+        fail("Pro prompt debe mencionar get_ar_bond_metadata")
+    print("  Pro prompt menciona get_ar_bond_metadata ✓")
+
+    # Pro: NO debe decir "NUNCA llames tools de mercado para bonos AR"
+    # (eso contradice la tool nueva). Verificamos con regex case-insensitive.
+    pro_lower = _AI_CHAT_SYSTEM.lower()
+    contradictions = [
+        "nunca llames tools de mercado para cripto ni bonos ar",
+        "no tienen scorecard ni fundamentales. decilo honesto.",
+    ]
+    for c in contradictions:
+        if c in pro_lower:
+            fail(f"Pro prompt aún contiene la contradicción: {c!r}")
+    print("  Pro prompt NO contiene instrucciones contradictorias ✓")
+
+    # Free: misma verificación
+    if "get_ar_bond_metadata" not in _AI_CHAT_SYSTEM_FREE:
+        fail("Free prompt debe mencionar get_ar_bond_metadata")
+    print("  Free prompt menciona get_ar_bond_metadata ✓")
+
+    free_lower = _AI_CHAT_SYSTEM_FREE.lower()
+    if "nunca llames tools de mercado para cripto ni bonos ar" in free_lower:
+        fail("Free prompt aún tiene contradicción sobre bonos AR")
+    print("  Free prompt clarifica que bonos AR soberanos sí tienen tool ✓")
+
+    print("  TEST 40 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -1936,6 +2052,9 @@ def main():
     test_pack_a_v2_dash_tickers()
     test_pack_a_v2_fair_value_low_confidence()
     test_pack_a_v2_cedear_currency_guard()
+    test_pack_a_v2_executor_timeout_real()
+    test_pack_a_v2_cer_no_variant()
+    test_pack_a_v2_prompt_bond_consistency()
     print("\n\nALL TESTS PASS")
 
 

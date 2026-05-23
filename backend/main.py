@@ -6747,25 +6747,33 @@ Tools internas (data del propio usuario):
 - get_recent_news_for_assets: top 3 noticias por ticker de la cartera.
 - remember_user_fact: persistir hechos del usuario entre sesiones.
 
-Tools de mercado externas (Pack A v2 — yfinance):
+Tools de mercado externas (Pack A v2):
+Para EQUITIES (acciones US, CEDEARs listados en US — yfinance):
 - get_stock_fundamentals: P/E, EPS, dividend yield, market cap, beta, sector — datos rápidos.
 - get_value_scorecard: scorecard completo con 8 métricas + semáforos (verde/ámbar/rojo) + label "Sólido/Mixto/Débil". LA TOOL ESTRELLA para preguntas de valoración.
 - get_earnings_history: próximo earnings + últimos 4 quarters con surprise %.
 - get_analyst_ratings: recomendación consenso + price target.
 - get_company_profile: a qué se dedica la empresa.
 
+Para BONOS ARGENTINOS soberanos (AL/GD/AE/AL41 + TX/T2X/TZX/T2X CER):
+- get_ar_bond_metadata: maturity, ley aplicable (local/NY), step-up cupones, indexado CER, descripción contextual. Cubre TODOS los soberanos AR canje 2020 + los CER principales. NO cubre ONs corporativas ni provinciales.
+
 Cuándo NO llamar tools de mercado:
 - Si el usuario solo quiere precio → get_current_prices.
-- Si pregunta sobre cripto o bonos AR → NO tienen scorecard ni fundamentales. Decilo honesto.
+- Si el ticker es CRIPTO → no hay scorecard ni fundamentales (P/E no aplica). Decilo honesto.
+- Si el ticker es bono CORPORATIVO o provincial → no tenemos metadata. Decilo honesto.
 - Si la pregunta es general/estrategia sin un ticker específico.
 - Si ya tenés la respuesta en el snapshot.
 
 Cuándo SÍ llamar tools de mercado:
-- Pregunta sobre "¿está cara/barata X?" → get_value_scorecard (UNA llamada cubre todo).
+- Pregunta sobre "¿está cara/barata X?" (acción) → get_value_scorecard (UNA llamada cubre todo).
 - Compara dos acciones → get_value_scorecard para cada uno (máx 2).
+- Pregunta sobre bono AR soberano ("¿qué es AL30?", "¿cuándo vence GD30?", "¿el TX26 ajusta por inflación?") → get_ar_bond_metadata.
 - Pregunta sobre earnings/próximo reporte → get_earnings_history.
 - Pregunta sobre cobertura de analistas → get_analyst_ratings.
 - Pregunta a qué se dedica → get_company_profile.
+
+Si get_value_scorecard devuelve `available: false` con razón sobre bonos, llamá get_ar_bond_metadata como fallback. Es la tool correcta para razonar sobre bonos AR.
 
 ANTI-SPAM DE TOOLS:
 - Máximo 2 tools de mercado por respuesta. Si tu pregunta necesita 3+, repensá si todas son necesarias.
@@ -6959,11 +6967,17 @@ UPSELL — IMPORTANTE
 Si el usuario pide análisis profundo, comparación extendida con benchmarks, atribución de causa, sesgos, o pregunta "¿por qué...?": respondé con el dato más simple del snapshot Y agregá al final UNA frase: "Para análisis con causalidad, comparaciones y profundidad, pasate a Pro desde Configuración."
 
 HERRAMIENTAS
-Tenés tools internas (get_current_prices, get_asset_operations, get_monthly_detail, get_realized_vs_unrealized, get_recent_news_for_assets) y tools de mercado externas Pack A v2 (get_stock_fundamentals, get_value_scorecard, get_earnings_history, get_analyst_ratings, get_company_profile). Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo.
+Tenés tools internas (get_current_prices, get_asset_operations, get_monthly_detail, get_realized_vs_unrealized, get_recent_news_for_assets) y tools de mercado externas Pack A v2:
+- Para ACCIONES (US/CEDEARs): get_stock_fundamentals, get_value_scorecard, get_earnings_history, get_analyst_ratings, get_company_profile.
+- Para BONOS AR SOBERANOS (AL30/GD30/AE38/TX26/TZX, etc.): get_ar_bond_metadata.
 
-Para preguntas de valoración de una acción ("¿está cara X?", "¿es buena compra?"), get_value_scorecard cubre todo en un solo call (8 métricas + semáforos). NO llames las otras tools de mercado a continuación — quedaste con esto.
+Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo.
 
-NUNCA llames tools de mercado para cripto ni bonos AR — no aplica. Si el usuario pregunta valoración de BTC/ETH, decile honest: "para cripto no manejo métricas de valoración tradicionales (P/E, ROE no aplican)".
+Para preguntas de valoración de una ACCIÓN ("¿está cara NVDA?"), get_value_scorecard cubre todo en un solo call (8 métricas + semáforos).
+
+Para preguntas sobre BONO AR ("¿qué es AL30?", "¿cuándo vence?"), get_ar_bond_metadata devuelve la metadata estructurada.
+
+NUNCA llames tools de mercado para CRIPTO — no aplican métricas tradicionales (P/E, ROE no se calculan). Decile honesto: "para cripto no manejo métricas de valoración tradicionales".
 
 DISTINGUIR EXPOSURE PRESENTE vs P&L HISTÓRICO
 El snapshot tiene `positions` (posiciones ABIERTAS HOY) y `operations` (cerradas YA). NUNCA confundirlas. Un ticker en operations puede no estar más en cartera. Si te preguntan sobre exposure o riesgo presente, usar SOLO positions. Si te preguntan sobre P&L histórico, usar SOLO operations.
@@ -7186,7 +7200,8 @@ class AIChatIn(BaseModel):
 
 # TTL granular por kind — refleja la realidad de cuán seguido cambia cada dato.
 # Default 6h; algunos kinds tienen TTL más largo porque sus datos son estables.
-# Semáforo + timeout para yfinance (audit crítico #1).
+# Semáforo + timeout para yfinance (audit Pack A v2 fix B1).
+#
 # Sin esto: 50 Pro concurrentes pidiendo scorecards distintos satura el
 # threadpool de FastAPI (default 40 workers) y degrada TODO el backend
 # (login, snapshots, /positions). El módulo news tenía BoundedSemaphore(16),
@@ -7194,12 +7209,21 @@ class AIChatIn(BaseModel):
 #
 # Cap a 8 fetches in-flight process-wide. Si todos los slots están en uso,
 # los siguientes esperan en cola (no bloquean otros endpoints).
+#
+# IMPORTANTE — fix B1 del audit final:
+# La primera implementación usó `with ThreadPoolExecutor(...)` lo cual
+# bloquea en __exit__ esperando al thread hung (defeats el timeout).
+# Solución: ThreadPoolExecutor GLOBAL módulo-level que NO se cierra.
+# El thread que timea queda en bg, lo dejamos morir naturalmente — pero
+# el caller libera el semáforo en su timeout sin esperar al thread.
 import threading as _threading_yf
+from concurrent.futures import ThreadPoolExecutor as _YFThreadPoolExecutor
 _yf_fetch_semaphore = _threading_yf.BoundedSemaphore(8)
+# Pool dedicado, max 8 workers (mismo cap que semáforo). NO usar `with`.
+_yf_executor = _YFThreadPoolExecutor(max_workers=8, thread_name_prefix="yf-fetch")
 
 # Timeout 10s para fetcher externo (yfinance). Si yf cuelga o tarda > 10s,
-# devolvemos available=false y cache stale si está. Sin esto, los threads
-# del pool quedan bloqueados minutos esperando una respuesta que nunca llega.
+# devolvemos available=false y cache stale si está.
 YF_FETCH_TIMEOUT_SECONDS = 10
 
 
@@ -7312,22 +7336,26 @@ def _yf_fetch_cached(ticker: str, kind: str, fetcher_fn) -> dict:
             log.debug("yf_cache MISS_NEW ticker=%s kind=%s", yf_ticker, kind)
 
         # 2. Stale o missing — llamar fetcher con semáforo + timeout.
-        # Semáforo limita a 8 fetches concurrentes process-wide para no
-        # saturar el threadpool de FastAPI cuando hay muchos Pro chateando.
-        # Timeout 10s para que yf colgado no bloquee threads minutos.
+        # Audit fix B1: usamos executor GLOBAL (_yf_executor) en lugar de
+        # crear uno nuevo con `with`. La razón: `with` bloquea en __exit__
+        # esperando shutdown del thread, neutralizando el timeout. Con
+        # executor global, el thread hung queda en bg (lo dejamos morir
+        # naturalmente cuando yfinance eventualmente responde o se hace GC).
         try:
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+            from concurrent.futures import TimeoutError as FutureTimeout
             with _yf_fetch_semaphore:
-                with ThreadPoolExecutor(max_workers=1) as ex_pool:
-                    future = ex_pool.submit(fetcher_fn, yf_ticker)
-                    try:
-                        new_payload = future.result(timeout=YF_FETCH_TIMEOUT_SECONDS)
-                    except FutureTimeout:
-                        log.warning("yf fetcher TIMEOUT after %ds for %s/%s",
-                                    YF_FETCH_TIMEOUT_SECONDS, yf_ticker, kind)
-                        # No esperamos al thread — lo dejamos morir en bg.
-                        # Caemos al stale fallback abajo.
-                        raise TimeoutError(f"yfinance no respondió en {YF_FETCH_TIMEOUT_SECONDS}s")
+                future = _yf_executor.submit(fetcher_fn, yf_ticker)
+                try:
+                    new_payload = future.result(timeout=YF_FETCH_TIMEOUT_SECONDS)
+                except FutureTimeout:
+                    log.warning("yf fetcher TIMEOUT after %ds for %s/%s",
+                                YF_FETCH_TIMEOUT_SECONDS, yf_ticker, kind)
+                    # No esperamos al thread — lo dejamos morir en bg.
+                    # Intentamos cancelar (no garantía, fetcher_fn no es cancelable,
+                    # pero al menos libera el slot si todavía no arrancó).
+                    future.cancel()
+                    # Caemos al stale fallback abajo.
+                    raise TimeoutError(f"yfinance no respondió en {YF_FETCH_TIMEOUT_SECONDS}s")
             # Sanitizar: solo cacheamos si no devuelve "available: False" por
             # error transitorio. Si devuelve available=False por motivo
             # estructural (ej. "cripto no aplica scorecard"), sí cacheamos
@@ -8622,12 +8650,18 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
         md = get_bond_metadata(raw_ticker)
         if md is None:
             return {"available": False, "reason": "metadata no encontrada"}
-        # Detectar si vino con variante USD MEP (D) / CCL (C)
+        # Detectar si vino con variante USD MEP (D) / CCL (C).
+        # Fix B3 del audit: solo aplica a SOBERANO_USD. Los CER (TX/T2X/TZX)
+        # son ARS denominated — NO existe variante USD MEP de un CER.
+        # Si vino "TX26D" la metadata es de TX26 (CER), pero el LLM no debería
+        # creer que es un bono dolarizado.
         from ai.ar_bonds_metadata import _strip_bond_suffix
         original_clean = str(raw_ticker).upper().strip().replace(".BA", "")
         base_ticker = _strip_bond_suffix(original_clean)
         variant = None
-        if original_clean != base_ticker and original_clean.endswith(("D", "C")):
+        if (original_clean != base_ticker
+                and original_clean.endswith(("D", "C"))
+                and md.get("kind") == "soberano_usd"):
             variant = original_clean[-1]  # "D" o "C"
         return {
             "available": True,
