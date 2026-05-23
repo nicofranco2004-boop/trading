@@ -3505,7 +3505,13 @@ CRYPTO_YF = {sym: f"{sym}-USD" for sym in CRYPTO_SYMBOLS}
 
 # Allowed symbol characters — only alphanumeric + dot (for .BA suffix)
 import re
-_SYMBOL_RE = re.compile(r'^[A-Z0-9]{1,10}(\.BA)?$')
+# Acepta:
+#  - Símbolos US/CEDEAR: NVDA, AAPL, GGAL
+#  - Sufijo .BA para AR (TSLA.BA)
+#  - Tickers con clase con guión: BRK-B, BF-B (Berkshire B, Brown-Forman B)
+#  - Cripto USD: BTC-USD, ETH-USD (-USD se reconoce en path separado del normalize)
+# Audit Pack A v2 fix: antes el regex bloqueaba BRK-B y similares.
+_SYMBOL_RE = re.compile(r'^[A-Z0-9]{1,10}([\.\-][A-Z0-9]{1,4})?$')
 
 MAX_SYMBOLS = 60  # hard cap on number of symbols per request
 
@@ -7178,7 +7184,38 @@ class AIChatIn(BaseModel):
 # Si fetcher falla y hay row stale (< 7d) → devuelve stale + warning log.
 # Si fetcher falla y NO hay cache → devuelve {available: false, reason: ...}.
 
-YF_CACHE_TTL_SECONDS = 6 * 60 * 60      # 6h fresh
+# TTL granular por kind — refleja la realidad de cuán seguido cambia cada dato.
+# Default 6h; algunos kinds tienen TTL más largo porque sus datos son estables.
+# Semáforo + timeout para yfinance (audit crítico #1).
+# Sin esto: 50 Pro concurrentes pidiendo scorecards distintos satura el
+# threadpool de FastAPI (default 40 workers) y degrada TODO el backend
+# (login, snapshots, /positions). El módulo news tenía BoundedSemaphore(16),
+# yfinance no.
+#
+# Cap a 8 fetches in-flight process-wide. Si todos los slots están en uso,
+# los siguientes esperan en cola (no bloquean otros endpoints).
+import threading as _threading_yf
+_yf_fetch_semaphore = _threading_yf.BoundedSemaphore(8)
+
+# Timeout 10s para fetcher externo (yfinance). Si yf cuelga o tarda > 10s,
+# devolvemos available=false y cache stale si está. Sin esto, los threads
+# del pool quedan bloqueados minutos esperando una respuesta que nunca llega.
+YF_FETCH_TIMEOUT_SECONDS = 10
+
+
+YF_CACHE_TTL_DEFAULT_SECONDS = 6 * 60 * 60          # 6h default
+YF_CACHE_TTL_BY_KIND = {
+    # Datos que casi no cambian intradía (audit Pack A v2 cost optimization):
+    "profile":     24 * 60 * 60,    # 24h — descripción de empresa, sector (~0 cambios/día)
+    "analysts":    24 * 60 * 60,    # 24h — recommendations cambian ~1×/semana
+    # Datos que cambian pero no tanto:
+    "fundamentals": 12 * 60 * 60,   # 12h — P/E sigue precio, EPS solo cambia con earnings
+    "scorecard":    12 * 60 * 60,   # 12h — derivado de fundamentals
+    # Datos más volátiles:
+    "earnings":     6 * 60 * 60,    # 6h — próxima fecha + surprises pueden actualizarse
+}
+# Mantener el alias viejo para back-compat con tests existentes
+YF_CACHE_TTL_SECONDS = YF_CACHE_TTL_DEFAULT_SECONDS
 YF_CACHE_STALE_FALLBACK_SECONDS = 7 * 24 * 60 * 60  # 7d fallback si fetcher falla
 
 
@@ -7262,15 +7299,35 @@ def _yf_fetch_cached(ticker: str, kind: str, fetcher_fn) -> dict:
 
     conn = get_db()
     try:
-        # 1. Leer cache
+        # 1. Leer cache — TTL granular según kind (audit cost opt)
+        ttl = YF_CACHE_TTL_BY_KIND.get(kind, YF_CACHE_TTL_DEFAULT_SECONDS)
         cached, age = _yf_cache_read(conn, yf_ticker, kind)
-        if cached is not None and age < YF_CACHE_TTL_SECONDS:
-            # Fresh — devolver directo
+        if cached is not None and age < ttl:
+            # Fresh — devolver directo. Loggeamos cache hit para medir hit rate.
+            log.debug("yf_cache HIT ticker=%s kind=%s age_s=%d ttl_s=%d", yf_ticker, kind, int(age), ttl)
             return cached
+        if cached is not None:
+            log.debug("yf_cache MISS_STALE ticker=%s kind=%s age_s=%d ttl_s=%d", yf_ticker, kind, int(age), ttl)
+        else:
+            log.debug("yf_cache MISS_NEW ticker=%s kind=%s", yf_ticker, kind)
 
-        # 2. Stale o missing — llamar fetcher
+        # 2. Stale o missing — llamar fetcher con semáforo + timeout.
+        # Semáforo limita a 8 fetches concurrentes process-wide para no
+        # saturar el threadpool de FastAPI cuando hay muchos Pro chateando.
+        # Timeout 10s para que yf colgado no bloquee threads minutos.
         try:
-            new_payload = fetcher_fn(yf_ticker)
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+            with _yf_fetch_semaphore:
+                with ThreadPoolExecutor(max_workers=1) as ex_pool:
+                    future = ex_pool.submit(fetcher_fn, yf_ticker)
+                    try:
+                        new_payload = future.result(timeout=YF_FETCH_TIMEOUT_SECONDS)
+                    except FutureTimeout:
+                        log.warning("yf fetcher TIMEOUT after %ds for %s/%s",
+                                    YF_FETCH_TIMEOUT_SECONDS, yf_ticker, kind)
+                        # No esperamos al thread — lo dejamos morir en bg.
+                        # Caemos al stale fallback abajo.
+                        raise TimeoutError(f"yfinance no respondió en {YF_FETCH_TIMEOUT_SECONDS}s")
             # Sanitizar: solo cacheamos si no devuelve "available: False" por
             # error transitorio. Si devuelve available=False por motivo
             # estructural (ej. "cripto no aplica scorecard"), sí cacheamos
@@ -7285,12 +7342,15 @@ def _yf_fetch_cached(ticker: str, kind: str, fetcher_fn) -> dict:
                 return {"available": False, "reason": "fetch_returned_invalid_type"}
         except Exception as ex:
             log.warning("yf fetcher failed for %s/%s: %s", yf_ticker, kind, ex)
-            # 3. Fallback a cache stale si existe y no es demasiado vieja
+            # 3. Fallback a cache stale si existe y no es demasiado vieja.
+            # Audit fix: COPIAR el dict antes de mutar — sin esto, el cache
+            # quedaba marcado _stale=true permanentemente aunque yf se recupere.
             if cached is not None and age < YF_CACHE_STALE_FALLBACK_SECONDS:
                 log.info("yf using stale cache for %s/%s (age=%ds)", yf_ticker, kind, int(age))
-                cached["_stale"] = True
-                cached["_age_hours"] = round(age / 3600, 1)
-                return cached
+                stale_copy = dict(cached)
+                stale_copy["_stale"] = True
+                stale_copy["_age_hours"] = round(age / 3600, 1)
+                return stale_copy
             return {"available": False, "reason": f"fetch_failed: {type(ex).__name__}"}
     finally:
         conn.close()
@@ -7521,6 +7581,32 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
     sector = info.get("sector")
     current_price = info.get("currentPrice") or info.get("regularMarketPrice")
     fair_value = info.get("targetMeanPrice")
+    n_analysts = info.get("numberOfAnalystOpinions") or 0
+
+    # Audit fix #3: si menos de 5 analistas cubren el ticker, el target mean
+    # es ruido (alta varianza, no representa consenso). Marcamos el fair
+    # value como "low_confidence" — la métrica se incluye pero el status
+    # cae a 'amber' con interpretation_hint que aclara la limitación.
+    # Sin esto: small caps con 1-2 analistas pintaban verde y engañaban al user.
+    fair_value_confidence = "high" if n_analysts >= 5 else "low" if n_analysts >= 2 else "none"
+
+    # Audit fix #4: si el ticker es un CEDEAR (.BA) con currency != USD,
+    # los datos P/E, EPS están en ARS — NO se pueden comparar contra
+    # thresholds USD ni mezclar con scorecards de US stocks. Devolvemos
+    # available=false con razón clara para que el LLM redirija al ticker US.
+    ticker_currency = (info.get("currency") or "USD").upper()
+    if ticker_currency != "USD" and yf_ticker.endswith(".BA"):
+        # Sugerir el ticker US equivalente (CEDEAR sin .BA)
+        us_ticker = yf_ticker.replace(".BA", "")
+        return {
+            "available": False,
+            "reason": (
+                f"El scorecard de {yf_ticker} usaría métricas en {ticker_currency} "
+                f"(P/E, EPS no son comparables vs scorecards en USD). "
+                f"Para análisis fundamental en USD, consultá '{us_ticker}' "
+                "(mismo activo subyacente listado en US)."
+            ),
+        }
 
     # Calcular margen de seguridad: (fair - current) / fair × 100
     margin_pct = None
@@ -7547,18 +7633,31 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
     metrics = []
 
     # Métrica 1: Fair Value (consenso analistas)
+    # Audit fix #3: forzar status a 'amber' si confidence baja (< 5 analistas).
+    # El número se reporta pero el LLM debe matizar — un target de 2 analistas
+    # NO es consenso confiable.
     if margin_pct is not None:
         status = _status_of_metric("margin_of_safety_pct", margin_pct)
+        if fair_value_confidence == "low":
+            status = "amber"  # Override — alta varianza estimate
+            confidence_note = f" Solo {n_analysts} analistas cubren — alta varianza, tomar con pinzas."
+        elif fair_value_confidence == "none":
+            status = "na"
+            confidence_note = " Sin cobertura suficiente de analistas — fair value no confiable."
+        else:
+            confidence_note = ""
         metrics.append({
             "name": "Fair Value (consenso analistas)",
             "value": fair_value,
             "value_label": f"US$ {fair_value:.2f} (margen {margin_pct:+.1f}%)",
-            "reference": "> 15% bajo el precio = oportunidad",
+            "reference": f"> 15% bajo el precio = oportunidad ({n_analysts} analistas)",
             "status": status,
+            "n_analysts": n_analysts,
+            "confidence": fair_value_confidence,
             "interpretation_hint": (
-                f"El consenso de analistas estima valor objetivo de US$ {fair_value:.2f} "
-                f"vs precio actual US$ {current_price:.2f}. "
-                f"Margen {margin_pct:+.1f}% — {'oportunidad' if status == 'green' else 'precio en línea con expectativa' if status == 'amber' else 'cotiza sobre el target consenso'}."
+                f"Target medio US$ {fair_value:.2f} (consenso {n_analysts} analistas) "
+                f"vs precio actual US$ {current_price:.2f}. Margen {margin_pct:+.1f}%."
+                + confidence_note
             ),
         })
 
@@ -8142,12 +8241,43 @@ _AI_TOOLS = [
             "  - El usuario pregunta financieros/valoración → otras tools del Pack\n"
             "  - Ya mencionaste sector/industria en una respuesta previa\n\n"
             "El business_summary llega capeado a 500 chars — resumilo aún más si lo citás.\n"
-            "Cache 6h."
+            "Cache 24h."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "ticker": {"type": "string", "description": "Símbolo de la acción."}
+            },
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_ar_bond_metadata",
+        "description": (
+            "Devuelve metadata de bonos soberanos argentinos (AL/GD/AE/T2X/TZX/TX). "
+            "Incluye: maturity, ley aplicable (local/NY), step-up de cupones, "
+            "indexado a CER si aplica, descripción contextual.\n\n"
+            "USALA cuando:\n"
+            "  - El usuario pregunta por un BONO AR específico: '¿qué es AL30?', "
+            "    '¿cuál es el plazo de GD30?', '¿el TX26 ajusta por inflación?'\n"
+            "  - El usuario tiene bonos AR en cartera y pregunta sobre ellos\n"
+            "  - get_value_scorecard / get_stock_fundamentals devolvió `available: false` "
+            "    para un ticker que es bono AR (AL30, GD30, etc.) — usá ESTA como fallback\n\n"
+            "NO LA USES cuando:\n"
+            "  - Es una acción US o CEDEAR (no es bono) → usar las tools de equity\n"
+            "  - Bonos corporativos / ON privadas (no cubiertos por esta metadata)\n\n"
+            "Acepta tickers con o sin .BA (AL30.BA o AL30), con variantes D/C "
+            "(AL30D = USD MEP, GD30C = USD CCL). Mismo bono base.\n\n"
+            "Source: prospectos oficiales + bolsar.com + iamc.com.ar. Sin cache "
+            "(es metadata estática hardcoded — no cambia salvo restructuring)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Símbolo del bono (AL30, GD30, AE38, TX26, T2X5, TZX26, etc.).",
+                }
             },
             "required": ["ticker"],
         },
@@ -8472,9 +8602,57 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
         finally:
             conn.close()
 
+    elif name == "get_ar_bond_metadata":
+        # Bonos AR fallback (audit crítico #2): si user pregunta por AL30/GD30,
+        # NO usamos yfinance (no los tiene) — leemos del módulo metadata interno.
+        # Cubre solo soberanos USD (AL/GD/AE/AL41) + CER (TX/T2X/TZX).
+        raw_ticker = input_data.get("ticker", "")
+        if not raw_ticker:
+            return {"error": "ticker requerido"}
+        from ai.ar_bonds_metadata import is_known_ar_bond, get_bond_metadata
+        if not is_known_ar_bond(raw_ticker):
+            return {
+                "available": False,
+                "reason": (
+                    f"'{raw_ticker}' no está en la base de bonos AR soberanos. "
+                    "Cubrimos solo soberanos USD (AL/GD/AE) y CER (TX/T2X/TZX). "
+                    "ONs corporativas y bonos provinciales no están incluidos."
+                ),
+            }
+        md = get_bond_metadata(raw_ticker)
+        if md is None:
+            return {"available": False, "reason": "metadata no encontrada"}
+        # Detectar si vino con variante USD MEP (D) / CCL (C)
+        from ai.ar_bonds_metadata import _strip_bond_suffix
+        original_clean = str(raw_ticker).upper().strip().replace(".BA", "")
+        base_ticker = _strip_bond_suffix(original_clean)
+        variant = None
+        if original_clean != base_ticker and original_clean.endswith(("D", "C")):
+            variant = original_clean[-1]  # "D" o "C"
+        return {
+            "available": True,
+            "ticker": base_ticker,
+            "variant": variant,  # "D" (MEP) | "C" (CCL) | None
+            "kind": md.get("kind"),
+            "maturity": md.get("maturity"),
+            "law": md.get("law"),
+            "currency_denom": md.get("currency_denom"),
+            "indexed_by": md.get("indexed_by"),
+            "step_up": md.get("step_up"),
+            "description": md.get("description"),
+            "_interpretation_hint": (
+                "Datos estáticos del bono. Usalos para razonar: "
+                "(1) duration aproximada por maturity vs hoy, "
+                "(2) ley aplicable (local vs NY = protección legal distinta), "
+                "(3) si indexed_by='CER' = cobertura inflación AR (no FX), "
+                "(4) step_up=True significa que el cupón sube a lo largo del tiempo. "
+                "NO podés predecir el precio futuro del bono."
+            ),
+        }
+
     # ─── Pack A v2: tools yfinance ───────────────────────────────────────
     # Las 5 tools comparten el patrón: validar ticker → fetch cached →
-    # devolver payload. Cuota implícita por cache 6h (no se machaca yfinance).
+    # devolver payload. Cuota implícita por cache TTL granular por kind.
     elif name in (
         "get_stock_fundamentals", "get_value_scorecard", "get_earnings_history",
         "get_analyst_ratings", "get_company_profile",
@@ -10215,6 +10393,13 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
             messages_loop.append(m)
 
     MAX_TOOL_LOOPS = 3  # límite de rondas para evitar loops infinitos
+    # Audit Pack A v2 fix #5: hard cap server-side de TOOL CALLS por turno.
+    # El prompt instruye "max 2 tools de mercado" pero el LLM puede ignorar.
+    # Si llama 5 tools, ejecutamos las primeras 4 y rechazamos el resto con
+    # un tool_result que dice "cap excedido". Protege contra cost spikes
+    # cuando el LLM se confunde y decide consultar todo en un solo turno.
+    MAX_TOOL_CALLS_PER_TURN = 4
+    tool_calls_total = 0
     last_response = None  # capturamos el response final para record_chat con tokens
 
     try:
@@ -10253,10 +10438,29 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
                     log.warning("record_chat failed for uid=%s: %s", uid, ex)
                 return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
-            # Hay tool_use: ejecutar cada tool y continuar el loop
+            # Hay tool_use: ejecutar cada tool y continuar el loop.
+            # Hard cap: si llegamos a MAX_TOOL_CALLS_PER_TURN, rechazamos
+            # los tools restantes con un tool_result de error.
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
+                    if tool_calls_total >= MAX_TOOL_CALLS_PER_TURN:
+                        log.warning(
+                            "ai_chat tool_cap_exceeded tier=%s uid=%s tool=%s total=%d",
+                            tier, uid, block.name, tool_calls_total,
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps({
+                                "error": (
+                                    f"cap de {MAX_TOOL_CALLS_PER_TURN} tools por turno alcanzado. "
+                                    "Sintetizá una respuesta con lo que ya tenés."
+                                ),
+                            }, ensure_ascii=False),
+                        })
+                        continue
+                    tool_calls_total += 1
                     result = _execute_ai_tool(block.name, block.input, uid)
                     tool_results.append({
                         "type": "tool_result",
