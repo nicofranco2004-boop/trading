@@ -108,8 +108,16 @@ export default function AICoach({ snapshot, suggested }) {
       // como fallback si tenemos algo mejor.
       let msg = 'No pudimos completar la consulta. Intentalo nuevamente.'
       const detail = e?.payload?.detail ?? e?.detail ?? e?.response?.data?.detail
+      const status = e?.status
 
-      if (detail && typeof detail === 'object' && !Array.isArray(detail) && detail.message) {
+      // Caso especial: payload null (body no es JSON) → típicamente Vercel
+      // 504 Gateway Timeout devolviendo HTML genérico cuando el backend
+      // tarda > 30s. El detail vendrá undefined. Damos mensaje útil al user.
+      // Síntoma reportado: pregunta sobre P/E en follow-up → tools cache
+      // miss + 2-3 round-trips Anthropic → > 30s → Vercel corta.
+      if (!detail && (status === 504 || status === 502 || status === 503 || e?.payload === null)) {
+        msg = 'El bot tardó más de lo normal en responder. Intentá una pregunta más simple, o esperá unos segundos y reintentá.'
+      } else if (detail && typeof detail === 'object' && !Array.isArray(detail) && detail.message) {
         // Caso 1: error estructurado del backend (gate Free, cuota agotada)
         msg = detail.message
         if (detail.usage) setUsage(detail.usage)

@@ -6711,11 +6711,26 @@ def _get_anthropic_client():
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
                 return None
-            # Timeout explícito 60s — default del SDK es 600s. Sin esto,
-            # un LLM lento + tool storm puede tener un thread del pool de
-            # FastAPI atrapado minutos (DoS exposure). 60s es generoso para
-            # Haiku 4.5 incluso con tool loops + cache miss. Auditoría #2.
-            _anthropic_client = Anthropic(api_key=api_key, timeout=60.0)
+            # Timeout explícito 25s — default del SDK es 600s.
+            #
+            # IMPORTANTE: Vercel rewrite a Railway tiene ~30s timeout duro.
+            # Si el SDK espera más, Vercel corta primero y devuelve HTML
+            # genérico (no JSON) → el frontend NO puede parsear `detail` y
+            # muestra un mensaje genérico inútil al usuario.
+            #
+            # Bajado de 60s → 25s para que el SDK falle ANTES que Vercel
+            # corte, lo que nos permite devolver un 503 con detail útil
+            # ("el coach está saturado, reintentá"). Bug reportado: tras
+            # el 1° turno, una follow-up sobre P/E pegaba a yfinance con
+            # cache miss + 2-3 tool calls + 2-3 round-trips Anthropic →
+            # >30s → Vercel timeout → user veía "No pudimos completar la
+            # consulta" sin contexto.
+            #
+            # 25s sigue siendo generoso para Haiku 4.5: warm cache responde
+            # en 2-5s, cold cache + 1-2 tools en 8-15s. Solo se cae con
+            # tool storm extremo (4 tools cache miss simultáneos), donde
+            # querés fallar rápido y mostrar mensaje útil.
+            _anthropic_client = Anthropic(api_key=api_key, timeout=25.0)
         except ImportError:
             return None
     return _anthropic_client
@@ -10426,7 +10441,15 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
         else:
             messages_loop.append(m)
 
-    MAX_TOOL_LOOPS = 3  # límite de rondas para evitar loops infinitos
+    # MAX_TOOL_LOOPS=2: 1 ronda de tool calls + 1 síntesis final = lo necesario.
+    # Bajado de 3 → 2 tras bug timeout Vercel (commit infra): cada loop = 1
+    # round-trip a Anthropic (5-15s con tools). Con 3 loops + fallback worst
+    # case = 4 round-trips → fácil > 25s SDK timeout → Vercel proxy corta a
+    # 30s → user veía error genérico sin contexto.
+    # 2 loops cubre el caso real: turn 1 → LLM pide N tools → ejecutamos →
+    # turn 2 → LLM sintetiza. Los casos donde necesita 3 loops son raros y
+    # típicamente síntoma de prompt confuso, no de complejidad legítima.
+    MAX_TOOL_LOOPS = 2
     # Audit Pack A v2 fix #5: hard cap server-side de TOOL CALLS por turno.
     # El prompt instruye "max 2 tools de mercado" pero el LLM puede ignorar.
     # Si llama 5 tools, ejecutamos las primeras 4 y rechazamos el resto con
@@ -10509,11 +10532,18 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
             })
             messages_loop.append({"role": "user", "content": tool_results})
 
-        # Si llegó al límite de loops sin respuesta final, forzar respuesta sin tools
+        # Si llegó al límite de loops sin respuesta final, forzar respuesta sin tool_use.
+        # PASAMOS tools=_AI_TOOLS pero con tool_choice="none" para que:
+        # 1. El shape del messages_loop (que tiene tool_use blocks históricos)
+        #    siga siendo coherente con la declaración de tools — sin esto
+        #    Anthropic puede devolver 400 BadRequest por history inconsistente.
+        # 2. El LLM esté forzado a sintetizar texto, no a llamar más tools.
         response = client.messages.create(
             model="claude-haiku-4-5",
             max_tokens=max_tokens_fallback,
             system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+            tools=_AI_TOOLS,
+            tool_choice={"type": "none"},
             messages=messages_loop,
         )
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
@@ -10532,6 +10562,43 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
     except HTTPException:
         raise
     except Exception as ex:
+        # Manejo específico de errores del SDK Anthropic. Los detectamos por
+        # nombre de clase (sin importar el módulo) para no acoplar el código
+        # al SDK exacto y porque heredan de Exception (caen acá).
+        #
+        # ¿Por qué? Vercel rewrite tiene ~30s timeout duro. Si Anthropic SDK
+        # falla por timeout (25s ahora), tenemos ~5s para devolver detail útil
+        # ANTES de que Vercel corte. Sin esto, todos los timeouts caían en
+        # f"Error en el chat: {ex}" con texto técnico al user.
+        ex_name = type(ex).__name__
+        log.warning("ai_chat exception tier=%s uid=%s type=%s msg=%s", tier, uid, ex_name, str(ex)[:200])
+        if ex_name in ("APITimeoutError", "APIConnectionError"):
+            raise HTTPException(
+                503,
+                detail={
+                    "error": "ai_timeout",
+                    "message": "El coach IA está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
+                },
+            )
+        if ex_name in ("RateLimitError",):
+            raise HTTPException(
+                503,
+                detail={
+                    "error": "ai_rate_limit",
+                    "message": "El coach IA está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
+                },
+            )
+        if ex_name in ("BadRequestError",):
+            # 400 del lado de Anthropic = nuestro problema (shape mal armado).
+            # No exponemos el detalle técnico al user — pero loggeamos para fix.
+            log.error("ai_chat BadRequest uid=%s detail=%s", uid, str(ex)[:500])
+            raise HTTPException(
+                500,
+                detail={
+                    "error": "ai_internal",
+                    "message": "Hubo un problema procesando tu consulta. Tocá \"Nuevo\" e intentá de nuevo.",
+                },
+            )
         raise HTTPException(500, f"Error en el chat: {ex}")
 
 
