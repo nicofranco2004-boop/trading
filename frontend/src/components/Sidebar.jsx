@@ -22,6 +22,7 @@ import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
+import { prefetchRoute } from '../utils/routePrefetch'
 
 const SIDEBAR_W_EXPANDED = '220px'
 const SIDEBAR_W_COLLAPSED = '56px'
@@ -145,6 +146,8 @@ export default function Sidebar() {
                   to={to}
                   end={to === '/'}
                   title={collapsed ? label : undefined}
+                  onMouseEnter={() => prefetchRoute(to)}
+                  onFocus={() => prefetchRoute(to)}
                   className={({ isActive }) =>
                     `relative flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
                       isActive
@@ -183,6 +186,8 @@ export default function Sidebar() {
         <NavLink
           to="/config"
           title={collapsed ? 'Configuración' : undefined}
+          onMouseEnter={() => prefetchRoute('/config')}
+          onFocus={() => prefetchRoute('/config')}
           className={({ isActive }) =>
             `flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
               isActive

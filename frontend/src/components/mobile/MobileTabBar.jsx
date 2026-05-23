@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import { track } from '../../utils/track'
+import { prefetchRoute } from '../../utils/routePrefetch'
 
 const TABS = [
   { to: '/',             label: 'Home',       icon: Home },
@@ -84,6 +85,8 @@ function TabItem({ to, label, icon: Icon }) {
     <NavLink
       to={to}
       end={to === '/'}
+      onTouchStart={() => prefetchRoute(to)}
+      onFocus={() => prefetchRoute(to)}
       className={({ isActive }) =>
         `flex flex-col items-center justify-center gap-0.5 text-[10px] transition-colors ${
           isActive ? 'text-ink-0' : 'text-ink-3 hover:text-ink-1'

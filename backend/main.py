@@ -3655,19 +3655,42 @@ _PRICE_CACHE: dict = {}  # symbol → (timestamp_epoch, price_or_None)
 _PRICE_CACHE_TTL_S = 60
 _PRICE_CACHE_LOCK = _threading_prices.Lock()
 
+# Stats acumulados — loggeamos a INFO cada N lookups para observabilidad.
+# Sin esto, si el cache regresa (TTL=0, lock contention, etc.) no nos
+# enteramos hasta que la app se sienta lenta. Con esto vemos en logs el
+# hit rate en tiempo real.
+_PRICE_CACHE_STATS = {"hits": 0, "misses": 0, "lookups": 0}
+_PRICE_CACHE_LOG_EVERY = 100  # log cada 100 lookups acumulados
+
 
 def _prices_cache_get(symbols: list[str]) -> tuple[dict, list[str]]:
     """Returns (cached_results, uncached_symbols). Cached incluye None values."""
     now = time.time()
     cached: dict = {}
     uncached: list[str] = []
+    hits = 0
+    misses = 0
     with _PRICE_CACHE_LOCK:
         for sym in symbols:
             entry = _PRICE_CACHE.get(sym)
             if entry is not None and (now - entry[0]) < _PRICE_CACHE_TTL_S:
                 cached[sym] = entry[1]
+                hits += 1
             else:
                 uncached.append(sym)
+                misses += 1
+        _PRICE_CACHE_STATS["hits"] += hits
+        _PRICE_CACHE_STATS["misses"] += misses
+        _PRICE_CACHE_STATS["lookups"] += 1
+        # Log periódico — cada N lookups (no por símbolo, para no spammear).
+        if _PRICE_CACHE_STATS["lookups"] % _PRICE_CACHE_LOG_EVERY == 0:
+            total = _PRICE_CACHE_STATS["hits"] + _PRICE_CACHE_STATS["misses"]
+            ratio = (_PRICE_CACHE_STATS["hits"] / total * 100) if total > 0 else 0
+            log.info(
+                "prices_cache stats: lookups=%d total_syms=%d hits=%d misses=%d hit_rate=%.1f%% cache_size=%d",
+                _PRICE_CACHE_STATS["lookups"], total, _PRICE_CACHE_STATS["hits"],
+                _PRICE_CACHE_STATS["misses"], ratio, len(_PRICE_CACHE),
+            )
     return cached, uncached
 
 
