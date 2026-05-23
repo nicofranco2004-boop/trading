@@ -1389,6 +1389,327 @@ def test_chat_429_returns_upgrade_payload():
     print("  TEST 27 PASS")
 
 
+def test_pack_a_v2_cache_layer():
+    print("\n=== Test 28: Pack A v2 — cache layer 6h funciona ===")
+    import os, sqlite3 as s3, tempfile, time
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import (
+        init_db, get_db, _yf_fetch_cached, _yf_cache_read, _yf_cache_write,
+        YF_CACHE_TTL_SECONDS,
+    )
+    init_db()
+
+    # Test 1: write + read consistente
+    conn = get_db()
+    payload = {"pe": 25.0, "name": "TestCo"}
+    _yf_cache_write(conn, "TESTABC", "fundamentals", payload)
+    got, age = _yf_cache_read(conn, "TESTABC", "fundamentals")
+    if got != payload:
+        fail(f"cache write/read mismatch: {got}")
+    if age < 0 or age > 5:
+        fail(f"age out of bounds: {age}s (esperaba 0-5)")
+    print(f"  write + read consistente, age={age:.2f}s ✓")
+
+    # Test 2: TTL respeta — manipular fetched_at a stale
+    conn.execute("UPDATE yfinance_cache SET fetched_at=? WHERE ticker=?",
+                 (str(time.time() - YF_CACHE_TTL_SECONDS - 1), "TESTABC"))
+    conn.commit()
+    calls = [0]
+    def fetcher(t):
+        calls[0] += 1
+        return {"fresh": True, "name": "TestCo"}
+    result = _yf_fetch_cached("TESTABC", "fundamentals", fetcher)
+    if calls[0] != 1:
+        fail(f"stale cache debería disparar fetcher, fetcher_calls={calls[0]}")
+    if result != {"fresh": True, "name": "TestCo"}:
+        fail(f"fetcher result no devuelto correctamente: {result}")
+    print("  TTL stale dispara re-fetch ✓")
+
+    # Test 3: fresh cache NO dispara fetcher
+    calls[0] = 0
+    result2 = _yf_fetch_cached("TESTABC", "fundamentals", fetcher)
+    if calls[0] != 0:
+        fail(f"fresh cache NO debería disparar fetcher, fetcher_calls={calls[0]}")
+    print("  fresh cache es hit (no re-fetch) ✓")
+
+    # Test 4: fetcher raise → devuelve {available: False} si no hay cache
+    def failing_fetcher(t):
+        raise RuntimeError("yfinance down")
+    result3 = _yf_fetch_cached("UNCACHED", "fundamentals", failing_fetcher)
+    if result3.get("available") is not False:
+        fail(f"fetcher fail sin cache debería devolver available=False, got {result3}")
+    print("  fetcher fail + no cache → available=False ✓")
+
+    conn.close()
+    os.unlink(tmp.name)
+    print("  TEST 28 PASS")
+
+
+def test_pack_a_v2_yf_validators():
+    print("\n=== Test 29: Pack A v2 — _yf_is_equity_with_fundamentals filtra cripto/ETF/fake ===")
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import _yf_is_info_valid, _yf_is_equity_with_fundamentals
+
+    # Empty/fake info
+    if _yf_is_info_valid({}) or _yf_is_equity_with_fundamentals({}):
+        fail("empty dict debería ser inválido")
+    if _yf_is_info_valid({"trailingPegRatio": None}):
+        fail("dict con 1 key debería ser inválido")
+    print("  empty/fake info → inválido ✓")
+
+    # Equity con fundamentals — debe pasar AMBOS
+    equity = {
+        "longName": "Test Corp", "symbol": "TST", "sector": "Tech",
+        "trailingPE": 25, "trailingEps": 4, "marketCap": 1e9,
+        "currentPrice": 100, "returnOnEquity": 0.2, "industry": "Software",
+        "quoteType": "EQUITY", "k1": 1,
+    }
+    if not _yf_is_info_valid(equity):
+        fail("equity válida rechazada por _yf_is_info_valid")
+    if not _yf_is_equity_with_fundamentals(equity):
+        fail("equity válida rechazada por _yf_is_equity_with_fundamentals")
+    print("  equity válida (NVDA-like) → ambos validators OK ✓")
+
+    # Cripto — pasa info_valid pero NO equity_with_fundamentals
+    crypto = {
+        "longName": "Bitcoin USD", "symbol": "BTC-USD", "marketCap": 1e12,
+        "currency": "USD", "quoteType": "CRYPTOCURRENCY",
+        "fiftyTwoWeekHigh": 100000, "fiftyTwoWeekLow": 30000,
+        "k1": 1, "k2": 2, "k3": 3,  # Sin trailingPE / EPS
+    }
+    if not _yf_is_info_valid(crypto):
+        fail("cripto debería pasar info_valid (tiene longName)")
+    if _yf_is_equity_with_fundamentals(crypto):
+        fail("cripto NO debería pasar equity_with_fundamentals (sin P/E ni EPS)")
+    print("  cripto pasa info_valid pero NO equity_with_fundamentals ✓")
+
+    # ETF — también rechaza por quoteType
+    etf = {
+        "longName": "Vanguard S&P 500 ETF", "symbol": "VOO",
+        "quoteType": "ETF", "marketCap": 1e9, "trailingPE": 22,
+        "k1": 1, "k2": 2, "k3": 3, "k4": 4, "k5": 5, "k6": 6,
+    }
+    if _yf_is_equity_with_fundamentals(etf):
+        fail("ETF debería ser rechazado por quoteType")
+    print("  ETF rechazado por quoteType ✓")
+
+    print("  TEST 29 PASS")
+
+
+def test_pack_a_v2_scorecard_thresholds():
+    print("\n=== Test 30: Pack A v2 — thresholds del scorecard ===")
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import _status_of_metric
+
+    # Margin of safety
+    if _status_of_metric("margin_of_safety_pct", 20) != "green":
+        fail(f"20% margen → green")
+    if _status_of_metric("margin_of_safety_pct", 5) != "amber":
+        fail(f"5% margen → amber")
+    if _status_of_metric("margin_of_safety_pct", -5) != "red":
+        fail(f"-5% margen → red")
+    print("  margin_of_safety_pct: green/amber/red boundaries OK ✓")
+
+    # PEG
+    if _status_of_metric("peg_ratio", 0.7) != "green":
+        fail("PEG 0.7 → green")
+    if _status_of_metric("peg_ratio", 1.3) != "amber":
+        fail("PEG 1.3 → amber")
+    if _status_of_metric("peg_ratio", 2.5) != "red":
+        fail("PEG 2.5 → red")
+    if _status_of_metric("peg_ratio", 10.0) != "outlier":
+        fail("PEG 10 → outlier")
+    print("  peg_ratio: green/amber/red/outlier OK ✓")
+
+    # Payout (outlier para >200%)
+    if _status_of_metric("payout_ratio_pct", 30) != "green":
+        fail("payout 30% → green")
+    if _status_of_metric("payout_ratio_pct", 60) != "amber":
+        fail("payout 60% → amber")
+    if _status_of_metric("payout_ratio_pct", 90) != "red":
+        fail("payout 90% → red")
+    if _status_of_metric("payout_ratio_pct", 404) != "outlier":
+        fail("payout 404% → outlier (GGAL caso real)")
+    print("  payout_ratio_pct: incluye detección outlier (GGAL 404%) ✓")
+
+    # Sector exclusion (D/E para bancos)
+    if _status_of_metric("debt_to_equity", 5.0, sector="Financial Services") != "na":
+        fail("D/E para bancos → na (sector excluido)")
+    if _status_of_metric("debt_to_equity", 0.3, sector="Technology") != "green":
+        fail("D/E 0.3 para tech → green")
+    print("  debt_to_equity: bancos excluidos, tech OK ✓")
+
+    # None → na
+    if _status_of_metric("peg_ratio", None) != "na":
+        fail("None → na")
+    print("  None value → na ✓")
+
+    print("  TEST 30 PASS")
+
+
+def test_pack_a_v2_counter_tracks_usage():
+    print("\n=== Test 31: Pack A v2 — counter ai_tool_usage suma calls ===")
+    import os, sqlite3 as s3, tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    os.environ["DB_PATH"] = tmp.name
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import init_db, get_db, _record_tool_usage, _execute_ai_tool
+    init_db()
+
+    # Crear user de test
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, approved, email_verified) "
+        "VALUES (?,?,?,1,1)",
+        ("t31@t", "h", "T31"),
+    )
+    uid = conn.execute("SELECT id FROM users WHERE email='t31@t'").fetchone()["id"]
+    conn.commit()
+    conn.close()
+
+    # Llamar _record_tool_usage directamente 3 veces
+    for _ in range(3):
+        _record_tool_usage(uid, "get_current_prices")
+    _record_tool_usage(uid, "get_value_scorecard")
+
+    conn = get_db()
+    row1 = conn.execute(
+        "SELECT count FROM ai_tool_usage WHERE user_id=? AND tool_name=?",
+        (uid, "get_current_prices"),
+    ).fetchone()
+    row2 = conn.execute(
+        "SELECT count FROM ai_tool_usage WHERE user_id=? AND tool_name=?",
+        (uid, "get_value_scorecard"),
+    ).fetchone()
+
+    if row1["count"] != 3:
+        fail(f"get_current_prices debería tener count=3, got {row1['count']}")
+    if row2["count"] != 1:
+        fail(f"get_value_scorecard debería tener count=1, got {row2['count']}")
+    print("  counter suma correctamente (3 + 1) ✓")
+
+    # _execute_ai_tool con tool inválida NO debe sumar al counter
+    _execute_ai_tool("hack_db", {}, uid)
+    row_hack = conn.execute(
+        "SELECT count FROM ai_tool_usage WHERE user_id=? AND tool_name=?",
+        (uid, "hack_db"),
+    ).fetchone()
+    if row_hack is not None:
+        fail(f"tool 'hack_db' (no reconocida) NO debería estar en counter, got {dict(row_hack)}")
+    print("  tool no-reconocida NO incrementa counter ✓")
+    conn.close()
+
+    os.unlink(tmp.name)
+    print("  TEST 31 PASS")
+
+
+def test_pack_a_v2_tools_in_schema():
+    print("\n=== Test 32: Pack A v2 — tools registradas en _AI_TOOLS schema ===")
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import _AI_TOOLS
+
+    expected_tools = {
+        "get_stock_fundamentals",
+        "get_value_scorecard",
+        "get_earnings_history",
+        "get_analyst_ratings",
+        "get_company_profile",
+    }
+    registered = {t["name"] for t in _AI_TOOLS}
+    missing = expected_tools - registered
+    if missing:
+        fail(f"tools faltantes en _AI_TOOLS: {missing}")
+    print(f"  5 tools nuevas registradas: {sorted(expected_tools)} ✓")
+
+    # Cada tool debe tener description con "USALA cuando" y "NO LA USES cuando"
+    # (anti-spam guidance crítica)
+    for tool in _AI_TOOLS:
+        if tool["name"] in expected_tools:
+            desc = tool.get("description", "")
+            if "USALA" not in desc.upper() or "NO LA USES" not in desc.upper():
+                # remember_user_fact + algunas no tienen NO LA USES — solo aplicar para Pack A v2
+                fail(f"tool {tool['name']} debería tener 'USALA cuando' Y 'NO LA USES cuando' en description")
+    print("  todas las descriptions tienen 'USALA cuando' + 'NO LA USES cuando' (anti-spam) ✓")
+
+    # Schema correcto: input_schema con ticker required
+    for tool in _AI_TOOLS:
+        if tool["name"] in expected_tools:
+            schema = tool.get("input_schema", {})
+            if "ticker" not in schema.get("properties", {}):
+                fail(f"tool {tool['name']} debe pedir 'ticker' en input_schema")
+            if "ticker" not in schema.get("required", []):
+                fail(f"tool {tool['name']} debe tener ticker como required")
+    print("  schemas OK (ticker required) ✓")
+
+    print("  TEST 32 PASS")
+
+
+def test_pack_a_v2_prompts_mention_tools():
+    print("\n=== Test 33: prompts incluyen instrucciones Pack A v2 ===")
+    for mod in list(sys.modules):
+        if mod.startswith("main") or mod.startswith("ai"):
+            del sys.modules[mod]
+    from main import _AI_CHAT_SYSTEM, _AI_CHAT_SYSTEM_FREE
+
+    # Pro prompt debe mencionar las 5 tools y reglas de interpretación
+    pro = _AI_CHAT_SYSTEM
+    expected_in_pro = [
+        "get_stock_fundamentals",
+        "get_value_scorecard",
+        "get_earnings_history",
+        "get_analyst_ratings",
+        "get_company_profile",
+        "ANTI-SPAM DE TOOLS",
+        "INTERPRETACIÓN DE TOOLS DE MERCADO",
+        "LENGUAJE ACCESIBLE",
+        "GLOSARIO INLINE",
+        "P/E (precio sobre ganancias)",
+        "PEG (P/E ajustado por crecimiento)",
+        "MAL:",  # Ejemplo malo
+        "BIEN:",  # Ejemplo bueno (o ya estaba)
+    ]
+    missing = [s for s in expected_in_pro if s not in pro]
+    if missing:
+        fail(f"Pro prompt falta sections: {missing}")
+    print(f"  Pro prompt tiene {len(expected_in_pro)} secciones nuevas ✓")
+
+    # Free prompt debe mencionar tools nuevas + glosario + scorecard handling
+    free = _AI_CHAT_SYSTEM_FREE
+    expected_in_free = [
+        "get_value_scorecard",
+        "get_stock_fundamentals",
+        "GLOSARIO INLINE",
+        "REGLAS PARA SCORECARDS DE VALOR",
+        "P/E (precio sobre ganancias)",
+        "Pack A v2",  # menciona el grupo
+    ]
+    missing_free = [s for s in expected_in_free if s not in free]
+    if missing_free:
+        fail(f"Free prompt falta sections: {missing_free}")
+    print(f"  Free prompt tiene {len(expected_in_free)} secciones nuevas ✓")
+
+    # Free prompt PROHÍBE interpretación causal del scorecard
+    if "PROHIBIDO" not in free:
+        fail("Free prompt debería tener PROHIBIDO sobre interpretación")
+    if "Para entender qué significan estos números para tu cartera" not in free:
+        fail("Free prompt debería incluir el cierre obligatorio que apunta a Pro")
+    print("  Free prompt tiene reglas anti-interpretación + cierre Pro ✓")
+
+    print("  TEST 33 PASS")
+
+
 def main():
     test_routing()
     test_profile_block_present()
@@ -1417,6 +1738,12 @@ def main():
     test_chat_cost_logger()
     test_injection_patterns_nfkd_accents()
     test_chat_429_returns_upgrade_payload()
+    test_pack_a_v2_cache_layer()
+    test_pack_a_v2_yf_validators()
+    test_pack_a_v2_scorecard_thresholds()
+    test_pack_a_v2_counter_tracks_usage()
+    test_pack_a_v2_tools_in_schema()
+    test_pack_a_v2_prompts_mention_tools()
     print("\n\nALL TESTS PASS")
 
 

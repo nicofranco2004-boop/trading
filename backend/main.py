@@ -170,7 +170,8 @@ def _table_cols(conn, table: str) -> set:
     # Table name is always hardcoded in callers — never user-supplied
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
-               'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts'}
+               'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
+               'ai_tool_usage', 'yfinance_cache'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -644,6 +645,48 @@ def init_db():
             cost_usd_cents INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
+
+        -- ─── ai_tool_usage: contador de uso de tools del chat IA ────────────
+        -- Cada vez que _execute_ai_tool corre exitosamente, suma 1. Permite
+        -- detectar:
+        --   • Tools no usadas (candidatas a borrar)
+        --   • Patrones de uso por tier (Pro vs Free)
+        --   • Detección de abuso (1 user con miles de calls a un tool)
+        -- Admin lee via /api/admin/ai/tool-usage. Sin esto, agregar tools
+        -- es disparar en la oscuridad.
+        CREATE TABLE IF NOT EXISTS ai_tool_usage (
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, date, tool_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_tool_usage_date
+            ON ai_tool_usage(date DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_tool_usage_tool
+            ON ai_tool_usage(tool_name, date DESC);
+
+        -- ─── yfinance_cache: cache de calls a yfinance (Pack A v2) ──────────
+        -- yfinance tarda 1-3s por call. Cuando el chat IA llama tools de
+        -- fundamentales/earnings/analysts, esta tabla cachea el payload
+        -- normalizado por 6h para que la 2da consulta sobre el mismo ticker
+        -- sea instantánea (~10ms desde DB vs 1-3s desde yfinance).
+        --
+        -- kind enum: 'fundamentals' | 'scorecard' | 'earnings' | 'analysts' | 'profile'
+        --   Cada kind tiene shape distinto, serializado a JSON en payload_json.
+        --   El consumer (_yf_fetch_cached) parsea y normaliza al leer.
+        --
+        -- fetched_at en ISO. TTL hardcoded 6h en el lector.
+        -- Cleanup: cron diario borra rows > 7 días.
+        CREATE TABLE IF NOT EXISTS yfinance_cache (
+            ticker TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (ticker, kind)
+        );
+        CREATE INDEX IF NOT EXISTS idx_yfinance_cache_fetched
+            ON yfinance_cache(fetched_at DESC);
 
         -- ─── ai_user_facts: memoria persistente del coach IA ─────────────────
         -- "Hechos" textuales que el user le aclara al bot ("AL30 lo compré en
@@ -6389,6 +6432,63 @@ def admin_stats(uid: int = Depends(get_admin_user)):
     }
 
 
+@app.get("/api/admin/ai/tool-usage")
+def admin_ai_tool_usage(days: int = 14, uid: int = Depends(get_admin_user)):
+    """Stats de uso de tools del Coach IA (ai_tool_usage).
+
+    Devuelve ranking de tools más usadas + breakdown por tier, días.
+    Pack A v2: sirve para detectar tools no-usadas (candidatas a borrar)
+    o sobre-usadas (candidatas a investigar abuso).
+
+    days: ventana de análisis (default 14d, max 90).
+    """
+    days = max(1, min(int(days or 14), 90))
+    conn = get_db()
+    try:
+        # Ranking global por tool
+        ranking = conn.execute(
+            f"""SELECT tool_name, SUM(count) AS calls, COUNT(DISTINCT user_id) AS users
+                FROM ai_tool_usage
+                WHERE date >= date('now', '-{days} days')
+                GROUP BY tool_name
+                ORDER BY calls DESC""",
+        ).fetchall()
+
+        # Breakdown por tier (necesita JOIN con users)
+        by_tier_raw = conn.execute(
+            f"""SELECT u.tier, t.tool_name, SUM(t.count) AS calls
+                FROM ai_tool_usage t
+                LEFT JOIN users u ON u.id = t.user_id
+                WHERE t.date >= date('now', '-{days} days')
+                GROUP BY u.tier, t.tool_name
+                ORDER BY u.tier, calls DESC""",
+        ).fetchall()
+        by_tier = {}
+        for r in by_tier_raw:
+            tier = r["tier"] or "unknown"
+            by_tier.setdefault(tier, []).append({"tool_name": r["tool_name"], "calls": r["calls"]})
+
+        # Top 10 users por uso total
+        top_users = conn.execute(
+            f"""SELECT u.id, u.email, u.tier, SUM(t.count) AS total_calls
+                FROM ai_tool_usage t
+                LEFT JOIN users u ON u.id = t.user_id
+                WHERE t.date >= date('now', '-{days} days')
+                GROUP BY u.id
+                ORDER BY total_calls DESC
+                LIMIT 10""",
+        ).fetchall()
+
+        return {
+            "days": days,
+            "ranking": [dict(r) for r in ranking],
+            "by_tier": by_tier,
+            "top_users": [dict(r) for r in top_users],
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/plan/conversion")
 def admin_plan_conversion(uid: int = Depends(get_admin_user)):
     """Métricas de conversión Free → Pro.
@@ -6632,10 +6732,39 @@ Respondés con los datos que tenés en el snapshot. Antes de decir "no tengo ese
 
 HERRAMIENTAS DISPONIBLES
 Tenés tools que podés invocar para obtener datos adicionales cuando el snapshot no alcance:
-- get_current_prices: precios en tiempo real de cualquier activo. Usala cuando el usuario pregunta el precio actual, o cuando querés comparar el precio de entrada con el precio de hoy.
-- get_asset_operations: historial completo de operaciones cerradas de un activo específico del usuario. Útil para análisis de performance de un papel en particular.
-- get_monthly_detail: detalle mensual completo de todos los brokers. Útil para análisis de períodos que no están en el snapshot resumido.
-Usá las tools solo cuando sean necesarias. Si la respuesta está en el snapshot ya enviado, no las invoques.
+
+Tools internas (data del propio usuario):
+- get_current_prices: precios en tiempo real de cualquier activo.
+- get_asset_operations: historial completo de operaciones cerradas de un activo del usuario.
+- get_monthly_detail: detalle mensual completo de todos los brokers.
+- get_realized_vs_unrealized: breakdown P&L realizado vs unrealized del usuario.
+- get_recent_news_for_assets: top 3 noticias por ticker de la cartera.
+- remember_user_fact: persistir hechos del usuario entre sesiones.
+
+Tools de mercado externas (Pack A v2 — yfinance):
+- get_stock_fundamentals: P/E, EPS, dividend yield, market cap, beta, sector — datos rápidos.
+- get_value_scorecard: scorecard completo con 8 métricas + semáforos (verde/ámbar/rojo) + label "Sólido/Mixto/Débil". LA TOOL ESTRELLA para preguntas de valoración.
+- get_earnings_history: próximo earnings + últimos 4 quarters con surprise %.
+- get_analyst_ratings: recomendación consenso + price target.
+- get_company_profile: a qué se dedica la empresa.
+
+Cuándo NO llamar tools de mercado:
+- Si el usuario solo quiere precio → get_current_prices.
+- Si pregunta sobre cripto o bonos AR → NO tienen scorecard ni fundamentales. Decilo honesto.
+- Si la pregunta es general/estrategia sin un ticker específico.
+- Si ya tenés la respuesta en el snapshot.
+
+Cuándo SÍ llamar tools de mercado:
+- Pregunta sobre "¿está cara/barata X?" → get_value_scorecard (UNA llamada cubre todo).
+- Compara dos acciones → get_value_scorecard para cada uno (máx 2).
+- Pregunta sobre earnings/próximo reporte → get_earnings_history.
+- Pregunta sobre cobertura de analistas → get_analyst_ratings.
+- Pregunta a qué se dedica → get_company_profile.
+
+ANTI-SPAM DE TOOLS:
+- Máximo 2 tools de mercado por respuesta. Si tu pregunta necesita 3+, repensá si todas son necesarias.
+- Antes de llamar una tool, preguntate: "¿esta respuesta sería significativamente peor SIN este dato?". Si no, no la llames.
+- Si una tool devuelve `available: false`, NO inventes la data — decile al user "no tengo acceso a fundamentales de cripto/bonos en esta sesión" y seguí adelante.
 
 ESTILO RIOPLATENSE
 Vos, tenés, querés. Tono cercano pero profesional. Sin emojis.
@@ -6695,7 +6824,109 @@ BIEN: "El P&L del año descansa parcialmente en trades cerrados de AMD/INTC. Tu 
 
 Si un ticker aparece en AMBOS lados (positions y operations), aclararlo: "mantenés posición abierta + tenés P&L cerrado en el mismo ticker; el riesgo presente es solo sobre el lote abierto".
 
-Tenés el snapshot del portfolio del usuario en el contexto. Usá los números concretos cuando sean relevantes. El snapshot incluye benchmarks (S&P 500, inflación AR, dólar blue) para comparar la performance del usuario contra referencias de mercado."""
+Tenés el snapshot del portfolio del usuario en el contexto. Usá los números concretos cuando sean relevantes. El snapshot incluye benchmarks (S&P 500, inflación AR, dólar blue) para comparar la performance del usuario contra referencias de mercado.
+
+INTERPRETACIÓN DE TOOLS DE MERCADO (Pack A v2 — Pro causal)
+
+Cuando llamás get_value_scorecard, get_stock_fundamentals, get_earnings_history o get_analyst_ratings, tu trabajo NO es repetir los números crudos. Es transformarlos en VALOR para la decisión del usuario.
+
+Tres niveles obligatorios al presentar resultados de estas tools:
+
+1. CONTEXTUALIZAR el número. "P/E 67×" no significa nada solo. "P/E 67× — pagás 67 años de ganancias actuales por la acción, vs media tecnología 25×" sí.
+
+2. CONECTAR con la cartera del usuario. Mirá el snapshot — si el usuario tiene el ticker, calculá:
+   - Cuánto pesa en su portfolio.
+   - Cuál sería el impacto en su patrimonio si la métrica cambia (ej. "un re-rating del P/E de 67 a 50 sería -25% en NVDA = -4% del portfolio").
+   - Si tiene posición unrealized grande, mencionalo.
+   Si NO tiene el ticker, decílo: "no tenés posición en X, lo analizo en abstracto".
+
+3. INTERPRETÁ pero NO recomiendes operativa. Diferencia clave:
+   - SÍ podés: "El PEG > 1.5 sugiere que el mercado ya descontó parte del crecimiento esperado. Para un inversor value tradicional, este múltiplo no luce barato."
+   - SÍ podés: "Considerá si querés esperar al earnings del 22 de feb antes de tomar la decisión — históricamente NVDA tiene volatilidad ±8% en earnings day."
+   - NO podés: "Vendé NVDA", "compralo ahora", "sacale ganancia parcial". Eso es asesoramiento operativo (prohibido).
+
+Usá los `_interpretation_hint` que vienen en los results — son guías internas, NO los repitas literal pero úsalos como brújula.
+
+LENGUAJE ACCESIBLE — REGLAS CRÍTICAS (audiencia mixta)
+
+Tu usuario puede ser desde alguien con licenciatura en finanzas hasta alguien de marketing que invierte para su jubilación. Tu lenguaje DEBE ser entendible para los dos.
+
+Regla 1 — GLOSARIO INLINE en la primera mención de un término técnico.
+La PRIMERA vez que aparece un término técnico en una respuesta, incluí mini-aclaración inline en paréntesis (máx 12 palabras). La 2da y 3ra vez en la misma respuesta solo el término.
+
+Términos que SIEMPRE deben explicarse en primera mención (si los usás):
+- P/E (precio sobre ganancias)
+- EPS (ganancia por acción)
+- PEG (P/E ajustado por crecimiento)
+- Payout ratio (porcentaje de ganancias pagadas como dividendo)
+- ROE (rentabilidad sobre capital)
+- Debt/Equity (deuda sobre patrimonio)
+- Market cap (valor total de la empresa)
+- Beta (volatilidad relativa al mercado)
+- Drawdown (caída desde el pico)
+- TWR (rendimiento ponderado por tiempo)
+- FIFO (lote más viejo se vende primero)
+- Mark-to-market (valor actual de mercado)
+- Forward P/E (P/E sobre ganancias esperadas)
+- Surprise % (cuánto superó o quedó debajo del estimate)
+- Margin of safety (margen de seguridad)
+- Fair value (valor justo estimado)
+
+Ejemplo:
+   MAL: "NVDA cotiza P/E 67× con PEG 0.71."
+   BIEN: "NVDA cotiza a un P/E (precio sobre ganancias) de 67× — alto. Pero el PEG (P/E ajustado por crecimiento) es 0.71, lo que dice que ese múltiplo se justifica si el crecimiento esperado se cumple."
+
+Regla 2 — ESPEJÁ el vocabulary del usuario.
+Si el usuario pregunta técnico ("compará forward P/E vs trailing"), respondé técnico (asumí que sabe).
+Si pregunta llano ("¿NVDA está cara?"), respondé llano. NUNCA respondas más técnico que la pregunta.
+
+Regla 3 — Analogías cuando aplique (especialmente para usuarios no técnicos).
+- P/E: "es como cuántos años de sueldo pagás por un departamento — alto = caro o tiene mucho upside descontado."
+- Dividend yield: "es el alquiler que te paga la acción mientras la tenés."
+- Drawdown: "es la caída desde el pico — si subiste a 100 y bajaste a 70, ese es tu drawdown de -30%."
+- PEG: "es el P/E corregido por crecimiento. PEG < 1 significa que pagás barato por el crecimiento que se espera."
+
+No metas analogías a la fuerza — solo cuando ayudan a entender. Si el usuario claramente sabe del tema, evitalas.
+
+Regla 4 — ANTI-DUMP de datos. Dos datos contextualizados > cuatro datos crudos.
+
+MAL: "NVDA: P/E 67, EPS $8.12, dividend yield 0.02%, beta 2.24, 52w high $236, 52w low $129, market cap $5.2T, próximo earnings 20 may."
+
+BIEN: "NVDA cotiza caro vs su historia (P/E 67× — pagás 67 años de ganancias actuales) y se va a jugar mucho el 20 de mayo, cuando reporta resultados. Pesa 16% en tu cartera, así que un movimiento grande te impacta."
+
+Tu trabajo NO es vomitar todo el resultado del tool. Es elegir los 2-3 datos que importan y conectarlos a la cartera.
+
+Regla 5 — NO USAR BULLETS para todo.
+Bullets son útiles solo para LISTAS REALES (los 4 últimos earnings, los top 3 detractors). Si tenés 3 datos para comunicar, armalos en PROSA fluida. Bullets cuando los items son genuinamente paralelos.
+
+Excepción: si presentás un scorecard de get_value_scorecard, USÁ formato de lista con símbolos ASCII porque es una tabla. Pero usá `✓` (green), `—` (amber/na), `✗` (red) — NO emojis colored ni cuadrados unicode.
+
+Regla 6 — FORMATO scorecard sugerido al presentar get_value_scorecard:
+Empezá con headline (1 línea: ticker + label overall + datos de precio/fair value).
+Después 6-8 líneas tipo:
+   ✓ Nombre métrica: valor (1 frase de interpretación si Pro)
+   — Otra métrica: valor (1 frase)
+Cerrá con "Mi lectura para tu cartera:" + 2-3 oraciones de conexión a posición real.
+
+EJEMPLOS BUENOS DE RESPUESTAS PRO (referencia)
+
+Pregunta: "¿NVDA está cara?"
+
+Respuesta Pro (buena):
+NVIDIA (NVDA) — Scorecard: Sólido. Precio actual US$ 215, fair value consenso US$ 278 (margen seguridad +22%).
+✓ Fair Value: el consenso de analistas ve potencial 22% sobre precio actual — oportunidad moderada.
+✓ PER actual vs forward: 33× hoy, 17× con ganancias esperadas próximo año. Las ganancias deberían duplicarse — el múltiplo se contrae solo si la tesis de crecimiento se cumple.
+✓ PEG: 0.71 — pagás barato por el crecimiento que se espera (PEG = P/E ajustado por crecimiento, < 1 es ideal value).
+✓ ROE (rentabilidad sobre capital): 114%. Extraordinario para large cap.
+✓ Crecimiento revenue +85% YoY.
+Mi lectura para tu cartera: NVDA pesa 16% en tu portfolio (US$ 7.812 con +38% sin realizar). Fundamentales sólidos justifican mantener — pero la apuesta es a que el crecimiento se sostenga. Si bajaran 2 quarters seguidos las surprises, el mercado podría re-evaluar rápido. Vale la pena considerar tomar ganancia parcial si quisieras bajar concentración.
+
+(esta respuesta combina: scorecard estructurado + glosario inline en PEG/ROE + conexión a posición real + sugerencia sin recomendación operativa)
+
+Respuesta Pro (mala):
+NVDA tiene P/E 33, forward 17, PEG 0.71, payoutRatio 0.0061, ROE 1.14, debtToEquity 0.07, profitMargins 0.62, revenueGrowth 0.85, marketCap $5.2T, beta 2.24. Comprala.
+
+(mala porque: dump de números crudos, sin contexto, jerga sin definir, hace recomendación operativa)"""
 
 
 # Prompt FREE — version stripped del coach. Diseño deliberado: descriptivo,
@@ -6722,13 +6953,49 @@ UPSELL — IMPORTANTE
 Si el usuario pide análisis profundo, comparación extendida con benchmarks, atribución de causa, sesgos, o pregunta "¿por qué...?": respondé con el dato más simple del snapshot Y agregá al final UNA frase: "Para análisis con causalidad, comparaciones y profundidad, pasate a Pro desde Configuración."
 
 HERRAMIENTAS
-Tenés get_current_prices, get_asset_operations, get_monthly_detail disponibles. Usalas SOLO si el snapshot no tiene la respuesta. Una tool call por respuesta, máximo.
+Tenés tools internas (get_current_prices, get_asset_operations, get_monthly_detail, get_realized_vs_unrealized, get_recent_news_for_assets) y tools de mercado externas Pack A v2 (get_stock_fundamentals, get_value_scorecard, get_earnings_history, get_analyst_ratings, get_company_profile). Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo.
+
+Para preguntas de valoración de una acción ("¿está cara X?", "¿es buena compra?"), get_value_scorecard cubre todo en un solo call (8 métricas + semáforos). NO llames las otras tools de mercado a continuación — quedaste con esto.
+
+NUNCA llames tools de mercado para cripto ni bonos AR — no aplica. Si el usuario pregunta valoración de BTC/ETH, decile honest: "para cripto no manejo métricas de valoración tradicionales (P/E, ROE no aplican)".
 
 DISTINGUIR EXPOSURE PRESENTE vs P&L HISTÓRICO
 El snapshot tiene `positions` (posiciones ABIERTAS HOY) y `operations` (cerradas YA). NUNCA confundirlas. Un ticker en operations puede no estar más en cartera. Si te preguntan sobre exposure o riesgo presente, usar SOLO positions. Si te preguntan sobre P&L histórico, usar SOLO operations.
 
+GLOSARIO INLINE (regla importante incluso en modo descriptivo)
+La primera vez que mencionás un término técnico en una respuesta, agregá mini-aclaración inline en paréntesis (máx 10 palabras). Tu usuario puede no saber qué es un P/E o un ROE.
+
+Términos a explicar siempre primera vez:
+- P/E (precio sobre ganancias) — pagás X años de ganancias actuales.
+- EPS (ganancia por acción).
+- PEG (P/E ajustado por crecimiento).
+- ROE (rentabilidad sobre capital).
+- Dividend yield (rendimiento de dividendo, en % anual).
+- Payout ratio (porcentaje de ganancias que la empresa paga como dividendo).
+- Fair value (valor estimado, en este caso consenso de analistas).
+
+REGLAS PARA SCORECARDS DE VALOR (get_value_scorecard)
+Si el usuario pregunta valoración de una acción, llamá get_value_scorecard y presentá el resultado SIN interpretar — solo describí:
+
+   Formato sugerido (en prosa breve, NO lista de bullets):
+   "Microsoft (MSFT) tiene un scorecard Sólido según las métricas tradicionales. Cotiza a US$ 418 vs un fair value (valor estimado consenso de analistas) de US$ 560. Tiene 6 indicadores en verde y 1 en rojo (el PEG ratio, que está alto). Para entender qué significan estos números para tu cartera, necesitás el plan Pro."
+
+   PROHIBIDO en modo descriptivo:
+   - "Está caro/barato" (interpretación)
+   - "Te conviene/no te conviene" (recomendación)
+   - "El P/E sugiere..." (causalidad)
+   - "Es buena oportunidad" (juicio de valor)
+
+   PERMITIDO:
+   - Nombrar las métricas y su valor.
+   - Decir "el indicador X está en verde/rojo según los thresholds estándar de value investing".
+   - Mencionar el `overall.label` (Sólido/Mixto/Débil) — ES el resumen objetivo del scorecard.
+
+Cierre obligatorio cuando presentás scorecard en Free/Plus:
+"Para entender qué significan estos números para tu cartera específicamente y qué considerar antes de decidir, el plan Pro hace ese análisis."
+
 DIFERENCIACIÓN CON PRO
-El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y profundidad analítica. Vos (Free) das el dato puro, brevísimo. Es deliberado — no inventes interpretación para "ayudar"."""
+El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y profundidad analítica. Vos (Free/Plus) das el dato puro, brevísimo. Es deliberado — no inventes interpretación para "ayudar"."""
 
 
 # Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos
@@ -6898,6 +7165,724 @@ class AIChatIn(BaseModel):
         return v
 
 
+# ─── yfinance cache layer (Pack A v2) ────────────────────────────────────────
+# Helpers compartidos para tools del Coach IA que consultan métricas
+# fundamentales / earnings / analysts via yfinance.
+#
+# Patrón:
+#   payload = _yf_fetch_cached(ticker, kind, fetcher_fn)
+#   donde fetcher_fn(ticker) → dict normalizado (puede tirar excepción)
+#
+# Si hay row fresh en cache (< 6h) → devuelve cache.
+# Si stale o no existe → llama fetcher → persiste → devuelve.
+# Si fetcher falla y hay row stale (< 7d) → devuelve stale + warning log.
+# Si fetcher falla y NO hay cache → devuelve {available: false, reason: ...}.
+
+YF_CACHE_TTL_SECONDS = 6 * 60 * 60      # 6h fresh
+YF_CACHE_STALE_FALLBACK_SECONDS = 7 * 24 * 60 * 60  # 7d fallback si fetcher falla
+
+
+def _yf_normalize_ticker(ticker: str) -> str:
+    """Normaliza ticker para lookup en yfinance.
+
+    Convenciones de Rendi → yfinance:
+    - CEDEARs llegan con .BA — yfinance las soporta tal cual (TSLA.BA).
+    - Cripto: el frontend usa 'BTC', yfinance espera 'BTC-USD'. Mapeo via
+      CRYPTO_YF (ya existe global). Si no está en el map, lo dejamos como
+      vino (BTC-USD ya viene normalizado en algunos callers).
+    """
+    if not ticker:
+        return ""
+    t = str(ticker).upper().strip()
+    # Si es cripto sin sufijo, mapear a -USD
+    if t in CRYPTO_YF:
+        return CRYPTO_YF[t]
+    return t
+
+
+def _yf_cache_read(conn, ticker: str, kind: str) -> tuple:
+    """Lee row del cache. Devuelve (payload_dict_or_None, age_seconds_or_inf).
+
+    fetched_at guardado como epoch float (string en SQLite), no ISO. Esto
+    evita la ambigüedad UTC vs local naive que tenía con datetime.isoformat().
+    Si no hay row, devuelve (None, inf).
+    """
+    import time as _time
+    row = conn.execute(
+        "SELECT fetched_at, payload_json FROM yfinance_cache WHERE ticker=? AND kind=?",
+        (ticker, kind),
+    ).fetchone()
+    if not row:
+        return (None, float('inf'))
+    try:
+        fetched_epoch = float(row["fetched_at"])
+        age = _time.time() - fetched_epoch
+        payload = json.loads(row["payload_json"])
+        return (payload, age)
+    except Exception as ex:
+        log.warning("yfinance_cache parse failed ticker=%s kind=%s: %s", ticker, kind, ex)
+        return (None, float('inf'))
+
+
+def _yf_cache_write(conn, ticker: str, kind: str, payload: dict) -> None:
+    """Persiste payload normalizado al cache. UPSERT por (ticker, kind).
+    fetched_at = time.time() epoch float (segundos UTC desde Unix epoch).
+    """
+    import time as _time
+    try:
+        conn.execute(
+            """INSERT INTO yfinance_cache(ticker, kind, fetched_at, payload_json)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(ticker, kind) DO UPDATE SET
+                 fetched_at = excluded.fetched_at,
+                 payload_json = excluded.payload_json""",
+            (ticker, kind, str(_time.time()), json.dumps(payload, default=str)),
+        )
+        conn.commit()
+    except Exception as ex:
+        log.warning("yfinance_cache write failed ticker=%s kind=%s: %s", ticker, kind, ex)
+
+
+def _yf_fetch_cached(ticker: str, kind: str, fetcher_fn) -> dict:
+    """Lee de cache o llama fetcher_fn(yf_ticker) si stale/missing.
+
+    fetcher_fn debe ser una función `(yf_ticker_str) -> dict` que devuelva el
+    payload normalizado. Si el fetcher tira excepción, retornamos cache stale
+    si existe (< 7d), sino devuelve {available: False, reason: 'fetch_failed'}.
+
+    Pattern:
+      payload = _yf_fetch_cached('NVDA', 'fundamentals', _yf_fundamentals_fetcher)
+
+    Devuelve el payload tal cual fue cacheado. NO inyecta `_cache_age` ni
+    metadata extra — el caller decide si la quiere.
+    """
+    yf_ticker = _yf_normalize_ticker(ticker)
+    if not yf_ticker:
+        return {"available": False, "reason": "ticker vacío"}
+
+    conn = get_db()
+    try:
+        # 1. Leer cache
+        cached, age = _yf_cache_read(conn, yf_ticker, kind)
+        if cached is not None and age < YF_CACHE_TTL_SECONDS:
+            # Fresh — devolver directo
+            return cached
+
+        # 2. Stale o missing — llamar fetcher
+        try:
+            new_payload = fetcher_fn(yf_ticker)
+            # Sanitizar: solo cacheamos si no devuelve "available: False" por
+            # error transitorio. Si devuelve available=False por motivo
+            # estructural (ej. "cripto no aplica scorecard"), sí cacheamos
+            # para evitar re-fetching innecesario.
+            if isinstance(new_payload, dict):
+                _yf_cache_write(conn, yf_ticker, kind, new_payload)
+                return new_payload
+            else:
+                log.warning("yf fetcher returned non-dict for %s/%s: %r", yf_ticker, kind, type(new_payload))
+                if cached is not None and age < YF_CACHE_STALE_FALLBACK_SECONDS:
+                    return cached
+                return {"available": False, "reason": "fetch_returned_invalid_type"}
+        except Exception as ex:
+            log.warning("yf fetcher failed for %s/%s: %s", yf_ticker, kind, ex)
+            # 3. Fallback a cache stale si existe y no es demasiado vieja
+            if cached is not None and age < YF_CACHE_STALE_FALLBACK_SECONDS:
+                log.info("yf using stale cache for %s/%s (age=%ds)", yf_ticker, kind, int(age))
+                cached["_stale"] = True
+                cached["_age_hours"] = round(age / 3600, 1)
+                return cached
+            return {"available": False, "reason": f"fetch_failed: {type(ex).__name__}"}
+    finally:
+        conn.close()
+
+
+def _yf_is_info_valid(info: dict) -> bool:
+    """True si el `info` de yfinance parece ser de un ticker real (no fake).
+
+    yfinance NO tira excepción para tickers inválidos — devuelve un dict
+    casi vacío (típicamente solo 'trailingPegRatio' o nada). Detectamos por:
+      - longitud del dict (>10 keys es signal de ticker real)
+      - presencia de al menos un identificador (longName / shortName / symbol)
+    """
+    if not isinstance(info, dict) or len(info) < 10:
+        return False
+    return any(info.get(k) for k in ("longName", "shortName", "symbol"))
+
+
+def _yf_is_equity_with_fundamentals(info: dict) -> bool:
+    """Más estricto que _yf_is_info_valid: además de "ticker real", verifica
+    que sea una EQUITY con fundamentales (P/E, EPS, etc).
+
+    Excluye:
+      - Cripto (quoteType='CRYPTOCURRENCY', sin P/E ni EPS)
+      - ETFs (quoteType='ETF' — fundamentales no aplican directo)
+      - Bonos (no aparecen en yfinance pero defensa por las dudas)
+      - Tickers fake
+
+    Para tools como scorecard, earnings, analysts — que NO aplican a cripto.
+    """
+    if not _yf_is_info_valid(info):
+        return False
+    quote_type = (info.get("quoteType") or "").upper()
+    if quote_type in ("CRYPTOCURRENCY", "ETF", "MUTUALFUND", "CURRENCY", "INDEX"):
+        return False
+    # Verificación funcional: tiene al menos un fundamental clave.
+    # Cripto tiene marketCap pero NO trailingPE/EPS.
+    has_fundamental = any(
+        info.get(k) is not None
+        for k in ("trailingPE", "forwardPE", "trailingEps", "returnOnEquity")
+    )
+    return has_fundamental
+
+
+def _record_tool_usage(uid: int, tool_name: str) -> None:
+    """Suma 1 al contador del día. No-op si falla (no debe bloquear el tool)."""
+    try:
+        conn = get_db()
+        try:
+            today = datetime.utcnow().strftime('%Y-%m-%d')
+            conn.execute(
+                """INSERT INTO ai_tool_usage(user_id, date, tool_name, count)
+                   VALUES (?, ?, ?, 1)
+                   ON CONFLICT(user_id, date, tool_name) DO UPDATE SET
+                     count = count + 1""",
+                (uid, today, tool_name),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as ex:
+        log.warning("record_tool_usage failed tool=%s uid=%s: %s", tool_name, uid, ex)
+
+
+# ─── Pack A v2: Fetchers + tools de fundamentales / scorecard / earnings ────
+#
+# Cada fetcher consume yfinance y devuelve un dict normalizado listo para el
+# LLM. Si yfinance no tiene data para ese ticker (cripto sin fundamentales,
+# bonos AR, ticker inválido), el fetcher devuelve {available: False, reason}
+# para que el LLM SEPA no inventar.
+#
+# Todos los fetchers se invocan vía _yf_fetch_cached(ticker, kind, fetcher).
+
+# ─── Thresholds del scorecard (decisiones de producto) ───────────────────────
+# Cada métrica tiene 3 niveles: green (saludable), amber (mirar), red (alerta).
+# "outlier" se usa para casos extremos donde el dato es probablemente roto
+# (ej: payout_ratio > 200% suele ser data sucia, no realidad fundamental).
+#
+# Diseñados con bias value-investing tradicional. NO son recomendaciones
+# operativas — son señales que el bot interpreta + conecta al perfil del user.
+
+SCORECARD_THRESHOLDS = {
+    # Margen de seguridad: fair_value de analistas vs precio actual
+    "margin_of_safety_pct": {
+        "green_min": 15,    # > 15% under fair value = oportunidad
+        "amber_min": 0,     # 0-15% = neutral
+        # < 0 = red (precio over fair value)
+    },
+    # PEG ratio: P/E / growth rate. < 1 = barato vs crecimiento.
+    # > 200% probable data sucia, marcamos outlier.
+    "peg_ratio": {
+        "green_max": 1.0,
+        "amber_max": 1.5,
+        "outlier_min": 5.0,   # PEG > 5 es probablemente error
+    },
+    # Payout ratio: % de ganancias pagadas como dividendo. < 50% sostenible.
+    "payout_ratio_pct": {
+        "green_max": 50,
+        "amber_max": 80,
+        "outlier_min": 200,   # > 200% es probable distorsión cambiaria
+    },
+    # ROE: ganancia sobre patrimonio. > 15% = empresa muy rentable.
+    "roe_pct": {
+        "green_min": 15,
+        "amber_min": 8,
+    },
+    # Debt/Equity: deuda sobre patrimonio. Bajo es bueno.
+    # Nota: bancos tienen D/E altísimo por naturaleza — excluimos sector financiero.
+    "debt_to_equity": {
+        "green_max": 0.5,
+        "amber_max": 1.5,
+        "exclude_sectors": ["Financial Services"],
+    },
+    # Profit margin: utilidad neta / revenue. > 15% es excelente, < 5% margen débil.
+    "profit_margin_pct": {
+        "green_min": 15,
+        "amber_min": 5,
+    },
+    # Revenue growth YoY: crecimiento últimos 12 meses.
+    "revenue_growth_pct": {
+        "green_min": 10,
+        "amber_min": 0,
+        # < 0 = red (revenue contrayendo)
+    },
+}
+
+
+def _status_of_metric(metric_key: str, value, sector: str = None) -> str:
+    """Aplica thresholds y devuelve 'green' | 'amber' | 'red' | 'outlier' | 'na'.
+
+    Si value es None → 'na' (not available).
+    Outlier para casos que rompen la heurística (ej: payout 400% por TC).
+    """
+    if value is None:
+        return "na"
+    th = SCORECARD_THRESHOLDS.get(metric_key, {})
+
+    # Excluciones por sector (ej: D/E no aplica a bancos)
+    excluded = th.get("exclude_sectors", [])
+    if sector and sector in excluded:
+        return "na"
+
+    # Outlier check primero (data sucia)
+    outlier_min = th.get("outlier_min")
+    if outlier_min is not None and abs(value) >= outlier_min:
+        return "outlier"
+
+    # Métricas "más es mejor" (green_min / amber_min)
+    if "green_min" in th:
+        if value >= th["green_min"]:
+            return "green"
+        if value >= th.get("amber_min", 0):
+            return "amber"
+        return "red"
+
+    # Métricas "menos es mejor" (green_max / amber_max)
+    if "green_max" in th:
+        if value <= th["green_max"]:
+            return "green"
+        if value <= th.get("amber_max", float("inf")):
+            return "amber"
+        return "red"
+
+    return "na"
+
+
+def _yf_fundamentals_fetcher(yf_ticker: str) -> dict:
+    """Fetch info de yfinance y devuelve fundamentales normalizados.
+
+    Para tickers sin info válida (cripto, fake), devuelve available=False.
+    """
+    import yfinance as yf
+    t = yf.Ticker(yf_ticker)
+    info = t.info or {}
+    if not _yf_is_info_valid(info):
+        return {
+            "available": False,
+            "reason": f"yfinance no tiene fundamentales para {yf_ticker} (cripto, bono o ticker inválido)",
+        }
+
+    return {
+        "available": True,
+        "ticker": yf_ticker,
+        "company_name": info.get("longName") or info.get("shortName"),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "trailing_pe": info.get("trailingPE"),
+        "forward_pe": info.get("forwardPE"),
+        "trailing_eps_usd": info.get("trailingEps"),
+        "forward_eps_usd": info.get("forwardEps"),
+        # dividendYield viene YA en porcentaje (no decimal). MSFT=0.87 significa
+        # 0.87%, NVDA=0.02 significa 0.02%. Verificado cross-checking con yfinance.
+        "dividend_yield_pct": round(info.get("dividendYield"), 2) if info.get("dividendYield") is not None else None,
+        "market_cap_usd": info.get("marketCap"),
+        "week_52_high_usd": info.get("fiftyTwoWeekHigh"),
+        "week_52_low_usd": info.get("fiftyTwoWeekLow"),
+        "beta": info.get("beta"),
+        "currency": info.get("currency", "USD"),
+    }
+
+
+def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
+    """Fetch + arma el scorecard de valor con semáforos.
+
+    Devuelve estructura lista para el LLM:
+      {
+        available, ticker, company_name, sector,
+        price: {current, fair_value, margin_of_safety_pct, source},
+        metrics: [{name, value, value_label, reference, status, interpretation}],
+        overall: {green_count, amber_count, red_count, na_count}
+      }
+    """
+    import yfinance as yf
+    t = yf.Ticker(yf_ticker)
+    info = t.info or {}
+    if not _yf_is_equity_with_fundamentals(info):
+        quote_type = (info.get("quoteType") or "desconocido").lower()
+        return {
+            "available": False,
+            "reason": (
+                f"El scorecard de valor no aplica a {yf_ticker} (tipo: {quote_type}). "
+                "Métricas como P/E, ROE o payout son específicas de acciones de empresas. "
+                "Para cripto se usan otros frameworks (S2F, on-chain) que no cubrimos. "
+                "Para bonos AR consultar metadata específica."
+            ),
+        }
+
+    sector = info.get("sector")
+    current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+    fair_value = info.get("targetMeanPrice")
+
+    # Calcular margen de seguridad: (fair - current) / fair × 100
+    margin_pct = None
+    if current_price and fair_value and fair_value > 0:
+        margin_pct = round((fair_value - current_price) / fair_value * 100, 2)
+
+    # Extraer raw metrics
+    trailing_pe = info.get("trailingPE")
+    forward_pe = info.get("forwardPE")
+    peg = info.get("pegRatio")
+    payout_raw = info.get("payoutRatio")  # decimal (0.20 = 20%)
+    payout_pct = round(payout_raw * 100, 2) if payout_raw is not None else None
+    roe_raw = info.get("returnOnEquity")  # decimal
+    roe_pct = round(roe_raw * 100, 2) if roe_raw is not None else None
+    de_raw = info.get("debtToEquity")
+    # yfinance da D/E como número (30.27) en lugar de ratio (0.30). Normalizamos a ratio.
+    de_ratio = round(de_raw / 100, 2) if de_raw is not None else None
+    pm_raw = info.get("profitMargins")  # decimal
+    pm_pct = round(pm_raw * 100, 2) if pm_raw is not None else None
+    rg_raw = info.get("revenueGrowth")  # decimal YoY
+    rg_pct = round(rg_raw * 100, 2) if rg_raw is not None else None
+
+    # Build metrics array — cada item: nombre, valor crudo, label, referencia, status, interpretación
+    metrics = []
+
+    # Métrica 1: Fair Value (consenso analistas)
+    if margin_pct is not None:
+        status = _status_of_metric("margin_of_safety_pct", margin_pct)
+        metrics.append({
+            "name": "Fair Value (consenso analistas)",
+            "value": fair_value,
+            "value_label": f"US$ {fair_value:.2f} (margen {margin_pct:+.1f}%)",
+            "reference": "> 15% bajo el precio = oportunidad",
+            "status": status,
+            "interpretation_hint": (
+                f"El consenso de analistas estima valor objetivo de US$ {fair_value:.2f} "
+                f"vs precio actual US$ {current_price:.2f}. "
+                f"Margen {margin_pct:+.1f}% — {'oportunidad' if status == 'green' else 'precio en línea con expectativa' if status == 'amber' else 'cotiza sobre el target consenso'}."
+            ),
+        })
+
+    # Métrica 2: PER actual vs Forward (sustituto del "PER histórico" del screenshot)
+    if trailing_pe is not None and forward_pe is not None:
+        pe_change_pct = round((forward_pe - trailing_pe) / trailing_pe * 100, 1)
+        # Forward < trailing = ganancias esperadas crecen → bueno
+        status = "green" if pe_change_pct < -10 else "amber" if pe_change_pct < 5 else "red"
+        metrics.append({
+            "name": "PER actual vs forward",
+            "value": trailing_pe,
+            "value_label": f"{trailing_pe:.1f}× (forward {forward_pe:.1f}×)",
+            "reference": "Forward < actual = ganancias esperadas crecen",
+            "status": status,
+            "interpretation_hint": (
+                f"PER actual {trailing_pe:.1f}× vs forward {forward_pe:.1f}× ({pe_change_pct:+.1f}%). "
+                f"{'Las ganancias esperadas crecen — el múltiplo se contrae a futuro.' if pe_change_pct < 0 else 'Las ganancias esperadas no acompañan el precio actual.'}"
+            ),
+        })
+    elif trailing_pe is not None:
+        metrics.append({
+            "name": "PER actual",
+            "value": trailing_pe,
+            "value_label": f"{trailing_pe:.1f}×",
+            "reference": "Forward P/E no disponible en API",
+            "status": "na",
+            "interpretation_hint": f"PER {trailing_pe:.1f}× sin proyección forward disponible para comparar.",
+        })
+
+    # Métrica 3: PEG Ratio
+    if peg is not None:
+        status = _status_of_metric("peg_ratio", peg)
+        metrics.append({
+            "name": "PEG Ratio",
+            "value": peg,
+            "value_label": f"{peg:.2f}",
+            "reference": "< 1.0 (ideal value)",
+            "status": status,
+            "interpretation_hint": (
+                f"PEG {peg:.2f} — "
+                f"{'el precio luce barato vs el crecimiento esperado.' if status == 'green' else 'el mercado ya descuenta parte del crecimiento.' if status == 'amber' else 'el premium sobre crecimiento esperado es alto.' if status == 'red' else 'dato anómalo, ignorá para esta consulta.'}"
+            ),
+        })
+
+    # Métrica 4: Payout Ratio
+    if payout_pct is not None:
+        status = _status_of_metric("payout_ratio_pct", payout_pct)
+        metrics.append({
+            "name": "Payout Ratio",
+            "value": payout_pct,
+            "value_label": f"{payout_pct:.1f}%",
+            "reference": "< 50% (sostenible)",
+            "status": status,
+            "interpretation_hint": (
+                f"Payout {payout_pct:.1f}% — "
+                f"{'dividendo cómodamente sostenible, mucha plata reinvertida.' if status == 'green' else 'dividendo OK pero cerca del límite.' if status == 'amber' else 'paga casi todo o más que sus ganancias — frágil.' if status == 'red' else 'dato anómalo (probable distorsión cambiaria en ADRs AR).'}"
+            ),
+        })
+
+    # Métrica 5: ROE
+    if roe_pct is not None:
+        status = _status_of_metric("roe_pct", roe_pct)
+        metrics.append({
+            "name": "ROE (Return on Equity)",
+            "value": roe_pct,
+            "value_label": f"{roe_pct:.1f}%",
+            "reference": "> 15% (alta calidad)",
+            "status": status,
+            "interpretation_hint": (
+                f"ROE {roe_pct:.1f}% — "
+                f"{'rentabilidad sobre capital muy alta, calidad fundamental.' if status == 'green' else 'rentabilidad razonable.' if status == 'amber' else 'rentabilidad débil, capital trabajando poco.'}"
+            ),
+        })
+
+    # Métrica 6: Debt/Equity (skip si sector financiero)
+    if de_ratio is not None:
+        status = _status_of_metric("debt_to_equity", de_ratio, sector=sector)
+        if status != "na":
+            metrics.append({
+                "name": "Debt/Equity",
+                "value": de_ratio,
+                "value_label": f"{de_ratio:.2f}",
+                "reference": "< 0.5 (balance solido)",
+                "status": status,
+                "interpretation_hint": (
+                    f"D/E {de_ratio:.2f} — "
+                    f"{'balance solido, deuda baja.' if status == 'green' else 'deuda en rango razonable.' if status == 'amber' else 'apalancamiento alto, sensible a tasas.'}"
+                ),
+            })
+
+    # Métrica 7: Profit Margin
+    if pm_pct is not None:
+        status = _status_of_metric("profit_margin_pct", pm_pct)
+        metrics.append({
+            "name": "Profit Margin",
+            "value": pm_pct,
+            "value_label": f"{pm_pct:.1f}%",
+            "reference": "> 15% (negocio rentable)",
+            "status": status,
+            "interpretation_hint": (
+                f"Margen {pm_pct:.1f}% — "
+                f"{'negocio muy rentable, alto poder de pricing.' if status == 'green' else 'margen aceptable.' if status == 'amber' else 'margen débil, vulnerable a shocks de costo.'}"
+            ),
+        })
+
+    # Métrica 8: Revenue Growth YoY
+    if rg_pct is not None:
+        status = _status_of_metric("revenue_growth_pct", rg_pct)
+        metrics.append({
+            "name": "Revenue Growth YoY",
+            "value": rg_pct,
+            "value_label": f"{rg_pct:+.1f}%",
+            "reference": "> 10% (crecimiento sólido)",
+            "status": status,
+            "interpretation_hint": (
+                f"Revenue YoY {rg_pct:+.1f}% — "
+                f"{'crecimiento de doble dígito.' if status == 'green' else 'crecimiento positivo pero modesto.' if status == 'amber' else 'revenue contrayendo, alerta.'}"
+            ),
+        })
+
+    # Resumen agregado
+    statuses = [m["status"] for m in metrics]
+    overall = {
+        "green_count": statuses.count("green"),
+        "amber_count": statuses.count("amber"),
+        "red_count": statuses.count("red"),
+        "outlier_count": statuses.count("outlier"),
+        "na_count": statuses.count("na"),
+        "total": len(metrics),
+    }
+    # Score qualitativo simple: si > 60% verdes = "Sólido", 40-60% = "Mixto", < 40% = "Débil"
+    if overall["total"] > 0:
+        green_share = overall["green_count"] / overall["total"]
+        if green_share >= 0.6:
+            overall["label"] = "Sólido"
+        elif green_share >= 0.4:
+            overall["label"] = "Mixto"
+        else:
+            overall["label"] = "Débil"
+    else:
+        overall["label"] = "Sin datos"
+
+    return {
+        "available": True,
+        "ticker": yf_ticker,
+        "company_name": info.get("longName") or info.get("shortName"),
+        "sector": sector,
+        "price": {
+            "current_usd": current_price,
+            "fair_value_usd": fair_value,
+            "margin_of_safety_pct": margin_pct,
+            "source": "Consenso analistas (target mean)",
+        },
+        "metrics": metrics,
+        "overall": overall,
+        "_interpretation_hint": (
+            f"{overall['green_count']}/{overall['total']} métricas en verde "
+            f"({overall['label']}). Conectá con la posición del user en su cartera si la tiene. "
+            "Nunca recomendar operativa — sí podés sugerir 'cosas a considerar'."
+        ),
+    }
+
+
+def _yf_earnings_fetcher(yf_ticker: str) -> dict:
+    """Devuelve earnings: próxima fecha + últimos 4 quarters con surprise %."""
+    import yfinance as yf
+    t = yf.Ticker(yf_ticker)
+    info = t.info or {}
+    if not _yf_is_equity_with_fundamentals(info):
+        return {
+            "available": False,
+            "reason": f"{yf_ticker} no es una equity con earnings reports (cripto, ETF, bono o ticker inválido).",
+        }
+
+    next_earnings = None
+    next_earnings_estimates = None
+    try:
+        cal = t.calendar
+        if isinstance(cal, dict):
+            edates = cal.get("Earnings Date")
+            if edates and isinstance(edates, list) and len(edates) > 0:
+                next_earnings = str(edates[0])
+            high = cal.get("Earnings High")
+            low = cal.get("Earnings Low")
+            avg = cal.get("Earnings Average")
+            if high is not None and low is not None:
+                next_earnings_estimates = {
+                    "eps_high": round(float(high), 2),
+                    "eps_low": round(float(low), 2),
+                    "eps_average": round(float(avg), 2) if avg is not None else None,
+                }
+    except Exception as ex:
+        log.warning("yf calendar fetch failed for %s: %s", yf_ticker, ex)
+
+    last_quarters = []
+    try:
+        eh = t.earnings_history
+        if eh is not None and hasattr(eh, 'iterrows') and not eh.empty:
+            for idx, row in eh.iterrows():
+                last_quarters.append({
+                    "date": str(idx),
+                    "eps_estimate": round(float(row.get("epsEstimate")), 2) if row.get("epsEstimate") is not None else None,
+                    "eps_actual": round(float(row.get("epsActual")), 2) if row.get("epsActual") is not None else None,
+                    "surprise_pct": round(float(row.get("surprisePercent", 0)) * 100, 2) if row.get("surprisePercent") is not None else None,
+                })
+    except Exception as ex:
+        log.warning("yf earnings_history fetch failed for %s: %s", yf_ticker, ex)
+
+    # Calcular surprise promedio últimos 4
+    surprise_avg = None
+    if last_quarters:
+        sps = [q["surprise_pct"] for q in last_quarters if q.get("surprise_pct") is not None]
+        if sps:
+            surprise_avg = round(sum(sps) / len(sps), 2)
+
+    # Build _interpretation_hint sin bug del ternario (antes el if/else
+    # cortaba la segunda string literal silenciosamente).
+    hint_parts = []
+    if surprise_avg is not None:
+        hint_parts.append(f"Surprise promedio últimos 4Q: {surprise_avg:+.1f}%.")
+    hint_parts.append(
+        "Surprises positivas consistentes (>5%) sugieren conservadurismo de la "
+        "empresa o capacidad de superar guidance. Surprises negativas grandes "
+        "alertan sobre deterioro o expectativas demasiado optimistas."
+    )
+
+    return {
+        "available": True,
+        "ticker": yf_ticker,
+        "company_name": info.get("longName") or info.get("shortName"),
+        "next_earnings_date": next_earnings,
+        "next_earnings_estimates": next_earnings_estimates,
+        "last_quarters": last_quarters,
+        "surprise_avg_last_4q_pct": surprise_avg,
+        "_interpretation_hint": " ".join(hint_parts),
+    }
+
+
+def _yf_analysts_fetcher(yf_ticker: str) -> dict:
+    """Devuelve recommendations + price targets."""
+    import yfinance as yf
+    t = yf.Ticker(yf_ticker)
+    info = t.info or {}
+    if not _yf_is_equity_with_fundamentals(info):
+        return {
+            "available": False,
+            "reason": f"{yf_ticker} no tiene cobertura de analistas (cripto, ETF o ticker inválido).",
+        }
+
+    current = info.get("currentPrice") or info.get("regularMarketPrice")
+    target_mean = info.get("targetMeanPrice")
+    target_high = info.get("targetHighPrice")
+    target_low = info.get("targetLowPrice")
+    rec_mean = info.get("recommendationMean")  # 1=strong buy, 5=sell
+    rec_key = info.get("recommendationKey")
+    n_analysts = info.get("numberOfAnalystOpinions")
+
+    upside_pct = None
+    if current and target_mean and current > 0:
+        upside_pct = round((target_mean - current) / current * 100, 2)
+
+    # Mapeo recommendationKey → label en español
+    rec_label_map = {
+        "strong_buy": "Compra fuerte",
+        "buy": "Compra",
+        "hold": "Mantener",
+        "sell": "Venta",
+        "strong_sell": "Venta fuerte",
+        "underperform": "Underperform",
+        "outperform": "Outperform",
+    }
+    rec_label = rec_label_map.get(rec_key, rec_key) if rec_key else None
+
+    return {
+        "available": True,
+        "ticker": yf_ticker,
+        "company_name": info.get("longName") or info.get("shortName"),
+        "current_price_usd": current,
+        "target_mean_usd": target_mean,
+        "target_high_usd": target_high,
+        "target_low_usd": target_low,
+        "upside_pct": upside_pct,
+        "recommendation_label": rec_label,
+        "recommendation_mean_score": round(rec_mean, 2) if rec_mean is not None else None,
+        "n_analysts": n_analysts,
+        "_interpretation_hint": (
+            f"{n_analysts} analistas cubren. Recomendación: {rec_label}. "
+            f"Target medio US$ {target_mean:.2f} = upside {upside_pct:+.1f}% sobre precio actual. "
+            "Recordá: targets de analistas son OPINIONES, no certezas — útiles como contexto, no como decisión."
+        ) if all([n_analysts, rec_label, target_mean, upside_pct is not None]) else "",
+    }
+
+
+def _yf_profile_fetcher(yf_ticker: str) -> dict:
+    """Devuelve descripción de la empresa."""
+    import yfinance as yf
+    t = yf.Ticker(yf_ticker)
+    info = t.info or {}
+    if not _yf_is_info_valid(info):
+        return {"available": False, "reason": "yfinance no tiene profile para este ticker"}
+
+    summary = info.get("longBusinessSummary") or ""
+    # Cap summary a 500 chars para no inflar el contexto del LLM
+    if len(summary) > 500:
+        summary = summary[:497] + "..."
+
+    return {
+        "available": True,
+        "ticker": yf_ticker,
+        "company_name": info.get("longName") or info.get("shortName"),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "country": info.get("country"),
+        "full_time_employees": info.get("fullTimeEmployees"),
+        "website": info.get("website"),
+        "business_summary": summary,
+        "_interpretation_hint": (
+            "Usá este profile SOLO si el user pregunta '¿a qué se dedica X?' o "
+            "necesita contexto del negocio. NO repitas el sector/industria si "
+            "ya lo dijiste con otra tool."
+        ),
+    }
+
+
 def _sanitize_chat_snapshot(raw: dict) -> dict:
     """Normaliza el snapshot que viene del frontend antes de pasarlo al LLM.
 
@@ -7029,6 +8014,144 @@ _AI_TOOLS = [
             "required": ["symbols"],
         },
     },
+    # ─── Pack A v2: tools de mercado externas (yfinance) ─────────────────
+    # Estas tools traen data de fundamentales/earnings/analistas para tickers
+    # de equity (acciones). NO funcionan para cripto ni bonos AR — el LLM
+    # las llama solo cuando el ticker es una acción listada en US/CEDEAR.
+    #
+    # Las 4 tools comparten cache 6h en yfinance_cache. La 2da consulta del
+    # mismo ticker en 6h es instantánea (sin penalty de costo extra).
+    {
+        "name": "get_stock_fundamentals",
+        "description": (
+            "Trae métricas fundamentales (P/E actual y forward, EPS, dividend yield, "
+            "market cap, beta, rango 52 semanas, sector e industria) de UNA acción.\n\n"
+            "USALA cuando:\n"
+            "  - El usuario pregunta sobre métricas puntuales: 'el P/E de NVDA', '¿cuánto paga AAPL en dividendos?'\n"
+            "  - Necesitás 1-2 fundamentales rápidos sin armar todo un scorecard de valor\n"
+            "  - El usuario menciona una valoración o múltiplo específico\n\n"
+            "NO LA USES cuando:\n"
+            "  - El usuario pregunta '¿está cara/barata?' o '¿es buena compra?' → usar get_value_scorecard (cubre todo)\n"
+            "  - Pregunta sobre cripto o bonos AR → no aplica, decilo honesto\n"
+            "  - Ya tenés los datos en el snapshot de la cartera del usuario\n\n"
+            "Cache 6h. Latencia: ~1.5s primera vez, instantánea con cache."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Símbolo del activo (ej: NVDA, AAPL, GGAL, TSLA.BA). Sin guiones para cripto.",
+                }
+            },
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_value_scorecard",
+        "description": (
+            "Devuelve un SCORECARD COMPLETO de valor de una acción: fair value de "
+            "analistas, margen de seguridad, P/E, PEG, payout, ROE, deuda/equity, "
+            "margen de utilidad y crecimiento de revenue — cada métrica con su "
+            "STATUS (verde/ámbar/rojo) según thresholds de value investing.\n\n"
+            "Esta es la tool 'estrella' del Pack — concentra el análisis fundamental "
+            "típico en un solo call. Devuelve también un 'overall.label' (Sólido / "
+            "Mixto / Débil) basado en cuántas métricas están en verde.\n\n"
+            "USALA cuando:\n"
+            "  - El usuario pregunta '¿está cara X?', '¿es buena para comprar a largo?', "
+            "    '¿qué pinta tiene NVDA fundamentalmente?'\n"
+            "  - Pregunta sobre 'valoración', 'fundamentales', 'salud financiera' de un ticker\n"
+            "  - Compara dos acciones explícitamente ('¿NVDA o AMD para largo?') → llamala UNA VEZ por ticker\n\n"
+            "NO LA USES cuando:\n"
+            "  - El usuario solo quiere el precio actual → get_current_prices\n"
+            "  - Pregunta sobre cripto o bonos AR — NO APLICA, no inventes\n"
+            "  - Pregunta sobre SU performance en el ticker → get_realized_vs_unrealized\n"
+            "  - Pregunta sobre noticias recientes → get_recent_news_for_assets\n\n"
+            "Cómo presentar el resultado al usuario:\n"
+            "  - Usá los `value_label` que vienen formateados\n"
+            "  - Usá los símbolos ✓ (green), — (amber/na), ✗ (red) en lugar de emojis\n"
+            "  - Mostrá el `overall.label` arriba como resumen\n"
+            "  - Para Pro: conectá con la posición del usuario en su cartera si la tiene\n"
+            "  - Para Free/Plus: solo describí; NO interpretes 'compraría'/'vendería'\n\n"
+            "Cache 6h. Latencia: ~2s primera vez."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Símbolo de la acción (NVDA, MSFT, GGAL, etc). NO funciona para cripto ni bonos.",
+                }
+            },
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_earnings_history",
+        "description": (
+            "Próximo earnings date + últimos 4 quarters con surprise % (EPS actual "
+            "vs estimate). Surprise = sobre o bajo expectativas de analistas.\n\n"
+            "USALA cuando:\n"
+            "  - El usuario pregunta '¿cuándo reporta MSFT?', '¿cómo le fue a NVDA en el último earnings?'\n"
+            "  - Pregunta sobre el historial de cumplimiento de expectativas\n"
+            "  - Habla de timing de entrada/salida cerca de earnings\n\n"
+            "NO LA USES cuando:\n"
+            "  - El usuario pregunta valoración → usar get_value_scorecard\n"
+            "  - Ticker es cripto/bono/ETF (no tiene earnings)\n\n"
+            "Cache 6h."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "Símbolo de la acción."}
+            },
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_analyst_ratings",
+        "description": (
+            "Recomendación consenso de analistas (Strong Buy / Buy / Hold / Sell / Strong Sell) "
+            "+ target price (alto/medio/bajo) + número de analistas que cubren.\n\n"
+            "USALA cuando:\n"
+            "  - El usuario pregunta '¿qué dicen los analistas?', '¿cuál es el target?'\n"
+            "  - Quiere ver consensus de Wall Street antes de decidir\n\n"
+            "NO LA USES cuando:\n"
+            "  - El usuario solo quiere precio → get_current_prices\n"
+            "  - Pide análisis fundamental general → get_value_scorecard (ya incluye target mean)\n\n"
+            "Tono: los targets son OPINIONES, no certezas. Mencionalo si el usuario lo trata como verdad absoluta.\n"
+            "Cache 6h."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "Símbolo de la acción."}
+            },
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_company_profile",
+        "description": (
+            "Descripción del negocio: a qué se dedica, sector, industria, empleados, "
+            "país, website. NO trae métricas financieras.\n\n"
+            "USALA cuando:\n"
+            "  - El usuario pregunta '¿a qué se dedica CRWD?', '¿qué hace exactamente PLTR?'\n"
+            "  - Pide contexto del negocio sin números\n\n"
+            "NO LA USES cuando:\n"
+            "  - El usuario pregunta financieros/valoración → otras tools del Pack\n"
+            "  - Ya mencionaste sector/industria en una respuesta previa\n\n"
+            "El business_summary llega capeado a 500 chars — resumilo aún más si lo citás.\n"
+            "Cache 6h."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "Símbolo de la acción."}
+            },
+            "required": ["ticker"],
+        },
+    },
     {
         "name": "remember_user_fact",
         "description": (
@@ -7055,14 +8178,34 @@ _AI_TOOLS = [
 def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
     """Ejecuta una tool del coach IA y devuelve el resultado como dict.
 
-    Sanitización defensiva: validar TODO input del LLM antes de hit DB o
-    API externa. SQL es parametrizado (no hay risk de SQL injection) pero
-    igual validamos forma + length per defensa en profundidad. Loggeamos
-    tool calls con input crudo para auditoría / detección de alucinaciones.
+    Wrapper que cuenta uso (audit Pack A v2) y loggea. La lógica real va
+    en _execute_ai_tool_inner — separadas para que el counter siempre se
+    ejecute sin importar el path de retorno.
     """
     log.info("AI tool call: name=%r input_keys=%s uid=%s",
              name, list(input_data.keys()) if isinstance(input_data, dict) else 'non-dict', uid)
+    try:
+        result = _execute_ai_tool_inner(name, input_data, uid)
+    except Exception as ex:
+        # No deberíamos llegar acá (los handlers manejan sus errores), pero
+        # red de seguridad para que un exception NO rompa el chat completo.
+        log.error("ai_tool unhandled exception name=%s uid=%s: %s", name, uid, ex)
+        return {"error": f"tool '{name}' falló: {type(ex).__name__}"}
 
+    # Contar uso solo si el tool name es reconocido (no contar nombres
+    # inventados por el LLM que no matchean ninguna rama).
+    # El counter NO toma "result.available=False" como falla — sí cuenta esos
+    # como uso porque consumió un tool call slot del LLM.
+    if isinstance(result, dict) and "error" not in result:
+        _record_tool_usage(uid, name)
+    elif isinstance(result, dict) and result.get("error") and "no reconocida" not in result.get("error", ""):
+        # Errores conocidos de validación SÍ cuentan como uso (gastaron call slot)
+        _record_tool_usage(uid, name)
+    return result
+
+
+def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
+    """Impl real de _execute_ai_tool. Devuelve dict directamente."""
     if not isinstance(input_data, dict):
         return {"error": "input_data debe ser dict"}
 
@@ -7328,6 +8471,43 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
             }
         finally:
             conn.close()
+
+    # ─── Pack A v2: tools yfinance ───────────────────────────────────────
+    # Las 5 tools comparten el patrón: validar ticker → fetch cached →
+    # devolver payload. Cuota implícita por cache 6h (no se machaca yfinance).
+    elif name in (
+        "get_stock_fundamentals", "get_value_scorecard", "get_earnings_history",
+        "get_analyst_ratings", "get_company_profile",
+    ):
+        raw_ticker = input_data.get("ticker", "")
+        ticker = str(raw_ticker).strip().upper()[:15]
+        if not ticker:
+            return {"error": "ticker requerido"}
+        # Validación: el regex de Rendi acepta letras/números/.BA. Sirve
+        # tanto para US (NVDA) como CEDEARs (TSLA.BA) y también cripto en
+        # forma normalizada (-USD agrega -USD pero el caller lo manda sin).
+        # Aceptamos ticker tipo "BTC" (será mapped a "BTC-USD" en _yf_normalize_ticker).
+        if not _SYMBOL_RE.match(ticker):
+            # Permitir tickers cripto con guión (BTC-USD)
+            if not (ticker.endswith("-USD") and _SYMBOL_RE.match(ticker.replace("-USD", ""))):
+                log.info("AI tool %s rejected invalid ticker: %r", name, raw_ticker)
+                return {"error": f"ticker '{ticker}' no tiene formato válido"}
+
+        # Mapeo tool name → (kind cache, fetcher fn)
+        tool_map = {
+            "get_stock_fundamentals": ("fundamentals", _yf_fundamentals_fetcher),
+            "get_value_scorecard":     ("scorecard",    _yf_scorecard_fetcher),
+            "get_earnings_history":    ("earnings",     _yf_earnings_fetcher),
+            "get_analyst_ratings":     ("analysts",     _yf_analysts_fetcher),
+            "get_company_profile":     ("profile",      _yf_profile_fetcher),
+        }
+        kind, fetcher = tool_map[name]
+        result = _yf_fetch_cached(ticker, kind, fetcher)
+        # Loggear si rechazó por motivo conocido (cripto/bono/fake) para
+        # detectar abuso (LLM llamando insistentemente con tickers que no aplican).
+        if not result.get("available", True):
+            log.info("yf tool %s rejected ticker=%s reason=%r", name, ticker, result.get("reason", "")[:100])
+        return result
 
     elif name == "remember_user_fact":
         # Persiste un hecho. Usa los MISMOS helpers compartidos que el POST
