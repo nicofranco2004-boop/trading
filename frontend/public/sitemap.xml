@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <!--
-    Sitemap de páginas públicas de Rendi (rendi.finance).
-    Las páginas internas (dashboard, posiciones, etc.) están en robots.txt
+    Sitemap de Rendi (rendi.finance) — todas las páginas públicas indexables.
+    Las rutas internas (dashboard, posiciones, etc.) están en robots.txt
     como Disallow porque requieren login y no aportan SEO.
 
-    Mantener esta lista alineada con:
-      - Páginas con Route definidas en src/App.jsx que sean accesibles sin login
-      - Cuando agregás una página pública nueva (blog, casos de uso, etc.),
-        sumarla acá.
-      - Cuando actualizás contenido de una página, mover su lastmod a la
-        fecha del cambio (Google usa esto para decidir recrawl).
+    Mantener actualizado cuando:
+      - Agregás una landing keyword nueva en pages/keywords/
+      - Publicás un artículo nuevo en pages/blog/articles/
+      - Actualizás contenido material → bumpear lastmod
   -->
+
+  <!-- ── Core: páginas principales ────────────────────────────────────── -->
   <url>
     <loc>https://rendi.finance/</loc>
     <lastmod>2026-05-24</lastmod>
@@ -24,6 +24,74 @@
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
+
+  <!-- ── Keyword landings: brokers AR (alta prioridad — bottom-of-funnel) ─ -->
+  <url>
+    <loc>https://rendi.finance/brokers/cocos</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://rendi.finance/brokers/iol</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://rendi.finance/brokers/binance</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- ── Keyword landings: productos / tópicos ────────────────────────── -->
+  <url>
+    <loc>https://rendi.finance/cedears</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://rendi.finance/bonos-argentinos</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://rendi.finance/afip-cripto</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- ── Blog ─────────────────────────────────────────────────────────── -->
+  <url>
+    <loc>https://rendi.finance/blog</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://rendi.finance/blog/fifo-cedears-argentina</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://rendi.finance/blog/pnl-real-usd-blue-argentina</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://rendi.finance/blog/comparativa-brokers-argentina</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+
+  <!-- ── Legal ────────────────────────────────────────────────────────── -->
   <url>
     <loc>https://rendi.finance/terminos</loc>
     <lastmod>2026-05-23</lastmod>

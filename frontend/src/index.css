@@ -72,6 +72,65 @@ body {
     letter-spacing: -0.005em;
   }
 
+  /* ── Blog prose — typography del contenido de artículos ─────────────────
+     Inyectado en BlogPost.jsx via className="blog-prose". Cada artículo
+     escribe HTML semántico (h2, h3, p, ul, ol, blockquote, code) y los
+     estilos vienen de acá — el escritor no se preocupa por las clases. */
+  .blog-prose {
+    @apply text-base leading-relaxed;
+  }
+  .blog-prose h2 {
+    @apply text-2xl font-semibold tracking-tight text-ink-0 mt-12 mb-4;
+  }
+  .blog-prose h3 {
+    @apply text-lg font-semibold text-ink-0 mt-8 mb-3;
+  }
+  .blog-prose p {
+    @apply text-base text-ink-1 leading-relaxed mb-5;
+  }
+  .blog-prose ul {
+    @apply list-disc pl-6 space-y-1.5 mb-5 text-ink-1;
+  }
+  .blog-prose ul li::marker {
+    color: rgb(125 133 144);  /* ink-3 */
+  }
+  .blog-prose ol {
+    @apply list-decimal pl-6 space-y-1.5 mb-5 text-ink-1;
+  }
+  .blog-prose strong {
+    @apply text-ink-0 font-medium;
+  }
+  .blog-prose a {
+    @apply text-data-violet underline decoration-dotted underline-offset-2 hover:text-data-violet/80;
+  }
+  .blog-prose blockquote {
+    @apply border-l-2 border-data-violet/50 pl-5 my-6 text-ink-1 italic;
+  }
+  .blog-prose code {
+    @apply font-mono text-sm bg-bg-2 text-ink-0 px-1.5 py-0.5 rounded;
+  }
+  .blog-prose pre {
+    @apply font-mono text-sm bg-bg-2 text-ink-1 p-4 rounded-md overflow-x-auto my-6;
+  }
+  .blog-prose hr {
+    @apply border-line/40 my-8;
+  }
+  .blog-prose table {
+    @apply w-full text-sm my-6;
+  }
+  .blog-prose thead {
+    @apply border-b border-line/60;
+  }
+  .blog-prose th {
+    @apply text-left text-ink-3 font-mono text-xs uppercase tracking-caps py-2 pr-4;
+  }
+  .blog-prose td {
+    @apply py-2 pr-4 text-ink-1;
+  }
+  .blog-prose tbody tr {
+    @apply border-b border-line/30;
+  }
+
   /* Label uppercase mono — patrón "specimen sheet" para etiquetas de KPIs.
      v2: tracking 0.12em (más compacto que 0.18 editorial), tamaño 10-11 px. */
   .label-mono {

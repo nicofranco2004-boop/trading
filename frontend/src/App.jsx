@@ -58,6 +58,24 @@ const PositionDetailMobile = lazy(() => import('./pages/PositionDetailMobile'))
 const Terminos = lazy(() => import('./pages/Terminos'))
 const Reembolso = lazy(() => import('./pages/Reembolso'))
 
+// SEO landings — páginas keyword-específicas que rankean long-tail
+// (cocos, iol, binance, cedears, bonos AR, AFIP cripto). Accesibles
+// sin login. Lazy porque solo se cargan cuando alguien viene de Google.
+const LandingCocos = lazy(() => import('./pages/keywords/Cocos'))
+const LandingIOL = lazy(() => import('./pages/keywords/IOL'))
+const LandingBinance = lazy(() => import('./pages/keywords/Binance'))
+const LandingCedears = lazy(() => import('./pages/keywords/Cedears'))
+const LandingBonosAR = lazy(() => import('./pages/keywords/BonosAR'))
+const LandingAfipCripto = lazy(() => import('./pages/keywords/AfipCripto'))
+
+// Blog — accesible sin login. Cada artículo es un componente JSX por
+// simplicidad (no markdown). Para agregar uno: crear el archivo + entry
+// en pages/Blog.jsx POSTS + ruta acá + sitemap.
+const Blog = lazy(() => import('./pages/Blog'))
+const BlogFifoCedears = lazy(() => import('./pages/blog/articles/FifoCedearsArgentina'))
+const BlogPnlRealUsdBlue = lazy(() => import('./pages/blog/articles/PnlRealUsdBlue'))
+const BlogComparativaBrokers = lazy(() => import('./pages/blog/articles/ComparativaBrokersArgentina'))
+
 // Fallback mínimo mientras carga el chunk. El shell (Sidebar / MobileTopBar)
 // queda montado, así que la nav no parpadea — solo el content area se reemplaza.
 function PageFallback() {
@@ -112,6 +130,17 @@ function AppRoutes() {
           accesibles sin login (linkeadas desde Planes.jsx antes del CTA de pago). */}
       <Route path="/terminos" element={<Terminos />} />
       <Route path="/reembolso" element={<Reembolso />} />
+      {/* SEO landings + blog — también duplicadas abajo para flow no-auth */}
+      <Route path="/brokers/cocos" element={<LandingCocos />} />
+      <Route path="/brokers/iol" element={<LandingIOL />} />
+      <Route path="/brokers/binance" element={<LandingBinance />} />
+      <Route path="/cedears" element={<LandingCedears />} />
+      <Route path="/bonos-argentinos" element={<LandingBonosAR />} />
+      <Route path="/afip-cripto" element={<LandingAfipCripto />} />
+      <Route path="/blog" element={<Blog />} />
+      <Route path="/blog/fifo-cedears-argentina" element={<BlogFifoCedears />} />
+      <Route path="/blog/pnl-real-usd-blue-argentina" element={<BlogPnlRealUsdBlue />} />
+      <Route path="/blog/comparativa-brokers-argentina" element={<BlogComparativaBrokers />} />
       <Route path="/billing/success" element={<BillingSuccess />} />
       <Route path="/billing/pending" element={<BillingPending />} />
       <Route path="/billing/failure" element={<BillingFailure />} />
@@ -142,6 +171,19 @@ function Layout() {
               T&C antes de crear cuenta). Lazy igual que las del flow auth. */}
           <Route path="/terminos" element={<Terminos />} />
           <Route path="/reembolso" element={<Reembolso />} />
+          {/* SEO landings públicas — visitantes desde Google sin sesión.
+              Cada una rankea para una keyword AR-específica. */}
+          <Route path="/brokers/cocos" element={<LandingCocos />} />
+          <Route path="/brokers/iol" element={<LandingIOL />} />
+          <Route path="/brokers/binance" element={<LandingBinance />} />
+          <Route path="/cedears" element={<LandingCedears />} />
+          <Route path="/bonos-argentinos" element={<LandingBonosAR />} />
+          <Route path="/afip-cripto" element={<LandingAfipCripto />} />
+          {/* Blog público */}
+          <Route path="/blog" element={<Blog />} />
+          <Route path="/blog/fifo-cedears-argentina" element={<BlogFifoCedears />} />
+          <Route path="/blog/pnl-real-usd-blue-argentina" element={<BlogPnlRealUsdBlue />} />
+          <Route path="/blog/comparativa-brokers-argentina" element={<BlogComparativaBrokers />} />
           <Route path="*" element={<Login />} />
         </Routes>
       </Suspense>

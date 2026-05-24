@@ -12,6 +12,12 @@ Allow: /planes
 Allow: /login
 Allow: /terminos
 Allow: /reembolso
+Allow: /brokers/
+Allow: /cedears
+Allow: /bonos-argentinos
+Allow: /afip-cripto
+Allow: /blog
+Allow: /blog/
 
 # Bloqueadas (requieren auth, no SEO value)
 Disallow: /dashboard
