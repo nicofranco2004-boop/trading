@@ -167,6 +167,10 @@ function Layout() {
               o tras clickear un magic link de password reset. */}
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/reset-password" element={<ResetPassword />} />
+          {/* Planes — accesible sin login (el visitante decide comprar ANTES
+              de crear cuenta; el flow de subscribe en sí requiere login pero
+              la página de pricing es 100% pública e indexable por Google). */}
+          <Route path="/planes" element={<Planes />} />
           {/* Legal — accesibles sin login (compliance + el user puede leer
               T&C antes de crear cuenta). Lazy igual que las del flow auth. */}
           <Route path="/terminos" element={<Terminos />} />
