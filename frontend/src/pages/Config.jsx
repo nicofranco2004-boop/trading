@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap } from 'lucide-react'
+import { RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
@@ -493,6 +493,10 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   const limit = usage?.analyses_limit ?? (isPlus ? 6 : 60)
   const pct = limit > 0 ? Math.min(100, (count / limit) * 100) : 0
   const [cancelling, setCancelling] = useState(false)
+  // Estados del modal de cancelación: 'closed' | 'confirm' | 'success' | 'error'.
+  // Reemplaza el confirm()/alert() nativo del browser (UX rota/fea — no
+  // matchea el diseño de Rendi) por un modal estilizado.
+  const [cancelModal, setCancelModal] = useState({ open: false, phase: 'confirm', errorMsg: null })
 
   // Single source of truth: access_mode viene calculado del backend.
   //   'authorized'  → sub Rebill activa, autorenovable. Botones: cambiar / cancelar.
@@ -519,22 +523,35 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   const anchorPeriod = user?.credit_anchor_period || null
   const hasCredit = creditDays > 0
 
-  async function handleCancel() {
+  // Abre el modal — la confirmación real la dispara el botón "Cancelar mi suscripción"
+  // dentro del modal (que llama a confirmCancel). Antes usábamos confirm() nativo,
+  // pero su UX rompe la estética de la app.
+  function openCancelModal() {
     if (cancelling) return
-    if (!confirm(`¿Cancelar tu suscripción ${tierLabel}? Mantenés acceso hasta el fin del período actual cobrado. Después tu cuenta vuelve a Free.`)) return
+    setCancelModal({ open: true, phase: 'confirm', errorMsg: null })
+  }
+
+  async function confirmCancel() {
     setCancelling(true)
+    setCancelModal((m) => ({ ...m, phase: 'pending' }))
     try {
-      const res = await api.post('/billing/cancel', {})
-      alert(`Suscripción cancelada. Mantenés ${tierLabel} hasta el fin del período cobrado.`)
+      await api.post('/billing/cancel', {})
       track('subscription_cancelled', { tier, source: 'config_plan_hero' })
-      // Refresca la página para que el badge / KPIs reflejen el nuevo status
-      window.location.reload()
+      setCancelModal({ open: true, phase: 'success', errorMsg: null })
+      // Pequeña pausa para que el user vea el "Cancelado correctamente" y
+      // después refrescamos para que el resto de la UI muestre el nuevo estado.
+      setTimeout(() => { window.location.reload() }, 1800)
     } catch (ex) {
-      const msg = ex?.payload?.detail?.error || ex?.message || 'No pudimos cancelar la suscripción.'
-      alert(msg)
+      const msg = ex?.payload?.detail?.error || ex?.message || 'No pudimos cancelar la suscripción. Intentá de nuevo o escribinos a soporte.'
+      setCancelModal({ open: true, phase: 'error', errorMsg: msg })
     } finally {
       setCancelling(false)
     }
+  }
+
+  function closeCancelModal() {
+    if (cancelling) return  // no permitir cerrar mientras se procesa
+    setCancelModal({ open: false, phase: 'confirm', errorMsg: null })
   }
 
   // Formato de fecha de expiración. Si tenemos credit_active_until lo
@@ -691,7 +708,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
             </button>
             <button
               type="button"
-              onClick={handleCancel}
+              onClick={openCancelModal}
               disabled={cancelling}
               className="inline-flex items-center gap-1.5 text-xs font-medium bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg border border-rendi-neg/30 rounded-sm px-3 py-2 transition-colors disabled:opacity-50"
             >
@@ -700,7 +717,132 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           </>
         )}
       </div>
+
+      {/* Modal de cancelación — estilizado, reemplaza confirm()/alert() nativos */}
+      {cancelModal.open && (
+        <CancelSubscriptionModal
+          phase={cancelModal.phase}
+          tierLabel={tierLabel}
+          periodEndLabel={periodEndLabel}
+          errorMsg={cancelModal.errorMsg}
+          onConfirm={confirmCancel}
+          onClose={closeCancelModal}
+        />
+      )}
     </section>
+  )
+}
+
+// ─── Modal de cancelación de suscripción ──────────────────────────────────────
+// Reemplaza el `confirm()` + `alert()` nativos del browser por una UX in-app
+// que matchea el resto del diseño de Rendi. 4 fases:
+//   - 'confirm':  el user todavía no decidió. Botón rojo "Cancelar mi suscripción".
+//   - 'pending':  request en flight. Spinner + texto.
+//   - 'success':  cancelado OK. Mensaje confirmando + reload automático.
+//   - 'error':    falló el API. Mensaje del backend + botón "Cerrar".
+function CancelSubscriptionModal({ phase, tierLabel, periodEndLabel, errorMsg, onConfirm, onClose }) {
+  const isPending = phase === 'pending'
+  const isSuccess = phase === 'success'
+  const isError = phase === 'error'
+  const isConfirm = phase === 'confirm'
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+      onClick={isPending ? undefined : onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cancel-modal-title"
+    >
+      <div
+        className="bg-bg-1 border border-line-2/70 rounded-lg max-w-md w-full p-6 shadow-[0_20px_60px_-10px_rgba(0,0,0,0.6)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {isConfirm && (
+          <>
+            <h2 id="cancel-modal-title" className="text-lg font-semibold text-ink-0 mb-3">
+              ¿Cancelar tu suscripción {tierLabel}?
+            </h2>
+            <div className="text-sm text-ink-2 leading-relaxed space-y-3 mb-5">
+              <p>
+                Mantenés acceso a {tierLabel} hasta el fin del período actual
+                {periodEndLabel ? <> (<span className="text-ink-0">{periodEndLabel}</span>)</> : null}.
+                Después tu cuenta vuelve a Free automáticamente.
+              </p>
+              <p className="text-xs text-ink-3">
+                Podés reactivarla en cualquier momento desde la página de Planes.
+                Tus datos no se pierden.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center gap-1.5 text-sm font-medium bg-bg-2 hover:bg-bg-2/80 text-ink-1 border border-line/60 rounded-sm px-4 py-2 transition-colors"
+              >
+                Volver
+              </button>
+              <button
+                type="button"
+                onClick={onConfirm}
+                className="inline-flex items-center gap-1.5 text-sm font-medium bg-rendi-neg/15 hover:bg-rendi-neg/25 text-rendi-neg border border-rendi-neg/40 rounded-sm px-4 py-2 transition-colors"
+              >
+                Cancelar mi suscripción
+              </button>
+            </div>
+          </>
+        )}
+
+        {isPending && (
+          <div className="flex items-center gap-3 py-2">
+            <Loader2 size={18} strokeWidth={1.75} className="animate-spin text-data-violet flex-shrink-0" />
+            <div>
+              <p className="text-sm text-ink-0 font-medium">Cancelando…</p>
+              <p className="text-xs text-ink-3 mt-0.5">Esto puede tardar unos segundos.</p>
+            </div>
+          </div>
+        )}
+
+        {isSuccess && (
+          <>
+            <div className="flex items-start gap-3 mb-2">
+              <CheckCircle2 size={20} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0 mt-0.5" />
+              <div>
+                <h2 className="text-base font-semibold text-ink-0">Suscripción cancelada</h2>
+                <p className="text-sm text-ink-2 mt-1 leading-relaxed">
+                  Mantenés acceso a {tierLabel} hasta el fin del período cobrado.
+                  Después tu cuenta vuelve a Free.
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-ink-3 mt-3">Actualizando la página…</p>
+          </>
+        )}
+
+        {isError && (
+          <>
+            <div className="flex items-start gap-3 mb-4">
+              <AlertCircle size={20} strokeWidth={1.75} className="text-rendi-neg flex-shrink-0 mt-0.5" />
+              <div>
+                <h2 className="text-base font-semibold text-ink-0">No pudimos cancelar</h2>
+                <p className="text-sm text-ink-2 mt-1 leading-relaxed">
+                  {errorMsg || 'Hubo un error al cancelar tu suscripción.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center gap-1.5 text-sm font-medium bg-bg-2 hover:bg-bg-2/80 text-ink-1 border border-line/60 rounded-sm px-4 py-2 transition-colors"
+              >
+                Cerrar
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 

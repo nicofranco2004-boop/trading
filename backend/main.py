@@ -1757,8 +1757,14 @@ def me(uid: int = Depends(get_current_user)):
                    WHEN 'authorized' THEN 0
                    WHEN 'retrying' THEN 1
                    WHEN 'paused' THEN 2
-                   WHEN 'cancelled' THEN 3
-                   WHEN 'superseded' THEN 4
+                   -- IMPORTANTE: 'superseded' va ANTES que 'cancelled' porque
+                   -- semánticamente representa el estado actual (cambio de
+                   -- plan reciente) mientras que 'cancelled' suele ser una
+                   -- row histórica anterior al cambio. Si el user hizo
+                   -- cancel → reactivó → change-plan, hay rows en ambos
+                   -- estados. La que importa es la del cambio (superseded).
+                   WHEN 'superseded' THEN 3
+                   WHEN 'cancelled' THEN 4
                    ELSE 9
                END,
                created_at DESC
