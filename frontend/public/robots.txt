@@ -1,11 +1,36 @@
+# robots.txt — Rendi (rendi.finance)
+# ════════════════════════════════════════════════════════════════════════
+# Permite crawl de las páginas públicas (landing, planes, login, legales).
+# Bloquea las rutas internas que requieren login — Google no las puede
+# rendear sin auth y no aportan nada al SEO.
+
 User-agent: *
+
+# Permitidas (páginas públicas indexables)
 Allow: /$
+Allow: /planes
 Allow: /login
-Allow: /register
+Allow: /terminos
+Allow: /reembolso
+
+# Bloqueadas (requieren auth, no SEO value)
+Disallow: /dashboard
 Disallow: /posiciones
-Disallow: /mensual
 Disallow: /operaciones
+Disallow: /mensual
+Disallow: /reportes
+Disallow: /insights
+Disallow: /comportamiento
+Disallow: /novedades
+Disallow: /objetivos
+Disallow: /wrapped
+Disallow: /imports
 Disallow: /config
+Disallow: /perfil-inversor
+Disallow: /admin
+Disallow: /mas
+Disallow: /buscar
+Disallow: /billing/
 Disallow: /api/
 
-Sitemap: https://rendi.app/sitemap.xml
+Sitemap: https://rendi.finance/sitemap.xml
