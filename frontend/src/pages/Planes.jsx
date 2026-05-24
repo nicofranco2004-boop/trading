@@ -428,6 +428,7 @@ export default function Planes() {
                 canChangePlan,
                 subscribing,
                 hasCredit,
+                isCancelledMode,
               })
               // Pricing ARS-first: el cobro real se hace en ARS, calculado
               // con TC blue del día y redondeado a centena (arsPriceRounded).
@@ -472,6 +473,7 @@ export default function Planes() {
                 canChangePlan,
                 subscribing,
                 hasCredit,
+                isCancelledMode,
               })
               const monthlyUsd = billingPeriod === 'annual' ? (+PRO_PRICE_ANNUAL_USD / 12) : +PRO_PRICE_USD
               const arsMonthly = arsPriceRounded(monthlyUsd, tcBlue)
@@ -552,15 +554,32 @@ export default function Planes() {
 //   - User es free sin crédito: "Suscribirme a X" → /api/billing/subscribe
 //   - User tiene Pro sin crédito y la card es Plus: "Ya tenés Pro" (downgrade
 //     no implementado vía subscribe — solo via cancel)
-function ctaForPlan({ cardPlan, cardPeriod, isCurrent, otherTier, canChangePlan, subscribing, hasCredit }) {
+//   - User canceló manualmente (cancelled mode, grace period): puede
+//     re-suscribirse a cualquier plan. Su plan anchor muestra "Reactivar"
+//     y los otros "Suscribirme". Conceptualmente la sub está terminada;
+//     el acceso restante viene del período ya pagado.
+function ctaForPlan({ cardPlan, cardPeriod, isCurrent, otherTier, canChangePlan, subscribing, hasCredit, isCancelledMode }) {
+  if (subscribing) {
+    return { label: 'Redirigiendo…', disabled: true, action: 'none' }
+  }
+  // Cancelled mode: NO mostramos disabled por "ya tenés ese plan" — el user
+  // canceló y queremos darle todos los planes habilitados para re-suscribirse.
+  // Si la card es el anchor del crédito, label "Reactivar"; si es otra,
+  // "Suscribirme". Cualquiera dispara el flujo /billing/subscribe normal,
+  // que respeta el crédito remanente (se suma al período nuevo).
+  if (isCancelledMode) {
+    const planLabel = cardPlan === 'pro' ? 'Pro' : 'Plus'
+    const periodLabel = cardPeriod === 'annual' ? ' anual' : ''
+    if (isCurrent) {
+      return { label: `Reactivar ${planLabel}${periodLabel}`, disabled: false, action: 'subscribe' }
+    }
+    return { label: `Suscribirme a ${planLabel}${periodLabel}`, disabled: false, action: 'subscribe' }
+  }
   if (isCurrent) {
     return { label: 'Tu plan actual', disabled: true, action: 'none' }
   }
   if (otherTier) {
     return { label: 'Ya tenés Pro', disabled: true, action: 'none' }
-  }
-  if (subscribing) {
-    return { label: 'Redirigiendo…', disabled: true, action: 'none' }
   }
   if (canChangePlan) {
     const planLabel = cardPlan === 'pro' ? 'Pro' : 'Plus'
