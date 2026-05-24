@@ -77,6 +77,18 @@ const BlogFifoCedears = lazy(() => import('./pages/blog/articles/FifoCedearsArge
 const BlogPnlRealUsdBlue = lazy(() => import('./pages/blog/articles/PnlRealUsdBlue'))
 const BlogComparativaBrokers = lazy(() => import('./pages/blog/articles/ComparativaBrokersArgentina'))
 
+// Guía / Manual completo — accesible sin login. Index + 6 sub-secciones.
+// Linkeado desde la Landing (botón "Ver guía completa" en HowItWorks) y
+// desde el Sidebar (footer) para usuarios logueados. SEO friendly: cada
+// sub-página tiene su propio canonical + metadescription.
+const Guia = lazy(() => import('./pages/Guia'))
+const GuiaEmpezar = lazy(() => import('./pages/guia/Empezar'))
+const GuiaCarteraYOperaciones = lazy(() => import('./pages/guia/CarteraYOperaciones'))
+const GuiaInsightsYReportes = lazy(() => import('./pages/guia/InsightsYReportes'))
+const GuiaCoachIA = lazy(() => import('./pages/guia/CoachIA'))
+const GuiaNovedades = lazy(() => import('./pages/guia/Novedades'))
+const GuiaCuentaYPlanes = lazy(() => import('./pages/guia/CuentaYPlanes'))
+
 // Fallback mínimo mientras carga el chunk. El shell (Sidebar / MobileTopBar)
 // queda montado, así que la nav no parpadea — solo el content area se reemplaza.
 function PageFallback() {
@@ -143,6 +155,14 @@ function AppRoutes() {
       <Route path="/blog/fifo-cedears-argentina" element={<BlogFifoCedears />} />
       <Route path="/blog/pnl-real-usd-blue-argentina" element={<BlogPnlRealUsdBlue />} />
       <Route path="/blog/comparativa-brokers-argentina" element={<BlogComparativaBrokers />} />
+      {/* Guía / manual de uso — index + 6 secciones */}
+      <Route path="/guia" element={<Guia />} />
+      <Route path="/guia/empezar" element={<GuiaEmpezar />} />
+      <Route path="/guia/cartera-y-operaciones" element={<GuiaCarteraYOperaciones />} />
+      <Route path="/guia/insights-y-reportes" element={<GuiaInsightsYReportes />} />
+      <Route path="/guia/coach-ia" element={<GuiaCoachIA />} />
+      <Route path="/guia/novedades" element={<GuiaNovedades />} />
+      <Route path="/guia/cuenta-y-planes" element={<GuiaCuentaYPlanes />} />
       <Route path="/billing/success" element={<BillingSuccess />} />
       <Route path="/billing/pending" element={<BillingPending />} />
       <Route path="/billing/failure" element={<BillingFailure />} />
@@ -191,6 +211,14 @@ function Layout() {
           <Route path="/blog/fifo-cedears-argentina" element={<BlogFifoCedears />} />
           <Route path="/blog/pnl-real-usd-blue-argentina" element={<BlogPnlRealUsdBlue />} />
           <Route path="/blog/comparativa-brokers-argentina" element={<BlogComparativaBrokers />} />
+          {/* Guía / manual público — index + 6 secciones, indexables */}
+          <Route path="/guia" element={<Guia />} />
+          <Route path="/guia/empezar" element={<GuiaEmpezar />} />
+          <Route path="/guia/cartera-y-operaciones" element={<GuiaCarteraYOperaciones />} />
+          <Route path="/guia/insights-y-reportes" element={<GuiaInsightsYReportes />} />
+          <Route path="/guia/coach-ia" element={<GuiaCoachIA />} />
+          <Route path="/guia/novedades" element={<GuiaNovedades />} />
+          <Route path="/guia/cuenta-y-planes" element={<GuiaCuentaYPlanes />} />
           <Route path="*" element={<Login />} />
         </Routes>
       </Suspense>

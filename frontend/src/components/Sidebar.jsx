@@ -17,7 +17,7 @@ import { NavLink } from 'react-router-dom'
 import {
   Home as HomeIcon, LayoutDashboard, Briefcase, List, Settings, LogOut,
   Sun, Moon, Compass, Shield, Target, BarChart3, Bell, Upload, Menu, Brain, Sparkles, UserRound,
-  MessageCircle,
+  MessageCircle, BookOpen,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
@@ -186,8 +186,28 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* Footer: configuración + user + toggle + logout */}
+      {/* Footer: guía + configuración + recomendaciones + user + toggle + logout */}
       <div className="border-t border-line px-2 py-2 flex-shrink-0">
+        {/* Guía — manual completo de uso. Linkeada acá para que esté siempre
+            accesible sin ocupar lugar en el nav principal (es referencia, no
+            navegación frecuente). */}
+        <NavLink
+          to="/guia"
+          title={collapsed ? 'Guía' : undefined}
+          onMouseEnter={() => prefetchRoute('/guia')}
+          onFocus={() => prefetchRoute('/guia')}
+          className={({ isActive }) =>
+            `flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
+              isActive
+                ? 'text-ink-0 bg-bg-2'
+                : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
+            }`
+          }
+        >
+          <BookOpen size={14} strokeWidth={1.75} aria-hidden="true" />
+          {!collapsed && <span>Guía</span>}
+        </NavLink>
+
         <NavLink
           to="/config"
           title={collapsed ? 'Configuración' : undefined}

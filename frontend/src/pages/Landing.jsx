@@ -514,6 +514,21 @@ function HowItWorks() {
           <HowItWorksStep key={s.n} step={s} reversed={i % 2 === 1} delayMs={i * 60} />
         ))}
       </div>
+
+      {/* CTA "Ver guía completa" — links a /guia para los que quieren leer el manual
+          completo. Outbound link interno; mejora dwell time + SEO interno. */}
+      <div className="mt-20 flex flex-col items-center gap-3">
+        <p className="text-sm text-ink-3 text-center max-w-md">
+          ¿Querés ver todos los detalles de cómo funciona cada parte?
+        </p>
+        <a
+          href="/guia"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-bg-2 border border-line text-ink-0 text-sm hover:bg-bg-3 hover:border-data-violet transition-colors"
+        >
+          Ver guía completa
+          <span aria-hidden="true">→</span>
+        </a>
+      </div>
     </section>
   )
 }
@@ -1138,8 +1153,8 @@ function CtaFinal() {
 const SUPPORT_EMAIL = 'hola@rendi.finance'
 
 const SOCIAL_LINKS = {
+  instagram: 'https://www.instagram.com/rendifinance/',
   // TODO: reemplazar con URLs reales cuando estén creadas las cuentas
-  instagram: 'https://instagram.com/rendi.finance',
   linkedin:  'https://www.linkedin.com/company/rendi-finance',
   x:         'https://x.com/rendifinance',
 }
@@ -1176,6 +1191,7 @@ function Footer() {
             <ul className="space-y-2 text-sm">
               <li><Link to="/planes" className="text-ink-1 hover:text-ink-0 transition-colors">Planes y precios</Link></li>
               <li><a href="#como-funciona" className="text-ink-1 hover:text-ink-0 transition-colors">Cómo funciona</a></li>
+              <li><Link to="/guia" className="text-ink-1 hover:text-ink-0 transition-colors">Guía completa</Link></li>
               <li><a href="#faq" className="text-ink-1 hover:text-ink-0 transition-colors">Preguntas frecuentes</a></li>
               <li><Link to="/blog" className="text-ink-1 hover:text-ink-0 transition-colors">Blog</Link></li>
             </ul>
