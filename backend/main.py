@@ -9336,8 +9336,21 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
                 period=period,
             )
         except Exception as ex:
-            log.error("Rebill create_payment_link failed for uid=%s: %s", uid, ex)
-            raise HTTPException(502, f"Error al crear suscripción en Rebill: {type(ex).__name__}")
+            # Log completo del lado del backend (Railway logs).
+            log.error("Rebill create_payment_link failed for uid=%s plan=%s period=%s: %s",
+                      uid, plan_id, period, ex, exc_info=True)
+            # Surface el mensaje real al frontend (no solo el type). Si el
+            # RuntimeError dice "REBILL_PLAN_ID_PLUS_MONTHLY no configurada",
+            # el user lo ve y sabe qué env var falta. Truncamos a 300 chars
+            # para no leak respuestas enormes de Rebill API si fuera el caso.
+            err_msg = str(ex)[:300] if str(ex) else type(ex).__name__
+            raise HTTPException(
+                502,
+                detail={
+                    "error": f"Error al crear suscripción en Rebill: {err_msg}",
+                    "error_type": type(ex).__name__,
+                },
+            )
 
         # 4. Guardar en DB. Reusamos mp_subscription_id field para guardar el
         # payment link ID inicialmente; cuando llegue el webhook con la
