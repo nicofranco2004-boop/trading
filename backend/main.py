@@ -11006,6 +11006,8 @@ def feedback_recommendation(
         conn.close()
 
     from billing import emails
+    # 1. Mail al equipo (recomendaciones@rendi.finance). Si falla, devolvemos
+    #    error porque el equipo no se entera del feedback — es lo crítico.
     ok = emails.send_user_recommendation(
         user_email=user_email,
         user_name=user_name,
@@ -11014,8 +11016,6 @@ def feedback_recommendation(
         body=data.body,
     )
     if not ok:
-        # Resend no configurado o tira error. No es bug del user — le
-        # decimos que pruebe de nuevo o use el mail directo.
         raise HTTPException(
             503,
             detail={
@@ -11027,6 +11027,21 @@ def feedback_recommendation(
                 ),
             },
         )
+
+    # 2. Acuse de recibo al user — reemplaza el filtro Gmail que era poco
+    #    confiable (responde al From de no_reply@, no al user real).
+    #    Si falla: log warning pero NO error — el equipo ya tiene el mensaje,
+    #    el user no recibe acuse pero su recomendación está registrada.
+    try:
+        ack_ok = emails.send_recommendation_acknowledgment(
+            user_email=user_email,
+            user_name=user_name,
+        )
+        if not ack_ok:
+            log.warning("recommendation ack email failed for uid=%s email=%s", uid, user_email)
+    except Exception as ex:
+        log.warning("recommendation ack exception uid=%s: %s", uid, ex)
+
     log.info("feedback_recommendation sent uid=%s subject=%s", uid, data.subject[:80])
     return {"ok": True}
 

@@ -652,3 +652,56 @@ def send_user_recommendation(
         reply_to=user_email,
         append_footer=False,  # interno, no consumer
     )
+
+
+def send_recommendation_acknowledgment(user_email: str, user_name: str) -> bool:
+    """Acuse de recibo automático al user después de mandar una recomendación.
+
+    Se llama desde el endpoint POST /api/feedback/recommendation después de
+    enviar el mail al equipo. Reemplaza el filtro de Gmail (que era poco
+    confiable porque respondía al From de no_reply@, no al user real).
+
+    Tono: cálido pero no efusivo. Confirma recepción + plazo de respuesta
+    (48hs si requiere) + agradecimiento por el feedback.
+    """
+    safe_name = (user_name or "").strip() or "Hola"
+    body_html = f"""
+      <p style="font-size:16px;line-height:1.7;margin:0 0 16px;">{safe_name},</p>
+      <p style="font-size:14px;line-height:1.7;color:#374151;margin:0 0 16px;">
+        Gracias por tomarte el tiempo de mandarnos esta recomendación.
+        La leemos personalmente — si hace falta una respuesta, te contestamos
+        en un plazo máximo de <b>48 horas hábiles</b>.
+      </p>
+      <p style="font-size:14px;line-height:1.7;color:#374151;margin:0 0 16px;">
+        Las ideas y feedback de los users son lo que más nos sirve para mejorar
+        Rendi. Gracias por ayudarnos a hacerlo mejor.
+      </p>
+      <p style="font-size:14px;line-height:1.7;color:#374151;margin:0 0 8px;">
+        Un abrazo,<br>
+        Equipo Rendi
+      </p>
+      <p style="font-size:12px;color:#9ca3af;margin:24px 0 0 0;">
+        Este es un mensaje automático. No respondas a este mail — alguien
+        del equipo te va a contestar pronto si tu recomendación lo requiere.
+      </p>
+    """
+    text = (
+        f"{safe_name},\n\n"
+        f"Gracias por tomarte el tiempo de mandarnos esta recomendación.\n"
+        f"La leemos personalmente — si hace falta una respuesta, te contestamos\n"
+        f"en un plazo máximo de 48 horas hábiles.\n\n"
+        f"Las ideas y feedback de los users son lo que más nos sirve para\n"
+        f"mejorar Rendi. Gracias por ayudarnos a hacerlo mejor.\n\n"
+        f"Un abrazo,\n"
+        f"Equipo Rendi\n\n"
+        f"---\n"
+        f"Este es un mensaje automático. No respondas a este mail."
+    )
+    return _send(
+        to=user_email,
+        subject="Recibimos tu recomendación — Rendi",
+        html=_wrap_html(body_html),
+        text=text,
+        from_addr=_from_noreply(),
+        append_footer=False,  # ya tiene su propio cierre, sin WhatsApp
+    )
