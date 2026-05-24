@@ -48,19 +48,33 @@ export default {
           3: '#3A4256',         // bordes muy elevados (focus, selección)
         },
 
-        // ── Semánticos — nombres mantenidos, hexes cambiados ──────────────
-        'rendi-pos':    '#21D07A',  // signal verde terminal
-        'rendi-neg':    '#FF5360',  // red financiero sobrio
-        'rendi-warn':   '#E8B14A',  // amber para warnings
-        'rendi-accent': '#4E83FF',  // blue (para selección, links)
+        // ── Semánticos — alineados con Brand Kit v1.0 ─────────────────────
+        // Source of truth: public/brand-kit/tokens.css. Ver tokens.json para
+        // mapping completo de los tokens del manual de marca.
+        'rendi-pos':    '#21D07A',  // signal verde — positivo, ganancia
+        'rendi-neg':    '#FF5360',  // red financiero sobrio — pérdida, error
+        'rendi-warn':   '#E8B14A',  // amber — warnings (alias de --rendi-amber)
+        'rendi-accent': '#5B9DF9',  // sky — información, benchmarks, links
+                                    // (antes #4E83FF; alineado con Brand Kit v1.0)
 
         // ── Data accents (uso restringido) ────────────────────────────────
         // Solo para tipos de dato secundarios (benchmarks, info chips).
         // NUNCA como acento decorativo o de marca.
-        'data-cyan':    '#46C6E0',
-        'data-blue':    '#4E83FF',
-        'data-violet':  '#8B7DFF',
-        'data-amber':   '#E8B14A',
+        'data-cyan':    '#46C6E0',  // aqua — sync, hints, neutro
+        'data-blue':    '#5B9DF9',  // sky — info (alineado con --rendi-sky)
+        'data-violet':  '#8B7DFF',  // marca · acción · botones primarios
+        'data-amber':   '#E8B14A',  // warnings sobrios
+
+        // ── Brand Kit v1.0 — tokens adicionales (variants violet + surfaces) ─
+        // Estos NO existían antes; provienen del brand kit oficial.
+        // Usar para nuevos componentes que necesiten estados o capas
+        // específicas (hover violet, charcoal panel, etc.). Code legacy
+        // sigue usando los tokens viejos (bg-1, bg-2, line — sin cambios).
+        'rendi-violet-hover': '#6E5FF0',  // :hover de botones violet
+        'rendi-violet-deep':  '#1E1840',  // background tintado profundo
+        'rendi-charcoal':     '#0D1015',  // paneles (alternativa a bg-1)
+        'rendi-slate':        '#141923',  // cards elevadas
+        'rendi-sky':          '#5B9DF9',  // alias semántico de rendi-accent
 
         // ── Polarity scales (9 pasos cada uno — heatmaps + backgrounds tonales)
         green: {

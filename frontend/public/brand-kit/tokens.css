@@ -1,0 +1,92 @@
+/* =====================================================
+   Rendi · Brand Tokens · v1.0
+   Importá este archivo o copiá los valores que necesites
+   ===================================================== */
+
+:root {
+  /* ====== COLORES DE MARCA ====== */
+  --rendi-violet:        #8B7DFF;  /* Marca · acción · botones primarios */
+  --rendi-violet-hover:  #6E5FF0;  /* Estado :hover de violeta */
+  --rendi-violet-deep:   #1E1840;  /* Background tintado */
+  --rendi-violet-soft:   rgba(139,125,255,0.12); /* Fill de badges */
+
+  /* ====== SUPERFICIES ====== */
+  --rendi-ink:           #07090C;  /* Fondo principal (dark) */
+  --rendi-charcoal:      #0D1015;  /* Paneles */
+  --rendi-slate:         #141923;  /* Cards raised */
+  --rendi-line:          #1B2030;  /* Líneas, bordes */
+  --rendi-frost:         #F4F2FB;  /* Fondo light */
+  --rendi-paper:         #FFFFFF;  /* Cards en light mode */
+
+  /* ====== TEXTO ====== */
+  --rendi-text:          #E6EAF2;  /* Primary text (dark mode) */
+  --rendi-text-2:        #9CA3B5;  /* Secondary */
+  --rendi-text-3:        #5A6478;  /* Tertiary / dim */
+  --rendi-text-light:    #1A1530;  /* Primary text (light mode) */
+
+  /* ====== DATOS ====== */
+  --rendi-green:         #21D07A;  /* Positivo · ganancia · live */
+  --rendi-red:           #FF5360;  /* Negativo · pérdida · error */
+  --rendi-sky:           #5B9DF9;  /* Información · benchmark · links */
+  --rendi-aqua:          #46C6E0;  /* Sync · hints · neutro */
+  --rendi-amber:         #E8B14A;  /* Warning sobrio */
+
+  /* ====== TIPOGRAFÍA ====== */
+  --rendi-font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --rendi-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* ====== ESCALA ====== */
+  --rendi-text-display: 64px;   /* Hero numbers, pantallas grandes */
+  --rendi-text-h1: 48px;
+  --rendi-text-h2: 32px;
+  --rendi-text-h3: 22px;
+  --rendi-text-body: 14px;
+  --rendi-text-small: 12px;
+  --rendi-text-mono: 11px;       /* Mono uppercase con 0.12em */
+
+  /* ====== ESPACIADO (múltiplos de 4) ====== */
+  --rendi-space-1: 4px;
+  --rendi-space-2: 8px;
+  --rendi-space-3: 12px;
+  --rendi-space-4: 16px;
+  --rendi-space-5: 24px;
+  --rendi-space-6: 32px;
+  --rendi-space-7: 48px;
+  --rendi-space-8: 72px;
+
+  /* ====== RADIUS ====== */
+  --rendi-radius-sm: 4px;
+  --rendi-radius:    6px;
+  --rendi-radius-lg: 8px;
+}
+
+/* ====== APLICACIONES BÁSICAS ====== */
+
+body {
+  font-family: var(--rendi-font-sans);
+  background: var(--rendi-ink);
+  color: var(--rendi-text);
+  font-feature-settings: 'tnum', 'ss01';
+}
+
+.rendi-btn-primary {
+  background: var(--rendi-violet);
+  color: #fff;
+  border: 0;
+  padding: 8px 14px;
+  border-radius: var(--rendi-radius-sm);
+  font-family: var(--rendi-font-sans);
+  font-weight: 500;
+  cursor: pointer;
+}
+.rendi-btn-primary:hover { background: var(--rendi-violet-hover); }
+
+.rendi-mono {
+  font-family: var(--rendi-font-mono);
+  letter-spacing: 0.04em;
+}
+
+.rendi-positive { color: var(--rendi-green); }
+.rendi-negative { color: var(--rendi-red); }
+.rendi-info     { color: var(--rendi-sky); }
+.rendi-neutral  { color: var(--rendi-aqua); }
