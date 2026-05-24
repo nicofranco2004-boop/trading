@@ -100,16 +100,15 @@ def create_payment_link(
     #
     # bank_transfer no aplica para USD en AR — solo card.
     #
-    # successUrl / cancelUrl: Rebill las acepta link-por-link en su panel,
-    # pero como creamos un link nuevo en cada subscribe (isSingleUse=true)
-    # tenemos que pasarlas en el payload. Si no, Rebill muestra su propia
-    # página de "Pago exitoso" sin redirect al user.
+    # successUrl / cancelUrl REMOVIDOS del payload (Rebill v3 los rechaza
+    # con 400 "property successUrl should not exist"). En la API v3 actual
+    # esos URLs se configuran a nivel del PLAN en el dashboard de Rebill
+    # (no del payment link individual). Hay que setearlos una vez por plan
+    # apuntando a /billing/success y /billing/failure de rendi.finance.
     payload = {
         "title": [{"language": "es", "text": title}],
         "plan": {"id": plan_id},
         "isSingleUse": True,
-        "successUrl": f"{_frontend_base()}/billing/success?provider=rebill",
-        "cancelUrl": f"{_frontend_base()}/billing/failure?provider=rebill",
         "metadata": {
             "rendi_user_id": str(user_id),
             "rendi_user_email": user_email,
