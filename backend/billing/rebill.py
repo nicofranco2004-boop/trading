@@ -177,6 +177,76 @@ def verify_api_key() -> Optional[dict]:
         return None
 
 
+def validate_config() -> dict:
+    """Sanity check de la config de Rebill al startup.
+
+    Devuelve dict con:
+      • ok: bool — config consistente
+      • sandbox: bool — ambiente detectado
+      • errors: list[str] — problemas que requieren acción
+      • warnings: list[str] — cosas raras pero no bloqueantes
+
+    Casos que detecta:
+      1. REBILL_API_KEY ausente.
+      2. REBILL_WEBHOOK_SECRET ausente (acepta webhooks sin validar).
+      3. Mismatch ambiente: key sk_live_ con plan IDs test_pln_, o
+         key sk_test_ con plan IDs sin prefijo test_.
+      4. Plan IDs ausentes para algún plan/período.
+
+    Llamada al startup desde main.py para que cualquier desconfig
+    aparezca inmediatamente en los logs de Railway al deployar.
+    """
+    errors = []
+    warnings = []
+
+    # API key
+    raw_key = (os.environ.get("REBILL_API_KEY") or "").strip()
+    if not raw_key:
+        errors.append("REBILL_API_KEY no configurada — billing no va a funcionar")
+        return {"ok": False, "sandbox": None, "errors": errors, "warnings": warnings}
+
+    sandbox = raw_key.startswith("sk_test_")
+    is_live = raw_key.startswith("sk_live_")
+    if not sandbox and not is_live:
+        warnings.append(f"REBILL_API_KEY no tiene prefijo sk_test_ o sk_live_ (key prefix: {raw_key[:8]}...)")
+
+    # Webhook secret
+    if not (os.environ.get("REBILL_WEBHOOK_SECRET") or "").strip():
+        warnings.append("REBILL_WEBHOOK_SECRET no configurada — los webhooks se aceptan SIN validar signature")
+
+    # Plan IDs: 4 combinaciones esperadas
+    plan_combos = [
+        ("plus", "monthly"),
+        ("plus", "annual"),
+        ("pro", "monthly"),
+        ("pro", "annual"),
+    ]
+    for plan, period in plan_combos:
+        var = f"REBILL_PLAN_ID_{plan.upper()}_{period.upper()}"
+        val = (os.environ.get(var) or "").strip()
+        if not val:
+            errors.append(f"{var} ausente — no se puede crear payment link para {plan} {period}")
+            continue
+        # Mismatch ambiente vs prefijo del plan ID
+        if sandbox and not val.startswith("test_"):
+            warnings.append(
+                f"{var}={val[:12]}... no tiene prefijo test_ pero la API key es sandbox. "
+                "Probable que falte actualizar este plan a un test_pln_ de Rebill sandbox."
+            )
+        if is_live and val.startswith("test_"):
+            errors.append(
+                f"{var}={val[:12]}... tiene prefijo test_ pero la API key es producción (sk_live_). "
+                "Mismatch crítico: Rebill va a rechazar el pago. Reemplazar por un plan ID de producción."
+            )
+
+    return {
+        "ok": len(errors) == 0,
+        "sandbox": sandbox,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
 # ─── Get + cancel subscription ──────────────────────────────────────────────
 
 def get_subscription(subscription_id: str) -> dict:

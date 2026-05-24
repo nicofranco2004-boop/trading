@@ -11597,6 +11597,32 @@ def _run_subscription_lifecycle_job():
 _scheduler = BackgroundScheduler(timezone='UTC')
 
 @app.on_event("startup")
+def _validate_rebill_config():
+    """Sanity check de la config de Rebill al arrancar.
+
+    Loggea errores (config ausente / mismatch ambiente) y warnings al
+    startup, así cuando deployás en Railway ves inmediatamente si algo
+    está mal antes de que un user intente pagar.
+
+    No bloquea el startup — si Rebill no está configurado, el resto de
+    Rendi sigue funcionando (Free / Plus existente / Coach IA / etc).
+    Solo los endpoints de /billing/* van a fallar.
+    """
+    try:
+        from billing import rebill
+        result = rebill.validate_config()
+        if result["ok"]:
+            env_label = "SANDBOX" if result["sandbox"] else "PRODUCCIÓN"
+            log.info("Rebill config OK — ambiente: %s", env_label)
+        for err in result.get("errors", []):
+            log.error("Rebill config ERROR: %s", err)
+        for warn in result.get("warnings", []):
+            log.warning("Rebill config WARN: %s", warn)
+    except Exception as ex:
+        log.warning("validate_rebill_config falló: %s", ex)
+
+
+@app.on_event("startup")
 def _prewarm_news_cache():
     """Pre-fetch news del mercado en background al boot. Así el primer user
     que entra ya tiene caché y la página /home carga al instante. No bloquea
