@@ -30,6 +30,12 @@
     <meta name="color-scheme" content="dark light" />
     <link rel="canonical" href="https://rendi.finance/" />
 
+    <!-- Hreflang — geo SEO. Rendi solo está en es-AR, así que el alternativo
+         es-AR + x-default fallback. Si en el futuro abrimos a otros países
+         (Uruguay, Chile), agregar líneas alternate adicionales aquí. -->
+    <link rel="alternate" hreflang="es-AR" href="https://rendi.finance/" />
+    <link rel="alternate" hreflang="x-default" href="https://rendi.finance/" />
+
     <!-- Favicon / PWA -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/favicon.svg" />
@@ -77,8 +83,8 @@
       "inLanguage": "es-AR",
       "offers": [
         { "@type": "Offer", "name": "Free", "price": "0", "priceCurrency": "USD" },
-        { "@type": "Offer", "name": "Plus", "price": "5", "priceCurrency": "USD", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } },
-        { "@type": "Offer", "name": "Pro", "price": "7", "priceCurrency": "USD", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } }
+        { "@type": "Offer", "name": "Plus", "price": "4", "priceCurrency": "USD", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } },
+        { "@type": "Offer", "name": "Pro", "price": "9", "priceCurrency": "USD", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } }
       ]
     }
     </script>
@@ -131,6 +137,38 @@
           "url": "https://rendi.finance/#como-funciona"
         }
       ]
+    }
+    </script>
+
+    <!-- Structured data: Organization — define a Rendi como entidad para Google.
+         Habilita Knowledge Graph + E-E-A-T signals (Experience/Expertise/
+         Authority/Trust) que Google usa para rankear en finanzas (YMYL). -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "Rendi",
+      "alternateName": "Rendi Finance",
+      "url": "https://rendi.finance",
+      "logo": "https://rendi.finance/favicon.svg",
+      "description": "Tracker de portafolio multi-broker para inversores argentinos con Coach IA.",
+      "email": "soporte@rendi.finance",
+      "areaServed": { "@type": "Country", "name": "Argentina" },
+      "knowsLanguage": ["es-AR", "es"],
+      "knowsAbout": ["Inversiones", "CEDEARs", "Bonos Argentinos", "Criptomonedas", "FIFO", "P&L USD", "Mercado de capitales argentino"]
+    }
+    </script>
+
+    <!-- Structured data: WebSite — habilita el "sitelinks searchbox" en SERPs
+         de Google (cajita de búsqueda directa dentro del resultado de Rendi). -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Rendi",
+      "url": "https://rendi.finance",
+      "inLanguage": "es-AR",
+      "publisher": { "@type": "Organization", "name": "Rendi", "url": "https://rendi.finance" }
     }
     </script>
 

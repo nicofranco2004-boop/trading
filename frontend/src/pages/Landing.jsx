@@ -1142,8 +1142,11 @@ function Footer() {
             <WhatsAppIcon size={12} />
             Soporte
           </a>
-          <Link to="/login" className="hover:text-ink-0 transition-colors">Login</Link>
-          <Link to="/login?mode=register" className="hover:text-ink-0 transition-colors">Sign up</Link>
+          <Link to="/planes" className="hover:text-ink-0 transition-colors">Planes y precios</Link>
+          <Link to="/login" className="hover:text-ink-0 transition-colors">Iniciar sesión en Rendi</Link>
+          <Link to="/login?mode=register" className="hover:text-ink-0 transition-colors">Crear cuenta gratis</Link>
+          <Link to="/terminos" className="hover:text-ink-0 transition-colors">Términos</Link>
+          <Link to="/reembolso" className="hover:text-ink-0 transition-colors">Política de reembolso</Link>
         </div>
       </div>
     </footer>
