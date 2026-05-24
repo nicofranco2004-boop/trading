@@ -70,31 +70,54 @@ def _is_configured() -> bool:
 # ─── Backend de envío ────────────────────────────────────────────────────────
 
 def _send(to: str, subject: str, html: str, text: str,
-          from_addr: Optional[str] = None) -> bool:
+          from_addr: Optional[str] = None,
+          reply_to: Optional[str] = None,
+          append_footer: bool = True) -> bool:
     """Backend-agnostic send. Retorna True si se envió OK.
 
     from_addr opcional: si no se pasa, usa _from_address() (default).
     Pasar _from_noreply() o _from_support() según el tipo de email.
 
+    reply_to opcional: si se pasa, Resend setea ese mail como destino
+    cuando el receptor le da "Responder". Útil para feedback del user
+    (recomendaciones, soporte) — el equipo de Rendi recibe el mail con
+    el From de no_reply@ pero al apretar Reply en su cliente, escribe
+    directo al user. Sin reply_to, las respuestas caen en no_reply@ y
+    son ignoradas.
+
+    append_footer: por default agregamos el footer con WhatsApp. Para
+    feedback interno (que viene al equipo, no al user) lo deshabilitamos.
+
     Si no hay provider configurado, loguea a console (modo dev) y retorna
     False — el caller asume que el evento no se notificó pero no falla."""
     sender = from_addr or _from_address()
-    text = (
-        f"{text}\n\n"
-        f"---\n"
-        f"¿Dudas? Escribinos por WhatsApp: +54 9 2914 37-3695\n"
-        f"({SUPPORT_WHATSAPP_URL})"
-    )
+    if append_footer:
+        text = (
+            f"{text}\n\n"
+            f"---\n"
+            f"¿Dudas? Escribinos por WhatsApp: +54 9 2914 37-3695\n"
+            f"({SUPPORT_WHATSAPP_URL})"
+        )
     if not _is_configured():
         log.info("=== EMAIL (no provider configured, logging only) ===")
-        log.info("  FROM:    %s", sender)
-        log.info("  TO:      %s", to)
-        log.info("  SUBJECT: %s", subject)
-        log.info("  TEXT:    %s", text[:400] + ("..." if len(text) > 400 else ""))
+        log.info("  FROM:     %s", sender)
+        log.info("  TO:       %s", to)
+        log.info("  REPLY_TO: %s", reply_to or "(none)")
+        log.info("  SUBJECT:  %s", subject)
+        log.info("  TEXT:     %s", text[:400] + ("..." if len(text) > 400 else ""))
         log.info("================================================")
         return False
 
     import httpx
+    payload = {
+        "from": sender,
+        "to": [to],
+        "subject": subject,
+        "html": html,
+        "text": text,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
     try:
         r = httpx.post(
             "https://api.resend.com/emails",
@@ -102,13 +125,7 @@ def _send(to: str, subject: str, html: str, text: str,
                 "Authorization": f"Bearer {_api_key()}",
                 "Content-Type": "application/json",
             },
-            json={
-                "from": sender,
-                "to": [to],
-                "subject": subject,
-                "html": html,
-                "text": text,
-            },
+            json=payload,
             timeout=10.0,
         )
         if r.status_code >= 400:
@@ -560,3 +577,78 @@ def send_new_login_alert(*, to: str, user_name: str, device: str,
     return _send(to, "Nuevo inicio de sesión · Rendi",
                  _wrap_html(body_html), text,
                  from_addr=_from_support())
+
+
+
+# ─── User feedback (recomendaciones, ideas, bugs) ──────────────────────────
+# Mail que llega al equipo de Rendi (recomendaciones@rendi.finance) cuando un
+# user manda una recomendación desde el modal in-app. NO es transaccional al
+# user — es feedback hacia adentro. Por eso:
+#   • From: no_reply@ (el equipo no tiene que responder a "Rendi")
+#   • Reply-To: email del user → cuando Nico apreta Reply en su Gmail,
+#     escribe directo al user. Sin esto, los replies van al limbo.
+#   • Sin footer de WhatsApp (es interno, no consumer-facing).
+#   • Body incluye user info (mail, name, tier) para contexto al leerlo.
+
+def send_user_recommendation(
+    user_email: str,
+    user_name: str,
+    user_tier: str,
+    subject: str,
+    body: str,
+) -> bool:
+    """Envía un mail al inbox de recomendaciones@rendi.finance con el
+    feedback del user. Sanitiza subject + body por seguridad."""
+    # Sanitización básica del subject (evitar header injection)
+    safe_subject = (subject or "").strip().replace("\n", " ").replace("\r", " ")
+    if len(safe_subject) > 200:
+        safe_subject = safe_subject[:197] + "..."
+    if not safe_subject:
+        safe_subject = "(sin asunto)"
+
+    safe_body = (body or "").strip()
+    if len(safe_body) > 5000:
+        safe_body = safe_body[:5000] + "\n\n[... truncado ...]"
+
+    # HTML del mail — formato chat-like para que se lea cómodo en el inbox.
+    html_body = f"""
+      <h2 style="font-size:18px;margin:0 0 16px;color:#1a1f2e;">
+        Nueva recomendación desde Rendi
+      </h2>
+      <table cellpadding="0" cellspacing="0" border="0" width="100%"
+             style="background:#f5f7fa;border-radius:6px;padding:14px;margin-bottom:18px;">
+        <tr><td style="font-size:14px;line-height:1.7;color:#374151;">
+          <b style="color:#1a1f2e;">De:</b> {user_name} &lt;{user_email}&gt;<br>
+          <b style="color:#1a1f2e;">Plan:</b> {user_tier.upper()}<br>
+          <b style="color:#1a1f2e;">Asunto:</b> {safe_subject}
+        </td></tr>
+      </table>
+      <p style="font-size:14px;line-height:1.7;color:#374151;white-space:pre-wrap;
+                background:#ffffff;border-left:3px solid #8b7dff;padding:12px 16px;
+                margin:0 0 18px;border-radius:0 4px 4px 0;">
+{safe_body}
+      </p>
+      <p style="font-size:12px;color:#6b7280;margin:0;">
+        Para responder, apretá Reply — la respuesta va directo a {user_email}.
+      </p>
+    """
+    text = (
+        f"Nueva recomendación desde Rendi\n"
+        f"================================\n\n"
+        f"De:     {user_name} <{user_email}>\n"
+        f"Plan:   {user_tier.upper()}\n"
+        f"Asunto: {safe_subject}\n\n"
+        f"--- Mensaje ---\n"
+        f"{safe_body}\n"
+        f"---\n\n"
+        f"Reply va directo a {user_email}."
+    )
+    return _send(
+        to="recomendaciones@rendi.finance",
+        subject=f"[Recomendación] {safe_subject}",
+        html=_wrap_html(html_body),
+        text=text,
+        from_addr=_from_noreply(),
+        reply_to=user_email,
+        append_footer=False,  # interno, no consumer
+    )

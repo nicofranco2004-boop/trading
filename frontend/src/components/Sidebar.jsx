@@ -17,12 +17,14 @@ import { NavLink } from 'react-router-dom'
 import {
   Home as HomeIcon, LayoutDashboard, Briefcase, List, Settings, LogOut,
   Sun, Moon, Compass, Shield, Target, BarChart3, Bell, Upload, Menu, Brain, Sparkles, UserRound,
+  MessageCircle,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { prefetchRoute } from '../utils/routePrefetch'
+import RecommendationsModal from './RecommendationsModal'
 
 const SIDEBAR_W_EXPANDED = '220px'
 const SIDEBAR_W_COLLAPSED = '56px'
@@ -63,6 +65,8 @@ export default function Sidebar() {
   const { dark, toggle } = useTheme()
   const coachDrawer = useCoachDrawer()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
+  // Modal de recomendaciones. Trigger desde el footer del sidebar.
+  const [recomOpen, setRecomOpen] = useState(false)
 
   // Persistir + setear CSS var consumida por <main> (margin dinámico)
   useEffect(() => {
@@ -81,6 +85,7 @@ export default function Sidebar() {
   ]
 
   return (
+    <>
     <aside
       className="fixed top-0 left-0 bottom-0 bg-bg-0 border-r border-line flex flex-col z-40 transition-[width] duration-200 ease-out"
       style={{ width: collapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED }}
@@ -200,6 +205,18 @@ export default function Sidebar() {
           {!collapsed && <span>Configuración</span>}
         </NavLink>
 
+        {/* Recomendaciones — abre modal in-app. Tono violet sutil para que se
+            distinga de "Configuración" sin ser invasivo. */}
+        <button
+          type="button"
+          onClick={() => setRecomOpen(true)}
+          title={collapsed ? 'Recomendaciones' : 'Mandanos una recomendación'}
+          className={`w-full flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors text-ink-2 hover:text-data-violet hover:bg-data-violet/[0.06]`}
+        >
+          <MessageCircle size={14} strokeWidth={1.75} aria-hidden="true" />
+          {!collapsed && <span>Recomendaciones</span>}
+        </button>
+
         {/* User row: nombre + badge de plan (solo expandida) */}
         {user && !collapsed && (
           <div className="px-1 mt-1 mb-1 flex items-center gap-1.5 min-w-0">
@@ -239,6 +256,10 @@ export default function Sidebar() {
         </div>
       </div>
     </aside>
+
+    {/* Modal recomendaciones — fuera del aside porque usa fixed inset-0 */}
+    <RecommendationsModal open={recomOpen} onClose={() => setRecomOpen(false)} />
+    </>
   )
 }
 

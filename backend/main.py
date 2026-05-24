@@ -10961,6 +10961,76 @@ def _atomic_insert_fact(conn, uid: int, content: str, source: str):
     return {"id": cur.lastrowid, "content": content, "source": source, "duplicate": False}
 
 
+# ─── Feedback del user: recomendaciones / ideas / bugs ──────────────────────
+# POST /api/feedback/recommendation → manda mail a recomendaciones@rendi.finance
+# Llamado desde el modal "Recomendaciones" accesible desde Sidebar + Config.
+
+class RecommendationIn(BaseModel):
+    """Input para enviar una recomendación al equipo de Rendi."""
+    subject: str = Field(..., min_length=2, max_length=200)
+    body: str = Field(..., min_length=5, max_length=5000)
+
+
+@app.post("/api/feedback/recommendation")
+def feedback_recommendation(
+    data: RecommendationIn,
+    request: Request,
+    uid: int = Depends(get_current_user),
+):
+    """Recibe una recomendación del user y la envía por mail a
+    recomendaciones@rendi.finance via Resend.
+
+    Rate limit: 5 por hora por IP (suficiente para uso legítimo,
+    bloquea spam masivo). Anti-abuse adicional: el mail siempre va
+    a recomendaciones@ con reply-to=user_email, así Nico ve quién
+    escribe y puede responder directo desde su Gmail.
+
+    Errores:
+      • 422 — validación de pydantic (subject/body fuera de rango)
+      • 429 — demasiados envíos desde la misma IP
+      • 503 — Resend no respondió (no bloqueante, intentar de nuevo)
+    """
+    _check_rate_limit(request, max_calls=5, window_seconds=3600, suffix="recommendation")
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT email, name, tier FROM users WHERE id=?", (uid,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "User not found")
+        user_email = row["email"]
+        user_name = row["name"] or row["email"].split("@")[0]
+        user_tier = (row["tier"] or "free").lower()
+    finally:
+        conn.close()
+
+    from billing import emails
+    ok = emails.send_user_recommendation(
+        user_email=user_email,
+        user_name=user_name,
+        user_tier=user_tier,
+        subject=data.subject,
+        body=data.body,
+    )
+    if not ok:
+        # Resend no configurado o tira error. No es bug del user — le
+        # decimos que pruebe de nuevo o use el mail directo.
+        raise HTTPException(
+            503,
+            detail={
+                "error": "send_failed",
+                "message": (
+                    "No pudimos enviar tu recomendación en este momento. "
+                    "Probá de nuevo en unos minutos, o escribinos directo "
+                    "a recomendaciones@rendi.finance."
+                ),
+            },
+        )
+    log.info("feedback_recommendation sent uid=%s subject=%s", uid, data.subject[:80])
+    return {"ok": True}
+
+
 class AIRememberIn(BaseModel):
     """Input para guardar un hecho persistente del user.
 

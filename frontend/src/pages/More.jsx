@@ -8,10 +8,11 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   LayoutDashboard, Bell, BarChart3, Brain, List, Upload,
-  Target, Sparkles, Settings, Shield, ChevronRight, LogOut, BellRing, BellOff, Send, UserRound,
+  Target, Sparkles, Settings, Shield, ChevronRight, LogOut, BellRing, BellOff, Send, UserRound, MessageCircle,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import { useAuth } from '../contexts/AuthContext'
+import RecommendationsModal from '../components/RecommendationsModal'
 import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
@@ -46,6 +47,7 @@ const GROUPS = [
 export default function More() {
   const { user, logout } = useAuth()
   const coachDrawer = useCoachDrawer()
+  const [recomOpen, setRecomOpen] = useState(false)
 
   const allGroups = [
     ...GROUPS,
@@ -136,6 +138,18 @@ export default function More() {
             <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3" />
           </Link>
           <button
+            type="button"
+            onClick={() => setRecomOpen(true)}
+            className="w-full flex items-center gap-3 px-4 py-3 border-t border-line/40 hover:bg-data-violet/[0.04] active:bg-data-violet/[0.08] transition-colors text-left"
+          >
+            <MessageCircle size={16} strokeWidth={1.75} className="text-data-violet flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-ink-0 leading-tight">Recomendaciones</div>
+              <div className="text-[11px] text-ink-3 leading-tight mt-0.5">Mandanos ideas, bugs o feedback</div>
+            </div>
+            <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3" />
+          </button>
+          <button
             onClick={logout}
             className="w-full flex items-center gap-3 px-4 py-3 border-t border-line/40 text-left text-rendi-neg hover:bg-rendi-neg/[0.04] active:bg-rendi-neg/[0.08] transition-colors"
           >
@@ -149,6 +163,10 @@ export default function More() {
           </button>
         </div>
       </section>
+
+      {/* Modal de recomendaciones — trigger desde el botón "Recomendaciones"
+          de la sección Cuenta arriba. */}
+      <RecommendationsModal open={recomOpen} onClose={() => setRecomOpen(false)} />
     </div>
   )
 }
