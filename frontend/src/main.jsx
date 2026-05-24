@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
+import { HelmetProvider } from 'react-helmet-async'
 import App from './App'
 import { ToastProvider } from './components/Toast'
 import './index.css'
@@ -74,9 +75,11 @@ window.addEventListener('unhandledrejection', (event) => {
 })
 
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <BrowserRouter>
-    <ToastProvider>
-      <App />
-    </ToastProvider>
-  </BrowserRouter>
+  <HelmetProvider>
+    <BrowserRouter>
+      <ToastProvider>
+        <App />
+      </ToastProvider>
+    </BrowserRouter>
+  </HelmetProvider>
 )

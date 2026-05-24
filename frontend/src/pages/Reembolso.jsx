@@ -12,10 +12,16 @@
 
 import { Link } from 'react-router-dom'
 import RendiLogo from '../components/RendiLogo'
+import PageMeta from '../components/PageMeta'
 
 export default function Reembolso() {
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
+      <PageMeta
+        title="Política de Reembolso — Rendi"
+        description="Política de reembolso de Rendi: no devolvemos plata del período actual; mantenés acceso hasta el fin del período cobrado. Casos de cobro duplicado, fallas materiales y derecho de arrepentimiento (Ley 24.240)."
+        canonical="/reembolso"
+      />
       <header className="border-b border-line">
         <div className="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2 hover:opacity-90">

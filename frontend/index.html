@@ -176,7 +176,33 @@
   </head>
   <body>
     <div id="root"></div>
-    <noscript>Rendi necesita JavaScript habilitado para funcionar.</noscript>
+    <!-- Contenido server-rendered para crawlers que NO ejecutan JS (WhatsApp,
+         Facebook scraper, Twitter card validator, Linkedin) y como fallback
+         si Googlebot deja la página en cola de rendering. Provee a Google
+         contenido inicial mientras React monta. -->
+    <noscript>
+      <div style="max-width:720px;margin:48px auto;padding:24px;font-family:system-ui,-apple-system,sans-serif;background:#0b0d10;color:#e6eaf2;line-height:1.6;">
+        <h1>Rendi — Tu portfolio multi-broker, con Coach IA</h1>
+        <p>Tracker de inversiones para Argentina. Seguí tu cartera consolidada de Cocos Capital, IOL, Balanz, Schwab, Binance y otros brokers en un solo lugar. P&amp;L real en USD, FIFO automático, Coach IA con memoria.</p>
+        <h2>Qué te da Rendi</h2>
+        <ul>
+          <li><strong>Multi-broker</strong> — Cocos, IOL, Balanz, Bull, Schwab, Binance y más.</li>
+          <li><strong>P&amp;L en USD real</strong> — convertimos cada operación al dólar blue del día.</li>
+          <li><strong>FIFO automático</strong> — criterio fiscal AR aplicado al vender.</li>
+          <li><strong>CEDEARs y bonos AR</strong> — AL30, GD30, TX26 con metadata de cupones.</li>
+          <li><strong>Coach IA</strong> — Claude Haiku 4.5 con contexto de tu cartera.</li>
+        </ul>
+        <p>
+          <a href="https://rendi.finance/planes">Ver planes y precios</a> ·
+          <a href="https://rendi.finance/login?mode=register">Crear cuenta gratis</a> ·
+          <a href="https://rendi.finance/login">Iniciar sesión</a>
+        </p>
+        <p style="color:#7d8590;font-size:13px;margin-top:32px;">
+          Rendi necesita JavaScript habilitado para funcionar.
+          Si estás viendo este mensaje, activá JS en tu navegador y recargá.
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { enableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
 import RendiLogo from '../components/RendiLogo'
+import PageMeta from '../components/PageMeta'
 
 export default function Login() {
   const [mode, setMode] = useState('login')
@@ -114,6 +115,12 @@ export default function Login() {
 
   return (
     <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+      <PageMeta
+        title="Iniciar sesión — Rendi"
+        description="Accedé a tu cuenta de Rendi para ver tu portfolio multi-broker."
+        canonical="/login"
+        noindex={true}
+      />
       <div className="w-full max-w-sm">
         <div className="flex items-center justify-center gap-3 mb-8">
           <RendiLogo size={36} />

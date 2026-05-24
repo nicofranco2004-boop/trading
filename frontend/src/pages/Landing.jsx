@@ -18,6 +18,7 @@ import {
 } from './Planes'
 import { whatsappUrl } from '../utils/support'
 import SupportWhatsAppFab, { WhatsAppIcon } from '../components/SupportWhatsAppFab'
+import FAQ from '../components/landing/FAQ'
 
 // ─── Hooks utilitarios ───────────────────────────────────────────────────────
 
@@ -110,18 +111,21 @@ function Hero() {
           <span className="terminal-cursor text-data-violet">▍</span>
         </div>
 
-        {/* Headline */}
+        {/* Headline — H1 único de la landing, con keyword "multi-broker"
+            visible para SEO sin romper el feel editorial. */}
         <h1 className="font-sans font-semibold tracking-tight leading-[0.95] mb-6"
             style={{ fontSize: 'clamp(36px, 7vw, 80px)', letterSpacing: '-0.035em' }}>
-          <span className="block text-ink-0">Tu portfolio,</span>
+          <span className="block text-ink-0">Tu portfolio multi-broker,</span>
           <span className="block headline-sweep">con coach IA.</span>
         </h1>
 
-        {/* Sub */}
+        {/* Sub — copy keyword-rich AR (Cocos, IOL, Schwab, Binance, USD blue).
+            Mantiene el "preguntale" del original que define la propuesta. */}
         <p className="max-w-2xl mx-auto text-base sm:text-lg text-ink-2 leading-relaxed mb-10">
-          Preguntale por qué bajó tu P&amp;L del mes, dónde está concentrado el riesgo
-          o qué activo te está costando plata. Detectores de sesgos que ningún Excel
-          te marca. Multi-broker, P&amp;L real en USD.
+          El tracker para inversores argentinos. Cargá tu cartera de Cocos, IOL, Balanz,
+          Schwab y Binance y ves tu P&amp;L real en USD blue. Preguntale al Coach IA
+          por qué bajó tu cartera, dónde está concentrado el riesgo y qué activo te
+          está costando plata.
         </p>
 
         {/* CTAs */}
@@ -1171,6 +1175,7 @@ export default function Landing() {
       <Features />
       <HowItWorks />
       <Pricing />
+      <FAQ />
       <CtaFinal />
       <Footer />
       <SupportWhatsAppFab />

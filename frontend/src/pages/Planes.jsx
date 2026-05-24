@@ -18,6 +18,7 @@ import { whatsappUrl } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { useNavigate, Link } from 'react-router-dom'
 import { useEffect, useState } from 'react'
+import PageMeta from '../components/PageMeta'
 import PageHeader from '../components/PageHeader'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAuth } from '../contexts/AuthContext'
@@ -318,6 +319,11 @@ export default function Planes() {
 
   return (
     <div className="page-shell">
+      <PageMeta
+        title="Planes y precios — Rendi | Plus desde ARS 5.700/mes"
+        description="Elegí el plan de Rendi: Free para empezar, Plus para multi-broker, Pro con Coach IA libre y memoria. Precios en pesos al blue del día. Cancelá cuando quieras."
+        canonical="/planes"
+      />
       <PageHeader
         eyebrow="Planes / Mejora tu cuenta"
         title="Elegí el plan que mejor te sirve"

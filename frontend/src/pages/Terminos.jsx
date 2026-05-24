@@ -10,10 +10,16 @@
 
 import { Link } from 'react-router-dom'
 import RendiLogo from '../components/RendiLogo'
+import PageMeta from '../components/PageMeta'
 
 export default function Terminos() {
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
+      <PageMeta
+        title="Términos y Condiciones — Rendi"
+        description="Términos de uso de Rendi: qué hacemos y qué no, suscripciones Plus y Pro, manejo de datos, responsabilidades, jurisdicción argentina. Última actualización mayo 2026."
+        canonical="/terminos"
+      />
       {/* Header simple — logo + link a home */}
       <header className="border-b border-line">
         <div className="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
