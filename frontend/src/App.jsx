@@ -57,6 +57,7 @@ const PositionDetailMobile = lazy(() => import('./pages/PositionDetailMobile'))
 // mayoría de los visitantes no las necesitan ver.
 const Terminos = lazy(() => import('./pages/Terminos'))
 const Reembolso = lazy(() => import('./pages/Reembolso'))
+const Privacidad = lazy(() => import('./pages/Privacidad'))
 
 // SEO landings — páginas keyword-específicas que rankean long-tail
 // (cocos, iol, binance, cedears, bonos AR, AFIP cripto). Accesibles
@@ -130,6 +131,7 @@ function AppRoutes() {
           accesibles sin login (linkeadas desde Planes.jsx antes del CTA de pago). */}
       <Route path="/terminos" element={<Terminos />} />
       <Route path="/reembolso" element={<Reembolso />} />
+      <Route path="/privacidad" element={<Privacidad />} />
       {/* SEO landings + blog — también duplicadas abajo para flow no-auth */}
       <Route path="/brokers/cocos" element={<LandingCocos />} />
       <Route path="/brokers/iol" element={<LandingIOL />} />
@@ -175,6 +177,7 @@ function Layout() {
               T&C antes de crear cuenta). Lazy igual que las del flow auth. */}
           <Route path="/terminos" element={<Terminos />} />
           <Route path="/reembolso" element={<Reembolso />} />
+          <Route path="/privacidad" element={<Privacidad />} />
           {/* SEO landings públicas — visitantes desde Google sin sesión.
               Cada una rankea para una keyword AR-específica. */}
           <Route path="/brokers/cocos" element={<LandingCocos />} />

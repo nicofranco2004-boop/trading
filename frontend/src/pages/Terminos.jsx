@@ -34,7 +34,7 @@ export default function Terminos() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="font-mono text-[10px] uppercase tracking-caps text-ink-3 mb-2">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Términos y Condiciones</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 23 de mayo de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: 24 de mayo de 2026</p>
 
         <Section title="1. Quiénes somos">
           <p>
@@ -193,6 +193,7 @@ export default function Terminos() {
             <li>Intentar acceder a datos de otros usuarios.</li>
             <li>Hacer scraping masivo, ataques DoS o ingeniería inversa del sistema.</li>
             <li>Usar el Coach IA para generar contenido que viole los términos de Anthropic (contenido ilegal, deepfakes, spam, etc.).</li>
+            <li>Re-vender el acceso a Rendi o compartir tu cuenta con múltiples personas.</li>
           </ul>
           <p>
             Reservamos el derecho de suspender o cancelar cuentas que incurran en
@@ -200,7 +201,85 @@ export default function Terminos() {
           </p>
         </Section>
 
-        <Section title="7. Cambios a estos términos">
+        <Section title="7. Propiedad intelectual">
+          <p>
+            El nombre <strong className="text-ink-0">Rendi</strong>, el logo (la "R"
+            violeta), el dominio rendi.finance, el diseño de la interfaz y el código
+            del software son propiedad exclusiva del equipo de Rendi. Están protegidos
+            por las leyes argentinas e internacionales de propiedad intelectual.
+          </p>
+          <p>
+            <strong className="text-ink-0">Tu contenido sigue siendo tuyo.</strong> Los
+            datos que cargás (posiciones, operaciones, etc.) son y siguen siendo de tu
+            propiedad. Rendi solo tiene una licencia limitada para procesarlos y
+            mostrártelos como parte del servicio. Si cancelás tu cuenta, los podés
+            exportar y eliminamos los nuestros.
+          </p>
+          <p>
+            No está permitido copiar, modificar, distribuir o crear obras derivadas
+            de la marca o el diseño de Rendi sin autorización por escrito.
+          </p>
+        </Section>
+
+        <Section title="8. Limitación de responsabilidad">
+          <p>
+            En la máxima medida permitida por la ley argentina:
+          </p>
+          <ul>
+            <li>
+              <strong className="text-ink-0">Rendi no se hace responsable</strong> por
+              pérdidas financieras, lucro cesante, oportunidades perdidas o daños
+              indirectos derivados del uso de la herramienta. Las decisiones de inversión
+              son tuyas y a tu propio riesgo.
+            </li>
+            <li>
+              <strong className="text-ink-0">Cap de responsabilidad económica:</strong>{' '}
+              en caso de que un tribunal nos encontrara responsables por un perjuicio
+              relacionado al servicio, nuestra responsabilidad total se limita al monto
+              que pagaste en los 12 meses anteriores al hecho que generó el reclamo (o
+              a USD 100 si nunca pagaste).
+            </li>
+            <li>
+              <strong className="text-ink-0">No garantizamos disponibilidad ininterrumpida.</strong>{' '}
+              Hacemos nuestro mejor esfuerzo (99% uptime target) pero pueden ocurrir
+              caídas por mantenimiento, problemas de proveedores (Vercel, Railway,
+              Anthropic), eventos de fuerza mayor o fallas técnicas.
+            </li>
+            <li>
+              <strong className="text-ink-0">No garantizamos la precisión de los datos
+              de mercado.</strong> Los precios vienen de fuentes terceras (Yahoo Finance,
+              data912.com) que pueden tener delays, errores o gaps. Verificá siempre
+              en tu broker antes de tomar decisiones importantes.
+            </li>
+          </ul>
+          <p>
+            Si la legislación argentina aplicable a vos no permite alguna de estas
+            limitaciones, esa limitación específica no aplica, pero las demás siguen
+            vigentes.
+          </p>
+        </Section>
+
+        <Section title="9. Cookies y tracking">
+          <p>
+            Rendi usa <strong className="text-ink-0">solo cookies funcionales esenciales</strong>{' '}
+            para operar (sesión de login, preferencia de tema). No usamos cookies de
+            tracking publicitario, pixels de Facebook, Google Ads conversion tracking,
+            ni terceros con fines de profiling.
+          </p>
+          <p>
+            Por eso no mostramos banner de consentimiento de cookies — no hay nada que
+            aceptar más allá de las cookies funcionales que la app necesita para que
+            puedas usar tu sesión.
+          </p>
+          <p>
+            Para detalles completos sobre el manejo de datos, ver nuestra{' '}
+            <Link to="/privacidad" className="text-data-violet hover:underline">
+              Política de Privacidad
+            </Link>.
+          </p>
+        </Section>
+
+        <Section title="10. Cambios a estos términos">
           <p>
             Podemos actualizar estos términos. Si hay cambios materiales (precio,
             política de reembolso, manejo de datos), te lo comunicamos por email con al
@@ -213,7 +292,7 @@ export default function Terminos() {
           </p>
         </Section>
 
-        <Section title="8. Jurisdicción y contacto">
+        <Section title="11. Jurisdicción y contacto">
           <p>
             Estos términos se rigen por las leyes de la República Argentina. Cualquier
             disputa se resuelve ante los tribunales ordinarios de la Ciudad Autónoma de

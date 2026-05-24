@@ -12,6 +12,7 @@ Allow: /planes
 Allow: /login
 Allow: /terminos
 Allow: /reembolso
+Allow: /privacidad
 Allow: /brokers/
 Allow: /cedears
 Allow: /bonos-argentinos

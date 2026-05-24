@@ -8,7 +8,7 @@ import {
   ArrowRight, Sparkles, RefreshCw, LineChart, Layers, Coins,
   Zap, Terminal, ChevronDown, Check,
   Upload, ListChecks, BarChart3, Bot, MessageSquare,
-  Plus,
+  Plus, Mail, Instagram, Linkedin,
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import {
@@ -1124,34 +1124,172 @@ function CtaFinal() {
   )
 }
 
+// ─── Footer ──────────────────────────────────────────────────────────────────
+// Estructura: 4 columnas (Producto, Cuenta, Legal, Contacto) en desktop;
+// stack en mobile. Brand block aparte arriba a la izquierda. Línea final con
+// año dinámico, "hecho en Argentina" y dominio.
+//
+// Hrefs sociales: WhatsApp y Mail apuntan a destinos reales (whatsappUrl()
+// y mailto: a hola@rendi.finance). Instagram/LinkedIn/X tienen placeholders
+// que el equipo de Rendi va a reemplazar cuando tenga las cuentas oficiales.
+// Por ahora son links visualmente válidos pero apuntan a las pages "que
+// faltan" — actualizar SOCIAL_LINKS abajo cuando los URLs estén.
+
+const SUPPORT_EMAIL = 'hola@rendi.finance'
+
+const SOCIAL_LINKS = {
+  // TODO: reemplazar con URLs reales cuando estén creadas las cuentas
+  instagram: 'https://instagram.com/rendi.finance',
+  linkedin:  'https://www.linkedin.com/company/rendi-finance',
+  x:         'https://x.com/rendifinance',
+}
+
 function Footer() {
+  const year = new Date().getFullYear()
   return (
-    <footer className="border-t border-line/40 py-8">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-2.5">
-          <RendiLogo size={32} />
-          <span className="text-base font-semibold text-ink-1">rendi</span>
-          <span className="text-[10px] font-mono uppercase tracking-label text-ink-3 ml-3">
-            v2 · hecho en Buenos Aires
-          </span>
+    <footer className="border-t border-line/40 mt-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12">
+
+        {/* Top: brand + tagline + columnas ───────────────────────── */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-8 md:gap-10 mb-10">
+
+          {/* Brand block (md: 4 cols / lg: 4 cols) */}
+          <div className="md:col-span-4">
+            <div className="flex items-center gap-2.5 mb-3">
+              <RendiLogo size={32} />
+              <span className="text-base font-semibold text-ink-1">rendi</span>
+            </div>
+            <p className="text-xs text-ink-2 leading-relaxed max-w-xs">
+              Tracker multi-broker para Argentina. P&amp;L real en USD, FIFO
+              automático, Coach IA con memoria.
+            </p>
+            <p className="text-[10px] font-mono uppercase tracking-label text-ink-3 mt-4">
+              Hecho en Argentina
+            </p>
+          </div>
+
+          {/* Producto */}
+          <div className="md:col-span-2">
+            <h3 className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-3">
+              Producto
+            </h3>
+            <ul className="space-y-2 text-sm">
+              <li><Link to="/planes" className="text-ink-1 hover:text-ink-0 transition-colors">Planes y precios</Link></li>
+              <li><a href="#como-funciona" className="text-ink-1 hover:text-ink-0 transition-colors">Cómo funciona</a></li>
+              <li><a href="#faq" className="text-ink-1 hover:text-ink-0 transition-colors">Preguntas frecuentes</a></li>
+              <li><Link to="/blog" className="text-ink-1 hover:text-ink-0 transition-colors">Blog</Link></li>
+            </ul>
+          </div>
+
+          {/* Cuenta */}
+          <div className="md:col-span-2">
+            <h3 className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-3">
+              Cuenta
+            </h3>
+            <ul className="space-y-2 text-sm">
+              <li><Link to="/login?mode=register" className="text-ink-1 hover:text-ink-0 transition-colors">Crear cuenta gratis</Link></li>
+              <li><Link to="/login" className="text-ink-1 hover:text-ink-0 transition-colors">Iniciar sesión</Link></li>
+              <li>
+                <button
+                  type="button"
+                  onClick={() => { window.location.href = '/?demo=1' }}
+                  className="text-ink-1 hover:text-ink-0 transition-colors text-left"
+                >
+                  Probar demo
+                </button>
+              </li>
+            </ul>
+          </div>
+
+          {/* Legal */}
+          <div className="md:col-span-2">
+            <h3 className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-3">
+              Legal
+            </h3>
+            <ul className="space-y-2 text-sm">
+              <li><Link to="/terminos" className="text-ink-1 hover:text-ink-0 transition-colors">Términos y condiciones</Link></li>
+              <li><Link to="/reembolso" className="text-ink-1 hover:text-ink-0 transition-colors">Política de reembolso</Link></li>
+              <li><Link to="/privacidad" className="text-ink-1 hover:text-ink-0 transition-colors">Privacidad</Link></li>
+            </ul>
+          </div>
+
+          {/* Contacto */}
+          <div className="md:col-span-2">
+            <h3 className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-3">
+              Contacto
+            </h3>
+            <ul className="space-y-2 text-sm">
+              <li>
+                <a
+                  href={`mailto:${SUPPORT_EMAIL}`}
+                  className="inline-flex items-center gap-2 text-ink-1 hover:text-ink-0 transition-colors"
+                  title="Escribinos por mail"
+                >
+                  <Mail size={13} strokeWidth={1.75} />
+                  <span className="text-xs">{SUPPORT_EMAIL}</span>
+                </a>
+              </li>
+              <li>
+                <a
+                  href={whatsappUrl()}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-2 text-ink-1 hover:text-[#25D366] transition-colors"
+                  title="WhatsApp"
+                >
+                  <WhatsAppIcon size={13} />
+                  <span className="text-xs">WhatsApp</span>
+                </a>
+              </li>
+            </ul>
+
+            {/* Redes sociales — solo iconos en fila */}
+            <div className="flex items-center gap-3 mt-4">
+              <a
+                href={SOCIAL_LINKS.instagram}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-ink-3 hover:text-ink-0 transition-colors"
+                title="Rendi en Instagram"
+                aria-label="Instagram"
+              >
+                <Instagram size={16} strokeWidth={1.75} />
+              </a>
+              <a
+                href={SOCIAL_LINKS.linkedin}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-ink-3 hover:text-ink-0 transition-colors"
+                title="Rendi en LinkedIn"
+                aria-label="LinkedIn"
+              >
+                <Linkedin size={16} strokeWidth={1.75} />
+              </a>
+              <a
+                href={SOCIAL_LINKS.x}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-ink-3 hover:text-ink-0 transition-colors"
+                title="Rendi en X (Twitter)"
+                aria-label="X (antes Twitter)"
+              >
+                {/* X (Twitter) — usamos un SVG inline porque lucide-react
+                    sigue mostrándolo como Twitter bird en versiones viejas. */}
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+              </a>
+            </div>
+          </div>
+
         </div>
-        <div className="flex items-center gap-5 text-[11px] font-mono uppercase tracking-label text-ink-3">
-          <a
-            href={whatsappUrl()}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="hover:text-[#25D366] transition-colors inline-flex items-center gap-1.5"
-            title="Consultas por WhatsApp"
-          >
-            <WhatsAppIcon size={12} />
-            Soporte
-          </a>
-          <Link to="/planes" className="hover:text-ink-0 transition-colors">Planes y precios</Link>
-          <Link to="/login" className="hover:text-ink-0 transition-colors">Iniciar sesión en Rendi</Link>
-          <Link to="/login?mode=register" className="hover:text-ink-0 transition-colors">Crear cuenta gratis</Link>
-          <Link to="/terminos" className="hover:text-ink-0 transition-colors">Términos</Link>
-          <Link to="/reembolso" className="hover:text-ink-0 transition-colors">Política de reembolso</Link>
+
+        {/* Bottom bar: copyright + meta ─────────────────────────── */}
+        <div className="pt-6 border-t border-line/40 flex items-center justify-between flex-wrap gap-3 text-[10px] font-mono uppercase tracking-label text-ink-3">
+          <span>© {year} Rendi · rendi.finance</span>
+          <span>Versión 2.0</span>
         </div>
+
       </div>
     </footer>
   )
