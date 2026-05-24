@@ -52,6 +52,11 @@ const BillingPending = lazy(() => import('./pages/BillingReturn').then(m => ({ d
 const BillingFailure = lazy(() => import('./pages/BillingReturn').then(m => ({ default: m.BillingFailure })))
 const MobileSearch = lazy(() => import('./pages/MobileSearch'))
 const PositionDetailMobile = lazy(() => import('./pages/PositionDetailMobile'))
+// Páginas legales — accesibles SIN login (compliance: el user puede leer
+// los T&C antes de pagar / sin tener una cuenta). Lazy igual porque la
+// mayoría de los visitantes no las necesitan ver.
+const Terminos = lazy(() => import('./pages/Terminos'))
+const Reembolso = lazy(() => import('./pages/Reembolso'))
 
 // Fallback mínimo mientras carga el chunk. El shell (Sidebar / MobileTopBar)
 // queda montado, así que la nav no parpadea — solo el content area se reemplaza.
@@ -103,6 +108,10 @@ function AppRoutes() {
       <Route path="/bienvenida" element={<FirstInsight />} />
       <Route path="/admin" element={<Admin />} />
       <Route path="/planes" element={<Planes />} />
+      {/* Páginas legales — duplicadas en flow no-auth abajo para que sean
+          accesibles sin login (linkeadas desde Planes.jsx antes del CTA de pago). */}
+      <Route path="/terminos" element={<Terminos />} />
+      <Route path="/reembolso" element={<Reembolso />} />
       <Route path="/billing/success" element={<BillingSuccess />} />
       <Route path="/billing/pending" element={<BillingPending />} />
       <Route path="/billing/failure" element={<BillingFailure />} />
@@ -121,15 +130,21 @@ function Layout() {
 
   if (!user) {
     return (
-      <Routes>
-        {/* Landing pública — primer punto de contacto sin login */}
-        <Route path="/" element={<Landing />} />
-        {/* Rutas accesibles SIN login — el user pasa por acá tras registrarse
-            o tras clickear un magic link de password reset. */}
-        <Route path="/verify-email" element={<VerifyEmail />} />
-        <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="*" element={<Login />} />
-      </Routes>
+      <Suspense fallback={<PageFallback />}>
+        <Routes>
+          {/* Landing pública — primer punto de contacto sin login */}
+          <Route path="/" element={<Landing />} />
+          {/* Rutas accesibles SIN login — el user pasa por acá tras registrarse
+              o tras clickear un magic link de password reset. */}
+          <Route path="/verify-email" element={<VerifyEmail />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          {/* Legal — accesibles sin login (compliance + el user puede leer
+              T&C antes de crear cuenta). Lazy igual que las del flow auth. */}
+          <Route path="/terminos" element={<Terminos />} />
+          <Route path="/reembolso" element={<Reembolso />} />
+          <Route path="*" element={<Login />} />
+        </Routes>
+      </Suspense>
     )
   }
 

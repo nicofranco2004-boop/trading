@@ -16,7 +16,7 @@
 import { Sparkles, Check, ArrowRight, Lock, Loader2, Clock } from 'lucide-react'
 import { whatsappUrl } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import PageHeader from '../components/PageHeader'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
@@ -541,6 +541,20 @@ export default function Planes() {
 
       <p className="text-[11px] text-ink-3 text-center max-w-2xl mx-auto mt-4 leading-relaxed">
         Suscribite cuando te conviene y cancelá cuando quieras. Cobramos en pesos al TC blue del día.
+      </p>
+
+      {/* Footer legal — visible siempre. Compliance: el user puede leer T&C
+          y política de reembolso ANTES de pagar. También para users no
+          autenticados que llegan a /planes desde la landing. */}
+      <p className="text-[11px] text-ink-3 text-center max-w-2xl mx-auto mt-3 leading-relaxed">
+        Al suscribirte aceptás nuestros{' '}
+        <Link to="/terminos" className="underline decoration-dotted underline-offset-2 hover:text-ink-1">
+          Términos y Condiciones
+        </Link>
+        {' '}y nuestra{' '}
+        <Link to="/reembolso" className="underline decoration-dotted underline-offset-2 hover:text-ink-1">
+          Política de Reembolso
+        </Link>.
       </p>
     </div>
   )
