@@ -952,6 +952,12 @@ def init_db():
     # Ledger de movimientos de crédito — audit trail completo de cada
     # grant / consume / plan_change. Permite debuggear "por qué este user
     # tiene X días de crédito" y reconstruir el historial.
+    # NOTA migración: el `CREATE UNIQUE INDEX ... ON credit_ledger(payment_id ...)`
+    # tiene que ir DESPUÉS del ALTER TABLE que agrega payment_id, porque
+    # SQLite valida que la columna exista al crear el índice. Por eso
+    # separamos en 3 pasos: CREATE TABLE (con payment_id si es DB nueva) →
+    # ALTER TABLE (agrega payment_id si DB vieja) → CREATE INDEX (siempre
+    # corre y el IF NOT EXISTS lo hace idempotente).
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS credit_ledger (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -971,22 +977,26 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, created_at DESC);
-        -- Idempotency: prevenir crédito doble si Rebill manda el mismo payment.created
-        -- dos veces (retry por timeout, race del LB). Partial index porque solo aplicamos
-        -- la constraint cuando hay payment_id (plan_changes y manual_adjusts no tienen).
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_payment_dedup
-            ON credit_ledger(source_subscription_id, payment_id, kind)
-            WHERE payment_id IS NOT NULL AND source_subscription_id IS NOT NULL;
     """)
     conn.commit()
 
     # Migración: agregar payment_id si la tabla ya existía sin esa columna.
+    # CRÍTICO: este ALTER tiene que correr ANTES del CREATE UNIQUE INDEX
+    # de abajo, sino el CREATE INDEX falla con "no such column: payment_id".
     credit_cols = _table_cols(conn, 'credit_ledger')
     if credit_cols and 'payment_id' not in credit_cols:
         conn.execute("ALTER TABLE credit_ledger ADD COLUMN payment_id TEXT")
-        # El partial index lo crea el CREATE INDEX IF NOT EXISTS del executescript
-        # arriba (idempotente — se ejecuta tras el ALTER en el próximo startup).
         conn.commit()
+
+    # Ahora SÍ podemos crear el partial unique index (la columna existe).
+    # Idempotency: prevenir crédito doble si Rebill manda el mismo
+    # payment.created 2 veces (retry por timeout, race del LB).
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_payment_dedup
+            ON credit_ledger(source_subscription_id, payment_id, kind)
+            WHERE payment_id IS NOT NULL AND source_subscription_id IS NOT NULL
+    """)
+    conn.commit()
 
     # ─── Backfill de crédito para subs pre-proration ───────────────────────
     # Users que pagaron antes del commit a09891a no tienen credit_active_until
