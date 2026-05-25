@@ -22,6 +22,7 @@ Cada operación escribe una fila en `credit_ledger` para auditoría.
 
 from __future__ import annotations
 import logging
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
@@ -145,6 +146,7 @@ def grant_payment_credit(
     period: str,
     amount_usd: Optional[float] = None,
     subscription_id: Optional[str] = None,
+    payment_id: Optional[str] = None,
     note: Optional[str] = None,
 ) -> dict:
     """Extiende la ventana de crédito del user porque Rebill cobró un período.
@@ -160,11 +162,43 @@ def grant_payment_credit(
 
     `amount_usd`: si no se provee, usa el precio del catálogo (PLAN_PRICES_USD).
                   Útil cuando Rebill no nos manda el monto en el webhook payload.
+
+    IDEMPOTENCY: si `payment_id` + `subscription_id` están presentes, antes de
+    procesar chequeamos si ya hay un row en credit_ledger con ese par. Si sí,
+    es un retry duplicado de Rebill (race del LB, timeout retry) — devolvemos
+    el estado actual SIN extender el crédito de nuevo. Si la UNIQUE constraint
+    DB-side se viola igual (race condition entre el SELECT y el INSERT), el
+    IntegrityError se captura y devolvemos el estado actual.
     """
     if amount_usd is None:
         amount_usd = PLAN_PRICES_USD.get((plan, period))
         if amount_usd is None:
             raise ValueError(f"Plan/period inválido: {plan}/{period}")
+
+    # ─── Idempotency check (app-side) ─────────────────────────────────────
+    if payment_id and subscription_id:
+        existing = conn.execute(
+            """SELECT id, active_until_after FROM credit_ledger
+               WHERE source_subscription_id = ?
+                 AND payment_id = ?
+                 AND kind = 'payment'
+               LIMIT 1""",
+            (subscription_id, str(payment_id)),
+        ).fetchone()
+        if existing:
+            log.warning(
+                "credits.grant_payment SKIP duplicate webhook user=%s sub=%s payment=%s "
+                "(ledger_id=%s ya procesado)",
+                user_id, subscription_id, payment_id, existing[0],
+            )
+            state = get_credit_state(conn, user_id)
+            return {
+                "active_until":   state["active_until"],
+                "days_remaining": state["days_remaining"],
+                "anchor_plan":    state["anchor_plan"],
+                "anchor_period":  state["anchor_period"],
+                "duplicate":      True,
+            }
 
     period_days = plan_period_days(plan, period)
     now = datetime.utcnow()
@@ -186,36 +220,54 @@ def grant_payment_credit(
     after_iso = new_active_until.isoformat()
     days_delta = (new_active_until - now).total_seconds() / 86400.0 - state["days_remaining"]
 
-    with conn:
-        conn.execute(
-            """UPDATE users
-               SET credit_active_until = ?,
-                   credit_anchor_plan = ?,
-                   credit_anchor_period = ?,
-                   credit_anchor_amount_usd = ?,
-                   credit_anchor_at = ?
-               WHERE id = ?""",
-            (after_iso, plan, period, amount_usd, now.isoformat(), user_id),
+    try:
+        with conn:
+            conn.execute(
+                """UPDATE users
+                   SET credit_active_until = ?,
+                       credit_anchor_plan = ?,
+                       credit_anchor_period = ?,
+                       credit_anchor_amount_usd = ?,
+                       credit_anchor_at = ?
+                   WHERE id = ?""",
+                (after_iso, plan, period, amount_usd, now.isoformat(), user_id),
+            )
+            conn.execute(
+                """INSERT INTO credit_ledger
+                      (user_id, kind, amount_usd, days_delta,
+                       from_plan, from_period, to_plan, to_period,
+                       active_until_before, active_until_after,
+                       source_subscription_id, payment_id, note)
+                   VALUES (?, 'payment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id, amount_usd, days_delta,
+                    state["anchor_plan"], state["anchor_period"], plan, period,
+                    before_iso, after_iso,
+                    subscription_id, str(payment_id) if payment_id else None,
+                    note or f"Rebill payment ({plan} {period})",
+                ),
+            )
+    except sqlite3.IntegrityError as ex:
+        # UNIQUE INDEX idx_credit_ledger_payment_dedup falló — race condition entre
+        # nuestro SELECT idempotency check y el INSERT. Otro proceso ya lo insertó.
+        # El UPDATE a users se rolled-back automático por el `with conn` block.
+        log.warning(
+            "credits.grant_payment INSERT race (UNIQUE constraint) user=%s sub=%s payment=%s: %s",
+            user_id, subscription_id, payment_id, ex,
         )
-        conn.execute(
-            """INSERT INTO credit_ledger
-                  (user_id, kind, amount_usd, days_delta,
-                   from_plan, from_period, to_plan, to_period,
-                   active_until_before, active_until_after,
-                   source_subscription_id, note)
-               VALUES (?, 'payment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                user_id, amount_usd, days_delta,
-                state["anchor_plan"], state["anchor_period"], plan, period,
-                before_iso, after_iso,
-                subscription_id, note or f"Rebill payment ({plan} {period})",
-            ),
-        )
+        state = get_credit_state(conn, user_id)
+        return {
+            "active_until":   state["active_until"],
+            "days_remaining": state["days_remaining"],
+            "anchor_plan":    state["anchor_plan"],
+            "anchor_period":  state["anchor_period"],
+            "duplicate":      True,
+        }
 
     log.info(
         "credits.grant_payment user=%s plan=%s period=%s amount=%.2f days_delta=%.2f "
-        "active_until=%s",
-        user_id, plan, period, amount_usd, days_delta, after_iso,
+        "active_until=%s payment=%s",
+        user_id, plan, period, amount_usd, days_delta, after_iso, payment_id or "-",
     )
     return {
         "active_until":   after_iso,

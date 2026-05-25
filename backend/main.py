@@ -212,7 +212,7 @@ def _table_cols(conn, table: str) -> set:
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
                'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
-               'ai_tool_usage', 'yfinance_cache'}
+               'ai_tool_usage', 'yfinance_cache', 'credit_ledger'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -966,12 +966,27 @@ def init_db():
             active_until_before TEXT,            -- ISO ts antes del cambio
             active_until_after TEXT,             -- ISO ts después del cambio
             source_subscription_id TEXT,         -- Rebill subscription_id si aplica
+            payment_id TEXT,                     -- Rebill payment_id (idempotency key)
             note TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, created_at DESC);
+        -- Idempotency: prevenir crédito doble si Rebill manda el mismo payment.created
+        -- dos veces (retry por timeout, race del LB). Partial index porque solo aplicamos
+        -- la constraint cuando hay payment_id (plan_changes y manual_adjusts no tienen).
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_payment_dedup
+            ON credit_ledger(source_subscription_id, payment_id, kind)
+            WHERE payment_id IS NOT NULL AND source_subscription_id IS NOT NULL;
     """)
     conn.commit()
+
+    # Migración: agregar payment_id si la tabla ya existía sin esa columna.
+    credit_cols = _table_cols(conn, 'credit_ledger')
+    if credit_cols and 'payment_id' not in credit_cols:
+        conn.execute("ALTER TABLE credit_ledger ADD COLUMN payment_id TEXT")
+        # El partial index lo crea el CREATE INDEX IF NOT EXISTS del executescript
+        # arriba (idempotente — se ejecuta tras el ALTER en el próximo startup).
+        conn.commit()
 
     # ─── Backfill de crédito para subs pre-proration ───────────────────────
     # Users que pagaron antes del commit a09891a no tienen credit_active_until
@@ -9753,6 +9768,19 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
         except (TypeError, ValueError):
             continue
 
+    # payment_id para idempotency del ledger — el subscription.created suele
+    # venir con un payment_id (el primer cobro). Si no está, queda None y
+    # el ledger no aplica el dedup (la sub.created solo viene una vez).
+    payment_id = ""
+    for c in (
+        payment_obj.get("id"),
+        data_obj.get("payment_id"),
+        payload.get("payment_id"),
+    ):
+        if c:
+            payment_id = str(c)
+            break
+
     with conn:
         conn.execute("UPDATE users SET tier = ? WHERE id = ?", (target_tier, uid))
 
@@ -9794,6 +9822,7 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
             period=period,
             amount_usd=amount_usd,  # None → usa catálogo
             subscription_id=sub_id or None,
+            payment_id=payment_id or None,  # idempotency key
         )
     except Exception as ex:
         # No fallar el activate si el ledger falla — loggear y seguir.
@@ -9962,6 +9991,7 @@ def _rebill_record_payment(conn, uid: int, sub_id: str, payload: dict):
                     period=anchor_period,
                     amount_usd=amount_usd,
                     subscription_id=sub_id or None,
+                    payment_id=payment_id or None,  # idempotency key
                     note=f"Rebill renewal payment {payment_id}",
                 )
             except Exception as ex:

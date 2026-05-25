@@ -287,18 +287,24 @@ def verify_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
     """Valida HMAC-SHA256 del body usando REBILL_WEBHOOK_SECRET.
 
     SECURITY: en prod (RENDI_ENV=prod) sin secret configurado, FALLAMOS
-    cerrado (return False). Antes el código dejaba pasar todo con warning,
-    permitiendo a un atacante POST-ear webhooks arbitrarios para activar
-    Pro/Plus a cualquier user_id. El handler superior decide qué hacer con
-    el False (en prod debería rechazar con 503).
+    cerrado (return False). En dev permitimos saltear (con warning).
 
-    En dev (sin RENDI_ENV=prod), permitimos saltear la validación para
-    testear webhooks locales sin secret. Loguea warning para que se note.
+    FORMATO INCIERTO: la doc pública de Rebill v3 no expone el formato exacto
+    del header de signature. Probamos múltiples formatos comunes en LATAM
+    payment processors:
 
-    Asumimos signature_header es el hex del HMAC del body crudo.
-    (Si Rebill usa formato `t=...,v1=...` como MP, ajustar el parsing —
-    ver docs oficiales de Rebill webhooks signature.)
+      1. Hex puro:        `<hex_sha256>`
+      2. Stripe-style:    `t=<ts>,v1=<hex>` (MP Argentina usa este)
+      3. Prefijo schema:  `sha256=<hex>` (GitHub-style)
+      4. Base64:          `<base64_sha256>`
+
+    Si CUALQUIERA matchea con HMAC-SHA256(secret, body) → OK.
+    Si NINGUNO matchea, loguea el formato recibido para debug y devuelve False.
+
+    Cuando llegue el primer webhook real de sandbox vas a ver en los logs
+    qué formato usa Rebill y podés simplificar este código a ese formato.
     """
+    import base64
     secret = _webhook_secret()
     if not secret:
         if os.environ.get("RENDI_ENV") == "prod":
@@ -311,15 +317,67 @@ def verify_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
         return True
 
     if not signature_header:
+        log.warning("Rebill webhook sin signature header")
         return False
 
+    header = signature_header.strip()
+
     try:
-        expected = hmac.new(
-            secret.encode("utf-8"),
-            raw_body,
-            hashlib.sha256,
-        ).hexdigest()
-        return hmac.compare_digest(expected, signature_header.strip())
+        secret_bytes = secret.encode("utf-8")
+
+        # Formato 1: hex puro del HMAC del body
+        hex_expected = hmac.new(secret_bytes, raw_body, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(hex_expected, header):
+            return True
+
+        # Formato 2: prefijo "sha256=" (GitHub-style)
+        if header.startswith("sha256="):
+            received = header.split("=", 1)[1]
+            if hmac.compare_digest(hex_expected, received):
+                return True
+
+        # Formato 3: Stripe/MP-style "t=<ts>,v1=<hex>" — el body firmado
+        # podría ser `{ts}.{body}` (Stripe) o solo `{body}` (algunos otros).
+        if "v1=" in header or "t=" in header:
+            try:
+                parts = {}
+                for chunk in header.split(","):
+                    if "=" in chunk:
+                        k, v = chunk.split("=", 1)
+                        parts[k.strip()] = v.strip()
+                ts = parts.get("t", "")
+                received_v1 = parts.get("v1", "")
+                if received_v1:
+                    # Probar con body solo
+                    if hmac.compare_digest(hex_expected, received_v1):
+                        return True
+                    # Probar con timestamp + body (Stripe-style manifest)
+                    if ts:
+                        manifest = f"{ts}.{raw_body.decode('utf-8', errors='replace')}".encode("utf-8")
+                        ts_hex = hmac.new(secret_bytes, manifest, hashlib.sha256).hexdigest()
+                        if hmac.compare_digest(ts_hex, received_v1):
+                            return True
+            except Exception:
+                pass
+
+        # Formato 4: base64 del HMAC
+        try:
+            b64_expected = base64.b64encode(
+                hmac.new(secret_bytes, raw_body, hashlib.sha256).digest()
+            ).decode("ascii")
+            if hmac.compare_digest(b64_expected, header):
+                return True
+        except Exception:
+            pass
+
+        # No matcheó ningún formato — logear chunk del header para debug.
+        # Truncamos a 60 chars para no log full secrets.
+        log.warning(
+            "Rebill signature verify FAILED — formato no reconocido. "
+            "header_prefix=%r expected_hex_prefix=%s",
+            header[:60], hex_expected[:12] + "...",
+        )
+        return False
     except Exception as ex:
         log.error("Rebill signature verify error: %s", ex)
         return False
