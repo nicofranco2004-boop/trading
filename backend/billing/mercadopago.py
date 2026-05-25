@@ -206,8 +206,14 @@ def verify_webhook_signature(
     """
     secret = _webhook_secret()
     if not secret:
-        log.warning("MP_WEBHOOK_SECRET no configurada — saltando validación (UNSAFE)")
-        return True   # En dev, sin secret, dejamos pasar. En prod, configurar.
+        if os.environ.get("RENDI_ENV") == "prod":
+            log.error(
+                "MP_WEBHOOK_SECRET no configurada en PROD — webhook rechazado. "
+                "Configurá la env var en Railway."
+            )
+            return False
+        log.warning("MP_WEBHOOK_SECRET no configurada — saltando validación (dev only)")
+        return True   # En dev, sin secret, dejamos pasar.
 
     try:
         parts = dict(p.split("=", 1) for p in x_signature.split(","))

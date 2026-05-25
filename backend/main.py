@@ -128,6 +128,16 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # HSTS — solo en prod (con HTTPS). Previene downgrade attacks + SSL strip.
+    # max-age=31536000 (1 año) + includeSubDomains para api.rendi.finance.
+    if os.environ.get("RENDI_ENV") == "prod":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Permissions-Policy: bloquear features que no usamos. Defensa en profundidad
+    # contra XSS que intente acceder a sensores / pagos del browser.
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), "
+        "bluetooth=(), magnetometer=(), gyroscope=(), accelerometer=()"
+    )
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -138,8 +148,25 @@ async def add_security_headers(request: Request, call_next):
 _rate_store: dict = defaultdict(list)  # key → [timestamps]
 _RATE_STORE_MAX_KEYS = 10_000  # cap para evitar memory bloat por IPs random
 
+def _rate_limit_ip(request: Request) -> str:
+    """Extrae la IP del cliente respetando X-Forwarded-For (Railway/Vercel
+    proxean — `request.client.host` sería siempre la IP del LB, generando
+    un solo cubo global para todos los users → cualquier atacante puede
+    DoS-ear el rate limit de TODOS al mismo tiempo).
+
+    SECURITY: solo confiamos en X-Forwarded-For si vamos detrás de un
+    proxy de confianza (RENDI_ENV=prod). En dev/local, fallback a
+    request.client.host para evitar spoofing trivial.
+    """
+    if os.environ.get("RENDI_ENV") == "prod":
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 def _check_rate_limit(request: Request, max_calls: int, window_seconds: int, suffix: str = ""):
-    ip = request.client.host if request.client else "unknown"
+    ip = _rate_limit_ip(request)
     key = f"{ip}|{suffix}" if suffix else ip
     now = time.time()
     # Limpieza global periódica si crece demasiado
@@ -161,8 +188,22 @@ def _check_rate_limit(request: Request, max_calls: int, window_seconds: int, suf
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # WAL: lectores no bloquean al writer (multi-user OK)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # busy_timeout: si otra conexión está escribiendo, esperar 5s antes de
+    # tirar "database is locked". Sin esto, requests concurrentes fallan
+    # inmediatamente bajo carga (FastAPI corre handlers en threadpool).
+    conn.execute("PRAGMA busy_timeout=5000")
+    # synchronous=NORMAL: con WAL es seguro y 2-3× más rápido que FULL
+    # (no fsync después de cada commit; el WAL checkpoint sí).
+    conn.execute("PRAGMA synchronous=NORMAL")
+    # cache: 64MB vs default 2MB. Evita evicción constante de índices hot.
+    conn.execute("PRAGMA cache_size=-64000")
+    # temp_store: usar memoria para tablas/índices temporarios (sorts, joins).
+    conn.execute("PRAGMA temp_store=MEMORY")
+    # mmap_size: 256MB de memory-mapped I/O acelera lecturas grandes.
+    conn.execute("PRAGMA mmap_size=268435456")
     return conn
 
 
@@ -1533,9 +1574,12 @@ def verify_email(data: VerifyEmailIn, request: Request, response: Response):
     """Confirma el email del user con un código OTP de 6 dígitos.
 
     Si el código es válido (existe, no expiró, no fue usado), marcamos
-    `email_verified=1` e issue token (logueamos al user)."""
-    _check_rate_limit(request, max_calls=15, window_seconds=60, suffix="verify_email")
+    `email_verified=1` e issue token (logueamos al user).
+
+    SECURITY: rate limit por email (no global) para evitar que un atacante
+    bloquee la verificación de todos los users iterando 15 attempts/min."""
     email_norm = data.email.strip().lower()
+    _check_rate_limit(request, max_calls=5, window_seconds=60, suffix=f"verify_email:{email_norm}")
     conn = get_db()
     try:
         user = conn.execute(
@@ -1557,7 +1601,8 @@ def verify_email(data: VerifyEmailIn, request: Request, response: Response):
         ).fetchone()
         if not row:
             raise HTTPException(400, "Código inválido o expirado")
-        if row["code"] != data.code:
+        # Constant-time compare para evitar side-channel timing.
+        if not hmac.compare_digest(str(row["code"]), str(data.code)):
             raise HTTPException(400, "Código inválido o expirado")
         # Vence?
         from datetime import datetime
@@ -5819,18 +5864,46 @@ import csv as _csv  # alias para evitar shadow con vars locales 'csv'
 from io import StringIO
 
 
+def _csv_safe(value):
+    """Mitiga CSV/formula injection en exports.
+
+    Un user maligno con cuenta puede crear posiciones u operaciones con
+    `asset` o `broker` empezando con `=`, `+`, `-`, `@`, `\\t`, `\\r`,
+    interpretados por Excel como fórmulas (`=cmd|'/c calc'!A0` ejecuta cmd
+    en versiones viejas). Cuando el usuario abre el CSV en Excel, las
+    fórmulas corren — peor cuando comparte con su contador.
+
+    Mitigación: prefijar cualquier celda string que empiece con esos
+    caracteres con un apóstrofe (`'`) — Excel/Sheets lo trata como texto,
+    no como fórmula. Los números no se tocan (queremos preservar la
+    semántica numérica de precios/cantidades).
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return value
+    s = str(value)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 def _csv_response(rows: list[dict], headers: list[tuple[str, str]], filename: str) -> Response:
     """Genera un Response CSV listo para descarga.
 
     headers: lista de (column_key, display_label). El display_label va en la
     primera fila del CSV (encabezado humano-readable en español).
+
+    SECURITY: cada celda string pasa por _csv_safe para mitigar CSV/formula
+    injection (un user maligno podría inyectar fórmulas en asset/broker/notes
+    que se ejecutarían al abrir el CSV en Excel).
     """
     buf = StringIO()
     # delimiter ',' + quoting MINIMAL — compatible con Excel/Numbers/Google Sheets
     writer = _csv.writer(buf, delimiter=",", quoting=_csv.QUOTE_MINIMAL)
     writer.writerow([label for _, label in headers])
     for row in rows:
-        writer.writerow([row.get(key, "") if row.get(key) is not None else "" for key, _ in headers])
+        writer.writerow([_csv_safe(row.get(key, "")) for key, _ in headers])
     content = buf.getvalue()
     return Response(
         content=content,
@@ -9287,7 +9360,7 @@ class SubscribeIn(BaseModel):
 
 
 @app.post("/api/billing/subscribe")
-def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
+def billing_subscribe(data: SubscribeIn, request: Request, uid: int = Depends(get_current_user)):
     """Crea un payment link en Rebill para que el user pague la suscripción.
 
     Devuelve `init_point` (URL del checkout Rebill). El frontend redirige al
@@ -9301,9 +9374,16 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
         en el futuro): puede crear sub nueva — la nueva se va a sumar a
         su crédito existente cuando Rebill cobre.
 
+    SECURITY: rate limit 5/600s por user para prevenir abuse de la API de
+    Rebill (cada call crea un payment-link que cuenta contra cuota upstream).
+
     NOTA: migramos de Mercado Pago a Rebill (commit X). MP queda muerto pero
     el código está en mercadopago.py por si hay que revertir.
     """
+    # Rate limit por user — máximo 5 intentos de subscribe en 10 min.
+    # Evita que un atacante cree spam de payment-links en Rebill.
+    _check_rate_limit(request, max_calls=5, window_seconds=600, suffix=f"subscribe:{uid}")
+
     from billing import rebill
     conn = get_db()
     try:
@@ -9365,6 +9445,21 @@ def billing_subscribe(data: SubscribeIn, uid: int = Depends(get_current_user)):
         link_url = rb_response.get("url") or ""
         link_id = rb_response.get("id") or ""
 
+        # SECURITY: validar que el link_url es del dominio de Rebill antes de
+        # devolverlo al frontend. Si la respuesta de Rebill fuera comprometida
+        # en transit o vino tampered, podría apuntar a un phishing site y el
+        # frontend redirigiría al user ahí. Allowlist explícito de dominios.
+        _ALLOWED_PAYMENT_HOSTS = (
+            "https://app.rebill.com/",
+            "https://checkout.rebill.com/",
+            "https://pay.rebill.com/",
+            "https://app.rebill.dev/",  # sandbox
+            "https://checkout.rebill.dev/",
+        )
+        if link_url and not link_url.startswith(_ALLOWED_PAYMENT_HOSTS):
+            log.error("Rebill devolvió URL inesperada (no Rebill domain): %s", link_url[:80])
+            raise HTTPException(502, {"error": "payment_url_invalid", "detail": "Respuesta inválida del procesador de pagos"})
+
         with conn:
             conn.execute(
                 """INSERT INTO subscriptions
@@ -9391,7 +9486,11 @@ class ChangePlanIn(BaseModel):
 
 
 @app.post("/api/billing/change-plan")
-def billing_change_plan(data: ChangePlanIn, uid: int = Depends(get_current_user)):
+def billing_change_plan(
+    data: ChangePlanIn,
+    request: Request,
+    uid: int = Depends(get_current_user),
+):
     """Cambia el plan del user manteniendo el crédito remanente.
 
     Flujo:
@@ -9410,6 +9509,10 @@ def billing_change_plan(data: ChangePlanIn, uid: int = Depends(get_current_user)
       • 400 si quiere cambiar al mismo plan (no-op).
       • 404 si no tiene crédito activo (debe usar /subscribe en su lugar).
     """
+    # Rate limit por user — 3 intentos en 10 min. Cambio de plan es costoso
+    # (cancelación + recálculo de crédito), no debe spamearse.
+    _check_rate_limit(request, max_calls=3, window_seconds=600, suffix=f"change_plan:{uid}")
+
     from billing import rebill
     from billing import credits as billing_credits
 
@@ -9874,7 +9977,7 @@ def _rebill_record_payment(conn, uid: int, sub_id: str, payload: dict):
 
 
 @app.post("/api/billing/cancel")
-def billing_cancel(uid: int = Depends(get_current_user)):
+def billing_cancel(request: Request, uid: int = Depends(get_current_user)):
     """Cancela la suscripción Pro del user.
 
     NOTA: NO devolvemos el dinero del período actual. El user mantiene
@@ -9882,7 +9985,11 @@ def billing_cancel(uid: int = Depends(get_current_user)):
     el próximo). Después de esa fecha, el webhook NO recibe más eventos
     de pago, y un cron periódico (o el próximo /auth/me) detectaría que
     pasó current_period_end y bajaría a tier='free'.
+
+    SECURITY: rate limit 5/600s por user.
     """
+    _check_rate_limit(request, max_calls=5, window_seconds=600, suffix=f"cancel:{uid}")
+
     from billing import rebill
     conn = get_db()
     try:

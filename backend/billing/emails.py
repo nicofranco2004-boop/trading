@@ -598,7 +598,16 @@ def send_user_recommendation(
     body: str,
 ) -> bool:
     """Envía un mail al inbox de recomendaciones@rendi.finance con el
-    feedback del user. Sanitiza subject + body por seguridad."""
+    feedback del user. Sanitiza subject + body por seguridad.
+
+    SECURITY: TODOS los campos user-controlled (name, email, subject, body,
+    tier) pasan por html.escape antes de interpolar en el HTML, para
+    prevenir HTML/script injection en el inbox del equipo. Un user con
+    nombre `<img src=x onerror="...">` o body con `</p><script>...</script>`
+    no puede inyectar JS en el inbox.
+    """
+    from html import escape
+
     # Sanitización básica del subject (evitar header injection)
     safe_subject = (subject or "").strip().replace("\n", " ").replace("\r", " ")
     if len(safe_subject) > 200:
@@ -610,6 +619,13 @@ def send_user_recommendation(
     if len(safe_body) > 5000:
         safe_body = safe_body[:5000] + "\n\n[... truncado ...]"
 
+    # Escape para HTML del email (Gmail/Outlook etc). text version queda tal cual.
+    esc_name = escape(user_name or "")
+    esc_email = escape(user_email or "")
+    esc_tier = escape((user_tier or "free").upper())
+    esc_subject = escape(safe_subject)
+    esc_body = escape(safe_body)
+
     # HTML del mail — formato chat-like para que se lea cómodo en el inbox.
     html_body = f"""
       <h2 style="font-size:18px;margin:0 0 16px;color:#1a1f2e;">
@@ -618,18 +634,18 @@ def send_user_recommendation(
       <table cellpadding="0" cellspacing="0" border="0" width="100%"
              style="background:#f5f7fa;border-radius:6px;padding:14px;margin-bottom:18px;">
         <tr><td style="font-size:14px;line-height:1.7;color:#374151;">
-          <b style="color:#1a1f2e;">De:</b> {user_name} &lt;{user_email}&gt;<br>
-          <b style="color:#1a1f2e;">Plan:</b> {user_tier.upper()}<br>
-          <b style="color:#1a1f2e;">Asunto:</b> {safe_subject}
+          <b style="color:#1a1f2e;">De:</b> {esc_name} &lt;{esc_email}&gt;<br>
+          <b style="color:#1a1f2e;">Plan:</b> {esc_tier}<br>
+          <b style="color:#1a1f2e;">Asunto:</b> {esc_subject}
         </td></tr>
       </table>
       <p style="font-size:14px;line-height:1.7;color:#374151;white-space:pre-wrap;
                 background:#ffffff;border-left:3px solid #8b7dff;padding:12px 16px;
                 margin:0 0 18px;border-radius:0 4px 4px 0;">
-{safe_body}
+{esc_body}
       </p>
       <p style="font-size:12px;color:#6b7280;margin:0;">
-        Para responder, apretá Reply — la respuesta va directo a {user_email}.
+        Para responder, apretá Reply — la respuesta va directo a {esc_email}.
       </p>
     """
     text = (

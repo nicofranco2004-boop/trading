@@ -286,15 +286,28 @@ def cancel_subscription(subscription_id: str) -> dict:
 def verify_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
     """Valida HMAC-SHA256 del body usando REBILL_WEBHOOK_SECRET.
 
-    Asumimos signature_header es el hex del HMAC del body crudo.
-    (Si Rebill usa formato `t=...,v1=...` como MP, ajustar el parsing.)
+    SECURITY: en prod (RENDI_ENV=prod) sin secret configurado, FALLAMOS
+    cerrado (return False). Antes el código dejaba pasar todo con warning,
+    permitiendo a un atacante POST-ear webhooks arbitrarios para activar
+    Pro/Plus a cualquier user_id. El handler superior decide qué hacer con
+    el False (en prod debería rechazar con 503).
 
-    En dev sin secret configurado, dejamos pasar con warning. En prod
-    siempre validamos.
+    En dev (sin RENDI_ENV=prod), permitimos saltear la validación para
+    testear webhooks locales sin secret. Loguea warning para que se note.
+
+    Asumimos signature_header es el hex del HMAC del body crudo.
+    (Si Rebill usa formato `t=...,v1=...` como MP, ajustar el parsing —
+    ver docs oficiales de Rebill webhooks signature.)
     """
     secret = _webhook_secret()
     if not secret:
-        log.warning("REBILL_WEBHOOK_SECRET no configurada — saltando validación (UNSAFE)")
+        if os.environ.get("RENDI_ENV") == "prod":
+            log.error(
+                "REBILL_WEBHOOK_SECRET no configurada en PROD — webhook rechazado. "
+                "Configurá la env var en Railway."
+            )
+            return False
+        log.warning("REBILL_WEBHOOK_SECRET no configurada — saltando validación (dev only)")
         return True
 
     if not signature_header:
