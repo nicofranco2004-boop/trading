@@ -17,6 +17,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { Lock, CheckCircle2, ArrowLeft, ArrowRight } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
+import PageMeta from '../components/PageMeta'
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams()
@@ -72,6 +73,12 @@ export default function ResetPassword() {
 
   return (
     <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+      <PageMeta
+        title="Cambiar contraseña — Rendi"
+        description="Restablecé tu contraseña de Rendi con el link que te enviamos por email."
+        canonical="/reset-password"
+        noindex={true}
+      />
       <div className="w-full max-w-md">
         <div className="flex items-center justify-center gap-3 mb-8">
           <RendiLogo size={36} />

@@ -9,7 +9,6 @@ User-agent: *
 # Permitidas (páginas públicas indexables)
 Allow: /$
 Allow: /planes
-Allow: /login
 Allow: /terminos
 Allow: /reembolso
 Allow: /privacidad
@@ -19,8 +18,13 @@ Allow: /bonos-argentinos
 Allow: /afip-cripto
 Allow: /blog
 Allow: /blog/
+Allow: /guia
+Allow: /guia/
 
-# Bloqueadas (requieren auth, no SEO value)
+# Bloqueadas (requieren auth o son transitorias — sin SEO value)
+Disallow: /login
+Disallow: /verify-email
+Disallow: /reset-password
 Disallow: /dashboard
 Disallow: /posiciones
 Disallow: /operaciones
@@ -37,6 +41,7 @@ Disallow: /perfil-inversor
 Disallow: /admin
 Disallow: /mas
 Disallow: /buscar
+Disallow: /bienvenida
 Disallow: /billing/
 Disallow: /api/
 

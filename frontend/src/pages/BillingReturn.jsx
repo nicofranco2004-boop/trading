@@ -22,6 +22,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CheckCircle2, Clock, XCircle, ArrowRight, Sparkles, Loader2 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
+import PageMeta from '../components/PageMeta'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { track } from '../utils/track'
 import { api } from '../utils/api'
@@ -207,6 +208,12 @@ function ReturnLayout({ icon, tone, title, description, cta, onCta, footer }) {
     : 'border-rendi-neg/30 bg-rendi-neg/[0.04]'
   return (
     <div className="page-shell max-w-2xl">
+      <PageMeta
+        title="Suscripción — Rendi"
+        description="Estado de tu pago en Rendi."
+        canonical="/billing/success"
+        noindex={true}
+      />
       <PageHeader eyebrow="Suscripción / Resultado" title="" subtitle="" />
       <div className={`${borderColor} border rounded-lg p-8 text-center mt-4`}>
         <div className="flex justify-center mb-4">{icon}</div>

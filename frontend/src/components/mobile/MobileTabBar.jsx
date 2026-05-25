@@ -88,7 +88,10 @@ function TabItem({ to, label, icon: Icon }) {
       onTouchStart={() => prefetchRoute(to)}
       onFocus={() => prefetchRoute(to)}
       className={({ isActive }) =>
-        `flex flex-col items-center justify-center gap-0.5 text-[10px] transition-colors ${
+        // BUG FIX (audit 2026-05-25): el `absolute top-1` del dot indicator
+        // necesita `position: relative` en el padre, sino el dot se posiciona
+        // respecto al <nav fixed bottom-0> (todos en top-left, invisible).
+        `relative flex flex-col items-center justify-center gap-0.5 text-[10px] transition-colors ${
           isActive ? 'text-ink-0' : 'text-ink-3 hover:text-ink-1'
         }`
       }
@@ -96,7 +99,7 @@ function TabItem({ to, label, icon: Icon }) {
       {({ isActive }) => (
         <>
           <Icon size={18} strokeWidth={1.75} />
-          <span className="font-mono uppercase tracking-caps text-[9px]">{label}</span>
+          <span className="font-mono uppercase tracking-caps text-[10px]">{label}</span>
           {isActive && (
             <span
               aria-hidden

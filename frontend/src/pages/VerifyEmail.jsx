@@ -19,6 +19,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { Sparkles, CheckCircle2, RefreshCw, ArrowLeft } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
+import PageMeta from '../components/PageMeta'
 
 export default function VerifyEmail() {
   const [searchParams] = useSearchParams()
@@ -163,6 +164,12 @@ export default function VerifyEmail() {
 
   return (
     <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+      <PageMeta
+        title="Verificar email — Rendi"
+        description="Confirmá tu email para activar tu cuenta de Rendi."
+        canonical="/verify-email"
+        noindex={true}
+      />
       <div className="w-full max-w-md">
         <div className="flex items-center justify-center gap-3 mb-8">
           <RendiLogo size={36} />
