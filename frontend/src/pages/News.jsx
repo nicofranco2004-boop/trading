@@ -19,6 +19,7 @@ import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
 import NewsTagBadge, { newsTagLabel } from '../components/NewsTagBadge'
 import { api } from '../utils/api'
+import { safeExternalUrl } from '../utils/safeUrl'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
 
@@ -295,7 +296,7 @@ function NewsFeatured({ news, tab, onTagClick }) {
         </div>
       )}
     <a
-      href={url}
+      href={safeExternalUrl(url)}
       target="_blank"
       rel="noopener noreferrer"
       className="block p-4 sm:p-5"
@@ -373,7 +374,7 @@ function NewsTile({ news, tab, onTagClick }) {
         </div>
       )}
       <a
-        href={url}
+        href={safeExternalUrl(url)}
         target="_blank"
         rel="noopener noreferrer"
         className="block p-3.5"

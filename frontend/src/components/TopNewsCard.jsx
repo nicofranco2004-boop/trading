@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Newspaper, ArrowRight, ExternalLink } from 'lucide-react'
+import { safeExternalUrl } from '../utils/safeUrl'
 import AssetLogo from './AssetLogo'
 import { api } from '../utils/api'
 
@@ -56,7 +57,7 @@ function NewsRow({ news }) {
   return (
     <li>
       <a
-        href={url}
+        href={safeExternalUrl(url)}
         target="_blank"
         rel="noopener noreferrer"
         className="block px-4 py-2.5 hover:bg-bg-2 dark:hover:bg-bg-2/40 transition"

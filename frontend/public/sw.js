@@ -59,7 +59,20 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const target = (event.notification.data && event.notification.data.url) || '/'
+  const rawTarget = (event.notification.data && event.notification.data.url) || '/'
+
+  // SECURITY: validar que target sea un path same-origin antes de navegar.
+  // Si el backend manda algo como "javascript:alert(1)" o una URL externa,
+  // bloqueamos y vamos al home. Defensa en profundidad.
+  let target = '/'
+  try {
+    const parsed = new URL(rawTarget, self.location.origin)
+    if (parsed.origin === self.location.origin) {
+      target = parsed.pathname + parsed.search + parsed.hash
+    }
+  } catch {
+    target = '/'
+  }
 
   event.waitUntil((async () => {
     // Buscar una pestaña abierta del mismo origin → enfocarla y navegar

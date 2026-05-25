@@ -121,7 +121,26 @@ export function AuthProvider({ children }) {
       // limpiamos el estado local; la cookie expira en 7d como fallback.
       api.post('/auth/logout').catch(() => {})
     }
-    localStorage.removeItem('rendi_user')
+    // SECURITY: limpiar TODOS los flags rendi_ del localStorage para evitar
+    // cross-user state leak en máquinas compartidas. Antes solo borrábamos
+    // rendi_user, quedaban: rendi_first_import_done, rendi_ai_discovered,
+    // rendi_dashboard_currency, rendi_sidebar_collapsed, rendi_demo_overlay,
+    // rendi_demo_mode, rendi_theme, etc. User B veía preferencias de user A.
+    // Preservamos rendi_theme porque es preferencia de máquina, no de cuenta.
+    try {
+      const preserve = new Set(['rendi_theme'])
+      const keysToRemove = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i)
+        if (key && key.startsWith('rendi_') && !preserve.has(key)) {
+          keysToRemove.push(key)
+        }
+      }
+      keysToRemove.forEach((k) => localStorage.removeItem(k))
+    } catch {
+      // localStorage puede no estar disponible (private mode iOS antiguo) — best effort
+      localStorage.removeItem('rendi_user')
+    }
     setUser(null)
     refreshPlanFeatures()  // limpiamos cache para el próximo login
   }

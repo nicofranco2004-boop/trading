@@ -23,6 +23,7 @@ import PageHeader from '../components/PageHeader'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
+import { isSafePaymentUrl } from '../utils/safeUrl'
 import { api } from '../utils/api'
 
 // Precios USD/mes — fuente de "valor" del producto. El COBRO real se hace
@@ -243,8 +244,14 @@ export default function Planes() {
     try {
       const body = { plan: planId, period: targetPeriod }
       const res = await api.post('/billing/subscribe', body)
-      if (res.init_point) {
+      // SECURITY: validar que init_point es del dominio de Rebill antes de
+      // redirigir. Si el backend devuelve una URL inesperada (tampered,
+      // bug, comprometido), evitamos open-redirect / phishing.
+      if (res.init_point && isSafePaymentUrl(res.init_point)) {
         window.location.href = res.init_point
+      } else if (res.init_point) {
+        console.error('Subscribe: init_point no es de un dominio Rebill confiable:', res.init_point)
+        alert('No pudimos validar el checkout. Probá de nuevo o escribinos a soporte@rendi.finance.')
       } else {
         alert('No pudimos generar el checkout. Probá de nuevo en unos minutos.')
       }

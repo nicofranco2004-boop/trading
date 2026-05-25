@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Newspaper, ExternalLink } from 'lucide-react'
 import { api } from '../../utils/api'
+import { safeExternalUrl } from '../../utils/safeUrl'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 
@@ -62,7 +63,7 @@ export default function NewsPreview() {
           {news.map((n, i) => (
             <li key={i}>
               <a
-                href={n.url}
+                href={safeExternalUrl(n.url)}
                 target="_blank" rel="noopener noreferrer"
                 className="block px-3 py-2.5 hover:bg-bg-2/60 transition-colors"
               >
