@@ -50,6 +50,33 @@ export default function BlogPost({
     mainEntityOfPage: { '@type': 'WebPage', '@id': canonicalUrl },
   }
 
+  // BreadcrumbList JSON-LD — muestra "Inicio › Blog › <title>" en SERP.
+  // Mejora CTR ~5-10% al dar contexto visual de jerarquía.
+  const breadcrumbSchema = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    'itemListElement': [
+      {
+        '@type': 'ListItem',
+        'position': 1,
+        'name': 'Inicio',
+        'item': `${BASE_URL}/`,
+      },
+      {
+        '@type': 'ListItem',
+        'position': 2,
+        'name': 'Blog',
+        'item': `${BASE_URL}/blog`,
+      },
+      {
+        '@type': 'ListItem',
+        'position': 3,
+        'name': title,
+        'item': canonicalUrl,
+      },
+    ],
+  }
+
   // Formato fecha humanizado (es-AR)
   const dateLabel = (() => {
     try {
@@ -68,6 +95,7 @@ export default function BlogPost({
       />
       <Helmet>
         <script type="application/ld+json">{JSON.stringify(articleSchema)}</script>
+        <script type="application/ld+json">{JSON.stringify(breadcrumbSchema)}</script>
       </Helmet>
 
       {/* Header minimal */}

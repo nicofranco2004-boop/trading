@@ -9,6 +9,7 @@ import {
   Zap, Terminal, ChevronDown, Check,
   Upload, ListChecks, BarChart3, Bot, MessageSquare,
   Plus, Mail, Instagram, Linkedin,
+  Building2, Bitcoin, TrendingUp, Landmark, Receipt,
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import {
@@ -606,6 +607,127 @@ function HowItWorksStep({ step, reversed, delayMs }) {
         </div>
       </div>
     </div>
+  )
+}
+
+// ─── BrokerSolutions: cards a las 6 keyword landings ─────────────────────────
+// Sección crítica para SEO (audit 2026-05-25 / SEO C1):
+// Las 6 landings keyword (/brokers/cocos, /iol, /binance, /cedears,
+// /bonos-argentinos, /afip-cripto) quedaban huérfanas sin links desde la home.
+// Google las indexa por sitemap pero sin recibir link equity de la página con
+// más authority del dominio (home). Esta sección lo arregla.
+//
+// También sirve para conversión: el visitante que viene buscando "cómo se
+// usa Rendi con Cocos" entra a la home y ve un atajo directo a su caso.
+
+function BrokerSolutions() {
+  const ref = useReveal()
+  const items = [
+    {
+      to: '/brokers/cocos',
+      Icon: Building2,
+      title: 'Cocos Capital',
+      desc: 'Importás tu CSV o cargás manual. Cocos USD y pesos en una vista, con TC blue automático.',
+      meta: 'BROKER · AR',
+    },
+    {
+      to: '/brokers/iol',
+      Icon: Building2,
+      title: 'IOL Inversiones',
+      desc: 'CEDEARs, bonos, ON y FCI consolidados. P&L FIFO real en USD, listo para AFIP.',
+      meta: 'BROKER · AR',
+    },
+    {
+      to: '/brokers/binance',
+      Icon: Bitcoin,
+      title: 'Binance / Crypto',
+      desc: 'Tu cartera cripto sin pegar pantallazos. BTC, ETH, USDT y stablecoins con P&L en USD.',
+      meta: 'CRYPTO · CSV',
+    },
+    {
+      to: '/cedears',
+      Icon: TrendingUp,
+      title: 'CEDEARs',
+      desc: 'Valor real en USD (no la ilusión en pesos). Ratio de conversión y subyacente NYSE/NASDAQ.',
+      meta: 'PRODUCTO · CEDEARs',
+    },
+    {
+      to: '/bonos-argentinos',
+      Icon: Landmark,
+      title: 'Bonos AR',
+      desc: 'AL30, GD30, TX26 con cupones, amortizaciones y MEP automático. Capital vs renta separados.',
+      meta: 'PRODUCTO · BONOS',
+    },
+    {
+      to: '/afip-cripto',
+      Icon: Receipt,
+      title: 'AFIP / Cripto',
+      desc: 'Export CSV con P&L FIFO en USD listo para tu contador. Cripto, acciones y CEDEARs.',
+      meta: 'COMPLIANCE · ARCA',
+    },
+  ]
+
+  return (
+    <section
+      id="para-tu-broker"
+      ref={ref}
+      className="reveal-up relative max-w-7xl mx-auto px-4 sm:px-6 pb-24"
+    >
+      {/* Eyebrow + headline */}
+      <div className="text-center mb-12">
+        <div className="text-[11px] font-mono uppercase tracking-label text-ink-3 mb-3">
+          / para tu broker
+        </div>
+        <h2 className="display-heading mb-3 max-w-2xl mx-auto">
+          Soluciones específicas para tu cartera AR.{' '}
+          <span className="text-ink-3">Sea Cocos, IOL, Binance o todos juntos.</span>
+        </h2>
+        <p className="text-sm text-ink-3 max-w-xl mx-auto">
+          Cada caso de uso tiene su guía: qué importar, cómo se ve el P&amp;L, qué cuidar para AFIP.
+        </p>
+      </div>
+
+      {/* Grid 3-col en desktop, 2-col tablet, 1-col mobile */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {items.map((it, i) => (
+          <BrokerSolutionCard key={it.to} {...it} delayMs={i * 70} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function BrokerSolutionCard({ to, Icon, title, desc, meta, delayMs }) {
+  const ref = useReveal()
+  return (
+    <Link
+      to={to}
+      ref={ref}
+      className="reveal-up group relative p-5 border border-line rounded bg-bg-1/60 hover:bg-bg-2/60 hover:border-line-3 transition-all duration-300 overflow-hidden block"
+      style={{ animationDelay: `${delayMs}ms` }}
+    >
+      {/* Hover glow corner */}
+      <div
+        className="absolute -top-12 -right-12 w-32 h-32 bg-data-violet/0 group-hover:bg-data-violet/10 rounded-full blur-2xl transition-colors duration-500"
+        aria-hidden="true"
+      />
+
+      <div className="relative">
+        <div className="flex items-center justify-between mb-4">
+          <div className="w-9 h-9 rounded bg-bg-2 border border-line flex items-center justify-center text-ink-1 group-hover:text-data-violet group-hover:border-data-violet/30 transition-colors">
+            <Icon size={16} strokeWidth={1.75} />
+          </div>
+          <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3">{meta}</span>
+        </div>
+        <h3 className="text-base font-semibold text-ink-0 mb-2 tracking-tight">{title}</h3>
+        <p className="text-sm text-ink-2 leading-relaxed mb-3">{desc}</p>
+        {/* Arrow indicator que aparece al hover — sugiere que es link */}
+        <div className="inline-flex items-center gap-1 text-xs font-medium text-ink-3 group-hover:text-data-violet transition-colors">
+          Ver guía
+          <ArrowRight size={12} strokeWidth={2} className="transition-transform group-hover:translate-x-0.5" />
+        </div>
+      </div>
+    </Link>
   )
 }
 
@@ -1328,6 +1450,7 @@ export default function Landing() {
       <LivePreview />
       <Features />
       <HowItWorks />
+      <BrokerSolutions />
       <Pricing />
       <FAQ />
       <CtaFinal />

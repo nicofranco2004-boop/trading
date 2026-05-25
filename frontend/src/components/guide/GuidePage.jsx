@@ -26,6 +26,33 @@ export default function GuidePage({
   metaDescription,
   canonicalPath,
 }) {
+  // BreadcrumbList JSON-LD para SERP de Google.
+  // Muestra "Inicio › Guía › <title>" mejorando el CTR de los resultados.
+  const breadcrumbSchema = canonicalPath ? {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    'itemListElement': [
+      {
+        '@type': 'ListItem',
+        'position': 1,
+        'name': 'Inicio',
+        'item': 'https://rendi.finance/',
+      },
+      {
+        '@type': 'ListItem',
+        'position': 2,
+        'name': 'Guía',
+        'item': 'https://rendi.finance/guia',
+      },
+      {
+        '@type': 'ListItem',
+        'position': 3,
+        'name': title,
+        'item': `https://rendi.finance${canonicalPath}`,
+      },
+    ],
+  } : null
+
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
@@ -33,6 +60,12 @@ export default function GuidePage({
         description={metaDescription}
         canonical={canonicalPath}
       />
+      {breadcrumbSchema && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+        />
+      )}
 
       {/* Header minimal: logo + nav a planes/login */}
       <header className="border-b border-line">

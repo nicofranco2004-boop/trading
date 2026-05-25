@@ -43,6 +43,28 @@ export default function KeywordLanding({
   metaDescription,
   canonicalPath,
 }) {
+  // BreadcrumbList JSON-LD para mejorar SERP de Google.
+  // Google muestra "rendi.finance › Inicio › <kicker>" en lugar de la URL
+  // cruda. Mejora CTR ~5-10% en resultados de búsqueda.
+  const breadcrumbSchema = canonicalPath ? {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    'itemListElement': [
+      {
+        '@type': 'ListItem',
+        'position': 1,
+        'name': 'Inicio',
+        'item': 'https://rendi.finance/',
+      },
+      {
+        '@type': 'ListItem',
+        'position': 2,
+        'name': kicker || h1,
+        'item': `https://rendi.finance${canonicalPath}`,
+      },
+    ],
+  } : null
+
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0 overflow-x-hidden">
       <PageMeta
@@ -50,6 +72,12 @@ export default function KeywordLanding({
         description={metaDescription}
         canonical={canonicalPath}
       />
+      {breadcrumbSchema && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+        />
+      )}
 
       {/* Header simple — logo + nav a planes/login */}
       <header className="border-b border-line">
