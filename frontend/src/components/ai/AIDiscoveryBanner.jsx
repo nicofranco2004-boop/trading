@@ -19,7 +19,15 @@ export function isAIDiscovered() {
 }
 
 export function markAIDiscovered() {
-  try { localStorage.setItem(AI_DISCOVERY_KEY, '1') } catch { /* ignore */ }
+  try {
+    localStorage.setItem(AI_DISCOVERY_KEY, '1')
+    // Dispatch custom event para que OnboardingChecklist (en Home) y otros
+    // listeners reactivos detecten el cambio EN EL MISMO tab. localStorage
+    // NO dispara 'storage' event para el tab que escribió — solo cross-tab.
+    // Sin esto, el checklist queda con state viejo hasta que el user cambia
+    // de tab + vuelve (lo cual dispara `focus`).
+    window.dispatchEvent(new Event('ai-discovered'))
+  } catch { /* ignore */ }
 }
 
 export default function AIDiscoveryBanner() {

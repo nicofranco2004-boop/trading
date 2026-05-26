@@ -22,8 +22,8 @@
 //   - checklist_item_clicked { item }
 //   - checklist_dismissed (cierre manual)
 
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState, useCallback } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
 import {
   CheckCircle2, Circle, X, Briefcase, PlusCircle, Brain, Bot,
   ArrowRight, Sparkles,
@@ -38,6 +38,7 @@ const CHECKLIST_DISMISSED_KEY = 'rendi_checklist_dismissed'
 
 export default function OnboardingChecklist() {
   const navigate = useNavigate()
+  const location = useLocation()
   const coachDrawer = useCoachDrawer()
   const [state, setState] = useState({
     hasBroker: null,    // null = loading, true/false = known
@@ -49,39 +50,55 @@ export default function OnboardingChecklist() {
   const [dismissed, setDismissed] = useState(() => {
     try { return localStorage.getItem(CHECKLIST_DISMISSED_KEY) === '1' } catch { return false }
   })
+  // Tick para forzar re-fetch (custom events incrementan este número).
+  const [refreshTick, setRefreshTick] = useState(0)
 
-  // Re-leer AI discovery cuando cambia el storage (otra tab, o user prueba Coach)
+  // ─── Detectar AI discovery REACTIVO ─────────────────────────────────────
+  // El Coach IA es un drawer overlay — cuando el user lo cierra, Home NO se
+  // desmonta y OnboardingChecklist sigue con state viejo. localStorage NO
+  // dispara `storage` event para el mismo tab que escribió. Por eso antes
+  // requería cambiar de tab y volver (para que onFocus disparara el re-check).
+  // Fix: además de storage/focus, escuchamos un custom event 'ai-discovered'
+  // que markAIDiscovered() dispara explícitamente. Más reactive cross-tab Y
+  // intra-tab.
   useEffect(() => {
-    function onStorage(e) {
-      if (e.key === AI_DISCOVERY_KEY) {
-        setState((s) => ({ ...s, hasAI: isAIDiscovered() }))
-      }
-    }
-    window.addEventListener('storage', onStorage)
-    // También chequeamos al focus del tab (Coach quizá fue probado en este mismo tab)
-    function onFocus() {
+    function recheckAI() {
       setState((s) => ({ ...s, hasAI: isAIDiscovered() }))
     }
-    window.addEventListener('focus', onFocus)
+    function onStorage(e) {
+      if (e.key === AI_DISCOVERY_KEY) recheckAI()
+    }
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('focus', recheckAI)
+    window.addEventListener('ai-discovered', recheckAI)
     return () => {
       window.removeEventListener('storage', onStorage)
-      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('focus', recheckAI)
+      window.removeEventListener('ai-discovered', recheckAI)
     }
   }, [])
 
-  // Fetch inicial del estado del user
-  useEffect(() => {
-    if (dismissed) return  // No vale la pena pegar a la API si ya cerró
+  // ─── Re-fetch del estado cuando se vuelve a Home ─────────────────────────
+  // Si el user navega a /perfil-inversor, completa el quiz, y vuelve a /,
+  // el OnboardingChecklist no se desmonta (porque Home maneja su propio
+  // lifecycle dentro de Layout) — pero como el path cambió, queremos re-leer.
+  // Usamos location.pathname como dep para refetchar al volver al Home.
+  const fetchState = useCallback(() => {
     let cancelled = false
     Promise.all([
       api.get('/brokers').catch(() => []),
       api.get('/positions').catch(() => []),
-      api.get('/investor-profile').catch(() => null),
+      // FIX (bug del audit user): el endpoint correcto es /auth/investor-profile
+      // (estaba puesto /investor-profile antes → 404 → siempre hasProfile=false).
+      // El backend devuelve {} si no hay perfil o el JSON del perfil si lo hay.
+      api.get('/auth/investor-profile').catch(() => null),
     ]).then(([brokers, positions, profile]) => {
       if (cancelled) return
       const hasBroker = Array.isArray(brokers) && brokers.length > 0
       const hasPosition = Array.isArray(positions) && positions.length > 0
-      // El endpoint /investor-profile devuelve 200 con null si no completó, o el JSON
+      // El endpoint devuelve {} cuando no hay perfil, así que checkeamos keys.
+      // Si tiene cualquier respuesta válida del quiz (horizonte, tolerancia, etc.)
+      // marcamos como completado.
       const hasProfile = profile && typeof profile === 'object' &&
                          Object.keys(profile).length > 0
       setState((s) => ({
@@ -89,13 +106,30 @@ export default function OnboardingChecklist() {
         hasBroker,
         hasPosition,
         hasProfile: !!hasProfile,
+        hasAI: isAIDiscovered(),  // re-leer flag local también acá
         loaded: true,
       }))
-      trackEvent('checklist_viewed', { items_done: [hasBroker, hasPosition, hasProfile, s.hasAI].filter(Boolean).length })
     })
     return () => { cancelled = true }
+  }, [])
+
+  // Fetch inicial + cada vez que location cambia a / (vuelve a Home) o cuando
+  // refreshTick se incrementa por un evento externo.
+  useEffect(() => {
+    if (dismissed) return
+    const cleanup = fetchState()
+    return cleanup
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dismissed])
+  }, [dismissed, location.pathname, refreshTick])
+
+  // Track view solo en el primer load para no inflar GA con duplicados.
+  useEffect(() => {
+    if (state.loaded) {
+      const itemsDone = [state.hasBroker, state.hasPosition, state.hasProfile, state.hasAI].filter(Boolean).length
+      trackEvent('checklist_viewed', { items_done: itemsDone })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.loaded])
 
   if (dismissed) return null
   if (!state.loaded) return null  // Skeleton/empty mientras carga — no flash
