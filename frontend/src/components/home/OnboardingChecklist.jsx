@@ -26,13 +26,14 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   CheckCircle2, Circle, X, Briefcase, PlusCircle, Brain, Bot,
-  ArrowRight, Sparkles,
+  ArrowRight, Sparkles, Upload,
 } from 'lucide-react'
 import { api } from '../../utils/api'
 import { trackEvent } from '../../utils/analytics'
 import { track } from '../../utils/track'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 import { isAIDiscovered, AI_DISCOVERY_KEY } from '../ai/AIDiscoveryBanner'
+import Modal from '../Modal'
 
 const CHECKLIST_DISMISSED_KEY = 'rendi_checklist_dismissed'
 
@@ -52,6 +53,10 @@ export default function OnboardingChecklist() {
   })
   // Tick para forzar re-fetch (custom events incrementan este número).
   const [refreshTick, setRefreshTick] = useState(0)
+  // Modal que aparece al clickear 'Cargá tu primera operación' para que
+  // el user elija si quiere importar CSV o cargar manual (en vez de ir
+  // directo a /posiciones que solo permite manual).
+  const [positionModalOpen, setPositionModalOpen] = useState(false)
 
   // ─── Detectar AI discovery REACTIVO ─────────────────────────────────────
   // El Coach IA es un drawer overlay — cuando el user lo cierra, Home NO se
@@ -160,7 +165,18 @@ export default function OnboardingChecklist() {
       title: 'Cargá tu primera operación',
       desc: 'Importá CSV o agregá manual. Empezás a ver tu P&L real.',
       cta: state.hasBroker ? 'Cargar' : 'Sumá broker primero',
-      onClick: () => navigate(state.hasBroker ? '/posiciones' : '/config'),
+      // En vez de navegar directo a /posiciones (que solo permite manual),
+      // abrimos modal de elección CSV / Manual. El user decide cómo quiere
+      // cargar — mismo patrón que el step 3 del wizard /onboarding.
+      // Si no tiene broker todavía, redirige a /posiciones donde el flow
+      // de "primero broker" está montado.
+      onClick: () => {
+        if (!state.hasBroker) {
+          navigate('/posiciones')
+          return
+        }
+        setPositionModalOpen(true)
+      },
       disabled: !state.hasBroker,
     },
     {
@@ -293,6 +309,78 @@ export default function OnboardingChecklist() {
           )
         })}
       </ul>
+
+      {/* Modal de elección al cargar primera operación: CSV o Manual.
+          Antes el item navegaba directo a /posiciones (manual only). Ahora
+          el user puede elegir, igual que en el step 3 del wizard. */}
+      {positionModalOpen && (
+        <Modal
+          title="¿Cómo querés cargar tu primera operación?"
+          onClose={() => setPositionModalOpen(false)}
+        >
+          <div className="space-y-2.5">
+            {/* Opción CSV — recomendada (más completa y rápida si tenés
+                varias posiciones) */}
+            <button
+              type="button"
+              onClick={() => {
+                trackEvent('checklist_position_method', { method: 'csv' })
+                track('checklist_position_method', { method: 'csv' })
+                setPositionModalOpen(false)
+                navigate('/imports')
+              }}
+              className="w-full p-3 border border-line hover:border-data-violet hover:bg-data-violet/[0.04] rounded text-left transition-all group flex items-start gap-3"
+            >
+              <div className="w-9 h-9 rounded bg-bg-2 border border-line flex items-center justify-center text-data-violet flex-shrink-0">
+                <Upload size={16} strokeWidth={1.75} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <h3 className="text-sm font-medium text-ink-0">Importar CSV</h3>
+                  <span className="text-[9px] font-mono uppercase tracking-caps text-data-violet bg-data-violet/15 px-1.5 py-0.5 rounded">
+                    recomendado
+                  </span>
+                </div>
+                <p className="text-xs text-ink-2 leading-relaxed">
+                  Subís el archivo de tu broker (Cocos, IOL, Schwab, Binance, Balanz). Mapeamos todas las operaciones de una.
+                </p>
+              </div>
+              <ArrowRight
+                size={14}
+                strokeWidth={1.75}
+                className="text-ink-3 group-hover:text-data-violet group-hover:translate-x-0.5 transition-all flex-shrink-0 mt-1"
+              />
+            </button>
+
+            {/* Opción Manual */}
+            <button
+              type="button"
+              onClick={() => {
+                trackEvent('checklist_position_method', { method: 'manual' })
+                track('checklist_position_method', { method: 'manual' })
+                setPositionModalOpen(false)
+                navigate('/posiciones')
+              }}
+              className="w-full p-3 border border-line hover:border-data-violet hover:bg-data-violet/[0.04] rounded text-left transition-all group flex items-start gap-3"
+            >
+              <div className="w-9 h-9 rounded bg-bg-2 border border-line flex items-center justify-center text-data-violet flex-shrink-0">
+                <PlusCircle size={16} strokeWidth={1.75} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-sm font-medium text-ink-0 mb-0.5">Cargar manual</h3>
+                <p className="text-xs text-ink-2 leading-relaxed">
+                  Tipeás ticker, cantidad y precio promedio. Ideal si tenés pocas posiciones.
+                </p>
+              </div>
+              <ArrowRight
+                size={14}
+                strokeWidth={1.75}
+                className="text-ink-3 group-hover:text-data-violet group-hover:translate-x-0.5 transition-all flex-shrink-0 mt-1"
+              />
+            </button>
+          </div>
+        </Modal>
+      )}
     </section>
   )
 }
