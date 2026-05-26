@@ -4,7 +4,12 @@ import { BrowserRouter } from 'react-router-dom'
 import { HelmetProvider } from 'react-helmet-async'
 import App from './App'
 import { ToastProvider } from './components/Toast'
+import { initAnalytics } from './utils/analytics'
 import './index.css'
+
+// Inicializar GA4 al arranque. No-op si VITE_GA_MEASUREMENT_ID no está seteada
+// (dev local, o si decidimos no usar tracking).
+initAnalytics()
 
 // ─── Auto-reload on stale chunk error ────────────────────────────────────────
 // Safari (especialmente iOS) es agresivo cacheando HTML aunque el header

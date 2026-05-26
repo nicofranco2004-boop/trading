@@ -18,6 +18,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Sparkles, AlertCircle, RotateCcw, Send, Lock } from 'lucide-react'
 import { api } from '../utils/api'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { trackEvent } from '../utils/analytics'
 import UpgradePromoCard from './ai/UpgradePromoCard'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
@@ -87,6 +88,11 @@ export default function AICoach({ snapshot, suggested }) {
     setError(null)
 
     try {
+      // GA4: engagement metric. No mandamos el content del mensaje (PII potential).
+      trackEvent('ai_chat_sent', {
+        is_freeform: !!(isPro || isAdmin),
+        tier,
+      })
       const res = await api.post('/ai/chat', {
         messages: newMessages,
         snapshot,

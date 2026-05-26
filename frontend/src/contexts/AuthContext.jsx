@@ -3,6 +3,7 @@ import { api } from '../utils/api'
 import { isDemoMode, enableDemoMode, disableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
+import { setUserId, setUserProperties, trackEvent } from '../utils/analytics'
 
 const AuthContext = createContext(null)
 
@@ -83,12 +84,20 @@ export function AuthProvider({ children }) {
         localStorage.setItem('rendi_user', JSON.stringify(fresh))
         setUser(fresh)
         refreshPlanFeatures()
+        // Analytics: identificar al user y setear propiedades para segmentación
+        // en GA4 (tier, access_mode). user_id permite trackear cross-device.
+        if (me.id) setUserId(me.id)
+        setUserProperties({
+          tier: fresh.tier,
+          access_mode: fresh.access_mode,
+        })
       })
       .catch(() => {
         // 401 / network → no hay sesión válida. Limpiar y ofrecer login.
         localStorage.removeItem('rendi_user')
         setUser(null)
         refreshPlanFeatures()
+        setUserId(null)
       })
       .finally(() => setBootstrapped(true))
   }, [])
@@ -102,6 +111,14 @@ export function AuthProvider({ children }) {
     setUser(u)
     // Identity change → forzar refetch del plan features.
     refreshPlanFeatures()
+    // Analytics: trackear login. Si extra trae `event_type='sign_up'`, mandamos
+    // sign_up también (callsite del flujo verify-email).
+    if (extra?.event_type === 'sign_up') {
+      trackEvent('sign_up', { method: 'email' })
+    } else {
+      trackEvent('login', { method: 'email' })
+    }
+    if (extra?.id) setUserId(extra.id)
   }
 
   function updateUser(patch) {
@@ -113,6 +130,8 @@ export function AuthProvider({ children }) {
   }
 
   function logout() {
+    trackEvent('logout')
+    setUserId(null)
     if (user?.demo) {
       track('demo_mode_exited')
       disableDemoMode()

@@ -73,6 +73,38 @@ export function track(event, props = {}) {
     _forwardToBackend(event, props)
   }
 
+  // Forward a GA4 también (analytics consolidados con eventos canónicos
+  // del producto: paywalls + onboarding + actions).
+  // Lazy import para evitar circular deps + no inicializar GA si no se usa.
+  if (typeof window !== 'undefined' && window.gtag) {
+    try {
+      // Eventos críticos del producto que queremos ver en GA4 también.
+      const FORWARD_TO_GA4 = new Set([
+        'auth_signup', 'auth_login', 'auth_logout',
+        'feature_blocked_clicked',
+        'upgrade_modal_cta_clicked',
+        'plan_hero_upgrade_clicked',
+        'upgrade_promo_clicked',
+        'upgrade_subscribe_clicked',
+        'position_added', 'import_completed',
+        'first_insight_viewed',
+        'report_generated', 'report_shared',
+      ])
+      if (FORWARD_TO_GA4.has(event)) {
+        // Mapear nombre canónico de track() → nombre GA4 friendly.
+        const GA4_NAME_MAP = {
+          'auth_signup': 'sign_up',
+          'auth_login': 'login',
+          'auth_logout': 'logout',
+          'position_added': 'first_position_added',  // primera vez es más útil
+        }
+        window.gtag('event', GA4_NAME_MAP[event] || event, props)
+      }
+    } catch {
+      // GA4 no disponible o falló — silencioso, track() no debe romper
+    }
+  }
+
   // ── Stub de provider real ──────────────────────────────────────────────────
   // Cuando integremos PostHog:
   //   if (window.posthog) window.posthog.capture(event, props)

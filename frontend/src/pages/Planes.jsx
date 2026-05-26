@@ -23,6 +23,7 @@ import PageHeader from '../components/PageHeader'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
+import { trackEvent } from '../utils/analytics'
 import { isSafePaymentUrl } from '../utils/safeUrl'
 import { api } from '../utils/api'
 
@@ -240,6 +241,12 @@ export default function Planes() {
       plan: planId,
       period: targetPeriod,
     })
+    // GA4: click en CTA "Suscribirme" — funnel step 1 (intent)
+    trackEvent('subscribe_clicked', {
+      from_tier: tier,
+      plan: planId,
+      period: targetPeriod,
+    })
     setSubscribing(true)
     try {
       const body = { plan: planId, period: targetPeriod }
@@ -248,6 +255,8 @@ export default function Planes() {
       // redirigir. Si el backend devuelve una URL inesperada (tampered,
       // bug, comprometido), evitamos open-redirect / phishing.
       if (res.init_point && isSafePaymentUrl(res.init_point)) {
+        // GA4: payment link creado, redirect a Rebill — funnel step 2
+        trackEvent('subscribe_started', { plan: planId, period: targetPeriod })
         window.location.href = res.init_point
       } else if (res.init_point) {
         console.error('Subscribe: init_point no es de un dominio Rebill confiable:', res.init_point)

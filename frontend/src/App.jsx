@@ -11,6 +11,7 @@ import SupportWhatsAppFab from './components/SupportWhatsAppFab'
 import AICoachDrawer from './components/ai/AICoachDrawer'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
+import { trackPageView } from './utils/analytics'
 
 // ─── Eager imports: páginas del flujo no-autenticado ──────────────────────────
 // Estas son las primeras que ve un user sin login (Landing → Login →
@@ -102,11 +103,21 @@ function PageFallback() {
 function RouteTracker() {
   // Trackea cambios de ruta automáticamente. Vive adentro del <BrowserRouter>
   // implícito de App.jsx (asume que react-router-dom está montado por encima).
+  // Manda el route change a 2 destinos:
+  //   - trackRoute(): nuestro backend telemetry interno (api.post /track)
+  //   - trackPageView(): Google Analytics 4 (page_view event)
   const location = useLocation()
   const prev = useRef(location.pathname)
+  // Page view inicial — el primer render no dispara el useEffect con prev≠new,
+  // así que lo trackeamos explícito.
+  useEffect(() => {
+    trackPageView(location.pathname)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   useEffect(() => {
     if (prev.current !== location.pathname) {
       trackRoute(prev.current, location.pathname)
+      trackPageView(location.pathname)
       prev.current = location.pathname
     }
   }, [location.pathname])

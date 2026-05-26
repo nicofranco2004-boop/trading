@@ -25,6 +25,7 @@ import PageHeader from '../components/PageHeader'
 import PageMeta from '../components/PageMeta'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { track } from '../utils/track'
+import { trackEvent } from '../utils/analytics'
 import { api } from '../utils/api'
 
 const POLL_INTERVAL_MS = 2_000   // /auth/me cada 2s
@@ -93,10 +94,13 @@ export function BillingSuccess() {
 
   useEffect(() => {
     if (isActivated) {
+      // GA4: funnel step 3 (conversion) — el user volvió de Rebill activado.
+      // Disparamos UNA sola vez (efecto corre cuando isActivated se hace true).
+      trackEvent('subscribe_completed', { tier })
       const t = setTimeout(() => navigate('/dashboard'), 4500)
       return () => clearTimeout(t)
     }
-  }, [isActivated, navigate])
+  }, [isActivated, navigate, tier])
 
   if (unauthenticated) {
     return (
