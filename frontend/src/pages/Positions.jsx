@@ -2354,10 +2354,28 @@ export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm
   )
 }
 
-function Field({ label, value, onChange, hint, type = 'text', autoFocus = false, inputRef, placeholder = '0', step }) {
+function Field({ label, value, onChange, hint, type = 'text', autoFocus = false, inputRef, placeholder = '0', step, autoCalculated = false }) {
+  // autoCalculated: el campo está siendo derivado de los otros 2 inputs
+  // (fórmula precio × cantidad = invertido). Si el user lo edita, el badge
+  // desaparece automáticamente porque pasa a ser un input "manual" — el
+  // estado se actualiza en el componente padre.
   return (
     <div>
-      <label className="block text-xs text-ink-3 mb-1">{label}</label>
+      <label className="flex items-center gap-1.5 text-xs text-ink-3 mb-1">
+        <span>{label}</span>
+        {autoCalculated && (
+          <span
+            className="inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-caps text-data-violet bg-data-violet/10 border border-data-violet/30 px-1.5 py-0.5 rounded"
+            title="Se calcula solo a partir de los otros dos campos. Editalo si querés sobrescribirlo."
+          >
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+              <polyline points="21 3 21 8 16 8" />
+            </svg>
+            auto
+          </span>
+        )}
+      </label>
       <input
         ref={inputRef}
         type={type}
@@ -2365,7 +2383,11 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
         autoFocus={autoFocus}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition"
+        className={`w-full bg-bg-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition ${
+          autoCalculated
+            ? 'border border-data-violet/40 bg-data-violet/[0.03]'
+            : 'border border-line-2'
+        }`}
         placeholder={placeholder}
       />
       {hint && <p className="text-xs text-ink-3 mt-1">{hint}</p>}
@@ -2617,6 +2639,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
               onChange={onPriceChange}
               type="number"
               step="any"
+              autoCalculated={derivedField === 'buy_price' && !!form.buy_price && +form.quantity > 0 && +form.invested > 0}
               hint={
                 bondMeta
                   ? `Convención del sistema: precio por 1 VN (valor nominal). Si Cocos te muestra "${form.buy_price ? Math.round((+form.buy_price)*100) : '71.5'} por 100 VN", entrá ${form.buy_price ? (+form.buy_price).toFixed(3) : '0.715'} acá (precio quote ÷ 100). El total invertido se autocompleta abajo.`
@@ -2624,7 +2647,8 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
               }
             />
 
-            {/* Invertido ⇄ Cantidad — bidireccional */}
+            {/* Invertido ⇄ Cantidad — bidireccional. El campo "auto" es
+                el menos recientemente editado (calculado desde los otros 2). */}
             <div className="grid grid-cols-2 gap-3">
               <Field
                 label={`Invertido (${moneyLabel})`}
@@ -2632,11 +2656,13 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
                 onChange={onInvestedChange}
                 type="number"
                 step="any"
+                autoCalculated={derivedField === 'invested' && !!form.invested && +form.buy_price > 0 && +form.quantity > 0}
               />
               <Field
                 label={bondMeta ? 'Cantidad (VN)' : 'Cantidad'}
                 value={form.quantity}
                 onChange={onQuantityChange}
+                autoCalculated={derivedField === 'quantity' && !!form.quantity && +form.buy_price > 0 && +form.invested > 0}
                 type="number"
                 step="any"
                 hint={bondMeta ? 'Valor nominal: 1 VN = 1 unidad de face value. Ej: 1000 VN de AL30 = USD 1000 face.' : undefined}
