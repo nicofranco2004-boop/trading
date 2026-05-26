@@ -673,17 +673,21 @@ function InsightsDesktop() {
   // Opciones del selector según moneda. Cada una marca `available` según si
   // tenemos data del backend (gracias al fire-and-forget el bench puede llegar
   // tarde y algunas opciones aparecen disabled al inicio).
+  // AUDIT FIX 2026-05-26: chequeamos Object.keys().length > 0 (no solo `!!`)
+  // porque si yfinance falla y devuelve {}, !!{} es true pero el chart queda
+  // vacío. El check más estricto evita habilitar opciones sin data real.
+  const hasData = (map) => !!map && Object.keys(map).length > 0
   const BENCHMARK_OPTIONS_USD = [
-    { key: 'sp500',      label: 'S&P 500',         available: !!bench?.sp500 },
-    { key: 'tbill',      label: 'T-Bills USD',     available: !!bench?.shv },
-    { key: 'gold',       label: 'Oro (GLD)',       available: !!bench?.gld },
+    { key: 'sp500',      label: 'S&P 500',         available: hasData(bench?.sp500) },
+    { key: 'tbill',      label: 'T-Bills USD',     available: hasData(bench?.shv) },
+    { key: 'gold',       label: 'Oro (GLD)',       available: hasData(bench?.gld) },
     { key: 'dolar_cash', label: 'Dólar quieto',    available: true },
   ]
   const BENCHMARK_OPTIONS_ARS = [
-    { key: 'inflation',  label: 'Inflación AR',    available: !!bench?.inflation_ar },
-    { key: 'merval',     label: 'Merval',          available: !!bench?.merval && !!bench?.dolar_blue },
-    { key: 'plazo_fijo', label: 'Plazo fijo AR',   available: !!bench?.plazo_fijo && !!bench?.dolar_blue },
-    { key: 'pesos_cash', label: 'Pesos cash (blue)', available: !!bench?.dolar_blue },
+    { key: 'inflation',  label: 'Inflación AR',    available: hasData(bench?.inflation_ar) },
+    { key: 'merval',     label: 'Merval',          available: hasData(bench?.merval) && hasData(bench?.dolar_blue) },
+    { key: 'plazo_fijo', label: 'Plazo fijo AR',   available: hasData(bench?.plazo_fijo) && hasData(bench?.dolar_blue) },
+    { key: 'pesos_cash', label: 'Pesos cash (blue)', available: hasData(bench?.dolar_blue) },
   ]
   const benchmarkOptions = currency === 'USD' ? BENCHMARK_OPTIONS_USD : BENCHMARK_OPTIONS_ARS
 

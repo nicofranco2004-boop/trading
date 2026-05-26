@@ -290,24 +290,32 @@ export function simulatePlazoFijoArs(globalMonthly, ratesMap, blueMap) {
   if (!firstBlue || firstBlue <= 0) return null
 
   // Capital USD inicial → ARS al blue del primer mes (mantenemos en ARS para
-  // capitalizar contra la TNA). Al final convertimos al blue del último mes.
+  // capitalizar contra la TNA). Al final convertimos al blue del mes.
   let valueArs = (sorted[0].capital_inicio || 0) * firstBlue
   const series = []
+  let isFirst = true
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
     const tna = lookupMonthly(ratesMap, k)  // % anualizada
     const blue = lookupMonthly(blueMap, k) ?? firstBlue
+
     // Capitalizar el mes: (1 + tna/100)^(1/12) - 1
-    // Si no hay TNA del mes, no capitalizamos (queda flat — fail safe).
-    if (tna != null && tna > 0) {
+    // AUDIT FIX 2026-05-26: skip capitalización en el PRIMER mes para alinear
+    // con simulateBenchmark genérico (donde en el primer mes price = firstPrice
+    // → retorno = 0%). Sin este skip, el PF se llevaba 1 mes extra de TNA y
+    // sobrestimaba retorno ~3-5%.
+    if (!isFirst && tna != null && tna > 0) {
       const monthlyReturn = Math.pow(1 + tna / 100, 1 / 12) - 1
       valueArs *= 1 + monthlyReturn
     }
-    // Agregamos flows del mes (al blue del mes para apples-to-apples)
+    isFirst = false
+
+    // Agregamos flows del mes (al blue del mes para apples-to-apples).
     const netUsd = (m.deposits || 0) - (m.withdrawals || 0)
     valueArs += netUsd * blue
-    // Value USD-equiv = ARS / blue del mes
+
+    // Value USD-equiv = ARS / blue del mes.
     const valueUsd = blue > 0 ? valueArs / blue : 0
     series.push({ key: k, value: valueUsd })
   }
