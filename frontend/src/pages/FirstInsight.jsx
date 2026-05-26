@@ -26,6 +26,20 @@ export default function FirstInsight() {
   const [dolar, setDolar] = useState(null)
   const [loading, setLoading] = useState(true)
 
+  // Si el user llega acá desde el flow de onboarding (ImportWizard lo seteó),
+  // lo redirigimos al CompleteStep del wizard en lugar del FirstInsight clásico.
+  // Mejor UX: cierra el loop del onboarding con celebración + 3 cards CTAs
+  // en vez de quedar varado en FirstInsight sin guidance hacia el dashboard.
+  useEffect(() => {
+    let pending = false
+    try { pending = localStorage.getItem('rendi_onboarding_pending') === '1' } catch {}
+    if (pending) {
+      try { localStorage.removeItem('rendi_onboarding_pending') } catch {}
+      navigate('/onboarding?step=complete', { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     track('first_insight_viewed')
     Promise.all([
