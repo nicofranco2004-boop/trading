@@ -2377,16 +2377,30 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
 // UX simplificada para agregar/editar posiciones.
 // Features:
 //  • Auto-fill precio actual al elegir ticker (editable).
-//  • Lógica bidireccional: cantidad × precio = invertido (y vice versa).
-//    `lastEdited` = source of truth: si tocaste invested, recalculo qty;
-//    si tocaste qty, recalculo invested. Cambios en precio recalculan según
-//    el último editado, sin loops.
+//  • Autocálculo trilateral: la fórmula `invested = price × qty` permite
+//    derivar cualquiera de los 3 si tenés los otros 2. Trackeamos `editOrder`
+//    (orden de los últimos edits) — el campo MENOS recientemente editado es
+//    el "derivado" y se autocompleta. Ej: tipeás cantidad e invertido → el
+//    precio sale solo. Tipeás precio e invertido → cantidad sale sola.
 //  • Sin "Precio override" — quien quiera editar el precio actual lo hace
 //    directo en el campo principal.
 //  • Comisiones: campo opcional. Real cost = invertido + comisiones.
 export function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcBlue, onClose, onSave, onChangeAsset }) {
   const isARS = selectedBrokerCurrency === 'ARS'
-  const [lastEdited, setLastEdited] = useState('invested') // 'invested' | 'quantity'
+  // UX mejorada (user feedback): el form pedía 3 valores (precio + cantidad +
+  // invertido) pero matemáticamente solo necesita 2. Trackeamos el orden de
+  // los últimos edits del user para que el campo MENOS recientemente editado
+  // sea el "derivado" — se autocompleta con la fórmula `invested = price × qty`.
+  //
+  // Default order: ['buy_price', 'quantity', 'invested']
+  //   → derivado = invested (típico cuando el ticker autocompleta el precio
+  //     y el user solo tipea cantidad).
+  //
+  // Cuando el user edita 'invested' → derivado pasa a ser 'quantity'.
+  // Cuando edita 'quantity' o 'invested' sin haber editado precio → derivado
+  // pasa a ser 'buy_price' (caso: tipo desde extracto sin saber el precio
+  // exacto, pero conoce monto total e units).
+  const [editOrder, setEditOrder] = useState(['buy_price', 'quantity', 'invested'])
   const [pricesFetched, setPricesFetched] = useState(false)
   const inputClass = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
 
@@ -2425,11 +2439,12 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
           // Si ya hay precio puesto a mano, no pisar
           if (f.buy_price && f.buy_price !== '') return f
           const next = { ...f, buy_price: roundMoney(price) }
-          // Recalcular el campo dependiente con el nuevo precio
-          if (lastEdited === 'invested' && next.invested) {
-            next.quantity = roundQty(+next.invested / price)
-          } else if (lastEdited === 'quantity' && next.quantity) {
-            next.invested = roundMoney(+next.quantity * price)
+          // Recalcular el campo derivado (el menos recientemente editado).
+          // Si el user ya tipeó cantidad o invertido, el otro se autocompleta.
+          const expectedDerived = editOrder[editOrder.length - 1]
+          if (expectedDerived !== 'buy_price') {
+            const update = recalcDerived(next, expectedDerived)
+            return { ...next, ...update }
           }
           return next
         })
@@ -2448,46 +2463,64 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
     }
   }
 
-  function onPriceChange(v) {
+  // El campo derivado es el último en editOrder (el menos recientemente editado).
+  const derivedField = editOrder[editOrder.length - 1]
+
+  // Recalcula el campo derivado a partir de los otros 2. Devuelve partial
+  // update para aplicar via setForm. Si no se puede derivar (faltan inputs),
+  // devuelve {} y el form no cambia.
+  function recalcDerived(formState, derived) {
+    const price = +formState.buy_price
+    const qty = +formState.quantity
+    const inv = +formState.invested
+    if (derived === 'invested' && price > 0 && qty > 0) {
+      return { invested: roundMoney(price * qty) }
+    }
+    if (derived === 'quantity' && price > 0 && inv > 0) {
+      return { quantity: roundQty(inv / price) }
+    }
+    if (derived === 'buy_price' && qty > 0 && inv > 0) {
+      return { buy_price: roundMoney(inv / qty) }
+    }
+    return {}
+  }
+
+  // Movés un campo al frente del orden de edición. El último elemento del
+  // array (menos editado) pasa a ser el "derivado" y se recalcula desde
+  // los otros 2.
+  function recordEdit(field) {
+    setEditOrder(prev => {
+      if (prev[0] === field) return prev  // mismo campo, no cambia el orden
+      return [field, ...prev.filter(f => f !== field)]
+    })
+  }
+
+  // Handler unificado para los 3 inputs (precio, cantidad, invertido).
+  // Actualiza el campo + recalcula el derivado (= el que no se editó
+  // recientemente, según editOrder).
+  function handleNumericChange(field, v) {
+    recordEdit(field)
     setForm(f => {
-      const next = { ...f, buy_price: v }
-      const priceNum = +v
-      if (priceNum > 0) {
-        if (lastEdited === 'invested' && next.invested) {
-          next.quantity = roundQty(+next.invested / priceNum)
-        } else if (lastEdited === 'quantity' && next.quantity) {
-          next.invested = roundMoney(+next.quantity * priceNum)
-        }
+      const next = { ...f, [field]: v }
+      // Calcular derivado en base al nuevo orden. Como recordEdit es
+      // asíncrono (setState), construimos el orden esperado manualmente.
+      const expectedOrder = editOrder[0] === field
+        ? editOrder
+        : [field, ...editOrder.filter(x => x !== field)]
+      const expectedDerived = expectedOrder[expectedOrder.length - 1]
+      if (expectedDerived !== field) {
+        const update = recalcDerived(next, expectedDerived)
+        return { ...next, ...update }
       }
       return next
     })
   }
 
-  function onInvestedChange(v) {
-    setLastEdited('invested')
-    setForm(f => {
-      const next = { ...f, invested: v }
-      const inv = +v
-      const price = +next.buy_price
-      if (inv > 0 && price > 0) {
-        next.quantity = roundQty(inv / price)
-      }
-      return next
-    })
-  }
-
-  function onQuantityChange(v) {
-    setLastEdited('quantity')
-    setForm(f => {
-      const next = { ...f, quantity: v }
-      const qty = +v
-      const price = +next.buy_price
-      if (qty > 0 && price > 0) {
-        next.invested = roundMoney(qty * price)
-      }
-      return next
-    })
-  }
+  // Wrappers explícitos (los inputs en el JSX llaman a estos para mantener
+  // legibilidad).
+  function onPriceChange(v)     { handleNumericChange('buy_price', v) }
+  function onQuantityChange(v)  { handleNumericChange('quantity', v) }
+  function onInvestedChange(v)  { handleNumericChange('invested', v) }
 
   // Costo real total (incluye comisiones) — feedback en vivo
   const realCost = (() => {
