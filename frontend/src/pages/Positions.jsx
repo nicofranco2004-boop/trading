@@ -64,9 +64,15 @@ function PositionsDesktop() {
   const [snapshots, setSnapshots] = useState([])
   const toast = useToast()
   const [modal, setModal] = useState(null)
+  // Modales nuevos del header (3 botones: Compra, Venta, Cash):
+  //   - sell-selector: lista todas las posiciones no-cash y deja elegir cuál vender
+  //   - cash-menu: selector broker + direction (deposit/withdraw) antes de abrir cashflow
+  // Estos NO modifican el modal classic — el del top puede coexistir con los antiguos.
   const [form, setForm] = useState(EMPTY_POS)
   const [sellForm, setSellForm] = useState({ broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '', tc_venta: '', date: '', commissions: '' })
   const [cashFlowForm, setCashFlowForm] = useState({ broker: '', currency: 'USDT', direction: 'deposit', amount: '', available: 0 })
+  // Cash menu (selector broker + direction) — pre-flow del cashflow tradicional.
+  const [cashMenuForm, setCashMenuForm] = useState({ broker: '', direction: 'deposit' })
   const [convertForm, setConvertForm] = useState({
     direction: 'ars_to_usd',  // 'ars_to_usd' | 'usd_to_ars'
     from_broker: '',
@@ -443,6 +449,55 @@ function PositionsDesktop() {
     setModal('cashflow')
   }
 
+  // ─── Top-level CTAs (botones del PageHeader: Compra, Venta, Cash) ──────
+  // Entrypoints generales que NO requieren contexto previo (a diferencia
+  // de los 3-puntitos por fila). Pensados para users que quieren registrar
+  // una operación sin tener que buscar la posición en la grilla primero.
+
+  function openSellFromHeader() {
+    // Filtramos posiciones cash (no se "venden", se retiran). Si hay 1 sola
+    // saltamos el selector — es la única opción posible.
+    const sellable = positions.filter(p => !p.is_cash)
+    if (sellable.length === 0) {
+      setModal('sell-empty')
+      return
+    }
+    if (sellable.length === 1) {
+      openSell(sellable[0])
+      return
+    }
+    setModal('sell-selector')
+  }
+
+  function openCashMenuFromHeader() {
+    // Pre-popular con el primer broker disponible. El user puede cambiar
+    // broker y direction adentro del modal antes de continuar.
+    setCashMenuForm({
+      broker: brokers[0]?.name || '',
+      direction: 'deposit',
+    })
+    setModal('cash-menu')
+  }
+
+  function continueCashMenu() {
+    // Después de elegir broker + direction en el cash-menu modal, abrimos
+    // el cashflow modal estándar. Buscamos la posición cash existente del
+    // broker para que `available` (saldo para retiros) sea preciso. Si el
+    // broker no tiene cash todavía, usamos available=0.
+    const brokerName = cashMenuForm.broker
+    const broker = brokers.find(b => b.name === brokerName)
+    if (!broker) return
+    const cashPos = positions.find(p => p.broker === brokerName && p.is_cash)
+    setCashFlowForm({
+      broker: brokerName,
+      currency: broker.currency || 'USDT',
+      direction: cashMenuForm.direction,
+      amount: '',
+      available: cashPos?.invested || 0,
+    })
+    setModal('cashflow')
+  }
+
   function openConvert(p, direction) {
     // p es la posición cash desde la cual se inicia la conversión.
     // Para usd_to_ars guardamos también el `tc_compra` promedio del cash USD
@@ -639,7 +694,39 @@ function PositionsDesktop() {
         eyebrow="Posiciones / Activas"
         title="Tu portfolio en vivo"
         meta={meta}
-        action={<ExportCsvButton resource="positions" source="positions_header" variant="compact" />}
+        action={
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* 3 CTAs principales: Compra (primary violet) + Venta + Cash.
+                Sin estos botones, el user tenía que buscar la posición en
+                la grilla y usar los 3-puntitos. Atajos rápidos desde el
+                header — alineado con copy del checklist y BrokerInstructions. */}
+            <button
+              type="button"
+              onClick={() => openAdd()}
+              className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-3 py-2 text-xs transition-colors"
+            >
+              <Plus size={13} strokeWidth={2} />
+              Registrar compra
+            </button>
+            <button
+              type="button"
+              onClick={openSellFromHeader}
+              className="inline-flex items-center gap-1.5 bg-bg-1 hover:bg-bg-2 border border-line hover:border-line-3 text-ink-1 font-medium rounded-sm px-3 py-2 text-xs transition-colors"
+            >
+              <DollarSign size={13} strokeWidth={2} />
+              Registrar venta
+            </button>
+            <button
+              type="button"
+              onClick={openCashMenuFromHeader}
+              className="inline-flex items-center gap-1.5 bg-bg-1 hover:bg-bg-2 border border-line hover:border-line-3 text-ink-1 font-medium rounded-sm px-3 py-2 text-xs transition-colors"
+            >
+              <Wallet size={13} strokeWidth={2} />
+              Cash
+            </button>
+            <ExportCsvButton resource="positions" source="positions_header" variant="compact" />
+          </div>
+        }
       />
 
       {/* Phase 3E — Inbox de cobranzas pendientes. Sólo se renderea cuando hay
@@ -1181,6 +1268,184 @@ function PositionsDesktop() {
           onClose={() => setModal(null)}
           onConfirm={confirmSell}
         />
+      )}
+
+      {/* Modal: "Registrar venta" sin posiciones abiertas — mensaje + CTA
+          a registrar compra. Evita que el user clickee venta y se quede
+          sin feedback (pasaba antes con el primer-uso). */}
+      {modal === 'sell-empty' && (
+        <Modal title="Todavía no hay posiciones para vender" onClose={() => setModal(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-ink-2 leading-relaxed">
+              Primero tenés que registrar una compra. Una vez que tengas posiciones
+              abiertas, vas a poder venderlas con FIFO automático desde este botón.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setModal(null)}
+                className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => { setModal(null); openAdd() }}
+                className="inline-flex items-center gap-1.5 text-xs bg-data-violet hover:bg-data-violet/90 text-white px-4 py-2 rounded-sm transition-colors"
+              >
+                <Plus size={12} strokeWidth={2} /> Registrar compra
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: selector de posición para vender — aparece cuando hay 2+
+          posiciones no-cash. Si hay 1 sola, openSellFromHeader la abre
+          directo sin pasar por acá. */}
+      {modal === 'sell-selector' && (
+        <Modal title="¿Qué posición querés vender?" onClose={() => setModal(null)}>
+          <div className="space-y-2 max-h-[60vh] overflow-y-auto -mx-2 px-2">
+            <p className="text-xs text-ink-3 leading-relaxed mb-2">
+              Seleccioná la posición y te abrimos el formulario de venta con FIFO automático.
+            </p>
+            <ul className="space-y-1.5">
+              {positions
+                .filter(p => !p.is_cash)
+                .sort((a, b) => {
+                  // Ordenar por broker (alfabético) y dentro de cada broker
+                  // por valor (mayor primero — más probable que el user
+                  // quiera vender posiciones grandes).
+                  if (a.broker !== b.broker) return a.broker.localeCompare(b.broker)
+                  return (b.invested || 0) - (a.invested || 0)
+                })
+                .map(p => {
+                  const b = brokers.find(br => br.name === p.broker)
+                  const isARS = b?.currency === 'ARS'
+                  return (
+                    <li key={p.id}>
+                      <button
+                        type="button"
+                        onClick={() => { setModal(null); setTimeout(() => openSell(p), 0) }}
+                        className="w-full p-3 border border-line hover:border-data-violet hover:bg-data-violet/[0.04] rounded text-left transition-all group flex items-center gap-3"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-sm font-semibold text-ink-0">{p.asset}</span>
+                            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded">
+                              {p.broker}
+                            </span>
+                          </div>
+                          <div className="text-xs text-ink-3 leading-relaxed">
+                            {p.quantity || 0} unidades · invertido {isARS ? `${ars(p.invested || 0)} ARS` : `${usd(p.invested || 0)} USD`}
+                          </div>
+                        </div>
+                        <span className="text-xs font-medium text-data-violet group-hover:translate-x-0.5 transition-transform">
+                          Vender →
+                        </span>
+                      </button>
+                    </li>
+                  )
+                })}
+            </ul>
+            <div className="flex justify-end pt-3 mt-2 border-t border-line/40">
+              <button
+                type="button"
+                onClick={() => setModal(null)}
+                className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: cash menu (selector broker + direction) — pre-flow del
+          cashflow tradicional. El user elige acá broker y dirección antes
+          de pasar al modal de monto. */}
+      {modal === 'cash-menu' && (
+        <Modal title="Movimiento de cash" onClose={() => setModal(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-ink-2 leading-relaxed">
+              Registrá un depósito (plata que entra al broker) o un retiro (plata que sale).
+            </p>
+
+            {/* Selector broker */}
+            <div>
+              <label className="block text-xs text-ink-3 mb-1.5">Broker</label>
+              <select
+                value={cashMenuForm.broker}
+                onChange={e => setCashMenuForm(f => ({ ...f, broker: e.target.value }))}
+                className={inputClass}
+                autoFocus
+              >
+                {brokers.map(b => (
+                  <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Selector dirección */}
+            <div>
+              <label className="block text-xs text-ink-3 mb-1.5">¿Qué movimiento?</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCashMenuForm(f => ({ ...f, direction: 'deposit' }))}
+                  className={`p-3 border rounded text-left transition-all ${
+                    cashMenuForm.direction === 'deposit'
+                      ? 'border-emerald-500/50 bg-emerald-500/10'
+                      : 'border-line hover:border-line-3'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <ArrowDownCircle size={14} strokeWidth={2} className="text-emerald-500" />
+                    <span className="text-sm font-medium text-ink-0">Depósito</span>
+                  </div>
+                  <div className="text-[11px] text-ink-3 leading-relaxed">
+                    Metés plata al broker
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCashMenuForm(f => ({ ...f, direction: 'withdraw' }))}
+                  className={`p-3 border rounded text-left transition-all ${
+                    cashMenuForm.direction === 'withdraw'
+                      ? 'border-orange-500/50 bg-orange-500/10'
+                      : 'border-line hover:border-line-3'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <ArrowUpCircle size={14} strokeWidth={2} className="text-orange-500" />
+                    <span className="text-sm font-medium text-ink-0">Retiro</span>
+                  </div>
+                  <div className="text-[11px] text-ink-3 leading-relaxed">
+                    Sacás plata del broker
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-line/40">
+              <button
+                type="button"
+                onClick={() => setModal(null)}
+                className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={continueCashMenu}
+                disabled={!cashMenuForm.broker}
+                className="inline-flex items-center gap-1.5 text-xs bg-data-violet hover:bg-data-violet/90 disabled:bg-data-violet/40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-sm transition-colors"
+              >
+                Continuar →
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {modal === 'convert' && (
