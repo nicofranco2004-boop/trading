@@ -142,7 +142,10 @@ export default function OnboardingChecklist() {
       title: 'Sumá tu primer broker',
       desc: 'Cocos, IOL, Schwab, Binance — donde tengas tu plata.',
       cta: 'Agregar',
-      onClick: () => navigate('/config'),
+      // /posiciones es ahora el hogar del BrokerManager (movido desde /config
+      // hace tiempo). En desktop, cuando no hay brokers, Positions muestra
+      // BrokerManager con su botón "+ Agregar broker" arriba del EmptyState.
+      onClick: () => navigate('/posiciones'),
     },
     {
       id: 'position',

@@ -609,11 +609,22 @@ function PositionsDesktop() {
   if (brokers.length === 0) {
     return (
       <div className="page-shell-wide">
-        <PageHeader eyebrow="Posiciones / Activas" title="Tu portfolio en vivo" />
-        <div className="bg-bg-1 border border-line rounded">
+        <PageHeader
+          eyebrow="Posiciones / Activas"
+          title="Tu portfolio en vivo"
+          subtitle="Para empezar, sumá el broker donde tenés tus inversiones."
+        />
+
+        {/* BrokerManager con su propio botón "+ Agregar broker" abre el
+            modal con form (nombre + moneda) y POSTea a /brokers. Antes,
+            el EmptyState decía "configurá desde Config" pero esa UI ya
+            no existe — ahora el flow vive acá en Posiciones. */}
+        <BrokerManager brokers={brokers} onChange={loadAll} />
+
+        <div className="bg-bg-1 border border-line rounded mt-6">
           <EmptyState
-            title="Sin brokers configurados"
-            description="Configurá tu primer broker desde la sección Config para comenzar a registrar posiciones."
+            title="Sumá tu primer broker"
+            description='Apretá "+ Agregar broker" arriba para empezar. Después vas a poder cargar posiciones, importar CSV o sumar más cuentas.'
           />
         </div>
       </div>
