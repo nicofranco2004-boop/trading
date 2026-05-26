@@ -95,7 +95,13 @@ export default function OnboardingChecklist() {
     ]).then(([brokers, positions, profile]) => {
       if (cancelled) return
       const hasBroker = Array.isArray(brokers) && brokers.length > 0
-      const hasPosition = Array.isArray(positions) && positions.length > 0
+      // FIX (reportado por user): el backend auto-crea una position cash
+      // (is_cash=1, asset = ARS/USD/USDT según moneda del broker) cada vez
+      // que se crea un broker — para que el botón "Depositar" aparezca
+      // sin obligar al user a cargar la cash manualmente. Esa posición
+      // NO es una "operación real" del user, por eso la filtramos del
+      // check. "Primera operación" = primera posición no-cash cargada.
+      const hasPosition = Array.isArray(positions) && positions.some((p) => !p.is_cash)
       // El endpoint devuelve {} cuando no hay perfil, así que checkeamos keys.
       // Si tiene cualquier respuesta válida del quiz (horizonte, tolerancia, etc.)
       // marcamos como completado.
