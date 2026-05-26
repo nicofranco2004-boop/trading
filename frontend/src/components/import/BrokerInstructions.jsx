@@ -187,13 +187,36 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos' }) {
             )}
           </div>
 
-          {/* Footer: mantenimiento mensual */}
-          <div className="mx-3 mb-3 rounded-md border border-rendi-pos/25 bg-rendi-pos/[0.04] p-3 flex items-start gap-2.5">
-            <RefreshCw size={14} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-ink-0">Mantenimiento mensual</div>
-              <div className="text-xs text-ink-3 mt-0.5 leading-relaxed">
-                Después de la carga inicial, descargá mes a mes los movimientos nuevos de cada broker y subilos como actualización.
+          {/* Footer: 2 opciones de mantenimiento post carga inicial.
+              Antes decía solo "descargá mes a mes el CSV" — pero el user
+              también puede ir cargando manual cada compra/venta cuando
+              ocurre, desde Posiciones. Las dos opciones son válidas y
+              vale aclarar ambas para que el user elija la que más le
+              cuadra. */}
+          <div className="mx-3 mb-3 rounded-md border border-rendi-pos/25 bg-rendi-pos/[0.04] p-3">
+            <div className="flex items-start gap-2.5 mb-2">
+              <RefreshCw size={14} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-ink-0">Mantenimiento después de la carga inicial</div>
+                <div className="text-xs text-ink-3 mt-0.5 leading-relaxed">
+                  Tenés dos formas de mantener Rendi actualizado. Podés usar la que más te convenga:
+                </div>
+              </div>
+            </div>
+
+            {/* Opción 1: manual */}
+            <div className="mt-2.5 pl-[26px] text-xs text-ink-2 leading-relaxed">
+              <div className="font-medium text-ink-1 mb-0.5">Opción 1 — Manual (recomendado si operás poco)</div>
+              <div className="text-ink-3">
+                Cada vez que hagas una compra o venta, cargala desde <span className="text-ink-1">Posiciones → Registrar compra/venta</span>. Tu cartera queda actualizada en el momento.
+              </div>
+            </div>
+
+            {/* Opción 2: CSV mensual */}
+            <div className="mt-2 pl-[26px] text-xs text-ink-2 leading-relaxed">
+              <div className="font-medium text-ink-1 mb-0.5">Opción 2 — CSV mensual (recomendado si operás mucho)</div>
+              <div className="text-ink-3">
+                Una vez por mes, descargá el CSV nuevo de tu broker con los movimientos del mes y subilo acá. Rendi suma lo nuevo sin duplicar.
               </div>
             </div>
           </div>
