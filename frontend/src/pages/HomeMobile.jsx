@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, TrendingUp, TrendingDown } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
+import BenchmarksLine from '../components/BenchmarksLine'
 import PersonalLayer from '../components/home/PersonalLayer'
 import Heatmap from '../components/home/Heatmap'
 import MoversRail from '../components/home/MoversRail'
@@ -38,6 +39,7 @@ export default function HomeMobile() {
   const [dolar, setDolar] = useState(null)
   const [prices, setPrices] = useState({})
   const [snapshots, setSnapshots] = useState([])
+  const [bench, setBench] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadAll() }, [])
@@ -60,6 +62,14 @@ export default function HomeMobile() {
     } finally {
       setLoading(false)
     }
+
+    // /benchmarks aparte del critical path:
+    // hace 3 fetches externos (yfinance ^SP500TR + argentinadatos inflación + blue)
+    // sin timeout total — en cache miss puede tardar 20-45s. Bloquearlo en el
+    // Promise.all retrasa loadPrices() + setLoading(false), generando que se vea
+    // "Cargando…" hasta que termine. Fire-and-forget: la BenchmarksCard aparece
+    // con tiles "—" mientras carga, y se actualiza cuando llega.
+    api.get('/benchmarks').then(setBench).catch(() => {})
   }
 
   async function loadPrices(pos, bkrs) {
@@ -249,6 +259,19 @@ export default function HomeMobile() {
           />
         </div>
       </section>
+
+      {/* ── 2.5. Headline benchmarks ───────────────────────────────
+          1 línea con S&P + dólar quieto. Detalle completo en /insights.
+          Liviano para no saturar la primera screen mobile. */}
+      {totals.totalValue > 0 && (
+        <section className="px-4 mb-5">
+          <BenchmarksLine
+            monthly={monthly}
+            bench={bench}
+            totalPortfolio={totals.totalValue}
+          />
+        </section>
+      )}
 
       {/* ── 3. Hoy en tu cartera ───────────────────────────────────── */}
       <section className="px-4 mb-5">

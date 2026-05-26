@@ -9,12 +9,27 @@ V2: real-time con polling/WebSocket.
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Any, Tuple
 
 import yfinance as yf
 
 log = logging.getLogger("home.market")
+
+# Executor dedicado para refrescos SWR background. Tamaño chico — solo
+# necesitamos 1-2 refreshes concurrent porque hay pocas keys distintas.
+# Patrón módulo-level (no `with`) para que el thread no muera al terminar
+# la request — la idea es que el refresh continúe en bg después de que
+# devolvimos la stale data al user.
+_swr_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="market-swr")
+
+# Lock por key para evitar dispatch múltiple del mismo refresh.
+# Sin esto, si 10 users entran al mismo tiempo y el cache está stale,
+# disparamos 10 refreshes idénticos a yfinance → throttle garantizado.
+_swr_inflight: Dict[str, bool] = {}
+_swr_lock = threading.Lock()
 
 
 # ─── Lista hardcodeada de S&P 500 top 50 por market cap (Q1 2026) ────────────
@@ -143,13 +158,50 @@ _cache: Dict[str, Tuple[float, Any]] = {}
 
 
 def _cached(key: str, ttl_s: int):
-    """Decorator: cachea el resultado de la func bajo `key` por `ttl_s` segundos."""
+    """Decorator stale-while-revalidate:
+       • cache fresco (< ttl_s) → return inmediato.
+       • cache stale pero existente → return stale + dispatch refresh background.
+       • sin cache → bloquea fetcheando (cold start).
+
+    Sin SWR, un cache stale post-restart bloqueaba el primer request del día
+    por 15-30s mientras yfinance respondía. Con SWR, el user que pidió ve
+    data un poco vieja (ej. heatmap de hace 35min) pero instantáneo, y el
+    próximo request ve data fresca.
+
+    Lock `_swr_inflight` evita disparar 10 refreshes idénticos si 10 users
+    entran simultáneo al cache stale. Solo 1 thread refresca; los otros
+    también devuelven stale.
+    """
     def deco(fn):
+        def _refresh_in_bg(*args, **kwargs):
+            try:
+                result = fn(*args, **kwargs)
+                _cache[key] = (time.time(), result)
+            except Exception as ex:
+                log.warning(f"SWR refresh failed for {key}: {ex}")
+            finally:
+                with _swr_lock:
+                    _swr_inflight.pop(key, None)
+
         def wrapper(*args, **kwargs):
             now = time.time()
             cached = _cache.get(key)
+
+            # Cache fresco → return inmediato
             if cached and (now - cached[0]) < ttl_s:
                 return cached[1]
+
+            # Cache stale pero existe → return stale + refresh bg
+            if cached:
+                with _swr_lock:
+                    already_refreshing = _swr_inflight.get(key, False)
+                    if not already_refreshing:
+                        _swr_inflight[key] = True
+                        _swr_executor.submit(_refresh_in_bg, *args, **kwargs)
+                return cached[1]
+
+            # Cold start (cache vacío) → bloquea fetcheando.
+            # Este path solo se ejecuta el PRIMER request post-restart.
             result = fn(*args, **kwargs)
             _cache[key] = (now, result)
             return result

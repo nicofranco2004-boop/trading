@@ -15,6 +15,7 @@ import InfoTooltip from '../components/InfoTooltip'
 import { DashboardSkeleton } from '../components/Skeleton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import InsightLine from '../components/InsightLine'
+import BenchmarksLine from '../components/BenchmarksLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
 import AssetLogo from '../components/AssetLogo'
@@ -34,6 +35,7 @@ export default function Dashboard() {
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
   const [snapshots, setSnapshots] = useState([])
+  const [bench, setBench] = useState(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [range, setRange] = useState('1M')
@@ -75,6 +77,14 @@ export default function Dashboard() {
       console.error('Dashboard loadAll error:', e)
       setLoading(false)
     }
+
+    // /benchmarks aparte del critical path:
+    // hace 3 fetches externos (yfinance ^SP500TR + argentinadatos inflación + blue)
+    // sin timeout total — en cache miss puede tardar 20-45s. Bloquearlo en el
+    // Promise.all retrasa loading skeleton + ocupa worker del backend mientras
+    // /prices y /heatmap se encolan. Fire-and-forget: la BenchmarksCard aparece
+    // con tiles "—" mientras carga, y se actualiza cuando llega.
+    api.get('/benchmarks').then(setBench).catch(() => {})
   }
 
   async function loadPrices(pos, cfg, bkrs) {
@@ -519,6 +529,17 @@ export default function Dashboard() {
           />
         )}
       </div>
+
+      {/* ── Headline de benchmarks ────────────────────────────────────────────
+          1 línea con S&P + dólar quieto + monto absoluto. El detalle (vs blue,
+          inflación, cards grandes) vive en /insights → "Comparativa con
+          benchmarks" — esto es solo el descubrimiento. */}
+      <BenchmarksLine
+        monthly={monthly}
+        bench={bench}
+        totalPortfolio={totalValue}
+        className="mb-8"
+      />
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
       <AskAIAbout

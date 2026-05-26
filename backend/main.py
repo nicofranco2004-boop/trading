@@ -2277,7 +2277,47 @@ def get_snapshots(days: int = 30, uid: int = Depends(get_current_user)):
 # ─── Benchmarks (inflación AR, S&P 500, dólar blue histórico) ────────────────
 
 _bench_cache = {"data": None, "ts": 0.0}
+_bench_refresh_inflight = {"flag": False}  # SWR: evita disparar múltiples refreshes
 BENCH_TTL = 3600  # 1 hour
+
+# Executor dedicado para paralelizar los 3 fetches externos del /api/benchmarks
+# + para el refresh SWR background. Wall time del fetch coordinado:
+#   • Secuencial: ~45s peor caso
+#   • Paralelo (este executor): ~15-20s
+# Patrón módulo-level (no `with`) para evitar el bug de shutdown documentado
+# en el módulo (ver _YFThreadPoolExecutor más abajo).
+_bench_fetch_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bench-fetch")
+
+
+def _benchmarks_fetch_and_cache():
+    """Fetch los 3 benchmarks externos en paralelo y persiste en cache.
+    Llamado tanto del cold-start sincrónico como del SWR background refresh.
+    """
+    f_inf = _bench_fetch_executor.submit(_fetch_inflation_ar)
+    f_sp = _bench_fetch_executor.submit(_fetch_sp500_monthly)
+    f_blue = _bench_fetch_executor.submit(_fetch_dolar_blue_monthly)
+    try:
+        inflation_ar = f_inf.result(timeout=25)
+    except Exception:
+        inflation_ar = (_bench_cache["data"] or {}).get("inflation_ar", {})
+    try:
+        sp500 = f_sp.result(timeout=25)
+    except Exception:
+        sp500 = (_bench_cache["data"] or {}).get("sp500", {})
+    try:
+        dolar_blue = f_blue.result(timeout=25)
+    except Exception:
+        dolar_blue = (_bench_cache["data"] or {}).get("dolar_blue", {})
+
+    data = {
+        "inflation_ar": inflation_ar,
+        "sp500": sp500,
+        "dolar_blue": dolar_blue,
+        "fetched_at": datetime.utcnow().isoformat() + "Z",
+    }
+    _bench_cache["data"] = data
+    _bench_cache["ts"] = time.time()
+    return data
 
 
 def _fetch_inflation_ar():
@@ -2351,18 +2391,42 @@ def _fetch_dolar_blue_monthly():
 
 @app.get("/api/benchmarks")
 def get_benchmarks(uid: int = Depends(get_current_user)):
+    """Endpoint stale-while-revalidate:
+       • cache fresco (< 1h) → return inmediato.
+       • cache stale pero existente → return stale + dispatch refresh background.
+       • sin cache (cold start post-restart) → bloquea fetcheando.
+
+    Sin SWR, el primer user después del restart del worker bloqueaba 15-20s
+    esperando los 3 fetches externos (yfinance + 2× argentinadatos.com). Con
+    SWR, ve data hasta 1h vieja (igual válida — los benchmarks son mensuales)
+    y el próximo request ve data fresca.
+    """
     now = time.time()
-    if _bench_cache["data"] and now - _bench_cache["ts"] < BENCH_TTL:
-        return _bench_cache["data"]
-    data = {
-        "inflation_ar": _fetch_inflation_ar(),
-        "sp500": _fetch_sp500_monthly(),
-        "dolar_blue": _fetch_dolar_blue_monthly(),
-        "fetched_at": datetime.utcnow().isoformat() + "Z",
-    }
-    _bench_cache["data"] = data
-    _bench_cache["ts"] = now
-    return data
+    cached_data = _bench_cache["data"]
+    cache_age = now - _bench_cache["ts"]
+
+    # Cache fresco → return inmediato
+    if cached_data and cache_age < BENCH_TTL:
+        return cached_data
+
+    # Cache stale pero existe → return stale + refresh bg (SWR).
+    # Lock simple para evitar 10 refreshes paralelos si llegan 10 requests.
+    if cached_data:
+        if not _bench_refresh_inflight["flag"]:
+            _bench_refresh_inflight["flag"] = True
+            def _bg_refresh():
+                try:
+                    _benchmarks_fetch_and_cache()
+                except Exception as ex:
+                    log.warning(f"benchmarks SWR refresh failed: {ex}")
+                finally:
+                    _bench_refresh_inflight["flag"] = False
+            _bench_fetch_executor.submit(_bg_refresh)
+        return cached_data
+
+    # Cold start (cache vacío) → bloquea fetcheando. Solo el primer request
+    # post-restart paga este costo (~15-20s con paralelización interna).
+    return _benchmarks_fetch_and_cache()
 
 
 # ─── Bond indices (CER / UVA / A3500) ─────────────────────────────────────────
