@@ -3047,75 +3047,197 @@ INVESTING_FEEDS = [
     ("https://es.investing.com/rss/news_285.rss",  "macro",  "es"),
 ]
 
-# Whitelist de keywords para filtrar noticias market/macro irrelevantes.
-# Si el title+summary de una noticia NO contiene al menos uno de estos
-# términos, la descartamos antes de persistirla.
+# Whitelist de relevancia (rediseñada 2026-05-26).
 #
-# Filosofía: mantener el filtro inclusivo (mejor falso positivo que falso
-# negativo). Cubrir EN+ES porque Google News mezcla idiomas a veces.
+# Versión vieja: filtro demasiado inclusivo — bastaba que la noticia tuviera
+# "stock", "share" o "ipo" para pasar. Resultado: el feed traía empresas
+# chiquitas (Insulet, Verra Mobility, Forgent, Suncrete, etc.) que ningún
+# usuario AR tiene en cartera.
+#
+# Versión nueva — DOS PATHS:
+#   Path A (empresa): noticia menciona una empresa/asset conocido (S&P 50 +
+#                     Merval 25 + cripto top + algunos extras populares LATAM)
+#   Path B (macro):   noticia tiene una keyword macro FUERTE (Fed, CPI, S&P 500,
+#                     dólar blue, Merval, BCRA, inflación, etc.)
+#   Default → DESCARTA.
 #
 # Sólo se aplica a categorías "market" y "macro". Las noticias de "portfolio"
 # ya están filtradas por el ticker en la query, no necesitan otro filtro.
-MARKET_RELEVANCE_KEYWORDS = frozenset({
-    # ── Activos / instrumentos
-    'stock', 'stocks', 'share', 'shares', 'equity', 'equities', 'etf', 'etfs',
-    'bond', 'bonds', 'yield', 'yields', 'treasury', 'treasuries', 'note', 'notes',
-    'cedear', 'cedears', 'adr', 'adrs',
-    'acción', 'acciones', 'accion', 'bono', 'bonos',
-    'letra', 'letras', 'lecap', 'lecaps', 'soberano', 'soberanos',
-    'plazo fijo', 'fondo común', 'fci',
 
-    # ── Mercados / índices
-    'market', 'markets', 'mercado', 'mercados', 'wall street',
-    'nyse', 'nasdaq', 's&p', 'sp500', 'dow jones', 'dow',
-    'russell', 'merval', 'bovespa', 'msci',
-    'index', 'indices', 'índice', 'índices',
-    'rally', 'sell-off', 'selloff', 'bull market', 'bear market',
-    'volatility', 'volatilidad',
+# Tokens de empresas/assets — word-boundary matching (no substring) para evitar
+# falsos positivos. Cubre tickers y nombres en EN/ES. Tickers de 1-2 chars
+# (V, F, MA) NO se incluyen — demasiado ambiguos para boundary matching.
+_KNOWN_ENTITIES = frozenset({
+    # ── US Top S&P (top 50 + extras populares LATAM) ──────────────────────
+    'apple', 'aapl',
+    'microsoft', 'msft',
+    'nvidia', 'nvda',
+    'alphabet', 'google', 'googl', 'goog',
+    'amazon', 'amzn',
+    'meta', 'facebook',
+    'berkshire', 'brk-a', 'brk-b', 'brkb',
+    'tesla', 'tsla',
+    'lilly', 'lly',
+    'broadcom', 'avgo',
+    'jpmorgan', 'jpm',
+    'walmart', 'wmt',
+    'exxonmobil', 'exxon', 'xom',
+    'unitedhealth', 'unh',
+    'mastercard',
+    'procter', 'p&g',
+    'johnson',
+    'costco', 'cost',
+    'abbvie', 'abbv',
+    'oracle', 'orcl',
+    'salesforce',
+    'chevron', 'cvx',
+    'coca-cola',
+    'adobe', 'adbe',
+    'merck', 'mrk',
+    'amd', 'pepsico', 'pepsi', 'pep',
+    'netflix', 'nflx',
+    'qualcomm', 'qcom',
+    'intel', 'intc',
+    'disney', 'dis',
+    'cisco', 'csco',
+    'abbott',
+    'accenture', 'acn',
+    'mcdonald', "mcdonald's",
+    'verizon',
+    'amgen', 'amgn',
+    'pfizer', 'pfe',
+    'philip morris',
+    'ibm',
+    'servicenow',
+    # Extras populares para LATAM / retail
+    'palantir', 'pltr',
+    'spotify',
+    'mercadolibre', 'meli',
+    'globant', 'glob',
+    'starbucks',
+    'paypal', 'pypl',
+    'shopify',
+    'uber',
+    'airbnb',
+    'snap',
+    'pinterest',
+    'roblox', 'rblx',
 
-    # ── Tasas / bancos centrales
-    'rate', 'rates', 'tasa', 'tasas', 'interest rate',
-    'fed', 'federal reserve', 'fomc', 'powell', 'ecb', 'boe', 'boj',
-    'bcra', 'banco central', 'central bank',
+    # ── AR Top Merval ─────────────────────────────────────────────────────
+    'merval',  # índice — standalone porque las noticias varían: "Merval cerró", "Merval abre", "Merval +2%"
+    'ggal', 'galicia',
+    'ypf', 'ypfd',
+    'pampa', 'pampa energía', 'pamp',
+    'macro', 'bma',
+    'bbva', 'bbar',
+    'aluar', 'alua',
+    'cresud', 'cres',
+    'ternium', 'txar',
+    'edenor', 'edn',
+    'tgs', 'tgno4',
+    'cepu', 'central puerto',
+    'mirgor', 'mirg',
+    'transener',
+    'loma negra',
+    'supervielle', 'supv',
+    'byma',
+    'holcim',
+    'cablevisión', 'cablevision', 'cvh',
+    # Bonos AR + soberanos
+    'al30', 'al29', 'al35', 'gd30', 'gd29', 'gd35', 'gd38', 'gd41', 'gd46',
+    'tx26', 'tx28', 'tzx26', 'tzx27', 'tzx28',
 
-    # ── Macro relevante
-    'inflation', 'cpi', 'ppi', 'inflación', 'inflacion', 'ipc', 'indec',
-    'gdp', 'pbi', 'pib', 'recession', 'recesión',
-    'jobs report', 'nfp', 'unemployment', 'jobless', 'empleo', 'desempleo',
-    'pmi', 'ism', 'retail sales',
+    # ── Crypto Top 30 ─────────────────────────────────────────────────────
+    'bitcoin', 'btc',
+    'ethereum', 'eth',
+    'solana',
+    'binance',
+    'xrp', 'ripple',
+    'cardano', 'ada',
+    'dogecoin', 'doge',
+    'avalanche', 'avax',
+    'polkadot',
+    'polygon',
+    'chainlink',
+    'litecoin', 'ltc',
+    'shiba',
+    'tron',
+    'uniswap',
+    'cosmos',
+    'stellar',
+    'aave',
+})
 
-    # ── FX
-    'dollar', 'dólar', 'dolar', 'blue', 'mep', 'ccl', 'contado con liqui',
-    'peso', 'euro', 'fx', 'forex', 'currency', 'currencies', 'divisa', 'divisas',
-
-    # ── Corporate / earnings
-    'earnings', 'revenue', 'profit', 'guidance', 'beat', 'miss',
-    'ipo', 'merger', 'acquisition', 'm&a', 'buyback', 'dividend',
-    'ganancias', 'ingresos', 'utilidades', 'ebitda',
-    'fusión', 'adquisición',
-
-    # ── Investor / trading
-    'investor', 'investors', 'inversor', 'inversores', 'inversionistas',
-    'trader', 'traders', 'analyst', 'analysts', 'analistas',
-    'portfolio', 'cartera', 'hedge fund', 'mutual fund',
-
-    # ── Bonds / debt (soberano + corporate)
-    'debt', 'deuda', 'default', 'restructuring', 'reestructuración', 'swap',
-    'imf', 'fmi', 'world bank', 'banco mundial',
+# Macro keywords FUERTES — siempre relevantes para un inversor AR/LATAM.
+# Multi-word OK (substring match). A diferencia del filtro viejo, estas son
+# específicas: no aceptamos "stock" solo, hay que tener contexto macro.
+_STRONG_MACRO_KEYWORDS = frozenset({
+    # USA — macro
+    'federal reserve', 'fomc', 'rate hike', 'rate cut', 'rate decision',
+    'powell', 'monetary policy', 'fed minutes', 'fed pivot',
+    'cpi data', 'core cpi', 'core inflation', 'inflation report', 'inflation data',
+    'jobs report', 'nonfarm payrolls', 'unemployment rate',
+    'jobless claims', 'retail sales', 'gdp growth', 'recession risk',
+    'treasury yield', 'treasury yields', '10-year treasury', '2-year treasury',
+    # USA — mercados/índices
+    's&p 500', 'sp500', 'nasdaq 100', 'nasdaq composite', 'dow jones',
+    'wall street', 'russell 2000', 'magnificent 7', 'mag seven',
+    # USA — commodities
+    'crude oil', 'oil prices', 'gold prices', 'natural gas prices',
+    # AR — macro
+    'inflación argentina', 'inflacion argentina', 'ipc indec', 'indec',
+    'bcra', 'banco central argentina', 'tasa de referencia', 'tasa badlar',
+    'política monetaria argentina', 'politica monetaria argentina',
+    'dolar blue', 'dólar blue', 'dolar mep', 'dolar ccl', 'dolar oficial',
+    'cepo cambiario', 'control de cambios', 'brecha cambiaria',
+    'reservas bcra', 'reservas internacionales',
+    # AR — mercados
+    's&p merval', 'merval cierra', 'merval abre', 'índice merval',
+    'bonos argentinos', 'bonos soberanos', 'deuda argentina',
+    'lecap', 'cer bonos',
+    # AR — política económica
+    'milei', 'caputo', 'ley bases', 'rigi', 'fmi argentina',
+    # Crypto — macro
+    'bitcoin halving', 'crypto market', 'crypto regulation', 'spot etf',
 })
 
 
-def _is_market_relevant(item):
-    """True si title+summary contiene al menos una keyword market-relevante.
+# Regex pre-compilado para Path A — word boundary matching evita falsos
+# positivos como "amid" matcheando "amd" o "macro" matcheando dentro de
+# otras palabras. Compilado al startup una sola vez.
+import re as _re_news
+_KNOWN_ENTITIES_REGEX = _re_news.compile(
+    r'\b(' + '|'.join(_re_news.escape(t) for t in sorted(_KNOWN_ENTITIES, key=len, reverse=True)) + r')\b',
+    _re_news.IGNORECASE,
+)
 
-    Falla abierto: si no hay title, lo dejamos pasar (raro pero defensivo).
+
+def _is_market_relevant(item):
+    """True si la noticia menciona una empresa conocida O tiene macro fuerte.
+
+    Cambio 2026-05-26: el filtro viejo era demasiado inclusivo (bastaba
+    "stock" o "share"). Traía noticias irrelevantes de empresas chicas.
+    Ahora exige una de dos cosas:
+       Path A: la noticia menciona una empresa/asset de la whitelist
+               (S&P 50 + Merval 25 + crypto top + extras populares LATAM).
+       Path B: la noticia tiene una keyword macro fuerte (Fed, CPI, S&P 500,
+               dólar blue, Merval, BCRA, inflación, etc.).
+
+    Falla abierto: si no hay title, deja pasar.
     """
-    title = (item.get('title') or '').lower()
-    summary = (item.get('summary') or '').lower()
+    title = item.get('title') or ''
+    summary = item.get('summary') or ''
     if not title:
         return True
     haystack = title + ' ' + summary
-    return any(kw in haystack for kw in MARKET_RELEVANCE_KEYWORDS)
+
+    # Path A: empresa/asset conocido (word boundary regex)
+    if _KNOWN_ENTITIES_REGEX.search(haystack):
+        return True
+
+    # Path B: macro fuerte (substring sobre lowercase)
+    haystack_l = haystack.lower()
+    return any(kw in haystack_l for kw in _STRONG_MACRO_KEYWORDS)
 
 
 # ─── News tagging ─────────────────────────────────────────────────────────────
@@ -3621,6 +3743,11 @@ def get_market_news(
             except Exception:
                 pass
 
+        # Fetcheamos MÁS rows que el limit final + filtramos en Python.
+        # Esto cubre las noticias viejas que están en DB de antes del cambio
+        # del filtro de relevancia (2026-05-26) — sin esto el feed seguiría
+        # mostrando Insulet, Forgent, Suncrete, etc. hasta que rote naturalmente.
+        # Overhead aceptable: ~5x rows fetchadas, filter in-mem es O(n) chico.
         rows = conn.execute(
             """SELECT title, summary, url, published_at, query_source,
                       category, source, tags
@@ -3628,9 +3755,20 @@ def get_market_news(
                WHERE category IN ('market', 'macro')
                ORDER BY published_at DESC
                LIMIT ?""",
-            (limit,),
+            (limit * 5,),  # overfetch para tener margen tras filtro
         ).fetchall()
-        return {'news': [_news_row_to_dict(r) for r in rows], 'count': len(rows)}
+
+        # Re-aplicamos _is_market_relevant para descartar las que ya
+        # estaban persistidas con el filtro viejo (más laxo).
+        filtered = []
+        for r in rows:
+            item = {'title': r['title'] or '', 'summary': r['summary'] or ''}
+            if _is_market_relevant(item):
+                filtered.append(r)
+            if len(filtered) >= limit:
+                break
+
+        return {'news': [_news_row_to_dict(r) for r in filtered], 'count': len(filtered)}
     finally:
         conn.close()
 
