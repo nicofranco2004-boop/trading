@@ -30,10 +30,11 @@
 // Privacy: anonymize_ip=true. No mandamos email, name ni amount_usd en
 // los params — solo IDs/categorías. user_id se setea como uid hasheado.
 
-const GA_ID =
-  typeof import.meta !== 'undefined' && import.meta.env
-    ? import.meta.env.VITE_GA_MEASUREMENT_ID
-    : null
+// GA4 Measurement ID — hardcoded porque Vercel no inyectaba el env var
+// correctamente (problema con flag VITE_ exposed). El ID es público por
+// diseño (aparece en el HTML de cualquier sitio que use GA4), no es secret.
+// Si querés cambiarlo o deshabilitar tracking, cambialo acá directamente.
+const GA_ID = 'G-DQ8LV6YJPP'
 
 const DEBUG = typeof window !== 'undefined' && window.location?.hostname === 'localhost'
 
