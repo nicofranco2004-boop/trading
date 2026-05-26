@@ -78,6 +78,11 @@ const BlogFifoCedears = lazy(() => import('./pages/blog/articles/FifoCedearsArge
 const BlogPnlRealUsdBlue = lazy(() => import('./pages/blog/articles/PnlRealUsdBlue'))
 const BlogComparativaBrokers = lazy(() => import('./pages/blog/articles/ComparativaBrokersArgentina'))
 
+// Onboarding wizard — flow guiado de primer uso post-signup.
+// Auto-trigger desde VerifyEmail.jsx si el user no tiene brokers.
+// Skip flag en localStorage para users que prefieran explorar solos.
+const Onboarding = lazy(() => import('./pages/Onboarding'))
+
 // Guía / Manual completo — accesible sin login. Index + 6 sub-secciones.
 // Linkeado desde la Landing (botón "Ver guía completa" en HowItWorks) y
 // desde el Sidebar (footer) para usuarios logueados. SEO friendly: cada
@@ -148,6 +153,7 @@ function AppRoutes() {
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
       <Route path="/bienvenida" element={<FirstInsight />} />
+      <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/admin" element={<Admin />} />
       <Route path="/planes" element={<Planes />} />
       {/* Páginas legales — duplicadas en flow no-auth abajo para que sean

@@ -127,9 +127,24 @@ export default function VerifyEmail() {
         inputs.current[0]?.focus()
         throw new Error(typeof data.detail === 'string' ? data.detail : 'Código inválido o expirado.')
       }
-      // Verificación exitosa → login + redirect
-      login(data.token, data.name, { is_admin: !!data.is_admin })
-      navigate('/')
+      // Verificación exitosa → login + redirect.
+      // Si el user es fresh signup (recién verificó email por primera vez)
+      // y no clickeó "saltar onboarding" en algún intento previo,
+      // lo mandamos al wizard de onboarding. Sino al home.
+      login(data.token, data.name, {
+        is_admin: !!data.is_admin,
+        id: data.user_id || data.id,
+        event_type: 'sign_up',
+      })
+      const skippedBefore = (() => {
+        try {
+          return localStorage.getItem('rendi_onboarding_skipped') === '1' ||
+                 localStorage.getItem('rendi_onboarding_completed') === '1'
+        } catch {
+          return false
+        }
+      })()
+      navigate(skippedBefore ? '/' : '/onboarding')
     } catch (ex) {
       setError(ex.message)
     } finally {
