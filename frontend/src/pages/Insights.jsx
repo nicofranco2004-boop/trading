@@ -43,7 +43,12 @@ import {
   simulateSp500,
   simulateDolarCash,
   simulateArsCash,
+  simulateShv,
+  simulateGold,
+  simulateMerval,
+  simulatePlazoFijoArs,
   computeInflationCumulative,
+  lookupMonthly,
 } from '../utils/benchmarkSim'
 import { selectDiagnostics } from '../utils/diagnostics'
 import AssetLogo from '../components/AssetLogo'
@@ -147,6 +152,27 @@ function InsightsDesktop() {
   const [dolar, setDolar] = useState(null)
   const [currency, setCurrency] = useState('USD')
   const [chartRange, setChartRange] = useState(12) // months; null = MAX
+
+  // Selector de benchmark del chart — uno por moneda, persisted en localStorage.
+  // Keys disponibles:
+  //   USD: 'sp500' (default) · 'tbill' · 'gold' · 'dolar_cash'
+  //   ARS: 'inflation' (default) · 'merval' · 'plazo_fijo' · 'pesos_cash'
+  const [benchUsd, setBenchUsd] = useState(() => {
+    try { return localStorage.getItem('rendi_insights_bench_usd') || 'sp500' }
+    catch { return 'sp500' }
+  })
+  const [benchArs, setBenchArs] = useState(() => {
+    try { return localStorage.getItem('rendi_insights_bench_ars') || 'inflation' }
+    catch { return 'inflation' }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('rendi_insights_bench_usd', benchUsd) } catch {}
+  }, [benchUsd])
+  useEffect(() => {
+    try { localStorage.setItem('rendi_insights_bench_ars', benchArs) } catch {}
+  }, [benchArs])
+  const selectedBench = currency === 'USD' ? benchUsd : benchArs
+  const setSelectedBench = (key) => currency === 'USD' ? setBenchUsd(key) : setBenchArs(key)
   const [loading, setLoading] = useState(true)
   // Investor profile — perfil del test (7 preguntas). Lo usamos para cruzarlo
   // contra la cartera real y mostrar match/objective coherence cards.
@@ -628,9 +654,38 @@ function InsightsDesktop() {
     return out.filter(p => { if (seen.has(p.key)) return false; seen.add(p.key); return true })
   })()
 
-  // Selector de serie para el gráfico de benchmarks
+  // Selector de serie del portfolio (USD vs ARS) y label del benchmark.
   const activeSeries = currency === 'USD' ? benchSeriesUsd : benchSeriesArs
-  const benchmarkKey = currency === 'USD' ? 'S&P 500' : 'Inflación AR'
+
+  // Labels visibles del benchmark seleccionado (para legend del chart).
+  const BENCHMARK_LABELS = {
+    sp500:      'S&P 500',
+    tbill:      'T-Bills USD',
+    gold:       'Oro',
+    dolar_cash: 'Dólar quieto',
+    inflation:  'Inflación AR',
+    merval:     'Merval',
+    plazo_fijo: 'Plazo fijo AR',
+    pesos_cash: 'Pesos cash (blue)',
+  }
+  const benchmarkKey = BENCHMARK_LABELS[selectedBench] || 'Benchmark'
+
+  // Opciones del selector según moneda. Cada una marca `available` según si
+  // tenemos data del backend (gracias al fire-and-forget el bench puede llegar
+  // tarde y algunas opciones aparecen disabled al inicio).
+  const BENCHMARK_OPTIONS_USD = [
+    { key: 'sp500',      label: 'S&P 500',         available: !!bench?.sp500 },
+    { key: 'tbill',      label: 'T-Bills USD',     available: !!bench?.shv },
+    { key: 'gold',       label: 'Oro (GLD)',       available: !!bench?.gld },
+    { key: 'dolar_cash', label: 'Dólar quieto',    available: true },
+  ]
+  const BENCHMARK_OPTIONS_ARS = [
+    { key: 'inflation',  label: 'Inflación AR',    available: !!bench?.inflation_ar },
+    { key: 'merval',     label: 'Merval',          available: !!bench?.merval && !!bench?.dolar_blue },
+    { key: 'plazo_fijo', label: 'Plazo fijo AR',   available: !!bench?.plazo_fijo && !!bench?.dolar_blue },
+    { key: 'pesos_cash', label: 'Pesos cash (blue)', available: !!bench?.dolar_blue },
+  ]
+  const benchmarkOptions = currency === 'USD' ? BENCHMARK_OPTIONS_USD : BENCHMARK_OPTIONS_ARS
 
   // Para el gráfico de benchmarks siempre usamos granularidad MENSUAL:
   // 1. Los datos de sp500 e inflation_ar son mensuales — comparar con puntos
@@ -678,107 +733,121 @@ function InsightsDesktop() {
     if (windowSeries.length === 0) return []
 
     const monthKeyOf = k => (k === 'today' ? k : k.slice(0, 7))
-    const spKeys = bench?.sp500 ? Object.keys(bench.sp500).sort() : []
     const rawFirstKey = (windowSeries.find(x => x.key !== 'today') || windowSeries[0]).key
     const windowFirstMonthKey = monthKeyOf(rawFirstKey)
 
-    // Lookup sp500 con fallback al mes anterior disponible
-    const spLookup = (key) => {
-      if (key === 'today') return bench.sp500[spKeys[spKeys.length - 1]]
-      const mk = monthKeyOf(key)
-      if (bench.sp500[mk]) return bench.sp500[mk]
-      // fallback: último mes <= mk
-      let found = null
-      for (const k of spKeys) { if (k <= mk) found = k; else break }
-      return found ? bench.sp500[found] : null
-    }
-
-    // ── Shadow S&P 500 portfolio — apples-to-apples con la línea verde ─────
-    // Para que la comparación sea justa: si vos depositaste \$100k inicial y
-    // retiraste \$70k en Dic, queremos saber qué hubiese pasado con TUS
-    // FLOWS exactos invertidos en S&P 500. No el "lump sum desde el día 1"
-    // (eso ignora tu timing real de deposits y withdrawals).
+    // ── Shadow portfolio del benchmark seleccionado ──────────────────────
+    // Apples-to-apples: aplicamos TUS flows reales al benchmark elegido.
+    // No es "lump sum desde día 1" — los flows se ejecutan al precio del mes.
     //
-    // Misma fórmula que el user line:
+    // Fórmula (misma que la línea verde del portfolio):
     //   gain = shadow_value - investedNow
     //   pct  = gain / stableInvested(investedNow, peakInvested) × 100
     //
-    // Safeguards (los que faltaban en el primer intento):
-    //   1. Cap de venta en withdrawal: si retirás más de lo que el shadow
-    //      tiene, sólo "vendemos" hasta cero — no permitimos units negativas.
-    //   2. Tratamos baseline como deposit inicial al precio del primer mes,
-    //      para que el shadow arranque con el capital correcto.
-    const shadowPctByMonth = new Map()
-    if (currency === 'USD' && bench?.sp500 && globalMonthly.length > 0) {
-      const firstM = globalMonthly[0]
-      const firstMk = monthKey(firstM.year, firstM.month)
-      const firstSp = spLookup(firstMk)
-      const baselineUsd = firstM.capital_inicio || 0
-      let shadowUnits = (firstSp && baselineUsd > 0) ? (baselineUsd / firstSp) : 0
+    // Safeguards:
+    //   1. Peak-stable denom: si invested cae < 60% del peak (retiro grande),
+    //      usamos peak como base — evita inflar % por retiros que achican
+    //      el denominador.
+    //   2. Clamp [-99, 200] para evitar outliers visuales.
+    //
+    // Cada benchmark tiene su simulador en benchmarkSim.js — cada uno maneja
+    // su propio lookup interno con fallback al mes anterior disponible.
+    const stableInv = (cur, peak) => (cur >= peak * 0.6 && cur > 1000) ? cur : peak
+
+    function buildShadowFromSim(simResult) {
+      const result = new Map()
+      if (!simResult || !simResult.series || simResult.series.length === 0) return result
+      const baselineUsd = globalMonthly[0]?.capital_inicio || 0
       let netFlows = 0
       let peakInvested = baselineUsd > 0 ? baselineUsd : 0
-      const stableInv = (cur, peak) => (cur >= peak * 0.6 && cur > 1000) ? cur : peak
+
+      // Index sim.series por key para lookup O(1).
+      const simByKey = {}
+      for (const p of simResult.series) simByKey[p.key] = p.value
 
       for (const m of globalMonthly) {
         const mk = monthKey(m.year, m.month)
-        const sp = spLookup(mk)
-        if (!sp) continue
-        const deposit = m.deposits || 0
-        const withdrawal = m.withdrawals || 0
-        if (deposit > 0) shadowUnits += deposit / sp
-        if (withdrawal > 0) {
-          const shadowValAtTime = shadowUnits * sp
-          const sellValue = Math.min(withdrawal, shadowValAtTime)
-          shadowUnits -= sellValue / sp
-          if (shadowUnits < 0) shadowUnits = 0
-        }
-        netFlows += deposit - withdrawal
+        netFlows += (m.deposits || 0) - (m.withdrawals || 0)
         const investedNow = baselineUsd + netFlows
         if (investedNow > peakInvested) peakInvested = investedNow
         const denom = stableInv(investedNow, peakInvested)
-        const shadowValue = shadowUnits * sp
+        const shadowValue = simByKey[mk]
+        if (shadowValue == null) continue
         const gain = shadowValue - investedNow
         const pct = denom > 0 ? (gain / denom) * 100 : 0
-        shadowPctByMonth.set(mk, +Math.min(Math.max(pct, -99), 200).toFixed(2))
+        result.set(mk, +Math.min(Math.max(pct, -99), 200).toFixed(2))
       }
-      // Punto "Hoy" — usar el precio S&P más reciente disponible
-      const latestSp = bench.sp500[spKeys[spKeys.length - 1]]
-      if (latestSp) {
-        const investedNow = baselineUsd + netFlows
-        const denom = stableInv(investedNow, peakInvested)
-        const shadowValue = shadowUnits * latestSp
-        const gain = shadowValue - investedNow
-        const pct = denom > 0 ? (gain / denom) * 100 : 0
-        shadowPctByMonth.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
+
+      // "Today": último value del sim (extrapolado al precio actual).
+      const last = simResult.series[simResult.series.length - 1]
+      const investedNow = baselineUsd + netFlows
+      const denom = stableInv(investedNow, peakInvested)
+      const gain = last.value - investedNow
+      const pct = denom > 0 ? (gain / denom) * 100 : 0
+      result.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
+      return result
+    }
+
+    function buildInflationCumPct() {
+      // Inflación: % macro acumulativo, NO portfolio. cum = Π(1 + ipc_m)
+      const result = new Map()
+      if (!bench?.inflation_ar) return result
+      let cum = 1
+      let firstSeen = false
+      for (const m of globalMonthly) {
+        const mk = monthKey(m.year, m.month)
+        if (!firstSeen) {
+          result.set(mk, 0)  // primer mes = base 0%
+          firstSeen = true
+          continue
+        }
+        const ipc = bench.inflation_ar[mk]
+        if (ipc != null) cum *= 1 + ipc / 100
+        result.set(mk, +((cum - 1) * 100).toFixed(2))
       }
+      // Today: mismo valor que el último mes (inflación es histórica, no live)
+      const allKeys = [...result.keys()]
+      if (allKeys.length > 0) {
+        result.set('today', result.get(allKeys[allKeys.length - 1]))
+      }
+      return result
+    }
+
+    // Dispatcher: cada benchmark seleccionado calcula su propio shadowPctByMonth.
+    let shadowPctByMonth = new Map()
+    if (selectedBench === 'sp500' && bench?.sp500) {
+      shadowPctByMonth = buildShadowFromSim(simulateSp500(globalMonthly, bench.sp500))
+    } else if (selectedBench === 'tbill' && bench?.shv) {
+      shadowPctByMonth = buildShadowFromSim(simulateShv(globalMonthly, bench.shv))
+    } else if (selectedBench === 'gold' && bench?.gld) {
+      shadowPctByMonth = buildShadowFromSim(simulateGold(globalMonthly, bench.gld))
+    } else if (selectedBench === 'dolar_cash') {
+      shadowPctByMonth = buildShadowFromSim(simulateDolarCash(globalMonthly))
+    } else if (selectedBench === 'inflation') {
+      shadowPctByMonth = buildInflationCumPct()
+    } else if (selectedBench === 'merval' && bench?.merval && bench?.dolar_blue) {
+      shadowPctByMonth = buildShadowFromSim(simulateMerval(globalMonthly, bench.merval, bench.dolar_blue))
+    } else if (selectedBench === 'plazo_fijo' && bench?.plazo_fijo && bench?.dolar_blue) {
+      shadowPctByMonth = buildShadowFromSim(simulatePlazoFijoArs(globalMonthly, bench.plazo_fijo, bench.dolar_blue))
+    } else if (selectedBench === 'pesos_cash' && bench?.dolar_blue) {
+      shadowPctByMonth = buildShadowFromSim(simulateArsCash(globalMonthly, bench.dolar_blue))
     }
 
     const withBench = windowSeries.map(s => {
       let benchPct = null
-      if (currency === 'USD' && bench?.sp500) {
+      if (shadowPctByMonth.size > 0) {
         const mk = monthKeyOf(s.key)
         if (shadowPctByMonth.has(mk)) {
           benchPct = shadowPctByMonth.get(mk)
-        } else if (shadowPctByMonth.size > 0) {
-          // Fallback: usar el último mes disponible <= mk (cobre snapshots
-          // diarios entre meses).
+        } else if (s.key === 'today' && shadowPctByMonth.has('today')) {
+          benchPct = shadowPctByMonth.get('today')
+        } else {
+          // Fallback: último mes <= mk (cubre snapshots diarios entre meses)
           const sortedSk = [...shadowPctByMonth.keys()].filter(k => k !== 'today').sort()
           let found = null
           for (const k of sortedSk) { if (k <= mk) found = k; else break }
           if (found) benchPct = shadowPctByMonth.get(found)
         }
-      } else if (currency === 'ARS' && bench?.inflation_ar) {
-        // windowSeries ya es mensual — componer IPC desde el segundo mes.
-        let cum = 1
-        let started = false
-        for (const b of windowSeries) {
-          if (b.key === 'today') break
-          if (!started) { started = true; continue } // saltar primer mes (base = 0%)
-          const inf = bench.inflation_ar[monthKeyOf(b.key)]
-          if (inf != null) cum *= 1 + inf / 100
-          if (b.key === s.key) break
-        }
-        benchPct = +((cum - 1) * 100).toFixed(2)
       }
       return { ...s, benchPct }
     })
@@ -1100,11 +1169,16 @@ function InsightsDesktop() {
 
   // ── Phase 4: simulación de benchmarks con flujos sincronizados ────────────
   // "Qué hubiera pasado si la misma plata, con los mismos aportes y retiros,
-  //  hubiera ido a S&P 500 / dólares cash / pesos cash."
+  //  hubiera ido a S&P 500 / T-Bills / Oro / dólares cash / Merval / Plazo Fijo /
+  //  pesos cash."
   // Cada uno devuelve { finalValue, series, finalUnits } o null si faltan datos.
-  const sp500Sim = simulateSp500(globalMonthly, bench?.sp500)
+  const sp500Sim     = simulateSp500(globalMonthly, bench?.sp500)
+  const shvSim       = simulateShv(globalMonthly, bench?.shv)
+  const goldSim      = simulateGold(globalMonthly, bench?.gld)
   const dolarCashSim = simulateDolarCash(globalMonthly)
-  const arsCashSim = simulateArsCash(globalMonthly, bench?.dolar_blue)
+  const mervalSim    = simulateMerval(globalMonthly, bench?.merval, bench?.dolar_blue)
+  const plazoFijoSim = simulatePlazoFijoArs(globalMonthly, bench?.plazo_fijo, bench?.dolar_blue)
+  const arsCashSim   = simulateArsCash(globalMonthly, bench?.dolar_blue)
   const inflationCum = computeInflationCumulative(globalMonthly, bench?.inflation_ar)
 
   // Helper para deltas: cuánto rindió mi portfolio vs el benchmark.
@@ -1115,9 +1189,13 @@ function InsightsDesktop() {
     const pct = benchmarkFinal > 0 ? (delta / benchmarkFinal) * 100 : 0
     return { delta, pct }
   }
-  const vsSp500 = sp500Sim ? compareToMine(sp500Sim.finalValue) : null
-  const vsDolar = dolarCashSim ? compareToMine(dolarCashSim.finalValue) : null
-  const vsArs   = arsCashSim ? compareToMine(arsCashSim.finalValue) : null
+  const vsSp500     = sp500Sim     ? compareToMine(sp500Sim.finalValue)     : null
+  const vsShv       = shvSim       ? compareToMine(shvSim.finalValue)       : null
+  const vsGold      = goldSim      ? compareToMine(goldSim.finalValue)      : null
+  const vsDolar     = dolarCashSim ? compareToMine(dolarCashSim.finalValue) : null
+  const vsMerval    = mervalSim    ? compareToMine(mervalSim.finalValue)    : null
+  const vsPlazoFijo = plazoFijoSim ? compareToMine(plazoFijoSim.finalValue) : null
+  const vsArs       = arsCashSim   ? compareToMine(arsCashSim.finalValue)   : null
 
   const aiOperations = operations.slice(0, 30).map(o => ({
     date: o.date,
@@ -1584,8 +1662,8 @@ function InsightsDesktop() {
       <Section
         title="Performance"
         subtitle={currency === 'USD'
-          ? 'Evolución en USD vs S&P 500, profundidad de drawdowns y atribución del crecimiento.'
-          : 'Evolución en pesos vs inflación INDEC, profundidad de drawdowns y atribución del crecimiento.'}
+          ? `Evolución en USD vs ${benchmarkKey}, profundidad de drawdowns y atribución del crecimiento.`
+          : `Evolución en pesos vs ${benchmarkKey}, profundidad de drawdowns y atribución del crecimiento.`}
       >
 
       {/* Cumulative performance chart — la moneda viene del toggle global */}
@@ -1598,7 +1676,7 @@ function InsightsDesktop() {
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">
-              {currency === 'USD' ? 'Portfolio vs S&P 500 (USD)' : 'Portfolio vs Inflación (ARS)'}
+              {currency === 'USD' ? `Portfolio vs ${benchmarkKey} (USD)` : `Portfolio vs ${benchmarkKey} (ARS)`}
             </h2>
             <InfoTooltip>
               <p className="font-semibold text-ink-0">% rendimiento acumulado sobre capital aportado</p>
@@ -1651,6 +1729,31 @@ function InsightsDesktop() {
               Últimos 12 meses
             </span>
           )}
+        </div>
+
+        {/* Selector de benchmark — segunda fila debajo del título.
+            Opciones cambian según moneda (USD vs ARS). Persisted en localStorage. */}
+        <div className="flex items-center gap-2 flex-wrap mb-4 -mt-1">
+          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mr-1">
+            Comparar contra:
+          </span>
+          {benchmarkOptions.map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => opt.available && setSelectedBench(opt.key)}
+              disabled={!opt.available}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                selectedBench === opt.key
+                  ? 'bg-data-violet/20 text-data-violet border border-data-violet/40'
+                  : opt.available
+                    ? 'text-ink-2 hover:text-ink-0 hover:bg-bg-2/60 border border-line/60'
+                    : 'text-ink-3/50 cursor-not-allowed border border-line/30'
+              }`}
+              title={opt.available ? `Comparar contra ${opt.label}` : `${opt.label}: sin datos disponibles`}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
 
         {chartData.length === 0 ? (
@@ -2135,38 +2238,94 @@ function InsightsDesktop() {
           </Card>
         ) : (
           <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <BenchmarkCard
-                label="vs S&P 500"
-                hint="Índice global de referencia · USD"
-                disabled={!sp500Sim}
-                disabledHint="Datos del S&P 500 no disponibles."
-                myValue={totalPortfolio}
-                benchmarkValue={sp500Sim?.finalValue}
-                delta={vsSp500}
-                amt={amt}
-              />
-              <BenchmarkCard
-                label="vs Dólar cash"
-                hint="Si los dólares hubieran quedado en efectivo"
-                disabled={false}
-                myValue={totalPortfolio}
-                benchmarkValue={dolarCashSim?.finalValue}
-                delta={vsDolar}
-                amt={amt}
-              />
-              <BenchmarkCard
-                label="vs Pesos cash"
-                hint="Si cada aporte se hubiera convertido a pesos al blue"
-                disabled={!arsCashSim}
-                disabledHint="Datos históricos del blue no disponibles."
-                myValue={totalPortfolio}
-                benchmarkValue={arsCashSim?.finalValue}
-                delta={vsArs}
-                amt={amt}
-              />
-              <InflationCard inflation={inflationCum} />
+            {/* Grupo USD: alternativas en dólares */}
+            <div className="mb-3">
+              <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+                Alternativas en USD
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <BenchmarkCard
+                  label="vs S&P 500"
+                  hint="Índice global de referencia"
+                  disabled={!sp500Sim}
+                  disabledHint="Datos del S&P 500 no disponibles."
+                  myValue={totalPortfolio}
+                  benchmarkValue={sp500Sim?.finalValue}
+                  delta={vsSp500}
+                  amt={amt}
+                />
+                <BenchmarkCard
+                  label="vs T-Bills USD"
+                  hint="Tasa libre de riesgo USD (ETF SHV)"
+                  disabled={!shvSim}
+                  disabledHint="Datos de T-Bills no disponibles."
+                  myValue={totalPortfolio}
+                  benchmarkValue={shvSim?.finalValue}
+                  delta={vsShv}
+                  amt={amt}
+                />
+                <BenchmarkCard
+                  label="vs Oro"
+                  hint="Hedge contra inflación (ETF GLD)"
+                  disabled={!goldSim}
+                  disabledHint="Datos del oro no disponibles."
+                  myValue={totalPortfolio}
+                  benchmarkValue={goldSim?.finalValue}
+                  delta={vsGold}
+                  amt={amt}
+                />
+                <BenchmarkCard
+                  label="vs Dólar quieto"
+                  hint="Si los dólares hubieran quedado en efectivo"
+                  disabled={false}
+                  myValue={totalPortfolio}
+                  benchmarkValue={dolarCashSim?.finalValue}
+                  delta={vsDolar}
+                  amt={amt}
+                />
+              </div>
             </div>
+
+            {/* Grupo ARS: alternativas en pesos */}
+            <div>
+              <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+                Alternativas en ARS
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <InflationCard inflation={inflationCum} />
+                <BenchmarkCard
+                  label="vs Merval"
+                  hint="Índice acciones argentinas (en USD-eq)"
+                  disabled={!mervalSim}
+                  disabledHint="Datos del Merval no disponibles."
+                  myValue={totalPortfolio}
+                  benchmarkValue={mervalSim?.finalValue}
+                  delta={vsMerval}
+                  amt={amt}
+                />
+                <BenchmarkCard
+                  label="vs Plazo fijo AR"
+                  hint="Capitalización mensual al TNA BCRA"
+                  disabled={!plazoFijoSim}
+                  disabledHint="Datos del plazo fijo no disponibles."
+                  myValue={totalPortfolio}
+                  benchmarkValue={plazoFijoSim?.finalValue}
+                  delta={vsPlazoFijo}
+                  amt={amt}
+                />
+                <BenchmarkCard
+                  label="vs Pesos cash"
+                  hint="Si cada aporte se hubiera convertido al blue"
+                  disabled={!arsCashSim}
+                  disabledHint="Datos históricos del blue no disponibles."
+                  myValue={totalPortfolio}
+                  benchmarkValue={arsCashSim?.finalValue}
+                  delta={vsArs}
+                  amt={amt}
+                />
+              </div>
+            </div>
+
             <p className="text-[11px] text-ink-3 mt-3 leading-snug px-1">
               <Info size={11} className="inline -mt-0.5 mr-1" />
               Benchmarks calculados replicando tus depósitos y retiros en las mismas fechas. Datos con periodicidad mensual — algunos meses utilizan el último valor disponible si falta el cierre oficial.

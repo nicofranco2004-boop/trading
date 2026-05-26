@@ -2290,30 +2290,45 @@ _bench_fetch_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="be
 
 
 def _benchmarks_fetch_and_cache():
-    """Fetch los 3 benchmarks externos en paralelo y persiste en cache.
+    """Fetch los 7 benchmarks externos en paralelo y persiste en cache.
     Llamado tanto del cold-start sincrónico como del SWR background refresh.
+
+    Benchmarks:
+      • inflation_ar       — IPC INDEC mensual (% mensual)
+      • sp500              — ^SP500TR total return (close mensual)
+      • dolar_blue         — blue venta mensual
+      • shv                — T-Bills USD via SHV ETF (close mensual)
+      • gld                — Oro via GLD ETF (close mensual)
+      • merval             — Índice Merval ARS via ^MERV (close mensual)
+      • plazo_fijo         — TNA Minorista BCRA (% anual mensual)
+
+    Paralelización: 7 fetches concurrent en _bench_fetch_executor (max_workers=4
+    → algunos quedarán en cola pero el wall time domina al más lento ~15-20s).
     """
     f_inf = _bench_fetch_executor.submit(_fetch_inflation_ar)
     f_sp = _bench_fetch_executor.submit(_fetch_sp500_monthly)
     f_blue = _bench_fetch_executor.submit(_fetch_dolar_blue_monthly)
-    try:
-        inflation_ar = f_inf.result(timeout=25)
-    except Exception:
-        inflation_ar = (_bench_cache["data"] or {}).get("inflation_ar", {})
-    try:
-        sp500 = f_sp.result(timeout=25)
-    except Exception:
-        sp500 = (_bench_cache["data"] or {}).get("sp500", {})
-    try:
-        dolar_blue = f_blue.result(timeout=25)
-    except Exception:
-        dolar_blue = (_bench_cache["data"] or {}).get("dolar_blue", {})
+    f_shv = _bench_fetch_executor.submit(_fetch_shv_monthly)
+    f_gld = _bench_fetch_executor.submit(_fetch_gld_monthly)
+    f_merval = _bench_fetch_executor.submit(_fetch_merval_monthly)
+    f_pf = _bench_fetch_executor.submit(_fetch_plazo_fijo_minorista)
+
+    def _safe(future, key, default=None):
+        """Resultado del future con fallback a stale cache si timeout/exception."""
+        try:
+            return future.result(timeout=25)
+        except Exception:
+            return (_bench_cache["data"] or {}).get(key, default if default is not None else {})
 
     data = {
-        "inflation_ar": inflation_ar,
-        "sp500": sp500,
-        "dolar_blue": dolar_blue,
-        "fetched_at": datetime.utcnow().isoformat() + "Z",
+        "inflation_ar": _safe(f_inf, "inflation_ar"),
+        "sp500":        _safe(f_sp, "sp500"),
+        "dolar_blue":   _safe(f_blue, "dolar_blue"),
+        "shv":          _safe(f_shv, "shv"),
+        "gld":          _safe(f_gld, "gld"),
+        "merval":       _safe(f_merval, "merval"),
+        "plazo_fijo":   _safe(f_pf, "plazo_fijo"),
+        "fetched_at":   datetime.utcnow().isoformat() + "Z",
     }
     _bench_cache["data"] = data
     _bench_cache["ts"] = time.time()
@@ -2384,6 +2399,88 @@ def _fetch_dolar_blue_monthly():
             venta = item.get("venta")
             if fecha and venta is not None:
                 out[fecha[:7]] = float(venta)  # last entry of month wins (dict overwrite)
+        return out
+    except Exception:
+        return {}
+
+
+def _fetch_yf_monthly(ticker: str):
+    """Helper genérico: mes-cierre de un ticker yfinance. Returns {YYYY-MM: close}.
+
+    Usado para SHV (T-Bills), GLD (Oro), ^MERV (índice Merval). Mismo patrón
+    que _fetch_sp500_monthly pero sin fallback (esos índices/ETFs son únicos).
+    """
+    try:
+        data = yf.Ticker(ticker).history(period="5y", interval="1mo")
+        if data.empty:
+            return {}
+        out = {}
+        for idx, row in data.iterrows():
+            key = idx.strftime("%Y-%m")
+            close = float(row["Close"]) if not math.isnan(row["Close"]) else None
+            if close:
+                out[key] = close
+        return out
+    except Exception:
+        return {}
+
+
+def _fetch_shv_monthly():
+    """T-Bills USD via SHV ETF (iShares 0-3 Month Treasury Bond).
+    Returns {YYYY-MM: close USD}. Proxy de tasa libre de riesgo USD."""
+    return _fetch_yf_monthly("SHV")
+
+
+def _fetch_gld_monthly():
+    """Oro via GLD ETF (SPDR Gold Trust).
+    Returns {YYYY-MM: close USD}. Hedge contra inflación."""
+    return _fetch_yf_monthly("GLD")
+
+
+def _fetch_merval_monthly():
+    """Índice Merval en ARS via yfinance (^MERV).
+    Returns {YYYY-MM: close ARS}. Benchmark mercado AR."""
+    return _fetch_yf_monthly("^MERV")
+
+
+def _fetch_plazo_fijo_minorista():
+    """Plazo fijo minorista TNA desde argentinadatos.com.
+    Returns dict {YYYY-MM: tna_pct} — la TNA promedio del mes (último valor mensual).
+
+    NOTA: argentinadatos.com tiene `/v1/finanzas/indices/plazoFijo` que devuelve
+    la serie histórica de la TNA minorista BCRA. Si el endpoint cambia o no
+    está disponible, devolvemos {} y el frontend muestra "sin datos".
+
+    Si el wording de la TNA viene como entidad/banco específico, agrupamos
+    por mes y tomamos el promedio cuando hay múltiples entries en el mes.
+    """
+    try:
+        r = requests.get(
+            "https://api.argentinadatos.com/v1/finanzas/indices/plazoFijo",
+            timeout=8,
+        )
+        if r.status_code != 200:
+            return {}
+        # API devuelve lista de entries con fecha + tnaClientes (puede variar).
+        # Aceptamos varios shapes posibles para robustez.
+        by_month: dict = {}
+        for item in r.json():
+            fecha = item.get("fecha", "")
+            if not fecha:
+                continue
+            # Posibles keys con la tasa: tnaClientes, tna, valor, tasa
+            tna = (
+                item.get("tnaClientes")
+                or item.get("tna")
+                or item.get("valor")
+                or item.get("tasa")
+            )
+            if tna is None:
+                continue
+            ym = fecha[:7]
+            # Promedio si hay múltiples entries el mismo mes
+            by_month.setdefault(ym, []).append(float(tna))
+        out = {ym: sum(vals) / len(vals) for ym, vals in by_month.items()}
         return out
     except Exception:
         return {}

@@ -197,3 +197,124 @@ export function computeInflationCumulative(globalMonthly, inflationMap) {
     toKey,
   }
 }
+
+// ─── T-Bill USD (SHV ETF) ───────────────────────────────────────────────────
+/**
+ * Simula tus aportes en T-Bills USD (proxy: ETF SHV — iShares 0-3 Month Treasury).
+ * Mismo flow que simulateSp500. Output en USD.
+ */
+export function simulateShv(globalMonthly, shvMap) {
+  if (!shvMap || Object.keys(shvMap).length === 0) return null
+  return simulateBenchmark(globalMonthly, k => lookupMonthly(shvMap, k))
+}
+
+// ─── Oro (GLD ETF) ──────────────────────────────────────────────────────────
+/**
+ * Simula tus aportes en oro (proxy: ETF GLD — SPDR Gold Trust).
+ * Mismo flow que simulateSp500. Output en USD.
+ */
+export function simulateGold(globalMonthly, gldMap) {
+  if (!gldMap || Object.keys(gldMap).length === 0) return null
+  return simulateBenchmark(globalMonthly, k => lookupMonthly(gldMap, k))
+}
+
+// ─── Merval (índice AR en ARS) ──────────────────────────────────────────────
+/**
+ * Simula tus aportes en el Merval (índice acciones argentinas, en ARS).
+ *
+ * IMPORTANTE: el Merval cotiza en pesos. Para hacer apples-to-apples con un
+ * user que tiene flujos en USD, convertimos cada flow USD → ARS al blue del
+ * mes, compramos puntos del Merval ese mes, y al final dividimos por el blue
+ * actual para volver a USD-equivalente.
+ *
+ * @returns {{ finalValue, series, finalUnits } | null}  series en USD-equiv
+ */
+export function simulateMerval(globalMonthly, mervalArsMap, blueMap) {
+  if (!mervalArsMap || Object.keys(mervalArsMap).length === 0) return null
+  if (!blueMap || Object.keys(blueMap).length === 0) return null
+  const sorted = sortGlobalMonthly(globalMonthly)
+  if (sorted.length === 0) return null
+
+  const firstKey = monthKey(sorted[0].year, sorted[0].month)
+  const firstMerv = lookupMonthly(mervalArsMap, firstKey)
+  const firstBlue = lookupMonthly(blueMap, firstKey)
+  if (!firstMerv || !firstBlue || firstMerv <= 0 || firstBlue <= 0) return null
+
+  // Capital USD inicial → ARS al blue del primer mes → puntos del Merval
+  let units = ((sorted[0].capital_inicio || 0) * firstBlue) / firstMerv
+  const series = []
+
+  for (const m of sorted) {
+    const k = monthKey(m.year, m.month)
+    const merv = lookupMonthly(mervalArsMap, k) ?? firstMerv
+    const blue = lookupMonthly(blueMap, k) ?? firstBlue
+    const netUsd = (m.deposits || 0) - (m.withdrawals || 0)
+    if (merv > 0 && blue > 0) {
+      // Flow USD → ARS al blue del mes → compramos puntos del Merval
+      units += (netUsd * blue) / merv
+    }
+    // Valor en USD-equiv = (puntos * merv_ars) / blue_actual
+    const valueArs = units * merv
+    const valueUsd = blue > 0 ? valueArs / blue : 0
+    series.push({ key: k, value: valueUsd })
+  }
+
+  return {
+    finalValue: series[series.length - 1].value,
+    series,
+    finalUnits: units,
+  }
+}
+
+// ─── Plazo fijo ARS (TNA Minorista) ─────────────────────────────────────────
+/**
+ * Simula tus aportes en plazo fijo minorista (BCRA).
+ *
+ * Distinto de simulateBenchmark genérico porque NO hay precio — hay TNA
+ * anualizada. Convertimos TNA → return mensual y capitalizamos.
+ *
+ * @param {Array}  globalMonthly  global monthly entries
+ * @param {Object} ratesMap       { 'YYYY-MM': tna_pct } TNA anualizada del mes
+ * @param {Object} blueMap        { 'YYYY-MM': blue_venta } para conversión USD↔ARS
+ * @returns {{ finalValue, series, finalArs } | null}
+ *          series con value en USD-equiv (mismo apples-to-apples que otros)
+ */
+export function simulatePlazoFijoArs(globalMonthly, ratesMap, blueMap) {
+  if (!ratesMap || Object.keys(ratesMap).length === 0) return null
+  if (!blueMap || Object.keys(blueMap).length === 0) return null
+  const sorted = sortGlobalMonthly(globalMonthly)
+  if (sorted.length === 0) return null
+
+  const firstKey = monthKey(sorted[0].year, sorted[0].month)
+  const firstBlue = lookupMonthly(blueMap, firstKey)
+  if (!firstBlue || firstBlue <= 0) return null
+
+  // Capital USD inicial → ARS al blue del primer mes (mantenemos en ARS para
+  // capitalizar contra la TNA). Al final convertimos al blue del último mes.
+  let valueArs = (sorted[0].capital_inicio || 0) * firstBlue
+  const series = []
+
+  for (const m of sorted) {
+    const k = monthKey(m.year, m.month)
+    const tna = lookupMonthly(ratesMap, k)  // % anualizada
+    const blue = lookupMonthly(blueMap, k) ?? firstBlue
+    // Capitalizar el mes: (1 + tna/100)^(1/12) - 1
+    // Si no hay TNA del mes, no capitalizamos (queda flat — fail safe).
+    if (tna != null && tna > 0) {
+      const monthlyReturn = Math.pow(1 + tna / 100, 1 / 12) - 1
+      valueArs *= 1 + monthlyReturn
+    }
+    // Agregamos flows del mes (al blue del mes para apples-to-apples)
+    const netUsd = (m.deposits || 0) - (m.withdrawals || 0)
+    valueArs += netUsd * blue
+    // Value USD-equiv = ARS / blue del mes
+    const valueUsd = blue > 0 ? valueArs / blue : 0
+    series.push({ key: k, value: valueUsd })
+  }
+
+  return {
+    finalValue: series[series.length - 1].value,
+    series,
+    finalArs: valueArs,
+  }
+}
