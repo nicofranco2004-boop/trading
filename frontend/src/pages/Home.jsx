@@ -17,6 +17,7 @@ import NewsPreview from '../components/home/NewsPreview'
 import EventsPreview from '../components/home/EventsPreview'
 import SearchBar from '../components/home/SearchBar'
 import Watchlist from '../components/home/Watchlist'
+import OnboardingChecklist from '../components/home/OnboardingChecklist'
 import Eyebrow from '../components/Eyebrow'
 import HomeMobile from './HomeMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -42,6 +43,11 @@ export default function Home() {
       </header>
 
       <div className="space-y-6">
+        {/* 0. Onboarding checklist — solo visible si el user no completó
+            todos los items (broker, posición, perfil, IA). Se silencia
+            automáticamente cuando está todo done o el user lo cierra. */}
+        <OnboardingChecklist />
+
         {/* 1. Strip de índices */}
         <IndicesStrip />
 

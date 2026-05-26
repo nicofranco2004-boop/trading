@@ -23,6 +23,7 @@ import MoversRail from '../components/home/MoversRail'
 import Watchlist from '../components/home/Watchlist'
 import NewsPreview from '../components/home/NewsPreview'
 import EventsPreview from '../components/home/EventsPreview'
+import OnboardingChecklist from '../components/home/OnboardingChecklist'
 import Eyebrow from '../components/Eyebrow'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -144,6 +145,13 @@ export default function HomeMobile() {
 
   return (
     <div className="pb-8">
+      {/* ── 0. Onboarding checklist (mobile) ────────────────────────────
+          Solo visible si el user no completó todos los items. Padding
+          horizontal matchea el resto de la home mobile. */}
+      <div className="px-4 pt-4">
+        <OnboardingChecklist />
+      </div>
+
       {/* ── 1. Hero balance ─────────────────────────────────────────── */}
       <section className="px-4 pt-5 pb-4">
         <div className="flex items-center justify-between mb-3">
