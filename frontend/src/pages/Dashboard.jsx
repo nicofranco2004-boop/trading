@@ -437,9 +437,11 @@ export default function Dashboard() {
           infoAlign="left"
           info={
             <>
-              <p className="font-medium text-ink-0">Capital aportado neto</p>
+              <p className="font-medium text-ink-0">Qué es</p>
               <p>Plata que pusiste de tu bolsillo y que sigue invertida.</p>
-              <p className="text-ink-3 font-mono text-[11px]">= depósitos − retiros</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-medium text-ink-0">Cómo se calcula</p>
+              <p className="text-ink-3 font-mono text-[11px]">= depósitos − retiros (+ saldo inicial si ya tenías plata al empezar)</p>
               <p className="text-ink-3">Si retirás y volvés a depositar lo mismo, no se duplica: solo cuenta el neto que está expuesto al mercado.</p>
             </>
           }
@@ -452,17 +454,19 @@ export default function Dashboard() {
           infoAlign="left"
           info={
             <>
-              <p className="font-medium text-ink-0">Resultado total acumulado</p>
+              <p className="font-medium text-ink-0">Qué es</p>
               <p>Cuánto vale tu portfolio HOY de más (o de menos) respecto a lo que pusiste neto.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-medium text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">= valor actual − capital aportado neto</p>
               <p className="text-ink-3">El porcentaje es sobre el capital aportado neto.</p>
               {showAccountingGap && (
                 <>
                   <div className="border-t border-line/60 my-1.5" />
-                  <p className="text-ink-3">
-                    <strong className="text-ink-1">¿Por qué no es igual a realizado + no realizado?</strong> {gapIsOutflow
-                      ? 'Hubo retiros que incluían ganancias — esa plata salió del portfolio pero sigue contabilizada como realizada (ver KPI "Ganancias retiradas").'
-                      : 'La cartera tiene plusvalía no clasificada como P&L realizado, típicamente dividendos cobrados o intereses sobre cash (ver KPI "Dividendos e intereses").'}
+                  <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
+                  <p className="text-ink-3">{gapIsOutflow
+                    ? 'Hubo retiros que incluían ganancias — esa plata salió del portfolio pero sigue contabilizada como realizada (ver KPI "Ganancias retiradas").'
+                    : 'La cartera tiene plusvalía no clasificada como P&L realizado, típicamente dividendos cobrados o intereses sobre cash (ver KPI "Dividendos e intereses").'}
                   </p>
                 </>
               )}
@@ -476,9 +480,11 @@ export default function Dashboard() {
           sub="operaciones cerradas"
           info={
             <>
-              <p className="font-medium text-ink-0">P&L realizado</p>
-              <p>Ganancia ya materializada: operaciones cerradas (ventas) + dividendos cobrados + intereses.</p>
-              <p className="text-ink-3 font-mono text-[11px]">= Σ pnl_realized de cada venta</p>
+              <p className="font-medium text-ink-0">Qué es</p>
+              <p>Ganancia (o pérdida) que ya está cerrada — ventas concretadas, dividendos cobrados, intereses.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-medium text-ink-0">Cómo se calcula</p>
+              <p className="text-ink-3 font-mono text-[11px]">= suma del P&L de cada venta cerrada (+ dividendos + intereses)</p>
               <p className="text-ink-3">Es plata que ya "tocaste". No cambia con los precios actuales: una vez cerrada la operación, queda fijo.</p>
             </>
           }
@@ -490,10 +496,12 @@ export default function Dashboard() {
           sub={`${pctSigned(totalPct)} sobre costo`}
           info={
             <>
-              <p className="font-medium text-ink-0">P&L no realizado</p>
-              <p>Ganancia "en papel" de las posiciones que tenés abiertas hoy.</p>
+              <p className="font-medium text-ink-0">Qué es</p>
+              <p>Ganancia "en papel" de las posiciones que tenés abiertas hoy — lo que pasaría si vendieras ahora.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-medium text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">= valor actual − costo de compra</p>
-              <p className="text-ink-3">Mark to market: cambia todos los días con los precios. Sólo se convierte en realizado cuando vendés. El % es sobre el costo de compra.</p>
+              <p className="text-ink-3">Cambia todos los días con los precios del mercado: vale lo que vale HOY, no lo que valía cuando compraste. Sólo se convierte en realizado cuando vendés. El % es sobre el costo de compra.</p>
             </>
           }
         />
@@ -506,23 +514,26 @@ export default function Dashboard() {
             info={
               gapIsOutflow ? (
                 <>
-                  <p className="font-medium text-ink-0">Ganancias retiradas del portfolio</p>
-                  <p>Plata que se realizó como ganancia y luego salió de la cuenta vía retiros.</p>
+                  <p className="font-medium text-ink-0">Qué es</p>
+                  <p>Plata que se cerró como ganancia y luego salió de la cuenta vía retiros.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-medium text-ink-0">Cómo se calcula</p>
                   <p className="text-ink-3 font-mono text-[11px]">= (realizado + no realizado) − resultado total</p>
-                  <p className="text-ink-3">
-                    Cierra la identidad contable: <span className="font-mono">realizado + no realizado = resultado total + ganancias retiradas</span>.
-                  </p>
-                  <p className="text-ink-3">Ejemplo: si retiraste $180k para impuestos y de eso $73k eran ganancias acumuladas en cash, ese $73k aparece acá. El sistema lo cuenta como realizado (porque se cobró), pero ya no está en tu portfolio.</p>
+                  <p className="text-ink-3">Esto cierra el cálculo: lo que tenés HOY + lo que retiraste = todo lo que pusiste + todo lo que ganaste.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-medium text-ink-1">Ejemplo</p>
+                  <p className="text-ink-3">Si retiraste $180k para impuestos y de esos $73k eran ganancias acumuladas en cash, esos $73k aparecen acá. El sistema los cuenta como realizados (porque se cobraron), pero ya no están en tu portfolio.</p>
                 </>
               ) : (
                 <>
-                  <p className="font-medium text-ink-0">Dividendos e intereses (estimado)</p>
-                  <p>Plata real que está en tu portfolio pero <strong>no se cargó como P&L realizado</strong>. La fuente típica son <strong>dividendos cobrados</strong> e <strong>intereses sobre cash</strong> del broker.</p>
+                  <p className="font-medium text-ink-0">Qué es</p>
+                  <p>Plata real que está en tu portfolio pero <strong>no se cargó como P&L realizado</strong>. Lo más común: <strong>dividendos cobrados</strong> e <strong>intereses sobre cash</strong> del broker.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-medium text-ink-0">Cómo se calcula</p>
                   <p className="text-ink-3 font-mono text-[11px]">= resultado total − (realizado + no realizado)</p>
-                  <p className="text-ink-3">
-                    Cierra la identidad: <span className="font-mono">resultado total = realizado + no realizado + esto</span>.
-                  </p>
-                  <p className="text-ink-3">En casos raros también puede incluir ajustes de splits, ajustes manuales de posiciones, o baselines mal cargados. Si lo querés ver dentro de "P&L realizado", cargá los dividendos/intereses como entradas mensuales con valor en <span className="font-mono">pnl_realized</span>.</p>
+                  <p className="text-ink-3">Esto cierra el cálculo: lo que tenés HOY = realizado + no realizado + esto.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="text-ink-3">En casos raros también puede incluir ajustes de splits, ajustes manuales o saldos iniciales mal cargados. Si lo querés ver dentro de "P&L realizado", cargá los dividendos/intereses como entradas mensuales con su valor.</p>
                 </>
               )
             }

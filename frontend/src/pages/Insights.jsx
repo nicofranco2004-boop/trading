@@ -1757,24 +1757,22 @@ function InsightsDesktop() {
               {currency === 'USD' ? `Portfolio vs ${benchmarkKey} (USD)` : `Portfolio vs ${benchmarkKey} (ARS)`}
             </h2>
             <InfoTooltip>
-              <p className="font-semibold text-ink-0">% rendimiento acumulado sobre capital aportado</p>
-              <p>Cada línea muestra cuánto creció (o cayó) sobre lo que pusiste neto. Las 3 arrancan en 0% al inicio del rango visible.</p>
+              <p className="font-semibold text-ink-0">Qué mostramos</p>
+              <p>Tu cartera comparada contra un benchmark, ambos en % desde el inicio del rango visible (las 3 líneas arrancan en 0%).</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-0">Las 3 líneas</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>P/L total</strong> (verde sólido): rendimiento de tu cartera, incluye realizado + no realizado (plusvalía abierta).</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>P/L realizado</strong> (amarillo punteado): solo lo ya cobrado — ventas, dividendos, intereses. Excluye plusvalía no vendida.</p>
-              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{currency === 'USD' ? 'S&P 500' : 'Inflación ARS'}</strong>: {currency === 'USD' ? 'simulación de qué hubiese pasado si tus mismos depósitos y retiros se hubieran invertido en S&P 500 (shadow portfolio). Cada depósito "compra" S&P al precio de ese mes; cada retiro "vende".' : 'inflación acumulada — para ver si tu cartera ARS está manteniendo poder de compra.'}</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#21D07A'}}/><strong>Verde sólido</strong>: tu cartera total (lo cerrado + lo abierto).</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background:'#E8B14A'}}/><strong>Amarillo punteado</strong>: solo lo cobrado (ventas + dividendos + intereses). Sin la plusvalía abierta.</p>
+              <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: currency === 'USD' ? '#46C6E0' : '#8B7DFF'}}/><strong>{benchmarkKey}</strong>: {currency === 'USD' ? `cómo iría el ${benchmarkKey} si hubiera recibido tus mismos depósitos y retiros en las mismas fechas.` : 'inflación acumulada del período — para ver si tu cartera mantiene poder de compra en pesos.'}</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-1">Puede no coincidir con el Dashboard</p>
+              <p className="text-ink-3">El Dashboard divide por lo que tenés aportado HOY. Este chart divide por el MÁXIMO histórico de capital aportado — más conservador si tuviste retiros grandes. Para flujos normales (depósitos sin retiros importantes), ambos coinciden.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">% = (valor actual − aportado neto) / aportado peak × 100</p>
-              <p className="text-ink-3">Para tu cartera, "valor actual" es el valor real de tus posiciones. Para S&P 500, es el valor del shadow portfolio (units × precio actual). Ambas líneas usan el mismo denominador → comparación apples-to-apples.</p>
-              <p className="text-ink-3">El "aportado peak" es el máximo histórico de capital neto invertido. Usarlo como denominador evita un bug: si retirás \$70k de \$100k, el "aportado actual" cae a \$30k y cualquier ganancia chica se vería como spike de +200%. Con peak, el % refleja la performance real sobre el capital que llegó a trabajar.</p>
-              <div className="border-t border-line/60 my-1.5" />
-              <p className="text-ink-3">
-                <strong className="text-ink-1">Puede no coincidir con el Dashboard:</strong> el Dashboard divide por el aportado NETO actual (no por el peak). Si tuviste retiros grandes, el chart muestra un número más conservador. Para flujos normales (depósitos sin retiros importantes), ambos coinciden.
-              </p>
+              <p className="text-ink-3">Usar el "aportado peak" (máximo histórico) evita un bug: si retirás $70k de $100k, el aportado actual cae a $30k y cualquier ganancia chica daría +200% engañoso. Con peak, el % refleja la performance real sobre el capital que llegó a trabajar.</p>
               {currency === 'ARS' && (
-                <p className="text-ink-3">Fijado a los últimos 12 meses. Períodos más extensos pierden comparabilidad por la hiperinflación previa.</p>
+                <p className="text-ink-3">Fijado a los últimos 12 meses. Períodos más largos pierden comparabilidad por la hiperinflación previa.</p>
               )}
             </InfoTooltip>
           </div>
@@ -1875,10 +1873,15 @@ function InsightsDesktop() {
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
             <InfoTooltip>
-              <p className="font-semibold text-ink-0">Cómo se calcula</p>
-              <p>Distancia mensual respecto al máximo histórico (HWM) del rendimiento acumulado.</p>
-              <p>0% indica que estás en máximos. -10% significa que caíste 10% desde el pico anterior.</p>
-              <p className="text-ink-3">Calculado sobre TWRR: los depósitos y retiros no afectan el drawdown.</p>
+              <p className="font-semibold text-ink-0">Qué es</p>
+              <p>Cuánto bajaste desde tu mejor momento histórico. Si llegaste a +20% y ahora estás en +10%, tu drawdown es −10%.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Cómo leerlo</p>
+              <p><span className="text-ink-1">0%</span>: estás en tu máximo histórico.</p>
+              <p><span className="text-rendi-warn">−10%</span>: caíste 10% desde el pico.</p>
+              <p><span className="text-rendi-neg">&lt; −25%</span>: drawdown serio — recuperar +25% requiere +33% de retorno.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="text-ink-3">Calculado sobre el rendimiento ajustado por flujos (TWRR) — depósitos y retiros no se cuentan como subida/bajada del portfolio.</p>
             </InfoTooltip>
           </div>
           {drawdownTwrr && (
@@ -1982,11 +1985,18 @@ function InsightsDesktop() {
           accent={profitFactor != null && profitFactor.profitFactor >= 1}
           tooltip={
             <>
-              <p className="font-semibold text-ink-0">Cómo se calcula</p>
-              <p><span className="font-medium">Win rate:</span> porcentaje de operaciones cerradas con P&L positivo.</p>
-              <p><span className="font-medium">Profit factor:</span> ganancia bruta total dividida por pérdida bruta total.</p>
-              <p className="text-ink-3">Excluimos trades con |P&L| &lt; $1.5 USD para evitar el ruido de bots y fees parciales de futuros que destruyen el win rate sin reflejar decisiones reales del trader.</p>
-              <p className="text-ink-3">Un win rate alto con ganancias pequeñas puede tener profit factor &lt; 1 (resultado neto negativo aunque aciertes más seguido). Las dos métricas se interpretan en conjunto.</p>
+              <p className="font-semibold text-ink-0">Qué son</p>
+              <p><span className="font-medium">Win rate:</span> porcentaje de operaciones cerradas con ganancia.</p>
+              <p><span className="font-medium">Profit factor:</span> total ganado dividido total perdido.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Cómo leer el Profit Factor</p>
+              <p><span className="text-rendi-neg">&lt; 1</span>: perdés más de lo que ganás (resultado neto negativo).</p>
+              <p><span className="text-ink-2">1.0 – 1.5</span>: marginal — ganás un poco más de lo que perdés.</p>
+              <p><span className="text-rendi-pos">1.5 – 2.0</span>: bueno.</p>
+              <p><span className="text-rendi-pos">&gt; 2.0</span>: excelente — por cada $1 que perdés, ganás más de $2.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="text-ink-3">Las dos métricas se leen juntas: un win rate alto con ganancias chiquitas puede tener PF &lt; 1 (perdés en neto aunque aciertes más seguido).</p>
+              <p className="text-ink-3">Excluimos micro-trades (&lt; USD 1.5) porque son ruido — fees parciales, ajustes de futuros, redondeos que no reflejan decisiones reales del trader.</p>
             </>
           }
         >
@@ -2041,9 +2051,12 @@ function InsightsDesktop() {
           accent={concentration != null && concentration.sharePct < 70}
           tooltip={
             <>
-              <p className="font-semibold text-ink-0">Cómo se calcula</p>
+              <p className="font-semibold text-ink-0">Qué es</p>
               <p>Porcentaje del portfolio concentrado en los 3 activos más grandes (excluyendo cash).</p>
-              <p className="text-ink-3">Cuanto más alto, mayor el riesgo idiosincrático: una caída en uno solo de esos activos impacta de forma directa.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Cómo leerlo</p>
+              <p>Cuanto más alto, más dependés de esos 3 activos. Si uno cae fuerte, te afecta de lleno — no tenés diversificación que amortigüe.</p>
+              <p className="text-ink-3">Concentración del 100% en pocos activos = todo el riesgo en pocas apuestas. Diversificación dispersa ese riesgo entre más activos no correlacionados.</p>
             </>
           }
         >
@@ -2121,9 +2134,11 @@ function InsightsDesktop() {
           accent={false}
           tooltip={
             <>
-              <p className="font-semibold text-ink-0">Cómo se calcula</p>
-              <p>Suma de las filas del CSV importadas explícitamente como "Comisión" / "Fee" (funding fees de futures, withdrawal fees, etc).</p>
-              <p className="text-ink-3">Si tu broker es en ARS, convertimos a USD al tipo de cambio blue. Si el fee va embebido en el precio o en otra fila (spread, fee de un trade), no aparece acá.</p>
+              <p className="font-semibold text-ink-0">Qué es</p>
+              <p>Suma de todas las comisiones que pagaste — fees del broker, comisiones de mercado, costos de extracción, fees de futuros.</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-semibold text-ink-0">Nota</p>
+              <p className="text-ink-3">Si tu broker es en pesos, lo convertimos a USD al blue. Si el fee va embebido en el precio (spread, fee dentro de una compra), no aparece acá.</p>
             </>
           }
         >
@@ -2169,18 +2184,18 @@ function InsightsDesktop() {
               title="Volatilidad anualizada"
               tooltip={
                 <>
-                  <p className="font-semibold text-ink-0">Cómo se calcula</p>
-                  <p className="text-ink-3 font-mono text-[11px]">
-                    σ<sub>anual</sub> = stdev(retornos mensuales) × √12
-                  </p>
+                  <p className="font-semibold text-ink-0">Qué es</p>
                   <p>Cuánto varían tus retornos mensualmente, anualizado. Volatilidad alta = más variabilidad mes a mes (más riesgo).</p>
                   <div className="border-t border-line/60 my-1.5" />
-                  <p className="font-semibold text-ink-0">Referencias típicas</p>
+                  <p className="font-semibold text-ink-0">Cómo leerlo</p>
                   <p><span className="text-rendi-pos">&lt; 10%</span>: bonos / conservador.</p>
                   <p><span className="text-ink-2">10–20%</span>: equities diversificadas (S&P ≈ 15-18%).</p>
                   <p><span className="text-rendi-warn">20–40%</span>: equities concentradas / sectorial.</p>
                   <p><span className="text-rendi-neg">&gt; 40%</span>: cripto / activos especulativos.</p>
-                  <p className="text-ink-3">Basado en {proMetrics.sharpe.months} meses de retornos TWRR (Modified Dietz).</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                  <p className="text-ink-3 font-mono text-[11px]">σ<sub>anual</sub> = stdev(retornos mensuales) × √12</p>
+                  <p className="text-ink-3">Basado en {proMetrics.sharpe.months} meses de retornos ajustados por flujos.</p>
                 </>
               }
             >
@@ -2212,19 +2227,19 @@ function InsightsDesktop() {
                 title="Beta (vs S&P 500)"
                 tooltip={
                   <>
-                    <p className="font-semibold text-ink-0">Cómo se calcula</p>
-                    <p className="text-ink-3 font-mono text-[11px]">
-                      β = Cov(R<sub>p</sub>, R<sub>b</sub>) / Var(R<sub>b</sub>)
-                    </p>
+                    <p className="font-semibold text-ink-0">Qué es</p>
                     <p>Sensibilidad de tu cartera al mercado. Cuánto se mueve tu portfolio por cada movimiento del S&P 500.</p>
                     <div className="border-t border-line/60 my-1.5" />
-                    <p className="font-semibold text-ink-0">Interpretación</p>
+                    <p className="font-semibold text-ink-0">Cómo leerlo</p>
                     <p><span className="text-ink-1">β = 1.0</span>: te movés igual que el S&P.</p>
                     <p><span className="text-rendi-warn">β &gt; 1.0</span>: más volátil (más riesgo de mercado).</p>
                     <p><span className="text-rendi-pos">β &lt; 1.0</span>: más defensivo.</p>
                     <p><span className="text-ink-2">β ≈ 0</span>: no correlacionado.</p>
                     <p><span className="text-rendi-pos">β &lt; 0</span>: hedge (contrario al S&P).</p>
-                    <p className="text-ink-3">Basado en {proMetrics.alphaBeta.months} meses con returns válidos en ambas series.</p>
+                    <div className="border-t border-line/60 my-1.5" />
+                    <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                    <p className="text-ink-3 font-mono text-[11px]">β = Cov(R<sub>p</sub>, R<sub>b</sub>) / Var(R<sub>b</sub>)</p>
+                    <p className="text-ink-3">Basado en {proMetrics.alphaBeta.months} meses con retornos válidos en ambas series.</p>
                   </>
                 }
               >
@@ -2263,17 +2278,17 @@ function InsightsDesktop() {
                 accent={proMetrics.sharpe.sharpe >= 1}
                 tooltip={
                   <>
-                    <p className="font-semibold text-ink-0">Cómo se calcula</p>
-                    <p className="text-ink-3 font-mono text-[11px]">
-                      sharpe = (μ<sub>anual</sub> − rf) / σ<sub>anual</sub>
-                    </p>
-                    <p>Rendimiento ajustado por riesgo. Cuanto mayor, mejor compensaste el riesgo asumido.</p>
+                    <p className="font-semibold text-ink-0">Qué es</p>
+                    <p>Rendimiento ajustado por toda la volatilidad. Mide cuánto extra ganaste sobre la tasa libre de riesgo (T-Bills) por cada unidad de riesgo que asumiste.</p>
                     <div className="border-t border-line/60 my-1.5" />
-                    <p className="font-semibold text-ink-0">Interpretación</p>
-                    <p><span className="text-rendi-neg">&lt; 0</span>: le perdés a T-Bills.</p>
-                    <p><span className="text-ink-2">0–1</span>: tomás riesgo pero el premium es bajo.</p>
+                    <p className="font-semibold text-ink-0">Cómo leerlo</p>
+                    <p><span className="text-rendi-neg">&lt; 0</span>: le perdés a T-Bills (mejor estar en cash USD).</p>
+                    <p><span className="text-ink-2">0–1</span>: tomás riesgo pero el premio es bajo.</p>
                     <p><span className="text-rendi-pos">1–2</span>: bueno.</p>
                     <p><span className="text-rendi-pos">&gt; 2</span>: excelente.</p>
+                    <div className="border-t border-line/60 my-1.5" />
+                    <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                    <p className="text-ink-3 font-mono text-[11px]">sharpe = (μ<sub>anual</sub> − rf) / σ<sub>anual</sub></p>
                     <p className="text-ink-3">Retorno anual: {(proMetrics.sharpe.returnAnnual * 100).toFixed(1)}% · Tasa libre: {(proMetrics.sharpe.rfAnnual * 100).toFixed(1)}%</p>
                   </>
                 }
@@ -2316,15 +2331,15 @@ function InsightsDesktop() {
                   accent={proMetrics.sortino.sortino >= 1}
                   tooltip={
                     <>
-                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
-                      <p className="text-ink-3 font-mono text-[11px]">
-                        sortino = (μ<sub>anual</sub> − rf) / σ<sub>downside</sub>
-                      </p>
-                      <p>Como Sharpe pero usa SOLO la volatilidad a la baja. Más justo: la volatilidad upside no es "riesgo" — no nos asusta cuando ganamos.</p>
+                      <p className="font-semibold text-ink-0">Qué es</p>
+                      <p>Como Sharpe pero usa SOLO la volatilidad a la baja. Más justo: cuando tu cartera tiene un mes muy bueno, eso no es "riesgo" — no nos asusta cuando ganamos.</p>
                       <div className="border-t border-line/60 my-1.5" />
-                      <p className="font-semibold text-ink-0">Interpretación</p>
-                      <p>Mismo rango que Sharpe pero típicamente MÁS ALTO (porque excluye upside vol).</p>
+                      <p className="font-semibold text-ink-0">Cómo leerlo</p>
+                      <p>Mismo rango que Sharpe pero típicamente MÁS ALTO (porque excluye la volatilidad de subida).</p>
                       <p><span className="text-rendi-pos">&gt; 1.5</span>: muy bueno.</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                      <p className="text-ink-3 font-mono text-[11px]">sortino = (μ<sub>anual</sub> − rf) / σ<sub>downside</sub></p>
                       <p className="text-ink-3">Downside dev anual: {(proMetrics.sortino.downsideDev * 100).toFixed(1)}%.</p>
                     </>
                   }
@@ -2372,16 +2387,17 @@ function InsightsDesktop() {
                   accent={proMetrics.alphaBeta.alphaAnnual > 0}
                   tooltip={
                     <>
-                      <p className="font-semibold text-ink-0">Cómo se calcula (Jensen's Alpha / CAPM)</p>
-                      <p className="text-ink-3 font-mono text-[11px]">
-                        α = mean(R<sub>p</sub>) − [Rf + β × (mean(R<sub>b</sub>) − Rf)]
-                      </p>
-                      <p>Retorno extra sobre lo que CAPM predice dado el riesgo de mercado (Beta).</p>
+                      <p className="font-semibold text-ink-0">Qué es</p>
+                      <p>Retorno extra sobre lo que el modelo CAPM predice dado el riesgo de mercado que asumiste (Beta). En cristiano: cuánto le ganaste al S&P teniendo en cuenta cuánto te movés con él.</p>
                       <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo leerlo</p>
                       <p><span className="text-rendi-pos">&gt; 0</span>: outperformaste el modelo (skill o suerte).</p>
-                      <p><span className="text-ink-2">≈ 0</span>: matchearás CAPM.</p>
+                      <p><span className="text-ink-2">≈ 0</span>: matcheás al CAPM.</p>
                       <p><span className="text-rendi-neg">&lt; 0</span>: underperformaste.</p>
-                      <p className="text-ink-3">R² {(proMetrics.alphaBeta.rSquared * 100).toFixed(0)}% — R² alto + α alto = outperform real.</p>
+                      <p className="text-ink-3">R² {(proMetrics.alphaBeta.rSquared * 100).toFixed(0)}% — R² alto + α alto = outperform real (no solo desviación aleatoria).</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                      <p className="text-ink-3 font-mono text-[11px]">α = mean(R<sub>p</sub>) − [Rf + β × (mean(R<sub>b</sub>) − Rf)]</p>
                     </>
                   }
                 >
@@ -2423,16 +2439,17 @@ function InsightsDesktop() {
                   accent={proMetrics.infoRatio.infoRatio >= 0.5}
                   tooltip={
                     <>
-                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
-                      <p className="text-ink-3 font-mono text-[11px]">
-                        IR = active_return<sub>anual</sub> / tracking_error<sub>anual</sub>
-                      </p>
-                      <p>Mide la consistencia del outperformance vs el benchmark. Cuánto le ganaste por cada unidad de desviación que tomaste vs el índice.</p>
+                      <p className="font-semibold text-ink-0">Qué es</p>
+                      <p>Consistencia con la que le ganás al benchmark. Mide cuánto le ganaste al S&P por cada unidad de "diferencia" que tomaste vs el índice (en lugar de calcar el S&P y dormir tranquilo).</p>
                       <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo leerlo</p>
                       <p><span className="text-ink-2">≈ 0</span>: matcheás al benchmark.</p>
                       <p><span className="text-rendi-pos">&gt; 0.5</span>: consistencia en outperform.</p>
                       <p><span className="text-rendi-pos">&gt; 1.0</span>: excelente (raro mantener sostenido).</p>
                       <p><span className="text-rendi-neg">&lt; 0</span>: underperformance crónica.</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                      <p className="text-ink-3 font-mono text-[11px]">IR = active_return<sub>anual</sub> / tracking_error<sub>anual</sub></p>
                       <p className="text-ink-3">Active return: {(proMetrics.infoRatio.activeReturn * 100).toFixed(1)}% · Tracking error: {(proMetrics.infoRatio.trackingError * 100).toFixed(1)}%</p>
                     </>
                   }
@@ -3172,9 +3189,13 @@ function ProfileAllocationCard({ data }) {
 function ProfileObjectiveCard({ data }) {
   const tooltip = (
     <>
-      <p className="font-semibold text-ink-0">Cómo se calcula</p>
-      <p>Cruza el objetivo declarado en el test (jubilación, libertad financiera, compra puntual, etc.) con la composición real de tu cartera.</p>
-      <p className="text-ink-3">Para objetivos de corto plazo (compra puntual, jubilación cercana) se considera "alineado" lo que está en cash + renta fija. Para objetivos de crecimiento a largo plazo (libertad, aprender, hobby) se considera alineado lo que está en renta variable + alternativos.</p>
+      <p className="font-semibold text-ink-0">Qué es</p>
+      <p>Cruza el objetivo que declaraste en el test (jubilación, libertad financiera, compra puntual, etc.) con la composición real de tu cartera.</p>
+      <div className="border-t border-line/60 my-1.5" />
+      <p className="font-semibold text-ink-0">Qué cuenta como "alineado"</p>
+      <p><strong>Corto plazo</strong> (compra puntual, jubilación cercana → &lt; 5 años): cash + renta fija.</p>
+      <p><strong>Largo plazo</strong> (libertad financiera, aprender, hobby → &gt; 10 años): renta variable + alternativos (crypto).</p>
+      <p className="text-ink-3">Para objetivos de corto plazo, la prioridad es preservar capital. Para largo plazo, es crecer (incluso aceptando volatilidad).</p>
     </>
   )
 
@@ -3223,9 +3244,14 @@ function ProfileObjectiveCard({ data }) {
 function ProfileHorizonCard({ data }) {
   const tooltip = (
     <>
-      <p className="font-semibold text-ink-0">Cómo se calcula</p>
-      <p>Toma el horizonte declarado en el test (corto/medio/largo plazo) y muestra qué porcentaje de tu cartera está en buckets consistentes con ese horizonte y qué porcentaje está en buckets que generarían riesgo para ese horizonte.</p>
-      <p className="text-ink-3">Horizonte largo → consistente con renta variable + alternativos (crecimiento). Horizonte corto → consistente con cash + renta fija (preservación). El "riesgo" es relativo al timing, no a la calidad del activo.</p>
+      <p className="font-semibold text-ink-0">Qué es</p>
+      <p>Cruza el horizonte que declaraste (corto / medio / largo plazo) con la composición real de tu cartera.</p>
+      <div className="border-t border-line/60 my-1.5" />
+      <p className="font-semibold text-ink-0">Qué cuenta como "consistente"</p>
+      <p><strong>Horizonte largo</strong>: renta variable + alternativos (crecimiento — podés esperar a que se recuperen las caídas).</p>
+      <p><strong>Horizonte corto</strong>: cash + renta fija (preservación — no podés esperar).</p>
+      <div className="border-t border-line/60 my-1.5" />
+      <p className="text-ink-3"><strong className="text-ink-1">"Riesgo" acá significa "riesgo de timing"</strong>, no calidad del activo: una buena acción puede estar abajo justo el día que tenés que vender. Para horizonte corto, eso es lo que se quiere evitar.</p>
     </>
   )
 

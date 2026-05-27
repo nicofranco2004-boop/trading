@@ -147,18 +147,22 @@ export default function Goals() {
           <TrendingUp size={16} className="text-ink-3" />
           <h2 className="font-semibold text-ink-0">Rendimiento histórico (CAGR)</h2>
           <InfoTooltip>
-            <p className="font-semibold text-ink-0">¿Qué es el CAGR?</p>
+            <p className="font-semibold text-ink-0">Qué es</p>
             <p>
-              <span className="font-medium">Compound Annual Growth Rate</span> · expresa tu rendimiento como una <span className="font-medium">tasa anual constante</span>.
+              <span className="font-medium">Tasa de crecimiento anual compuesto</span> (CAGR) — expresa tu rendimiento total como una tasa fija por año.
+            </p>
+            <div className="border-t border-line/60 my-1.5" />
+            <p className="font-semibold text-ink-0">Para qué sirve</p>
+            <p className="text-ink-3">
+              Comparar tu performance contra otras inversiones en la misma unidad (% por año): plazos fijos, S&P 500, inflación INDEC, FCIs.
             </p>
             <p className="text-ink-3">
-              Permite comparar tu performance contra otras inversiones en la misma unidad (% por año): plazos fijos, S&P 500, inflación INDEC, FCIs.
+              Distinto al <span className="font-medium">retorno total acumulado</span> que ves en el Dashboard, que muestra la ganancia desde el inicio sin anualizar.
             </p>
+            <div className="border-t border-line/60 my-1.5" />
+            <p className="font-semibold text-ink-0">Cómo se calcula</p>
             <p className="text-ink-3">
-              Es distinto al <span className="font-medium">retorno total acumulado</span> que ves en el Dashboard, que muestra la ganancia desde el inicio sin anualizar.
-            </p>
-            <p className="text-ink-3">
-              Calculado con <span className="font-medium">TWR (Time-Weighted Return)</span>: neutraliza el efecto de tus aportes y retiros — refleja únicamente la performance del mercado sobre tu capital.
+              Con <span className="font-medium">TWR</span> (rendimiento ajustado por flujos) — neutraliza el efecto de tus aportes y retiros para que solo veas la performance pura del mercado sobre tu capital.
             </p>
           </InfoTooltip>
         </div>
