@@ -151,11 +151,115 @@ export function computeSharpe(monthlyReturns, rfAnnual = RF_RATE_FALLBACK) {
 }
 
 /**
+ * Computa returns mensuales de una serie de precios mensuales.
+ * Usado para derivar la serie del benchmark (S&P, etc.).
+ *
+ * @param {Object} priceMap  { 'YYYY-MM': close_price }
+ * @returns {Array<{key, return}>}  retornos en fracción
+ */
+export function computePriceMapReturns(priceMap) {
+  if (!priceMap || typeof priceMap !== 'object') return []
+  const sortedKeys = Object.keys(priceMap).sort()
+  if (sortedKeys.length < 2) return []
+  const out = []
+  for (let i = 1; i < sortedKeys.length; i++) {
+    const prev = priceMap[sortedKeys[i - 1]]
+    const curr = priceMap[sortedKeys[i]]
+    if (!prev || prev <= 0 || curr == null || curr <= 0) continue
+    out.push({
+      key: sortedKeys[i],
+      return: curr / prev - 1,
+    })
+  }
+  return out
+}
+
+/**
+ * Alpha + Beta del portfolio vs un benchmark (CAPM / Jensen's Alpha).
+ *
+ *   Beta  = Cov(R_p, R_b) / Var(R_b)
+ *   Alpha = mean(R_p) − [Rf_m + Beta × (mean(R_b) − Rf_m)]
+ *   R²    = Cov² / (Var(R_p) × Var(R_b))
+ *
+ * Interpretación:
+ *   • Beta = 1.0  → te movés igual que el benchmark
+ *   • Beta > 1.0  → más volátil que el mercado (más riesgo de mercado)
+ *   • Beta < 1.0  → más defensivo (menos sensible)
+ *   • Beta ≈ 0    → no correlacionado
+ *   • Beta < 0    → te movés contrario (poco común, hedge)
+ *
+ *   • Alpha > 0   → outperformaste lo que CAPM predice (skill o suerte)
+ *   • Alpha = 0   → matchearás al modelo
+ *   • Alpha < 0   → underperformaste
+ *
+ * R² indica qué tanto del portfolio se explica por el benchmark:
+ *   1.0 = idéntico; 0 = independiente. R² alto + Alpha alto = outperform real.
+ *
+ * Mínimo 6 meses de overlap para que las estadísticas sean confiables.
+ *
+ * @param {Array}  portfolioReturns  output de computeMonthlyReturns
+ * @param {Array}  benchmarkReturns  output de computePriceMapReturns
+ * @param {number} rfAnnual          tasa libre de riesgo anualizada
+ * @returns {{alpha, alphaAnnual, beta, rSquared, months} | null}
+ */
+export function computeAlphaBeta(portfolioReturns, benchmarkReturns, rfAnnual = RF_RATE_FALLBACK) {
+  if (!portfolioReturns || !benchmarkReturns) return null
+
+  // Index benchmark por key para lookup O(1)
+  const benchByKey = {}
+  for (const b of benchmarkReturns) benchByKey[b.key] = b.return
+
+  // Pares (R_p, R_b) solo para meses donde AMBOS tienen return
+  const pairs = []
+  for (const p of portfolioReturns) {
+    const b = benchByKey[p.key]
+    if (b != null) pairs.push({ rp: p.return, rb: b })
+  }
+
+  if (pairs.length < 6) return null  // mínimo 6 meses overlap para confiabilidad
+
+  const n = pairs.length
+  const meanP = pairs.reduce((s, x) => s + x.rp, 0) / n
+  const meanB = pairs.reduce((s, x) => s + x.rb, 0) / n
+
+  // Covariance y variance (sample, n-1)
+  let cov = 0
+  let varB = 0
+  let varP = 0
+  for (const p of pairs) {
+    cov += (p.rp - meanP) * (p.rb - meanB)
+    varB += Math.pow(p.rb - meanB, 2)
+    varP += Math.pow(p.rp - meanP, 2)
+  }
+  cov /= n - 1
+  varB /= n - 1
+  varP /= n - 1
+
+  if (varB === 0) return null  // benchmark sin volatilidad → Beta indefinido
+
+  const beta = cov / varB
+  const rSquared = varP > 0 ? (cov * cov) / (varP * varB) : 0
+
+  // CAPM: alpha_mensual = mean(R_p) − [Rf_m + Beta × (mean(R_b) − Rf_m)]
+  const rfMonthly = rfAnnual / 12  // aprox lineal — industry std
+  const alpha = meanP - (rfMonthly + beta * (meanB - rfMonthly))
+  const alphaAnnual = alpha * 12  // anualización lineal
+
+  return {
+    alpha,
+    alphaAnnual,
+    beta,
+    rSquared,
+    months: n,
+  }
+}
+
+/**
  * Helper combinado: dado globalMonthly + bench, devuelve todas las métricas.
  *
  * @param {Array}  globalMonthly  entries del broker 'global'
  * @param {Object} bench          { sp500, shv, ... } del endpoint /benchmarks
- * @returns {{returns, volatility, sharpe} | null}
+ * @returns {{returns, volatility, sharpe, alphaBeta} | null}
  */
 export function computeProMetrics(globalMonthly, bench) {
   const returns = computeMonthlyReturns(globalMonthly)
@@ -163,9 +267,18 @@ export function computeProMetrics(globalMonthly, bench) {
   const volatility = computeAnnualizedVolatility(returns)
   const rf = estimateRiskFreeRate(bench?.shv)
   const sharpe = computeSharpe(returns, rf)
+
+  // Alpha + Beta vs S&P 500. Es el benchmark de referencia global; si en el
+  // futuro queremos vs otros benchmarks, se puede parametrizar.
+  const sp500Returns = computePriceMapReturns(bench?.sp500)
+  const alphaBeta = sp500Returns.length >= 6
+    ? computeAlphaBeta(returns, sp500Returns, rf)
+    : null
+
   return {
     returns,
     volatility,
     sharpe,
+    alphaBeta,
   }
 }

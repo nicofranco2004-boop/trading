@@ -2094,16 +2094,16 @@ function InsightsDesktop() {
       </Section>
 
       {/* ══════════════════════════════════════════════════════════════════════
-          C1.5 MÉTRICAS PRO — Sharpe Ratio + Volatilidad anualizada.
+          C1.5 MÉTRICAS PRO — Sharpe, Volatilidad, Alpha y Beta vs S&P 500.
                Estadísticas estándar de la industria (calculadas con TWRR
-               vía Modified Dietz). Risk-free rate desde SHV ETF.
+               vía Modified Dietz + CAPM para Alpha/Beta).
           ══════════════════════════════════════════════════════════════════════ */}
       {proMetrics && proMetrics.sharpe && (
         <Section
           title="Métricas pro"
-          subtitle="Sharpe Ratio y volatilidad anualizada — estadísticas estándar de la industria."
+          subtitle={`Sharpe, Volatilidad${proMetrics.alphaBeta ? ', Alpha y Beta vs S&P 500' : ''} — estadísticas estándar de la industria.`}
         >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className={`grid grid-cols-1 ${proMetrics.alphaBeta ? 'md:grid-cols-2 lg:grid-cols-4' : 'md:grid-cols-2'} gap-4`}>
             {/* Sharpe Ratio */}
             <InsightCard
               icon={<Target size={18} />}
@@ -2200,6 +2200,104 @@ function InsightsDesktop() {
                 Comparable: S&P 500 ≈ 15-18% anual.
               </p>
             </InsightCard>
+
+            {/* Alpha (Jensen) vs S&P 500 */}
+            {proMetrics.alphaBeta && (
+              <InsightCard
+                icon={<TrendingUp size={18} />}
+                title="Alpha (vs S&P 500)"
+                accent={proMetrics.alphaBeta.alphaAnnual > 0}
+                tooltip={
+                  <>
+                    <p className="font-semibold text-ink-0">Cómo se calcula (Jensen's Alpha / CAPM)</p>
+                    <p className="text-ink-3 font-mono text-[11px]">
+                      α = mean(R<sub>p</sub>) − [Rf + β × (mean(R<sub>b</sub>) − Rf)]
+                    </p>
+                    <p>El retorno extra que generaste sobre lo que el modelo CAPM predice, dado el riesgo de mercado que asumiste (Beta).</p>
+                    <div className="border-t border-line/60 my-1.5" />
+                    <p className="font-semibold text-ink-0">Interpretación</p>
+                    <p><span className="text-rendi-pos">&gt; 0</span>: outperformaste el modelo (skill genuino o suerte).</p>
+                    <p><span className="text-ink-2">≈ 0</span>: matchearás al modelo.</p>
+                    <p><span className="text-rendi-neg">&lt; 0</span>: underperformaste vs lo esperable.</p>
+                    <div className="border-t border-line/60 my-1.5" />
+                    <p className="font-semibold text-ink-0">Contexto</p>
+                    <p className="text-ink-3">R²: {(proMetrics.alphaBeta.rSquared * 100).toFixed(0)}% — qué tanto del retorno del portfolio explica el S&P 500. R² alto + Alpha alto = outperform real (no sólo desviación).</p>
+                    <p className="text-ink-3">Basado en {proMetrics.alphaBeta.months} meses con returns válidos en ambas series.</p>
+                  </>
+                }
+              >
+                <div className="flex items-baseline gap-3">
+                  <p className={`text-3xl font-bold tabular ${
+                    proMetrics.alphaBeta.alphaAnnual > 0.02 ? 'text-rendi-pos'
+                    : proMetrics.alphaBeta.alphaAnnual > -0.02 ? 'text-ink-1'
+                    : 'text-rendi-neg'
+                  }`}>
+                    {proMetrics.alphaBeta.alphaAnnual >= 0 ? '+' : '−'}{Math.abs(proMetrics.alphaBeta.alphaAnnual * 100).toFixed(1)}%
+                  </p>
+                  <p className="text-xs text-ink-3 tabular">
+                    {proMetrics.alphaBeta.alphaAnnual > 0.05 ? 'Outperform alto'
+                     : proMetrics.alphaBeta.alphaAnnual > 0 ? 'Outperform'
+                     : proMetrics.alphaBeta.alphaAnnual > -0.05 ? 'Matchea CAPM'
+                     : 'Underperform'}
+                  </p>
+                </div>
+                <p className="text-xs text-ink-3 mt-2 leading-snug">
+                  Retorno anual extra vs lo que el modelo CAPM predice.
+                  R² <span className="text-ink-1 font-medium tabular">{(proMetrics.alphaBeta.rSquared * 100).toFixed(0)}%</span> — correlación con S&P.
+                </p>
+              </InsightCard>
+            )}
+
+            {/* Beta vs S&P 500 */}
+            {proMetrics.alphaBeta && (
+              <InsightCard
+                icon={<BarChart3 size={18} />}
+                title="Beta (vs S&P 500)"
+                tooltip={
+                  <>
+                    <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                    <p className="text-ink-3 font-mono text-[11px]">
+                      β = Cov(R<sub>p</sub>, R<sub>b</sub>) / Var(R<sub>b</sub>)
+                    </p>
+                    <p>Sensibilidad de tu cartera al mercado. Cuánto se mueve tu portfolio por cada movimiento del S&P 500.</p>
+                    <div className="border-t border-line/60 my-1.5" />
+                    <p className="font-semibold text-ink-0">Interpretación</p>
+                    <p><span className="text-ink-1">β = 1.0</span>: te movés igual que el S&P.</p>
+                    <p><span className="text-rendi-warn">β &gt; 1.0</span>: más volátil que el mercado (más riesgo).</p>
+                    <p><span className="text-rendi-pos">β &lt; 1.0</span>: más defensivo (menos sensible).</p>
+                    <p><span className="text-ink-2">β ≈ 0</span>: no correlacionado con el mercado.</p>
+                    <p><span className="text-rendi-pos">β &lt; 0</span>: hedge (te movés contrario al S&P).</p>
+                    <div className="border-t border-line/60 my-1.5" />
+                    <p className="text-ink-3">Basado en {proMetrics.alphaBeta.months} meses con returns válidos en ambas series.</p>
+                  </>
+                }
+              >
+                <div className="flex items-baseline gap-3">
+                  <p className={`text-3xl font-bold tabular ${
+                    Math.abs(proMetrics.alphaBeta.beta - 1.0) < 0.15 ? 'text-ink-1'
+                    : proMetrics.alphaBeta.beta > 1.0 ? 'text-rendi-warn'
+                    : proMetrics.alphaBeta.beta >= 0 ? 'text-rendi-pos'
+                    : 'text-rendi-accent'
+                  }`}>
+                    {proMetrics.alphaBeta.beta.toFixed(2)}
+                  </p>
+                  <p className="text-xs text-ink-3 tabular">
+                    {Math.abs(proMetrics.alphaBeta.beta - 1.0) < 0.15 ? 'Como S&P'
+                     : proMetrics.alphaBeta.beta > 1.3 ? 'Agresivo'
+                     : proMetrics.alphaBeta.beta > 1.0 ? 'Sobre el S&P'
+                     : proMetrics.alphaBeta.beta > 0.5 ? 'Defensivo'
+                     : proMetrics.alphaBeta.beta >= 0 ? 'Bajo'
+                     : 'Hedge'}
+                  </p>
+                </div>
+                <p className="text-xs text-ink-3 mt-2 leading-snug">
+                  Por cada 1% que se mueve el S&P, tu cartera se mueve{' '}
+                  <span className="text-ink-1 font-medium tabular">
+                    {proMetrics.alphaBeta.beta.toFixed(2)}%
+                  </span>.
+                </p>
+              </InsightCard>
+            )}
           </div>
         </Section>
       )}
