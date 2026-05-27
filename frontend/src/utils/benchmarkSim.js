@@ -266,56 +266,64 @@ export function simulateMerval(globalMonthly, mervalArsMap, blueMap) {
   }
 }
 
-// ─── Plazo fijo ARS (TNA Minorista) ─────────────────────────────────────────
+// ─── Plazo fijo UVA (CER-ajustado) ──────────────────────────────────────────
 /**
- * Simula tus aportes en plazo fijo minorista (BCRA).
+ * Simula tus aportes en Plazo Fijo UVA — el PF retail más popular en AR.
  *
- * Distinto de simulateBenchmark genérico porque NO hay precio — hay TNA
- * anualizada. Convertimos TNA → return mensual y capitalizamos.
+ * El PF UVA ajusta el saldo en pesos por el coeficiente UVA (= IPC INDEC),
+ * más un spread chico (~0.5-1% TNA, despreciable). Asumimos spread = 0.
+ *
+ * Factor de capitalización mensual = UVA_t / UVA_{t-1} (= 1 + inflación_t).
+ *
+ * El "Plazo Fijo Tradicional" (TNA Minorista) NO se simula porque ninguna
+ * API pública tiene serie histórica confiable. UVA es el reemplazo más
+ * representativo y con data verificable.
  *
  * @param {Array}  globalMonthly  global monthly entries
- * @param {Object} ratesMap       { 'YYYY-MM': tna_pct } TNA anualizada del mes
+ * @param {Object} uvaMap         { 'YYYY-MM': uva_value } UVA al cierre del mes
  * @param {Object} blueMap        { 'YYYY-MM': blue_venta } para conversión USD↔ARS
  * @returns {{ finalValue, series, finalArs } | null}
- *          series con value en USD-equiv (mismo apples-to-apples que otros)
+ *          series con value en USD-equiv (apples-to-apples con otros benchmarks)
  */
-export function simulatePlazoFijoArs(globalMonthly, ratesMap, blueMap) {
-  if (!ratesMap || Object.keys(ratesMap).length === 0) return null
+export function simulatePlazoFijoUva(globalMonthly, uvaMap, blueMap) {
+  if (!uvaMap || Object.keys(uvaMap).length === 0) return null
   if (!blueMap || Object.keys(blueMap).length === 0) return null
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
   const firstKey = monthKey(sorted[0].year, sorted[0].month)
   const firstBlue = lookupMonthly(blueMap, firstKey)
+  const firstUva = lookupMonthly(uvaMap, firstKey)
   if (!firstBlue || firstBlue <= 0) return null
+  if (!firstUva || firstUva <= 0) return null
 
-  // Capital USD inicial → ARS al blue del primer mes (mantenemos en ARS para
-  // capitalizar contra la TNA). Al final convertimos al blue del mes.
+  // Capital USD inicial → ARS al blue del primer mes. Mantenemos saldo en
+  // ARS para capitalizar con UVA; convertimos a USD-eq al blue del mes en
+  // cada punto.
   let valueArs = (sorted[0].capital_inicio || 0) * firstBlue
+  let prevUva = firstUva  // primer mes: ratio = 1 → no capitaliza (alineado con S&P)
   const series = []
-  let isFirst = true
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
-    const tna = lookupMonthly(ratesMap, k)  // % anualizada
+    const uva = lookupMonthly(uvaMap, k) ?? prevUva
     const blue = lookupMonthly(blueMap, k) ?? firstBlue
 
-    // Capitalizar el mes: (1 + tna/100)^(1/12) - 1
-    // AUDIT FIX 2026-05-26: skip capitalización en el PRIMER mes para alinear
-    // con simulateBenchmark genérico (donde en el primer mes price = firstPrice
-    // → retorno = 0%). Sin este skip, el PF se llevaba 1 mes extra de TNA y
-    // sobrestimaba retorno ~3-5%.
-    if (!isFirst && tna != null && tna > 0) {
-      const monthlyReturn = Math.pow(1 + tna / 100, 1 / 12) - 1
-      valueArs *= 1 + monthlyReturn
+    // Capitalizar con ratio UVA. En el primer mes prevUva === firstUva === uva
+    // → ratio = 1 → no genera retorno (alineado con simulateBenchmark donde
+    // el primer mes tiene price = firstPrice).
+    if (uva > 0 && prevUva > 0) {
+      valueArs *= uva / prevUva
     }
-    isFirst = false
 
-    // Agregamos flows del mes (al blue del mes para apples-to-apples).
+    // Agregar flow al blue del mes (apples-to-apples)
     const netUsd = (m.deposits || 0) - (m.withdrawals || 0)
     valueArs += netUsd * blue
 
-    // Value USD-equiv = ARS / blue del mes.
+    // Update prevUva para próxima iteración
+    if (uva > 0) prevUva = uva
+
+    // Value USD-equiv = ARS / blue del mes
     const valueUsd = blue > 0 ? valueArs / blue : 0
     series.push({ key: k, value: valueUsd })
   }

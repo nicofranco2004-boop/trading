@@ -2311,7 +2311,7 @@ def _benchmarks_fetch_and_cache():
     f_shv = _bench_fetch_executor.submit(_fetch_shv_monthly)
     f_gld = _bench_fetch_executor.submit(_fetch_gld_monthly)
     f_merval = _bench_fetch_executor.submit(_fetch_merval_monthly)
-    f_pf = _bench_fetch_executor.submit(_fetch_plazo_fijo_minorista)
+    f_uva = _bench_fetch_executor.submit(_fetch_uva_monthly)
 
     def _safe(future, key, default=None):
         """Resultado del future con fallback a stale cache si timeout/exception."""
@@ -2327,7 +2327,7 @@ def _benchmarks_fetch_and_cache():
         "shv":          _safe(f_shv, "shv"),
         "gld":          _safe(f_gld, "gld"),
         "merval":       _safe(f_merval, "merval"),
-        "plazo_fijo":   _safe(f_pf, "plazo_fijo"),
+        "uva":          _safe(f_uva, "uva"),
         "fetched_at":   datetime.utcnow().isoformat() + "Z",
     }
     _bench_cache["data"] = data
@@ -2443,44 +2443,36 @@ def _fetch_merval_monthly():
     return _fetch_yf_monthly("^MERV")
 
 
-def _fetch_plazo_fijo_minorista():
-    """Plazo fijo minorista TNA desde argentinadatos.com.
-    Returns dict {YYYY-MM: tna_pct} — la TNA promedio del mes (último valor mensual).
+def _fetch_uva_monthly():
+    """UVA (Unidad de Valor Adquisitivo) mensual desde argentinadatos.com.
+    Returns {YYYY-MM: uva_value} (último valor del mes).
 
-    NOTA: argentinadatos.com tiene `/v1/finanzas/indices/plazoFijo` que devuelve
-    la serie histórica de la TNA minorista BCRA. Si el endpoint cambia o no
-    está disponible, devolvemos {} y el frontend muestra "sin datos".
+    UVA ajusta por inflación INDEC (CER): el ratio UVA_t / UVA_{t-1} es
+    el factor de capitalización del mes (= inflación del mes).
 
-    Si el wording de la TNA viene como entidad/banco específico, agrupamos
-    por mes y tomamos el promedio cuando hay múltiples entries en el mes.
+    Usado para simular un Plazo Fijo UVA — la opción de PF más popular en AR
+    para preservar poder de compra. Su retorno mensual = inflación + spread
+    chico (~0.5-1% TNA); asumimos spread = 0 (impacto <1pp anual, despreciable).
+
+    Endpoint verificado activo 2026-05-26. argentinadatos.com NO tiene una
+    serie histórica de TNA Minorista del BCRA — UVA es el mejor proxy
+    disponible para el comportamiento del PF retail AR.
     """
     try:
         r = requests.get(
-            "https://api.argentinadatos.com/v1/finanzas/indices/plazoFijo",
+            "https://api.argentinadatos.com/v1/finanzas/indices/uva",
             timeout=8,
         )
         if r.status_code != 200:
             return {}
-        # API devuelve lista de entries con fecha + tnaClientes (puede variar).
-        # Aceptamos varios shapes posibles para robustez.
-        by_month: dict = {}
+        # La API devuelve daily. Tomamos el último valor de cada mes
+        # (dict overwrite gana porque las entries vienen ordenadas por fecha).
+        out = {}
         for item in r.json():
             fecha = item.get("fecha", "")
-            if not fecha:
-                continue
-            # Posibles keys con la tasa: tnaClientes, tna, valor, tasa
-            tna = (
-                item.get("tnaClientes")
-                or item.get("tna")
-                or item.get("valor")
-                or item.get("tasa")
-            )
-            if tna is None:
-                continue
-            ym = fecha[:7]
-            # Promedio si hay múltiples entries el mismo mes
-            by_month.setdefault(ym, []).append(float(tna))
-        out = {ym: sum(vals) / len(vals) for ym, vals in by_month.items()}
+            valor = item.get("valor")
+            if fecha and valor is not None:
+                out[fecha[:7]] = float(valor)
         return out
     except Exception:
         return {}

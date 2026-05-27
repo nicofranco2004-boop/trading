@@ -46,7 +46,7 @@ import {
   simulateShv,
   simulateGold,
   simulateMerval,
-  simulatePlazoFijoArs,
+  simulatePlazoFijoUva,
   computeInflationCumulative,
   lookupMonthly,
 } from '../utils/benchmarkSim'
@@ -665,7 +665,7 @@ function InsightsDesktop() {
     dolar_cash: 'Dólar quieto',
     inflation:  'Inflación AR',
     merval:     'Merval',
-    plazo_fijo: 'Plazo fijo AR',
+    plazo_fijo: 'Plazo fijo UVA',
     pesos_cash: 'Pesos cash (blue)',
   }
   const benchmarkKey = BENCHMARK_LABELS[selectedBench] || 'Benchmark'
@@ -686,7 +686,7 @@ function InsightsDesktop() {
   const BENCHMARK_OPTIONS_ARS = [
     { key: 'inflation',  label: 'Inflación AR',    available: hasData(bench?.inflation_ar) },
     { key: 'merval',     label: 'Merval',          available: hasData(bench?.merval) && hasData(bench?.dolar_blue) },
-    { key: 'plazo_fijo', label: 'Plazo fijo AR',   available: hasData(bench?.plazo_fijo) && hasData(bench?.dolar_blue) },
+    { key: 'plazo_fijo', label: 'Plazo fijo UVA',  available: hasData(bench?.uva) && hasData(bench?.dolar_blue) },
     { key: 'pesos_cash', label: 'Pesos cash (blue)', available: hasData(bench?.dolar_blue) },
   ]
   const benchmarkOptions = currency === 'USD' ? BENCHMARK_OPTIONS_USD : BENCHMARK_OPTIONS_ARS
@@ -831,8 +831,8 @@ function InsightsDesktop() {
       shadowPctByMonth = buildInflationCumPct()
     } else if (selectedBench === 'merval' && bench?.merval && bench?.dolar_blue) {
       shadowPctByMonth = buildShadowFromSim(simulateMerval(globalMonthly, bench.merval, bench.dolar_blue))
-    } else if (selectedBench === 'plazo_fijo' && bench?.plazo_fijo && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadowFromSim(simulatePlazoFijoArs(globalMonthly, bench.plazo_fijo, bench.dolar_blue))
+    } else if (selectedBench === 'plazo_fijo' && bench?.uva && bench?.dolar_blue) {
+      shadowPctByMonth = buildShadowFromSim(simulatePlazoFijoUva(globalMonthly, bench.uva, bench.dolar_blue))
     } else if (selectedBench === 'pesos_cash' && bench?.dolar_blue) {
       shadowPctByMonth = buildShadowFromSim(simulateArsCash(globalMonthly, bench.dolar_blue))
     }
@@ -1181,7 +1181,7 @@ function InsightsDesktop() {
   const goldSim      = simulateGold(globalMonthly, bench?.gld)
   const dolarCashSim = simulateDolarCash(globalMonthly)
   const mervalSim    = simulateMerval(globalMonthly, bench?.merval, bench?.dolar_blue)
-  const plazoFijoSim = simulatePlazoFijoArs(globalMonthly, bench?.plazo_fijo, bench?.dolar_blue)
+  const plazoFijoSim = simulatePlazoFijoUva(globalMonthly, bench?.uva, bench?.dolar_blue)
   const arsCashSim   = simulateArsCash(globalMonthly, bench?.dolar_blue)
   const inflationCum = computeInflationCumulative(globalMonthly, bench?.inflation_ar)
 
@@ -2308,10 +2308,10 @@ function InsightsDesktop() {
                   amt={amt}
                 />
                 <BenchmarkCard
-                  label="vs Plazo fijo AR"
-                  hint="Capitalización mensual al TNA BCRA"
+                  label="vs Plazo fijo UVA"
+                  hint="PF ajustado por inflación (CER)"
                   disabled={!plazoFijoSim}
-                  disabledHint="Datos del plazo fijo no disponibles."
+                  disabledHint="Datos de UVA no disponibles."
                   myValue={totalPortfolio}
                   benchmarkValue={plazoFijoSim?.finalValue}
                   delta={vsPlazoFijo}
