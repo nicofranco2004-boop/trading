@@ -154,16 +154,24 @@ function InsightsDesktop() {
   const [chartRange, setChartRange] = useState(12) // months; null = MAX
 
   // Selector de benchmark del chart — uno por moneda, persisted en localStorage.
-  // Keys disponibles:
-  //   USD: 'sp500' (default) · 'tbill' · 'gold' · 'dolar_cash'
-  //   ARS: 'inflation' (default) · 'merval' · 'plazo_fijo' · 'pesos_cash'
+  // Keys del SELECTOR (no incluimos benchmarks que dan 0% siempre — ej. "Dólar
+  // quieto" rinde 0% por definición → línea plana sin info. Esas opciones
+  // siguen apareciendo en las CARDS de comparativa de abajo donde sí aportan
+  // el monto absoluto). Si llega un value viejo de localStorage que ya no es
+  // válido (e.g. 'dolar_cash'), caemos al default.
+  const VALID_USD_BENCH = ['sp500', 'tbill', 'gold']
+  const VALID_ARS_BENCH = ['inflation', 'merval', 'plazo_fijo', 'pesos_cash']
   const [benchUsd, setBenchUsd] = useState(() => {
-    try { return localStorage.getItem('rendi_insights_bench_usd') || 'sp500' }
-    catch { return 'sp500' }
+    try {
+      const v = localStorage.getItem('rendi_insights_bench_usd')
+      return VALID_USD_BENCH.includes(v) ? v : 'sp500'
+    } catch { return 'sp500' }
   })
   const [benchArs, setBenchArs] = useState(() => {
-    try { return localStorage.getItem('rendi_insights_bench_ars') || 'inflation' }
-    catch { return 'inflation' }
+    try {
+      const v = localStorage.getItem('rendi_insights_bench_ars')
+      return VALID_ARS_BENCH.includes(v) ? v : 'inflation'
+    } catch { return 'inflation' }
   })
   useEffect(() => {
     try { localStorage.setItem('rendi_insights_bench_usd', benchUsd) } catch {}
@@ -677,11 +685,13 @@ function InsightsDesktop() {
   // porque si yfinance falla y devuelve {}, !!{} es true pero el chart queda
   // vacío. El check más estricto evita habilitar opciones sin data real.
   const hasData = (map) => !!map && Object.keys(map).length > 0
+  // Dólar quieto NO está en el selector porque su línea es siempre 0% (rinde
+  // 0% por definición — no aporta info en el chart). Sigue apareciendo en las
+  // cards de "Comparativa con benchmarks" donde sí muestra el monto absoluto.
   const BENCHMARK_OPTIONS_USD = [
     { key: 'sp500',      label: 'S&P 500',         available: hasData(bench?.sp500) },
     { key: 'tbill',      label: 'T-Bills USD',     available: hasData(bench?.shv) },
     { key: 'gold',       label: 'Oro (GLD)',       available: hasData(bench?.gld) },
-    { key: 'dolar_cash', label: 'Dólar quieto',    available: true },
   ]
   const BENCHMARK_OPTIONS_ARS = [
     { key: 'inflation',  label: 'Inflación AR',    available: hasData(bench?.inflation_ar) },
