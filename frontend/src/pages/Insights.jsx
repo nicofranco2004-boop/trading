@@ -51,6 +51,7 @@ import {
   lookupMonthly,
 } from '../utils/benchmarkSim'
 import { selectDiagnostics } from '../utils/diagnostics'
+import { computeProMetrics } from '../utils/insightsMetrics'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
 import {
@@ -1195,6 +1196,12 @@ function InsightsDesktop() {
   const arsCashSim   = simulateArsCash(globalMonthly, bench?.dolar_blue)
   const inflationCum = computeInflationCumulative(globalMonthly, bench?.inflation_ar)
 
+  // ── Métricas pro: Sharpe Ratio + Volatilidad anualizada ────────────────────
+  // Calculadas sobre returns TWRR mensuales (Modified Dietz) — ya descuentan
+  // depósitos/retiros. Risk-free rate derivada de SHV (T-Bills USD).
+  // Mínimo 3 meses para que las estadísticas sean confiables.
+  const proMetrics = computeProMetrics(globalMonthly, bench)
+
   // Helper para deltas: cuánto rindió mi portfolio vs el benchmark.
   // Tomamos el "valor final" del benchmark contra `totalPortfolio` (live).
   function compareToMine(benchmarkFinal) {
@@ -2085,6 +2092,117 @@ function InsightsDesktop() {
       </div>
 
       </Section>
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          C1.5 MÉTRICAS PRO — Sharpe Ratio + Volatilidad anualizada.
+               Estadísticas estándar de la industria (calculadas con TWRR
+               vía Modified Dietz). Risk-free rate desde SHV ETF.
+          ══════════════════════════════════════════════════════════════════════ */}
+      {proMetrics && proMetrics.sharpe && (
+        <Section
+          title="Métricas pro"
+          subtitle="Sharpe Ratio y volatilidad anualizada — estadísticas estándar de la industria."
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Sharpe Ratio */}
+            <InsightCard
+              icon={<Target size={18} />}
+              title="Sharpe Ratio"
+              accent={proMetrics.sharpe.sharpe >= 1}
+              tooltip={
+                <>
+                  <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                  <p className="text-ink-3 font-mono text-[11px]">
+                    sharpe = (μ<sub>anual</sub> − tasa libre de riesgo) / σ<sub>anual</sub>
+                  </p>
+                  <p>Mide el rendimiento ajustado por riesgo. Cuanto mayor el Sharpe, mejor compensaste el riesgo asumido.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-semibold text-ink-0">Componentes</p>
+                  <p><strong>Retorno anualizado</strong>: promedio de retornos mensuales × 12 (TWRR Modified Dietz — descuenta depósitos/retiros).</p>
+                  <p><strong>Tasa libre de riesgo</strong>: derivada del ETF SHV (T-Bills 0-3M USD).</p>
+                  <p><strong>Volatilidad anualizada</strong>: desvío estándar de retornos mensuales × √12.</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-semibold text-ink-0">Interpretación</p>
+                  <p><span className="text-rendi-neg">&lt; 0</span>: le perdés a T-Bills (mejor estar en tasa libre de riesgo).</p>
+                  <p><span className="text-ink-2">0–1</span>: tomás riesgo pero el premium es bajo.</p>
+                  <p><span className="text-rendi-pos">1–2</span>: bueno.</p>
+                  <p><span className="text-rendi-pos">&gt; 2</span>: excelente (alto premium por riesgo asumido).</p>
+                  <p className="text-ink-3">Basado en {proMetrics.sharpe.months} meses de data.</p>
+                </>
+              }
+            >
+              <div className="flex items-baseline gap-3">
+                <p className={`text-3xl font-bold tabular ${
+                  proMetrics.sharpe.sharpe >= 2 ? 'text-rendi-pos'
+                  : proMetrics.sharpe.sharpe >= 1 ? 'text-emerald-600/80 dark:text-emerald-400/80'
+                  : proMetrics.sharpe.sharpe >= 0 ? 'text-ink-1'
+                  : 'text-rendi-neg'
+                }`}>
+                  {proMetrics.sharpe.sharpe.toFixed(2)}
+                </p>
+                <p className="text-xs text-ink-3 tabular">
+                  {proMetrics.sharpe.sharpe >= 2 ? 'Excelente'
+                   : proMetrics.sharpe.sharpe >= 1 ? 'Bueno'
+                   : proMetrics.sharpe.sharpe >= 0 ? 'Subóptimo'
+                   : 'Negativo'}
+                </p>
+              </div>
+              <p className="text-xs text-ink-3 mt-2 leading-snug">
+                Retorno anualizado: <span className="text-ink-1 font-medium tabular">
+                  {(proMetrics.sharpe.returnAnnual * 100).toFixed(1)}%
+                </span>
+                {' · '}
+                Tasa libre de riesgo: <span className="text-ink-1 font-medium tabular">
+                  {(proMetrics.sharpe.rfAnnual * 100).toFixed(1)}%
+                </span>
+              </p>
+            </InsightCard>
+
+            {/* Volatilidad anualizada */}
+            <InsightCard
+              icon={<Activity size={18} />}
+              title="Volatilidad anualizada"
+              tooltip={
+                <>
+                  <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                  <p className="text-ink-3 font-mono text-[11px]">
+                    σ<sub>anual</sub> = stdev(retornos mensuales) × √12
+                  </p>
+                  <p>Cuánto varían tus retornos mensualmente, anualizado. Volatilidad alta = más variabilidad mes a mes (más riesgo).</p>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-semibold text-ink-0">Referencias típicas</p>
+                  <p><span className="text-rendi-pos">&lt; 10%</span>: bonos / conservador.</p>
+                  <p><span className="text-ink-2">10–20%</span>: equities diversificadas (S&P ≈ 15-18%).</p>
+                  <p><span className="text-rendi-warn">20–40%</span>: equities concentradas / sectorial.</p>
+                  <p><span className="text-rendi-neg">&gt; 40%</span>: cripto / activos especulativos.</p>
+                  <p className="text-ink-3">Basado en {proMetrics.sharpe.months} meses de retornos TWRR (Modified Dietz).</p>
+                </>
+              }
+            >
+              <div className="flex items-baseline gap-3">
+                <p className={`text-3xl font-bold tabular ${
+                  proMetrics.volatility < 0.10 ? 'text-rendi-pos'
+                  : proMetrics.volatility < 0.20 ? 'text-ink-1'
+                  : proMetrics.volatility < 0.40 ? 'text-rendi-warn'
+                  : 'text-rendi-neg'
+                }`}>
+                  {(proMetrics.volatility * 100).toFixed(1)}%
+                </p>
+                <p className="text-xs text-ink-3 tabular">
+                  {proMetrics.volatility < 0.10 ? 'Baja'
+                   : proMetrics.volatility < 0.20 ? 'Moderada'
+                   : proMetrics.volatility < 0.40 ? 'Alta'
+                   : 'Muy alta'}
+                </p>
+              </div>
+              <p className="text-xs text-ink-3 mt-2 leading-snug">
+                Desvío estándar de los retornos mensuales del portfolio, anualizado.
+                Comparable: S&P 500 ≈ 15-18% anual.
+              </p>
+            </InsightCard>
+          </div>
+        </Section>
+      )}
 
       {/* ══════════════════════════════════════════════════════════════════════
           C2. PERFIL DEL INVERSOR — cruza el test (perfil declarado) con la
