@@ -769,7 +769,7 @@ function InsightsDesktop() {
     // su propio lookup interno con fallback al mes anterior disponible.
     const stableInv = (cur, peak) => (cur >= peak * 0.6 && cur > 1000) ? cur : peak
 
-    function buildShadowFromSim(simResult) {
+    function buildShadowFromSim(simResult, latestBenchPrice) {
       const result = new Map()
       if (!simResult || !simResult.series || simResult.series.length === 0) return result
       const baselineUsd = globalMonthly[0]?.capital_inicio || 0
@@ -793,14 +793,32 @@ function InsightsDesktop() {
         result.set(mk, +Math.min(Math.max(pct, -99), 200).toFixed(2))
       }
 
-      // "Today": último value del sim (extrapolado al precio actual).
+      // "Today": para benchmarks tipo S&P/SHV/GLD (con finalUnits), si tenemos
+      // un precio MÁS RECIENTE que el último mes del user, lo usamos para
+      // extrapolar al estado actual. Si no, usamos el último value del sim.
+      //
+      // Cubre el caso donde el user no cargó la entry del mes en curso pero
+      // el bench ya tiene precio actualizado.
       const last = simResult.series[simResult.series.length - 1]
       const investedNow = baselineUsd + netFlows
       const denom = stableInv(investedNow, peakInvested)
-      const gain = last.value - investedNow
+      const todayShadowValue =
+        (latestBenchPrice != null && simResult.finalUnits != null && latestBenchPrice > 0)
+          ? simResult.finalUnits * latestBenchPrice
+          : last.value
+      const gain = todayShadowValue - investedNow
       const pct = denom > 0 ? (gain / denom) * 100 : 0
       result.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
       return result
+    }
+
+    // Helper para obtener el último precio disponible del map del benchmark
+    // (usado en el "today" — extrapola si el bench tiene data más reciente
+    // que la última entry del user).
+    function latestPriceOf(priceMap) {
+      if (!priceMap) return null
+      const keys = Object.keys(priceMap).sort()
+      return keys.length > 0 ? priceMap[keys[keys.length - 1]] : null
     }
 
     function buildInflationCumPct() {
@@ -829,23 +847,43 @@ function InsightsDesktop() {
     }
 
     // Dispatcher: cada benchmark seleccionado calcula su propio shadowPctByMonth.
+    // Para benchmarks con finalUnits (S&P, SHV, GLD), pasamos latestBenchPrice
+    // para que el "today" del shadow extrapole al precio actual del benchmark
+    // (caso del audit M3: user que no cargó mes en curso pero el bench sí lo tiene).
     let shadowPctByMonth = new Map()
     if (selectedBench === 'sp500' && bench?.sp500) {
-      shadowPctByMonth = buildShadowFromSim(simulateSp500(globalMonthly, bench.sp500))
+      shadowPctByMonth = buildShadowFromSim(
+        simulateSp500(globalMonthly, bench.sp500),
+        latestPriceOf(bench.sp500),
+      )
     } else if (selectedBench === 'tbill' && bench?.shv) {
-      shadowPctByMonth = buildShadowFromSim(simulateShv(globalMonthly, bench.shv))
+      shadowPctByMonth = buildShadowFromSim(
+        simulateShv(globalMonthly, bench.shv),
+        latestPriceOf(bench.shv),
+      )
     } else if (selectedBench === 'gold' && bench?.gld) {
-      shadowPctByMonth = buildShadowFromSim(simulateGold(globalMonthly, bench.gld))
+      shadowPctByMonth = buildShadowFromSim(
+        simulateGold(globalMonthly, bench.gld),
+        latestPriceOf(bench.gld),
+      )
     } else if (selectedBench === 'dolar_cash') {
       shadowPctByMonth = buildShadowFromSim(simulateDolarCash(globalMonthly))
     } else if (selectedBench === 'inflation') {
       shadowPctByMonth = buildInflationCumPct()
     } else if (selectedBench === 'merval' && bench?.merval && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadowFromSim(simulateMerval(globalMonthly, bench.merval, bench.dolar_blue))
+      // Merval no usa finalUnits porque la conversión USD-ARS es compleja —
+      // dejamos el último value del sim como "today".
+      shadowPctByMonth = buildShadowFromSim(
+        simulateMerval(globalMonthly, bench.merval, bench.dolar_blue),
+      )
     } else if (selectedBench === 'plazo_fijo' && bench?.uva && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadowFromSim(simulatePlazoFijoUva(globalMonthly, bench.uva, bench.dolar_blue))
+      shadowPctByMonth = buildShadowFromSim(
+        simulatePlazoFijoUva(globalMonthly, bench.uva, bench.dolar_blue),
+      )
     } else if (selectedBench === 'pesos_cash' && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadowFromSim(simulateArsCash(globalMonthly, bench.dolar_blue))
+      shadowPctByMonth = buildShadowFromSim(
+        simulateArsCash(globalMonthly, bench.dolar_blue),
+      )
     }
 
     const withBench = windowSeries.map(s => {
@@ -1421,6 +1459,25 @@ function InsightsDesktop() {
       concentration_top3_assets: concentration ? concentration.top3.map(t => t.asset) : null,
       avg_hold_days: holdTime ? +holdTime.avg.toFixed(1) : null,
       tc_blue_ars: tcBlue,
+      // Pro metrics (calculadas en frontend con TWRR Modified Dietz + CAPM).
+      // El Coach puede usarlas para diagnósticos tipo "tu Sharpe bajó de 1.4 a
+      // 0.8 los últimos 3 meses" o "tu Beta de 1.6 indica que sos más agresivo
+      // que el S&P, esperás drawdowns más grandes en correcciones".
+      pro_metrics: proMetrics ? {
+        volatility_annual_pct: proMetrics.volatility != null ? +(proMetrics.volatility * 100).toFixed(2) : null,
+        sharpe_ratio: proMetrics.sharpe ? +proMetrics.sharpe.sharpe.toFixed(2) : null,
+        return_annual_pct: proMetrics.sharpe ? +(proMetrics.sharpe.returnAnnual * 100).toFixed(2) : null,
+        rf_annual_pct: proMetrics.sharpe ? +(proMetrics.sharpe.rfAnnual * 100).toFixed(2) : null,
+        sortino_ratio: proMetrics.sortino ? +proMetrics.sortino.sortino.toFixed(2) : null,
+        downside_dev_annual_pct: proMetrics.sortino ? +(proMetrics.sortino.downsideDev * 100).toFixed(2) : null,
+        alpha_annual_pct: proMetrics.alphaBeta ? +(proMetrics.alphaBeta.alphaAnnual * 100).toFixed(2) : null,
+        beta_vs_sp500: proMetrics.alphaBeta ? +proMetrics.alphaBeta.beta.toFixed(2) : null,
+        r_squared_pct: proMetrics.alphaBeta ? +(proMetrics.alphaBeta.rSquared * 100).toFixed(0) : null,
+        info_ratio: proMetrics.infoRatio ? +proMetrics.infoRatio.infoRatio.toFixed(2) : null,
+        active_return_annual_pct: proMetrics.infoRatio ? +(proMetrics.infoRatio.activeReturn * 100).toFixed(2) : null,
+        tracking_error_annual_pct: proMetrics.infoRatio ? +(proMetrics.infoRatio.trackingError * 100).toFixed(2) : null,
+        months_data: proMetrics.sharpe ? proMetrics.sharpe.months : null,
+      } : null,
     },
     positions: aiPositions,
     cash: aiCash,
@@ -2094,71 +2151,19 @@ function InsightsDesktop() {
       </Section>
 
       {/* ══════════════════════════════════════════════════════════════════════
-          C1.5 MÉTRICAS PRO — Sharpe, Volatilidad, Alpha y Beta vs S&P 500.
-               Estadísticas estándar de la industria (calculadas con TWRR
-               vía Modified Dietz + CAPM para Alpha/Beta).
+          C1.5 MÉTRICAS PRO — 6 métricas estadísticas estándar de la industria.
+               Tier gating:
+                 • Plus: Volatilidad + Beta (descriptivas del riesgo)
+                 • Pro:  Sharpe + Sortino + Alpha + Information Ratio
+                         (skill ajustado por riesgo — métricas premium)
           ══════════════════════════════════════════════════════════════════════ */}
-      {proMetrics && proMetrics.sharpe && (
+      {proMetrics && proMetrics.sharpe && plan.isPaid && (
         <Section
           title="Métricas pro"
-          subtitle={`Sharpe, Volatilidad${proMetrics.alphaBeta ? ', Alpha y Beta vs S&P 500' : ''} — estadísticas estándar de la industria.`}
+          subtitle="Volatilidad y Beta en Plus; Sharpe, Sortino, Alpha e Information Ratio en Pro."
         >
-          <div className={`grid grid-cols-1 ${proMetrics.alphaBeta ? 'md:grid-cols-2 lg:grid-cols-4' : 'md:grid-cols-2'} gap-4`}>
-            {/* Sharpe Ratio */}
-            <InsightCard
-              icon={<Target size={18} />}
-              title="Sharpe Ratio"
-              accent={proMetrics.sharpe.sharpe >= 1}
-              tooltip={
-                <>
-                  <p className="font-semibold text-ink-0">Cómo se calcula</p>
-                  <p className="text-ink-3 font-mono text-[11px]">
-                    sharpe = (μ<sub>anual</sub> − tasa libre de riesgo) / σ<sub>anual</sub>
-                  </p>
-                  <p>Mide el rendimiento ajustado por riesgo. Cuanto mayor el Sharpe, mejor compensaste el riesgo asumido.</p>
-                  <div className="border-t border-line/60 my-1.5" />
-                  <p className="font-semibold text-ink-0">Componentes</p>
-                  <p><strong>Retorno anualizado</strong>: promedio de retornos mensuales × 12 (TWRR Modified Dietz — descuenta depósitos/retiros).</p>
-                  <p><strong>Tasa libre de riesgo</strong>: derivada del ETF SHV (T-Bills 0-3M USD).</p>
-                  <p><strong>Volatilidad anualizada</strong>: desvío estándar de retornos mensuales × √12.</p>
-                  <div className="border-t border-line/60 my-1.5" />
-                  <p className="font-semibold text-ink-0">Interpretación</p>
-                  <p><span className="text-rendi-neg">&lt; 0</span>: le perdés a T-Bills (mejor estar en tasa libre de riesgo).</p>
-                  <p><span className="text-ink-2">0–1</span>: tomás riesgo pero el premium es bajo.</p>
-                  <p><span className="text-rendi-pos">1–2</span>: bueno.</p>
-                  <p><span className="text-rendi-pos">&gt; 2</span>: excelente (alto premium por riesgo asumido).</p>
-                  <p className="text-ink-3">Basado en {proMetrics.sharpe.months} meses de data.</p>
-                </>
-              }
-            >
-              <div className="flex items-baseline gap-3">
-                <p className={`text-3xl font-bold tabular ${
-                  proMetrics.sharpe.sharpe >= 2 ? 'text-rendi-pos'
-                  : proMetrics.sharpe.sharpe >= 1 ? 'text-emerald-600/80 dark:text-emerald-400/80'
-                  : proMetrics.sharpe.sharpe >= 0 ? 'text-ink-1'
-                  : 'text-rendi-neg'
-                }`}>
-                  {proMetrics.sharpe.sharpe.toFixed(2)}
-                </p>
-                <p className="text-xs text-ink-3 tabular">
-                  {proMetrics.sharpe.sharpe >= 2 ? 'Excelente'
-                   : proMetrics.sharpe.sharpe >= 1 ? 'Bueno'
-                   : proMetrics.sharpe.sharpe >= 0 ? 'Subóptimo'
-                   : 'Negativo'}
-                </p>
-              </div>
-              <p className="text-xs text-ink-3 mt-2 leading-snug">
-                Retorno anualizado: <span className="text-ink-1 font-medium tabular">
-                  {(proMetrics.sharpe.returnAnnual * 100).toFixed(1)}%
-                </span>
-                {' · '}
-                Tasa libre de riesgo: <span className="text-ink-1 font-medium tabular">
-                  {(proMetrics.sharpe.rfAnnual * 100).toFixed(1)}%
-                </span>
-              </p>
-            </InsightCard>
-
-            {/* Volatilidad anualizada */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* ── PLUS — Volatilidad anualizada ─────────────────────────── */}
             <InsightCard
               icon={<Activity size={18} />}
               title="Volatilidad anualizada"
@@ -2196,59 +2201,11 @@ function InsightsDesktop() {
                 </p>
               </div>
               <p className="text-xs text-ink-3 mt-2 leading-snug">
-                Desvío estándar de los retornos mensuales del portfolio, anualizado.
-                Comparable: S&P 500 ≈ 15-18% anual.
+                Desvío estándar de los retornos mensuales, anualizado. S&P 500 ≈ 15-18%.
               </p>
             </InsightCard>
 
-            {/* Alpha (Jensen) vs S&P 500 */}
-            {proMetrics.alphaBeta && (
-              <InsightCard
-                icon={<TrendingUp size={18} />}
-                title="Alpha (vs S&P 500)"
-                accent={proMetrics.alphaBeta.alphaAnnual > 0}
-                tooltip={
-                  <>
-                    <p className="font-semibold text-ink-0">Cómo se calcula (Jensen's Alpha / CAPM)</p>
-                    <p className="text-ink-3 font-mono text-[11px]">
-                      α = mean(R<sub>p</sub>) − [Rf + β × (mean(R<sub>b</sub>) − Rf)]
-                    </p>
-                    <p>El retorno extra que generaste sobre lo que el modelo CAPM predice, dado el riesgo de mercado que asumiste (Beta).</p>
-                    <div className="border-t border-line/60 my-1.5" />
-                    <p className="font-semibold text-ink-0">Interpretación</p>
-                    <p><span className="text-rendi-pos">&gt; 0</span>: outperformaste el modelo (skill genuino o suerte).</p>
-                    <p><span className="text-ink-2">≈ 0</span>: matchearás al modelo.</p>
-                    <p><span className="text-rendi-neg">&lt; 0</span>: underperformaste vs lo esperable.</p>
-                    <div className="border-t border-line/60 my-1.5" />
-                    <p className="font-semibold text-ink-0">Contexto</p>
-                    <p className="text-ink-3">R²: {(proMetrics.alphaBeta.rSquared * 100).toFixed(0)}% — qué tanto del retorno del portfolio explica el S&P 500. R² alto + Alpha alto = outperform real (no sólo desviación).</p>
-                    <p className="text-ink-3">Basado en {proMetrics.alphaBeta.months} meses con returns válidos en ambas series.</p>
-                  </>
-                }
-              >
-                <div className="flex items-baseline gap-3">
-                  <p className={`text-3xl font-bold tabular ${
-                    proMetrics.alphaBeta.alphaAnnual > 0.02 ? 'text-rendi-pos'
-                    : proMetrics.alphaBeta.alphaAnnual > -0.02 ? 'text-ink-1'
-                    : 'text-rendi-neg'
-                  }`}>
-                    {proMetrics.alphaBeta.alphaAnnual >= 0 ? '+' : '−'}{Math.abs(proMetrics.alphaBeta.alphaAnnual * 100).toFixed(1)}%
-                  </p>
-                  <p className="text-xs text-ink-3 tabular">
-                    {proMetrics.alphaBeta.alphaAnnual > 0.05 ? 'Outperform alto'
-                     : proMetrics.alphaBeta.alphaAnnual > 0 ? 'Outperform'
-                     : proMetrics.alphaBeta.alphaAnnual > -0.05 ? 'Matchea CAPM'
-                     : 'Underperform'}
-                  </p>
-                </div>
-                <p className="text-xs text-ink-3 mt-2 leading-snug">
-                  Retorno anual extra vs lo que el modelo CAPM predice.
-                  R² <span className="text-ink-1 font-medium tabular">{(proMetrics.alphaBeta.rSquared * 100).toFixed(0)}%</span> — correlación con S&P.
-                </p>
-              </InsightCard>
-            )}
-
-            {/* Beta vs S&P 500 */}
+            {/* ── PLUS — Beta vs S&P 500 ───────────────────────────────── */}
             {proMetrics.alphaBeta && (
               <InsightCard
                 icon={<BarChart3 size={18} />}
@@ -2263,11 +2220,10 @@ function InsightsDesktop() {
                     <div className="border-t border-line/60 my-1.5" />
                     <p className="font-semibold text-ink-0">Interpretación</p>
                     <p><span className="text-ink-1">β = 1.0</span>: te movés igual que el S&P.</p>
-                    <p><span className="text-rendi-warn">β &gt; 1.0</span>: más volátil que el mercado (más riesgo).</p>
-                    <p><span className="text-rendi-pos">β &lt; 1.0</span>: más defensivo (menos sensible).</p>
-                    <p><span className="text-ink-2">β ≈ 0</span>: no correlacionado con el mercado.</p>
-                    <p><span className="text-rendi-pos">β &lt; 0</span>: hedge (te movés contrario al S&P).</p>
-                    <div className="border-t border-line/60 my-1.5" />
+                    <p><span className="text-rendi-warn">β &gt; 1.0</span>: más volátil (más riesgo de mercado).</p>
+                    <p><span className="text-rendi-pos">β &lt; 1.0</span>: más defensivo.</p>
+                    <p><span className="text-ink-2">β ≈ 0</span>: no correlacionado.</p>
+                    <p><span className="text-rendi-pos">β &lt; 0</span>: hedge (contrario al S&P).</p>
                     <p className="text-ink-3">Basado en {proMetrics.alphaBeta.months} meses con returns válidos en ambas series.</p>
                   </>
                 }
@@ -2291,12 +2247,224 @@ function InsightsDesktop() {
                   </p>
                 </div>
                 <p className="text-xs text-ink-3 mt-2 leading-snug">
-                  Por cada 1% que se mueve el S&P, tu cartera se mueve{' '}
+                  Por cada 1% del S&P, tu cartera se mueve{' '}
                   <span className="text-ink-1 font-medium tabular">
                     {proMetrics.alphaBeta.beta.toFixed(2)}%
                   </span>.
                 </p>
               </InsightCard>
+            )}
+
+            {/* ── PRO — Sharpe Ratio ──────────────────────────────────── */}
+            {plan.hasFullAccess ? (
+              <InsightCard
+                icon={<Target size={18} />}
+                title="Sharpe Ratio"
+                accent={proMetrics.sharpe.sharpe >= 1}
+                tooltip={
+                  <>
+                    <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                    <p className="text-ink-3 font-mono text-[11px]">
+                      sharpe = (μ<sub>anual</sub> − rf) / σ<sub>anual</sub>
+                    </p>
+                    <p>Rendimiento ajustado por riesgo. Cuanto mayor, mejor compensaste el riesgo asumido.</p>
+                    <div className="border-t border-line/60 my-1.5" />
+                    <p className="font-semibold text-ink-0">Interpretación</p>
+                    <p><span className="text-rendi-neg">&lt; 0</span>: le perdés a T-Bills.</p>
+                    <p><span className="text-ink-2">0–1</span>: tomás riesgo pero el premium es bajo.</p>
+                    <p><span className="text-rendi-pos">1–2</span>: bueno.</p>
+                    <p><span className="text-rendi-pos">&gt; 2</span>: excelente.</p>
+                    <p className="text-ink-3">Retorno anual: {(proMetrics.sharpe.returnAnnual * 100).toFixed(1)}% · Tasa libre: {(proMetrics.sharpe.rfAnnual * 100).toFixed(1)}%</p>
+                  </>
+                }
+              >
+                <div className="flex items-baseline gap-3">
+                  <p className={`text-3xl font-bold tabular ${
+                    proMetrics.sharpe.sharpe >= 2 ? 'text-rendi-pos'
+                    : proMetrics.sharpe.sharpe >= 1 ? 'text-emerald-600/80 dark:text-emerald-400/80'
+                    : proMetrics.sharpe.sharpe >= 0 ? 'text-ink-1'
+                    : 'text-rendi-neg'
+                  }`}>
+                    {proMetrics.sharpe.sharpe.toFixed(2)}
+                  </p>
+                  <p className="text-xs text-ink-3 tabular">
+                    {proMetrics.sharpe.sharpe >= 2 ? 'Excelente'
+                     : proMetrics.sharpe.sharpe >= 1 ? 'Bueno'
+                     : proMetrics.sharpe.sharpe >= 0 ? 'Subóptimo'
+                     : 'Negativo'}
+                  </p>
+                </div>
+                <p className="text-xs text-ink-3 mt-2 leading-snug">
+                  Retorno ajustado por toda la volatilidad. La métrica clásica de skill.
+                </p>
+              </InsightCard>
+            ) : (
+              <LockedSection.Placeholder
+                feature="insights.metrics_pro_sharpe"
+                title="Sharpe Ratio"
+                description="Rendimiento ajustado por toda la volatilidad — la métrica clásica de skill. Disponible en Pro."
+                source="insights_metrics_pro"
+              />
+            )}
+
+            {/* ── PRO — Sortino Ratio ─────────────────────────────────── */}
+            {plan.hasFullAccess ? (
+              proMetrics.sortino ? (
+                <InsightCard
+                  icon={<TrendingDown size={18} />}
+                  title="Sortino Ratio"
+                  accent={proMetrics.sortino.sortino >= 1}
+                  tooltip={
+                    <>
+                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                      <p className="text-ink-3 font-mono text-[11px]">
+                        sortino = (μ<sub>anual</sub> − rf) / σ<sub>downside</sub>
+                      </p>
+                      <p>Como Sharpe pero usa SOLO la volatilidad a la baja. Más justo: la volatilidad upside no es "riesgo" — no nos asusta cuando ganamos.</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Interpretación</p>
+                      <p>Mismo rango que Sharpe pero típicamente MÁS ALTO (porque excluye upside vol).</p>
+                      <p><span className="text-rendi-pos">&gt; 1.5</span>: muy bueno.</p>
+                      <p className="text-ink-3">Downside dev anual: {(proMetrics.sortino.downsideDev * 100).toFixed(1)}%.</p>
+                    </>
+                  }
+                >
+                  <div className="flex items-baseline gap-3">
+                    <p className={`text-3xl font-bold tabular ${
+                      proMetrics.sortino.sortino >= 2 ? 'text-rendi-pos'
+                      : proMetrics.sortino.sortino >= 1 ? 'text-emerald-600/80 dark:text-emerald-400/80'
+                      : proMetrics.sortino.sortino >= 0 ? 'text-ink-1'
+                      : 'text-rendi-neg'
+                    }`}>
+                      {proMetrics.sortino.sortino.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-ink-3 tabular">
+                      {proMetrics.sortino.sortino >= 2 ? 'Excelente'
+                       : proMetrics.sortino.sortino >= 1 ? 'Bueno'
+                       : proMetrics.sortino.sortino >= 0 ? 'Subóptimo'
+                       : 'Negativo'}
+                    </p>
+                  </div>
+                  <p className="text-xs text-ink-3 mt-2 leading-snug">
+                    Sharpe variante: solo penaliza volatilidad a la baja.
+                  </p>
+                </InsightCard>
+              ) : (
+                <InsightCard icon={<TrendingDown size={18} />} title="Sortino Ratio">
+                  <p className="text-sm text-ink-3">Sin volatilidad a la baja para medir aún.</p>
+                </InsightCard>
+              )
+            ) : (
+              <LockedSection.Placeholder
+                feature="insights.metrics_pro_sortino"
+                title="Sortino Ratio"
+                description="Variante de Sharpe que penaliza solo la volatilidad a la baja. Disponible en Pro."
+                source="insights_metrics_pro"
+              />
+            )}
+
+            {/* ── PRO — Alpha (Jensen's CAPM) ─────────────────────────── */}
+            {plan.hasFullAccess ? (
+              proMetrics.alphaBeta ? (
+                <InsightCard
+                  icon={<TrendingUp size={18} />}
+                  title="Alpha (vs S&P 500)"
+                  accent={proMetrics.alphaBeta.alphaAnnual > 0}
+                  tooltip={
+                    <>
+                      <p className="font-semibold text-ink-0">Cómo se calcula (Jensen's Alpha / CAPM)</p>
+                      <p className="text-ink-3 font-mono text-[11px]">
+                        α = mean(R<sub>p</sub>) − [Rf + β × (mean(R<sub>b</sub>) − Rf)]
+                      </p>
+                      <p>Retorno extra sobre lo que CAPM predice dado el riesgo de mercado (Beta).</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p><span className="text-rendi-pos">&gt; 0</span>: outperformaste el modelo (skill o suerte).</p>
+                      <p><span className="text-ink-2">≈ 0</span>: matchearás CAPM.</p>
+                      <p><span className="text-rendi-neg">&lt; 0</span>: underperformaste.</p>
+                      <p className="text-ink-3">R² {(proMetrics.alphaBeta.rSquared * 100).toFixed(0)}% — R² alto + α alto = outperform real.</p>
+                    </>
+                  }
+                >
+                  <div className="flex items-baseline gap-3">
+                    <p className={`text-3xl font-bold tabular ${
+                      proMetrics.alphaBeta.alphaAnnual > 0.02 ? 'text-rendi-pos'
+                      : proMetrics.alphaBeta.alphaAnnual > -0.02 ? 'text-ink-1'
+                      : 'text-rendi-neg'
+                    }`}>
+                      {proMetrics.alphaBeta.alphaAnnual >= 0 ? '+' : '−'}{Math.abs(proMetrics.alphaBeta.alphaAnnual * 100).toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-ink-3 tabular">
+                      {proMetrics.alphaBeta.alphaAnnual > 0.05 ? 'Outperform alto'
+                       : proMetrics.alphaBeta.alphaAnnual > 0 ? 'Outperform'
+                       : proMetrics.alphaBeta.alphaAnnual > -0.05 ? 'Matchea CAPM'
+                       : 'Underperform'}
+                    </p>
+                  </div>
+                  <p className="text-xs text-ink-3 mt-2 leading-snug">
+                    Retorno anual extra vs CAPM. R² {(proMetrics.alphaBeta.rSquared * 100).toFixed(0)}%.
+                  </p>
+                </InsightCard>
+              ) : null
+            ) : (
+              <LockedSection.Placeholder
+                feature="insights.metrics_pro_alpha"
+                title="Alpha vs S&P 500"
+                description="Retorno extra sobre lo que CAPM predice (Jensen's Alpha). Disponible en Pro."
+                source="insights_metrics_pro"
+              />
+            )}
+
+            {/* ── PRO — Information Ratio ─────────────────────────────── */}
+            {plan.hasFullAccess ? (
+              proMetrics.infoRatio ? (
+                <InsightCard
+                  icon={<BarChart2 size={18} />}
+                  title="Information Ratio (vs S&P)"
+                  accent={proMetrics.infoRatio.infoRatio >= 0.5}
+                  tooltip={
+                    <>
+                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                      <p className="text-ink-3 font-mono text-[11px]">
+                        IR = active_return<sub>anual</sub> / tracking_error<sub>anual</sub>
+                      </p>
+                      <p>Mide la consistencia del outperformance vs el benchmark. Cuánto le ganaste por cada unidad de desviación que tomaste vs el índice.</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p><span className="text-ink-2">≈ 0</span>: matcheás al benchmark.</p>
+                      <p><span className="text-rendi-pos">&gt; 0.5</span>: consistencia en outperform.</p>
+                      <p><span className="text-rendi-pos">&gt; 1.0</span>: excelente (raro mantener sostenido).</p>
+                      <p><span className="text-rendi-neg">&lt; 0</span>: underperformance crónica.</p>
+                      <p className="text-ink-3">Active return: {(proMetrics.infoRatio.activeReturn * 100).toFixed(1)}% · Tracking error: {(proMetrics.infoRatio.trackingError * 100).toFixed(1)}%</p>
+                    </>
+                  }
+                >
+                  <div className="flex items-baseline gap-3">
+                    <p className={`text-3xl font-bold tabular ${
+                      proMetrics.infoRatio.infoRatio >= 1 ? 'text-rendi-pos'
+                      : proMetrics.infoRatio.infoRatio >= 0.5 ? 'text-emerald-600/80 dark:text-emerald-400/80'
+                      : proMetrics.infoRatio.infoRatio >= 0 ? 'text-ink-1'
+                      : 'text-rendi-neg'
+                    }`}>
+                      {proMetrics.infoRatio.infoRatio >= 0 ? '+' : '−'}{Math.abs(proMetrics.infoRatio.infoRatio).toFixed(2)}
+                    </p>
+                    <p className="text-xs text-ink-3 tabular">
+                      {proMetrics.infoRatio.infoRatio >= 1 ? 'Excelente'
+                       : proMetrics.infoRatio.infoRatio >= 0.5 ? 'Consistente'
+                       : proMetrics.infoRatio.infoRatio >= 0 ? 'Marginal'
+                       : 'Underperform'}
+                    </p>
+                  </div>
+                  <p className="text-xs text-ink-3 mt-2 leading-snug">
+                    Consistencia del outperformance vs S&P por unidad de tracking error.
+                  </p>
+                </InsightCard>
+              ) : null
+            ) : (
+              <LockedSection.Placeholder
+                feature="insights.metrics_pro_ir"
+                title="Information Ratio"
+                description="Consistencia del outperformance vs el benchmark por unidad de tracking error. Disponible en Pro."
+                source="insights_metrics_pro"
+              />
             )}
           </div>
         </Section>

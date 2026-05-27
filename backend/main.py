@@ -3269,7 +3269,7 @@ _STRONG_MACRO_KEYWORDS = frozenset({
     'jobless claims', 'retail sales', 'gdp growth', 'recession risk',
     'treasury yield', 'treasury yields', '10-year treasury', '2-year treasury',
     # USA — mercados/índices
-    's&p 500', 'sp500', 'nasdaq 100', 'nasdaq composite', 'dow jones',
+    's&p 500', 'sp500', 'nasdaq', 'nasdaq 100', 'nasdaq composite', 'dow jones',
     'wall street', 'russell 2000', 'magnificent 7', 'mag seven',
     # USA — commodities
     'crude oil', 'oil prices', 'gold prices', 'natural gas prices',
@@ -7433,6 +7433,18 @@ BIEN: "El P&L del año descansa parcialmente en trades cerrados de AMD/INTC. Tu 
 Si un ticker aparece en AMBOS lados (positions y operations), aclararlo: "mantenés posición abierta + tenés P&L cerrado en el mismo ticker; el riesgo presente es solo sobre el lote abierto".
 
 Tenés el snapshot del portfolio del usuario en el contexto. Usá los números concretos cuando sean relevantes. El snapshot incluye benchmarks (S&P 500, inflación AR, dólar blue) para comparar la performance del usuario contra referencias de mercado.
+
+MÉTRICAS PRO (summary.pro_metrics):
+Si están presentes, podés usarlas para diagnósticos cuantitativos. Todas son anualizadas:
+- sharpe_ratio (retorno ajustado por toda la volatilidad vs T-Bills): <0 perdés vs cash, 0-1 subóptimo, 1-2 bueno, >2 excelente.
+- sortino_ratio (como Sharpe pero solo downside): suele ser MÁS ALTO que Sharpe.
+- volatility_annual_pct: <10 conservador, 10-20 equities diversificadas (S&P ~15-18), 20-40 concentrado, >40 cripto.
+- alpha_annual_pct (Jensen, CAPM): >0 outperformaste lo que CAPM predice, <0 underperformaste.
+- beta_vs_sp500: 1.0 te movés igual al S&P, >1 más volátil/agresivo, <1 defensivo, <0 hedge contrario.
+- r_squared_pct: qué tanto del retorno del portfolio explica el S&P. Alto + Alpha alto = outperform real.
+- info_ratio (consistencia del outperform vs S&P): >0.5 consistente, >1 excelente.
+
+USAR estas métricas para preguntas como "¿qué tan bien lo estoy haciendo?", "¿mi cartera es muy volátil?", "¿le gano al mercado?". Citá los números concretos del snapshot y interpretalos en el contexto del usuario (perfil, horizonte declarado).
 
 INTERPRETACIÓN DE TOOLS DE MERCADO (Pack A v2 — Pro causal)
 

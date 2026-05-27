@@ -95,6 +95,51 @@ export function computeAnnualizedVolatility(monthlyReturns) {
 }
 
 /**
+ * Sortino Ratio — variante de Sharpe que penaliza SOLO la volatilidad
+ * a la baja (downside deviation), no la volatilidad total.
+ *
+ *   downside_dev = √(Σ min(R_t - target, 0)² / n) × √12
+ *   sortino = (μ_anual − rf_anual) / downside_dev
+ *
+ * Más justo que Sharpe porque el inversor real no se asusta por
+ * volatilidad upside (returns positivos altos no son "riesgo").
+ *
+ * Target = rf_mensual (mismo benchmark que Sharpe).
+ *
+ * @param {Array}  monthlyReturns
+ * @param {number} rfAnnual
+ * @returns {{sortino, downsideDev, returnAnnual, months} | null}
+ */
+export function computeSortino(monthlyReturns, rfAnnual = RF_RATE_FALLBACK) {
+  if (!monthlyReturns || monthlyReturns.length < MIN_MONTHS_FOR_STATS) return null
+  const returns = monthlyReturns.map(r => r.return)
+  const n = returns.length
+  const mean = returns.reduce((s, r) => s + r, 0) / n
+  const rfMonthly = rfAnnual / 12
+
+  // Downside deviation: solo considera retornos por debajo del target.
+  // Formal: √(Σ min(R - target, 0)² / n) × √12
+  // Nota: el denominador es n (no n-1) porque NO es muestra de stdev clásica,
+  // sino "semivarianza" — ver Sortino (1991).
+  let sumSquaredDownside = 0
+  for (const r of returns) {
+    const dev = r - rfMonthly
+    if (dev < 0) sumSquaredDownside += dev * dev
+  }
+  const downsideDev = Math.sqrt(sumSquaredDownside / n) * Math.sqrt(12)
+  if (downsideDev === 0) return null  // sin downside → sortino indefinido
+
+  const returnAnnual = mean * 12
+  const sortino = (returnAnnual - rfAnnual) / downsideDev
+  return {
+    sortino,
+    downsideDev,
+    returnAnnual,
+    months: n,
+  }
+}
+
+/**
  * Estima la risk-free rate anualizada desde el ETF SHV (T-Bills 0-3M).
  *
  * Anualiza el return del SHV en el período disponible (últimos ≤13 meses).
@@ -255,30 +300,107 @@ export function computeAlphaBeta(portfolioReturns, benchmarkReturns, rfAnnual = 
 }
 
 /**
- * Helper combinado: dado globalMonthly + bench, devuelve todas las métricas.
+ * Information Ratio — mide el "active return" por unidad de tracking error.
+ *
+ *   active_return_t = R_p_t - R_b_t
+ *   tracking_error  = stdev(active_return) × √12   (anualizado)
+ *   IR              = (mean(R_p) − mean(R_b)) × 12 / tracking_error
+ *
+ * Diferencia con Sharpe: IR compara contra el BENCHMARK (S&P), no contra
+ * la tasa libre de riesgo. Mide "skill activo" — qué tan consistentemente
+ * superás al índice por encima del nivel de desviación que asumís.
+ *
+ * Interpretación:
+ *   > 0.5  → consistencia en outperformance
+ *   > 1.0  → excelente (raro mantener sostenido)
+ *   < 0    → underperformance crónica
+ *
+ * @param {Array} portfolioReturns
+ * @param {Array} benchmarkReturns
+ * @returns {{infoRatio, trackingError, activeReturn, months} | null}
+ */
+export function computeInformationRatio(portfolioReturns, benchmarkReturns) {
+  if (!portfolioReturns || !benchmarkReturns) return null
+  const benchByKey = {}
+  for (const b of benchmarkReturns) benchByKey[b.key] = b.return
+
+  const pairs = []
+  for (const p of portfolioReturns) {
+    const b = benchByKey[p.key]
+    if (b != null) pairs.push({ rp: p.return, rb: b })
+  }
+  if (pairs.length < 6) return null
+
+  const n = pairs.length
+  const meanP = pairs.reduce((s, x) => s + x.rp, 0) / n
+  const meanB = pairs.reduce((s, x) => s + x.rb, 0) / n
+
+  // Active returns y su stdev (tracking error)
+  const activeReturns = pairs.map(p => p.rp - p.rb)
+  const meanActive = activeReturns.reduce((s, r) => s + r, 0) / n
+  const varActive = activeReturns.reduce((s, r) => s + Math.pow(r - meanActive, 2), 0) / (n - 1)
+  const trackingError = Math.sqrt(varActive) * Math.sqrt(12)
+  // Guard: si TE es muy chico (<0.1% anual), el IR puede explotar a valores
+  // absurdos por floating-point. En la práctica eso indica returns casi
+  // idénticos al benchmark, sin alpha real para medir.
+  if (trackingError < 0.001) return null
+
+  const activeReturnAnnual = (meanP - meanB) * 12
+  const infoRatio = activeReturnAnnual / trackingError
+  // Cap visual: IR > 10 es matemáticamente posible pero clínicamente raro.
+  // Mantenemos el valor real pero los users lo ven con disclaimer en UI.
+  return {
+    infoRatio,
+    trackingError,
+    activeReturn: activeReturnAnnual,
+    months: n,
+  }
+}
+
+/**
+ * Helper combinado: dado globalMonthly + bench, devuelve TODAS las métricas pro.
+ *
+ * Métricas incluidas:
+ *   • Volatilidad anualizada  (Plus)
+ *   • Beta vs S&P 500          (Plus)
+ *   • Sharpe Ratio             (Pro)
+ *   • Sortino Ratio            (Pro)
+ *   • Alpha (Jensen's CAPM)    (Pro)
+ *   • Information Ratio        (Pro)
  *
  * @param {Array}  globalMonthly  entries del broker 'global'
  * @param {Object} bench          { sp500, shv, ... } del endpoint /benchmarks
- * @returns {{returns, volatility, sharpe, alphaBeta} | null}
+ * @returns {{returns, volatility, sharpe, sortino, alphaBeta, infoRatio} | null}
  */
 export function computeProMetrics(globalMonthly, bench) {
   const returns = computeMonthlyReturns(globalMonthly)
   if (returns.length < MIN_MONTHS_FOR_STATS) return null
-  const volatility = computeAnnualizedVolatility(returns)
-  const rf = estimateRiskFreeRate(bench?.shv)
-  const sharpe = computeSharpe(returns, rf)
 
-  // Alpha + Beta vs S&P 500. Es el benchmark de referencia global; si en el
-  // futuro queremos vs otros benchmarks, se puede parametrizar.
+  // Risk-free rate anualizada para Sharpe/Sortino/Alpha (constante).
+  // Posible mejora: rf temporal por mes (rf_t para cada mes) si los rangos
+  // son largos y la TNA varió mucho. Para portfolios <= 24 meses, la
+  // aproximación constante introduce <50bps de sesgo en Alpha.
+  const rf = estimateRiskFreeRate(bench?.shv)
+
+  const volatility = computeAnnualizedVolatility(returns)
+  const sharpe = computeSharpe(returns, rf)
+  const sortino = computeSortino(returns, rf)
+
+  // Alpha/Beta + Information Ratio vs S&P 500 (benchmark de referencia global).
   const sp500Returns = computePriceMapReturns(bench?.sp500)
   const alphaBeta = sp500Returns.length >= 6
     ? computeAlphaBeta(returns, sp500Returns, rf)
+    : null
+  const infoRatio = sp500Returns.length >= 6
+    ? computeInformationRatio(returns, sp500Returns)
     : null
 
   return {
     returns,
     volatility,
     sharpe,
+    sortino,
     alphaBeta,
+    infoRatio,
   }
 }
