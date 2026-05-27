@@ -39,7 +39,10 @@ const GROUPS = [
     items: [
       { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound, sub: 'Contexto para el Coach IA' },
       { to: '/objetivos',       label: 'Objetivos',          icon: Target,    sub: 'Metas financieras' },
-      { to: '/wrapped',         label: 'Wrapped',            icon: Sparkles,  sub: 'Reseña anual' },
+      // Wrapped salió del nav (ruido casi todo el año). Sigue accesible
+      // vía `/wrapped` por URL directa — pensado para un trigger anual
+      // en diciembre (banner/notif "tu Wrapped está listo") que linkee
+      // directo al resumen del año en curso.
     ],
   },
 ]

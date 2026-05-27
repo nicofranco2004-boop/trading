@@ -18,10 +18,37 @@ import { useEffect, useState } from 'react'
 import { api } from '../utils/api'
 
 // Cache módulo-level: 1 fetch por sesión, compartido entre todos los hooks.
+//
+// Además, cacheamos en localStorage para evitar el "flash" entre page loads:
+// sin cache, cada hard refresh empieza con tier=free durante 100-500ms y los
+// componentes que gateaban por tier mostraban brevemente la versión Free
+// (Insights ocultaba métricas pro, Behavioral mostraba previews lockeadas).
+// Con localStorage el primer render es instantáneo con el tier conocido —
+// el fetch real corre en background y reconcilia si cambió.
+//
+// SECURITY: el tier en localStorage NO sustituye el gate del backend (el
+// backend valida el JWT del user y resuelve tier server-side). Es solo
+// hint visual para UX — manipular localStorage no desbloquea features.
+const LS_KEY = 'rendi_plan_features_v1'
 let _cached = null
 let _inflight = null
 let _version = 0
 const _listeners = new Set()
+
+// Hydrate desde localStorage al cargar el módulo. Si hay basura corrupta,
+// fail-open: simplemente arrancamos sin cache (igual que antes).
+try {
+  if (typeof window !== 'undefined') {
+    const raw = localStorage.getItem(LS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      // Validación mínima de shape — evita usar cache de un formato viejo
+      if (parsed && typeof parsed === 'object' && typeof parsed.tier === 'string') {
+        _cached = parsed
+      }
+    }
+  }
+} catch { /* ignore */ }
 
 function _notify() {
   _listeners.forEach(fn => fn(_version))
@@ -35,19 +62,27 @@ export function refreshPlanFeatures() {
   _cached = null
   _inflight = null
   _version += 1
+  try { localStorage.removeItem(LS_KEY) } catch { /* ignore */ }
   _notify()
 }
 
 async function _fetch() {
-  if (_cached) return _cached
   if (_inflight) return _inflight
   _inflight = api.get('/plan/features')
-    .then(data => { _cached = data; _inflight = null; return data })
+    .then(data => {
+      _cached = data
+      _inflight = null
+      // Persistir en localStorage para próximo page load (hidratación instant)
+      try { localStorage.setItem(LS_KEY, JSON.stringify(data)) } catch { /* ignore */ }
+      return data
+    })
     .catch(err => { _inflight = null; throw err })
   return _inflight
 }
 
 export function usePlanFeatures() {
+  // Si hay cache (memoria o localStorage), arrancamos con tier conocido —
+  // no hay flash. Si no hay nada, arrancamos con loading=true.
   const [features, setFeatures] = useState(_cached)
   const [loading, setLoading] = useState(!_cached)
   const [error, setError] = useState(null)
@@ -65,13 +100,16 @@ export function usePlanFeatures() {
     }
     _listeners.add(listener)
 
-    if (!_cached) {
-      _fetch()
-        .then(data => { if (!cancelled) { setFeatures(data); setLoading(false) } })
-        .catch(err => { if (!cancelled) { setError(err); setLoading(false) } })
-    } else {
-      setLoading(false)
-    }
+    // Siempre revalidamos en background — incluso con cache hidratado de
+    // localStorage. Esto detecta upgrades hechos en otra pestaña/sesión sin
+    // necesidad de reload manual.
+    _fetch()
+      .then(data => {
+        if (cancelled) return
+        setFeatures(data)
+        setLoading(false)
+      })
+      .catch(err => { if (!cancelled) { setError(err); setLoading(false) } })
 
     return () => { cancelled = true; _listeners.delete(listener) }
   }, [])

@@ -2167,18 +2167,23 @@ function InsightsDesktop() {
 
       {/* ══════════════════════════════════════════════════════════════════════
           C1.5 MÉTRICAS PRO — 6 métricas estadísticas estándar de la industria.
-               Tier gating:
-                 • Plus: Volatilidad + Beta (descriptivas del riesgo)
-                 • Pro:  Sharpe + Sortino + Alpha + Information Ratio
-                         (skill ajustado por riesgo — métricas premium)
+               Tier gating (por card, no por sección):
+                 • Free: TODAS bloqueadas — placeholders con CTA upgrade
+                         (Vol/Beta → Plus, Sharpe/Sortino/Alpha/IR → Pro)
+                 • Plus: Volatilidad + Beta visibles; resto bloqueado (→ Pro)
+                 • Pro:  Todas visibles
+               Decisión: el Free SÍ debe ver la sección (con cards locked) para
+               crear awareness de qué le falta. Antes la guarda externa
+               `plan.isPaid` escondía todo y el Free no veía nada — mal UX.
           ══════════════════════════════════════════════════════════════════════ */}
-      {proMetrics && proMetrics.sharpe && plan.isPaid && (
+      {proMetrics && proMetrics.sharpe && (
         <Section
           title="Métricas pro"
           subtitle="Volatilidad y Beta en Plus; Sharpe, Sortino, Alpha e Information Ratio en Pro."
         >
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* ── PLUS — Volatilidad anualizada ─────────────────────────── */}
+            {plan.isPaid ? (
             <InsightCard
               icon={<Activity size={18} />}
               title="Volatilidad anualizada"
@@ -2219,9 +2224,19 @@ function InsightsDesktop() {
                 Desvío estándar de los retornos mensuales, anualizado. S&P 500 ≈ 15-18%.
               </p>
             </InsightCard>
+            ) : (
+              <LockedSection.Placeholder
+                feature="insights.metrics_plus_volatility"
+                title="Volatilidad anualizada"
+                description="¿Tu cartera es un ascensor o algo estable? Te dice cuánto saltan tus retornos mes a mes. Útil para saber si vas a dormir tranquilo o no."
+                source="insights_metrics_plus"
+                targetTier="plus"
+              />
+            )}
 
             {/* ── PLUS — Beta vs S&P 500 ───────────────────────────────── */}
-            {proMetrics.alphaBeta && (
+            {plan.isPaid ? (
+              proMetrics.alphaBeta && (
               <InsightCard
                 icon={<BarChart3 size={18} />}
                 title="Beta (vs S&P 500)"
@@ -2268,6 +2283,15 @@ function InsightsDesktop() {
                   </span>.
                 </p>
               </InsightCard>
+              )
+            ) : (
+              <LockedSection.Placeholder
+                feature="insights.metrics_plus_beta"
+                title="Beta (vs S&P 500)"
+                description="¿Te movés con el mercado o por tu cuenta? Si el S&P cae 1%, ¿vos caés 0.5%, 1% o 2%? Te dice qué tan expuesto estás al mercado en general."
+                source="insights_metrics_plus"
+                targetTier="plus"
+              />
             )}
 
             {/* ── PRO — Sharpe Ratio ──────────────────────────────────── */}
@@ -2317,7 +2341,7 @@ function InsightsDesktop() {
               <LockedSection.Placeholder
                 feature="insights.metrics_pro_sharpe"
                 title="Sharpe Ratio"
-                description="Rendimiento ajustado por toda la volatilidad — la métrica clásica de skill. Disponible en Pro."
+                description="¿Vale la pena el riesgo que tomás? Compara tu rendimiento contra dejar la plata en T-Bills. Arriba de 1 = ganás bien por lo que arriesgás. La métrica que usa todo el mundo en finanzas."
                 source="insights_metrics_pro"
               />
             )}
@@ -2373,7 +2397,7 @@ function InsightsDesktop() {
               <LockedSection.Placeholder
                 feature="insights.metrics_pro_sortino"
                 title="Sortino Ratio"
-                description="Variante de Sharpe que penaliza solo la volatilidad a la baja. Disponible en Pro."
+                description="Como Sharpe pero más justo: solo cuenta como 'riesgo' tus meses malos. Si tuviste un mes excelente, eso no debería penalizar tu score. Más cercano a cómo realmente vivís el riesgo."
                 source="insights_metrics_pro"
               />
             )}
@@ -2425,7 +2449,7 @@ function InsightsDesktop() {
               <LockedSection.Placeholder
                 feature="insights.metrics_pro_alpha"
                 title="Alpha vs S&P 500"
-                description="Retorno extra sobre lo que CAPM predice (Jensen's Alpha). Disponible en Pro."
+                description="¿Le ganás al mercado por skill o por suerte? Mide cuánto rendiste por encima del S&P 500, descontando el riesgo extra que tomaste. Positivo = realmente picaste activos mejores."
                 source="insights_metrics_pro"
               />
             )}
@@ -2479,7 +2503,7 @@ function InsightsDesktop() {
               <LockedSection.Placeholder
                 feature="insights.metrics_pro_ir"
                 title="Information Ratio"
-                description="Consistencia del outperformance vs el benchmark por unidad de tracking error. Disponible en Pro."
+                description="¿Le ganás al S&P de forma consistente o fue un mes con suerte? Mide qué tan estable es tu ventaja. Si le ganaste un mes y perdiste tres, no contás como skill — esto lo detecta."
                 source="insights_metrics_pro"
               />
             )}

@@ -19,6 +19,10 @@ import {
   Sun, Moon, Compass, Shield, Target, BarChart3, Bell, Upload, Menu, Brain, Sparkles, UserRound,
   MessageCircle, BookOpen,
 } from 'lucide-react'
+// NOTA: Sparkles se mantiene importado porque lo usa el botón del Coach IA.
+// Wrapped salió del nav (era ruido casi todo el año) — la ruta /wrapped
+// sigue activa para acceso por URL y para futuro trigger de diciembre
+// (notificación in-app cuando esté listo el wrapped del año).
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
@@ -55,7 +59,6 @@ const GROUPS = [
     items: [
       { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
       { to: '/objetivos',       label: 'Objetivos',          icon: Target },
-      { to: '/wrapped',         label: 'Wrapped',            icon: Sparkles },
     ],
   },
 ]

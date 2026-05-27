@@ -8,11 +8,12 @@
 // académicas.
 
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   Brain, Activity, TrendingDown, RefreshCw, Repeat, Info, AlertTriangle,
   CheckCircle2, ChevronRight, ArrowRight, X, BookOpen, Share2,
   PieChart, Globe2, Wallet, Flame, Rewind, Target, Zap, Layers,
+  Lock, Sparkles,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
@@ -26,24 +27,64 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 
-// Mapeo code → icono + tono visual.
+// Mapeo code → icono + tono visual + descripción educativa.
+// `what`: 1-2 frases que explican qué detecta el sesgo (en abstracto, sin
+// data del usuario). Se muestra al user Free como "preview educativo" en
+// vez de blurear las cards: el user ve QUÉ analiza Rendi sin ver SU resultado,
+// para que pueda decidir si el valor le sirve antes de upgradear.
 const CARD_META = {
   // Sprint 3
-  disposition_effect: { Icon: TrendingDown, label: 'Disposition effect' },
-  overtrade:          { Icon: Repeat,        label: 'Frecuencia de trades' },
-  loss_aversion:      { Icon: Activity,      label: 'Loss aversion' },
-  averaging_down:     { Icon: RefreshCw,     label: 'Promedio a la baja' },
+  disposition_effect: {
+    Icon: TrendingDown, label: 'Disposition effect',
+    what: 'Detecta si vendés ganadoras muy rápido y bancás perdedoras demasiado tiempo. Compara holding time de trades ganadores vs perdedores.',
+  },
+  overtrade: {
+    Icon: Repeat, label: 'Frecuencia de trades',
+    what: 'Mide cuánto operás por mes y si la rotación de tu cartera erosiona tu rendimiento con comisiones y mal timing.',
+  },
+  loss_aversion: {
+    Icon: Activity, label: 'Loss aversion',
+    what: 'Detecta si tomás más riesgo en operaciones perdedoras para "recuperarte" (size más grande en pérdidas vs ganancias).',
+  },
+  averaging_down: {
+    Icon: RefreshCw, label: 'Promedio a la baja',
+    what: 'Identifica si comprás más de un activo que ya viene cayendo, en vez de cortar la pérdida o esperar reversión confirmada.',
+  },
   // Sprint 3.1
-  concentration:      { Icon: PieChart,      label: 'Concentración' },
-  inflation_loss:     { Icon: Flame,         label: 'Pérdida por inflación' },
-  counterfactual:     { Icon: Rewind,        label: 'Tu yo de hace meses' },
+  concentration: {
+    Icon: PieChart, label: 'Concentración',
+    what: 'Mide qué tan concentrada está tu cartera en un solo activo. Top 1 sobre 40% es un riesgo idiosincrático alto.',
+  },
+  inflation_loss: {
+    Icon: Flame, label: 'Pérdida por inflación',
+    what: 'Calcula cuánto perdiste de poder de compra por tener pesos sin invertir, usando inflación AR vs tu saldo en ARS.',
+  },
+  counterfactual: {
+    Icon: Rewind, label: 'Tu yo de hace meses',
+    what: 'Compara tu P&L real vs el hipotético si no hubieras vendido. Detecta ventas tempranas que dejaron upside sobre la mesa.',
+  },
   // Sprint 3.2
-  winrate_payoff:     { Icon: Target,        label: 'Win rate · Payoff' },
-  home_bias:          { Icon: Globe2,        label: 'Home bias' },
-  cash_drag:          { Icon: Wallet,        label: 'Cash drag' },
+  winrate_payoff: {
+    Icon: Target, label: 'Win rate · Payoff',
+    what: 'Tu win rate cruzado con el payoff ratio (ganancia promedio / pérdida promedio). Te dice si tenés estrategia rentable a largo plazo.',
+  },
+  home_bias: {
+    Icon: Globe2, label: 'Home bias',
+    what: 'Cuánto de tu cartera está concentrada en activos AR (acciones BYMA + bonos AR) vs internacional. Sesgo común en inversores AR.',
+  },
+  cash_drag: {
+    Icon: Wallet, label: 'Cash drag',
+    what: 'Mide cuánto cash idle (sin invertir) tenés en cartera. Cash alto en USD sufre inflación; en ARS, mucho más.',
+  },
   // Sprint 3.3
-  recency_bias:       { Icon: Zap,           label: 'Chase the pump' },
-  sector_concentration: { Icon: Layers,      label: 'Concentración sectorial' },
+  recency_bias: {
+    Icon: Zap, label: 'Chase the pump',
+    what: 'Detecta compras en máximos recientes (perseguir activos que ya volaron). Mide drawdown post-compra para ver si chasing destruyó capital.',
+  },
+  sector_concentration: {
+    Icon: Layers, label: 'Concentración sectorial',
+    what: 'Distribución por sector de tu cartera. Concentración sectorial alta (ej. 70% tech) te expone a shocks del sector específico.',
+  },
 }
 
 const SEVERITY_TONE = {
@@ -593,15 +634,23 @@ function EvidenceRow({ label, value, count, mono }) {
 }
 
 // ─── BehavioralCards — grid de cards con gate Free/Pro ──────────────────────
-// Free: muestra solo el primer card visible, el resto blureado con CTA.
-// Pro/Admin: muestra todos.
+// • Pro/Admin: muestra todas las cards con su análisis personalizado.
+// • Free: muestra UNA card visible + las 11 restantes como "preview
+//   educativo" — explican QUÉ detecta cada sesgo (definición abstracta)
+//   sin exponer la data personal del user. Cada preview tiene CTA a Pro.
+//
+// Rationale: el patrón anterior (un solo "Desbloqueá 11 análisis más con
+// Pro") no comunicaba valor — el user no sabía qué sesgos se estaban
+// analizando. Con preview educativo, el user puede juzgar si los sesgos
+// son útiles para su caso antes de upgradear.
 function BehavioralCards({ cards, onCardClick }) {
   const { limit, hasFullAccess, loading } = usePlanFeatures()
 
-  // Mientras carga el tier, mostramos todas (avoid flash of locked UI).
-  // Si por algún motivo no resolvemos tier, default a "show all" (fail-open
-  // visualmente; el backend ya gatea las features pago, no hay leak de data).
-  if (loading || hasFullAccess) {
+  // Fail-CLOSED durante loading: en el primer page load sin cache, en lugar
+  // de mostrar todas las cards (flash que un Free podría capturar) mostramos
+  // la versión gateada. Si el user es Pro, dura ~100-300ms hasta que el
+  // fetch resuelve. Cubierto por localStorage cache → casi siempre instant.
+  if (hasFullAccess) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {cards.map(card => (
@@ -619,44 +668,138 @@ function BehavioralCards({ cards, onCardClick }) {
     )
   }
 
-  // Free tier — split entre visibles y bloqueados.
+  // Loading (sin cache) o Free/Plus — mostramos split visible + preview educativo
   const visibleCount = limit('behavioral_tags_visible') || 1
   const visible = cards.slice(0, visibleCount)
-  const hidden = cards.slice(visibleCount)
+  const locked = cards.slice(visibleCount)
+
+  // Cuántas cards puede ver Plus (debe coincidir con plan.py PLUS limits).
+  // Free ve 1, Plus ve 4, Pro ve todas. Para Free, las cards en posiciones
+  // 1-3 (las que ve Plus que él no) tienen CTA "Plus"; las 4-11 son Pro-only.
+  const PLUS_VISIBLE_COUNT = 4
 
   return (
-    <>
-      {visible.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {visible.map(card => (
-            <AskAIAbout
-              key={card.code}
-              topic="behavioral.card"
-              params={{ code: card.code }}
-              subtitle={card.title || card.code}
-              className="h-full"
-            >
-              <BehavioralCard card={card} onClick={() => onCardClick(card)} />
-            </AskAIAbout>
-          ))}
-        </div>
-      )}
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {visible.map(card => (
+          <AskAIAbout
+            key={card.code}
+            topic="behavioral.card"
+            params={{ code: card.code }}
+            subtitle={card.title || card.code}
+            className="h-full"
+          >
+            <BehavioralCard card={card} onClick={() => onCardClick(card)} />
+          </AskAIAbout>
+        ))}
+        {/* Preview educativo de los sesgos bloqueados.
+            Para Free: posiciones 1-3 son visibles en Plus (targetTier='plus'),
+            4-11 son solo Pro (targetTier='pro'). Para Plus: todas las
+            bloqueadas son Pro. */}
+        {locked.map((card, i) => {
+          const absoluteIdx = visibleCount + i
+          const targetTier = absoluteIdx < PLUS_VISIBLE_COUNT ? 'plus' : 'pro'
+          return (
+            <BehavioralCardLockedPreview
+              key={`locked-${card.code}`}
+              card={card}
+              targetTier={targetTier}
+            />
+          )
+        })}
+      </div>
 
-      {hidden.length > 0 && (
-        <LockedSection.BlurredList
-          feature="comportamiento.full"
-          hiddenCount={hidden.length}
-          noun="análisis de sesgos"
-          source="behavioral_grid"
-        >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {hidden.slice(0, 4).map(card => (
-              <BehavioralCard key={`hidden-${card.code}`} card={card} onClick={() => {}} />
-            ))}
-          </div>
-        </LockedSection.BlurredList>
+      {/* CTA general al final — track distinto al de cada card */}
+      {locked.length > 0 && (
+        <LockedCtaFooter hiddenCount={locked.length} />
       )}
-    </>
+    </div>
+  )
+}
+
+// ─── BehavioralCardLockedPreview ────────────────────────────────────────────
+// Card de preview para users que no acceden a este sesgo. Muestra título +
+// icono + descripción educativa de qué detecta el sesgo, SIN mostrar el
+// resultado del análisis del user. Estilo apagado para distinguirse de
+// la card real con análisis. El `targetTier` define el color del badge
+// y el CTA: 'plus' (cyan) para sesgos accesibles desde Plus, 'pro' (violet)
+// para los Pro-only.
+function BehavioralCardLockedPreview({ card, targetTier = 'pro' }) {
+  const meta = CARD_META[card.code] || { Icon: Info, label: card.code }
+  const { Icon } = meta
+  const navigate = useNavigate()
+  const tier = targetTier === 'plus' ? 'plus' : 'pro'
+  const tierLabel = tier === 'plus' ? 'Plus' : 'Pro'
+  const styles = tier === 'plus'
+    ? { hoverBorder: 'hover:border-data-cyan/40', cta: 'text-data-cyan group-hover:text-data-cyan/80' }
+    : { hoverBorder: 'hover:border-data-violet/40', cta: 'text-data-violet group-hover:text-data-violet/80' }
+
+  const onClick = () => {
+    track('feature_blocked_clicked', {
+      feature: 'comportamiento.bias_card',
+      code: card.code,
+      target_tier: tier,
+      source: 'behavioral_grid_preview',
+    })
+    navigate('/planes')
+  }
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full h-full text-left border border-line/60 rounded bg-bg-1/60 hover:bg-bg-2/60 ${styles.hoverBorder} p-4 transition-colors group flex flex-col`}
+    >
+      <div className="flex items-center justify-between mb-2.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <Icon size={14} strokeWidth={1.75} className="text-ink-3" />
+          <span className="text-xs font-mono uppercase tracking-caps text-ink-3">{meta.label}</span>
+        </div>
+        <Pill tone="off">
+          <span className="inline-flex items-center gap-1">
+            <Lock size={9} strokeWidth={2} /> {tierLabel}
+          </span>
+        </Pill>
+      </div>
+
+      <h3 className="text-base font-medium text-ink-1 mb-1.5 leading-snug">Qué analiza Rendi</h3>
+      <p className="text-sm text-ink-3 leading-relaxed mb-3">
+        {meta.what || 'Análisis comportamental sobre tu historial de operaciones.'}
+      </p>
+
+      <div className={`text-xs mt-auto inline-flex items-center gap-1 transition-colors ${styles.cta}`}>
+        Desbloquear con {tierLabel} <ChevronRight size={11} strokeWidth={1.75} />
+      </div>
+    </button>
+  )
+}
+
+// ─── LockedCtaFooter ────────────────────────────────────────────────────────
+// CTA grande al final del grid de previews. Resumen visual + botón único
+// para upgradear. Track distinto al click-per-card para distinguir intenciones.
+function LockedCtaFooter({ hiddenCount }) {
+  const navigate = useNavigate()
+  const go = () => {
+    track('feature_blocked_clicked', { feature: 'comportamiento.full', source: 'behavioral_grid_footer' })
+    navigate('/planes')
+  }
+  return (
+    <div className="border border-data-violet/30 bg-data-violet/[0.04] rounded p-4 text-center">
+      <div className="inline-flex items-center justify-center gap-2 mb-1.5">
+        <Sparkles size={14} strokeWidth={1.75} className="text-data-violet" />
+        <p className="text-sm font-medium text-ink-0">
+          Desbloqueá {hiddenCount} {hiddenCount === 1 ? 'análisis' : 'análisis'} de sesgos sobre tu cartera
+        </p>
+      </div>
+      <p className="text-xs text-ink-2 mb-3 max-w-md mx-auto">
+        Rendi Pro detecta {hiddenCount + 1} sesgos comportamentales sobre tu historial real, con evidencia específica y recomendaciones del Coach IA.
+      </p>
+      <button
+        type="button"
+        onClick={go}
+        className="inline-flex items-center gap-1.5 text-sm font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm px-4 py-2 transition-colors"
+      >
+        Ver planes
+      </button>
+    </div>
   )
 }
 

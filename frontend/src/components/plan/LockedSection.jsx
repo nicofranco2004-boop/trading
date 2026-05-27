@@ -32,6 +32,10 @@ function useGoToPlanes() {
 // ── Variante A: Placeholder full-card ────────────────────────────────────────
 // Card que reemplaza totalmente a la feature original. La describe pero
 // sin mostrar la data. CTA grande para upgrade.
+//
+// `targetTier`: 'plus' | 'pro' (default 'pro'). Cambia el copy del CTA y la
+// paleta. Features Plus-tier (Volatilidad, Beta) usan acento cyan; features
+// Pro (Sharpe, Sortino, Alpha, IR) mantienen el violet histórico.
 function Placeholder({
   feature,
   title,
@@ -39,14 +43,30 @@ function Placeholder({
   source,
   icon: Icon = Sparkles,
   className = '',
+  targetTier = 'pro',
 }) {
   const go = useGoToPlanes()
+  const tier = targetTier === 'plus' ? 'plus' : 'pro'
+  const tierLabel = tier === 'plus' ? 'Plus' : 'Pro'
+  // Paleta condicional según target tier. Plus = cyan (acento secundario),
+  // Pro = violet (acento principal de upsell).
+  const styles = tier === 'plus'
+    ? {
+        wrap: 'border-data-cyan/30 bg-data-cyan/[0.05]',
+        iconBg: 'bg-data-cyan/15',
+        iconText: 'text-data-cyan',
+        cta: 'bg-data-cyan/15 hover:bg-data-cyan/25 text-data-cyan border-data-cyan/40',
+      }
+    : {
+        wrap: 'border-data-violet/30 bg-data-violet/[0.04]',
+        iconBg: 'bg-data-violet/15',
+        iconText: 'text-data-violet',
+        cta: 'bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border-data-violet/40',
+      }
   return (
-    <div
-      className={`relative border border-data-violet/30 bg-data-violet/[0.04] rounded p-6 text-center ${className}`}
-    >
-      <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-data-violet/15 mb-3">
-        <Icon size={18} strokeWidth={1.75} className="text-data-violet" />
+    <div className={`relative border rounded p-6 text-center ${styles.wrap} ${className}`}>
+      <div className={`inline-flex items-center justify-center w-10 h-10 rounded-full mb-3 ${styles.iconBg}`}>
+        <Icon size={18} strokeWidth={1.75} className={styles.iconText} />
       </div>
       <h3 className="text-base font-medium text-ink-0 mb-1.5">{title}</h3>
       <p className="text-sm text-ink-2 leading-relaxed max-w-md mx-auto mb-4">
@@ -55,10 +75,10 @@ function Placeholder({
       <button
         type="button"
         onClick={() => go(feature, source)}
-        className="inline-flex items-center gap-1.5 text-sm font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm px-4 py-2 transition-colors"
+        className={`inline-flex items-center gap-1.5 text-sm font-medium border rounded-sm px-4 py-2 transition-colors ${styles.cta}`}
       >
         <Sparkles size={13} strokeWidth={1.75} />
-        Desbloquear con Rendi Pro
+        Desbloquear con Rendi {tierLabel}
       </button>
     </div>
   )
