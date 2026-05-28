@@ -766,11 +766,45 @@ function computeMovementKpis(rows, filterType) {
   const sumByType = (t) => rows.filter(r => r.type === t).reduce((s, r) => s + (r.amount_usd || 0), 0)
   const countByType = (t) => rows.filter(r => r.type === t).length
 
+  // Fix 2026-05-27 (bug reportado por user): los KPIs Depositado/Retirado
+  // antes sumaban TODOS los DEPOSIT/WITHDRAW, incluyendo los importados de
+  // CSV de brokers (Binance especialmente). Esos imports incluyen movimientos
+  // INTERNOS del broker (FUNDING, conversions, settlements, transfers entre
+  // wallets) que no son "capital nuevo" desde la vida del user a su portfolio.
+  // Resultado: un user con 7 depósitos reales ($2.5k) veía $28k con 65 eventos.
+  //
+  // Solución: el KPI de "capital nuevo" (Depositado/Retirado) cuenta SOLO los
+  // que el user marca manualmente en /mensual (source='monthly'). Los flujos
+  // de import siguen apareciendo en la tabla, pero no inflan el KPI.
+  const sumByTypeManual = (t) =>
+    rows.filter(r => r.type === t && r.source === 'monthly')
+        .reduce((s, r) => s + (r.amount_usd || 0), 0)
+  const countByTypeManual = (t) =>
+    rows.filter(r => r.type === t && r.source === 'monthly').length
+
   if (filterType === 'DEPOSIT' || filterType === 'WITHDRAW') {
     const t = filterType
+    // Total = solo manuales (capital nuevo). En la tabla abajo el user ve
+    // todos los eventos individualmente.
+    const totalManual = sumByTypeManual(t)
+    const totalAll = sumByType(t)
+    const countManual = countByTypeManual(t)
+    const countAll = countByType(t)
+    const hasImports = countAll > countManual
     return [
-      { label: `Total ${t === 'DEPOSIT' ? 'depositado' : 'retirado'}`, value: fmtUsd(sumByType(t)), tone: t === 'DEPOSIT' ? 'pos' : 'neg', sub: `${countByType(t)} eventos` },
-      { label: 'Promedio', value: countByType(t) > 0 ? fmtUsd(sumByType(t) / countByType(t)) : '—', sub: 'por evento' },
+      {
+        label: `Total ${t === 'DEPOSIT' ? 'depositado' : 'retirado'}`,
+        value: fmtUsd(totalManual),
+        tone: t === 'DEPOSIT' ? 'pos' : 'neg',
+        sub: hasImports
+          ? `${countManual} manuales · ${countAll - countManual} de imports (no contados)`
+          : `${countManual} eventos`,
+      },
+      {
+        label: 'Promedio',
+        value: countManual > 0 ? fmtUsd(totalManual / countManual) : '—',
+        sub: 'por evento manual',
+      },
     ]
   }
   if (filterType === 'DIVIDEND' || filterType === 'INTEREST') {
@@ -785,13 +819,32 @@ function computeMovementKpis(rows, filterType) {
   }
 
   // Vista "Todos" o por trade type → KPIs generales de cash flow
-  const depositos = sumByType('DEPOSIT')
-  const retiros = sumByType('WITHDRAW')
+  // (Depositado/Retirado SOLO suman manuales — ver comentario arriba.)
+  const depositos = sumByTypeManual('DEPOSIT')
+  const retiros = sumByTypeManual('WITHDRAW')
   const dividendos = sumByType('DIVIDEND') + sumByType('INTEREST')
   const comisiones = sumByType('FEE')
+  const depositCountManual = countByTypeManual('DEPOSIT')
+  const depositCountAll = countByType('DEPOSIT')
+  const wdrCountManual = countByTypeManual('WITHDRAW')
+  const wdrCountAll = countByType('WITHDRAW')
   return [
-    { label: 'Depositado', value: fmtUsd(depositos), tone: depositos > 0 ? 'pos' : null, sub: `${countByType('DEPOSIT')} eventos` },
-    { label: 'Retirado',   value: fmtUsd(retiros),   tone: retiros > 0 ? 'neg' : null, sub: `${countByType('WITHDRAW')} eventos` },
+    {
+      label: 'Depositado',
+      value: fmtUsd(depositos),
+      tone: depositos > 0 ? 'pos' : null,
+      sub: depositCountAll > depositCountManual
+        ? `${depositCountManual} manuales (+${depositCountAll - depositCountManual} de imports)`
+        : `${depositCountManual} eventos`,
+    },
+    {
+      label: 'Retirado',
+      value: fmtUsd(retiros),
+      tone: retiros > 0 ? 'neg' : null,
+      sub: wdrCountAll > wdrCountManual
+        ? `${wdrCountManual} manuales (+${wdrCountAll - wdrCountManual} de imports)`
+        : `${wdrCountManual} eventos`,
+    },
     { label: 'Cobrado',    value: fmtUsd(dividendos), tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
     { label: 'Comisiones', value: fmtUsd(comisiones), tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales' },
   ]
