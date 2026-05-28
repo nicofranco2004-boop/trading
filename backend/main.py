@@ -7302,6 +7302,157 @@ def historical_cagr(uid: int = Depends(get_current_user)):
 # Solo accesible para users con is_admin=1. El email del admin se compara contra
 # un hash SHA-256 al registrarse (ver _is_admin_email arriba).
 
+@app.get("/api/admin/debug/movements-kpi")
+def admin_debug_movements_kpi(uid: int = Depends(get_admin_user)):
+    """DEBUG temporal: dump del estado interno del cálculo de Depositado/Retirado
+    para el admin logueado. Permite diagnosticar el bug del KPI inflado en
+    /operaciones cuando hay imports + monthly_entries acumulados.
+
+    Devuelve:
+      • Lista completa de monthly_entries no-global (id, year, month, broker, deposits, withdrawals)
+      • Agregados de import_normalized_tx por (broker, year, month) → DEPOSIT, WITHDRAW, FEE en USD
+      • El cálculo del RESIDUAL que hace /api/movements (con el fix actual)
+      • Suma de cada bucket para diagnóstico
+
+    Borrar este endpoint cuando se confirme el fix.
+    """
+    conn = get_db()
+    try:
+        # Mismo cálculo de tc_blue que usa /api/movements
+        tc_blue = _user_tc_blue(conn, uid)
+
+        # Monthly entries del user (no-global, con deposits>0 o withdrawals>0)
+        me_rows = conn.execute(
+            """SELECT id, year, month, broker, deposits, withdrawals
+                 FROM monthly_entries
+                WHERE user_id = ? AND broker <> 'global'
+                  AND (deposits > 0 OR withdrawals > 0)
+                ORDER BY year, month, broker""",
+            (uid,),
+        ).fetchall()
+        me_list = [dict(r) for r in me_rows]
+
+        # Agregados de imports por (broker, year, month). Separamos DEPOSIT,
+        # WITHDRAW y FEE para entender qué se está double-counting.
+        imp_rows = conn.execute(
+            """SELECT
+                  t.broker AS broker,
+                  CAST(strftime('%Y', t.date) AS INTEGER) AS y,
+                  CAST(strftime('%m', t.date) AS INTEGER) AS m,
+                  UPPER(t.operation_type) AS op_type,
+                  COUNT(*) AS n,
+                  ROUND(SUM(t.gross_amount), 4) AS raw_sum,
+                  UPPER(COALESCE(t.currency, 'USD')) AS currency,
+                  ROUND(SUM(CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                 THEN t.gross_amount/?
+                                 ELSE t.gross_amount END), 4) AS usd_sum
+                FROM import_normalized_tx t
+                JOIN import_batches b ON t.batch_id = b.id
+                WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND UPPER(t.operation_type) IN ('DEPOSIT', 'WITHDRAW', 'FEE')
+                GROUP BY t.broker, y, m, op_type, currency
+                ORDER BY t.broker, y, m, op_type""",
+            (tc_blue or 1.0, tc_blue or 1.0, uid),
+        ).fetchall()
+        imp_list = [dict(r) for r in imp_rows]
+
+        # Agregar también el agg por (broker, y, m) sin tipo, para el cálculo del residual
+        imp_agg_rows = conn.execute(
+            """SELECT
+                  t.broker AS broker,
+                  CAST(strftime('%Y', t.date) AS INTEGER) AS y,
+                  CAST(strftime('%m', t.date) AS INTEGER) AS m,
+                  SUM(CASE WHEN UPPER(t.operation_type)='DEPOSIT'
+                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                      THEN t.gross_amount/?
+                                      ELSE t.gross_amount END)
+                           ELSE 0 END) AS dep_usd,
+                  SUM(CASE WHEN UPPER(t.operation_type)='WITHDRAW'
+                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                      THEN t.gross_amount/?
+                                      ELSE t.gross_amount END)
+                           ELSE 0 END) AS wit_usd,
+                  SUM(CASE WHEN UPPER(t.operation_type)='FEE'
+                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                      THEN t.gross_amount/?
+                                      ELSE t.gross_amount END)
+                           ELSE 0 END) AS fee_usd
+                FROM import_normalized_tx t
+                JOIN import_batches b ON t.batch_id = b.id
+                WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND UPPER(t.operation_type) IN ('DEPOSIT', 'WITHDRAW', 'FEE')
+                GROUP BY t.broker, y, m""",
+            (tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0,
+             tc_blue or 1.0, tc_blue or 1.0, uid),
+        ).fetchall()
+        imp_dep_map = {(r["broker"], r["y"], r["m"]): float(r["dep_usd"] or 0) for r in imp_agg_rows}
+        imp_wit_map = {(r["broker"], r["y"], r["m"]): float(r["wit_usd"] or 0) for r in imp_agg_rows}
+        imp_fee_map = {(r["broker"], r["y"], r["m"]): float(r["fee_usd"] or 0) for r in imp_agg_rows}
+
+        # Calcular residual por monthly_entry — con y SIN restar FEE (para diagnóstico)
+        residuals = []
+        for d in me_list:
+            y = int(d["year"])
+            m = int(d["month"])
+            broker = d["broker"]
+            key = (broker, y, m)
+            imp_dep = imp_dep_map.get(key, 0.0)
+            imp_wit = imp_wit_map.get(key, 0.0)
+            imp_fee = imp_fee_map.get(key, 0.0)
+            dep_total = float(d["deposits"] or 0)
+            wit_total = float(d["withdrawals"] or 0)
+            # Residual con fix actual (resta solo DEPOSIT/WITHDRAW)
+            dep_residual_v1 = max(0.0, dep_total - imp_dep)
+            wit_residual_v1 = max(0.0, wit_total - imp_wit)
+            # Residual alternativo (resta también FEE de withdrawals)
+            wit_residual_v2 = max(0.0, wit_total - imp_wit - imp_fee)
+            residuals.append({
+                "broker": broker,
+                "year": y,
+                "month": m,
+                "me_deposits": dep_total,
+                "me_withdrawals": wit_total,
+                "imp_dep_usd": round(imp_dep, 4),
+                "imp_wit_usd": round(imp_wit, 4),
+                "imp_fee_usd": round(imp_fee, 4),
+                "residual_dep_v1": round(dep_residual_v1, 4),
+                "residual_wit_v1": round(wit_residual_v1, 4),
+                "residual_wit_v2_with_fee": round(wit_residual_v2, 4),
+            })
+
+        # Totales
+        total_me_dep = sum(float(d["deposits"] or 0) for d in me_list)
+        total_me_wit = sum(float(d["withdrawals"] or 0) for d in me_list)
+        total_resid_dep_v1 = sum(r["residual_dep_v1"] for r in residuals)
+        total_resid_wit_v1 = sum(r["residual_wit_v1"] for r in residuals)
+        total_resid_wit_v2 = sum(r["residual_wit_v2_with_fee"] for r in residuals)
+        # Total imports tomados a USD para sanity check
+        total_imp_dep = sum(imp_dep_map.values())
+        total_imp_wit = sum(imp_wit_map.values())
+        total_imp_fee = sum(imp_fee_map.values())
+
+        return {
+            "user_id": uid,
+            "tc_blue": tc_blue,
+            "monthly_entries_count": len(me_list),
+            "monthly_entries": me_list,
+            "imports_breakdown_per_op_type": imp_list,
+            "residuals_per_entry": residuals,
+            "totals": {
+                "me_deposits_sum": round(total_me_dep, 4),
+                "me_withdrawals_sum": round(total_me_wit, 4),
+                "imp_deposit_sum_usd": round(total_imp_dep, 4),
+                "imp_withdraw_sum_usd": round(total_imp_wit, 4),
+                "imp_fee_sum_usd": round(total_imp_fee, 4),
+                "residual_dep_v1_sum": round(total_resid_dep_v1, 4),
+                "residual_wit_v1_sum": round(total_resid_wit_v1, 4),
+                "residual_wit_v2_with_fee_sum": round(total_resid_wit_v2, 4),
+            },
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/stats")
 def admin_stats(uid: int = Depends(get_admin_user)):
     conn = get_db()
