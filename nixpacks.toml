@@ -15,10 +15,15 @@ nixPkgs = ["python311", "gcc"]
 # arranca y crashea con "libstdc++.so.6: cannot open shared object file".
 nixLibs = ["stdenv.cc.cc.lib"]
 
+# PIN pip < 26: pip 26.1.1 (publicado 2026-05) tiene un bug en el resolver
+# que devuelve "No matching distribution found for fastapi==0.115.0" aunque
+# el package SÍ existe en PyPI. Hasta que salga un fix upstream, pinneamos
+# a la última 25.x estable. Cuando salga pip 26.2 (con el fix) podemos
+# volver a `--upgrade pip` sin restricción.
 [phases.install]
 cmds = [
   "python -m venv --copies /opt/venv",
-  ". /opt/venv/bin/activate && pip install --upgrade pip",
+  ". /opt/venv/bin/activate && pip install --upgrade 'pip<26'",
   ". /opt/venv/bin/activate && pip install -r backend/requirements.txt",
 ]
 
