@@ -4464,22 +4464,26 @@ class CashFlowIn(BaseModel):
 
 
 def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
-    """Recalcula `monthly_entries.pnl_realized`, `deposits` y `withdrawals`
-    desde las fuentes (operations + import_normalized_tx confirmados).
+    """Recalcula `monthly_entries.pnl_realized` desde operations (la única
+    fuente canónica del P&L realizado).
 
-    Self-healing de drift acumulado por cycles import/revert/reimport con
-    cálculos cambiantes entre versiones. Cada fila queda con:
-      pnl_realized = SUM(operations.pnl_usd)
-      deposits     = SUM(monto USD de DEPOSITs en batches confirmed)
-      withdrawals  = SUM(monto USD de WITHDRAWs en batches confirmed)
+    Self-healing de drift acumulado por cycles import/revert/reimport.
 
     Para broker='global', suma cross-broker.
 
     Re-repara la cadena de capital_final.
 
-    CAVEAT: si el user hizo cash flows MANUALES (desde /api/cash/flow, no
-    desde un import), esos se zero-ean — son raros, el user los puede
-    re-hacer si fueran necesarios.
+    HISTORIA (bug fix 2026-05-27): esta función ANTES también sobreescribía
+    `deposits` y `withdrawals` con valores agregados desde import_normalized_tx,
+    lo cual ZERO-eaba cualquier cash flow MANUAL del user (form /mensual,
+    botón Cash de Cartera, reconcile-cash). Los manuales NO tienen respaldo
+    en import_normalized_tx así que quedaban en 0 → algunos entries enteros
+    se borraban por la cleanup de filas en 0 (ver más abajo).
+    Resultado en producción: el user perdía silenciosamente sus deposits
+    manuales cada vez que importaba un CSV o re-confirmaba un batch.
+    Fix: ahora SOLO recalculamos pnl_realized. deposits/withdrawals quedan
+    intactos — son la suma autoritativa (manuales + lo que el importer ya
+    acumuló via _update_monthly_flow en cada DEPOSIT/WITHDRAW de CSV).
 
     Idempotente. Devuelve cantidad de rows actualizados.
     """
@@ -4489,17 +4493,6 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     ).fetchall()
     updates = 0
     brokers_touched: set = set()
-    # TC blue para convertir DEPOSITs/WITHDRAWs en ARS a USD-equivalente
-    # (consistente con _persist_cash_in/out)
-    tc_blue_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
-    ).fetchone()
-    try:
-        tc_blue = float(tc_blue_row["value"]) if tc_blue_row else 1415.0
-        if tc_blue <= 0:
-            tc_blue = 1415.0
-    except (TypeError, ValueError):
-        tc_blue = 1415.0
 
     for r in rows:
         broker, y, m = r["broker"], r["year"], r["month"]
@@ -4508,7 +4501,7 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         broker_filter_sql = "" if broker == "global" else " AND o.broker = ?"
         broker_filter_args = () if broker == "global" else (broker,)
 
-        # 1) pnl_realized desde operations
+        # pnl_realized desde operations — ÚNICA fuente autoritativa
         pnl_row = conn.execute(
             f"""SELECT COALESCE(SUM(o.pnl_usd), 0) AS s FROM operations o
                 WHERE o.user_id=?
@@ -4519,49 +4512,17 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         ).fetchone()
         new_pnl = round(float(pnl_row["s"] or 0), 4)
 
-        # 2) deposits + withdrawals desde import_normalized_tx (solo batches
-        #    confirmed). Convierte ARS a USD para tracking en USD-base.
-        tx_broker_filter = "" if broker == "global" else " AND n.broker = ?"
-        tx_broker_args = () if broker == "global" else (broker,)
-        flow_row = conn.execute(
-            f"""SELECT n.operation_type AS op,
-                       COALESCE(SUM(n.gross_amount), 0) AS s,
-                       n.currency AS cur
-                FROM import_normalized_tx n
-                JOIN import_batches b ON b.id = n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed'
-                  AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
-                  AND strftime('%Y', n.date)=?
-                  AND strftime('%m', n.date)=?
-                  {tx_broker_filter}
-                GROUP BY n.operation_type, n.currency""",
-            (uid, year_str, month_str, *tx_broker_args),
-        ).fetchall()
-        new_deposits = 0.0
-        new_withdrawals = 0.0
-        for f in flow_row:
-            amt = float(f["s"] or 0)
-            cur_norm = (f["cur"] or "").upper()
-            # Convertir ARS a USD para el aggregate USD
-            amt_usd = amt / tc_blue if cur_norm == "ARS" else amt
-            if f["op"] == "DEPOSIT":
-                new_deposits += amt_usd
-            else:
-                new_withdrawals += amt_usd
-        new_deposits = round(new_deposits, 4)
-        new_withdrawals = round(new_withdrawals, 4)
-
-        # También reseteamos pnl_unrealized: es un live snapshot que se
-        # recalcula desde positions actuales (via /sync-unrealized en el
-        # dashboard). Si quedó un valor stale de cycles previos, ensucia
-        # el "delta del mes" en /reportes — fórmula `partial`: deltaUsd =
-        # pnl_realized + pnl_unrealized, así un -$69k phantom rompe el view.
+        # Reseteamos pnl_unrealized: es un live snapshot que se recalcula
+        # desde positions actuales (via /sync-unrealized en el dashboard).
+        # Si quedó un valor stale de cycles previos, ensucia el "delta del
+        # mes" en /reportes — fórmula `partial`: deltaUsd = pnl_realized +
+        # pnl_unrealized, así un -$69k phantom rompe el view.
+        # NOTA: deposits/withdrawals NO los tocamos — ver docstring.
         conn.execute(
             """UPDATE monthly_entries
-               SET pnl_realized=?, pnl_unrealized=0,
-                   deposits=?, withdrawals=?
+               SET pnl_realized=?, pnl_unrealized=0
                WHERE user_id=? AND broker=? AND year=? AND month=?""",
-            (new_pnl, new_deposits, new_withdrawals, uid, broker, y, m),
+            (new_pnl, uid, broker, y, m),
         )
         updates += 1
         brokers_touched.add(broker)
@@ -6264,26 +6225,26 @@ def get_movements(uid: int = Depends(get_current_user)):
             })
 
         # ── 3) Monthly entries (no-global) — solo el RESIDUAL manual ────────
-        # CRITICAL (bug fix 2026-05-27): `monthly_entries.deposits/withdrawals`
-        # son sumas acumulativas que incluyen DOS fuentes:
+        # `monthly_entries.deposits/withdrawals` son sumas acumulativas que
+        # incluyen DOS fuentes:
         #   (a) Lo que el user cargó manualmente (form /mensual + botón Cash
         #       en Cartera + reconcile-cash en Config). Esto SÍ es "capital
         #       nuevo" y debería contarse en el KPI.
-        #   (b) Lo que vino del importer (persister.py llama _update_monthly_flow
-        #       cada vez que el CSV trae un DEPOSIT/WITHDRAW). Esto NO debería
-        #       contarse como "movement manual" porque YA aparece en la lista
-        #       como source='import' desde import_normalized_tx (paso 2).
+        #   (b) Lo que el importer acumuló al procesar CSV (persister.py llama
+        #       _update_monthly_flow cada vez que el CSV trae DEPOSIT/WITHDRAW).
+        #       Esto NO debería contarse como "movement manual" porque YA
+        #       aparece como source='import' desde import_normalized_tx (paso 2).
         #
-        # Si emitimos un movement por cada `monthly_entry` con el `deposits`
-        # entero, los DEPOSIT importados quedan DOUBLE-COUNTED: una vez como
-        # source='import' (desde import_normalized_tx) + otra como
-        # source='monthly' (desde acá). Resultado del bug: el KPI Depositado
-        # mostraba ~$14k cuando los manuales reales eran $2,2k.
+        # Si emitimos un movement por cada monthly_entry con el deposits/
+        # withdrawals entero, los importados quedan DOUBLE-COUNTED.
         #
         # Fix: agregamos los DEPOSIT/WITHDRAW de imports por (broker, year, month)
         # y los RESTAMOS de monthly_entries.deposits/withdrawals. El residual
-        # es lo que el user agregó manualmente. Solo emitimos movement si el
-        # residual > 0.
+        # es lo que el user agregó manualmente.
+        #
+        # ⚠ PRECONDICIÓN: _recalc_pnl_realized_from_ops NO debe sobreescribir
+        # deposits/withdrawals (fix 2026-05-27). Antes lo hacía y borraba los
+        # manuales del user.
         imp_agg_rows = conn.execute(
             """SELECT
                   t.broker AS broker,
@@ -6321,9 +6282,6 @@ def get_movements(uid: int = Depends(get_current_user)):
             d = dict(r)
             y, m = int(d["year"]), int(d["month"])
             key = (d.get("broker") or "", y, m)
-            # Imports DEPOSIT/WITHDRAW para el mismo (broker, year, month).
-            # Si el monthly_entry ya incluye estos, restamos para dejar solo
-            # el residual manual del user.
             imp_dep = imp_dep_map.get(key, 0.0)
             imp_wit = imp_wit_map.get(key, 0.0)
             deposits_total = float(d["deposits"] or 0)
@@ -6331,12 +6289,7 @@ def get_movements(uid: int = Depends(get_current_user)):
             deposits_manual = max(0.0, deposits_total - imp_dep)
             withdrawals_manual = max(0.0, withdrawals_total - imp_wit)
 
-            # Fecha aproximada al día 15 del mes — los flows mensuales no
-            # tienen día exacto cargado.
             approx_date = f"{y:04d}-{m:02d}-15"
-            # Umbral 0.01 USD: si el residual es cents (round-off por
-            # conversión tc histórico vs actual), no emitimos movement
-            # para no contaminar la lista con eventos fantasma.
             if deposits_manual > 0.01:
                 movements.append({
                     "id": f"me-{d['id']}-dep",
@@ -7301,6 +7254,114 @@ def historical_cagr(uid: int = Depends(get_current_user)):
 # ─── Admin ───────────────────────────────────────────────────────────────────
 # Solo accesible para users con is_admin=1. El email del admin se compara contra
 # un hash SHA-256 al registrarse (ver _is_admin_email arriba).
+
+@app.post("/api/admin/cleanup/realign-monthly-with-imports")
+def admin_cleanup_realign_monthly(uid: int = Depends(get_admin_user)):
+    """REPARACIÓN one-shot del daño causado por el viejo
+    _recalc_pnl_realized_from_ops (que sobreescribía deposits/withdrawals con
+    los valores de imports, borrando los manuales del user).
+
+    Re-alinea monthly_entries.deposits/withdrawals con la suma EXACTA de
+    DEPOSIT/WITHDRAW desde import_normalized_tx para cada (broker, year, month).
+
+    Resultado post-cleanup:
+      • monthly_entries.deposits = SUM(imports DEPOSIT) en ese período
+      • monthly_entries.withdrawals = SUM(imports WITHDRAW) en ese período
+      • /api/movements resta imports → residual manual = 0 (limpio)
+      • El user puede ir a /mensual y agregar/editar entries → esos manuales
+        se SUMAN encima de los imports → /api/movements resta imports →
+        residual = solo manual ✓
+
+    Idempotente. Solo afecta al user admin que lo llame.
+    """
+    conn = get_db()
+    try:
+        tc_blue = _user_tc_blue(conn, uid)
+        # Agregar imports DEPOSIT/WITHDRAW por (broker, year, month) en USD
+        imp_rows = conn.execute(
+            """SELECT
+                  t.broker AS broker,
+                  CAST(strftime('%Y', t.date) AS INTEGER) AS y,
+                  CAST(strftime('%m', t.date) AS INTEGER) AS m,
+                  SUM(CASE WHEN UPPER(t.operation_type)='DEPOSIT'
+                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                      THEN t.gross_amount/?
+                                      ELSE t.gross_amount END)
+                           ELSE 0 END) AS dep_usd,
+                  SUM(CASE WHEN UPPER(t.operation_type)='WITHDRAW'
+                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                      THEN t.gross_amount/?
+                                      ELSE t.gross_amount END)
+                           ELSE 0 END) AS wit_usd
+                FROM import_normalized_tx t
+                JOIN import_batches b ON t.batch_id = b.id
+                WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND UPPER(t.operation_type) IN ('DEPOSIT', 'WITHDRAW')
+                GROUP BY t.broker, y, m""",
+            (tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, uid),
+        ).fetchall()
+        # Map: (broker, y, m) → (dep_usd, wit_usd)
+        target = {(r["broker"], r["y"], r["m"]): (float(r["dep_usd"] or 0), float(r["wit_usd"] or 0))
+                  for r in imp_rows}
+
+        # Para CADA broker que tiene monthly_entries no-global, iterar todas
+        # sus rows y setear deposits/withdrawals al target.
+        updated = 0
+        zeroed = 0
+        for me in conn.execute(
+            "SELECT id, broker, year, month, deposits, withdrawals FROM monthly_entries WHERE user_id=? AND broker <> 'global'",
+            (uid,),
+        ).fetchall():
+            key = (me["broker"], me["year"], me["month"])
+            dep_target, wit_target = target.get(key, (0.0, 0.0))
+            conn.execute(
+                "UPDATE monthly_entries SET deposits=?, withdrawals=? WHERE id=? AND user_id=?",
+                (round(dep_target, 4), round(wit_target, 4), me["id"], uid),
+            )
+            updated += 1
+            if dep_target < 0.01 and wit_target < 0.01:
+                zeroed += 1
+
+        # Para el broker='global', es la suma cross-broker. Resetear igual.
+        global_target_dep = sum(d for d, w in target.values())
+        global_target_wit = sum(w for d, w in target.values())
+        # Distribuir global_target entre los meses globales — usar mismo agregado
+        # por (year, month) sumando entre brokers.
+        global_by_period = {}
+        for (br, y, m), (dep, wit) in target.items():
+            global_by_period[(y, m)] = (
+                global_by_period.get((y, m), (0.0, 0.0))[0] + dep,
+                global_by_period.get((y, m), (0.0, 0.0))[1] + wit,
+            )
+        for me in conn.execute(
+            "SELECT id, year, month FROM monthly_entries WHERE user_id=? AND broker='global'",
+            (uid,),
+        ).fetchall():
+            dep, wit = global_by_period.get((me["year"], me["month"]), (0.0, 0.0))
+            conn.execute(
+                "UPDATE monthly_entries SET deposits=?, withdrawals=? WHERE id=? AND user_id=?",
+                (round(dep, 4), round(wit, 4), me["id"], uid),
+            )
+            updated += 1
+
+        conn.commit()
+        _ai_cache_invalidate(uid)
+        return {
+            "ok": True,
+            "user_id": uid,
+            "rows_updated": updated,
+            "rows_zeroed": zeroed,
+            "total_imports_dep_usd": round(global_target_dep, 4),
+            "total_imports_wit_usd": round(global_target_wit, 4),
+            "next_step": (
+                "Andá a /mensual y agregá tus depósitos/retiros manuales reales. "
+                "Esos se SUMAN sobre los imports — /operaciones va a mostrar el "
+                "residual manual en el KPI."
+            ),
+        }
+    finally:
+        conn.close()
+
 
 @app.get("/api/admin/debug/movements-kpi")
 def admin_debug_movements_kpi(uid: int = Depends(get_admin_user)):
