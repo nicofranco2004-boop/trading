@@ -145,9 +145,18 @@ export function AuthProvider({ children }) {
     // rendi_user, quedaban: rendi_first_import_done, rendi_ai_discovered,
     // rendi_dashboard_currency, rendi_sidebar_collapsed, rendi_demo_overlay,
     // rendi_demo_mode, rendi_theme, etc. User B veía preferencias de user A.
-    // Preservamos rendi_theme porque es preferencia de máquina, no de cuenta.
+    //
+    // PRESERVE list — flags que NO se borran al logout:
+    //   • rendi_theme: preferencia de máquina, no de cuenta.
+    //   • rendi_ai_discovered: "el user de este browser ya descubrió la feature
+    //     Coach IA". Si lo borramos, cada logout+login del MISMO user resetea
+    //     el checklist y muestra "Coach IA pendiente" como si nunca lo hubiera
+    //     usado. Trade-off aceptado: en máquina compartida user B ve ✓ Coach
+    //     IA sin haberlo usado — minor leak (no es PII, solo discovery state)
+    //     vs UX bug recurrente. Si en el futuro tracking server-side, mover
+    //     este flag al endpoint /api/plan/features o similar.
     try {
-      const preserve = new Set(['rendi_theme'])
+      const preserve = new Set(['rendi_theme', 'rendi_ai_discovered'])
       const keysToRemove = []
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i)
