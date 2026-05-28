@@ -6263,7 +6263,52 @@ def get_movements(uid: int = Depends(get_current_user)):
                 "ref_id": d["id"],
             })
 
-        # ── 3) Monthly entries (no-global) — depósitos/retiros manuales ─────
+        # ── 3) Monthly entries (no-global) — solo el RESIDUAL manual ────────
+        # CRITICAL (bug fix 2026-05-27): `monthly_entries.deposits/withdrawals`
+        # son sumas acumulativas que incluyen DOS fuentes:
+        #   (a) Lo que el user cargó manualmente (form /mensual + botón Cash
+        #       en Cartera + reconcile-cash en Config). Esto SÍ es "capital
+        #       nuevo" y debería contarse en el KPI.
+        #   (b) Lo que vino del importer (persister.py llama _update_monthly_flow
+        #       cada vez que el CSV trae un DEPOSIT/WITHDRAW). Esto NO debería
+        #       contarse como "movement manual" porque YA aparece en la lista
+        #       como source='import' desde import_normalized_tx (paso 2).
+        #
+        # Si emitimos un movement por cada `monthly_entry` con el `deposits`
+        # entero, los DEPOSIT importados quedan DOUBLE-COUNTED: una vez como
+        # source='import' (desde import_normalized_tx) + otra como
+        # source='monthly' (desde acá). Resultado del bug: el KPI Depositado
+        # mostraba ~$14k cuando los manuales reales eran $2,2k.
+        #
+        # Fix: agregamos los DEPOSIT/WITHDRAW de imports por (broker, year, month)
+        # y los RESTAMOS de monthly_entries.deposits/withdrawals. El residual
+        # es lo que el user agregó manualmente. Solo emitimos movement si el
+        # residual > 0.
+        imp_agg_rows = conn.execute(
+            """SELECT
+                  t.broker AS broker,
+                  CAST(strftime('%Y', t.date) AS INTEGER) AS y,
+                  CAST(strftime('%m', t.date) AS INTEGER) AS m,
+                  SUM(CASE WHEN UPPER(t.operation_type)='DEPOSIT'
+                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                      THEN t.gross_amount/?
+                                      ELSE t.gross_amount END)
+                           ELSE 0 END) AS dep_usd,
+                  SUM(CASE WHEN UPPER(t.operation_type)='WITHDRAW'
+                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                      THEN t.gross_amount/?
+                                      ELSE t.gross_amount END)
+                           ELSE 0 END) AS wit_usd
+                FROM import_normalized_tx t
+                JOIN import_batches b ON t.batch_id = b.id
+                WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND UPPER(t.operation_type) IN ('DEPOSIT', 'WITHDRAW')
+                GROUP BY t.broker, y, m""",
+            (tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, uid),
+        ).fetchall()
+        imp_dep_map = {(r["broker"], r["y"], r["m"]): float(r["dep_usd"] or 0) for r in imp_agg_rows}
+        imp_wit_map = {(r["broker"], r["y"], r["m"]): float(r["wit_usd"] or 0) for r in imp_agg_rows}
+
         me_rows = conn.execute(
             """SELECT id, year, month, broker, deposits, withdrawals
                  FROM monthly_entries
@@ -6274,10 +6319,25 @@ def get_movements(uid: int = Depends(get_current_user)):
         ).fetchall()
         for r in me_rows:
             d = dict(r)
+            y, m = int(d["year"]), int(d["month"])
+            key = (d.get("broker") or "", y, m)
+            # Imports DEPOSIT/WITHDRAW para el mismo (broker, year, month).
+            # Si el monthly_entry ya incluye estos, restamos para dejar solo
+            # el residual manual del user.
+            imp_dep = imp_dep_map.get(key, 0.0)
+            imp_wit = imp_wit_map.get(key, 0.0)
+            deposits_total = float(d["deposits"] or 0)
+            withdrawals_total = float(d["withdrawals"] or 0)
+            deposits_manual = max(0.0, deposits_total - imp_dep)
+            withdrawals_manual = max(0.0, withdrawals_total - imp_wit)
+
             # Fecha aproximada al día 15 del mes — los flows mensuales no
             # tienen día exacto cargado.
-            approx_date = f"{int(d['year']):04d}-{int(d['month']):02d}-15"
-            if d["deposits"] and d["deposits"] > 0:
+            approx_date = f"{y:04d}-{m:02d}-15"
+            # Umbral 0.01 USD: si el residual es cents (round-off por
+            # conversión tc histórico vs actual), no emitimos movement
+            # para no contaminar la lista con eventos fantasma.
+            if deposits_manual > 0.01:
                 movements.append({
                     "id": f"me-{d['id']}-dep",
                     "kind": "movement",
@@ -6287,15 +6347,15 @@ def get_movements(uid: int = Depends(get_current_user)):
                     "asset": "",
                     "quantity": None,
                     "unit_price": None,
-                    "amount_usd": float(d["deposits"]),
+                    "amount_usd": deposits_manual,
                     "currency": "USD",
                     "fees_usd": 0,
-                    "notes": f"Total depósitos {d['year']}-{int(d['month']):02d}",
+                    "notes": f"Depósitos manuales {y}-{m:02d}",
                     "source": "monthly",
                     "ref_id": d["id"],
                     "approx_date": True,
                 })
-            if d["withdrawals"] and d["withdrawals"] > 0:
+            if withdrawals_manual > 0.01:
                 movements.append({
                     "id": f"me-{d['id']}-wit",
                     "kind": "movement",
@@ -6305,10 +6365,10 @@ def get_movements(uid: int = Depends(get_current_user)):
                     "asset": "",
                     "quantity": None,
                     "unit_price": None,
-                    "amount_usd": float(d["withdrawals"]),
+                    "amount_usd": withdrawals_manual,
                     "currency": "USD",
                     "fees_usd": 0,
-                    "notes": f"Total retiros {d['year']}-{int(d['month']):02d}",
+                    "notes": f"Retiros manuales {y}-{m:02d}",
                     "source": "monthly",
                     "ref_id": d["id"],
                     "approx_date": True,
