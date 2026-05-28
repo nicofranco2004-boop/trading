@@ -28,6 +28,8 @@ from .builders.dashboard_brokers import build as build_dashboard_brokers
 from .builders.dashboard_events import build as build_dashboard_events
 from .builders.behavioral import build as build_behavioral
 from .builders.behavioral_card import build as build_behavioral_card
+from .builders.profile_card import build as build_profile_card
+from .builders.metrics_pro_card import build as build_metrics_pro_card
 from .builders.insights import build as build_insights
 from .builders.insights_evolution import build as build_insights_evolution
 from .builders.insights_drawdown import build as build_insights_drawdown
@@ -60,6 +62,8 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "dashboard.upcoming_events": (build_dashboard_events, prompts.render_dashboard_events_prompt),
     "behavioral": (build_behavioral, prompts.render_behavioral_prompt),
     "behavioral.card": (build_behavioral_card, prompts.render_behavioral_card_prompt),
+    "profile.card": (build_profile_card, prompts.render_profile_card_prompt),
+    "metrics_pro.card": (build_metrics_pro_card, prompts.render_metrics_pro_card_prompt),
     "insights": (build_insights, prompts.render_insights_prompt),
     "insights.evolution": (build_insights_evolution, prompts.render_insights_evolution_prompt),
     "insights.drawdown": (build_insights_drawdown, prompts.render_insights_drawdown_prompt),

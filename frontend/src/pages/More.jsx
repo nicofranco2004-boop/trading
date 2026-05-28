@@ -17,32 +17,29 @@ import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 
+// Restructure 2026-05-27: 7 items en 3 grupos, espejado del sidebar desktop.
+// Las URLs viejas (/dashboard, /insights, etc.) redirigen al wrapper consolidado
+// con el tab correspondiente (ver App.jsx).
 const GROUPS = [
   {
-    label: 'Análisis',
+    label: 'Tu portfolio',
     items: [
-      { to: '/dashboard',      label: 'Dashboard',      icon: LayoutDashboard, sub: 'Resumen consolidado' },
-      { to: '/novedades',      label: 'Novedades',      icon: Bell,            sub: 'Noticias + eventos' },
-      { to: '/comportamiento', label: 'Comportamiento', icon: Brain,           sub: 'Sesgos detectados' },
-      { to: '/reportes',       label: 'Reportes',       icon: BarChart3,       sub: 'Performance mensual' },
+      { to: '/posiciones',  label: 'Cartera',      icon: List,   sub: 'Posiciones, evolución, objetivos' },
+      { to: '/operaciones', label: 'Movimientos',  icon: List,   sub: 'Trades + depósitos + dividendos' },
+      { to: '/imports',     label: 'Importes',     icon: Upload, sub: 'Subí CSVs de tus brokers' },
     ],
   },
   {
-    label: 'Data',
+    label: 'Análisis',
     items: [
-      { to: '/operaciones', label: 'Operaciones', icon: List,   sub: 'Historial de trades' },
-      { to: '/imports',     label: 'Importaciones', icon: Upload, sub: 'CSV de brokers' },
+      { to: '/analisis',  label: 'Análisis',  icon: Brain,    sub: 'Diagnóstico, métricas pro, sesgos' },
+      { to: '/novedades', label: 'Novedades', icon: Bell,     sub: 'Noticias + eventos' },
     ],
   },
   {
     label: 'Personal',
     items: [
       { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound, sub: 'Contexto para el Coach IA' },
-      { to: '/objetivos',       label: 'Objetivos',          icon: Target,    sub: 'Metas financieras' },
-      // Wrapped salió del nav (ruido casi todo el año). Sigue accesible
-      // vía `/wrapped` por URL directa — pensado para un trigger anual
-      // en diciembre (banner/notif "tu Wrapped está listo") que linkee
-      // directo al resumen del año en curso.
     ],
   },
 ]

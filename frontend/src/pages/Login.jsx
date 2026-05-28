@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Sparkles, ArrowRight } from 'lucide-react'
+import { Sparkles, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { enableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
@@ -11,6 +11,11 @@ export default function Login() {
   const [mode, setMode] = useState('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  // Toggle "ver contraseña" — feature crítica en mobile porque el user no
+  // puede verificar visualmente que tipeó bien la pass. Causa #1 de "credenciales
+  // inválidas" reportadas: autocomplete del browser mete pass viejo de otra
+  // cuenta, o el user mete un caracter de más sin darse cuenta.
+  const [showPassword, setShowPassword] = useState(false)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
@@ -57,42 +62,112 @@ export default function Login() {
     setError('')
     setInfo('')
     setEmailExists(false)
+
+    // ── Validación frontend pre-flight ────────────────────────────────────
+    // Mensajes específicos para errores de input ANTES de pegarle al backend.
+    // Evitan que el user vea "credenciales inválidas" cuando el problema real
+    // es que no completó algo o el email no tiene formato válido.
+    const cleanEmail = email.trim()
+    if (!cleanEmail) {
+      setError('Ingresá tu email para continuar.')
+      return
+    }
+    // Regex simple — no exhaustivo pero detecta los typos comunes (sin @,
+    // sin dominio, sin TLD). El backend hace la validación estricta.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setError('El email no tiene formato válido. Revisalo y probá de nuevo.')
+      return
+    }
+    if (!password) {
+      setError('Ingresá tu contraseña para continuar.')
+      return
+    }
+    if (mode === 'register' && password.length < 10) {
+      setError('La contraseña debe tener al menos 10 caracteres.')
+      return
+    }
+    if (mode === 'register' && !name.trim()) {
+      setError('Ingresá tu nombre para crear la cuenta.')
+      return
+    }
+
     setLoading(true)
     try {
       const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register'
-      const body = mode === 'login' ? { email, password } : { email, password, name }
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      let data
+      const body = mode === 'login' ? { email: cleanEmail, password } : { email: cleanEmail, password, name: name.trim() }
+      let res
+      try {
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      } catch (netErr) {
+        // Falla de red — no llegó al server. Distinguir esto del "credenciales
+        // inválidas" es crítico: el user piensa que el password está mal
+        // cuando en realidad no hay internet o el server está caído.
+        throw new Error('No hay conexión con el servidor. Revisá tu internet y probá de nuevo.')
+      }
+
+      let data = {}
       try {
         data = await res.json()
       } catch {
-        throw new Error('No pudimos contactar el servidor. Verificá que el backend esté corriendo en el puerto 8000.')
+        // Response no es JSON — probablemente HTML de error de Vercel/Cloudflare
+        if (res.status >= 500) {
+          throw new Error('El servidor está teniendo problemas. Probá de nuevo en un minuto.')
+        }
+        throw new Error('Respuesta inesperada del servidor. Probá de nuevo.')
       }
+
       if (!res.ok) {
-        // Caso especial: login con email no verificado → llevarlo a /verify-email
+        // ── Caso especial: email no verificado → redirect a /verify-email ──
         if (res.status === 403 && data?.detail?.code === 'EMAIL_NOT_VERIFIED') {
-          navigate(`/verify-email?email=${encodeURIComponent(data.detail.email || email)}`)
+          navigate(`/verify-email?email=${encodeURIComponent(data.detail.email || cleanEmail)}`)
           return
         }
-        // Caso especial: register con email ya registrado → mostrar CTA "ir a login"
+        // ── Caso especial: register con email ya registrado → CTA "ir a login" ──
         if (res.status === 409 && data?.detail?.code === 'EMAIL_ALREADY_REGISTERED') {
           setEmailExists(true)
-          // Pre-set email para que el switch a login lo conserve
           return
         }
-        // El detail puede ser string (mensaje plano) o dict (estructurado).
-        const msg = typeof data.detail === 'string'
-          ? data.detail
-          : (data.detail?.error || 'Ocurrió un error')
-        throw new Error(msg)
+
+        // ── Mensajes contextuales por status code ──
+        // Importante: NO podemos distinguir entre "email no existe" vs
+        // "password mal" porque el backend devuelve el mismo 401 para ambos
+        // (anti-enumeration de cuentas). Pero SÍ mejoramos el copy para que
+        // el user entienda mejor qué chequear.
+        let friendly
+        if (res.status === 401) {
+          friendly = mode === 'login'
+            ? 'El email o la contraseña no coinciden. Revisá que estén bien escritos — si olvidaste tu contraseña, podés resetearla con el link de arriba.'
+            : 'Las credenciales no son válidas.'
+        } else if (res.status === 403) {
+          // Cuenta pendiente de aprobación, deshabilitada, etc.
+          const backendMsg = typeof data.detail === 'string' ? data.detail : (data.detail?.error || data.detail?.message)
+          friendly = backendMsg || 'Tu cuenta está pendiente de aprobación. Recibirás un email cuando podamos habilitarla.'
+        } else if (res.status === 429) {
+          friendly = 'Demasiados intentos. Esperá un minuto antes de intentar de nuevo.'
+        } else if (res.status === 422 || res.status === 400) {
+          // Validation error del backend (Pydantic, etc.)
+          const backendMsg = typeof data.detail === 'string'
+            ? data.detail
+            : Array.isArray(data.detail)
+              ? data.detail.map(d => d.msg || d).join('; ')
+              : (data.detail?.error || data.detail?.message)
+          friendly = backendMsg || 'Algunos datos no son válidos. Revisá el formulario.'
+        } else if (res.status >= 500) {
+          friendly = 'El servidor está teniendo problemas. Probá de nuevo en un minuto.'
+        } else {
+          // Fallback: usar el detail del backend si es legible
+          const backendMsg = typeof data.detail === 'string' ? data.detail : (data.detail?.error || data.detail?.message)
+          friendly = backendMsg || `Algo salió mal (código ${res.status}). Probá de nuevo.`
+        }
+        throw new Error(friendly)
       }
       // Registro con verificación pendiente → llevar a /verify-email
       if (data.needs_verification) {
-        navigate(`/verify-email?email=${encodeURIComponent(data.email || email)}`)
+        navigate(`/verify-email?email=${encodeURIComponent(data.email || cleanEmail)}`)
         return
       }
       // Registro pendiente: el admin debe aprobar
@@ -208,20 +283,37 @@ export default function Login() {
                   </button>
                 )}
               </div>
-              <input
-                id="login-password"
-                type="password"
-                name="password"
-                autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                minLength={mode === 'register' ? 10 : undefined}
-                placeholder={mode === 'register' ? 'Mínimo 10 caracteres' : '••••••••'}
-                className={inputClass}
-              />
+              {/* Password con toggle "ver contraseña". El botón se posiciona
+                  absoluto sobre el lado derecho del input. Ayuda al user mobile
+                  a verificar que tipeó bien la pass (resuelve la causa #1 de
+                  "credenciales inválidas" reportada). */}
+              <div className="relative">
+                <input
+                  id="login-password"
+                  type={showPassword ? 'text' : 'password'}
+                  name="password"
+                  autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  minLength={mode === 'register' ? 10 : undefined}
+                  placeholder={mode === 'register' ? 'Mínimo 10 caracteres' : '••••••••'}
+                  className={`${inputClass} pr-10`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(s => !s)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-ink-3 hover:text-ink-0 transition-colors"
+                  aria-label={showPassword ? 'Ocultar contraseña' : 'Ver contraseña'}
+                  tabIndex={-1}
+                >
+                  {showPassword
+                    ? <EyeOff size={16} strokeWidth={1.75} />
+                    : <Eye size={16} strokeWidth={1.75} />}
+                </button>
+              </div>
               {mode === 'register' && password && password.length < 10 && (
                 <p className="text-xs text-amber-500 dark:text-amber-400 mt-1">Faltan caracteres · {password.length}/10</p>
               )}

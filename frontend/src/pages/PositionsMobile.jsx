@@ -16,7 +16,7 @@
 
 import { useEffect, useMemo, useState, lazy, Suspense, memo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft } from 'lucide-react'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import EmptyState from '../components/EmptyState'
@@ -84,6 +84,10 @@ export default function PositionsMobile() {
   const [sortBy, setSortBy] = useState('value')
   const [query, setQuery] = useState('')
   const [brokerFilter, setBrokerFilter] = useState(ALL_FILTER)
+  // Bottom sheet con las 4 acciones rápidas: Registrar compra, Registrar
+  // venta, Cash, Exportar CSV. Antes el botón "+ Nueva" solo abría el
+  // add-flow; ahora pone parity con el desktop que tiene los 4 atajos.
+  const [actionsSheet, setActionsSheet] = useState(false)
   // Modales de gestión de broker (mismo flow que el desktop BrokerManager)
   const [showAddBroker, setShowAddBroker] = useState(false)
   const [editingBroker, setEditingBroker] = useState(null)
@@ -491,31 +495,34 @@ export default function PositionsMobile() {
             </span>
             <button
               type="button"
-              onClick={() => openNewPositionFlow('mobile_cartera_header')}
-              className="inline-flex items-center gap-1 text-xs font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm px-2.5 py-1.5 transition-colors whitespace-nowrap"
-              aria-label="Nueva posición"
+              onClick={() => setActionsSheet(true)}
+              className="inline-flex items-center gap-1 text-xs font-medium bg-data-violet hover:bg-data-violet/90 text-white rounded-md px-3 py-2 transition-colors whitespace-nowrap shadow-sm"
+              aria-label="Acciones rápidas"
             >
-              <Plus size={12} strokeWidth={2.5} />
-              Nueva
+              <Plus size={13} strokeWidth={2.5} />
+              Acciones
+              <ChevronDown size={11} strokeWidth={2} aria-hidden="true" />
             </button>
           </div>
         </div>
 
-        {/* Search input compacto */}
-        <div className="relative mb-2">
-          <Search size={12} strokeWidth={1.75} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
+        {/* Search input compacto. Padding interno aumentado de py-1.5 → py-2.5
+            para no sentir el input apretado contra los chips de abajo. */}
+        <div className="relative mb-3.5">
+          <Search size={13} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar ticker o broker…"
-            className="w-full bg-bg-2 border border-line/40 rounded-sm pl-7 pr-3 py-1.5 text-xs text-ink-0 placeholder:text-ink-3 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40"
+            className="w-full bg-bg-2 border border-line/40 rounded-md pl-8 pr-3 py-2.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40"
           />
         </div>
 
-        {/* Filtro de broker — chips horizontales scrollables */}
-        <div className="-mx-4 px-4 mb-2 overflow-x-auto no-scrollbar">
-          <div className="inline-flex gap-1.5 pb-0.5">
+        {/* Filtro de broker — chips horizontales scrollables. Margen extra
+            inferior para separar del sort segmented. */}
+        <div className="-mx-4 px-4 mb-3.5 overflow-x-auto no-scrollbar">
+          <div className="inline-flex gap-2 pb-0.5">
             <BrokerFilterChip
               active={brokerFilter === ALL_FILTER}
               onClick={() => setBrokerFilter(ALL_FILTER)}
@@ -533,23 +540,23 @@ export default function PositionsMobile() {
             <button
               type="button"
               onClick={() => setShowAddBroker(true)}
-              className="inline-flex items-center gap-1 text-[11px] font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-dashed border-data-violet/40 rounded-sm px-2.5 py-1.5 whitespace-nowrap transition-colors"
+              className="inline-flex items-center gap-1 text-[11px] font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-dashed border-data-violet/40 rounded-md px-3 py-2 whitespace-nowrap transition-colors"
             >
               <Plus size={11} strokeWidth={2} />
-              Agregar
+              Agregar broker
             </button>
           </div>
         </div>
 
-        {/* Sort segmented */}
-        <div className="flex items-center gap-1.5">
-          <ArrowDownUp size={11} strokeWidth={1.75} className="text-ink-3" />
-          <div className="inline-flex bg-bg-2 p-0.5 rounded-sm">
+        {/* Sort segmented — más respiro vertical (py 0.5 → py 1) */}
+        <div className="flex items-center gap-2">
+          <ArrowDownUp size={12} strokeWidth={1.75} className="text-ink-3" />
+          <div className="inline-flex bg-bg-2 p-1 rounded-md">
             {SORT_OPTIONS.map(o => (
               <button
                 key={o.id}
                 onClick={() => setSortBy(o.id)}
-                className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-caps rounded-sm transition-colors ${
+                className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-caps rounded transition-colors ${
                   sortBy === o.id ? 'bg-bg-3 text-ink-0' : 'text-ink-3 hover:text-ink-1'
                 }`}
               >
@@ -835,6 +842,59 @@ export default function PositionsMobile() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {/* ─── Bottom sheet de acciones rápidas (header "Acciones") ─────────
+          Paridad con los 4 CTAs del header del desktop. Cada item:
+            1. Cierra el sheet
+            2. Dispara su handler (open* o export)
+          Para venta/cash, los handlers usan el selector inline del modal
+          existente cuando hay múltiples opciones disponibles. */}
+      {actionsSheet && (
+        <ActionsSheet
+          onClose={() => setActionsSheet(false)}
+          positions={positions}
+          brokers={brokers}
+          onBuy={() => {
+            setActionsSheet(false)
+            openNewPositionFlow('mobile_actions_sheet')
+          }}
+          onSell={() => {
+            const sellable = positions.filter(p => !p.is_cash)
+            setActionsSheet(false)
+            if (sellable.length === 0) {
+              toast?.show?.('No tenés posiciones para vender. Agregá una primero.', { variant: 'info' })
+              return
+            }
+            if (sellable.length === 1) {
+              openSell(sellable[0])
+              return
+            }
+            // >1: dejamos al user elegir desde la lista. Hacemos scroll
+            // simple a la lista + toast con el hint.
+            toast?.show?.('Tocá la posición que querés vender en la lista de abajo.', { variant: 'info' })
+          }}
+          onCash={() => {
+            setActionsSheet(false)
+            const firstBroker = brokers[0]
+            if (!firstBroker) {
+              toast?.show?.('Primero agregá un broker.', { variant: 'info' })
+              return
+            }
+            // Buscamos cash position del primer broker; si no existe creamos
+            // el form con available=0 para que el user pueda depositar.
+            const cashPos = positions.find(p => p.broker === firstBroker.name && p.is_cash)
+            if (cashPos) {
+              openCashFlow(cashPos, 'deposit')
+            } else {
+              // Cash inicial: el form requiere un objeto position-like
+              openCashFlow(
+                { broker: firstBroker.name, asset: firstBroker.currency, is_cash: true, invested: 0 },
+                'deposit'
+              )
+            }
+          }}
+        />
       )}
     </div>
   )
@@ -1145,3 +1205,158 @@ function formatQty(q) {
   if (Math.abs(q) >= 1) return q.toFixed(2).replace(/\.00$/, '')
   return q.toFixed(4)
 }
+
+
+// ─── ActionsSheet ───────────────────────────────────────────────────────────
+// Bottom sheet con los 4 atajos del header desktop. Se monta condicionalmente
+// desde el render principal. Cada item dispara el handler que le corresponde
+// y luego se cierra. Para Exportar CSV usa el endpoint /api/export/positions.csv
+// con feature-gate de Plus/Pro (mismo que ExportCsvButton).
+function ActionsSheet({ onClose, positions, brokers, onBuy, onSell, onCash }) {
+  // Para Exportar CSV reusamos la lógica de ExportCsvButton inline (no podemos
+  // usar el componente directamente porque queremos integrar el flow del
+  // sheet). Mismo behavior: blob download + filename amistoso + fallback
+  // upgrade modal si el user es Free.
+  const [exporting, setExporting] = useState(false)
+  const [showUpgrade, setShowUpgrade] = useState(false)
+  // usePlanFeatures vive en el outer (hooks pueden romper si los importamos
+  // acá doble). Para mantener el componente simple, no chequeamos pre-flight
+  // — el backend responde 403 si Free y caemos al upgrade modal.
+
+  async function handleExport() {
+    if (exporting) return
+    track('export_csv_downloaded', { resource: 'positions', source: 'mobile_actions_sheet' })
+    setExporting(true)
+    try {
+      const blob = await api.getBlob('/export/positions.csv')
+      const filename = `rendi_posiciones_${new Date().toISOString().slice(0, 10)}.csv`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      onClose()
+    } catch (ex) {
+      if (ex?.status === 403 && ex?.payload?.detail?.upgrade) {
+        track('feature_blocked_clicked', { feature: 'export.csv', source: 'mobile_actions_sheet' })
+        setShowUpgrade(true)
+      } else {
+        console.error('Export CSV failed:', ex)
+        alert('No pudimos generar el CSV. Probá de nuevo.')
+      }
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const sellableCount = positions.filter(p => !p.is_cash).length
+  const brokerCount = brokers.length
+
+  const items = [
+    {
+      id: 'buy',
+      icon: <Plus size={20} strokeWidth={2} />,
+      label: 'Registrar compra',
+      sub: 'Nueva posición en algún broker',
+      onClick: onBuy,
+      primary: true,
+    },
+    {
+      id: 'sell',
+      icon: <TrendingDown size={20} strokeWidth={2} />,
+      label: 'Registrar venta',
+      sub: sellableCount === 0
+        ? 'Sin posiciones para vender todavía'
+        : sellableCount === 1
+          ? 'Vender tu única posición'
+          : `Elegir entre ${sellableCount} posiciones`,
+      onClick: onSell,
+      disabled: sellableCount === 0,
+    },
+    {
+      id: 'cash',
+      icon: <Wallet size={20} strokeWidth={2} />,
+      label: 'Cash · depósito / retiro',
+      sub: brokerCount === 0 ? 'Agregá un broker primero' : 'Modificar saldo en alguno de tus brokers',
+      onClick: onCash,
+      disabled: brokerCount === 0,
+    },
+    {
+      id: 'export',
+      icon: <Download size={20} strokeWidth={2} />,
+      label: exporting ? 'Exportando…' : 'Exportar CSV',
+      sub: 'Bajá todas tus posiciones para tu contador',
+      onClick: handleExport,
+      disabled: exporting,
+    },
+  ]
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end"
+        onClick={onClose}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="w-full bg-bg-1 border-t border-line rounded-t-2xl px-4 pt-4 pb-8 max-h-[85vh] overflow-y-auto"
+        >
+          {/* Handle visual estilo bottom sheet iOS */}
+          <div className="w-10 h-1 bg-ink-3/40 rounded-full mx-auto mb-4" aria-hidden="true" />
+
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-base font-semibold text-ink-0">Acciones rápidas</h2>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-md text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+              aria-label="Cerrar"
+            >
+              <X size={16} strokeWidth={2} />
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {items.map((it) => (
+              <button
+                key={it.id}
+                type="button"
+                disabled={it.disabled}
+                onClick={it.onClick}
+                className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-lg border transition-colors ${
+                  it.disabled
+                    ? 'border-line/40 bg-bg-2/50 opacity-60 cursor-not-allowed'
+                    : it.primary
+                      ? 'border-data-violet/50 bg-data-violet/10 hover:bg-data-violet/20 active:bg-data-violet/25'
+                      : 'border-line bg-bg-2 hover:bg-bg-3 active:bg-bg-3'
+                }`}
+              >
+                <span className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
+                  it.primary ? 'bg-data-violet/20 text-data-violet' : 'bg-bg-3 text-ink-1'
+                }`}>
+                  {it.icon}
+                </span>
+                <div className="flex-1 text-left min-w-0">
+                  <p className={`text-sm font-medium ${it.primary ? 'text-data-violet' : 'text-ink-0'}`}>
+                    {it.label}
+                  </p>
+                  <p className="text-xs text-ink-3 mt-0.5">{it.sub}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {showUpgrade && (
+        <UpgradeModal
+          feature="export.csv"
+          onClose={() => setShowUpgrade(false)}
+        />
+      )}
+    </>
+  )
+}
+

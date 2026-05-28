@@ -532,6 +532,83 @@ def render_behavioral_card_prompt(tier: str = "pro") -> str:
     )
 
 
+def render_metrics_pro_card_prompt(tier: str = "pro") -> str:
+    view = "Métrica Pro individual (zoom-in sobre UNA card de Métricas Pro)"
+    pkt = (
+        "metric.code (volatility, beta, cagr, sharpe, sortino, alpha, ir, "
+        "calmar), metric.value (el número visible), metric.months (sample "
+        "size), y campos específicos del code (rf, downside_dev, alpha_annual, "
+        "beta, r_squared, etc.). context tiene n_months_loaded, date_range "
+        "y monthly_pnl_range (peor/mejor mes en USD) para que el LLM pueda "
+        "contextualizar la métrica en términos concretos del user."
+    )
+    free = _maybe_free("metrics_pro.card", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Interpretar el valor concreto: qué dice ESTE número para ESTE user con n meses de historia. Si Sharpe=1.2 y 4 meses, decir 'preliminar pero positivo, hay que esperar más data'.",
+            "Cómo se cruza con el contexto: si la métrica es buena pero el sample size es chico, advertir. Si Sharpe alto pero peor mes -15%, ese mes domina.",
+            "Para 'cagr' con <12 meses: la anualización extrapola. Decir 'rendimiento del período fue X%, anualizado eso da Y% pero amplifica ruido — interpretar con cautela'.",
+            "Para 'calmar': el ratio mezcla retorno y dolor. Si el drawdown fue chico, calmar alto puede engañar (basta una corrección normal para destruirlo). Aclarar esto.",
+            "Para 'alpha/beta/ir' con sample chico (6-12 meses): el R² o el tracking error dan pistas de si el cruce con S&P es real o ruido. Mencionar si R² < 30%.",
+            "Comparar con benchmarks de la industria: Sharpe S&P histórico ≈ 0.5, Sortino bueno > 1, Beta de un equity LATAM ≈ 1.2-1.5.",
+        ],
+        insight_examples=[
+            "Tu Sharpe de 1.5 con 6 meses es preliminar — es buena señal pero un Sharpe estabilizado requiere 12-24 meses. Tu peor mes fue -8% (USD), si se repite el ratio cae a 0.9. La consistencia importa más que el pico.",
+            "CAGR del 28% anualizado con 4 meses de historia: el período tuvo +9% acumulado, extrapolarlo a 12 meses asume que el ritmo se mantiene. Probable que el real estabilizado sea bastante menor — apuntar a 12-20% es más realista.",
+            "Beta 1.8 vs S&P con R² del 45%: te movés más que el mercado, pero menos de la mitad de tu varianza la explica el S&P. El resto es idiosincrático (acciones AR, cripto). Las decisiones de timing importan más que la dirección del mercado general.",
+            "Calmar de 2.3 con drawdown máximo de solo -5%: el bajo drawdown infla el ratio. Antes de cantar victoria, esperar a un drawdown 'normal' (-15-20%) para ver si el CAGR aguanta.",
+        ],
+        pitfalls=[
+            "No inventar valores históricos del benchmark. Las referencias S&P histórico Sharpe ≈ 0.5 son rangos amplios, no datos exactos.",
+            "No declarar 'excelente' o 'malo' sin matizar con sample size. Sharpe 2 con 3 meses != Sharpe 2 con 24 meses.",
+            "No sugerir cambios concretos al portfolio basados en una sola métrica. Mantener tono diagnóstico, no prescriptivo.",
+            "Si metric.value es null (la card no se renderiza), no inventar valor — devolver 'falta data' y explicar qué se necesita.",
+        ],
+    )
+
+
+def render_profile_card_prompt(tier: str = "pro") -> str:
+    view = "Card del Perfil del inversor (zoom-in sobre UNA card del cruce test↔cartera)"
+    pkt = (
+        "card.code (allocation, objective, horizon, drawdown, concentration, "
+        "style, liquidity), card.declared (lo que el user dijo en el test "
+        "de 7 preguntas), card.actual (cómo es su cartera real), y "
+        "profile_declared (las 7 respuestas completas — horizon, drawdown, "
+        "goal, style, net_worth, liquidity, experience). El LLM razona "
+        "sobre el cruce declared vs actual."
+    )
+    free = _maybe_free("profile.card", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Diagnóstico específico del cruce: si lo declarado matchea con lo real, decir POR QUÉ es coherente. Si NO matchea, explicar la inconsistencia con números del packet.",
+            "Implicancias concretas: si el user dijo 'pasivo' pero hace 12 trades/mes, ¿qué problema operativo tiene? ¿comisiones, mal timing, drift de tesis?",
+            "Considerar el contexto del resto del perfil (horizon, drawdown, liquidity, experience) — un mismatch en un eje puede explicarse por coherencia en otro.",
+            "Si la card es 'liquidity' y hay mismatch_severe (necesita en 2 años pero tiene 95% en volátil), señalar el riesgo concreto: tener que vender en drawdown.",
+            "Si el cruce es 'aligned', no inventar problemas — confirmar la consistencia y opcionalmente mencionar qué la sostiene.",
+        ],
+        insight_examples=[
+            "Declarás horizonte largo pero el 70% está en cripto. La incongruencia no es necesariamente mala (cripto puede ser una apuesta de largo plazo), pero a 5+ años suele dominar la inflación AR + drawdowns que esperás aguantar. Si el plan es genuinamente largo, la composición está OK; si en realidad pensás vender en 12-18 meses, estás expuesto.",
+            "Estilo declarado 'pasivo' con 14 trades/mes en los últimos 6 meses: el costo acumulado en comisiones probablemente erosionó >5% del retorno bruto, y cada rotación es una oportunidad de mal timing. Antes de cambiar la declaración del perfil, vale la pena entender si los trades responden a tesis o a impulsos del mercado.",
+            "Liquidez declarada como 'parcial' (necesitás algo en 12-24 meses) con solo 8% en cash/RF: si hay corrección del 20% del S&P justo cuando precisás retirar, estarías liquidando en el peor momento. Reasignar a renta fija una porción equivalente a la liquidez declarada evita ese escenario.",
+        ],
+        pitfalls=[
+            "Si status='no_profile' → no hay test cargado, decir solo eso y sugerir completarlo. No inventar declaración.",
+            "Si status='no_portfolio' → hay test pero sin cartera, comentar solo lo declarado sin inferir comportamiento.",
+            "Para code='drawdown', el packet NO trae el drawdown real (vive en frontend). Razonar sobre la preferencia declarada sin inventar números reales.",
+            "No usar 'deberías' / 'te conviene'. Tono descriptivo: 'la incongruencia entre X e Y suele implicar Z'.",
+            "Para 'aligned', no agregar caveat artificial — si está bien alineado, decirlo claro.",
+        ],
+    )
+
+
 def render_dashboard_composition_prompt(tier: str = "pro") -> str:
     view = "Composición del portfolio (sub-componente Dashboard)"
     pkt = (

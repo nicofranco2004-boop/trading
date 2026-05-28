@@ -6123,6 +6123,264 @@ def get_operations(uid: int = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
+@app.get("/api/movements")
+def get_movements(uid: int = Depends(get_current_user)):
+    """Historial unificado de TODOS los movimientos del usuario.
+
+    Es la "vista contadora" — todo lo que pasó cronológicamente, sin
+    distinguir si fue trade, depósito, retiro, dividendo, etc. Pensado
+    para la página /operaciones después del refactor que la convierte
+    en "historial completo" (no solo trades).
+
+    Fuentes consolidadas:
+      1. operations (manual)          → trades cerrados (BUY+SELL pairs)
+      2. import_normalized_tx          → todos los tipos importados (BUY,
+         SELL, DEPOSIT, WITHDRAW, DIVIDEND, INTEREST, FEE)
+      3. monthly_entries (no-global)   → depósitos/retiros mensuales
+         cargados a mano. Fecha aproximada al día 15 del mes.
+      4. positions abiertas manuales   → compras sin venta todavía
+         (BUY puro, sin pair)
+
+    Cada movement devuelve:
+      { id, kind, date, type, broker, asset, quantity, unit_price,
+        amount_usd, currency, fees_usd, notes, source }
+
+      - kind: 'movement' (estable, para identificar el objeto)
+      - type: 'BUY' | 'SELL' | 'DEPOSIT' | 'WITHDRAW' | 'DIVIDEND' |
+              'INTEREST' | 'FEE'
+      - source: 'manual' | 'import' | 'monthly' — indica si es editable
+        (solo manual lo es; los demás vienen de imports o agregados).
+      - amount_usd: monto USD canónico. Para BUY/SELL = qty × price (o
+        pnl si solo P&L). Para flujos = el monto neto.
+      - id: único dentro del scope (op-{id}, tx-{id}, me-{id}, pos-{id}).
+
+    NO incluye:
+      - Cobranzas de bonos (sub-tipo de operations.notes con kind '_bond_*')
+      - Snapshots de portfolio (eso es /api/snapshots)
+
+    Ordenado por date DESC (más reciente primero). Los movimientos sin
+    fecha (legacy) van al final.
+    """
+    conn = get_db()
+    movements: list[dict] = []
+    try:
+        # ── TC blue para conversión ARS→USD ─────────────────────────────────
+        tc_blue = _user_tc_blue(conn, uid)
+
+        # ── 1) Operations (manual trades) ───────────────────────────────────
+        op_rows = conn.execute(
+            """SELECT o.* FROM operations o
+                WHERE o.user_id = ?
+                  AND o.id NOT IN (
+                    SELECT operation_id FROM import_op_links
+                     WHERE operation_id IS NOT NULL)
+                ORDER BY o.date DESC""",
+            (uid,),
+        ).fetchall()
+        for r in op_rows:
+            d = dict(r)
+            op_type = (d.get("op_type") or "").upper()
+            qty = _safe_float_or_none(d.get("quantity"))
+            entry_p = _safe_float_or_none(d.get("entry_price"))
+            exit_p = _safe_float_or_none(d.get("exit_price"))
+            pnl = _safe_float_or_none(d.get("pnl_usd")) or 0
+            fees = _safe_float_or_none(d.get("commissions")) or 0
+
+            # Un trade cerrado son 2 eventos contables (BUY + SELL). Para que
+            # el user vea ambos en la timeline, generamos 2 rows: una con
+            # entry_date como BUY (si hay), una con date como SELL.
+            if d.get("entry_date"):
+                amount_buy = (entry_p or 0) * (qty or 0) if entry_p and qty else 0
+                movements.append({
+                    "id": f"op-{d['id']}-buy",
+                    "kind": "movement",
+                    "date": d["entry_date"],
+                    "type": "BUY",
+                    "broker": d.get("broker") or "",
+                    "asset": d.get("asset") or "",
+                    "quantity": qty,
+                    "unit_price": entry_p,
+                    "amount_usd": amount_buy,
+                    "currency": (d.get("currency") or "USD").upper(),
+                    "fees_usd": 0,
+                    "notes": d.get("notes") or "",
+                    "source": "manual",
+                    "ref_id": d["id"],
+                })
+            amount_sell = (exit_p or 0) * (qty or 0) if exit_p and qty else (pnl + (entry_p or 0) * (qty or 0) if entry_p and qty else pnl)
+            movements.append({
+                "id": f"op-{d['id']}-sell",
+                "kind": "movement",
+                "date": d.get("date"),
+                "type": "SELL",
+                "broker": d.get("broker") or "",
+                "asset": d.get("asset") or "",
+                "quantity": qty,
+                "unit_price": exit_p,
+                "amount_usd": amount_sell,
+                "currency": (d.get("currency") or "USD").upper(),
+                "fees_usd": fees,
+                "pnl_usd": pnl,
+                "notes": d.get("notes") or "",
+                "source": "manual",
+                "ref_id": d["id"],
+            })
+
+        # ── 2) Import normalized transactions ───────────────────────────────
+        tx_rows = conn.execute(
+            """SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
+                      t.asset_name, t.quantity, t.unit_price, t.gross_amount,
+                      t.currency, t.fees, t.notes
+                FROM import_normalized_tx t
+                JOIN import_batches b ON t.batch_id = b.id
+                WHERE b.user_id = ? AND b.status = 'confirmed'
+                ORDER BY t.date DESC""",
+            (uid,),
+        ).fetchall()
+        for r in tx_rows:
+            d = dict(r)
+            op_type = (d.get("operation_type") or "").upper()
+            cur = (d.get("currency") or "USD").upper()
+            amt = _safe_float_or_none(d.get("gross_amount")) or 0
+            fees = _safe_float_or_none(d.get("fees")) or 0
+            # Convertir a USD si está en ARS
+            amount_usd = amt / tc_blue if cur == "ARS" and tc_blue > 0 else amt
+            fees_usd = fees / tc_blue if cur == "ARS" and tc_blue > 0 else fees
+            movements.append({
+                "id": f"tx-{d['id']}",
+                "kind": "movement",
+                "date": d.get("date"),
+                "type": op_type,
+                "broker": d.get("broker") or "",
+                "asset": d.get("asset_symbol") or d.get("asset_name") or "",
+                "quantity": _safe_float_or_none(d.get("quantity")),
+                "unit_price": _safe_float_or_none(d.get("unit_price")),
+                "amount_usd": amount_usd,
+                "currency": cur,
+                "fees_usd": fees_usd,
+                "notes": d.get("notes") or "",
+                "source": "import",
+                "ref_id": d["id"],
+            })
+
+        # ── 3) Monthly entries (no-global) — depósitos/retiros manuales ─────
+        me_rows = conn.execute(
+            """SELECT id, year, month, broker, deposits, withdrawals
+                 FROM monthly_entries
+                WHERE user_id = ? AND broker <> 'global'
+                  AND (deposits > 0 OR withdrawals > 0)
+                ORDER BY year DESC, month DESC""",
+            (uid,),
+        ).fetchall()
+        for r in me_rows:
+            d = dict(r)
+            # Fecha aproximada al día 15 del mes — los flows mensuales no
+            # tienen día exacto cargado.
+            approx_date = f"{int(d['year']):04d}-{int(d['month']):02d}-15"
+            if d["deposits"] and d["deposits"] > 0:
+                movements.append({
+                    "id": f"me-{d['id']}-dep",
+                    "kind": "movement",
+                    "date": approx_date,
+                    "type": "DEPOSIT",
+                    "broker": d.get("broker") or "",
+                    "asset": "",
+                    "quantity": None,
+                    "unit_price": None,
+                    "amount_usd": float(d["deposits"]),
+                    "currency": "USD",
+                    "fees_usd": 0,
+                    "notes": f"Total depósitos {d['year']}-{int(d['month']):02d}",
+                    "source": "monthly",
+                    "ref_id": d["id"],
+                    "approx_date": True,
+                })
+            if d["withdrawals"] and d["withdrawals"] > 0:
+                movements.append({
+                    "id": f"me-{d['id']}-wit",
+                    "kind": "movement",
+                    "date": approx_date,
+                    "type": "WITHDRAW",
+                    "broker": d.get("broker") or "",
+                    "asset": "",
+                    "quantity": None,
+                    "unit_price": None,
+                    "amount_usd": float(d["withdrawals"]),
+                    "currency": "USD",
+                    "fees_usd": 0,
+                    "notes": f"Total retiros {d['year']}-{int(d['month']):02d}",
+                    "source": "monthly",
+                    "ref_id": d["id"],
+                    "approx_date": True,
+                })
+
+        # ── 4) Positions abiertas manuales (BUY sin SELL todavía) ───────────
+        # Las que vienen de imports YA están en (2). Acá solo las del user
+        # que cargó manual (sin import_op_links).
+        pos_rows = conn.execute(
+            """SELECT p.* FROM positions p
+                WHERE p.user_id = ?
+                  AND p.is_cash = 0
+                  AND p.id NOT IN (
+                    SELECT position_id FROM import_op_links
+                     WHERE position_id IS NOT NULL)
+                ORDER BY p.entry_date DESC""",
+            (uid,),
+        ).fetchall()
+        for r in pos_rows:
+            d = dict(r)
+            qty = _safe_float_or_none(d.get("quantity"))
+            buy_p = _safe_float_or_none(d.get("buy_price"))
+            invested = _safe_float_or_none(d.get("invested")) or 0
+            cur = (d.get("currency") or "USD").upper()
+            amount_usd = invested
+            if cur == "ARS":
+                tc_compra = _safe_float_or_none(d.get("tc_compra"))
+                if tc_compra and tc_compra > 0:
+                    amount_usd = invested / tc_compra
+                elif tc_blue > 0:
+                    amount_usd = invested / tc_blue
+            movements.append({
+                "id": f"pos-{d['id']}",
+                "kind": "movement",
+                "date": d.get("entry_date") or "",
+                "type": "BUY",
+                "broker": d.get("broker") or "",
+                "asset": d.get("asset") or "",
+                "quantity": qty,
+                "unit_price": buy_p,
+                "amount_usd": amount_usd,
+                "currency": cur,
+                "fees_usd": _safe_float_or_none(d.get("commissions")) or 0,
+                "notes": d.get("notes") or "",
+                "source": "manual",
+                "ref_id": d["id"],
+                "is_open_position": True,
+            })
+
+    finally:
+        conn.close()
+
+    # Sort: fecha DESC, con sin-fecha al final. Tuple (has_date, date_str)
+    # para que (1, '...') siempre rankee arriba de (0, '').
+    def _sort_key(m):
+        has_date = 1 if m.get("date") else 0
+        return (has_date, m.get("date") or "")
+    movements.sort(key=_sort_key, reverse=True)
+
+    return movements
+
+
+def _safe_float_or_none(v):
+    """Conversor defensivo a float. Devuelve None si no se puede."""
+    try:
+        if v is None or v == "":
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.get("/api/insights/commissions")
 def get_commissions_total(uid: int = Depends(get_current_user)):
     """Suma de las comisiones EXPLÍCITAS importadas (operation_type='FEE' en

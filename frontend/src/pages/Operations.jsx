@@ -3,7 +3,7 @@
 // Header operativo + KPI strip denso + filtros mono caps + tabla compacta.
 
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, SlidersHorizontal, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, SlidersHorizontal, ChevronLeft, ChevronRight, ArrowDownToLine, ArrowUpFromLine, Coins, Receipt, Repeat } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
@@ -42,6 +42,12 @@ export default function Operations() {
 }
 
 function OperationsDesktop() {
+  // tab: 'trades' = vista actual de operaciones cerradas con KPIs P&L
+  //      'all'    = historial unificado (trades + depósitos + retiros + dividendos + intereses + comisiones)
+  // Persistimos selección en localStorage para que respete preferencia del user.
+  const [tab, setTab] = useState(() => localStorage.getItem('rendi_operations_tab') || 'all')
+  useEffect(() => { localStorage.setItem('rendi_operations_tab', tab) }, [tab])
+
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
   const [modal, setModal] = useState(null)
@@ -150,8 +156,11 @@ function OperationsDesktop() {
   return (
     <div className="page-shell-wide">
       <PageHeader
-        eyebrow="Operaciones / Cerradas"
-        title="Historial de trades"
+        eyebrow="Tu actividad"
+        title="Operaciones"
+        subtitle={tab === 'trades'
+          ? 'Historial de trades cerrados con P&L realizado.'
+          : 'Todos los movimientos: trades, depósitos, retiros, dividendos y comisiones.'}
         action={
           <div className="flex items-center gap-2 flex-wrap">
             <AnalyzeButton screen="operations" subtitle="Tu historial completo" />
@@ -166,6 +175,38 @@ function OperationsDesktop() {
         }
       />
 
+      {/* Tab switcher: Todos los movimientos vs solo Trades — mismo diseño
+          que /posiciones y /analisis (filled pills + violet en activa). */}
+      <div className="inline-flex flex-wrap gap-2 mb-5">
+        <button
+          onClick={() => setTab('all')}
+          className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
+            tab === 'all'
+              ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
+              : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
+          }`}
+        >
+          Todos los movimientos
+        </button>
+        <button
+          onClick={() => setTab('trades')}
+          className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
+            tab === 'trades'
+              ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
+              : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
+          }`}
+        >
+          Solo trades
+        </button>
+      </div>
+
+      {/* Si el user eligió "Todos los movimientos", renderizamos un
+          componente aparte que fetcha /api/movements (unificado). El return
+          temprano evita renderizar el resto de la página (KPIs de trades,
+          tabla, modales) que solo aplica al tab "Solo trades". */}
+      {tab === 'all' && <MovementsView />}
+      {tab === 'trades' && (
+      <>
       {/* KPI strip denso */}
       <div className="border border-line rounded bg-bg-1 flex flex-wrap mb-4">
         <KpiCell
@@ -384,6 +425,8 @@ function OperationsDesktop() {
           onClose={() => setModal(null)}
         />
       )}
+      </>
+      )}
     </div>
   )
 }
@@ -501,5 +544,291 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MOVEMENTS VIEW — historial unificado (trades + cash flows + dividendos + ...)
+// ═══════════════════════════════════════════════════════════════════════════
+// Consume /api/movements (endpoint que junta operations + import_normalized_tx
+// + monthly_entries en una lista cronológica). Filtros por tipo y broker.
+// KPIs adaptativos según el filtro de tipo seleccionado.
+//
+// Sources del backend:
+//   • 'manual' → operations / positions cargadas a mano (editables, pero
+//     desde acá NO editamos — el user va a /operaciones?tab=trades)
+//   • 'import' → vinieron de un CSV (read-only)
+//   • 'monthly' → depósitos/retiros agregados mensualmente en /mensual
+
+const MOVEMENT_TYPES = [
+  { id: 'all',      label: 'Todos',        icon: SlidersHorizontal },
+  { id: 'BUY',      label: 'Compras',      icon: ArrowUpRight,      tone: 'pos' },
+  { id: 'SELL',     label: 'Ventas',       icon: ArrowDownRight,    tone: 'neg' },
+  { id: 'DEPOSIT',  label: 'Depósitos',    icon: ArrowDownToLine,   tone: 'pos' },
+  { id: 'WITHDRAW', label: 'Retiros',      icon: ArrowUpFromLine,   tone: 'neg' },
+  { id: 'DIVIDEND', label: 'Dividendos',   icon: Coins,             tone: 'pos' },
+  { id: 'INTEREST', label: 'Intereses',    icon: Coins,             tone: 'pos' },
+  { id: 'FEE',      label: 'Comisiones',   icon: Receipt,           tone: 'neg' },
+]
+
+const TYPE_META = {
+  BUY:      { label: 'Compra',     Icon: ArrowUpRight,     color: 'text-data-blue' },
+  SELL:     { label: 'Venta',      Icon: ArrowDownRight,   color: 'text-data-violet' },
+  DEPOSIT:  { label: 'Depósito',   Icon: ArrowDownToLine,  color: 'text-rendi-pos' },
+  WITHDRAW: { label: 'Retiro',     Icon: ArrowUpFromLine,  color: 'text-rendi-warn' },
+  DIVIDEND: { label: 'Dividendo',  Icon: Coins,            color: 'text-rendi-pos' },
+  INTEREST: { label: 'Interés',    Icon: Coins,            color: 'text-rendi-pos' },
+  FEE:      { label: 'Comisión',   Icon: Receipt,          color: 'text-ink-3' },
+}
+
+const MOV_PAGE_SIZE = 50
+
+function MovementsView() {
+  const [movements, setMovements] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [filterType, setFilterType] = useState('all')
+  const [filterBroker, setFilterBroker] = useState('all')
+  const [filterYear, setFilterYear] = useState('all')
+  const [page, setPage] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    api.get('/movements')
+      .then(d => { if (!cancelled) setMovements(d || []) })
+      .catch(ex => { if (!cancelled) setError(ex?.message || 'No pudimos cargar los movimientos.') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  // Reset página al cambiar filtros
+  useEffect(() => { setPage(0) }, [filterType, filterBroker, filterYear])
+
+  const filtered = useMemo(() => {
+    return movements.filter(m => {
+      if (filterType !== 'all' && m.type !== filterType) return false
+      if (filterBroker !== 'all' && m.broker !== filterBroker) return false
+      if (filterYear !== 'all' && !(m.date || '').startsWith(filterYear)) return false
+      return true
+    })
+  }, [movements, filterType, filterBroker, filterYear])
+
+  // KPIs adaptativos según filtro
+  const kpis = useMemo(() => computeMovementKpis(filtered, filterType), [filtered, filterType])
+
+  const brokersAvailable = useMemo(() => {
+    const set = new Set(movements.map(m => m.broker).filter(Boolean))
+    return [...set].sort()
+  }, [movements])
+
+  const yearsAvailable = useMemo(() => {
+    const set = new Set(movements.map(m => (m.date || '').slice(0, 4)).filter(Boolean))
+    return [...set].sort().reverse()
+  }, [movements])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / MOV_PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages - 1)
+  const pageRows = filtered.slice(currentPage * MOV_PAGE_SIZE, (currentPage + 1) * MOV_PAGE_SIZE)
+
+  if (loading) {
+    return <div className="text-center py-10 text-ink-3 text-sm" aria-live="polite">Cargando movimientos…</div>
+  }
+  if (error) {
+    return <div className="border border-rendi-neg/30 bg-rendi-neg/[0.06] rounded p-4 text-sm text-rendi-neg">{error}</div>
+  }
+
+  return (
+    <>
+      {/* KPI strip adaptativo */}
+      <div className="border border-line rounded bg-bg-1 flex flex-wrap mb-4">
+        {kpis.map((k, i) => (
+          <KpiCell key={k.label} first={i === 0} label={k.label} value={k.value} sub={k.sub} tone={k.tone} />
+        ))}
+      </div>
+
+      {/* Selector de tipo (pills) — escaneable */}
+      <div className="flex items-center gap-1.5 flex-wrap mb-3">
+        {MOVEMENT_TYPES.map(t => {
+          const Icon = t.icon
+          const count = t.id === 'all' ? movements.length : movements.filter(m => m.type === t.id).length
+          if (t.id !== 'all' && count === 0) return null
+          const active = filterType === t.id
+          return (
+            <button
+              key={t.id}
+              onClick={() => setFilterType(t.id)}
+              className={`inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-sm border transition-colors ${
+                active
+                  ? 'border-data-violet/40 bg-data-violet/10 text-data-violet'
+                  : 'border-line bg-bg-2 text-ink-2 hover:text-ink-0 hover:bg-bg-3'
+              }`}
+            >
+              <Icon size={11} strokeWidth={2} aria-hidden="true" />
+              {t.label}
+              <span className="ml-1 tabular text-[10px] opacity-70">{count}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Filtros secundarios (broker, año) */}
+      <div className="flex items-center gap-2 flex-wrap mb-3">
+        {brokersAvailable.length > 1 && (
+          <select
+            value={filterBroker}
+            onChange={e => setFilterBroker(e.target.value)}
+            className="text-[11px] font-mono uppercase tracking-caps bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2"
+          >
+            <option value="all">Todos los brokers</option>
+            {brokersAvailable.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+        )}
+        {yearsAvailable.length > 1 && (
+          <select
+            value={filterYear}
+            onChange={e => setFilterYear(e.target.value)}
+            className="text-[11px] font-mono uppercase tracking-caps bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2"
+          >
+            <option value="all">Todos los años</option>
+            {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+        <span className="text-[11px] text-ink-3 font-mono">
+          {filtered.length === movements.length
+            ? `${movements.length} movimientos`
+            : `${filtered.length} de ${movements.length}`}
+        </span>
+      </div>
+
+      {/* Tabla */}
+      {filtered.length === 0 ? (
+        <EmptyState
+          icon={<Repeat size={18} />}
+          title="No hay movimientos"
+          description="No se encontraron movimientos con los filtros aplicados."
+        />
+      ) : (
+        <div className="border border-line rounded overflow-x-auto bg-bg-1">
+          <table className="w-full text-sm">
+            <thead className="bg-bg-2 text-ink-3 font-mono uppercase text-[10px] tracking-caps">
+              <tr>
+                <th className="text-left px-3 py-2">Fecha</th>
+                <th className="text-left px-3 py-2">Tipo</th>
+                <th className="text-left px-3 py-2">Broker</th>
+                <th className="text-left px-3 py-2">Activo</th>
+                <th className="text-right px-3 py-2">Cant.</th>
+                <th className="text-right px-3 py-2">Precio</th>
+                <th className="text-right px-3 py-2">Monto USD</th>
+                <th className="text-left px-3 py-2">Notas</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.map(m => (
+                <MovementRow key={m.id} m={m} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between mt-3 text-xs text-ink-3">
+          <span className="font-mono tabular">Página {currentPage + 1} de {totalPages}</span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={currentPage === 0}
+              className="p-1.5 rounded-sm border border-line bg-bg-2 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft size={12} />
+            </button>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={currentPage >= totalPages - 1}
+              className="p-1.5 rounded-sm border border-line bg-bg-2 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <ChevronRight size={12} />
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+// Compute KPI strip dinámico. Cada filtro de tipo tiene su set propio de
+// métricas relevantes (no tiene sentido mostrar P&L Realizado si el user
+// está mirando solo depósitos).
+function computeMovementKpis(rows, filterType) {
+  const sumByType = (t) => rows.filter(r => r.type === t).reduce((s, r) => s + (r.amount_usd || 0), 0)
+  const countByType = (t) => rows.filter(r => r.type === t).length
+
+  if (filterType === 'DEPOSIT' || filterType === 'WITHDRAW') {
+    const t = filterType
+    return [
+      { label: `Total ${t === 'DEPOSIT' ? 'depositado' : 'retirado'}`, value: fmtUsd(sumByType(t)), tone: t === 'DEPOSIT' ? 'pos' : 'neg', sub: `${countByType(t)} eventos` },
+      { label: 'Promedio', value: countByType(t) > 0 ? fmtUsd(sumByType(t) / countByType(t)) : '—', sub: 'por evento' },
+    ]
+  }
+  if (filterType === 'DIVIDEND' || filterType === 'INTEREST') {
+    return [
+      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmtUsd(sumByType(filterType)), tone: 'pos', sub: `${countByType(filterType)} pagos` },
+    ]
+  }
+  if (filterType === 'FEE') {
+    return [
+      { label: 'Total comisiones', value: fmtUsd(sumByType('FEE')), tone: 'neg', sub: `${countByType('FEE')} comisiones` },
+    ]
+  }
+
+  // Vista "Todos" o por trade type → KPIs generales de cash flow
+  const depositos = sumByType('DEPOSIT')
+  const retiros = sumByType('WITHDRAW')
+  const dividendos = sumByType('DIVIDEND') + sumByType('INTEREST')
+  const comisiones = sumByType('FEE')
+  return [
+    { label: 'Depositado', value: fmtUsd(depositos), tone: depositos > 0 ? 'pos' : null, sub: `${countByType('DEPOSIT')} eventos` },
+    { label: 'Retirado',   value: fmtUsd(retiros),   tone: retiros > 0 ? 'neg' : null, sub: `${countByType('WITHDRAW')} eventos` },
+    { label: 'Cobrado',    value: fmtUsd(dividendos), tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
+    { label: 'Comisiones', value: fmtUsd(comisiones), tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales' },
+  ]
+}
+
+function MovementRow({ m }) {
+  const meta = TYPE_META[m.type] || { label: m.type, Icon: Repeat, color: 'text-ink-3' }
+  const { Icon } = meta
+  const isPositive = ['DEPOSIT', 'DIVIDEND', 'INTEREST'].includes(m.type)
+  const isNegative = ['WITHDRAW', 'FEE'].includes(m.type)
+  const amountClass = isPositive ? 'text-rendi-pos' : isNegative ? 'text-rendi-neg' : 'text-ink-1'
+  return (
+    <tr className="border-t border-line/60 hover:bg-bg-2/40">
+      <td className="px-3 py-2 text-ink-2 tabular text-xs">
+        {m.date || '—'}
+        {m.approx_date && <span className="ml-1 text-[9px] text-ink-3" title="Fecha aproximada (agregado mensual)">~</span>}
+      </td>
+      <td className="px-3 py-2">
+        <span className={`inline-flex items-center gap-1 text-xs ${meta.color}`}>
+          <Icon size={11} strokeWidth={2} aria-hidden="true" />
+          {meta.label}
+        </span>
+      </td>
+      <td className="px-3 py-2 text-ink-3 text-xs">{m.broker || '—'}</td>
+      <td className="px-3 py-2 font-medium text-ink-0 text-xs">{m.asset || '—'}</td>
+      <td className="px-3 py-2 text-right font-mono text-ink-2 tabular text-xs">
+        {m.quantity != null ? Number(m.quantity).toLocaleString('es-AR', { maximumFractionDigits: 4 }) : '—'}
+      </td>
+      <td className="px-3 py-2 text-right font-mono text-ink-2 tabular text-xs">
+        {m.unit_price != null ? Number(m.unit_price).toLocaleString('es-AR', { maximumFractionDigits: 2 }) : '—'}
+      </td>
+      <td className={`px-3 py-2 text-right font-mono font-medium tabular ${amountClass}`}>
+        {fmtUsd(m.amount_usd || 0)}
+      </td>
+      <td className="px-3 py-2 text-ink-3 text-xs max-w-xs truncate" title={m.notes}>
+        {m.notes || (m.source === 'monthly' ? 'Agregado mensual' : m.source === 'import' ? 'Desde import CSV' : '')}
+      </td>
+    </tr>
   )
 }

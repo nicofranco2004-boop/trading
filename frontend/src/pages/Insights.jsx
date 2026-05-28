@@ -5,7 +5,7 @@ import {
   PieChart, Pie, Cell, Legend, Tooltip, LineChart, Line,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target, Layers, Clock, Stethoscope, BarChart3, Scale, PiggyBank, Wallet, CircleDollarSign, Building2, BarChart2, UserRound } from 'lucide-react'
+import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target, Layers, Clock, Stethoscope, BarChart3, Scale, PiggyBank, Wallet, CircleDollarSign, Building2, BarChart2, UserRound, Droplets } from 'lucide-react'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
@@ -60,6 +60,8 @@ import {
   computeHorizonComposition,
   computeDrawdownTolerance,
   computeConcentrationVsProfile,
+  computeStyleCoherence,
+  computeLiquidityRisk,
 } from '../utils/profileMatch'
 
 const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -124,18 +126,33 @@ function pickBalancedDiagnosis(diagnosis, n = 3) {
   return picked
 }
 
-export default function Insights() {
+export default function Insights({ _embeddedTab }) {
   // Estructura única para desktop y mobile. La diferencia se maneja con
   // useIsMobile() abajo: en mobile mostramos la card "Insight del día" como
   // hero al top y ocultamos la curva de drawdown (decisión del producto:
   // demasiado denso para mobile).
-  return <InsightsDesktop />
+  //
+  // _embeddedTab: si el componente se embebe dentro de /analisis (page wrapper),
+  // este prop define qué subsección renderizar:
+  //   • 'diagnostico' → TODO menos la sección "Métricas Pro"
+  //   • 'metricas'    → SOLO la sección "Métricas Pro"
+  //   • undefined     → render completo (modo standalone, ya casi no se usa)
+  // El render condicional se hace inline abajo con `shouldRender()`.
+  return <InsightsDesktop _embeddedTab={_embeddedTab} />
 }
 
-function InsightsDesktop() {
+function InsightsDesktop({ _embeddedTab }) {
   const isMobile = useIsMobile()
   const { user } = useAuth()
   const plan = usePlanFeatures()
+  // Flags de renderizado condicional cuando se embebe dentro de /analisis.
+  // Standalone (sin _embeddedTab) → renderiza TODO.
+  // En tab 'diagnostico' → todo menos "Métricas Pro" y "Perfil del inversor".
+  // En tab 'metricas'    → solo la sección "Métricas Pro".
+  // En tab 'perfil'      → solo la sección "Perfil del inversor".
+  const showDiagnostico = !_embeddedTab || _embeddedTab === 'diagnostico'
+  const showMetricas    = !_embeddedTab || _embeddedTab === 'metricas'
+  const showPerfil      = !_embeddedTab || _embeddedTab === 'perfil'
   // Truncar y sanitizar para usarlo como dataKey de Recharts (un solo nombre, máx 12 chars).
   // Si el "name" es un email, agarrar la parte antes del @.
   const userName = (() => {
@@ -266,14 +283,21 @@ function InsightsDesktop() {
   // Positions con value_usd resuelto — necesario para los cards de perfil
   // del inversor (classifyAssetBucket + computeAllocationBuckets). Misma
   // lógica de valuación que assetPieData arriba.
+  //
+  // FIX 2026-05-27: las posiciones cash (USDT en Binance, ARS en Cocos)
+  // tienen quantity=0 y el monto real vive en `invested`. Antes leíamos
+  // `quantity` directamente y caía a 0, dejando todos los cash fuera del
+  // bucket. Eso rompía la card de Liquidez (mostraba 0% en cash+RF cuando
+  // el user tenía miles en USDT/ARS). Ahora alineado con el patrón de
+  // aiCash (línea ~1203): leer `invested`, convertir si el broker es ARS.
   const positionsWithValue = (() => {
     return positions.map(p => {
       if (p.is_cash) {
-        // Cash: el value es la quantity directamente (en la currency del broker).
-        // Si broker ARS, convertimos a USD.
+        // Cash: el monto real está en `invested` (la quantity suele ser 0
+        // porque el cash se modeló como un saldo, no como N unidades).
         const broker = brokers.find(b => b.name === p.broker)
-        const qty = p.quantity || 0
-        const val = broker?.currency === 'ARS' ? qty / tcBlue : qty
+        const amount = p.invested || 0
+        const val = broker?.currency === 'ARS' ? amount / tcBlue : amount
         return { ...p, value_usd: val }
       }
       const broker = brokers.find(b => b.name === p.broker)
@@ -298,6 +322,10 @@ function InsightsDesktop() {
   const objectiveCard = computeObjectiveCoherence(investorProfile, positionsWithValue, brokers)
   const horizonCard = computeHorizonComposition(investorProfile, positionsWithValue, brokers)
   const concentrationCard = computeConcentrationVsProfile(investorProfile, positionsWithValue, brokers)
+  // Cards nuevas (2026-05-27): cruce de las dimensiones del test que antes no
+  // se cruzaban con la realidad. `styleCard` necesita operations (más abajo),
+  // `liquidityCard` ya tiene todo lo que necesita.
+  const liquidityCard = computeLiquidityRisk(investorProfile, positionsWithValue, brokers)
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
   const totalCostBasis = brokers.reduce((s, b) => {
@@ -958,6 +986,9 @@ function InsightsDesktop() {
     investorProfile,
     drawdown?.max,  // % negativo; la función hace Math.abs()
   )
+  // Card nueva (2026-05-27): estilo declarado vs trade frequency real. Usa
+  // operations (todas las ops del user) y la función filtra a SELLs adentro.
+  const styleCard = computeStyleCoherence(investorProfile, operations)
 
   // ── Insight 3: Deposit discipline ──
   let discipline = null
@@ -1237,8 +1268,10 @@ function InsightsDesktop() {
   // ── Métricas pro: Sharpe Ratio + Volatilidad anualizada ────────────────────
   // Calculadas sobre returns TWRR mensuales (Modified Dietz) — ya descuentan
   // depósitos/retiros. Risk-free rate derivada de SHV (T-Bills USD).
-  // Mínimo 3 meses para que las estadísticas sean confiables.
-  const proMetrics = computeProMetrics(globalMonthly, bench)
+  // Mínimo 2 meses para que arranque CAGR; el resto de métricas tienen sus
+  // propios thresholds adentro (3 meses para Sharpe/Sortino/Vol, 6 para Alpha/IR).
+  // Pasamos el drawdown max para que Calmar Ratio (CAGR / |maxDD|) se compute.
+  const proMetrics = computeProMetrics(globalMonthly, bench, drawdown?.max)
 
   // Helper para deltas: cuánto rindió mi portfolio vs el benchmark.
   // Tomamos el "valor final" del benchmark contra `totalPortfolio` (live).
@@ -1340,6 +1373,7 @@ function InsightsDesktop() {
     realizedPnl,          // P&L acumulado realizado
     unrealizedPnl,        // P&L abierto
     globalMonthly,        // meses globales para streak/consistency
+    commissionsStats,     // { total, count, avgPerTrade, pctOfGrossWin } — costos de operar
   }, 12)
 
   // ── Qué explica tu resultado: principales contribuyentes ──────────────────
@@ -1587,6 +1621,12 @@ function InsightsDesktop() {
           </div>
         }
       />
+
+      {/* ╔═══════════════════════════════════════════════════════════════════╗
+          ║ BLOQUE DIAGNÓSTICO — visible en tab 'diagnostico' y standalone.   ║
+          ║ Cierra justo antes de la sección "Métricas Pro" abajo.            ║
+          ╚═══════════════════════════════════════════════════════════════════╝ */}
+      {showDiagnostico && (<>
 
       {/* Insight del día — solo en mobile, como hero por encima del análisis. */}
       {isMobile && <InsightDelDiaHero />}
@@ -1935,10 +1975,19 @@ function InsightsDesktop() {
       </Section>
 
       {/* ══════════════════════════════════════════════════════════════════════
-          C. COMPORTAMIENTO — quién sos como inversor: win rate, hold time,
-             concentración y mejor trade individual.
+          ELIMINADO Sprint restructure 2026-05-27: la sección "Comportamiento" /
+          "Tu estilo de inversor" con 5 cards (mejor operación, win rate,
+          concentración top 3, hold time, comisiones) se eliminó porque entraba
+          en conflicto visual con (a) el tab "Comportamiento" del nav nuevo y
+          (b) la sección "Perfil del inversor" más abajo. Las 5 métricas ahora
+          rotan como observaciones en el sistema de "Diagnóstico" arriba
+          (generadores: best_trade_celebration, winrate_balanced_summary,
+          hold_time_summary, commissions_high/summary; concentration_top3 ya
+          existía). Si querés recuperar las cards complejas con tooltips +
+          breakdowns, revertí el commit del restructure.
           ══════════════════════════════════════════════════════════════════════ */}
-      <Section title="Comportamiento" subtitle="Tu estilo de inversor: tasa de acierto, horizonte de las posiciones y nivel de concentración.">
+      {false && (
+      <Section title="Tu estilo de inversor" subtitle="Métricas operativas: tasa de acierto, horizonte de posiciones, concentración y costos.">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
 
         {/* Mejor operación cerrada individual */}
@@ -2164,6 +2213,13 @@ function InsightsDesktop() {
       </div>
 
       </Section>
+      )}
+
+      {/* ╔═══════════════════════════════════════════════════════════════════╗
+          ║ Cierro el bloque "Diagnóstico" para que la sección Métricas Pro    ║
+          ║ pueda mostrarse SOLA cuando estamos en tab 'metricas'.            ║
+          ╚═══════════════════════════════════════════════════════════════════╝ */}
+      </>)}
 
       {/* ══════════════════════════════════════════════════════════════════════
           C1.5 MÉTRICAS PRO — 6 métricas estadísticas estándar de la industria.
@@ -2176,14 +2232,33 @@ function InsightsDesktop() {
                crear awareness de qué le falta. Antes la guarda externa
                `plan.isPaid` escondía todo y el Free no veía nada — mal UX.
           ══════════════════════════════════════════════════════════════════════ */}
-      {proMetrics && proMetrics.sharpe && (
+      {showMetricas && proMetrics && (proMetrics.sharpe || proMetrics.cagr) && (() => {
+        // Helper local: wrap cada card paid con AskAIAbout para análisis IA.
+        // Las locked (placeholders) NO se wrappean — no tienen data para el LLM.
+        // Pasamos los números precomputados del frontend como params para evitar
+        // duplicar la lógica de cálculo en Python.
+        const wrapAI = (code, params, child) => (
+          <AskAIAbout
+            topic="metrics_pro.card"
+            params={{ code, ...params }}
+            subtitle={`Análisis de ${code}`}
+            className="h-full"
+          >
+            {child}
+          </AskAIAbout>
+        )
+        return (
         <Section
           title="Métricas pro"
           subtitle="Volatilidad y Beta en Plus; Sharpe, Sortino, Alpha e Information Ratio en Pro."
         >
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* ── PLUS — Volatilidad anualizada ─────────────────────────── */}
-            {plan.isPaid ? (
+            {plan.isPaid ? wrapAI('volatility', {
+              value: proMetrics.volatility,
+              months: proMetrics.sharpe?.months,
+              volatility_annual_pct: proMetrics.volatility != null ? +(proMetrics.volatility * 100).toFixed(2) : null,
+            },
             <InsightCard
               icon={<Activity size={18} />}
               title="Volatilidad anualizada"
@@ -2236,7 +2311,12 @@ function InsightsDesktop() {
 
             {/* ── PLUS — Beta vs S&P 500 ───────────────────────────────── */}
             {plan.isPaid ? (
-              proMetrics.alphaBeta && (
+              proMetrics.alphaBeta && wrapAI('beta', {
+                value: proMetrics.alphaBeta.beta,
+                months: proMetrics.alphaBeta.months,
+                beta: +proMetrics.alphaBeta.beta.toFixed(2),
+                r_squared_pct: +(proMetrics.alphaBeta.rSquared * 100).toFixed(0),
+              },
               <InsightCard
                 icon={<BarChart3 size={18} />}
                 title="Beta (vs S&P 500)"
@@ -2295,7 +2375,12 @@ function InsightsDesktop() {
             )}
 
             {/* ── PRO — Sharpe Ratio ──────────────────────────────────── */}
-            {plan.hasFullAccess ? (
+            {plan.hasFullAccess ? wrapAI('sharpe', {
+              value: proMetrics.sharpe.sharpe,
+              months: proMetrics.sharpe.months,
+              return_annual_pct: +(proMetrics.sharpe.returnAnnual * 100).toFixed(2),
+              rf_annual_pct: +(proMetrics.sharpe.rfAnnual * 100).toFixed(2),
+            },
               <InsightCard
                 icon={<Target size={18} />}
                 title="Sharpe Ratio"
@@ -2348,7 +2433,13 @@ function InsightsDesktop() {
 
             {/* ── PRO — Sortino Ratio ─────────────────────────────────── */}
             {plan.hasFullAccess ? (
-              proMetrics.sortino ? (
+              proMetrics.sortino ? wrapAI('sortino', {
+                value: proMetrics.sortino.sortino,
+                months: proMetrics.sortino.months,
+                return_annual_pct: +(proMetrics.sortino.returnAnnual * 100).toFixed(2),
+                rf_annual_pct: +(proMetrics.sortino.rfAnnual * 100).toFixed(2),
+                downside_dev_pct: +(proMetrics.sortino.downsideDev * 100).toFixed(2),
+              },
                 <InsightCard
                   icon={<TrendingDown size={18} />}
                   title="Sortino Ratio"
@@ -2404,7 +2495,13 @@ function InsightsDesktop() {
 
             {/* ── PRO — Alpha (Jensen's CAPM) ─────────────────────────── */}
             {plan.hasFullAccess ? (
-              proMetrics.alphaBeta ? (
+              proMetrics.alphaBeta ? wrapAI('alpha', {
+                value: proMetrics.alphaBeta.alphaAnnual,
+                months: proMetrics.alphaBeta.months,
+                alpha_annual_pct: +(proMetrics.alphaBeta.alphaAnnual * 100).toFixed(2),
+                beta: +proMetrics.alphaBeta.beta.toFixed(2),
+                r_squared_pct: +(proMetrics.alphaBeta.rSquared * 100).toFixed(0),
+              },
                 <InsightCard
                   icon={<TrendingUp size={18} />}
                   title="Alpha (vs S&P 500)"
@@ -2456,7 +2553,12 @@ function InsightsDesktop() {
 
             {/* ── PRO — Information Ratio ─────────────────────────────── */}
             {plan.hasFullAccess ? (
-              proMetrics.infoRatio ? (
+              proMetrics.infoRatio ? wrapAI('ir', {
+                value: proMetrics.infoRatio.infoRatio,
+                months: proMetrics.infoRatio.months,
+                active_return_pct: +(proMetrics.infoRatio.activeReturn * 100).toFixed(2),
+                tracking_error_pct: +(proMetrics.infoRatio.trackingError * 100).toFixed(2),
+              },
                 <InsightCard
                   icon={<BarChart2 size={18} />}
                   title="Information Ratio (vs S&P)"
@@ -2507,18 +2609,151 @@ function InsightsDesktop() {
                 source="insights_metrics_pro"
               />
             )}
+
+            {/* ── PLUS — CAGR (anualizado) ──────────────────────────────────
+                Métrica básica de retorno anual compuesto. Funciona con 2+
+                meses (la más permisiva), pensada para que users con poca
+                data igual vean algo concreto. */}
+            {plan.isPaid ? (
+              proMetrics.cagr && wrapAI('cagr', {
+                value: proMetrics.cagr.cagr,
+                months: proMetrics.cagr.months,
+                cagr_annual_pct: +(proMetrics.cagr.cagr * 100).toFixed(2),
+                total_growth_pct: +(proMetrics.cagr.totalGrowth * 100).toFixed(2),
+              },
+                <InsightCard
+                  icon={<TrendingUp size={18} />}
+                  title="CAGR anualizado"
+                  accent={proMetrics.cagr.cagr > 0}
+                  tooltip={
+                    <>
+                      <p className="font-semibold text-ink-0">Qué es</p>
+                      <p>Tasa de crecimiento anual compuesta. Si dejaras tu cartera generando al mismo ritmo durante un año, ¿cuánto rendiría?</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo leerlo</p>
+                      <p><span className="text-rendi-pos">&gt; 15%</span>: muy bueno (S&P histórico ≈ 10%).</p>
+                      <p><span className="text-ink-2">5–15%</span>: en línea con índices.</p>
+                      <p><span className="text-rendi-neg">&lt; 0</span>: estás perdiendo plata en términos compuestos.</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                      <p className="text-ink-3 font-mono text-[11px]">cagr = (1 + retorno_total) ^ (12/n_meses) − 1</p>
+                      <p className="text-ink-3">Basado en {proMetrics.cagr.months} {proMetrics.cagr.months === 1 ? 'mes' : 'meses'} cargados. Retorno total acumulado del período: {(proMetrics.cagr.totalGrowth * 100).toFixed(1)}%.</p>
+                      {proMetrics.cagr.months < 12 && (
+                        <p className="text-rendi-warn">Con menos de 12 meses, la anualización extrapola y amplifica ruido — interpretar con cautela.</p>
+                      )}
+                    </>
+                  }
+                >
+                  <div className="flex items-baseline gap-3">
+                    <p className={`text-3xl font-bold tabular ${
+                      proMetrics.cagr.cagr > 0.15 ? 'text-rendi-pos'
+                      : proMetrics.cagr.cagr > 0.05 ? 'text-emerald-600/80 dark:text-emerald-400/80'
+                      : proMetrics.cagr.cagr > 0 ? 'text-ink-1'
+                      : 'text-rendi-neg'
+                    }`}>
+                      {proMetrics.cagr.cagr >= 0 ? '+' : '−'}{Math.abs(proMetrics.cagr.cagr * 100).toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-ink-3 tabular">
+                      anualizado
+                    </p>
+                  </div>
+                  <p className="text-xs text-ink-3 mt-2 leading-snug">
+                    Acumulado del período: <span className="text-ink-1 font-medium tabular">{proMetrics.cagr.totalGrowth >= 0 ? '+' : '−'}{Math.abs(proMetrics.cagr.totalGrowth * 100).toFixed(1)}%</span> sobre {proMetrics.cagr.months} {proMetrics.cagr.months === 1 ? 'mes' : 'meses'}.
+                  </p>
+                </InsightCard>
+              )
+            ) : (
+              <LockedSection.Placeholder
+                feature="insights.metrics_plus_cagr"
+                title="CAGR anualizado"
+                description="¿Cuánto rinde tu cartera por año si seguís al mismo ritmo? La métrica más básica de retorno — pero también la más usada para comparar entre estrategias e índices."
+                source="insights_metrics_plus"
+                targetTier="plus"
+              />
+            )}
+
+            {/* ── PRO — Calmar Ratio ──────────────────────────────────────
+                CAGR / |max drawdown|. Métrica de skill ajustada por dolor:
+                "cuánto rendiste por unidad de drawdown sufrido". Popular en
+                CTAs y hedge funds porque captura el componente psicológico
+                del riesgo (tener que aguantar -X% para llegar al rendimiento).
+                Requiere drawdown > 0 — si todos los meses fueron positivos,
+                Calmar es indefinido y la card no aparece. */}
+            {plan.hasFullAccess ? (
+              proMetrics.calmar && wrapAI('calmar', {
+                value: proMetrics.calmar.calmar,
+                months: proMetrics.calmar.months,
+                cagr_annual_pct: +(proMetrics.calmar.cagrAnnual * 100).toFixed(2),
+                max_drawdown_pct: +proMetrics.calmar.maxDrawdownPct.toFixed(2),
+              },
+                <InsightCard
+                  icon={<Scale size={18} />}
+                  title="Calmar Ratio"
+                  accent={proMetrics.calmar.calmar >= 1}
+                  tooltip={
+                    <>
+                      <p className="font-semibold text-ink-0">Qué es</p>
+                      <p>Rendimiento ajustado por el peor drawdown sufrido. Si rendiste 20% anual pero pasaste por una caída de 30% para llegar ahí, tu Calmar es 0.67 (0.20 / 0.30).</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo leerlo</p>
+                      <p><span className="text-rendi-neg">&lt; 0</span>: CAGR negativo — perdiste plata.</p>
+                      <p><span className="text-ink-2">0–1</span>: el drawdown supera al retorno anual.</p>
+                      <p><span className="text-rendi-pos">1–3</span>: bueno (rendiste más que tu peor caída).</p>
+                      <p><span className="text-rendi-pos">&gt; 3</span>: excelente (raro mantener sostenido).</p>
+                      <div className="border-t border-line/60 my-1.5" />
+                      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                      <p className="text-ink-3 font-mono text-[11px]">calmar = cagr / |max_drawdown|</p>
+                      <p className="text-ink-3">CAGR anual: {(proMetrics.calmar.cagrAnnual * 100).toFixed(1)}% · Max drawdown: {proMetrics.calmar.maxDrawdownPct.toFixed(1)}%</p>
+                    </>
+                  }
+                >
+                  <div className="flex items-baseline gap-3">
+                    <p className={`text-3xl font-bold tabular ${
+                      proMetrics.calmar.calmar >= 3 ? 'text-rendi-pos'
+                      : proMetrics.calmar.calmar >= 1 ? 'text-emerald-600/80 dark:text-emerald-400/80'
+                      : proMetrics.calmar.calmar >= 0 ? 'text-ink-1'
+                      : 'text-rendi-neg'
+                    }`}>
+                      {proMetrics.calmar.calmar.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-ink-3 tabular">
+                      {proMetrics.calmar.calmar >= 3 ? 'Excelente'
+                       : proMetrics.calmar.calmar >= 1 ? 'Bueno'
+                       : proMetrics.calmar.calmar >= 0 ? 'Subóptimo'
+                       : 'Negativo'}
+                    </p>
+                  </div>
+                  <p className="text-xs text-ink-3 mt-2 leading-snug">
+                    CAGR <span className="text-ink-1 font-medium tabular">{(proMetrics.calmar.cagrAnnual * 100).toFixed(1)}%</span> / max drawdown <span className="text-ink-1 font-medium tabular">{Math.abs(proMetrics.calmar.maxDrawdownPct).toFixed(1)}%</span>.
+                  </p>
+                </InsightCard>
+              )
+            ) : (
+              <LockedSection.Placeholder
+                feature="insights.metrics_pro_calmar"
+                title="Calmar Ratio"
+                description="¿Cuánto rendiste por cada punto de caída que tuviste que aguantar? Métrica que captura el dolor real de invertir — no solo el resultado, sino lo que tuviste que bancarte en el camino."
+                source="insights_metrics_pro"
+              />
+            )}
           </div>
         </Section>
-      )}
+      )
+      })()}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          C2. PERFIL DEL INVERSOR — cruza el test (perfil declarado) con la
-              cartera real. Solo descriptivo: presenta el dato, no juzga.
-              Si el user no completó el test → un solo CTA al test (no 2
-              empty states duplicados).
+          PERFIL DEL INVERSOR — cruza el test (perfil declarado) con la cartera
+          real. Solo descriptivo: presenta el dato, no juzga. Si el user no
+          completó el test → CTA al test (lo muestra ProfileInvestorBlock).
+          ──
+          Restructure 2026-05-27: esta sección ahora se muestra en la tab
+          "Perfil del inversor" de /analisis. El tab muestra el test arriba
+          (input) y estas cards abajo (output). FUERA del wrap `showDiagnostico`
+          porque en tab 'perfil' showDiagnostico=false pero showPerfil=true.
           ══════════════════════════════════════════════════════════════════════ */}
+      {showPerfil && (
       <Section
-        title="Perfil del inversor"
+        title={_embeddedTab === 'perfil' ? 'Diagnóstico vs. perfil declarado' : 'Perfil del inversor'}
         subtitle="Cómo se alinea tu cartera real con lo que declaraste en el test."
       >
         <ProfileInvestorBlock
@@ -2527,8 +2762,18 @@ function InsightsDesktop() {
           horizonCard={horizonCard}
           drawdownCard={drawdownCard}
           concentrationCard={concentrationCard}
+          styleCard={styleCard}
+          liquidityCard={liquidityCard}
         />
       </Section>
+      )}
+
+      {/* ╔═══════════════════════════════════════════════════════════════════╗
+          ║ BLOQUE DIAGNÓSTICO (continuación) — atribución y distribución solo║
+          ║ se muestran en tab 'diagnostico' o standalone.                     ║
+          ║ Cierra al final del return.                                        ║
+          ╚═══════════════════════════════════════════════════════════════════╝ */}
+      {showDiagnostico && (<>
 
       {/* Diagnóstico se renderiza arriba como hero — ver bloque al inicio. */}
 
@@ -2775,6 +3020,11 @@ function InsightsDesktop() {
 
       {/* Coach IA movido al sidebar (botón "Coach IA" arriba de todo) — abre
           un drawer global accesible desde cualquier página. */}
+
+      {/* ╔═══════════════════════════════════════════════════════════════════╗
+          ║ Fin del bloque "Diagnóstico" continuación.                         ║
+          ╚═══════════════════════════════════════════════════════════════════╝ */}
+      </>)}
 
     </div>
   )
@@ -3104,6 +3354,7 @@ function InsightCard({ icon, title, children, accent, tooltip }) {
 
 function ProfileInvestorBlock({
   allocationCard, objectiveCard, horizonCard, drawdownCard, concentrationCard,
+  styleCard, liquidityCard,
 }) {
   // Si las cards basadas en perfil NO tienen perfil utilizable, mostramos
   // un CTA único en vez de 5 empty states duplicados.
@@ -3115,34 +3366,59 @@ function ProfileInvestorBlock({
     (horizonCard?.status === 'no_profile' || horizonCard?.status === 'no_data')
 
   if (noProfileAtAll) {
+    // Empty state cuando el user no completó el test. Audit fix 2026-05-27:
+    // antes había un CTA "Hacer el test" → /perfil-inversor. Después del
+    // restructure, /perfil-inversor redirige a /analisis?tab=perfil — donde
+    // ya estamos viendo este componente. Resultado: botón self-link inútil.
+    // Solución: cambiar el copy para que apunte al test embebido ARRIBA
+    // (PerfilInversor _embeddedInAnalisis) en lugar de a una URL.
     return (
       <div className="bg-white dark:bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
         <div className="flex items-center gap-2 text-ink-3">
           <UserRound size={18} />
-          <span className="text-xs font-medium uppercase tracking-wide">Completá el test de inversor</span>
+          <span className="text-xs font-medium uppercase tracking-wide">Completá el test de arriba</span>
         </div>
         <p className="text-sm text-ink-1 leading-snug max-w-xl">
-          El test de 7 preguntas define tu perfil (conservador / moderado / agresivo) y nos permite
-          mostrarte cómo se alinea tu cartera real con lo que declarás.
+          El test de 7 preguntas (arriba en esta misma página) define tu perfil
+          (conservador / moderado / agresivo) y nos permite mostrarte acá cómo se
+          alinea tu cartera real con lo que declarás.
         </p>
-        <Link
-          to="/perfil-inversor"
-          className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 rounded-sm px-3 py-2 transition-colors"
-        >
-          Hacer el test
-          <ArrowRight size={13} strokeWidth={1.75} />
-        </Link>
       </div>
     )
   }
 
+  // Helper: wrap cada card con AskAIAbout para que tenga ✦ "Preguntar a la IA"
+  // (mismo patrón que Behavioral). El backend resuelve via topic profile.card
+  // + param code. Cada code mapea a un cruce específico del perfil declarado
+  // contra la cartera real.
+  const wrap = (code, subtitle, child) => (
+    <AskAIAbout
+      topic="profile.card"
+      params={{ code }}
+      subtitle={subtitle}
+      className="h-full"
+    >
+      {child}
+    </AskAIAbout>
+  )
+
+  // Filtramos cards que están en estado "no se renderiza" (no_data / no_profile)
+  // ANTES de wrappar con AskAIAbout. De lo contrario, el wrapper queda como
+  // un slot vacío en el grid y rompe la alineación 3-columnas (ej: si Estilo
+  // no tiene suficientes SELLs, antes quedaba como hueco y Liquidez caía sola
+  // en la fila 3 en lugar de completar la segunda fila).
+  const hasRenderableContent = (card) =>
+    card && card.status !== 'no_data' && card.status !== 'no_profile'
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      <ProfileAllocationCard data={allocationCard} />
-      <ProfileObjectiveCard data={objectiveCard} />
-      <ProfileHorizonCard data={horizonCard} />
-      <ProfileDrawdownCard data={drawdownCard} />
-      <ProfileConcentrationCard data={concentrationCard} />
+      {wrap('allocation',    'Match perfil vs cartera',         <ProfileAllocationCard data={allocationCard} />)}
+      {wrap('objective',     'Coherencia con tu objetivo',      <ProfileObjectiveCard data={objectiveCard} />)}
+      {wrap('horizon',       'Horizonte vs composición',        <ProfileHorizonCard data={horizonCard} />)}
+      {wrap('drawdown',      'Drawdown tolerado vs real',       <ProfileDrawdownCard data={drawdownCard} />)}
+      {wrap('concentration', 'Concentración vs perfil',         <ProfileConcentrationCard data={concentrationCard} />)}
+      {hasRenderableContent(styleCard)     && wrap('style',     'Estilo declarado vs actividad',   <ProfileStyleCard data={styleCard} />)}
+      {hasRenderableContent(liquidityCard) && wrap('liquidity', 'Liquidez declarada vs cartera', <ProfileLiquidityCard data={liquidityCard} />)}
     </div>
   )
 }
@@ -3425,6 +3701,131 @@ function ProfileConcentrationCard({ data }) {
               : data.comparison === 'below'
                 ? `Por debajo del rango típico.`
                 : `Por encima del rango típico.`}
+          </p>
+        </>
+      )}
+    </InsightCard>
+  )
+}
+
+
+// ─── Card 6 (nueva 2026-05-27): Estilo declarado vs trade frequency real ──
+// Cruza profile.style (passive/active/mixed) contra la cantidad de SELLs
+// promedio por mes durante los últimos 6 meses. Usa rangos típicos.
+function ProfileStyleCard({ data }) {
+  if (!data || data.status === 'no_profile' || data.status === 'no_data') return null
+  const tooltip = (
+    <>
+      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+      <p>Cuenta las operaciones cerradas (SELL) de los últimos 6 meses y calcula promedio por mes.</p>
+      <p className="text-ink-3">Bandas de referencia: Pasivo (0-2 trades/mes), Mixto (3-8), Activo (9+).</p>
+      <p className="text-ink-3">No incluye depósitos, retiros, dividendos ni compras — solo ventas (trades cerrados).</p>
+    </>
+  )
+
+  return (
+    <InsightCard
+      icon={<Activity size={18} />}
+      title="Estilo declarado vs actividad real"
+      tooltip={tooltip}
+    >
+      <p className="text-sm text-ink-1 leading-snug">
+        Declaraste estilo <span className="font-semibold text-ink-0">{data.declared.styleLabel}</span>{' '}
+        (típico: {data.declared.typicalRange.min}
+        {data.declared.typicalRange.max === Infinity ? '+' : `-${data.declared.typicalRange.max}`} trades/mes).
+      </p>
+      <div className="mt-3 flex items-baseline gap-3">
+        <p className="text-2xl font-bold text-ink-0 tabular">
+          {data.actual.tradesPerMonth}
+          <span className="text-xs font-normal text-ink-3 ml-1">/mes</span>
+        </p>
+        <p className="text-xs text-ink-3">
+          en los últimos {data.actual.monthsWindow} meses
+        </p>
+      </div>
+      <p className="text-xs text-ink-2 mt-3 leading-snug">
+        {data.comparison === 'aligned' ? (
+          `Tu actividad real coincide con un estilo ${data.actual.inferredStyleLabel.toLowerCase()}.`
+        ) : data.comparison === 'mismatch_more_active' ? (
+          <>Tu actividad real es más cercana a{' '}
+          <span className="font-medium text-ink-0">{data.actual.inferredStyleLabel}</span> que a lo declarado. Estás operando más de lo que tu perfil sugiere.</>
+        ) : (
+          <>Tu actividad real es más cercana a{' '}
+          <span className="font-medium text-ink-0">{data.actual.inferredStyleLabel}</span> que a lo declarado. Estás operando menos de lo que tu perfil sugiere.</>
+        )}
+      </p>
+    </InsightCard>
+  )
+}
+
+
+// ─── Card 7 (nueva 2026-05-27): Liquidez declarada vs volatilidad real ────
+// La card de mayor impacto educativo: si el user dijo que necesita la plata
+// en 12-24 meses pero el grueso está en activos volátiles, está expuesto a
+// vender en un drawdown. Lo dice de forma descriptiva, no alarmista.
+function ProfileLiquidityCard({ data }) {
+  if (!data || data.status === 'no_profile' || data.status === 'no_data') return null
+
+  const tooltip = (
+    <>
+      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+      <p>Suma el % de tu cartera en activos "seguros" (cash + renta fija) vs "volátiles" (acciones, CEDEARs, ETFs, cripto).</p>
+      <p className="text-ink-3">Cuanto más cerca necesites la plata, más conviene tener proporción en activos no volátiles para no tener que vender en un drawdown.</p>
+      <p className="text-ink-3">Umbrales de referencia: si declarás "Sí" necesito en 2 años → ideal +70% en cash/RF. "Parcial" → +40%. "No" → cualquier mix funciona.</p>
+    </>
+  )
+
+  return (
+    <InsightCard
+      icon={<Droplets size={18} />}
+      title="Liquidez declarada vs cartera"
+      tooltip={tooltip}
+      accent={data.comparison === 'mismatch_severe'}
+    >
+      {data.status === 'no_portfolio' ? (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Declaraste: <span className="font-semibold text-ink-0">{data.declared.liquidityLabel}</span>.
+            {data.declared.safeMinPct > 0 && (
+              <> Recomendación de referencia: tener al menos{' '}
+              <span className="text-ink-0 tabular">{data.declared.safeMinPct}%</span> en cash/RF.</>
+            )}
+          </p>
+          <p className="text-xs text-ink-3 mt-3 leading-snug">
+            Cargá posiciones para ver tu exposición real.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-ink-1 leading-snug">
+            Declaraste: <span className="font-semibold text-ink-0">{data.declared.liquidityLabel}</span>.
+          </p>
+          <div className="mt-3 flex items-baseline gap-3">
+            <p className={`text-2xl font-bold tabular ${
+              data.comparison === 'aligned' ? 'text-rendi-pos'
+              : data.comparison === 'mismatch_risky' ? 'text-rendi-warn'
+              : data.comparison === 'mismatch_severe' ? 'text-rendi-neg'
+              : 'text-ink-0'
+            }`}>
+              {data.actual.safePct}%
+            </p>
+            <p className="text-xs text-ink-3">
+              en cash + renta fija · <span className="tabular">{data.actual.volatilePct}%</span> en volátiles
+            </p>
+          </div>
+          <p className="text-xs text-ink-2 mt-3 leading-snug">
+            {data.comparison === 'aligned' && data.declared.liquidity === 'no' && (
+              'Como no necesitás liquidez en el corto plazo, cualquier mix de cartera te sirve.'
+            )}
+            {data.comparison === 'aligned' && data.declared.liquidity !== 'no' && (
+              `Tu mix actual te deja buffer suficiente si necesitás retirar parte de la plata en el plazo declarado.`
+            )}
+            {data.comparison === 'mismatch_risky' && (
+              <>Tenés menos del recomendado (<span className="tabular">{data.declared.safeMinPct}%</span> en cash/RF) para cubrir la necesidad declarada. Una caída de mercado podría obligarte a vender activos volátiles en el peor momento.</>
+            )}
+            {data.comparison === 'mismatch_severe' && (
+              <>Tu exposición a volatilidad es alta para una necesidad de liquidez en 12-24 meses. Si el mercado cae justo cuando necesitás retirar, estarías vendiendo al fondo.</>
+            )}
           </p>
         </>
       )}

@@ -15,8 +15,15 @@
 
 const importMap = {
   '/':                () => import('../pages/Home'),
+  // Wrappers del restructure 2026-05-27. /posiciones AHORA carga Cartera
+  // (no Positions). /analisis es un wrapper nuevo. Las páginas internas
+  // siguen siendo lazy-loaded por los wrappers, pero el hover sobre el
+  // sidebar dispara el prefetch del wrapper + su tab default.
+  '/posiciones':      () => import('../pages/Cartera'),
+  '/analisis':        () => import('../pages/Analisis'),
+  // Rutas viejas: aunque ahora son redirects, mantenerlas en el map ayuda
+  // si algún link interno apunta directamente a ellas.
   '/dashboard':       () => import('../pages/Dashboard'),
-  '/posiciones':      () => import('../pages/Positions'),
   '/insights':        () => import('../pages/Insights'),
   '/comportamiento':  () => import('../pages/Behavioral'),
   '/mensual':         () => import('../pages/Monthly'),

@@ -291,6 +291,79 @@ export const DIAGNOSTIC_GENERATORS = [
     },
   },
 
+  // ─── Generadores nuevos (Sprint restructure 2026-05-27) ────────────────
+  // Cubren las 5 métricas que antes vivían en la sección "Tu estilo de
+  // inversor" (que eliminamos para evitar duplicación con el tab
+  // "Comportamiento" del nav). Ahora rotan como observaciones del
+  // diagnóstico principal.
+  {
+    id: 'best_trade_celebration',
+    category: 'Comportamiento',
+    severity: 'positive',
+    generate: ({ bestWorstOp }) => {
+      if (!bestWorstOp || !bestWorstOp.best) return null
+      const b = bestWorstOp.best
+      if (!b.pnl_usd || b.pnl_usd <= 0) return null
+      const asset = b.asset || 'tu mejor operación'
+      return `Tu mejor operación cerrada fue **${asset}** con **${fmtUsd(b.pnl_usd)}** de ganancia. Identificá qué hiciste bien ahí — replicar buenas decisiones es tan útil como evitar las malas.`
+    },
+  },
+  {
+    id: 'winrate_balanced_summary',
+    category: 'Comportamiento',
+    severity: 'info',
+    generate: ({ winRate, profitFactor }) => {
+      if (!winRate || !profitFactor) return null
+      const total = winRate.wins + winRate.losses
+      if (total < 10) return null  // bajo sample size lo cubre otro generador
+      // Solo disparamos cuando NO disparan los otros generators de win rate
+      // específicos. Caso: win rate normal (no extremo) Y profit factor sano.
+      if (winRate.pct >= 60 && profitFactor.profitFactor < 1) return null  // ya cubre profit_factor_low_winrate_high
+      if (profitFactor.profitFactor >= 2) return null  // ya cubre profit_factor_strong
+      const pf = profitFactor.profitFactor === Infinity ? '∞' : profitFactor.profitFactor.toFixed(2)
+      return `Win rate **${winRate.pct.toFixed(0)}%** (${winRate.wins} ganadoras vs ${winRate.losses} perdedoras), profit factor **${pf}**. Métricas dentro de un rango normal.`
+    },
+  },
+  {
+    id: 'hold_time_summary',
+    category: 'Comportamiento',
+    severity: 'info',
+    generate: ({ holdTime }) => {
+      if (!holdTime || holdTime.avg == null || holdTime.count < 3) return null
+      const d = holdTime.avg
+      // Categorizar el estilo: <30d = trader corto, 30-180 = mediano, >180 = largo
+      let estilo
+      if (d < 30) estilo = 'trader de corto plazo'
+      else if (d < 180) estilo = 'horizonte intermedio'
+      else estilo = 'inversor de largo plazo'
+      return `Sostenés posiciones **${d.toFixed(0)} días** en promedio (${estilo}). Si bancás trades más de 1 año, en Argentina entran en régimen de plazo largo (relevante para tu contador).`
+    },
+  },
+  {
+    id: 'commissions_high',
+    category: 'Comportamiento',
+    severity: 'warn',
+    generate: ({ commissionsStats }) => {
+      if (!commissionsStats || commissionsStats.total <= 0) return null
+      if (commissionsStats.pctOfGrossWin == null || commissionsStats.pctOfGrossWin < 15) return null
+      return `Pagaste **${fmtUsd(commissionsStats.total)}** en comisiones — el **${commissionsStats.pctOfGrossWin.toFixed(1)}%** de tus ganancias brutas. Revisá si conviene operar menos o cambiar de broker.`
+    },
+  },
+  {
+    id: 'commissions_summary',
+    category: 'Comportamiento',
+    severity: 'info',
+    generate: ({ commissionsStats }) => {
+      if (!commissionsStats || commissionsStats.total <= 0) return null
+      // Solo dispara si NO disparó el warn (comisiones < 15% de ganancias)
+      if (commissionsStats.pctOfGrossWin != null && commissionsStats.pctOfGrossWin >= 15) return null
+      const tag = commissionsStats.pctOfGrossWin != null && commissionsStats.pctOfGrossWin >= 5
+        ? ` (${commissionsStats.pctOfGrossWin.toFixed(1)}% de tus ganancias brutas)`
+        : ''
+      return `Comisiones acumuladas: **${fmtUsd(commissionsStats.total)}** sobre ${commissionsStats.count} ${commissionsStats.count === 1 ? 'operación' : 'operaciones'}${tag}. Costo razonable en relación a lo generado.`
+    },
+  },
+
   // ─── Cash / asignación ──────────────────────────────────────────────────
   {
     id: 'cash_heavy',

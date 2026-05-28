@@ -43,6 +43,12 @@ const Novedades = lazy(() => import('./pages/Novedades'))
 const FirstInsight = lazy(() => import('./pages/FirstInsight'))
 const Behavioral = lazy(() => import('./pages/Behavioral'))
 const Wrapped = lazy(() => import('./pages/Wrapped'))
+// Restructure 2026-05-27: páginas wrapper que consolidan secciones del nav.
+// Analisis = Insights + Comportamiento + Reportes en 4 tabs.
+// Cartera = Posiciones + Dashboard + Objetivos en 4 tabs.
+// Las páginas internas siguen existiendo como rutas (alias) — ver redirects.
+const Analisis = lazy(() => import('./pages/Analisis'))
+const Cartera = lazy(() => import('./pages/Cartera'))
 const More = lazy(() => import('./pages/More'))
 const Planes = lazy(() => import('./pages/Planes'))
 // BillingReturn exporta 3 componentes — Vite los dedupea en un solo chunk
@@ -136,20 +142,29 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Home />} />
-      <Route path="/dashboard" element={<Dashboard />} />
-      <Route path="/posiciones" element={<Positions />} />
-      <Route path="/insights" element={<Insights />} />
-      <Route path="/comportamiento" element={<Behavioral />} />
+      {/* Restructure 2026-05-27: rutas wrapper consolidadas. Las URLs viejas
+          (/dashboard, /insights, etc.) mantienen redirects para no romper
+          bookmarks ni links externos. */}
+      <Route path="/posiciones" element={<Cartera />} />
+      <Route path="/analisis" element={<Analisis />} />
+      {/* Redirects de rutas viejas al wrapper consolidado, preservando query */}
+      <Route path="/dashboard"       element={<Navigate to="/posiciones?tab=evolucion"   replace />} />
+      <Route path="/objetivos"       element={<Navigate to="/posiciones?tab=objetivos"   replace />} />
+      <Route path="/insights"        element={<Navigate to="/analisis?tab=diagnostico"   replace />} />
+      <Route path="/comportamiento"  element={<Navigate to="/analisis?tab=comportamiento" replace />} />
+      <Route path="/reportes"        element={<Navigate to="/analisis?tab=reportes"      replace />} />
       <Route path="/mensual" element={<Monthly />} />
-      <Route path="/reportes" element={<Reports />} />
       <Route path="/novedades" element={<Novedades />} />
       {/* Redirects back-compat */}
       <Route path="/eventos"  element={<Navigate to="/novedades?tab=eventos"  replace />} />
       <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />
       <Route path="/operaciones" element={<Operations />} />
       <Route path="/config" element={<Config />} />
-      <Route path="/perfil-inversor" element={<PerfilInversor />} />
-      <Route path="/objetivos" element={<Goals />} />
+      {/* /perfil-inversor ahora es tab dentro de Análisis. PerfilInversor sigue
+          como componente embebido en Analisis.jsx — el URL viejo redirige al
+          tab para que bookmarks externos no se rompan. */}
+      <Route path="/perfil-inversor" element={<Navigate to="/analisis?tab=perfil" replace />} />
+      {/* /objetivos sigue siendo redirect a /posiciones?tab=objetivos arriba */}
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
       <Route path="/bienvenida" element={<FirstInsight />} />

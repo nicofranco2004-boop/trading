@@ -358,30 +358,116 @@ export function computeInformationRatio(portfolioReturns, benchmarkReturns) {
 }
 
 /**
+ * CAGR (Compound Annual Growth Rate) — tasa anual compuesta de los retornos
+ * mensuales. Equivalente a "qué interés efectivo anualizado generó tu plata"
+ * sobre la ventana de meses cargados.
+ *
+ * Fórmula:
+ *   total_growth = ∏ (1 + r_t)
+ *   cagr = total_growth ^ (12 / n_meses) − 1
+ *
+ * Rinde con 2+ meses (umbral bajo a propósito — métrica accesible). Para
+ * <12 meses la "anualización" extrapola el período corto a un año entero,
+ * lo cual amplifica ruido. La card lo aclara en el subtítulo.
+ *
+ * Returns:
+ *   {
+ *     cagr: number,    // ej. 0.18 = 18% anual
+ *     totalGrowth: number,  // crecimiento total acumulado, ej. 0.15 = +15%
+ *     months: number,
+ *   } | null
+ */
+export function computeCAGR(monthlyReturns) {
+  if (!monthlyReturns || monthlyReturns.length < 2) return null
+  // computeMonthlyReturns devuelve [{key, return}, ...], no [number, ...].
+  // Extraemos los valores numéricos antes del reduce, igual que las otras
+  // funciones (computeAnnualizedVolatility, computeSharpe, etc.).
+  // BUG previo (2026-05-27): sin este .map sumábamos objetos → NaN.
+  const returns = monthlyReturns.map(r => r.return)
+  const totalGrowth = returns.reduce((prod, r) => prod * (1 + r), 1) - 1
+  // Si totalGrowth ≤ -1 (perdiste todo), CAGR no está definido — devolvemos
+  // -100% como floor en lugar de NaN.
+  if (totalGrowth <= -0.999) {
+    return {
+      cagr: -1,
+      totalGrowth: -1,
+      months: monthlyReturns.length,
+    }
+  }
+  const n = monthlyReturns.length
+  const cagr = Math.pow(1 + totalGrowth, 12 / n) - 1
+  return {
+    cagr,
+    totalGrowth,
+    months: n,
+  }
+}
+
+
+/**
+ * Calmar Ratio — rendimiento anualizado dividido por max drawdown.
+ * Métrica popular en hedge funds y CTAs: "cuánto rendiste por unidad de
+ * dolor (drawdown) sufrido en el camino".
+ *
+ * Fórmula:
+ *   calmar = CAGR / |max_drawdown|
+ *
+ * Interpretación:
+ *   • > 1.0  → bueno (rendiste más que tu peor caída)
+ *   • > 3.0  → excelente (raro mantener)
+ *   • < 0    → CAGR negativo, métrica no informativa
+ *
+ * @param {object} cagrResult - resultado de computeCAGR
+ * @param {number} maxDrawdownPct - drawdown máximo en % (negativo, ej. -15)
+ * @returns {{ calmar, cagrAnnual, maxDrawdownPct, months } | null}
+ */
+export function computeCalmar(cagrResult, maxDrawdownPct) {
+  if (!cagrResult || cagrResult.cagr == null) return null
+  if (maxDrawdownPct == null || !isFinite(maxDrawdownPct)) return null
+  const ddAbs = Math.abs(maxDrawdownPct) / 100  // convertir % → ratio
+  // Si nunca hubo drawdown (todos meses positivos), Calmar es indefinido
+  // (división por cero). Devolvemos null — la card maneja el caso.
+  if (ddAbs < 0.001) return null
+  return {
+    calmar: cagrResult.cagr / ddAbs,
+    cagrAnnual: cagrResult.cagr,
+    maxDrawdownPct,
+    months: cagrResult.months,
+  }
+}
+
+
+/**
  * Helper combinado: dado globalMonthly + bench, devuelve TODAS las métricas pro.
  *
  * Métricas incluidas:
- *   • Volatilidad anualizada  (Plus)
- *   • Beta vs S&P 500          (Plus)
- *   • Sharpe Ratio             (Pro)
- *   • Sortino Ratio            (Pro)
- *   • Alpha (Jensen's CAPM)    (Pro)
- *   • Information Ratio        (Pro)
+ *   • CAGR anualizado          (Plus, 2+ meses)
+ *   • Volatilidad anualizada   (Plus, 3+ meses)
+ *   • Beta vs S&P 500           (Plus, 6+ meses overlap)
+ *   • Sharpe Ratio              (Pro,  3+ meses)
+ *   • Sortino Ratio             (Pro,  3+ meses con ≥1 mes negativo)
+ *   • Alpha (Jensen's CAPM)     (Pro,  6+ meses overlap)
+ *   • Information Ratio         (Pro,  6+ meses overlap)
+ *   • Calmar Ratio              (Pro,  3+ meses con drawdown>0) — requiere
+ *                                drawdownMaxPct externo (de Insights)
  *
- * @param {Array}  globalMonthly  entries del broker 'global'
- * @param {Object} bench          { sp500, shv, ... } del endpoint /benchmarks
- * @returns {{returns, volatility, sharpe, sortino, alphaBeta, infoRatio} | null}
+ * @param {Array}  globalMonthly      entries del broker 'global'
+ * @param {Object} bench              { sp500, shv, ... } del endpoint /benchmarks
+ * @param {number} [drawdownMaxPct]   max drawdown en % (negativo). Opcional.
+ *                                    Si no se pasa, calmar queda null.
+ * @returns {{returns, cagr, volatility, sharpe, sortino, alphaBeta, infoRatio, calmar} | null}
  */
-export function computeProMetrics(globalMonthly, bench) {
+export function computeProMetrics(globalMonthly, bench, drawdownMaxPct = null) {
   const returns = computeMonthlyReturns(globalMonthly)
-  if (returns.length < MIN_MONTHS_FOR_STATS) return null
+  // Threshold bajado a 2 meses para que CAGR rinda. Las otras métricas
+  // (volatility/sharpe/sortino) usan su propio MIN_MONTHS_FOR_STATS=3
+  // adentro y devuelven null si no llegan.
+  if (returns.length < 2) return null
 
   // Risk-free rate anualizada para Sharpe/Sortino/Alpha (constante).
-  // Posible mejora: rf temporal por mes (rf_t para cada mes) si los rangos
-  // son largos y la TNA varió mucho. Para portfolios <= 24 meses, la
-  // aproximación constante introduce <50bps de sesgo en Alpha.
   const rf = estimateRiskFreeRate(bench?.shv)
 
+  const cagr = computeCAGR(returns)
   const volatility = computeAnnualizedVolatility(returns)
   const sharpe = computeSharpe(returns, rf)
   const sortino = computeSortino(returns, rf)
@@ -395,12 +481,17 @@ export function computeProMetrics(globalMonthly, bench) {
     ? computeInformationRatio(returns, sp500Returns)
     : null
 
+  // Calmar usa CAGR + drawdown que viene de afuera (Insights ya lo calcula).
+  const calmar = computeCalmar(cagr, drawdownMaxPct)
+
   return {
     returns,
+    cagr,
     volatility,
     sharpe,
     sortino,
     alphaBeta,
     infoRatio,
+    calmar,
   }
 }

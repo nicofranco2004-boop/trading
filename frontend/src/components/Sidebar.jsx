@@ -15,14 +15,21 @@
 import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  Home as HomeIcon, LayoutDashboard, Briefcase, List, Settings, LogOut,
-  Sun, Moon, Compass, Shield, Target, BarChart3, Bell, Upload, Menu, Brain, Sparkles, UserRound,
+  Home as HomeIcon, Briefcase, List, Settings, LogOut,
+  Sun, Moon, Compass, Shield, Bell, Upload, Menu, Sparkles,
   MessageCircle, BookOpen,
 } from 'lucide-react'
 // NOTA: Sparkles se mantiene importado porque lo usa el botón del Coach IA.
-// Wrapped salió del nav (era ruido casi todo el año) — la ruta /wrapped
-// sigue activa para acceso por URL y para futuro trigger de diciembre
-// (notificación in-app cuando esté listo el wrapped del año).
+// Restructure 2026-05-27: sidebar de 11 → 6 items para reducir ruido visual.
+// - Dashboard salió del nav (fusionado en Cartera /posiciones).
+// - Comportamiento + Reportes salieron (fusionados en Análisis /analisis con tabs).
+// - Insights renombrado a "Análisis" (más claro qué es).
+// - Importes se mantiene como item separado para descubrimiento (decisión del
+//   user — la carga de CSV es un job crítico que tiene que estar visible).
+// - Wrapped quedó fuera desde antes (futuro trigger anual de diciembre).
+// - Perfil de inversor pasó a ser una TAB de Análisis (el test es input y las
+//   cards de cruce son output — viven juntos). Grupo "Personal" del sidebar
+//   eliminado entero.
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
@@ -34,31 +41,28 @@ const SIDEBAR_W_EXPANDED = '220px'
 const SIDEBAR_W_COLLAPSED = '56px'
 const LS_KEY = 'rendi_sidebar_collapsed'
 
+// Sidebar restructurado — 6 items en 2 grupos lógicos.
+// • Tu portfolio: lo que pasa con tu plata (estática + flujos)
+// • Análisis: contexto y entendimiento (fusiona Insights/Comportamiento/
+//             Reportes/Perfil del inversor)
+//
+// Objetivos se integra como tab dentro de Cartera. Perfil de inversor se
+// integra como tab dentro de Análisis. Nada de "Personal" como grupo aparte.
 const GROUPS = [
+  {
+    label: 'Tu portfolio',
+    items: [
+      { to: '/',            label: 'Inicio',        icon: HomeIcon },
+      { to: '/posiciones',  label: 'Cartera',       icon: Briefcase },
+      { to: '/operaciones', label: 'Movimientos',   icon: List },
+      { to: '/imports',     label: 'Importes',      icon: Upload },
+    ],
+  },
   {
     label: 'Análisis',
     items: [
-      { to: '/',          label: 'Home',       icon: HomeIcon },
-      { to: '/novedades', label: 'Novedades',  icon: Bell },
-      { to: '/dashboard', label: 'Dashboard',  icon: LayoutDashboard },
-      { to: '/insights',       label: 'Insights',       icon: Compass },
-      { to: '/comportamiento', label: 'Comportamiento', icon: Brain },
-      { to: '/reportes',       label: 'Reportes',       icon: BarChart3 },
-    ],
-  },
-  {
-    label: 'Data',
-    items: [
-      { to: '/posiciones',  label: 'Posiciones',  icon: Briefcase },
-      { to: '/operaciones', label: 'Operaciones', icon: List },
-      { to: '/imports',     label: 'Importes',    icon: Upload },
-    ],
-  },
-  {
-    label: 'Personal',
-    items: [
-      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
-      { to: '/objetivos',       label: 'Objetivos',          icon: Target },
+      { to: '/analisis',    label: 'Análisis',      icon: Compass },
+      { to: '/novedades',   label: 'Novedades',     icon: Bell },
     ],
   },
 ]

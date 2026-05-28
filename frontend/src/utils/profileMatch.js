@@ -394,3 +394,199 @@ export function computeConcentrationVsProfile(profile, positions, brokers) {
     comparison,
   }
 }
+
+
+// ─── Card 6: Estilo declarado vs frecuencia de trades real ─────────────────
+//
+// Cruza profile.style (passive/active/mixed) contra la trade frequency real
+// del user, calculada como operaciones cerradas (SELL) por mes durante los
+// últimos N meses con actividad.
+//
+// Bandas de referencia (trades por mes, promedio):
+//   • Pasivo (buy & hold): 0–2/mes
+//   • Mixto:                3–8/mes
+//   • Activo (trading):     9+/mes
+//
+// Status output:
+//   • ready    → tenemos profile + suficiente data (>=3 trades total)
+//   • no_profile → no completó el test
+//   • no_data    → no hay trades cerrados suficientes
+//   • aligned    → estilo declarado matchea con frequency real
+//   • mismatch_more_active   → declaró pasivo/mixto, opera como activo
+//   • mismatch_more_passive  → declaró activo, opera como pasivo
+//
+// Args:
+//   profile: { style: 'passive' | 'active' | 'mixed', ... }
+//   operations: lista completa de operations (cualquier tipo)
+//   monthsWindow: ventana de cálculo, default 6 meses
+//
+// El cálculo usa SOLO operations con op_type SELL (trades cerrados) para
+// no inflar el conteo con compras o flujos de cash.
+
+const STYLE_BANDS = {
+  // [minTradesPerMonth, maxTradesPerMonth] que tipifica cada estilo
+  passive: { label: 'Pasivo (buy & hold)', min: 0, max: 2 },
+  mixed:   { label: 'Mixto',                min: 3, max: 8 },
+  active:  { label: 'Activo (trading)',     min: 9, max: Infinity },
+}
+
+export function computeStyleCoherence(profile, operations, monthsWindow = 6) {
+  const declared = profile?.style
+  if (!declared || !STYLE_BANDS[declared]) {
+    return {
+      status: operations?.length > 0 ? 'no_profile' : 'no_data',
+    }
+  }
+
+  // Filtramos solo SELLs (trades cerrados). Ignoramos BUYs, DEPOSITS, etc.
+  const sells = (operations || []).filter(o => {
+    const t = String(o.op_type || '').toUpperCase()
+    return t === 'SELL' && o.date
+  })
+
+  if (sells.length < 3) {
+    return {
+      status: 'no_data',
+      declared: { style: declared, styleLabel: STYLE_BANDS[declared].label },
+    }
+  }
+
+  // Ventana: últimos N meses contados desde la operación más reciente.
+  const sortedDesc = [...sells].sort((a, b) => (a.date < b.date ? 1 : -1))
+  const latestDate = new Date(sortedDesc[0].date)
+  const cutoff = new Date(latestDate.getTime() - monthsWindow * 30 * 86400000)
+  const recent = sortedDesc.filter(o => new Date(o.date) >= cutoff)
+
+  const tradesPerMonth = recent.length / monthsWindow
+  const declaredBand = STYLE_BANDS[declared]
+
+  // Inferir el "estilo real" según la banda donde cae
+  let actualStyle
+  if (tradesPerMonth <= STYLE_BANDS.passive.max) actualStyle = 'passive'
+  else if (tradesPerMonth <= STYLE_BANDS.mixed.max) actualStyle = 'mixed'
+  else actualStyle = 'active'
+
+  let comparison
+  if (actualStyle === declared) comparison = 'aligned'
+  else if (
+    (declared === 'passive' && (actualStyle === 'mixed' || actualStyle === 'active')) ||
+    (declared === 'mixed' && actualStyle === 'active')
+  ) {
+    comparison = 'mismatch_more_active'
+  } else {
+    comparison = 'mismatch_more_passive'
+  }
+
+  return {
+    status: 'ready',
+    declared: {
+      style: declared,
+      styleLabel: declaredBand.label,
+      typicalRange: declaredBand,
+    },
+    actual: {
+      tradesPerMonth: Math.round(tradesPerMonth * 10) / 10,
+      tradesTotal: recent.length,
+      monthsWindow,
+      inferredStyle: actualStyle,
+      inferredStyleLabel: STYLE_BANDS[actualStyle].label,
+    },
+    comparison,
+  }
+}
+
+
+// ─── Card 7: Liquidez declarada vs volatilidad de cartera ──────────────────
+//
+// Cruza profile.liquidity (yes/partial/no) contra el % de cartera en activos
+// volátiles (equities + cripto). Es la card de MAYOR impacto educativo:
+// si el user declaró necesitar la plata en 12-24 meses pero el 90% está en
+// activos volátiles, está expuesto a tener que vender en un drawdown para
+// cubrir esa necesidad.
+//
+// Buckets:
+//   • cash (sin volatilidad)
+//   • fixed_income (volatilidad baja — bonos AR/USA, plazo fijo)
+//   • equity (volatilidad media-alta — acciones, ETFs, CEDEARs)
+//   • alternative (volatilidad alta — cripto)
+//
+// Política de "volátil": equity + alternative.
+//
+// Status output:
+//   • ready             → todo computado
+//   • no_profile        → no completó el test
+//   • no_portfolio      → tiene perfil pero sin posiciones
+//   • aligned           → declaró que NO necesita → cualquier mix funciona
+//                       → declaró SÍ/parcial necesita → tiene >40% en cash/RF
+//   • mismatch_risky    → necesita en 2 años pero <40% en cash/RF
+//   • mismatch_severe   → necesita en 2 años pero <15% en cash/RF (alta exposición)
+
+const LIQUIDITY_THRESHOLDS = {
+  // Cuánto % en cash+RF se considera "seguro" según necesidad declarada
+  yes:     { safeMinPct: 70, label: 'Sí, necesito parte en 12-24 meses' },
+  partial: { safeMinPct: 40, label: 'Parcial — quizás una porción' },
+  no:      { safeMinPct: 0,  label: 'No, es plata de largo plazo' },
+}
+
+export function computeLiquidityRisk(profile, positions, brokers) {
+  const declared = profile?.liquidity
+  if (!declared || !LIQUIDITY_THRESHOLDS[declared]) {
+    return {
+      status: positions?.length > 0 ? 'no_profile' : 'no_data',
+    }
+  }
+
+  const declaredCfg = LIQUIDITY_THRESHOLDS[declared]
+
+  const buckets = computeAllocationBuckets(positions || [], brokers || [])
+  // Buckets viene como { cash, fixed_income, equity, alternative } en %
+  const totalPct = (buckets.cash || 0) + (buckets.fixed_income || 0) +
+                   (buckets.equity || 0) + (buckets.alternative || 0)
+
+  if (totalPct === 0) {
+    return {
+      status: 'no_portfolio',
+      declared: {
+        liquidity: declared,
+        liquidityLabel: declaredCfg.label,
+        safeMinPct: declaredCfg.safeMinPct,
+      },
+    }
+  }
+
+  const safePct = (buckets.cash || 0) + (buckets.fixed_income || 0)
+  const volatilePct = (buckets.equity || 0) + (buckets.alternative || 0)
+
+  // Comparison logic
+  let comparison
+  if (declared === 'no') {
+    // Caller declaró que NO necesita liquidez — cualquier mix funciona
+    comparison = 'aligned'
+  } else {
+    // Caller declaró Sí o Parcial — necesita un mínimo en cash/RF
+    const safeMin = declaredCfg.safeMinPct
+    if (safePct >= safeMin) comparison = 'aligned'
+    else if (safePct >= safeMin / 2) comparison = 'mismatch_risky'
+    else comparison = 'mismatch_severe'
+  }
+
+  return {
+    status: 'ready',
+    declared: {
+      liquidity: declared,
+      liquidityLabel: declaredCfg.label,
+      safeMinPct: declaredCfg.safeMinPct,
+    },
+    actual: {
+      safePct: Math.round(safePct),       // cash + fixed_income
+      volatilePct: Math.round(volatilePct), // equity + alternative
+      buckets: {
+        cash: Math.round(buckets.cash || 0),
+        fixed_income: Math.round(buckets.fixed_income || 0),
+        equity: Math.round(buckets.equity || 0),
+        alternative: Math.round(buckets.alternative || 0),
+      },
+    },
+    comparison,
+  }
+}
