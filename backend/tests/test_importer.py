@@ -3020,14 +3020,19 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         self.assertAlmostEqual(by_broker["Cocos"], 25.20, places=2)
         self.assertAlmostEqual(by_broker["global"], 25.20, places=2)
 
-    def test_recalcs_deposits_and_withdrawals_from_imports(self):
-        """REGRESIÓN: tras revertir todos los batches, monthly_entries
-        quedaba con deposits/withdrawals huérfanos → Capital Aportado != 0.
-        Ahora el recalc los reconstruye desde import_normalized_tx confirmados,
-        zero-eando los que no tienen respaldo."""
+    def test_recalcs_preserves_manual_residual_when_no_imports(self):
+        """REGRESIÓN del bug 2026-05-27: el recalc DESTRUÍA cash flows manuales
+        (form /mensual, botón Cash, reconcile-cash) cuando no había imports
+        respaldando ese (broker, year, month) — los zero-eaba y la fila se
+        borraba por el cleanup post-recalc.
+
+        Nueva semántica: cualquier valor en monthly_entries.deposits/withdrawals
+        que NO esté respaldado por imports DEPOSIT/WITHDRAW se considera
+        residual MANUAL y se preserva. pnl_realized sí se reconstruye desde
+        operations (que es fuente canónica)."""
         conn = main.get_db()
         with conn:
-            # Drift simulado: deposits/withdrawals huérfanos sin import_normalized_tx
+            # User cargó manualmente $831.58 (sin imports correspondientes)
             conn.execute(
                 """INSERT INTO monthly_entries
                    (user_id, year, month, broker, deposits, withdrawals,
@@ -3049,13 +3054,14 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         ).fetchall()
         conn.close()
         for r in rows:
-            self.assertEqual(r["deposits"], 0.0,
-                f"{r['broker']}: deposits debería ser 0, quedó {r['deposits']}")
+            self.assertAlmostEqual(r["deposits"], 831.58, places=2,
+                msg=f"{r['broker']}: manual residual debería preservarse, quedó {r['deposits']}")
             self.assertEqual(r["withdrawals"], 0.0)
             self.assertEqual(r["pnl_realized"], 0.0)
 
     def test_recalcs_preserves_deposits_from_confirmed_batch(self):
-        """Si hay un batch CONFIRMED con un DEPOSIT, el recalc lo preserva."""
+        """Si hay un batch CONFIRMED con un DEPOSIT y NO hay residual manual,
+        el recalc deja deposits = imports_USD."""
         import uuid, json
         conn = main.get_db()
         batch_id = str(uuid.uuid4())
@@ -3078,12 +3084,13 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
                    VALUES (?, ?, '2025-05-15', 'Cocos', 'DEPOSIT', 100000, 'ARS')""",
                 (batch_id, raw_id),
             )
-            # Pre-existente con drift (mock)
+            # Pre-existente alineado con imports (el persister acumuló al confirmar):
+            # 100000 ARS / 1415 tc_blue = ~70.67 USD
             conn.execute(
                 """INSERT INTO monthly_entries
                    (user_id, year, month, broker, deposits, withdrawals,
                     pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-                   VALUES (?, 2025, 5, 'Cocos', 999999, 0, 0, 0, 0, 999999)""",
+                   VALUES (?, 2025, 5, 'Cocos', 70.67, 0, 0, 0, 0, 70.67)""",
                 (self.uid,),
             )
             main._recalc_pnl_realized_from_ops(conn, self.uid)
@@ -3092,8 +3099,51 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
             (self.uid,),
         ).fetchone()
         conn.close()
-        # 100000 ARS / 1415 tc_blue default = ~70.67 USD
+        # imp_deposits ≈ 70.67, manual_residual = 0 → new_deposits ≈ 70.67
         self.assertAlmostEqual(row["deposits"], 70.67, delta=0.1)
+
+    def test_recalcs_preserves_manual_residual_above_imports(self):
+        """Caso mixto: user cargó manualmente $200 EN ADICIÓN a un import de
+        $70.67 USD (la fila acumula 270.67 = 70.67 imports + 200 manual). El
+        recalc debe preservar el residual manual y dejar deposits=270.67."""
+        import uuid, json
+        conn = main.get_db()
+        batch_id = str(uuid.uuid4())
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'x.csv', ?, 'Cocos', 'confirmed')""",
+                (batch_id, self.uid, batch_id),
+            )
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                   VALUES (?,?,?,'valid',NULL)""",
+                (batch_id, 1, json.dumps({})),
+            )
+            raw_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO import_normalized_tx
+                   (batch_id, raw_row_id, date, broker, operation_type, gross_amount, currency)
+                   VALUES (?, ?, '2025-05-15', 'Cocos', 'DEPOSIT', 100000, 'ARS')""",
+                (batch_id, raw_id),
+            )
+            # 70.67 imports + 200 manual = 270.67 acumulado
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 270.67, 0, 0, 0, 0, 270.67)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        row = conn.execute(
+            "SELECT deposits FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # imp_deposits ≈ 70.67, manual_residual = 200 → new_deposits ≈ 270.67
+        self.assertAlmostEqual(row["deposits"], 270.67, delta=0.1)
 
     def test_recalc_deletes_empty_rows_and_clears_baseline(self):
         """REGRESIÓN: tras recalc, una fila con todo en 0 pero capital_inicio

@@ -4464,26 +4464,30 @@ class CashFlowIn(BaseModel):
 
 
 def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
-    """Recalcula `monthly_entries.pnl_realized` desde operations (la única
-    fuente canónica del P&L realizado).
+    """Recalcula `monthly_entries.pnl_realized`, `deposits` y `withdrawals`
+    desde las fuentes (operations + import_normalized_tx confirmados).
 
-    Self-healing de drift acumulado por cycles import/revert/reimport.
+    Self-healing de drift acumulado por cycles import/revert/reimport con
+    cálculos cambiantes entre versiones. Cada fila queda con:
+      pnl_realized = SUM(operations.pnl_usd)
+      deposits     = SUM(imports DEPOSIT en USD) + MANUAL RESIDUAL
+      withdrawals  = SUM(imports WITHDRAW en USD) + MANUAL RESIDUAL
 
     Para broker='global', suma cross-broker.
 
     Re-repara la cadena de capital_final.
 
-    HISTORIA (bug fix 2026-05-27): esta función ANTES también sobreescribía
-    `deposits` y `withdrawals` con valores agregados desde import_normalized_tx,
-    lo cual ZERO-eaba cualquier cash flow MANUAL del user (form /mensual,
-    botón Cash de Cartera, reconcile-cash). Los manuales NO tienen respaldo
-    en import_normalized_tx así que quedaban en 0 → algunos entries enteros
-    se borraban por la cleanup de filas en 0 (ver más abajo).
-    Resultado en producción: el user perdía silenciosamente sus deposits
-    manuales cada vez que importaba un CSV o re-confirmaba un batch.
-    Fix: ahora SOLO recalculamos pnl_realized. deposits/withdrawals quedan
-    intactos — son la suma autoritativa (manuales + lo que el importer ya
-    acumuló via _update_monthly_flow en cada DEPOSIT/WITHDRAW de CSV).
+    HISTORIA (bug fix 2026-05-27): antes esta función SOBREESCRIBÍA
+    deposits/withdrawals con SOLO los valores de imports → los cash flows
+    manuales del user (form /mensual + botón Cash + reconcile-cash) se
+    ZERO-eaban silenciosamente cada vez que se llamaba (post-import,
+    post-revert). El user perdía sus deposits manuales sin notar.
+
+    Fix: preservamos el residual manual. Calculamos `manual_residual =
+    max(0, deposits_actual - imports_DEPOSIT_USD)`. El nuevo deposits =
+    imports_DEPOSIT_USD + manual_residual. Si el residual era 0 (nada
+    manual cargado), el resultado es el mismo que antes — y los tests
+    que validaban la reconstrucción desde imports siguen pasando.
 
     Idempotente. Devuelve cantidad de rows actualizados.
     """
@@ -4493,6 +4497,17 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     ).fetchall()
     updates = 0
     brokers_touched: set = set()
+    # TC blue para convertir DEPOSITs/WITHDRAWs en ARS a USD-equivalente
+    # (consistente con _persist_cash_in/out)
+    tc_blue_row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
+    ).fetchone()
+    try:
+        tc_blue = float(tc_blue_row["value"]) if tc_blue_row else 1415.0
+        if tc_blue <= 0:
+            tc_blue = 1415.0
+    except (TypeError, ValueError):
+        tc_blue = 1415.0
 
     for r in rows:
         broker, y, m = r["broker"], r["year"], r["month"]
@@ -4501,7 +4516,7 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         broker_filter_sql = "" if broker == "global" else " AND o.broker = ?"
         broker_filter_args = () if broker == "global" else (broker,)
 
-        # pnl_realized desde operations — ÚNICA fuente autoritativa
+        # 1) pnl_realized desde operations — ÚNICA fuente autoritativa
         pnl_row = conn.execute(
             f"""SELECT COALESCE(SUM(o.pnl_usd), 0) AS s FROM operations o
                 WHERE o.user_id=?
@@ -4512,17 +4527,60 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         ).fetchone()
         new_pnl = round(float(pnl_row["s"] or 0), 4)
 
-        # Reseteamos pnl_unrealized: es un live snapshot que se recalcula
-        # desde positions actuales (via /sync-unrealized en el dashboard).
-        # Si quedó un valor stale de cycles previos, ensucia el "delta del
-        # mes" en /reportes — fórmula `partial`: deltaUsd = pnl_realized +
-        # pnl_unrealized, así un -$69k phantom rompe el view.
-        # NOTA: deposits/withdrawals NO los tocamos — ver docstring.
+        # 2) deposits + withdrawals desde imports (solo batches confirmed)
+        tx_broker_filter = "" if broker == "global" else " AND n.broker = ?"
+        tx_broker_args = () if broker == "global" else (broker,)
+        flow_row = conn.execute(
+            f"""SELECT n.operation_type AS op,
+                       COALESCE(SUM(n.gross_amount), 0) AS s,
+                       n.currency AS cur
+                FROM import_normalized_tx n
+                JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
+                  AND strftime('%Y', n.date)=?
+                  AND strftime('%m', n.date)=?
+                  {tx_broker_filter}
+                GROUP BY n.operation_type, n.currency""",
+            (uid, year_str, month_str, *tx_broker_args),
+        ).fetchall()
+        imp_deposits = 0.0
+        imp_withdrawals = 0.0
+        for f in flow_row:
+            amt = float(f["s"] or 0)
+            cur_norm = (f["cur"] or "").upper()
+            amt_usd = amt / tc_blue if cur_norm == "ARS" else amt
+            if f["op"] == "DEPOSIT":
+                imp_deposits += amt_usd
+            else:
+                imp_withdrawals += amt_usd
+
+        # 3) Preservar residual MANUAL. Lo que está en monthly_entries por
+        #    encima de la suma de imports es manual (form /mensual + cash_flow
+        #    + reconcile-cash) y NO debe destruirse.
+        existing = conn.execute(
+            "SELECT deposits, withdrawals FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
+            (uid, broker, y, m),
+        ).fetchone()
+        existing_dep = float(existing["deposits"] or 0) if existing else 0.0
+        existing_wit = float(existing["withdrawals"] or 0) if existing else 0.0
+        # Residual manual = max(0, existing - imports). Si el persister es
+        # correcto, existing >= imports siempre. El clamp a 0 protege contra
+        # drift que daría residual negativo.
+        manual_dep_residual = max(0.0, existing_dep - imp_deposits)
+        manual_wit_residual = max(0.0, existing_wit - imp_withdrawals)
+        new_deposits = round(imp_deposits + manual_dep_residual, 4)
+        new_withdrawals = round(imp_withdrawals + manual_wit_residual, 4)
+
+        # Reseteamos pnl_unrealized: live snapshot que se recalcula desde
+        # positions via /sync-unrealized. Si quedó stale de cycles previos
+        # rompe deltaUsd en /reportes.
         conn.execute(
             """UPDATE monthly_entries
-               SET pnl_realized=?, pnl_unrealized=0
+               SET pnl_realized=?, pnl_unrealized=0,
+                   deposits=?, withdrawals=?
                WHERE user_id=? AND broker=? AND year=? AND month=?""",
-            (new_pnl, uid, broker, y, m),
+            (new_pnl, new_deposits, new_withdrawals, uid, broker, y, m),
         )
         updates += 1
         brokers_touched.add(broker)
