@@ -4,6 +4,7 @@ import { isDemoMode, enableDemoMode, disableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { setUserId, setUserProperties, trackEvent } from '../utils/analytics'
+import { trackMetaEvent } from '../utils/metaPixel'
 
 const AuthContext = createContext(null)
 
@@ -115,6 +116,9 @@ export function AuthProvider({ children }) {
     // sign_up también (callsite del flujo verify-email).
     if (extra?.event_type === 'sign_up') {
       trackEvent('sign_up', { method: 'email' })
+      // Meta Pixel: evento de conversión de registro. Es el que optimizan las
+      // campañas de Meta Ads y con el que medimos el costo por signup.
+      trackMetaEvent('CompleteRegistration', { content_name: 'signup', status: true })
     } else {
       trackEvent('login', { method: 'email' })
     }

@@ -5,11 +5,16 @@ import { HelmetProvider } from 'react-helmet-async'
 import App from './App'
 import { ToastProvider } from './components/Toast'
 import { initAnalytics } from './utils/analytics'
+import { initMetaPixel } from './utils/metaPixel'
 import './index.css'
 
 // Inicializar GA4 al arranque. No-op si VITE_GA_MEASUREMENT_ID no está seteada
 // (dev local, o si decidimos no usar tracking).
 initAnalytics()
+
+// Inicializar Meta Pixel (Facebook/Instagram Ads). No-op mientras META_PIXEL_ID
+// esté vacío en utils/metaPixel.js (o sea, hasta que tengamos la cuenta Meta).
+initMetaPixel()
 
 // ─── Auto-reload on stale chunk error ────────────────────────────────────────
 // Safari (especialmente iOS) es agresivo cacheando HTML aunque el header

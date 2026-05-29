@@ -12,6 +12,7 @@ import AICoachDrawer from './components/ai/AICoachDrawer'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import { trackPageView } from './utils/analytics'
+import { trackMetaPageView } from './utils/metaPixel'
 
 // ─── Eager imports: páginas del flujo no-autenticado ──────────────────────────
 // Estas son las primeras que ve un user sin login (Landing → Login →
@@ -129,6 +130,7 @@ function RouteTracker() {
     if (prev.current !== location.pathname) {
       trackRoute(prev.current, location.pathname)
       trackPageView(location.pathname)
+      trackMetaPageView()  // Meta Pixel — PageView en navegación SPA (retargeting)
       prev.current = location.pathname
     }
   }, [location.pathname])
