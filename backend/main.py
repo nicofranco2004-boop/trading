@@ -105,11 +105,25 @@ def clear_auth_cookie(response: Response) -> None:
 
 app = FastAPI(title="Rendi", docs_url=None, redoc_url=None)  # disable public docs in prod
 
-# CORS — origins explícitos (allow_credentials no admite "*"). En prod estos
-# son la URL del frontend (Vercel) seteada por env. En dev acepta los
-# puertos de Vite. allow_credentials=True es necesario para que el browser
-# acepte la cookie HttpOnly cross-origin.
-ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174").split(",")
+# CORS — origins explícitos (allow_credentials no admite "*"). Nota: el frontend
+# web pega a rutas relativas (/api/...) y Vercel proxea a Railway server-side,
+# así que en prod el browser NUNCA cruza origin y CORS casi no entra en juego.
+# Lo dejamos restringido igual, como defensa en profundidad, por si algún cliente
+# le pega directo al dominio de Railway desde un browser de otro origin.
+# Default environment-aware: prod cae a los dominios reales aunque falte la env
+# var; dev a los puertos de Vite. Overridable con ALLOWED_ORIGINS.
+_DEFAULT_ORIGINS = (
+    "https://rendi.finance,https://www.rendi.finance"
+    if os.environ.get("RENDI_ENV", "dev").lower() == "prod"
+    else "http://localhost:5173,http://localhost:5174"
+)
+# .strip() + filtro de vacíos: si la env var viene "a.com, b.com" (espacio tras
+# la coma), sin esto el segundo origin quedaría " b.com" y nunca matchearía.
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
