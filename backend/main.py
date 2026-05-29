@@ -3995,6 +3995,24 @@ def _fetch_one(yf_ticker: str):
         return None
 
 
+def _fetch_prev_close_one(yf_ticker: str):
+    """Fallback de cierre anterior para símbolos cuya serie .history() trae <2
+    puntos. Pasa con CEDEARs muy ilíquidos (ej. COIN.BA, META.BA): .history()
+    devuelve sólo la vela de hoy, así que iloc[-2] no existe — pero
+    fast_info.previous_close SÍ expone el cierre del día hábil anterior.
+
+    Para símbolos líquidos fast_info.previous_close coincide con iloc[-2]
+    (validado con GGAL.BA), así que usarlo como fallback no introduce
+    inconsistencia con el path principal del batch."""
+    try:
+        fi = yf.Ticker(yf_ticker).fast_info
+        pc = getattr(fi, "previous_close", None)
+        pc = float(pc) if pc is not None else None
+        return pc if pc is not None and not math.isnan(pc) and pc > 0 else None
+    except Exception:
+        return None
+
+
 # ─── Bonos AR — live price via data912.com ───────────────────────────────────
 # data912 expone cotizaciones live de BYMA (que yfinance no cubre para bonos
 # AR). Convención de los sufijos en data912:
@@ -4327,6 +4345,16 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
                         pass
     except Exception:
         pass
+
+    # Fallback per-símbolo: para los que el batch .history() no resolvió (serie
+    # con <2 puntos — CEDEARs ilíquidos como COIN.BA/META.BA), probamos
+    # fast_info.previous_close, que tiene el cierre anterior aunque la serie no.
+    # Mismo patrón que el fallback _fetch_one de /api/prices. Acotado a
+    # MAX_SYMBOLS y sólo sobre cache misses → barato.
+    for sym in [s for s in uncached_symbols if result[s] is None]:
+        pc = _fetch_prev_close_one(sym_to_yf[sym])
+        if pc is not None:
+            result[sym] = pc
 
     _prevclose_cache_set({sym: result[sym] for sym in uncached_symbols})
     return result
