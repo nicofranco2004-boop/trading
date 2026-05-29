@@ -121,7 +121,7 @@ function KpiCell({ label, value, sub, tone, hero }) {
     'text-ink-0'
   return (
     <div className="px-4 py-3 border-r border-line/40 last:border-r-0 flex-1 min-w-[150px]">
-      <div className="text-[9px] font-mono uppercase tracking-label text-ink-3 leading-none">{label}</div>
+      <div className="text-[9px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
       <div className={`mt-2 font-medium tabular num leading-none ${hero ? 'text-3xl tracking-tight' : 'text-2xl'} ${valueColor}`}>
         {value}
       </div>

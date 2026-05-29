@@ -56,6 +56,97 @@ export function buildPortfolioValueSeries(snapshots, days = null, liveValue = nu
 
 
 /**
+ * netDepositedOf — baseline para Total Return de un snapshot.
+ * Phase 6+ guarda `net_deposited`; snapshots legacy lo tienen en 0 → fallback
+ * a `total_invested` (cost basis) para no romper el cálculo. Misma convención
+ * que buildPortfolioValueSeries / buildEvolutionFromSnapshots.
+ */
+function netDepositedOf(s) {
+  return (s.net_deposited && s.net_deposited > 0) ? s.net_deposited : (s.total_invested || 0)
+}
+
+/**
+ * computeReturnDelta
+ * ──────────────────
+ * Δ(Total Return) entre "hoy" y un punto de referencia, EXCLUYENDO cashflows
+ * (depósitos / retiros). Es la base de `computeDailyPnl` (referencia = cierre
+ * anterior) y de la variación mensual (referencia = cierre del mes pasado).
+ *
+ * EL BUG QUE CORRIGE: el cálculo viejo era `Δtotal_value` (valor de hoy − valor
+ * de referencia). Pero total_value mezcla aportes con ganancias: si retirás
+ * US$110, total_value baja US$110 y se mostraba "−$110" aunque no hayas perdido
+ * un centavo. Lo mismo al revés con un depósito (variación inflada).
+ *
+ * FÓRMULA CORRECTA = Δ(Total Return), donde Total Return = value − net_deposited:
+ *
+ *   variación = (value − net_deposited)_hoy − (value − net_deposited)_referencia
+ *
+ * Esto equivale exactamente a "(realizado + no realizado) hoy − (realizado +
+ * no realizado) en la referencia": value − net_deposited ES la ganancia
+ * acumulada sobre el capital aportado (= realizado + no realizado).
+ *
+ * Usa el valor LIVE de hoy (si se pasa, refleja precios actuales) contra el
+ * snapshot de referencia. Sin liveValue, usa el snapshot más reciente como "hoy".
+ *
+ * @param {Array}  snapshots               [{ date, total_value, total_invested, net_deposited }]
+ * @param {Object} [opts]
+ * @param {number} [opts.liveValue]         valor total USD actual (mark-to-market en vivo)
+ * @param {number} [opts.liveNetDeposited]  net_deposited actual USD (baseline + flujos)
+ * @param {string} [opts.sinceDate]         ISO (YYYY-MM-DD). Referencia = snapshot más
+ *   reciente ANTERIOR a esta fecha (ej: cierre del mes pasado para month-to-date).
+ *   Si empezaste DENTRO del período (no hay snapshot previo) cae al más antiguo.
+ *   Sin sinceDate → modo diario: referencia = cierre más reciente anterior a hoy.
+ * @returns {null | { usd:number, pct:number, prevDate:string, dayDiff:number }}
+ */
+export function computeReturnDelta(snapshots, { liveValue = null, liveNetDeposited = null, sinceDate = null } = {}) {
+  if (!snapshots?.length) return null
+  const today = new Date().toISOString().slice(0, 10)
+  // Orden DESC por fecha — [0] = más reciente.
+  const desc = [...snapshots].sort((a, b) => (a.date < b.date ? 1 : -1))
+
+  // "Hoy": preferimos el valor live (refleja la cartera ahora). Fallback al snap más reciente.
+  let todayValue, todayNetDep
+  if (liveValue != null) {
+    todayValue = +liveValue
+    todayNetDep = liveNetDeposited != null ? +liveNetDeposited : netDepositedOf(desc[0])
+  } else {
+    todayValue = +(desc[0].total_value || 0)
+    todayNetDep = netDepositedOf(desc[0])
+  }
+
+  // Referencia (cierre del período anterior).
+  let prev
+  if (sinceDate != null) {
+    // Cierre más reciente ANTES del inicio del período (ej: último día del mes pasado).
+    prev = desc.find(s => s.date < sinceDate)
+    // Empezaste dentro del período → no hay cierre previo: usamos el más antiguo.
+    if (!prev) prev = desc[desc.length - 1]
+  } else if (liveValue != null) {
+    // Modo diario con live: cierre más reciente con fecha < hoy (saltea el snap de hoy).
+    prev = desc.find(s => s.date < today)
+  } else {
+    prev = desc[1]  // modo diario sin live: penúltimo snapshot
+  }
+  if (!prev || !prev.total_value) return null
+
+  const usd = (todayValue - todayNetDep) - ((prev.total_value || 0) - netDepositedOf(prev))
+  const prevValue = prev.total_value || 0
+  const pct = prevValue > 0 ? usd / prevValue : 0
+  const dayDiff = Math.max(1, Math.round((new Date(today) - new Date(prev.date)) / 86_400_000))
+  return { usd, pct, prevDate: prev.date, dayDiff }
+}
+
+/**
+ * computeDailyPnl — P&L del día (variación vs el cierre anterior).
+ * Wrapper de computeReturnDelta sin `sinceDate` (modo diario).
+ * Ver computeReturnDelta para la explicación del cálculo cashflow-adjusted.
+ */
+export function computeDailyPnl(snapshots, opts = {}) {
+  return computeReturnDelta(snapshots, { ...opts, sinceDate: null })
+}
+
+
+/**
  * buildEvolutionFromSnapshots
  * ───────────────────────────
  * Phase 7 — daily-granularity portfolio evolution from snapshots.

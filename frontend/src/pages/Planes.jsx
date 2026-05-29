@@ -878,7 +878,7 @@ function PlanQuotaGrid({ quotas, variant }) {
   const accent = variantAccent(variant)
   return (
     <div>
-      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">Cuotas semanales</div>
+      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">Cuotas semanales</div>
       <div className="grid grid-cols-3 gap-2">
         {quotas.map((q, i) => (
           <div key={i} className="border border-line/60 rounded bg-bg-2/30 px-2 py-2 text-center">

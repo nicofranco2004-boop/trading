@@ -265,7 +265,7 @@ function ReportsFreeTeaser({ yearGroups }) {
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
             <span className="text-[11px] font-mono uppercase tracking-label text-ink-0">Tu último mes</span>
           </div>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Vista previa Free</span>
+          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Vista previa Free</span>
         </header>
         <MonthCard month={lastMonth.month} defaultExpanded={true} />
       </div>
@@ -295,7 +295,7 @@ function PeriodTabs({ value, onChange }) {
   const tabs = ['day', 'week', 'month', 'year']
   return (
     <div className="flex items-center gap-2 mb-4">
-      <span className="text-[10px] font-mono uppercase tracking-label text-ink-3 mr-1">Período</span>
+      <span className="text-[11px] font-mono uppercase tracking-label text-ink-2 mr-1">Período</span>
       <div className="inline-flex bg-bg-2 border border-line rounded-sm p-0.5">
         {tabs.map(t => (
           <button
@@ -378,7 +378,7 @@ function PeriodRow({ period, expanded, onToggle }) {
             </span>
           )}
           {empty && (
-            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
               Sin actividad
             </span>
           )}
@@ -671,7 +671,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 divide-x divide-y md:divide-y-0 divide-line/40">
           {kpis.map((k, i) => (
             <div key={i} className="px-4 py-3 min-w-0">
-              <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-1.5">{k.label}</div>
+              <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1.5">{k.label}</div>
               <div className={`text-base font-medium tabular truncate ${
                 k.tone === 'pos' ? 'text-rendi-pos' : k.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
               }`}>

@@ -98,7 +98,7 @@ export default function BrokerStep({ onNext, onBack }) {
 
       {/* Grid de brokers populares */}
       <div className="mb-5">
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-3">
+        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-3">
           / brokers populares en argentina
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -116,7 +116,7 @@ export default function BrokerStep({ onNext, onBack }) {
                 }`}
               >
                 <div className="text-sm font-medium text-ink-0">{b.name}</div>
-                <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mt-0.5">
+                <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mt-0.5">
                   {b.tag}
                 </div>
               </button>
@@ -138,7 +138,7 @@ export default function BrokerStep({ onNext, onBack }) {
           </button>
         ) : (
           <div>
-            <label className="block text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+            <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
               / nombre del broker
             </label>
             <input
@@ -156,7 +156,7 @@ export default function BrokerStep({ onNext, onBack }) {
 
       {/* Moneda (siempre visible) */}
       <div className="mb-6">
-        <label className="block text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+        <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
           / moneda principal de la cuenta
         </label>
         <div className="space-y-2">

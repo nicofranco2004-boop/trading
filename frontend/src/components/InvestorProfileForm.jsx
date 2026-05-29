@@ -121,7 +121,7 @@ export default function InvestorProfileForm() {
           7 preguntas rápidas para que el Coach IA te conozca mejor. Se guarda automáticamente.
           Las respuestas no se comparten — solo viajan al prompt de la IA cuando le hablás.
         </p>
-        <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 whitespace-nowrap">
+        <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 whitespace-nowrap">
           {answered}/{QUESTIONS.length} respondidas
           {saveState.justSaved && (
             <span className="ml-2 inline-flex items-center gap-1 text-rendi-pos">
@@ -137,7 +137,7 @@ export default function InvestorProfileForm() {
         <div className="space-y-4">
           {QUESTIONS.map(q => (
             <fieldset key={q.id} className="border-t border-line/30 pt-3 first:border-t-0 first:pt-0">
-              <legend className="text-[11px] font-mono uppercase tracking-caps text-ink-3 mb-1">
+              <legend className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">
                 {q.label}
               </legend>
               {q.hint && (

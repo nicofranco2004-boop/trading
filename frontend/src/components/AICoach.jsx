@@ -292,7 +292,7 @@ export default function AICoach({ snapshot, suggested }) {
       {availableQuestions.length > 0 && (
         <div className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40">
           <div className="flex items-center justify-between mb-2">
-            <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+            <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
               {messages.length === 0 ? 'Preguntas sugeridas' : 'Otra pregunta'}
             </p>
             <span className="text-[10px] font-mono text-ink-3 tabular">

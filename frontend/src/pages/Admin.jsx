@@ -225,7 +225,7 @@ function ConversionPanel({ data }) {
           <Sparkles size={16} className="text-data-violet" />
           <h2 className="font-semibold text-ink-0">Conversión Pro</h2>
         </div>
-        <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+        <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
           {totalEvents} eventos totales · {data.last_30d_total} en 30 días
         </span>
       </div>
@@ -344,7 +344,7 @@ function ConversionPanel({ data }) {
 function ConvCell({ label, value, hint }) {
   return (
     <div className="border border-line/40 rounded-sm bg-bg-1/40 px-3 py-2.5">
-      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none">{label}</div>
+      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none">{label}</div>
       <div className="mt-1.5 text-xl font-medium tabular num leading-none text-ink-0">{value}</div>
       <div className="text-[10px] text-ink-3 mt-1 truncate">{hint}</div>
     </div>

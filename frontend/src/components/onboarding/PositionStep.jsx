@@ -197,7 +197,7 @@ function ManualForm({ broker, onNext, onBack }) {
       <div className="space-y-4 max-w-md mx-auto">
         {/* Ticker */}
         <div>
-          <label className="block text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+          <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
             / ticker
           </label>
           <input
@@ -220,7 +220,7 @@ function ManualForm({ broker, onNext, onBack }) {
         {/* Cantidad + Precio en 2 cols */}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+            <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
               / cantidad
             </label>
             <input
@@ -235,7 +235,7 @@ function ManualForm({ broker, onNext, onBack }) {
             />
           </div>
           <div>
-            <label className="block text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+            <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
               / precio promedio
             </label>
             <input

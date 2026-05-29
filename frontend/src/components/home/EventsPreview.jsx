@@ -66,7 +66,7 @@ export default function EventsPreview() {
         </div>
         <Link
           to="/novedades?tab=eventos"
-          className="text-[10px] text-ink-3 hover:text-ink-0 inline-flex items-center gap-1 font-mono uppercase tracking-caps"
+          className="text-[11px] text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 font-mono uppercase tracking-caps"
         >
           Calendario <ArrowRight size={10} strokeWidth={1.75} aria-hidden="true" />
         </Link>
@@ -96,7 +96,7 @@ export default function EventsPreview() {
                     <div className="text-sm text-ink-1 truncate">
                       {e.details?.title || e.ticker || TYPE_LABEL[e.event_type]}
                     </div>
-                    <div className="text-[10px] text-ink-3 font-mono uppercase tracking-caps">
+                    <div className="text-[11px] text-ink-2 font-mono uppercase tracking-caps">
                       {TYPE_LABEL[e.event_type] || e.event_type}
                       {e.ticker && e.ticker !== e.details?.title && ` · ${e.ticker}`}
                     </div>

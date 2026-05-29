@@ -120,7 +120,7 @@ export default function GuidePage({
                 to={prev.to}
                 className="block border border-line/60 hover:border-line-3 rounded-sm px-4 py-3 transition-colors text-left group"
               >
-                <div className="inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">
+                <div className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">
                   <ArrowLeft size={11} strokeWidth={1.75} />
                   Anterior
                 </div>
@@ -133,7 +133,7 @@ export default function GuidePage({
                 to={next.to}
                 className="block border border-line/60 hover:border-line-3 rounded-sm px-4 py-3 transition-colors text-right group"
               >
-                <div className="inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1 justify-end w-full">
+                <div className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1 justify-end w-full">
                   Siguiente
                   <ArrowRight size={11} strokeWidth={1.75} />
                 </div>

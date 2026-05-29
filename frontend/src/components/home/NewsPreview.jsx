@@ -44,7 +44,7 @@ export default function NewsPreview() {
         </div>
         <Link
           to="/novedades?tab=noticias"
-          className="text-[10px] text-ink-3 hover:text-ink-0 inline-flex items-center gap-1 font-mono uppercase tracking-caps"
+          className="text-[11px] text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 font-mono uppercase tracking-caps"
         >
           Ver todas <ArrowRight size={10} strokeWidth={1.75} aria-hidden="true" />
         </Link>

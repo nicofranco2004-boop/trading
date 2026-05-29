@@ -114,13 +114,13 @@ export default function AnalysisDrawer({
 
       {/* Cap alcanzado */}
       {followupsExhausted && !followupLoading && (
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 text-center pt-2">
+        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 text-center pt-2">
           Ya profundizaste una vez. Refrescá para hacer otra pregunta.
         </div>
       )}
 
       {/* Footer meta — cached + usage badge (weekly) */}
-      <div className="pt-3 border-t border-line/40 flex items-center justify-between text-[10px] font-mono uppercase tracking-caps text-ink-3">
+      <div className="pt-3 border-t border-line/40 flex items-center justify-between text-[11px] font-mono uppercase tracking-caps text-ink-2">
         <span>
           {loading ? 'Generando…' : cached ? 'Análisis cacheado · ≤24h' : 'Generado ahora'}
         </span>
@@ -190,7 +190,7 @@ export default function AnalysisDrawer({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5 mb-1.5">
               <Sparkles size={12} strokeWidth={1.75} className="text-data-violet" />
-              <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+              <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
                 {title}
               </span>
             </div>

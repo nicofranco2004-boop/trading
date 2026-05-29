@@ -428,7 +428,7 @@ function PlanHeroFree({ usage }) {
         {/* Left: tier badge + headline */}
         <div className="flex-1 min-w-[240px]">
           <div className="flex items-center gap-2 mb-1.5">
-            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
+            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Plan actual</span>
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-bg-2 text-ink-2">
               FREE
             </span>
@@ -444,7 +444,7 @@ function PlanHeroFree({ usage }) {
         {/* Middle: usage strip compacto */}
         <div className="min-w-[180px]">
           <div className="flex items-baseline justify-between gap-3 mb-1">
-            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA</span>
+            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Uso IA</span>
             <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
           </div>
           <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
@@ -609,7 +609,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
     <section className={`mb-6 border rounded-lg p-5 flex items-center gap-5 flex-wrap ${containerStyle}`}>
       <div className="flex-1 min-w-[240px]">
         <div className="flex items-center gap-2 mb-1.5">
-          <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Plan actual</span>
+          <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Plan actual</span>
           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${badgeStyle}`}>
             {tierLabel}
           </span>
@@ -624,7 +624,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
 
       <div className="min-w-[180px]">
         <div className="flex items-baseline justify-between gap-3 mb-1">
-          <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Uso IA</span>
+          <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Uso IA</span>
           <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
         </div>
         <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
@@ -643,7 +643,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
       {hasCredit && anchorPlan && anchorPeriod && (
         <div className="min-w-[180px] border-l border-line/40 pl-5">
           <div className="flex items-baseline justify-between gap-3 mb-1">
-            <span className="font-mono text-[10px] uppercase tracking-caps text-ink-3">Crédito</span>
+            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Crédito</span>
             <span className="font-mono text-xs text-ink-1 tabular">
               {Math.round(creditDays)} días
             </span>

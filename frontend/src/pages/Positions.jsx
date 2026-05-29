@@ -58,6 +58,10 @@ export default function Positions() {
 function PositionsDesktop() {
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
+  // Cierre del día anterior por símbolo (mismo keying que `prices`: ASSET para
+  // USD, ASSET.BA para ARS). Base de la variación diaria por posición. Se
+  // fetchea en paralelo a /prices y NO bloquea el render si falla.
+  const [prevClose, setPrevClose] = useState({})
   const [config, setConfig] = useState({ tc_mep: 1415, tc_blue: 1415 })
   const [dolar, setDolar] = useState(null)
   const [brokers, setBrokers] = useState([])
@@ -337,6 +341,12 @@ function PositionsDesktop() {
       setPrices(data)
       setLastUpdated(new Date())
     } catch {}
+    // Prev-close para la variación diaria por posición. Endpoint aparte y
+    // best-effort: si falla, las celdas "Var. día" muestran '—' sin romper nada.
+    try {
+      const prev = await api.get(`/prices/prev-close?symbols=${all}`)
+      setPrevClose(prev)
+    } catch {}
   }
 
   function openAdd(broker) {
@@ -607,6 +617,21 @@ function PositionsDesktop() {
     return { valueArs, valueUsd, pnlArs, pnlUsd, pnlPct: realCostArs > 0 ? pnlArs / realCostArs : 0, priceArs, invUsd }
   }
 
+  // Variación del día por posición (market-based): (precio actual − cierre
+  // anterior) × cantidad, más el % de movimiento. Usa el MISMO precio que
+  // muestra la fila para que los números reconcilien. Devuelve null cuando es
+  // cash, falta el cierre anterior (símbolo sin cobertura yfinance, ej. bonos
+  // AR) o todavía no llegó el precio actual.
+  function dayVarOf(p, symbolKey, currentPrice) {
+    // Cash y precios manuales no tienen variación de mercado comparable: el
+    // precio override no proviene de la misma fuente que el cierre anterior.
+    if (p.is_cash || p.price_override) return null
+    const prev = prevClose[symbolKey]
+    if (prev == null || !(prev > 0) || currentPrice == null) return null
+    const perUnit = currentPrice - prev
+    return { amount: perUnit * (p.quantity || 0), pct: perUnit / prev }
+  }
+
   // sticky top-0 + bg matched al thead row para que al scrollear la tabla
   // (especialmente en mobile o brokers con muchas posiciones) el header
   // quede pegado arriba — convención fintech standard (Robinhood, Stripe).
@@ -779,6 +804,19 @@ function PositionsDesktop() {
         const showDetail = detailBrokers.has(broker.name)
         const r = computeBrokerValue(positions, prices, broker, tcBlue)
 
+        // Variación del día agregada del broker (suma de los Δ por posición con
+        // cierre anterior disponible). En la moneda nativa del broker. `hasDay`
+        // distingue "sin movimiento" (0) de "sin data" (todos los símbolos sin
+        // prev-close) → en ese caso el TOTAL muestra '—'.
+        let brokerDay = 0
+        let brokerHasDay = false
+        for (const p of bpos) {
+          const symKey = isARS ? p.asset + '.BA' : p.asset
+          const curPrice = p.price_override ?? prices[symKey]
+          const dv = dayVarOf(p, symKey, curPrice)
+          if (dv) { brokerDay += dv.amount; brokerHasDay = true }
+        }
+
         // ── Header (compartido) ────────────────────────────────────────────
         // Eyebrow 'Broker' + nombre prominente · badges discretos · métricas
         // inline · acciones a la derecha. Patrón specimen sheet del audit.
@@ -869,6 +907,7 @@ function PositionsDesktop() {
                       <th className={thClass}>P&L</th>
                       {showDetail && <th className={thClass}>P&L USD</th>}
                       <th className={thClass}>P&L %</th>
+                      <th className={thClass}>Var. día</th>
                       <th className={thClass}></th>
                     </tr>
                   </thead>
@@ -896,8 +935,9 @@ function PositionsDesktop() {
                         : c.pnlPct
                       const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
+                      const dvArs = dayVarOf(p, p.asset + '.BA', c.priceArs)
                       const expanded = isBond && expandedBonds.has(bondKey)
-                      const arsColSpan = showDetail ? 13 : 10
+                      const arsColSpan = showDetail ? 14 : 11
                       const pnlTooltip = (isBond && pnlContrib !== 0)
                         ? `P&L = mark-to-market (${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlContrib))} de ganancia realizada (cupones + parte de ganancia de amorts). Cash total cobrado: ARS ${ars(cobranzasCash)}.`
                         : undefined
@@ -969,6 +1009,16 @@ function PositionsDesktop() {
                           </td>
                           {showDetail && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—'}</td>}
                           <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
+                          <td className={`${tdClass} tabular`}>
+                            {dvArs ? (
+                              <div className="leading-tight">
+                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}ARS {ars(Math.abs(dvArs.amount))}</div>
+                                <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
+                              </div>
+                            ) : (
+                              <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
+                            )}
+                          </td>
                           <td className={tdClass}>
                             <div className="flex items-center gap-1 justify-end">
                               {!p.is_cash && (
@@ -1013,6 +1063,11 @@ function PositionsDesktop() {
                       <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
                         {r.invUsd > 0 ? pctSigned(r.pnlUsd / r.invUsd) : '—'}
                       </td>
+                      <td className="px-3 py-2.5 text-xs font-bold tabular">
+                        {brokerHasDay
+                          ? <span className={colorClass(brokerDay)}>{brokerDay >= 0 ? '+' : '-'}ARS {ars(Math.abs(brokerDay))}</span>
+                          : <span className="text-ink-3">—</span>}
+                      </td>
                       <td />
                     </tr>
                   </tfoot>
@@ -1039,6 +1094,7 @@ function PositionsDesktop() {
                     <th className={thClass}>Valor</th>
                     <th className={thClass}>P&L</th>
                     <th className={thClass}>P&L %</th>
+                    <th className={thClass}>Var. día</th>
                     <th className={thClass}></th>
                   </tr>
                 </thead>
@@ -1061,6 +1117,7 @@ function PositionsDesktop() {
                     const avgPrice = (!p.is_cash && p.quantity > 0)
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
+                    const dvUsd = dayVarOf(p, p.asset, c.price)
                     const expanded = isBond && expandedBonds.has(bondKey)
                     const pnlTooltip = (isBond && pnlContrib !== 0)
                       ? `P&L = mark-to-market (${c.pnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnl || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}USD ${usd(Math.abs(pnlContrib))} de ganancia realizada (cupones + ganancia de amorts). Cash total cobrado: USD ${usd(cobranzasCash)}.`
@@ -1122,6 +1179,16 @@ function PositionsDesktop() {
                           )}
                         </td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
+                        <td className={`${tdClass} tabular`}>
+                          {dvUsd ? (
+                            <div className="leading-tight">
+                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}USD {usd(Math.abs(dvUsd.amount))}</div>
+                              <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
+                            </div>
+                          ) : (
+                            <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
+                          )}
+                        </td>
                         <td className={tdClass}>
                           <div className="flex items-center gap-1 justify-end">
                             {!p.is_cash && (
@@ -1138,7 +1205,7 @@ function PositionsDesktop() {
                       {expanded && (
                         <BondDetailRow
                           p={p}
-                          colSpan={10}
+                          colSpan={11}
                           summary={bondSummary}
                           isARS={false}
                           currentPrice={c.price}
@@ -1162,6 +1229,11 @@ function PositionsDesktop() {
                     <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{r.pnlUsd >= 0 ? '+' : '-'}USD {usd(Math.abs(r.pnlUsd))}</td>
                     <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
                       {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs font-bold tabular">
+                      {brokerHasDay
+                        ? <span className={colorClass(brokerDay)}>{brokerDay >= 0 ? '+' : '-'}USD {usd(Math.abs(brokerDay))}</span>
+                        : <span className="text-ink-3">—</span>}
                     </td>
                     <td />
                   </tr>
@@ -1332,7 +1404,7 @@ function PositionsDesktop() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-0.5">
                             <span className="text-sm font-semibold text-ink-0">{p.asset}</span>
-                            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded">
+                            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded">
                               {p.broker}
                             </span>
                           </div>

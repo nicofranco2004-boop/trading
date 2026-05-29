@@ -1850,7 +1850,7 @@ function InsightsDesktop({ _embeddedTab }) {
         {/* Selector de benchmark — segunda fila debajo del título.
             Opciones cambian según moneda (USD vs ARS). Persisted en localStorage. */}
         <div className="flex items-center gap-2 flex-wrap mb-4 -mt-1">
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mr-1">
+          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mr-1">
             Comparar contra:
           </span>
           {benchmarkOptions.map(opt => (
@@ -2924,7 +2924,7 @@ function InsightsDesktop({ _embeddedTab }) {
           <>
             {/* Grupo USD: alternativas en dólares */}
             <div className="mb-3">
-              <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+              <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
                 Alternativas en USD
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -2972,7 +2972,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
             {/* Grupo ARS: alternativas en pesos */}
             <div>
-              <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+              <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
                 Alternativas en ARS
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -3853,7 +3853,7 @@ function AllocationRow({ label, buckets, tone = 'muted' }) {
   return (
     <div>
       <div className="flex items-baseline justify-between mb-0.5">
-        <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">{label}</span>
+        <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">{label}</span>
         <span className="text-[10px] font-mono text-ink-3 tabular">
           {buckets.cash}/{buckets.fixed_income}/{buckets.equity}{buckets.alternative > 0 ? `/${buckets.alternative}` : ''}
         </span>

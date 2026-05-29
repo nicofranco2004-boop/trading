@@ -30,7 +30,7 @@ export default function Privacidad() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-12">
-        <p className="font-mono text-[10px] uppercase tracking-caps text-ink-3 mb-2">Legal</p>
+        <p className="font-mono text-[11px] uppercase tracking-caps text-ink-2 mb-2">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de Privacidad</h1>
         <p className="text-sm text-ink-3 mb-10">Última actualización: 24 de mayo de 2026</p>
 

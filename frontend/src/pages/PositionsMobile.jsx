@@ -73,6 +73,10 @@ export default function PositionsMobile() {
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
+  // Cierre del día hábil anterior por símbolo (mismo shape que /prices) para la
+  // columna "Var. día". Endpoint aparte y best-effort: si falla, las celdas
+  // muestran "—" sin romper el resto de la vista.
+  const [prevClose, setPrevClose] = useState({})
   const [dolar, setDolar] = useState(null)
   const [loading, setLoading] = useState(true)
   // Loading separado para precios live — la página se muestra apenas
@@ -84,6 +88,9 @@ export default function PositionsMobile() {
   const [sortBy, setSortBy] = useState('value')
   const [query, setQuery] = useState('')
   const [brokerFilter, setBrokerFilter] = useState(ALL_FILTER)
+  // "Detalle" (paridad con desktop): en brokers ARS revela el equivalente en
+  // USD de la variación diaria y del P&L, que por defecto van en pesos.
+  const [showDetail, setShowDetail] = useState(false)
   // Bottom sheet con las 4 acciones rápidas: Registrar compra, Registrar
   // venta, Cash, Exportar CSV. Antes el botón "+ Nueva" solo abría el
   // add-flow; ahora pone parity con el desktop que tiene los 4 atajos.
@@ -308,6 +315,8 @@ export default function PositionsMobile() {
     const all = [...arsSyms, ...usdtSyms].join(',')
     if (!all) return
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
+    // Prev-close para "Var. día" — best-effort, no bloquea ni rompe si falla.
+    try { setPrevClose(await api.get(`/prices/prev-close?symbols=${all}`)) } catch { /* silent */ }
   }
 
   async function addBroker(e) {
@@ -366,7 +375,10 @@ export default function PositionsMobile() {
       let priceLocal = null
       if (p.is_cash) {
         valueUsd = isAR ? invested / tcBlue : invested
-        return { ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null, isAR }
+        return {
+          ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null,
+          pnlLocal: null, dayVarLocal: null, dayVarUsd: null, dayVarPct: null, isAR,
+        }
       } else if (isAR) {
         priceLocal = p.price_override ?? prices[p.asset + '.BA']
         if (priceLocal) valueUsd = (priceLocal * qty) / tcBlue
@@ -379,9 +391,29 @@ export default function PositionsMobile() {
       const investedUsd = isAR ? invested / tcBlue : invested
       const pnlUsd = valueUsd - investedUsd
       const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
-      return { ...p, valueUsd, priceLocal, pnlUsd, pnlPct, isAR }
+      // P&L en la moneda local del broker (ARS para brokers en pesos, USD resto).
+      const pnlLocal = isAR ? pnlUsd * tcBlue : pnlUsd
+
+      // ─── Variación diaria de mercado (precio hoy vs cierre anterior) ────────
+      // Montos en la MISMA moneda local que el precio: ARS para .BA, USD resto.
+      // Saltamos precios manuales (price_override no comparte fuente con el
+      // cierre de mercado → comparación inválida). Cash ya retornó arriba.
+      let dayVarLocal = null, dayVarUsd = null, dayVarPct = null
+      if (!p.price_override && priceLocal != null) {
+        const prev = prevClose[isAR ? p.asset + '.BA' : p.asset]
+        if (prev != null && prev > 0) {
+          const perUnit = priceLocal - prev
+          dayVarLocal = perUnit * qty
+          dayVarUsd = isAR ? dayVarLocal / tcBlue : dayVarLocal
+          dayVarPct = perUnit / prev
+        }
+      }
+      return {
+        ...p, valueUsd, priceLocal, pnlUsd, pnlPct, pnlLocal,
+        dayVarLocal, dayVarUsd, dayVarPct, isAR,
+      }
     })
-  }, [positions, prices, arsBrokerSet, tcBlue])
+  }, [positions, prices, prevClose, arsBrokerSet, tcBlue])
 
   // Filtro de búsqueda libre (asset o broker name)
   const filteredBySearch = useMemo(() => {
@@ -443,6 +475,14 @@ export default function PositionsMobile() {
   const visibleCount = brokerFilter === ALL_FILTER
     ? filteredByBroker.length
     : (flatList?.length || 0)
+  // El toggle "Detalle" solo aporta en brokers ARS (revela el equivalente USD).
+  // Si el user no tiene ningún broker en pesos, no mostramos el botón.
+  const hasArs = brokers.some(b => b.currency === 'ARS')
+  // Moneda del broker seleccionado (encabezado de columnas en vista filtrada).
+  // En "Todos", cada sección define la suya.
+  const selectedCurrency = brokerFilter === ALL_FILTER
+    ? null
+    : (brokers.find(b => b.name === brokerFilter)?.currency || 'USDT')
 
   if (loading) {
     // Skeleton mínimo en lugar de texto plano — el user ve inmediatamente
@@ -467,7 +507,7 @@ export default function PositionsMobile() {
       <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-2">
         <div className="flex items-baseline justify-between mb-2 gap-2">
           <div className="min-w-0">
-            <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1">
+            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1">
               Cartera total
             </div>
             <div className="text-xl font-medium tabular text-ink-0 leading-none">
@@ -490,7 +530,7 @@ export default function PositionsMobile() {
                 aria-label="Actualizando precios"
               />
             )}
-            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
               {visibleCount} pos
             </span>
             <button
@@ -548,22 +588,38 @@ export default function PositionsMobile() {
           </div>
         </div>
 
-        {/* Sort segmented — más respiro vertical (py 0.5 → py 1) */}
-        <div className="flex items-center gap-2">
-          <ArrowDownUp size={12} strokeWidth={1.75} className="text-ink-3" />
-          <div className="inline-flex bg-bg-2 p-1 rounded-md">
-            {SORT_OPTIONS.map(o => (
-              <button
-                key={o.id}
-                onClick={() => setSortBy(o.id)}
-                className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-caps rounded transition-colors ${
-                  sortBy === o.id ? 'bg-bg-3 text-ink-0' : 'text-ink-3 hover:text-ink-1'
-                }`}
-              >
-                {o.label}
-              </button>
-            ))}
+        {/* Sort segmented + toggle "Detalle" (este último solo si hay broker
+            ARS, que es donde aporta: revela el equivalente USD de var. día y P&L). */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <ArrowDownUp size={12} strokeWidth={1.75} className="text-ink-3" />
+            <div className="inline-flex bg-bg-2 p-1 rounded-md">
+              {SORT_OPTIONS.map(o => (
+                <button
+                  key={o.id}
+                  onClick={() => setSortBy(o.id)}
+                  className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-caps rounded transition-colors ${
+                    sortBy === o.id ? 'bg-bg-3 text-ink-0' : 'text-ink-3 hover:text-ink-1'
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
           </div>
+          {hasArs && (
+            <button
+              type="button"
+              onClick={() => setShowDetail(v => !v)}
+              aria-pressed={showDetail}
+              className={`px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-caps rounded-md transition-colors ${
+                showDetail ? 'bg-bg-3 text-ink-0' : 'bg-bg-2 text-ink-3 hover:text-ink-1'
+              }`}
+              title="Mostrar el equivalente en USD de la variación diaria y el P&L en brokers ARS"
+            >
+              Detalle USD
+            </button>
+          )}
         </div>
       </header>
 
@@ -590,6 +646,7 @@ export default function PositionsMobile() {
               broker={g.broker}
               positions={g.positions}
               totalUsd={g.totalUsd}
+              showDetail={showDetail}
               onEdit={() => setEditingBroker({ ...g.broker })}
               onDelete={() => deleteBrokerAction(g.broker)}
               onSellPosition={openSell}
@@ -601,18 +658,22 @@ export default function PositionsMobile() {
         </div>
       ) : (
         // Vista filtrada — lista plana del broker seleccionado
-        <ul className="divide-y divide-line/30">
-          {flatList?.map(p => (
-            <PositionRow
-              key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
-              p={p}
-              onSell={openSell}
-              onCashFlow={openCashFlow}
-              onEditPos={openEditPosition}
-              onDeletePos={deletePosition}
-            />
-          ))}
-        </ul>
+        <>
+          <ColumnHeader currency={selectedCurrency} />
+          <ul className="divide-y divide-line/30">
+            {flatList?.map(p => (
+              <PositionRow
+                key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
+                p={p}
+                showDetail={showDetail}
+                onSell={openSell}
+                onCashFlow={openCashFlow}
+                onEditPos={openEditPosition}
+                onDeletePos={deletePosition}
+              />
+            ))}
+          </ul>
+        </>
       )}
 
       {/* Modal: agregar broker */}
@@ -950,12 +1011,30 @@ function BrokerFilterChip({ active, onClick, label, currency }) {
   )
 }
 
+// ─── ColumnHeader ────────────────────────────────────────────────────────────
+// Fila de rótulos para que cada columna "diga" qué muestra (antes no había
+// labels y no se entendía qué era cada número). Currency-aware: en ARS la
+// var. día y el P&L van en pesos; el total siempre en USD (suma a la cartera).
+// El grid-template debe coincidir EXACTO con el de PositionRow para alinear.
+function ColumnHeader({ currency }) {
+  const code = String(currency || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
+  const numCls = 'flex flex-col items-end text-[9px] font-mono uppercase tracking-caps text-ink-3 leading-tight'
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_56px_64px_76px] gap-1.5 items-end px-3 py-1.5 bg-bg-1/50 border-b border-line/20">
+      <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 self-end">Activo</span>
+      <span className={numCls}><span>Var. día</span><span className="text-ink-3/60">{code}</span></span>
+      <span className={numCls}><span>{'P&L'}</span><span className="text-ink-3/60">{code}</span></span>
+      <span className={numCls}><span>Total</span><span className="text-ink-3/60">USD</span></span>
+    </div>
+  )
+}
+
 // ─── BrokerSection ─────────────────────────────────────────────────────────
 // Header con nombre del broker + currency + valor total + acciones edit/delete.
 // Debajo, las positions del broker (cash siempre al final).
 
 const BrokerSection = memo(function BrokerSection({
-  broker, positions, totalUsd, onEdit, onDelete,
+  broker, positions, totalUsd, showDetail, onEdit, onDelete,
   onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition,
 }) {
   // Color asignado por nombre — estable entre re-renders. Antes el header
@@ -1012,11 +1091,13 @@ const BrokerSection = memo(function BrokerSection({
           </button>
         </div>
       </div>
+      <ColumnHeader currency={broker.currency} />
       <ul className="divide-y divide-line/20">
         {positions.map(p => (
           <PositionRow
             key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
             p={p}
+            showDetail={showDetail}
             onSell={onSellPosition}
             onCashFlow={onCashFlowPosition}
             onEditPos={onEditPosition}
@@ -1046,7 +1127,7 @@ const BrokerSection = memo(function BrokerSection({
 // porque los callbacks se definen en el padre con closure sobre el state.
 // Esto corta los re-render de la fila cada vez que prices cambia.
 
-const PositionRow = memo(function PositionRow({ p, onSell, onCashFlow, onEditPos, onDeletePos }) {
+const PositionRow = memo(function PositionRow({ p, showDetail, onSell, onCashFlow, onEditPos, onDeletePos }) {
   const cur = p.isAR ? 'ARS' : 'USD'
   const [aiOpen, setAiOpen] = useState(false)
 
@@ -1146,40 +1227,69 @@ const PositionRow = memo(function PositionRow({ p, onSell, onCashFlow, onEditPos
       rowId={`${p.broker}:${p.asset}:${p.id || ''}`}
     >
       <div
-        className="flex items-center gap-3 px-4 py-3 hover:bg-bg-2/30 active:bg-bg-3 transition-colors cursor-pointer"
+        className="grid grid-cols-[minmax(0,1fr)_56px_64px_76px] gap-1.5 items-center px-3 py-3 hover:bg-bg-2/30 active:bg-bg-3 transition-colors cursor-pointer"
       >
-      <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={32} />
-
-      {/* Col 1: identificador */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-sm font-semibold text-ink-0 leading-none truncate">
+      {/* Col 1 — Activo: logo + ticker + (cantidad · moneda) */}
+      <div className="flex items-center gap-2 min-w-0">
+        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={28} />
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold text-ink-0 leading-none truncate">
             {p.asset}
-          </span>
-        </div>
-        <div className="text-[11px] font-mono text-ink-3 leading-none mt-1.5 truncate">
-          {p.is_cash ? 'Cash' : `${formatQty(p.quantity)} · ${cur}`}
+          </div>
+          <div className="text-[10px] font-mono text-ink-3 leading-none mt-1 truncate">
+            {p.is_cash ? 'Cash' : `${formatQty(p.quantity)} · ${cur}`}
+          </div>
         </div>
       </div>
 
-      {/* Col 2: P/L (oculto para cash — no tiene variación) */}
-      {!p.is_cash && (p.pnlUsd != null || p.pnlPct != null) && (
-        <div className="flex-shrink-0 text-right min-w-[72px]">
-          <div className={`text-sm font-medium tabular leading-none ${colorClass(p.pnlUsd)}`}>
-            {p.pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(p.pnlUsd)).toLocaleString('en-US')}
-          </div>
-          <div className={`text-[11px] font-mono tabular leading-none mt-1.5 ${colorClass(p.pnlPct)}`}>
-            {pctSigned(p.pnlPct)}
-          </div>
-        </div>
-      )}
+      {/* Col 2 — Var. día: variación de mercado (precio hoy vs cierre anterior) */}
+      <div className="text-right min-w-0">
+        {p.is_cash || p.dayVarLocal == null ? (
+          <span className="text-[11px] text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
+        ) : (
+          <>
+            <div className={`text-[13px] font-medium tabular leading-none ${colorClass(p.dayVarLocal)}`}>
+              {compactAmount(p.dayVarLocal, cur)}
+            </div>
+            <div className={`text-[10px] font-mono tabular leading-none mt-1 ${colorClass(p.dayVarPct)}`}>
+              {pctSigned(p.dayVarPct)}
+            </div>
+            {showDetail && p.isAR && p.dayVarUsd != null && (
+              <div className="text-[9px] font-mono tabular leading-none mt-1 text-ink-3">
+                {compactAmount(p.dayVarUsd, 'USD')}
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
-      {/* Col 3: valor actual */}
-      <div className="flex-shrink-0 text-right min-w-[78px]">
-        <div className="text-sm font-medium tabular text-ink-0 leading-none">
+      {/* Col 3 — P&L total (moneda del broker; USD revelado con "Detalle") */}
+      <div className="text-right min-w-0">
+        {p.is_cash || p.pnlLocal == null ? (
+          <span className="text-[11px] text-ink-3">—</span>
+        ) : (
+          <>
+            <div className={`text-[13px] font-medium tabular leading-none ${colorClass(p.pnlLocal)}`}>
+              {compactAmount(p.pnlLocal, cur)}
+            </div>
+            <div className={`text-[10px] font-mono tabular leading-none mt-1 ${colorClass(p.pnlPct)}`}>
+              {pctSigned(p.pnlPct)}
+            </div>
+            {showDetail && p.isAR && p.pnlUsd != null && (
+              <div className="text-[9px] font-mono tabular leading-none mt-1 text-ink-3">
+                {compactAmount(p.pnlUsd, 'USD')}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Col 4 — Total: valor actual, siempre en USD (suma a la cartera) */}
+      <div className="text-right min-w-0">
+        <div className="text-[13px] font-medium tabular text-ink-0 leading-none">
           ${Math.round(p.valueUsd).toLocaleString('en-US')}
         </div>
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mt-1.5">
+        <div className="text-[9px] font-mono uppercase tracking-caps text-ink-2 leading-none mt-1">
           USD
         </div>
       </div>
@@ -1204,6 +1314,25 @@ function formatQty(q) {
   if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('en-US')
   if (Math.abs(q) >= 1) return q.toFixed(2).replace(/\.00$/, '')
   return q.toFixed(4)
+}
+
+// Monto compacto para las celdas estrechas de la tabla mobile. En ARS los
+// montos son grandes (6-7 dígitos) y romperían el layout → se abrevian (k/M) y
+// van SIN símbolo (en AR "$" se lee como pesos, ambiguo acá; la columna ya está
+// rotulada "ARS"). USD va con "$" y separador de miles. Signo pegado al número.
+function compactAmount(n, currency) {
+  if (n == null || isNaN(n)) return '—'
+  const sign = n > 0 ? '+' : n < 0 ? '−' : ''
+  const abs = Math.abs(n)
+  if (String(currency).toUpperCase() === 'ARS') {
+    let body
+    if (abs >= 1e6) body = (abs / 1e6).toFixed(abs >= 1e7 ? 0 : 1) + 'M'
+    else if (abs >= 1e4) body = Math.round(abs / 1e3) + 'k'
+    else if (abs >= 1e3) body = (abs / 1e3).toFixed(1) + 'k'
+    else body = Math.round(abs).toLocaleString('es-AR')
+    return `${sign}${body}`
+  }
+  return `${sign}$${Math.round(abs).toLocaleString('en-US')}`
 }
 
 

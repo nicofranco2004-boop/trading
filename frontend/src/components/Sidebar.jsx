@@ -126,7 +126,7 @@ export default function Sidebar() {
             (acento violet) para que se note como feature distintivo. */}
         <div className="mb-3">
           {!collapsed && (
-            <p className="px-2.5 mb-1 font-mono text-[10px] uppercase tracking-label text-ink-3 font-medium">
+            <p className="px-2.5 mb-1 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">
               Asistente
             </p>
           )}
@@ -144,7 +144,7 @@ export default function Sidebar() {
         {allGroups.map((group, gi) => (
           <div key={group.label} className={gi > 0 ? 'mt-4' : ''}>
             {!collapsed && (
-              <p className="px-2.5 mb-1 font-mono text-[10px] uppercase tracking-label text-ink-3 font-medium">
+              <p className="px-2.5 mb-1 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">
                 {group.label}
               </p>
             )}

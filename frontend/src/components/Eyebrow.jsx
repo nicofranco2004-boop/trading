@@ -7,7 +7,7 @@
 //   <Eyebrow tone="red">Stale</Eyebrow>
 
 const TONE = {
-  default: 'text-ink-3',
+  default: 'text-ink-2',
   signal:  'text-rendi-pos',
   red:     'text-rendi-neg',
   warn:    'text-rendi-warn',
@@ -16,7 +16,7 @@ const TONE = {
 
 export default function Eyebrow({ children, tone = 'default', className = '' }) {
   return (
-    <span className={`font-mono text-[10px] sm:text-[11px] uppercase tracking-label font-medium ${TONE[tone] || TONE.default} ${className}`}>
+    <span className={`font-mono text-[11px] sm:text-xs uppercase tracking-label font-medium ${TONE[tone] || TONE.default} ${className}`}>
       {children}
     </span>
   )

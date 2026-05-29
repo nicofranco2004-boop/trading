@@ -227,7 +227,7 @@ function SummaryCell({ label, value, sub, tone, first }) {
               : 'text-ink-0'
   return (
     <div className={`px-4 py-3 flex-1 min-w-[120px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 leading-none">{label}</div>
+      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${color}`}>{value}</div>
       {sub && <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none">{sub}</div>}
     </div>
@@ -248,7 +248,7 @@ function BehavioralCard({ card, onClick }) {
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <Icon size={14} strokeWidth={1.75} className="text-ink-3" />
-            <span className="text-xs font-mono uppercase tracking-caps text-ink-3">{meta.label}</span>
+            <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
           </div>
           <Pill tone="off">Sin datos</Pill>
         </div>
@@ -266,7 +266,7 @@ function BehavioralCard({ card, onClick }) {
       <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2 min-w-0">
           <Icon size={14} strokeWidth={1.75} className={tone.accent} />
-          <span className="text-xs font-mono uppercase tracking-caps text-ink-3">{meta.label}</span>
+          <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
         </div>
         <Pill tone={tone.pill} dot={card.severity !== 'neutral' && card.severity !== 'off'}>
           {SEVERITY_LABEL[card.severity] || card.severity}
@@ -317,7 +317,7 @@ function BehavioralModal({ card, onClose }) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-1">
               <Icon size={14} strokeWidth={1.75} className={tone.accent} />
-              <span className="text-xs font-mono uppercase tracking-caps text-ink-3">{meta.label}</span>
+              <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
               <Pill tone={tone.pill} dot>{SEVERITY_LABEL[card.severity] || card.severity}</Pill>
             </div>
             <h2 className="text-lg font-medium text-ink-0 leading-tight">{card.title}</h2>
@@ -355,7 +355,7 @@ function BehavioralModal({ card, onClose }) {
           {/* Referencias académicas */}
           {card.references?.length > 0 && (
             <div className="border-t border-line/40 pt-3">
-              <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">
+              <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">
                 <BookOpen size={11} strokeWidth={1.75} />
                 Referencia académica
               </div>
@@ -430,7 +430,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Caída promedio entre compras" value={`${ev.avg_drop_pct?.toFixed(1)}%`} mono />
           {ev.instances?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-2">
-              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Ejemplos</div>
+              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Ejemplos</div>
               {ev.instances.slice(0, 5).map((inst, i) => (
                 <div key={i} className="text-xs border border-line/40 rounded-sm p-2 bg-bg-2/40">
                   <div className="flex items-center justify-between mb-1">
@@ -459,7 +459,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Activos totales" value={ev.total_assets} mono />
           {ev.top_5?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
-              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">Composición</div>
+              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">Composición</div>
               {ev.top_5.map((a, i) => (
                 <div key={i} className="flex items-center justify-between text-xs">
                   <span className="text-ink-1 font-mono">{a.asset}</span>
@@ -493,7 +493,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Trades analizados" value={ev.trades_analyzed} mono />
           {ev.top_misses?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
-              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">Top diferencias</div>
+              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">Top diferencias</div>
               {ev.top_misses.map((m, i) => (
                 <div key={i} className="flex items-center justify-between text-xs">
                   <span className="text-ink-1 font-mono">{m.asset}</span>
@@ -562,7 +562,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Activos flagged" value={ev.flagged_count} count={`de ${ev.flagged_count > 0 ? ev.flagged_count : 0}`} />
           {ev.flagged_assets?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-2">
-              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Top compras altas</div>
+              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Top compras altas</div>
               {ev.flagged_assets.map((a, i) => (
                 <div key={i} className="text-xs border border-line/40 rounded-sm p-2 bg-bg-2/40">
                   <div className="flex items-center justify-between mb-1">
@@ -588,7 +588,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Sectores distintos" value={ev.total_sectors} mono />
           {ev.breakdown?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
-              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">Distribución</div>
+              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">Distribución</div>
               {/* Barra stacked */}
               <div className="flex h-2 rounded-sm overflow-hidden bg-bg-2 mb-2">
                 {ev.breakdown.slice(0, 6).map((b, i) => {
@@ -751,7 +751,7 @@ function BehavioralCardLockedPreview({ card, targetTier = 'pro' }) {
       <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2 min-w-0">
           <Icon size={14} strokeWidth={1.75} className="text-ink-3" />
-          <span className="text-xs font-mono uppercase tracking-caps text-ink-3">{meta.label}</span>
+          <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
         </div>
         <Pill tone="off">
           <span className="inline-flex items-center gap-1">
@@ -807,7 +807,7 @@ function SamplesPanel({ title, tone, items }) {
   const color = tone === 'pos' ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
     <div className="border border-line/40 rounded-sm p-2 bg-bg-2/40">
-      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">{title}</div>
+      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">{title}</div>
       <ul className="space-y-1 text-xs">
         {items.map((s, i) => (
           <li key={i} className="flex items-center justify-between gap-2">

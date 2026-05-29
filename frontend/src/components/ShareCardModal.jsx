@@ -124,7 +124,7 @@ export default function ShareCardModal({ spec, filename, source, onClose }) {
       >
         <header className="flex items-center justify-between gap-2 px-4 py-3 border-b border-line/40">
           <div className="min-w-0">
-            <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none">
+            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none">
               Compartir
             </div>
             <h2 className="text-sm font-medium text-ink-0 mt-1.5 leading-none">

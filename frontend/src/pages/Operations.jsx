@@ -260,13 +260,13 @@ function OperationsDesktop() {
               {filtersActive && (
                 <button
                   onClick={() => { setFilterAsset(''); setFilterBroker('all'); setFilterResult('all'); setFilterYear('all') }}
-                  className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition-colors"
+                  className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition-colors"
                 >
                   <X size={11} strokeWidth={1.75} /> Limpiar
                 </button>
               )}
             </div>
-            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 tabular">
+            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 tabular">
               {filteredOps.length} de {ops.length}
             </span>
           </div>
@@ -298,7 +298,7 @@ function OperationsDesktop() {
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-line text-[10px] font-mono uppercase tracking-label text-ink-3">
+              <tr className="border-b border-line text-[11px] font-mono uppercase tracking-label text-ink-2">
                 <th className="text-left px-4 py-2.5 font-medium">Fecha</th>
                 <th className="text-left px-3 py-2.5 font-medium">Broker</th>
                 <th className="text-left px-3 py-2.5 font-medium">Activo</th>
@@ -440,9 +440,9 @@ function KpiCell({ label, value, sub, tone, first }) {
     'text-ink-0'
   return (
     <div className={`px-4 py-3 flex-1 min-w-[140px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 leading-none">{label}</div>
+      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{value}</div>
-      <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none truncate uppercase tracking-caps">{sub}</div>
+      <div className="text-[11px] font-mono text-ink-2 mt-1.5 leading-none truncate uppercase tracking-caps">{sub}</div>
     </div>
   )
 }
@@ -450,7 +450,7 @@ function KpiCell({ label, value, sub, tone, first }) {
 function FilterPill({ label, value, onChange, options }) {
   return (
     <label className="inline-flex items-center gap-1.5 text-xs">
-      <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">{label}</span>
+      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">{label}</span>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -466,7 +466,7 @@ function FilterPill({ label, value, onChange, options }) {
 
 function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
   const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2'
-  const labelClass = 'block text-[10px] font-mono uppercase tracking-label text-ink-3 mb-1'
+  const labelClass = 'block text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1'
   return (
     <Modal title={mode === 'edit' ? 'Editar operación' : 'Nueva operación'} onClose={onClose}>
       <div className="space-y-3">
@@ -531,7 +531,7 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
             <input type="number" step="any" value={form.commissions} onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))} className={inputClass} placeholder="0" />
           </div>
         </div>
-        <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-tight">
+        <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-tight">
           Atajo: si solo querés registrar la ganancia/pérdida (sin precios ni cantidad), completá únicamente P&L USD.
         </p>
         <div className="flex justify-end gap-2 pt-2">

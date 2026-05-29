@@ -176,7 +176,7 @@ export default function BottomSheet({
           >
             <div className="min-w-0 flex-1">
               {eyebrow && (
-                <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1.5">
+                <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1.5">
                   {eyebrow}
                 </div>
               )}

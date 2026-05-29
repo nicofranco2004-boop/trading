@@ -413,7 +413,7 @@ function GoalDiagnostic({ goalId, reached }) {
       <div className="flex items-start gap-2 px-3 py-2.5 border-b border-line/40">
         <Compass size={13} strokeWidth={1.75} className="text-ink-3 mt-0.5 flex-shrink-0" />
         <div className="flex-1 min-w-0">
-          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1.5">
+          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1.5">
             Diagnóstico
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -421,12 +421,12 @@ function GoalDiagnostic({ goalId, reached }) {
               <Icon size={10} strokeWidth={1.75} /> {meta.label}
             </span>
             {diag.eta_months_at_current_rate != null && (
-              <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+              <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
                 ETA · {diag.eta_months_at_current_rate} meses
               </span>
             )}
             {diag.required_annual_pct != null && (
-              <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+              <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
                 Necesario · {diag.required_annual_pct.toFixed(1)}%/año
               </span>
             )}
@@ -440,7 +440,7 @@ function GoalDiagnostic({ goalId, reached }) {
         <div className="px-3 py-2.5 flex items-start gap-2 bg-bg-1">
           <Zap size={13} strokeWidth={1.75} className="text-rendi-warn mt-0.5 flex-shrink-0" />
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1.5">
+            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1.5">
               Sugerencia · {diag.suggestion.code}
             </div>
             <p className="text-sm font-medium text-ink-0 leading-snug mb-1">{diag.suggestion.title}</p>

@@ -198,7 +198,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
   return (
     <>
       <div className="flex items-center justify-between mb-2">
-        <div className="text-[10px] uppercase tracking-label text-ink-3 font-mono font-medium">
+        <div className="text-[11px] uppercase tracking-label text-ink-2 font-mono font-medium">
           {MARKETS.find(m => m.key === market)?.label || market} · {blocks.length} activos
         </div>
         {Tabs}

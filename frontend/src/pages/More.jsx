@@ -69,7 +69,7 @@ export default function More() {
 
       {/* Asistente — Coach IA abre el drawer global, no navega a una ruta */}
       <section>
-        <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
+        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
           Asistente
         </h2>
         <div className="bg-bg-1 border border-data-violet/30 rounded-lg overflow-hidden">
@@ -90,7 +90,7 @@ export default function More() {
 
       {allGroups.map((group) => (
         <section key={group.label}>
-          <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
+          <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
             {group.label}
           </h2>
           <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
@@ -122,7 +122,7 @@ export default function More() {
 
       {/* Configuración + logout */}
       <section>
-        <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
+        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
           Cuenta
         </h2>
         <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
@@ -184,7 +184,7 @@ function PushNotificationsSection() {
   if (!supported) {
     return (
       <section>
-        <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
+        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
           Notificaciones
         </h2>
         <div className="bg-bg-1 border border-line/60 rounded-lg p-4">
@@ -239,7 +239,7 @@ function PushNotificationsSection() {
 
   return (
     <section>
-      <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2 px-1">
+      <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2 px-1">
         Notificaciones
       </h2>
       <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">

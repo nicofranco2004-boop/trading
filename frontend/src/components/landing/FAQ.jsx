@@ -73,7 +73,7 @@ export default function FAQ() {
 
       <div className="max-w-3xl mx-auto px-6">
         <div className="text-center mb-12">
-          <p className="font-mono text-[10px] uppercase tracking-caps text-ink-3 mb-2">FAQ</p>
+          <p className="font-mono text-[11px] uppercase tracking-caps text-ink-2 mb-2">FAQ</p>
           <h2 className="text-3xl md:text-4xl font-semibold tracking-tight text-ink-0 mb-3">
             Preguntas frecuentes
           </h2>

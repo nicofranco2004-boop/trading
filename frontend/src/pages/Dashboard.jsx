@@ -22,8 +22,9 @@ import AssetLogo from '../components/AssetLogo'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
-import { buildPortfolioValueSeries } from '../utils/evolution'
+import { buildPortfolioValueSeries, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
+import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
 
 const REFRESH_MS = 90_000
 
@@ -271,14 +272,59 @@ export default function Dashboard() {
   }, [evoSeries])
 
   // Period change (start → end of visible range)
+  // Δ(Total Return) cashflow-adjusted: (value − net_deposited)_fin − (…)_inicio.
+  // Antes era ΔvalueUsd crudo, que mezclaba aportes/retiros y contradecía el copy
+  // "ajustado por flujos de capital". Mismo criterio que el cuadro de variación.
   const periodChange = useMemo(() => {
     if (evoSeries.length < 2) return null
-    const first = evoSeries[0].valueUsd
-    const last = evoSeries[evoSeries.length - 1].valueUsd
-    const delta = last - first
-    const dPct = first > 0 ? delta / first : 0
+    const first = evoSeries[0]
+    const last = evoSeries[evoSeries.length - 1]
+    const delta = (last.valueUsd - last.netDeposited) - (first.valueUsd - first.netDeposited)
+    const dPct = first.valueUsd > 0 ? delta / first.valueUsd : 0
     return { delta, pct: dPct }
   }, [evoSeries])
+
+  // ── Variación reciente (cuadro diaria + mensual) ────────────────────────────
+  // Δ(Total Return) cashflow-adjusted — mismo criterio que el P&L Día del Home.
+  // Diaria = vs el último cierre; mensual = month-to-date (desde el cierre del
+  // mes pasado). Excluye depósitos/retiros. Ver computeReturnDelta.
+  // Guard: hasta que los precios live no llegaron, totalValue puede ser 0 y la
+  // variación mostraría una pérdida falsa enorme. Esperamos a tener valor real.
+  const dailyVar = useMemo(
+    () => (totalValue > 0 ? computeDailyPnl(snapshots, { liveValue: totalValue, liveNetDeposited: netDeposited }) : null),
+    [snapshots, totalValue, netDeposited],
+  )
+  const monthlyVar = useMemo(() => {
+    if (!(totalValue > 0)) return null
+    const d = new Date()
+    const monthStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+    return computeReturnDelta(snapshots, { liveValue: totalValue, liveNetDeposited: netDeposited, sinceDate: monthStart })
+  }, [snapshots, totalValue, netDeposited])
+  // Realizado del MES en curso (flujo limpio: ventas cerradas + dividendos del mes).
+  // Subdato del cuadro mensual — el único split realizado/no-realizado que aporta.
+  const realizedThisMonth = useMemo(() => {
+    const d = new Date()
+    const y = d.getFullYear(), m = d.getMonth() + 1
+    const e = monthly.find(x => x.broker === 'global' && x.year === y && x.month === m)
+    return e ? (e.pnl_realized || 0) : 0
+  }, [monthly])
+
+  // Rendimiento acumulado (desde el inicio). Mismo número que el hero "Ganancia
+  // total" y el KPI "Resultado total"; acá lo mostramos también por horizonte.
+  const totalVar = (totalValue > 0 && netDeposited > 0)
+    ? { usd: totalReturnUsd, pct: totalReturnPct }
+    : null
+
+  // Rendimiento anual (CAGR time-weighted, Modified Dietz) — reusa el mismo
+  // cálculo que la card de Insights. En USD, comparable con plazo fijo / S&P.
+  // Guard: <3 meses de historial no se muestra (anualizar un período corto
+  // amplifica ruido; ver doc de computeCAGR).
+  const cagrVar = useMemo(() => {
+    const mr = computeMonthlyReturns(monthly.filter(m => m.broker === 'global'))
+    if (mr.length < 3) return null
+    const c = computeCAGR(mr)
+    return c ? { pct: c.cagr, months: c.months } : null
+  }, [monthly])
 
   if (loading) return <DashboardSkeleton />
 
@@ -541,6 +587,69 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* ── Rendimiento por horizonte (hoy · mes · total · anual) ──────────────
+          Δ(Total Return) cashflow-adjusted (excluye depósitos/retiros), mismo
+          criterio que el P&L Día del Home. "Total" es el acumulado desde el
+          inicio (mismo número que el hero y el KPI "Resultado total"); "Anual"
+          es la CAGR time-weighted (Modified Dietz), comparable con benchmarks.
+          El desglose realizado/no-realizado ACUMULADO vive en el KPI strip. */}
+      {(dailyVar || monthlyVar || totalVar || cagrVar) && (
+        <div className="mb-8">
+          <div className="flex items-center gap-1 mb-2">
+            <p className="eyebrow">Rendimiento</p>
+            <InfoTooltip size={11} align="left">
+              <p className="font-medium text-ink-0">Qué es</p>
+              <p>Tu rendimiento en distintos horizontes, <strong>sin contar</strong> depósitos ni retiros (la plata que aportás no cuenta como ganancia).</p>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-medium text-ink-0">Cada cuadro</p>
+              <p className="text-ink-2"><strong className="text-ink-1">Hoy / Este mes:</strong> cuánto cambió tu resultado en el período. En el mes, "realizado" es lo que cerraste (ventas, dividendos).</p>
+              <p className="text-ink-2"><strong className="text-ink-1">Total:</strong> rendimiento acumulado desde que empezaste.</p>
+              <p className="text-ink-2"><strong className="text-ink-1">Anual:</strong> tasa anual compuesta (CAGR) en USD, comparable con un plazo fijo, la inflación o el S&P. Con menos de 12 meses está anualizada (extrapola el período, amplifica ruido).</p>
+            </InfoTooltip>
+          </div>
+          {/* Mini-strip compacto (no full-width) con el mismo lenguaje visual que
+              el strip de KPIs de arriba — label mono caps + valor text-2xl + %. */}
+          <div className="inline-flex flex-wrap border border-line rounded bg-bg-1">
+            {[
+              dailyVar && {
+                key: 'd',
+                label: dailyVar.dayDiff === 1 ? 'Hoy' : `Últimos ${dailyVar.dayDiff} días`,
+                data: dailyVar,
+              },
+              monthlyVar && {
+                key: 'm',
+                label: 'Este mes',
+                data: monthlyVar,
+                note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSigned(realizedThisMonth)}` : null,
+              },
+              totalVar && {
+                key: 't',
+                label: 'Total',
+                data: totalVar,
+                note: 'desde el inicio',
+              },
+              cagrVar && {
+                key: 'a',
+                label: 'Anual',
+                data: cagrVar,
+                pctHero: true,
+                note: cagrVar.months < 12 ? `${cagrVar.months}m · anualizado` : `${cagrVar.months} meses`,
+              },
+            ].filter(Boolean).map((c, i) => (
+              <VarCell
+                key={c.key}
+                first={i === 0}
+                label={c.label}
+                data={c.data}
+                note={c.note}
+                pctHero={c.pctHero}
+                fmtSigned={fmtSigned}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Headline de benchmarks ────────────────────────────────────────────
           1 línea con S&P + dólar quieto + monto absoluto. El detalle (vs blue,
           inflación, cards grandes) vive en /insights → "Comparativa con
@@ -784,7 +893,34 @@ function rangeLabel(id) {
   }
 }
 
-// KPI cell denso V2: label mono uppercase + value tabular + sub mono caps.
+// Celda del strip "Rendimiento" — mismo lenguaje visual que KpiCell (label mono
+// caps + valor tabular text-2xl + sub mono caps) para que combine con el strip
+// de KPIs de arriba. Por defecto muestra monto USD firmado + % (Hoy / Este mes /
+// Total). Con pctHero=true el % es el valor principal y no hay monto (Anual/CAGR).
+// El subdato opcional (note) lleva contexto: "realizado", "desde el inicio",
+// "anualizado". Renderiza igual en mobile y desktop.
+function VarCell({ label, data, fmtSigned, note = null, first = false, pctHero = false }) {
+  const pos = (pctHero ? data.pct : data.usd) >= 0
+  const toneCls = pos ? 'text-rendi-pos' : 'text-rendi-neg'
+  const subTone = pos ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
+  return (
+    <div className={`px-5 py-3 min-w-[150px] ${first ? '' : 'border-l border-line/50'}`}>
+      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
+      {pctHero ? (
+        <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${toneCls}`}>{pctSigned(data.pct)}</div>
+      ) : (
+        <>
+          <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${toneCls}`}>{fmtSigned(data.usd)}</div>
+          <div className={`text-[11px] font-mono mt-1.5 leading-none uppercase tracking-caps ${subTone}`}>{pctSigned(data.pct)}</div>
+        </>
+      )}
+      {note && (
+        <div className="text-[11px] font-mono text-ink-2 mt-1 leading-none uppercase tracking-caps truncate">{note}</div>
+      )}
+    </div>
+  )
+}
+
 function KpiCell({ label, value, sub, tone, first, info, infoAlign = 'right' }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
@@ -793,11 +929,11 @@ function KpiCell({ label, value, sub, tone, first, info, infoAlign = 'right' }) 
   return (
     <div className={`px-4 py-3 flex-1 min-w-[160px] ${first ? '' : 'border-l border-line/50'}`}>
       <div className="flex items-center gap-1 leading-none">
-        <div className="text-[10px] font-mono uppercase tracking-label text-ink-3">{label}</div>
+        <div className="text-[11px] font-mono uppercase tracking-label text-ink-2">{label}</div>
         {info && <InfoTooltip size={11} align={infoAlign}>{info}</InfoTooltip>}
       </div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{value}</div>
-      <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none truncate uppercase tracking-caps">{sub}</div>
+      <div className="text-[11px] font-mono text-ink-2 mt-1.5 leading-none truncate uppercase tracking-caps">{sub}</div>
     </div>
   )
 }

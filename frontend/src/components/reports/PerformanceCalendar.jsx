@@ -81,13 +81,13 @@ function KpiCell({ label, value, sub, tone, first }) {
     'text-ink-0'
   return (
     <div className={`px-4 py-3 flex-1 min-w-[140px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 leading-none">
+      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">
         {label}
       </div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>
         {value}
       </div>
-      <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none truncate uppercase tracking-caps">
+      <div className="text-[11px] font-mono text-ink-2 mt-1.5 leading-none truncate uppercase tracking-caps">
         {sub}
       </div>
     </div>
@@ -145,11 +145,11 @@ export default function PerformanceCalendar({ yearGroups }) {
             <span className="text-[11px] font-mono uppercase tracking-label text-ink-0">
               Calendario de performance
             </span>
-            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 ml-1">
+            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 ml-1">
               / TWR mensual
             </span>
           </div>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
             {yearGroups.length} {yearGroups.length === 1 ? 'año' : 'años'} cargados
           </span>
         </header>

@@ -197,7 +197,7 @@ function YearSelector({ year, setYear }) {
   const opts = [CURRENT_YEAR, CURRENT_YEAR - 1, CURRENT_YEAR - 2]
   return (
     <div className="flex items-center gap-2">
-      <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Año:</span>
+      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Año:</span>
       <div className="inline-flex bg-bg-2 p-0.5 rounded-md border border-line/40">
         {opts.map(y => (
           <button
@@ -255,7 +255,7 @@ function SlideStage({ slide, year }) {
   const eyebrow = (
     <div className="flex items-center gap-2">
       <Sparkles size={14} strokeWidth={1.75} className={accent} />
-      <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
         {slide.metric?.label || `${year}`}
       </span>
     </div>
@@ -333,7 +333,7 @@ function OutroLayout({ slide }) {
           {slide.subtitle}
         </p>
       </div>
-      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 pt-4 border-t border-line/40">
+      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 pt-4 border-t border-line/40">
         Tocá compartir para guardar o enviar cualquiera de los slides.
       </div>
     </>
@@ -448,7 +448,7 @@ function ActivityLayout({ slide, accentHex }) {
       </div>
 
       <div className="space-y-3 pt-4 border-t border-line/40">
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
           Top activos operados
         </div>
         {bars.length > 0 ? bars.map((b, i) => {
@@ -501,7 +501,7 @@ function BestTradeLayout({ slide }) {
       </div>
       {date && (
         <div className="flex items-center justify-between pt-4 border-t border-line/40">
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Fecha de cierre</span>
+          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Fecha de cierre</span>
           <span className="text-sm font-mono tabular text-ink-1">{date}</span>
         </div>
       )}
@@ -575,7 +575,7 @@ function DefaultLayout({ slide, tone }) {
 function TeaserStat({ label, value }) {
   return (
     <div>
-      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1.5">
+      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1.5">
         {label}
       </div>
       <div className="text-base sm:text-lg font-medium text-ink-0 tabular leading-none">

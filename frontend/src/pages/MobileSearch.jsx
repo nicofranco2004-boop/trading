@@ -252,7 +252,7 @@ export default function MobileSearch() {
 function SectionHeader({ label, count }) {
   return (
     <div className="px-3 pt-3 pb-2 flex items-baseline justify-between">
-      <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
         {label}
       </span>
       <span className="text-[10px] font-mono tabular text-ink-3">

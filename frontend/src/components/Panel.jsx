@@ -62,7 +62,7 @@ export function PanelHeader({ title, subtitle, action, icon, eyebrow }) {
         )}
         <div className="min-w-0">
           {eyebrow && (
-            <p className="font-mono text-[10px] uppercase tracking-label text-ink-3 mb-0.5">
+            <p className="font-mono text-[11px] uppercase tracking-label text-ink-2 mb-0.5">
               {eyebrow}
             </p>
           )}

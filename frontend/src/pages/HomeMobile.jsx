@@ -30,6 +30,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
+import { computeDailyPnl } from '../utils/evolution'
 import { fmtUsd, pctSigned, colorClass } from '../utils/format'
 
 export default function HomeMobile() {
@@ -116,18 +117,20 @@ export default function HomeMobile() {
     const pnlMonth = lastMonth
       ? (lastMonth.pnl_realized || 0) + (lastMonth.pnl_unrealized || 0)
       : null
-    // P&L día: delta del último vs penúltimo snapshot
-    const sortedSnaps = [...snapshots].sort((a, b) => (a.date > b.date ? 1 : -1))
-    let pnlDay = null
-    if (sortedSnaps.length >= 2) {
-      const last = Number(sortedSnaps[sortedSnaps.length - 1].total_value || 0)
-      const prev = Number(sortedSnaps[sortedSnaps.length - 2].total_value || 0)
-      pnlDay = last - prev
-    }
-    // Capital aportado = baseline + flujos
+    // Capital aportado = baseline + flujos. Misma fórmula que compute_net_deposited
+    // del backend → comparable 1:1 con snapshot.net_deposited (ambos en USD).
     const baseline = sortedMonthly[0]?.capital_inicio || 0
     const flows = sortedMonthly.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
     const aportado = baseline + flows
+    // P&L del día = Δ(Total Return) entre la cartera live de hoy y el cierre
+    // anterior, EXCLUYENDO depósitos/retiros. El cálculo viejo (Δtotal_value)
+    // contaminaba el dato: un retiro de $110 se mostraba como "P&L día −$110"
+    // aunque no hubiera pérdida. Ver computeDailyPnl en utils/evolution.js.
+    const daily = computeDailyPnl(snapshots, {
+      liveValue: totals.totalValue,
+      liveNetDeposited: aportado,
+    })
+    const pnlDay = daily?.usd ?? null
     // Mejor activo hoy = mayor change_pct del día (necesitaría /prices con change — usamos % del PnL no real por ahora)
     let bestAsset = null
     let bestPct = -Infinity
@@ -142,8 +145,8 @@ export default function HomeMobile() {
         bestAsset = { symbol: p.asset, pct }
       }
     }
-    return { pnlMonth, pnlDay, aportado, bestAsset }
-  }, [monthly, snapshots, positions, prices])
+    return { pnlMonth, pnlDay, pnlDayMeta: daily, aportado, bestAsset }
+  }, [monthly, snapshots, positions, prices, totals])
 
   if (loading) {
     return (
@@ -165,7 +168,7 @@ export default function HomeMobile() {
       {/* ── 1. Hero balance ─────────────────────────────────────────── */}
       <section className="px-4 pt-5 pb-4">
         <div className="flex items-center justify-between mb-3">
-          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
             Tu portfolio
           </div>
           {/* Botón primario de análisis del portfolio — siempre visible
@@ -193,7 +196,7 @@ export default function HomeMobile() {
           <div className="bg-bg-1 border border-line/40 rounded-lg p-3">
             <div className="flex items-baseline justify-between mb-1.5">
               <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+                <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
                   Últimos 30 días
                 </span>
                 <span className={`inline-flex items-center gap-0.5 text-xs font-medium tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
@@ -231,8 +234,10 @@ export default function HomeMobile() {
       <section className="px-4 mb-5">
         <div className="grid grid-cols-2 border border-line/60 rounded-lg overflow-hidden bg-bg-1">
           <KpiCell
-            label="P&L Día"
+            label={kpis.pnlDayMeta && kpis.pnlDayMeta.dayDiff > 1 ? `P&L ${kpis.pnlDayMeta.dayDiff}d` : 'P&L Día'}
             value={kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(kpis.pnlDay))}` : '—'}
+            sub={kpis.pnlDay != null && kpis.pnlDayMeta ? pctSigned(kpis.pnlDayMeta.pct) : null}
+            subTone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
             tone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
             bordered
           />
@@ -276,7 +281,7 @@ export default function HomeMobile() {
       {/* ── 3. Hoy en tu cartera ───────────────────────────────────── */}
       <section className="px-4 mb-5">
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
             Hoy en tu cartera
           </h2>
           <Link
@@ -291,7 +296,7 @@ export default function HomeMobile() {
 
       {/* ── 4. Heatmap S&P ─────────────────────────────────────────── */}
       <section className="px-4 mb-5">
-        <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
           S&P 500 hoy
         </h2>
         <Heatmap defaultMarket="sp500" />
@@ -299,7 +304,7 @@ export default function HomeMobile() {
 
       {/* ── 5. Movers del día ──────────────────────────────────────── */}
       <section className="px-4 mb-5">
-        <h2 className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
           Movers del día
         </h2>
         <MoversRail market="sp500" />
@@ -338,7 +343,7 @@ function KpiCell({ label, value, sub, tone, subTone, bordered, leftBorder, topBo
     : 'text-ink-3'
   return (
     <div className={`px-3 py-3 ${leftBorder ? 'border-l border-line/40' : ''} ${topBorder ? 'border-t border-line/40' : ''}`}>
-      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5 leading-none">
+      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5 leading-none">
         {label}
       </div>
       <div className={`text-base font-medium tabular leading-none ${valueColor}`}>

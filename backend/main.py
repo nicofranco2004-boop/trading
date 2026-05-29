@@ -4150,6 +4150,38 @@ def _prices_cache_set(prices: dict) -> None:
             _PRICE_CACHE[sym] = (now, price)
 
 
+# ─── Prev-close cache (variación diaria por posición) ───────────────────────
+# Cierre del día hábil ANTERIOR por símbolo. A diferencia del precio live,
+# cambia 1×/día (al cerrar el mercado) → TTL largo (10 min). Mismo patrón
+# thread-safe que _PRICE_CACHE. Cachea None para no reintentar símbolos sin
+# cobertura (ej. bonos AR de data912, que yfinance no tiene).
+_PREVCLOSE_CACHE: dict = {}  # symbol → (timestamp_epoch, prevclose_or_None)
+_PREVCLOSE_CACHE_TTL_S = 600
+_PREVCLOSE_CACHE_LOCK = _threading_prices.Lock()
+
+
+def _prevclose_cache_get(symbols: list[str]) -> tuple[dict, list[str]]:
+    """Returns (cached_results, uncached_symbols). Cached incluye None values."""
+    now = time.time()
+    cached: dict = {}
+    uncached: list[str] = []
+    with _PREVCLOSE_CACHE_LOCK:
+        for sym in symbols:
+            entry = _PREVCLOSE_CACHE.get(sym)
+            if entry is not None and (now - entry[0]) < _PREVCLOSE_CACHE_TTL_S:
+                cached[sym] = entry[1]
+            else:
+                uncached.append(sym)
+    return cached, uncached
+
+
+def _prevclose_cache_set(values: dict) -> None:
+    now = time.time()
+    with _PREVCLOSE_CACHE_LOCK:
+        for sym, v in values.items():
+            _PREVCLOSE_CACHE[sym] = (now, v)
+
+
 @app.get("/api/prices")
 def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     raw = [s.strip().upper() for s in symbols.split(",") if s.strip()]
@@ -4239,6 +4271,64 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     # Persistir todos los uncached que acabamos de fetchear (incluyendo None
     # para los que fallaron — evita retry storm si Yahoo está down).
     _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
+    return result
+
+
+@app.get("/api/prices/prev-close")
+def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
+    """Cierre del día hábil ANTERIOR por símbolo — base de la variación diaria
+    por posición en Positions. Mismo shape que /api/prices: {symbol: number|null}.
+
+    ADITIVO: no toca /api/prices ni sus consumidores. El frontend computa el
+    delta del día con (precio_actual − prev_close) × cantidad, usando el precio
+    que ya muestra la fila (de /api/prices) para que los números reconcilien.
+
+    Reusa el mismo download mensual de yfinance que /api/prices (period="1mo",
+    auto_adjust=True) pero toma el PENÚLTIMO cierre válido (iloc[-2]). Símbolos
+    sin cobertura yfinance (ej. bonos AR vía data912) devuelven null → el
+    frontend muestra '—' para esas filas.
+    """
+    raw = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    sym_list = [s for s in raw if _SYMBOL_RE.match(s)][:MAX_SYMBOLS]
+    if not sym_list:
+        return {}
+
+    cached_results, uncached_symbols = _prevclose_cache_get(sym_list)
+    if not uncached_symbols:
+        return cached_results
+
+    result = dict(cached_results)
+    for sym in uncached_symbols:
+        result[sym] = None
+
+    # Crypto mapea a su ticker yfinance (BTC → BTC-USD, etc), igual que /api/prices.
+    sym_to_yf = {sym: (CRYPTO_YF[sym] if sym in CRYPTO_YF else sym) for sym in uncached_symbols}
+    yf_tickers = list(set(sym_to_yf.values()))
+
+    try:
+        data = yf.download(" ".join(yf_tickers), period="1mo", progress=False, auto_adjust=True)
+        if not data.empty:
+            close = data.get("Close") if hasattr(data, 'get') else (data["Close"] if "Close" in data.columns else None)
+            if close is not None and not (hasattr(close, 'empty') and close.empty):
+                for sym, yf_t in sym_to_yf.items():
+                    try:
+                        # Multi-ticker → columna por ticker; single-ticker → Series directa.
+                        if hasattr(close, 'columns') and yf_t in getattr(close, 'columns', []):
+                            ser = close[yf_t].dropna()
+                        elif not hasattr(close, 'columns'):
+                            ser = close.dropna()
+                        else:
+                            ser = None
+                        if ser is not None and len(ser) >= 2:
+                            prev = float(ser.iloc[-2])
+                            if not math.isnan(prev) and prev > 0:
+                                result[sym] = prev
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    _prevclose_cache_set({sym: result[sym] for sym in uncached_symbols})
     return result
 
 

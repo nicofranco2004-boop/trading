@@ -194,7 +194,7 @@ function StatsStrip() {
                style={{ fontSize: 'clamp(20px, 2.4vw, 28px)', letterSpacing: '-0.02em' }}>
             {Math.round(it.v).toLocaleString('es-AR')}{it.suffix || ''}
           </div>
-          <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 leading-tight">
+          <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-tight">
             {it.label}
           </div>
         </div>
@@ -283,8 +283,8 @@ function LivePreview() {
         {/* Cards por broker (matchea el grid del Dashboard real) */}
         <div className="px-4 py-4">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-[10px] font-mono uppercase tracking-label text-ink-3">Por broker</span>
-            <span className="text-[10px] font-mono uppercase tracking-label text-ink-3">3 activos</span>
+            <span className="text-[11px] font-mono uppercase tracking-label text-ink-2">Por broker</span>
+            <span className="text-[11px] font-mono uppercase tracking-label text-ink-2">3 activos</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {brokers.map((b, i) => {
@@ -316,7 +316,7 @@ function LivePreview() {
 function KpiCell({ label, value, sub, positive, pulse }) {
   return (
     <div className="px-4 py-3 min-w-0">
-      <div className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-1.5">{label}</div>
+      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1.5">{label}</div>
       <div className={`data-hero leading-none truncate ${pulse ? 'value-pulse' : (positive ? 'text-rendi-pos' : 'text-ink-0')}`}>
         {value}
       </div>
@@ -417,7 +417,7 @@ function BrokerTicker() {
   const doubled = [...brokers, ...brokers] // duplico para scroll infinito
   return (
     <section className="border-y border-line/40 bg-bg-1/40 py-6 overflow-hidden">
-      <div className="text-center text-[10px] font-mono uppercase tracking-label text-ink-3 mb-4">
+      <div className="text-center text-[11px] font-mono uppercase tracking-label text-ink-2 mb-4">
         Compatible con los brokers que ya usás
       </div>
       <div className="relative">
@@ -1163,7 +1163,7 @@ function PlanCard({ name, tagline, price, priceSub, priceFootnote, features, cta
             {/* Cuotas — grid mini ARRIBA para escaneo rápido */}
             {features.quotas && features.quotas.length > 0 && (
               <div>
-                <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">Cuotas semanales</div>
+                <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">Cuotas semanales</div>
                 <div className="grid grid-cols-3 gap-1.5">
                   {features.quotas.map((q, i) => (
                     <div key={i} className="border border-line/60 rounded bg-bg-2/30 px-2 py-1.5 text-center">
@@ -1182,7 +1182,7 @@ function PlanCard({ name, tagline, price, priceSub, priceFootnote, features, cta
             {/* Esenciales */}
             {features.essentials && features.essentials.length > 0 && (
               <div>
-                <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">Lo que incluye</div>
+                <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">Lo que incluye</div>
                 <ul className="space-y-2">
                   {features.essentials.slice(0, 6).map((f, i) => {
                     const isObj = typeof f === 'object'
@@ -1300,14 +1300,14 @@ function Footer() {
               Tracker multi-broker para Argentina. P&amp;L real en USD, FIFO
               automático, Coach IA con memoria.
             </p>
-            <p className="text-[10px] font-mono uppercase tracking-label text-ink-3 mt-4">
+            <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mt-4">
               Hecho en Argentina
             </p>
           </div>
 
           {/* Producto */}
           <div className="md:col-span-2">
-            <h3 className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-3">
+            <h3 className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">
               Producto
             </h3>
             <ul className="space-y-2 text-sm">
@@ -1321,7 +1321,7 @@ function Footer() {
 
           {/* Cuenta */}
           <div className="md:col-span-2">
-            <h3 className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-3">
+            <h3 className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">
               Cuenta
             </h3>
             <ul className="space-y-2 text-sm">
@@ -1341,7 +1341,7 @@ function Footer() {
 
           {/* Legal */}
           <div className="md:col-span-2">
-            <h3 className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-3">
+            <h3 className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">
               Legal
             </h3>
             <ul className="space-y-2 text-sm">
@@ -1353,7 +1353,7 @@ function Footer() {
 
           {/* Contacto */}
           <div className="md:col-span-2">
-            <h3 className="text-[10px] font-mono uppercase tracking-label text-ink-3 mb-3">
+            <h3 className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">
               Contacto
             </h3>
             <ul className="space-y-2 text-sm">
@@ -1423,7 +1423,7 @@ function Footer() {
         </div>
 
         {/* Bottom bar: copyright + meta ─────────────────────────── */}
-        <div className="pt-6 border-t border-line/40 flex items-center justify-between flex-wrap gap-3 text-[10px] font-mono uppercase tracking-label text-ink-3">
+        <div className="pt-6 border-t border-line/40 flex items-center justify-between flex-wrap gap-3 text-[11px] font-mono uppercase tracking-label text-ink-2">
           <span>© {year} Rendi · rendi.finance</span>
           <span>Versión 2.0</span>
         </div>

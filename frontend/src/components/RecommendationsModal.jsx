@@ -149,7 +149,7 @@ export default function RecommendationsModal({ open, onClose }) {
 
             <form onSubmit={handleSend} className="space-y-3">
               <div>
-                <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">
+                <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">
                   Asunto
                 </label>
                 <input
@@ -163,7 +163,7 @@ export default function RecommendationsModal({ open, onClose }) {
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">
+                <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">
                   Mensaje
                 </label>
                 <textarea
@@ -209,7 +209,7 @@ export default function RecommendationsModal({ open, onClose }) {
 
             {/* Alternativas: copiar mail / abrir cliente de mail */}
             <div className="mt-5 pt-4 border-t border-line/40">
-              <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+              <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
                 O escribinos directo a este mail
               </p>
               <div className="flex items-center gap-2">

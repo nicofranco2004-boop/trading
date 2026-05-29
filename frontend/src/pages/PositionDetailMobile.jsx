@@ -122,7 +122,7 @@ export default function PositionDetailMobile() {
         <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={28} />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-ink-0 leading-none truncate">{p.asset}</div>
-          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mt-1">
+          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mt-1">
             {p.broker}
           </div>
         </div>
@@ -135,7 +135,7 @@ export default function PositionDetailMobile() {
         subtitle={`${p.asset} · ${p.broker}`}
       >
         <section className="px-4 pt-5 pb-3">
-          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">
+          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">
             Valor actual
           </div>
           <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
@@ -165,7 +165,7 @@ export default function PositionDetailMobile() {
           subtitle={`Precio reciente · ${p.asset}`}
         >
           <section className="px-4 mb-5">
-            <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
               Precio · últimos 30 días
             </div>
             <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
@@ -177,7 +177,7 @@ export default function PositionDetailMobile() {
 
       {/* Stats */}
       <section className="px-4 mb-5">
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
           Detalle
         </div>
         <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
@@ -242,7 +242,7 @@ export default function PositionDetailMobile() {
         subtitle={`Historial · ${p.asset}`}
       >
         <section className="px-4 mb-5">
-          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
             Operaciones de este activo · {operations.length}
           </div>
           <ul className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">

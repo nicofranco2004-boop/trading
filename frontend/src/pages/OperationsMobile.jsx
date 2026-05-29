@@ -105,7 +105,7 @@ export default function OperationsMobile() {
       <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-3">
         <div className="flex items-baseline justify-between mb-3">
           <div>
-            <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1">
+            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1">
               P&L acumulado · {filtered.length} ops
             </div>
             <div className={`text-xl font-medium tabular leading-none ${colorClass(totalPnl)}`}>
@@ -114,7 +114,7 @@ export default function OperationsMobile() {
           </div>
           {winRate != null && (
             <div className="text-right">
-              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none mb-1">
+              <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1">
                 Win rate
               </div>
               <div className="text-xl font-medium tabular text-ink-0 leading-none">
@@ -140,7 +140,7 @@ export default function OperationsMobile() {
               </span>
             )}
           </span>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
             {PERIOD_OPTIONS.find(p => p.id === period)?.label}
             {broker !== 'all' && ` · ${broker}`}
             {result !== 'all' && ` · ${RESULT_OPTIONS.find(r => r.id === result)?.label}`}
@@ -231,7 +231,7 @@ function DayGroup({ date, ops }) {
       <div className="flex items-baseline justify-between px-4 py-2 bg-bg-1/50">
         <div className="flex items-center gap-1.5">
           <Calendar size={11} strokeWidth={1.75} className="text-ink-3" />
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
             {label}
           </span>
           <span className="text-[10px] font-mono text-ink-3">
@@ -266,7 +266,7 @@ function OperationRow({ op }) {
           <span className="text-sm font-semibold text-ink-0 leading-none truncate">
             {op.asset}
           </span>
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 leading-none">
+          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none">
             {op.broker}
           </span>
         </div>
@@ -308,7 +308,7 @@ function OperationRow({ op }) {
 function FilterGroup({ label, options, value, onChange }) {
   return (
     <div>
-      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-2">
+      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
         {label}
       </div>
       <div className="flex flex-wrap gap-1.5">

@@ -22,7 +22,7 @@ export default function PageHeader({ title, subtitle, action, meta, bordered = f
     >
       <div className="min-w-0">
         {eyebrow && (
-          <p className="font-mono text-[10px] uppercase tracking-label text-ink-3 font-medium mb-1">
+          <p className="font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium mb-1">
             {eyebrow}
           </p>
         )}
@@ -37,7 +37,7 @@ export default function PageHeader({ title, subtitle, action, meta, bordered = f
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
         {meta && (
-          <span className="inline-flex items-center gap-2 text-[11px] font-mono text-ink-3 uppercase tracking-caps">
+          <span className="inline-flex items-center gap-2 text-[11px] font-mono text-ink-2 uppercase tracking-caps">
             {isLive && <span className="live-dot" aria-hidden />}
             {meta}
           </span>

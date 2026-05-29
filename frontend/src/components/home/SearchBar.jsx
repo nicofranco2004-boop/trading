@@ -384,7 +384,7 @@ export default function SearchBar() {
                   </button>
                 ))}
               </div>
-              <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 flex-shrink-0">
+              <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 flex-shrink-0">
                 {totalCount} {totalCount === 1 ? 'resultado' : 'resultados'} · {elapsedMs}ms
               </span>
             </div>
@@ -457,7 +457,7 @@ export default function SearchBar() {
             )}
 
             {/* FOOTER: atajos */}
-            <div className="px-3 py-2 border-t border-line/60 flex items-center gap-4 text-[10px] font-mono uppercase tracking-caps text-ink-3 bg-bg-2/40">
+            <div className="px-3 py-2 border-t border-line/60 flex items-center gap-4 text-[11px] font-mono uppercase tracking-caps text-ink-2 bg-bg-2/40">
               <Shortcut icon={<><ArrowUp size={9} strokeWidth={2} /><ArrowDown size={9} strokeWidth={2} /></>} label="navegar" />
               <Shortcut icon={<CornerDownLeft size={9} strokeWidth={2} />} label="abrir / agregar" />
               <Shortcut text="ESC" label="cerrar" />
@@ -480,7 +480,7 @@ export default function SearchBar() {
 function SectionHeader({ label, count, hint }) {
   return (
     <div className="px-3 pt-2.5 pb-1 flex items-baseline justify-between gap-3">
-      <span className="text-[10px] font-mono uppercase tracking-label text-ink-3">
+      <span className="text-[11px] font-mono uppercase tracking-label text-ink-2">
         {label} <span className="text-ink-2">· {count}</span>
       </span>
       {hint && (
@@ -520,13 +520,13 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
           <span className="text-sm font-mono text-ink-0">{ticker.symbol}</span>
           <span className="text-xs text-ink-2 truncate">{ticker.name}</span>
           {ticker.exchange && (
-            <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
               · {ticker.exchange}
             </span>
           )}
         </div>
         {ticker.fromUser && (
-          <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mt-0.5">
+          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mt-0.5">
             En posición
             {ticker.quantity > 0 && <> · {ticker.quantity.toLocaleString('es-AR', { maximumFractionDigits: 4 })} {ticker.type === 'crypto' ? 'unid.' : 'acc.'}</>}
             {ticker.invested > 0 && <> · invertido {fmtUsd(ticker.invested)}</>}
