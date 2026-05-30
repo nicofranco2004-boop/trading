@@ -1014,9 +1014,14 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                     "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
                     (new_inv, cash["id"], uid),
                 )
+            # Bug C fix (2026-05-30): el revert de un DEPOSIT debe RESTAR de
+            # `deposits`, no sumar a `withdrawals`. Antes inflaba withdrawals
+            # con un movimiento que nunca ocurrió, contaminando el bruto
+            # histórico y el Capital Aportado vía monthly_entries.
+            # Ahora pasamos amount negativo con la misma dirección ("deposit").
             y, m = int(tx["date"][:4]), int(tx["date"][5:7])
-            helpers._update_monthly_flow(conn, uid, tx["broker"], y, m, "withdraw", amount_usd)
-            helpers._update_monthly_flow(conn, uid, "global", y, m, "withdraw", amount_usd)
+            helpers._update_monthly_flow(conn, uid, tx["broker"], y, m, "deposit", -amount_usd)
+            helpers._update_monthly_flow(conn, uid, "global", y, m, "deposit", -amount_usd)
 
         elif op in ("DIVIDEND", "INTEREST"):
             # Revertir: bajar cash + bajar pnl_realized + borrar la fila de
@@ -1047,9 +1052,13 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
             row_currency = (tx["currency"] or "").upper() if "currency" in tx.keys() else ""
             amount_usd = (amount / tc_blue) if row_currency == "ARS" else amount
             helpers._adjust_broker_cash(conn, uid, tx["broker"], amount)
+            # Bug C fix (2026-05-30): el revert de un WITHDRAW/FEE debe RESTAR
+            # de `withdrawals`, no sumar a `deposits`. Antes inflaba deposits
+            # con un movimiento que nunca ocurrió. Ahora pasamos amount
+            # negativo con la misma dirección ("withdraw").
             y, m = int(tx["date"][:4]), int(tx["date"][5:7])
-            helpers._update_monthly_flow(conn, uid, tx["broker"], y, m, "deposit", amount_usd)
-            helpers._update_monthly_flow(conn, uid, "global", y, m, "deposit", amount_usd)
+            helpers._update_monthly_flow(conn, uid, tx["broker"], y, m, "withdraw", -amount_usd)
+            helpers._update_monthly_flow(conn, uid, "global", y, m, "withdraw", -amount_usd)
 
         elif op == "SELL":
             if not nuclear:

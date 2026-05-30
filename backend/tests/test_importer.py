@@ -1085,6 +1085,111 @@ class PipelineE2ETest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_revert_deposit_subtracts_from_deposits_not_withdrawals(self):
+        """Bug C fix (2026-05-30): el revert de un DEPOSIT debe restar de
+        monthly_entries.deposits, NO inflar withdrawals. Si infla withdrawals,
+        cada ciclo import → revert → reimport infla bruto histórico aunque
+        el net quede invariante."""
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-06-15,DEPOSITO,IBKR,,,,1000,,,,USD,Aporte de prueba
+"""
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="dep_revert.csv",
+                    broker_hint="IBKR", parser_format="rendi_generic",
+                )
+            session_id = payload["session_id"]
+            with conn:
+                txs, raw_map = pl.load_session_for_confirm(conn, uid=self.uid, session_id=session_id)
+                ps.persist_batch(
+                    conn, uid=self.uid, batch_id=session_id, txs=txs,
+                    raw_row_ids_by_index=raw_map, helpers=_helpers(),
+                )
+
+            # Post-persist: deposits acumuló +$1000 en 2024-06 IBKR
+            row = conn.execute(
+                """SELECT deposits, withdrawals FROM monthly_entries
+                   WHERE user_id=? AND broker='IBKR' AND year=2024 AND month=6""",
+                (self.uid,),
+            ).fetchone()
+            self.assertIsNotNone(row, "monthly_entry debe existir tras persist")
+            self.assertAlmostEqual(float(row["deposits"]), 1000.0, places=2)
+            self.assertAlmostEqual(float(row["withdrawals"]), 0.0, places=2)
+
+            # Revert
+            with conn:
+                ps.revert_batch(conn, uid=self.uid, batch_id=session_id, helpers=_helpers())
+
+            # Post-revert: deposits debe estar en 0, withdrawals TAMBIÉN en 0
+            # (NO inflar withdrawals con $1000 fantasma).
+            row_after = conn.execute(
+                """SELECT deposits, withdrawals FROM monthly_entries
+                   WHERE user_id=? AND broker='IBKR' AND year=2024 AND month=6""",
+                (self.uid,),
+            ).fetchone()
+            # Si la row sigue existiendo, ambos deben estar en 0.
+            # Si fue borrada por cleanup post-recalc, también OK.
+            if row_after is not None:
+                self.assertAlmostEqual(float(row_after["deposits"]), 0.0, places=2,
+                                       msg="deposits debe volver a 0 tras revert")
+                self.assertAlmostEqual(float(row_after["withdrawals"]), 0.0, places=2,
+                                       msg="withdrawals NO debe inflarse al revertir un deposit")
+        finally:
+            conn.close()
+
+    def test_revert_withdraw_subtracts_from_withdrawals_not_deposits(self):
+        """Bug C fix (2026-05-30) — caso simétrico: el revert de WITHDRAW/FEE
+        debe restar de withdrawals, no inflar deposits."""
+        # Necesitamos primero un deposit para tener saldo, luego un withdraw
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-07-01,DEPOSITO,IBKR,,,,2000,,,,USD,Aporte previo
+2024-07-15,RETIRO,IBKR,,,,500,,,,USD,Retiro de prueba
+"""
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="wit_revert.csv",
+                    broker_hint="IBKR", parser_format="rendi_generic",
+                )
+            session_id = payload["session_id"]
+            with conn:
+                txs, raw_map = pl.load_session_for_confirm(conn, uid=self.uid, session_id=session_id)
+                ps.persist_batch(
+                    conn, uid=self.uid, batch_id=session_id, txs=txs,
+                    raw_row_ids_by_index=raw_map, helpers=_helpers(),
+                )
+
+            # Post-persist: en 2024-07 IBKR → deposits=$2000, withdrawals=$500
+            row = conn.execute(
+                """SELECT deposits, withdrawals FROM monthly_entries
+                   WHERE user_id=? AND broker='IBKR' AND year=2024 AND month=7""",
+                (self.uid,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertAlmostEqual(float(row["deposits"]), 2000.0, places=2)
+            self.assertAlmostEqual(float(row["withdrawals"]), 500.0, places=2)
+
+            # Revert
+            with conn:
+                ps.revert_batch(conn, uid=self.uid, batch_id=session_id, helpers=_helpers())
+
+            # Post-revert: ambos deben volver a 0
+            row_after = conn.execute(
+                """SELECT deposits, withdrawals FROM monthly_entries
+                   WHERE user_id=? AND broker='IBKR' AND year=2024 AND month=7""",
+                (self.uid,),
+            ).fetchone()
+            if row_after is not None:
+                self.assertAlmostEqual(float(row_after["deposits"]), 0.0, places=2,
+                                       msg="deposits NO debe inflarse al revertir un withdraw")
+                self.assertAlmostEqual(float(row_after["withdrawals"]), 0.0, places=2,
+                                       msg="withdrawals debe volver a 0 tras revert")
+        finally:
+            conn.close()
+
     def test_revert_with_sell_blocked(self):
         # Si el batch incluye venta, no se puede revertir
         conn = main.get_db()

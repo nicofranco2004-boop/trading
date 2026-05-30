@@ -4933,7 +4933,17 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
                          direction: str, amount: float) -> None:
     """Suma amount a deposits (o withdrawals) del mes actual del broker.
     Ajusta capital_final en la misma dirección.
-    Si la fila no existe, la crea con capital_inicio = capital_final del mes anterior."""
+
+    `amount` puede ser NEGATIVO — se usa para revertir cash flows previos.
+    Cuando se revierte una transacción importada (ej: revert de un batch
+    con DEPOSIT $100), el caller pasa amount=-100 con direction='deposit'
+    para restar de `deposits` (no agregar a `withdrawals` que sería un
+    movimiento contable distinto).
+
+    Si la fila no existe Y amount > 0 → crea la fila con capital_inicio del
+    último mes anterior. Si la fila no existe Y amount < 0 → no-op + warning
+    (no podemos "revertir" algo que nunca se aplicó).
+    """
     row = conn.execute(
         "SELECT * FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
         (uid, broker, year, month),
@@ -4954,24 +4964,37 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
                    WHERE user_id=? AND broker=? AND year=? AND month=?""",
                 (amount, amount, uid, broker, year, month),
             )
-    else:
-        # Crear fila del mes — capital_inicio = capital_final del mes anterior más reciente
-        prev = conn.execute(
-            """SELECT capital_final FROM monthly_entries
-               WHERE user_id=? AND broker=? ORDER BY year DESC, month DESC LIMIT 1""",
-            (uid, broker),
-        ).fetchone()
-        cap_inicio = float(prev['capital_final']) if prev else 0.0
-        deposits = amount if direction == 'deposit' else 0.0
-        withdrawals = 0.0 if direction == 'deposit' else amount
-        cap_final = cap_inicio + (amount if direction == 'deposit' else -amount)
-        conn.execute(
-            """INSERT INTO monthly_entries
-               (user_id, year, month, broker, deposits, withdrawals,
-                pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-               VALUES (?,?,?,?,?,?,0,0,?,?)""",
-            (uid, year, month, broker, deposits, withdrawals, cap_inicio, max(0.0, cap_final)),
+        return
+
+    # Row no existe
+    if amount < 0:
+        # Revert request sin row prior — log y no-op. No tiene sentido
+        # crear una row con valores negativos para "deshacer" algo que
+        # nunca se aplicó (indica un bug aguas arriba).
+        logging.getLogger(__name__).warning(
+            "_update_monthly_flow revert no-op: row not found for "
+            "user=%d broker=%s %d-%02d direction=%s amount=%.4f",
+            uid, broker, year, month, direction, amount,
         )
+        return
+
+    # Crear fila del mes — capital_inicio = capital_final del mes anterior más reciente
+    prev = conn.execute(
+        """SELECT capital_final FROM monthly_entries
+           WHERE user_id=? AND broker=? ORDER BY year DESC, month DESC LIMIT 1""",
+        (uid, broker),
+    ).fetchone()
+    cap_inicio = float(prev['capital_final']) if prev else 0.0
+    deposits = amount if direction == 'deposit' else 0.0
+    withdrawals = 0.0 if direction == 'deposit' else amount
+    cap_final = cap_inicio + (amount if direction == 'deposit' else -amount)
+    conn.execute(
+        """INSERT INTO monthly_entries
+           (user_id, year, month, broker, deposits, withdrawals,
+            pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+           VALUES (?,?,?,?,?,?,0,0,?,?)""",
+        (uid, year, month, broker, deposits, withdrawals, cap_inicio, max(0.0, cap_final)),
+    )
 
 
 class BrokerReconcileCashIn(BaseModel):
