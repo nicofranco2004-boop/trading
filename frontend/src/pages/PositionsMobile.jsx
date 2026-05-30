@@ -351,8 +351,35 @@ export default function PositionsMobile() {
   }
 
   async function deleteBrokerAction(b) {
-    if (!confirm(`¿Eliminar el broker "${b.name}"? Se van a borrar también TODAS sus posiciones, operaciones y datos mensuales. Esta acción no se puede deshacer.`)) return
-    await api.delete(`/brokers/${b.id}`)
+    // Fase 5: doble confirmación cuando el broker tiene data. Mismo flow que
+    // BrokerManager.jsx (mantengo duplicación porque el mobile tiene su
+    // propio path; cuando se unifique en Fase 8 esto se centraliza).
+    try {
+      await api.delete(`/brokers/${b.id}`)
+    } catch (ex) {
+      const detail = ex?.payload?.detail
+      if (ex?.status !== 409 || !detail?.counts) {
+        alert(`No se pudo eliminar: ${ex?.message || 'error desconocido'}`)
+        return
+      }
+      const c = detail.counts
+      const parts = []
+      if (c.positions > 0) parts.push(`${c.positions} ${c.positions === 1 ? 'posición' : 'posiciones'}`)
+      if (c.operations > 0) parts.push(`${c.operations} ${c.operations === 1 ? 'operación' : 'operaciones'}`)
+      if (c.monthly_entries > 0) parts.push(`${c.monthly_entries} ${c.monthly_entries === 1 ? 'entrada mensual' : 'entradas mensuales'}`)
+      if (c.import_batches > 0) parts.push(`${c.import_batches} ${c.import_batches === 1 ? 'import' : 'imports'}`)
+      const siblingWarning = detail.sibling
+        ? `\n\n⚠️ ATENCIÓN: este broker es PADRE de "${detail.sibling.name}" (${detail.sibling.currency}). Al borrar el padre, el sibling también se eliminará.`
+        : ''
+      const msg = `El broker "${b.name}" tiene data:\n\n  • ${parts.join('\n  • ')}${siblingWarning}\n\n¿Borrar TODO? Esta acción no se puede deshacer.`
+      if (!confirm(msg)) return
+      try {
+        await api.delete(`/brokers/${b.id}?force=true`)
+      } catch (ex2) {
+        alert(`Error al borrar: ${ex2?.message || 'desconocido'}`)
+        return
+      }
+    }
     if (brokerFilter === b.name) setBrokerFilter(ALL_FILTER)
     await loadAll()
     refreshPlanFeatures()

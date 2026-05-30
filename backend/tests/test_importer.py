@@ -3350,6 +3350,133 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         self.assertGreaterEqual(body["rows_updated"], 1)
 
 
+class DeleteBrokerGuardTest(unittest.TestCase):
+    """Fase 5 (2026-05-30): DELETE /api/brokers/{bid} debe refuse-then-confirm.
+    Si el broker tiene positions/operations/monthly_entries/imports asociados,
+    el endpoint devuelve 409 Conflict con el resumen de counts. Solo con
+    ?force=true procede con el cascade delete."""
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries", "brokers", "positions"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"delbroker-{id(self)}@rendi.test")
+        # Dos brokers: uno vacío, otro con data
+        _add_broker(conn, self.uid, "EmptyBroker", "USDT")
+        _add_broker(conn, self.uid, "WithData", "USDT")
+        with_data_id = conn.execute(
+            "SELECT id FROM brokers WHERE user_id=? AND name='WithData'", (self.uid,)
+        ).fetchone()["id"]
+        self.with_data_id = with_data_id
+        self.empty_id = conn.execute(
+            "SELECT id FROM brokers WHERE user_id=? AND name='EmptyBroker'", (self.uid,)
+        ).fetchone()["id"]
+        # Inyectar data al broker "WithData"
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
+               VALUES (?, 'WithData', 'BTC', 0, 1000, 0.05)""",
+            (self.uid,),
+        )
+        conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd)
+               VALUES (?, '2026-05-01', 'WithData', 'BTC', 'Venta', 50)""",
+            (self.uid,),
+        )
+        conn.execute(
+            """INSERT INTO monthly_entries
+               (user_id, year, month, broker, deposits, withdrawals,
+                pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+               VALUES (?, 2026, 5, 'WithData', 100, 0, 0, 0, 0, 100)""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def test_delete_empty_broker_succeeds(self):
+        """Broker vacío → 200 OK sin force."""
+        res = self.client.delete(
+            f"/api/brokers/{self.empty_id}",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        # Broker debe estar eliminado
+        conn = main.get_db()
+        n = conn.execute(
+            "SELECT COUNT(*) FROM brokers WHERE user_id=? AND name='EmptyBroker'", (self.uid,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(n, 0)
+
+    def test_delete_broker_with_data_returns_409(self):
+        """Broker con data, sin ?force=true → 409 con counts en detail.
+        La data NO debe borrarse."""
+        res = self.client.delete(
+            f"/api/brokers/{self.with_data_id}",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 409, res.text)
+        detail = res.json()["detail"]
+        self.assertEqual(detail["code"], "broker_has_data")
+        self.assertEqual(detail["broker_name"], "WithData")
+        self.assertEqual(detail["counts"]["positions"], 1)
+        self.assertEqual(detail["counts"]["operations"], 1)
+        self.assertEqual(detail["counts"]["monthly_entries"], 1)
+        # Sanity: nada se borró
+        conn = main.get_db()
+        n_pos = conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE user_id=? AND broker='WithData'", (self.uid,)
+        ).fetchone()[0]
+        n_ops = conn.execute(
+            "SELECT COUNT(*) FROM operations WHERE user_id=? AND broker='WithData'", (self.uid,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(n_pos, 1, "positions NO debe borrarse sin force")
+        self.assertEqual(n_ops, 1, "operations NO debe borrarse sin force")
+
+    def test_delete_broker_with_force_succeeds(self):
+        """Con ?force=true, el cascade procede normalmente."""
+        res = self.client.delete(
+            f"/api/brokers/{self.with_data_id}?force=true",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertTrue(body["ok"])
+        # Sanity: data borrada
+        conn = main.get_db()
+        n_pos = conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE user_id=? AND broker='WithData'", (self.uid,)
+        ).fetchone()[0]
+        n_ops = conn.execute(
+            "SELECT COUNT(*) FROM operations WHERE user_id=? AND broker='WithData'", (self.uid,)
+        ).fetchone()[0]
+        n_me = conn.execute(
+            "SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker='WithData'", (self.uid,)
+        ).fetchone()[0]
+        n_br = conn.execute(
+            "SELECT COUNT(*) FROM brokers WHERE user_id=? AND name='WithData'", (self.uid,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(n_pos, 0)
+        self.assertEqual(n_ops, 0)
+        self.assertEqual(n_me, 0)
+        self.assertEqual(n_br, 0)
+
+    def test_delete_nonexistent_broker_is_idempotent(self):
+        """Borrar un broker que no existe → 200 OK con no_change=True
+        (idempotent, no error)."""
+        res = self.client.delete(
+            "/api/brokers/99999",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertTrue(body.get("no_change"))
+
+
 class OperationCurrencyStampingTest(unittest.TestCase):
     """Fase 6 (2026-05-30): operations creadas via POST/PUT /api/operations
     deben stampar `currency`. Antes el OperationIn no incluía el campo,

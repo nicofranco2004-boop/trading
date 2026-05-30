@@ -2122,16 +2122,26 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)
 
 
 @app.delete("/api/brokers/{bid}")
-def delete_broker(bid: int, uid: int = Depends(get_current_user)):
-    """Borra el broker + cascade delete de toda su data asociada.
+def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_current_user)):
+    """Borra el broker. Por defecto REFUSE si tiene data asociada
+    (positions/operations/monthly_entries) — el caller debe pasar `?force=true`
+    explícitamente para confirmar el cascade delete.
 
-    Antes solo borraba el row de brokers, dejando operations / positions /
-    monthly_entries / snapshots huérfanos con `broker = name` (texto) que
-    seguían sumando en aggregates y dashboard. Ahora limpia en cascada.
+    Fase 5 (2026-05-30): antes el endpoint borraba TODO sin confirmar al
+    backend. Si el frontend tenía un bug o el user clickeaba sin querer,
+    perdía toda la historia del broker silenciosamente. Ahora retorna
+    409 Conflict con un resumen de cuánto se borraría, y obliga al
+    frontend a mostrar UN modal de confirmación antes de re-llamar con
+    `?force=true`.
 
-    Los batches del broker se marcan como 'reverted' (no se borran físicamente
-    para mantener auditoría); las normalized_tx asociadas siguen en disco pero
-    no afectan ningún calculo porque el broker ya no existe.
+    Cascade (cuando force=true):
+      • operations / positions / monthly_entries del broker
+      • import_batches → status='reverted' (no delete físico para auditoría)
+      • Las normalized_tx asociadas siguen en disco pero no afectan cálculos
+        porque el broker ya no existe.
+
+    Si el broker es padre de un sibling (parent_broker_id FK), el cascade
+    de SQLite borra el sibling también — el frontend debe alertar al user.
     """
     conn = get_db()
     try:
@@ -2139,9 +2149,56 @@ def delete_broker(bid: int, uid: int = Depends(get_current_user)):
             "SELECT name FROM brokers WHERE id=? AND user_id=?", (bid, uid),
         ).fetchone()
         if not broker_row:
-            return {"ok": True}  # idempotente — no error si ya no existe
+            return {"ok": True, "no_change": True}  # idempotente
         broker_name = broker_row["name"]
 
+        # ── Guard: contar data asociada para decidir si bloquear ────────────
+        counts = {
+            "positions": conn.execute(
+                "SELECT COUNT(*) FROM positions WHERE user_id=? AND broker=?",
+                (uid, broker_name),
+            ).fetchone()[0],
+            "operations": conn.execute(
+                "SELECT COUNT(*) FROM operations WHERE user_id=? AND broker=?",
+                (uid, broker_name),
+            ).fetchone()[0],
+            "monthly_entries": conn.execute(
+                "SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker=?",
+                (uid, broker_name),
+            ).fetchone()[0],
+            "import_batches": conn.execute(
+                """SELECT COUNT(*) FROM import_batches
+                    WHERE user_id=? AND broker=? AND status IN ('confirmed','preview')""",
+                (uid, broker_name),
+            ).fetchone()[0],
+        }
+        # Sibling check — si este broker tiene un sibling vía parent_broker_id,
+        # avisamos para que el frontend muestre la advertencia (CASCADE FK).
+        sibling = conn.execute(
+            "SELECT id, name, currency FROM brokers WHERE user_id=? AND parent_broker_id=?",
+            (uid, bid),
+        ).fetchone()
+
+        has_data = any(v > 0 for v in counts.values())
+        if has_data and not force:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "broker_has_data",
+                    "broker_name": broker_name,
+                    "counts": counts,
+                    "sibling": dict(sibling) if sibling else None,
+                    "message": (
+                        f"El broker '{broker_name}' tiene data asociada. "
+                        f"Pasá ?force=true para borrar todo (incluyendo "
+                        f"{counts['positions']} positions, {counts['operations']} operations, "
+                        f"{counts['monthly_entries']} entradas mensuales y "
+                        f"{counts['import_batches']} batches de import)."
+                    ),
+                },
+            )
+
+        # ── Force delete (o broker vacío) ───────────────────────────────────
         with conn:
             conn.execute(
                 "DELETE FROM operations WHERE user_id=? AND broker=?", (uid, broker_name),
@@ -2168,7 +2225,7 @@ def delete_broker(bid: int, uid: int = Depends(get_current_user)):
             log.error("Recalc tras delete_broker falló: %s", ex)
 
         _ai_cache_invalidate(uid)
-        return {"ok": True}
+        return {"ok": True, "broker_name": broker_name, "counts_deleted": counts}
     finally:
         conn.close()
 
