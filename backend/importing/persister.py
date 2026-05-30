@@ -96,9 +96,12 @@ def persist_batch(
                 # Fase 4: stamp gross_amount_usd al momento del seed (con
                 # tc_blue actual del user — el seed corre ahora, no en el
                 # pasado, así que esto refleja el FX del momento del import).
+                # Audit follow-up: stamp también en memory (st es NormalizedTx)
+                # para que `_apply_cash_flow` use el mismo USD que la DB.
                 from .pipeline import _stamp_gross_amount_usd, _read_user_tc_blue
                 _tc_blue_seed = _read_user_tc_blue(conn, uid)
                 gross_usd = _stamp_gross_amount_usd(st.currency, st.gross_amount, _tc_blue_seed)
+                st.gross_amount_usd = gross_usd
                 conn.execute(
                     """INSERT INTO import_normalized_tx
                        (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
@@ -684,7 +687,20 @@ def _apply_cash_flow(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers,
     # el tc_blue de la config del usuario — mismo patrón que /api/cash/flow.
     # Sin esta conversión, un depósito de 10M ARS se guarda como 10M USD y
     # rompe el "Capital Aportado" del Dashboard.
-    amount_usd = (amount / tc_blue) if currency == "ARS" else amount
+    #
+    # Fase 4 audit follow-up (2026-05-30): PRIORIZAR el USD stamped al preview
+    # time (tx.gross_amount_usd) sobre la conversión runtime. Si el preview
+    # stampeó $500 con tc=1000 y entre confirm y persist tc cambia a 1500, la
+    # conversión runtime daría $666.67 — drift con respecto al stamped en
+    # `import_normalized_tx.gross_amount_usd`. Al usar el stamped acá, ambos
+    # campos (monthly_entries.deposits + import_normalized_tx.gross_amount_usd)
+    # quedan consistentes y el `_recalc` posterior no introduce sorpresas.
+    # Fallback a runtime conversion si el stamped no está (seed sintético
+    # legacy, tests directos, etc).
+    if getattr(tx, "gross_amount_usd", None) is not None:
+        amount_usd = float(tx.gross_amount_usd)
+    else:
+        amount_usd = (amount / tc_blue) if currency == "ARS" else amount
     direction = "deposit" if sign > 0 else "withdraw"
     year, month = int(tx.date[:4]), int(tx.date[5:7])
     helpers._update_monthly_flow(conn, uid, tx.broker, year, month, direction, amount_usd)

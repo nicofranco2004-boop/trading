@@ -2163,32 +2163,42 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_current_
             return {"ok": True, "no_change": True}  # idempotente
         broker_name = broker_row["name"]
 
-        # ── Guard: contar data asociada para decidir si bloquear ────────────
-        counts = {
-            "positions": conn.execute(
-                "SELECT COUNT(*) FROM positions WHERE user_id=? AND broker=?",
-                (uid, broker_name),
-            ).fetchone()[0],
-            "operations": conn.execute(
-                "SELECT COUNT(*) FROM operations WHERE user_id=? AND broker=?",
-                (uid, broker_name),
-            ).fetchone()[0],
-            "monthly_entries": conn.execute(
-                "SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker=?",
-                (uid, broker_name),
-            ).fetchone()[0],
-            "import_batches": conn.execute(
-                """SELECT COUNT(*) FROM import_batches
-                    WHERE user_id=? AND broker=? AND status IN ('confirmed','preview')""",
-                (uid, broker_name),
-            ).fetchone()[0],
-        }
-        # Sibling check — si este broker tiene un sibling vía parent_broker_id,
-        # avisamos para que el frontend muestre la advertencia (CASCADE FK).
+        # ── Sibling check — si este broker tiene un sibling vía
+        # parent_broker_id, el FK CASCADE de SQLite va a borrar el row del
+        # sibling cuando borremos el padre. PERO positions/operations/
+        # monthly_entries del sibling usan broker NAME (no FK) → si solo
+        # borramos `WHERE broker=padre_name`, los del sibling quedan
+        # HUÉRFANOS (audit follow-up 2026-05-30, finding #1).
+        # Solución: extender el cleanup a `broker IN (padre, sibling)`.
         sibling = conn.execute(
             "SELECT id, name, currency FROM brokers WHERE user_id=? AND parent_broker_id=?",
             (uid, bid),
         ).fetchone()
+        sibling_name = sibling["name"] if sibling else None
+        broker_names = [broker_name] + ([sibling_name] if sibling_name else [])
+
+        # ── Guard: contar data asociada (padre Y sibling si existe) ──────────
+        placeholders = ",".join("?" * len(broker_names))
+        counts = {
+            "positions": conn.execute(
+                f"SELECT COUNT(*) FROM positions WHERE user_id=? AND broker IN ({placeholders})",
+                (uid, *broker_names),
+            ).fetchone()[0],
+            "operations": conn.execute(
+                f"SELECT COUNT(*) FROM operations WHERE user_id=? AND broker IN ({placeholders})",
+                (uid, *broker_names),
+            ).fetchone()[0],
+            "monthly_entries": conn.execute(
+                f"SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker IN ({placeholders})",
+                (uid, *broker_names),
+            ).fetchone()[0],
+            "import_batches": conn.execute(
+                f"""SELECT COUNT(*) FROM import_batches
+                    WHERE user_id=? AND broker IN ({placeholders})
+                      AND status IN ('confirmed','preview')""",
+                (uid, *broker_names),
+            ).fetchone()[0],
+        }
 
         has_data = any(v > 0 for v in counts.values())
         if has_data and not force:
@@ -2205,27 +2215,34 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_current_
                         f"{counts['positions']} positions, {counts['operations']} operations, "
                         f"{counts['monthly_entries']} entradas mensuales y "
                         f"{counts['import_batches']} batches de import)."
+                        + (f" El broker sibling '{sibling_name}' y sus datos también se eliminarán."
+                           if sibling_name else "")
                     ),
                 },
             )
 
-        # ── Force delete (o broker vacío) ───────────────────────────────────
+        # ── Force delete (o broker vacío) — incluye sibling para evitar orphans
         with conn:
             conn.execute(
-                "DELETE FROM operations WHERE user_id=? AND broker=?", (uid, broker_name),
+                f"DELETE FROM operations WHERE user_id=? AND broker IN ({placeholders})",
+                (uid, *broker_names),
             )
             conn.execute(
-                "DELETE FROM positions WHERE user_id=? AND broker=?", (uid, broker_name),
+                f"DELETE FROM positions WHERE user_id=? AND broker IN ({placeholders})",
+                (uid, *broker_names),
             )
             conn.execute(
-                "DELETE FROM monthly_entries WHERE user_id=? AND broker=?", (uid, broker_name),
+                f"DELETE FROM monthly_entries WHERE user_id=? AND broker IN ({placeholders})",
+                (uid, *broker_names),
             )
             conn.execute(
-                """UPDATE import_batches
+                f"""UPDATE import_batches
                    SET status='reverted', reverted_at=datetime('now')
-                   WHERE user_id=? AND broker=? AND status IN ('confirmed','preview')""",
-                (uid, broker_name),
+                   WHERE user_id=? AND broker IN ({placeholders})
+                     AND status IN ('confirmed','preview')""",
+                (uid, *broker_names),
             )
+            # DELETE del padre — el FK CASCADE elimina el row del sibling.
             conn.execute("DELETE FROM brokers WHERE id=? AND user_id=?", (bid, uid))
 
         # Recalc global aggregates (el broker 'global' sumaba el broker borrado)
@@ -2236,7 +2253,12 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_current_
             log.error("Recalc tras delete_broker falló: %s", ex)
 
         _ai_cache_invalidate(uid)
-        return {"ok": True, "broker_name": broker_name, "counts_deleted": counts}
+        return {
+            "ok": True,
+            "broker_name": broker_name,
+            "sibling_name": sibling_name,
+            "counts_deleted": counts,
+        }
     finally:
         conn.close()
 
@@ -6352,18 +6374,38 @@ def _rollover_to_current_month(conn, uid: int, broker: str) -> int:
 
 def _rollover_all_brokers(conn, uid: int) -> int:
     """Conveniencia: ejecuta `_rollover_to_current_month` para cada broker
-    distinto en monthly_entries del user (incluye 'global'). Idempotente."""
+    distinto en monthly_entries del user (incluye 'global'). Idempotente.
+
+    Audit follow-up (2026-05-30, finding #6): después de crear rows nuevas,
+    correr `_repair_monthly_chain` para garantizar que `capital_inicio[N+1]
+    = capital_final[N]` aún bajo race conditions. Sin esta llamada, dos
+    requests concurrentes el día 1 del mes podían dejar la chain drifted.
+    """
     brokers = conn.execute(
         "SELECT DISTINCT broker FROM monthly_entries WHERE user_id=?",
         (uid,),
     ).fetchall()
     total_created = 0
+    brokers_touched = []
     for b in brokers:
         try:
-            total_created += _rollover_to_current_month(conn, uid, b["broker"])
+            created = _rollover_to_current_month(conn, uid, b["broker"])
+            total_created += created
+            if created > 0:
+                brokers_touched.append(b["broker"])
         except Exception as ex:
             logging.getLogger(__name__).warning(
                 "Rollover error for user=%d broker=%s: %s", uid, b["broker"], ex,
+            )
+    # Repair chain solo para brokers donde creamos rows nuevas (evita
+    # trabajo innecesario en el hot path GET /api/monthly).
+    for broker in brokers_touched:
+        try:
+            _repair_monthly_chain(conn, uid, broker)
+        except Exception as ex:
+            logging.getLogger(__name__).warning(
+                "Chain repair after rollover error for user=%d broker=%s: %s",
+                uid, broker, ex,
             )
     return total_created
 
@@ -13321,21 +13363,10 @@ def _user_tc_blue(conn, uid: int) -> float:
         return 1415.0
 
 
-def _compute_gross_amount_usd(currency: Optional[str], gross_amount: Optional[float],
-                              tc_blue: float) -> Optional[float]:
-    """Helper canónico para convertir gross_amount a USD-equivalente.
-    Usado al stampar `import_normalized_tx.gross_amount_usd` (Fase 4) y
-    como fallback al leer rows legacy (NULL). Reglas:
-      • currency=ARS y tc_blue > 0 → amount / tc_blue
-      • currency USD/USDT/cualquier-otro → amount (passthrough)
-      • amount=None → None
-    """
-    if gross_amount is None:
-        return None
-    cur = (currency or "").upper()
-    if cur == "ARS" and tc_blue and tc_blue > 0:
-        return float(gross_amount) / float(tc_blue)
-    return float(gross_amount)
+# Helper canónico para convertir gross_amount → USD vive en
+# `backend/importing/pipeline.py:_stamp_gross_amount_usd` (Fase 4). NO se
+# replica acá para evitar drift de mantenimiento. Si main.py necesita la
+# conversión, importar desde importing.pipeline.
 
 
 @app.get("/api/reports/timeline")

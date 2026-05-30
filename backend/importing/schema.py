@@ -214,6 +214,13 @@ class NormalizedTx:
     currency: Optional[str] = None              # moneda del precio/quantity
     settlement_currency: Optional[str] = None   # moneda en que se liquida (cash debit/credit)
     notes: Optional[str] = None
+    # Fase 4 audit follow-up (2026-05-30): gross_amount_usd stamped al
+    # preview/confirm time (con tc_blue del momento del import). El
+    # persister DEBE usar este valor en `_apply_cash_flow` para acumular
+    # en monthly_entries — así el USD persistido coincide exactamente con
+    # el `import_normalized_tx.gross_amount_usd` stamped. Sin esto, había
+    # drift potencial si tc_blue cambiaba entre confirm y persist.
+    gross_amount_usd: Optional[float] = None
 
     def to_db_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -3450,6 +3450,87 @@ class FxStampedPerEventTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_stamped_usd_prevents_spurious_manual_residual_after_tc_change(self):
+        """Audit follow-up (2026-05-30, finding #3): el test anterior
+        `test_recalc_uses_stamped_usd_invariant_to_tc_change` pasaba aún
+        SIN el fix de stamping porque `manual_residual = max(0, existing -
+        imp_deposits)` compensaba: si imp_deposits caía con nuevo tc, el
+        residual subía absorbiendo la diferencia → deposits final OK.
+
+        PERO: el residual fantasma se emite como movement con
+        `source='monthly'` en /api/movements → el user ve un "depósito
+        manual" que nunca cargó. Test verdadero: verificar que después
+        del fix, el residual queda en 0 (no se emite movement espurio)."""
+        from fastapi.testclient import TestClient
+        client = TestClient(main.app)
+        token = main.create_token(self.uid)
+
+        # Import un DEPOSIT 1,000,000 ARS con tc=1000 → stamp $1000
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-08-10,DEPOSITO,Cocos,,,,1000000,,,,ARS,
+"""
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="dep.csv",
+                    broker_hint="Cocos", parser_format="rendi_generic",
+                )
+            session_id = payload["session_id"]
+            with conn:
+                txs, raw_map = pl.load_session_for_confirm(conn, uid=self.uid, session_id=session_id)
+                ps.persist_batch(conn, uid=self.uid, batch_id=session_id, txs=txs,
+                                 raw_row_ids_by_index=raw_map, helpers=_helpers())
+
+            # Sanity: stamped = $1000, monthly_entries.deposits = $1000
+            stamped = conn.execute(
+                "SELECT gross_amount_usd FROM import_normalized_tx WHERE batch_id=?",
+                (session_id,),
+            ).fetchone()
+            self.assertAlmostEqual(float(stamped["gross_amount_usd"]), 1000.0, places=2)
+            me = conn.execute(
+                """SELECT deposits FROM monthly_entries
+                    WHERE user_id=? AND broker='Cocos' AND year=2024 AND month=8""",
+                (self.uid,),
+            ).fetchone()
+            self.assertAlmostEqual(float(me["deposits"]), 1000.0, places=2)
+
+            # Cambiar tc_blue a 1500 — simula que el user actualizó la config
+            with conn:
+                conn.execute(
+                    "UPDATE config SET value='1500' WHERE user_id=? AND key='tc_blue'",
+                    (self.uid,),
+                )
+
+            # Correr _recalc y luego pedir /api/movements
+            with conn:
+                main._recalc_pnl_realized_from_ops(conn, self.uid)
+
+            res = client.get(
+                "/api/movements",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(res.status_code, 200, res.text)
+            movements = res.json()
+
+            # Filter Cocos 2024-08 movements
+            cocos_aug = [m for m in movements
+                         if m["broker"] == "Cocos"
+                         and m["date"][:7] == "2024-08"
+                         and m["type"] == "DEPOSIT"]
+            # Esperamos EXACTAMENTE 1 movement (el import) con source='import'.
+            # Antes del fix, también aparecía un fantasma con source='monthly'
+            # por el manual_residual artificial.
+            sources = [m["source"] for m in cocos_aug]
+            self.assertIn("import", sources,
+                msg="El movement del import debe estar presente")
+            self.assertNotIn("monthly", sources,
+                msg="NO debe haber movement 'monthly' espurio: el residual "
+                    "manual_residual debería ser 0 con stamped USD correcto. "
+                    "Si aparece, indica que stamping no se está usando en algún path.")
+        finally:
+            conn.close()
+
     def test_legacy_row_without_stamp_falls_back_to_runtime_conversion(self):
         """Backwards-compat: rows con gross_amount_usd=NULL (legacy) usan
         conversión runtime con tc_blue actual. No crash, no datos perdidos."""
@@ -3827,6 +3908,104 @@ class DeleteBrokerGuardTest(unittest.TestCase):
         self.assertEqual(n_ops, 0)
         self.assertEqual(n_me, 0)
         self.assertEqual(n_br, 0)
+
+    def test_delete_parent_broker_cleans_sibling_data(self):
+        """Audit follow-up (2026-05-30, finding #1): cuando se borra un broker
+        padre con sibling vía parent_broker_id FK, el CASCADE del FK destruye
+        el row del sibling. Pero positions/operations/monthly_entries del
+        sibling usan broker NAME (no FK) → si solo borramos
+        `WHERE broker=padre_name`, los del sibling quedan HUÉRFANOS.
+        Test: crear padre+sibling con data en ambos, DELETE force del padre,
+        verificar que NO quedan rows huérfanas con sibling broker name."""
+        # Crear sibling vía parent_broker_id
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO brokers (user_id, name, currency, parent_broker_id)
+                   VALUES (?, 'WithDataUSD', 'USDT', ?)""",
+                (self.uid, self.with_data_id),
+            )
+            sibling_row = conn.execute(
+                "SELECT id FROM brokers WHERE user_id=? AND name='WithDataUSD'",
+                (self.uid,),
+            ).fetchone()
+            sibling_id = sibling_row["id"]
+            # Data del sibling
+            conn.execute(
+                """INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
+                   VALUES (?, 'WithDataUSD', 'ETH', 0, 500, 0.1)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2026, 5, 'WithDataUSD', 200, 0, 0, 0, 0, 200)""",
+                (self.uid,),
+            )
+
+        # DELETE force del padre → debe limpiar el sibling también
+        res = self.client.delete(
+            f"/api/brokers/{self.with_data_id}?force=true",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+
+        # Verificar que NO quedaron huérfanos del sibling
+        conn = main.get_db()
+        sibling_positions = conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE user_id=? AND broker='WithDataUSD'",
+            (self.uid,),
+        ).fetchone()[0]
+        sibling_monthly = conn.execute(
+            "SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker='WithDataUSD'",
+            (self.uid,),
+        ).fetchone()[0]
+        sibling_broker = conn.execute(
+            "SELECT COUNT(*) FROM brokers WHERE user_id=? AND name='WithDataUSD'",
+            (self.uid,),
+        ).fetchone()[0]
+        conn.close()
+
+        self.assertEqual(sibling_positions, 0,
+            "Positions del sibling deben borrarse (no quedar orphan)")
+        self.assertEqual(sibling_monthly, 0,
+            "monthly_entries del sibling deben borrarse")
+        self.assertEqual(sibling_broker, 0,
+            "El broker row del sibling debe borrarse via FK CASCADE")
+
+    def test_delete_parent_broker_409_includes_sibling_counts(self):
+        """Audit follow-up (2026-05-30, finding #12): el 409 sin force debe
+        incluir el data count del sibling. Si el sibling tiene 10 positions
+        y mostramos "0 positions", el user no entiende qué pierde."""
+        # Crear sibling con data — usando self.with_data_id ya tiene data
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO brokers (user_id, name, currency, parent_broker_id)
+                   VALUES (?, 'WithDataUSD2', 'USDT', ?)""",
+                (self.uid, self.with_data_id),
+            )
+            # Sibling tiene 3 positions extra
+            for i in range(3):
+                conn.execute(
+                    """INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
+                       VALUES (?, 'WithDataUSD2', ?, 0, 100, 0.01)""",
+                    (self.uid, f"BTC{i}"),
+                )
+
+        res = self.client.delete(
+            f"/api/brokers/{self.with_data_id}",  # sin force
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 409, res.text)
+        detail = res.json()["detail"]
+        # Padre tiene 1 position, sibling tiene 3 → total esperado 4
+        self.assertEqual(detail["counts"]["positions"], 4,
+            "Counts debe incluir positions del sibling también, no solo del padre")
+        self.assertIsNotNone(detail["sibling"])
+        self.assertEqual(detail["sibling"]["name"], "WithDataUSD2")
+        conn.close()
 
     def test_delete_nonexistent_broker_is_idempotent(self):
         """Borrar un broker que no existe → 200 OK con no_change=True

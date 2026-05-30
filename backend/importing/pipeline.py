@@ -483,6 +483,11 @@ def run_preview(
         if fp in existing_fingerprints:
             duplicate_row_indices.append(tx.row_index)
         gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_import)
+        # Audit follow-up: ALSO populate the NormalizedTx in-memory para que el
+        # persister (que consume estos NormalizedTx) tenga acceso al stamped USD
+        # y lo use en `_apply_cash_flow`. Sin esto, persist re-convertía con
+        # runtime tc_blue → drift potencial.
+        tx.gross_amount_usd = gross_usd
         conn.execute(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
@@ -768,6 +773,9 @@ def load_session_with_seed_revalidate(
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
         gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_confirm)
+        # Audit follow-up: stamp también en el NormalizedTx in-memory para que
+        # el persister lo use en `_apply_cash_flow` (consistencia DB ↔ memory).
+        tx.gross_amount_usd = gross_usd
         conn.execute(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
