@@ -7500,6 +7500,14 @@ def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional
 
 @app.post("/api/operations")
 def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
+    """Crea una operation manual.
+
+    Audit follow-up (2026-05-31): después de INSERT, syncroniza el cache
+    `monthly_entries.pnl_realized` para que coincida con sum(operations.pnl_usd).
+    Antes el cache quedaba stale después de ops manuales → /reportes y
+    Dashboard mostraban valores distintos para "P&L realizado del mes"
+    porque uno leía cache stale ($889) y otro recomputaba on-the-fly ($854).
+    """
     conn = get_db()
     currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
     cur = conn.execute(
@@ -7509,8 +7517,13 @@ def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
         (uid, op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
          op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, currency, op.fx_to_usd),
     )
-    conn.commit()
     row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
+    # Sync cache de pnl_realized en monthly_entries
+    try:
+        _recalc_pnl_realized_from_ops(conn, uid)
+    except Exception as ex:
+        log.error("Recalc tras create_operation falló: %s", ex)
+    conn.commit()
     conn.close()
     _ai_cache_invalidate(uid)
     return dict(row)
@@ -7518,6 +7531,7 @@ def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
 
 @app.put("/api/operations/{oid}")
 def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_user)):
+    """Update operation manual + sync cache pnl_realized (audit follow-up)."""
     conn = get_db()
     currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
     conn.execute(
@@ -7529,20 +7543,30 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_u
          op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0,
          currency, op.fx_to_usd, oid, uid),
     )
-    conn.commit()
     # FIXED: include user_id in SELECT to prevent IDOR data leak
     row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
-    conn.close()
     if not row:
+        conn.close()
         raise HTTPException(404, "Not found")
+    try:
+        _recalc_pnl_realized_from_ops(conn, uid)
+    except Exception as ex:
+        log.error("Recalc tras update_operation falló: %s", ex)
+    conn.commit()
+    conn.close()
     _ai_cache_invalidate(uid)
     return dict(row)
 
 
 @app.delete("/api/operations/{oid}")
 def delete_operation(oid: int, uid: int = Depends(get_current_user)):
+    """Delete operation manual + sync cache pnl_realized (audit follow-up)."""
     conn = get_db()
     conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (oid, uid))
+    try:
+        _recalc_pnl_realized_from_ops(conn, uid)
+    except Exception as ex:
+        log.error("Recalc tras delete_operation falló: %s", ex)
     conn.commit()
     conn.close()
     _ai_cache_invalidate(uid)
@@ -13143,6 +13167,8 @@ def _migrate_snapshots_netdep():
 
                 total_corrupt_removed = 0
                 corrupt_user_ids = []
+                total_pnl_recalc_updates = 0
+                pnl_recalc_user_ids = []
                 for u in users:
                     uid = u["user_id"]
                     try:
@@ -13160,12 +13186,26 @@ def _migrate_snapshots_netdep():
                         if removed:
                             total_corrupt_removed += len(removed)
                             corrupt_user_ids.append(uid)
+                        # Audit follow-up (2026-05-31): sync cache pnl_realized
+                        # con sum(operations.pnl_usd). Cuando el user creaba
+                        # ops manuales pre-fix, el cache quedaba stale → /reportes
+                        # y Dashboard mostraban valores distintos del realizado.
+                        updates = _recalc_pnl_realized_from_ops(conn, uid)
+                        if updates > 0:
+                            total_pnl_recalc_updates += updates
+                            if uid not in pnl_recalc_user_ids:
+                                pnl_recalc_user_ids.append(uid)
                     except Exception as ex:
                         _log.warning(
                             "Snapshot migration error for user %s: %s",
                             uid, ex,
                         )
                 conn.commit()
+                if total_pnl_recalc_updates > 0:
+                    _log.info(
+                        "Pnl_realized cache resync: %d rows en %d users.",
+                        total_pnl_recalc_updates, len(pnl_recalc_user_ids),
+                    )
 
                 if total_snapshots_fixed > 0:
                     _log.info(

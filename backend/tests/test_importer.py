@@ -3794,6 +3794,148 @@ class AutoRolloverServerSideTest(unittest.TestCase):
             "Sin historia previa, GET devuelve [] sin crear nada")
 
 
+class ManualOperationPnlCacheSyncTest(unittest.TestCase):
+    """Audit follow-up (2026-05-31): POST/PUT/DELETE de operations debe
+    sincronizar el cache `monthly_entries.pnl_realized` con la fuente
+    canónica `sum(operations.pnl_usd)`.
+
+    Bug original: el user creaba ops desde el form, operations.pnl_usd
+    actualizado, PERO monthly_entries.pnl_realized quedaba stale → Dashboard
+    "Este mes / realizado" mostraba $889 (cache stale), narrative del reporte
+    mostraba $854 (recomputado fresh). Mismo número, dos valores en pantalla."""
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries", "brokers"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"pnlcache-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Binance", "USDT")
+        # Pre-seed monthly_entries con valor stale
+        conn.execute(
+            """INSERT INTO monthly_entries
+               (user_id, year, month, broker, deposits, withdrawals,
+                pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+               VALUES (?, 2026, 5, 'Binance', 0, 0, 999, 0, 0, 999)""",
+            (self.uid,),
+        )
+        conn.execute(
+            """INSERT INTO monthly_entries
+               (user_id, year, month, broker, deposits, withdrawals,
+                pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+               VALUES (?, 2026, 5, 'global', 0, 0, 999, 0, 0, 999)""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def test_create_operation_syncs_pnl_cache(self):
+        """POST /api/operations debe poner monthly_entries.pnl_realized =
+        sum(operations.pnl_usd)."""
+        # Crear operation con pnl_usd=150
+        res = self.client.post(
+            "/api/operations",
+            json={
+                "date": "2026-05-15",
+                "broker": "Binance",
+                "asset": "BTC",
+                "op_type": "Venta",
+                "pnl_usd": 150,
+            },
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+
+        # Cache debe haberse syncronizado: pnl_realized = 150 (no 999 stale)
+        conn = main.get_db()
+        row_binance = conn.execute(
+            """SELECT pnl_realized FROM monthly_entries
+                WHERE user_id=? AND broker='Binance' AND year=2026 AND month=5""",
+            (self.uid,),
+        ).fetchone()
+        row_global = conn.execute(
+            """SELECT pnl_realized FROM monthly_entries
+                WHERE user_id=? AND broker='global' AND year=2026 AND month=5""",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertAlmostEqual(float(row_binance["pnl_realized"]), 150.0, places=2,
+            msg="Cache Binance debería ser 150 (no stale 999)")
+        self.assertAlmostEqual(float(row_global["pnl_realized"]), 150.0, places=2,
+            msg="Cache global debería ser 150")
+
+    def test_update_operation_resyncs_pnl_cache(self):
+        """PUT /api/operations actualiza pnl_usd → cache se re-sync."""
+        # Crear primera op
+        res = self.client.post(
+            "/api/operations",
+            json={"date": "2026-05-15", "broker": "Binance", "asset": "BTC",
+                  "op_type": "Venta", "pnl_usd": 150},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        op_id = res.json()["id"]
+
+        # Update a 250
+        res = self.client.put(
+            f"/api/operations/{op_id}",
+            json={"date": "2026-05-15", "broker": "Binance", "asset": "BTC",
+                  "op_type": "Venta", "pnl_usd": 250},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+
+        conn = main.get_db()
+        row = conn.execute(
+            """SELECT pnl_realized FROM monthly_entries
+                WHERE user_id=? AND broker='Binance' AND year=2026 AND month=5""",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        self.assertAlmostEqual(float(row["pnl_realized"]), 250.0, places=2,
+            msg="Cache debe reflejar el nuevo pnl tras update")
+
+    def test_delete_operation_resyncs_pnl_cache(self):
+        """DELETE /api/operations remueve la op → cache se actualiza."""
+        res = self.client.post(
+            "/api/operations",
+            json={"date": "2026-05-15", "broker": "Binance", "asset": "BTC",
+                  "op_type": "Venta", "pnl_usd": 150},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        op_id = res.json()["id"]
+
+        # Verificar cache = 150
+        conn = main.get_db()
+        row = conn.execute(
+            """SELECT pnl_realized FROM monthly_entries
+                WHERE user_id=? AND broker='Binance' AND year=2026 AND month=5""",
+            (self.uid,),
+        ).fetchone()
+        self.assertAlmostEqual(float(row["pnl_realized"]), 150.0, places=2)
+
+        # Delete
+        res = self.client.delete(
+            f"/api/operations/{op_id}",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+
+        # Cache debe ser 0 (o la row borrada por cleanup)
+        row_after = conn.execute(
+            """SELECT pnl_realized FROM monthly_entries
+                WHERE user_id=? AND broker='Binance' AND year=2026 AND month=5""",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # Si la row sobrevive (otros valores no-cero), debe tener pnl_realized=0
+        # Si fue borrada por cleanup post-recalc, también OK
+        if row_after is not None:
+            self.assertAlmostEqual(float(row_after["pnl_realized"]), 0.0, places=2,
+                msg="Cache debe ser 0 tras delete del único op")
+
+
 class CorruptSnapshotDetectionTest(unittest.TestCase):
     """Audit follow-up (2026-05-31): `_detect_and_remove_corrupt_snapshots`
     debe identificar snapshots con V-shape de total_value (caída >15% +
