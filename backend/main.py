@@ -13341,9 +13341,14 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     brokers_count = int(brk_row["cnt"] or 0) if brk_row else 0
 
     # Deltas históricos: 1, 7 y 30 días atrás (global, requieren snapshots).
-    delta_1d = _snapshot_delta(conn, uid, latest_value, latest_date, days=1) if broker_filter == "global" else None
-    delta_7d = _snapshot_delta(conn, uid, latest_value, latest_date, days=7) if broker_filter == "global" else None
-    delta_30d = _snapshot_delta(conn, uid, latest_value, latest_date, days=30) if broker_filter == "global" else None
+    # Audit follow-up (2026-05-31): cashflow-adjusted — pasamos latest_netdep
+    # para que el delta neutralice aportes/retiros del período (mismo criterio
+    # que Dashboard "HOY"). Para current snapshot, netdep = cum_deposited
+    # (que ya calculamos arriba).
+    _latest_netdep = float(cum_deposited or 0) if broker_filter == "global" else None
+    delta_1d = _snapshot_delta(conn, uid, latest_value, latest_date, days=1, latest_netdep=_latest_netdep) if broker_filter == "global" else None
+    delta_7d = _snapshot_delta(conn, uid, latest_value, latest_date, days=7, latest_netdep=_latest_netdep) if broker_filter == "global" else None
+    delta_30d = _snapshot_delta(conn, uid, latest_value, latest_date, days=30, latest_netdep=_latest_netdep) if broker_filter == "global" else None
 
     # YTD: rendimiento desde el 1 de enero del año actual.
     ytd = _ytd_delta(conn, uid, latest_value, latest_date, broker_filter)
@@ -13406,14 +13411,21 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
 
 
 def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
-                    latest_date: Optional[str], days: int) -> Optional[dict]:
+                    latest_date: Optional[str], days: int,
+                    latest_netdep: Optional[float] = None) -> Optional[dict]:
     """Variación del portfolio (USD + %) entre el snapshot más reciente y
     el snapshot más cercano a N días atrás.
 
-    Devuelve `prev_date` para que el frontend pueda mostrar "vs vie 15 may"
-    en lugar de "Δ último día" (que puede ser engañoso si hubo gap por
-    fin de semana o feriado).
+    Audit follow-up (2026-05-31): cashflow-adjusted.
+    Antes era `latest_value − prev_value` (bruto) — si el user retiraba
+    $400 ayer, "Δ último cierre" mostraba -$400 como pérdida fantasma.
+    Ahora usa `Δ(value − netDeposited)`: descuenta aportes/retiros, mismo
+    criterio que el Dashboard "HOY" y el chart "1S".
 
+    `latest_netdep` opcional — si no se pasa, asume 0 (mismo en ambos
+    lados → equivalente al raw diff legacy).
+
+    Devuelve `prev_date` para que el frontend pueda mostrar "vs vie 15 may".
     Devuelve None si no hay data.
     """
     if latest_value is None or latest_date is None:
@@ -13424,7 +13436,7 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     except ValueError:
         return None
     prev = conn.execute(
-        "SELECT date, total_value FROM snapshots WHERE user_id=? AND date<=? ORDER BY date DESC LIMIT 1",
+        "SELECT date, total_value, net_deposited FROM snapshots WHERE user_id=? AND date<=? ORDER BY date DESC LIMIT 1",
         (uid, target),
     ).fetchone()
     if not prev or prev["total_value"] is None:
@@ -13432,10 +13444,18 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     prev_v = float(prev["total_value"])
     if prev_v <= 0:
         return None
+    prev_netdep = float(prev["net_deposited"] or 0)
+    # Cashflow-adjusted: Δ(value − netDeposited). Si el caller no pasa
+    # latest_netdep, ambos lados usan 0 (equivalent al raw diff legacy).
+    cur_netdep = float(latest_netdep or 0)
+    flows = cur_netdep - prev_netdep
+    delta_usd = (latest_value - cur_netdep) - (prev_v - prev_netdep)
+    # Pct sobre el VALOR base (no Total Return — ese podría ser 0 o negativo).
     return {
-        "usd": round(latest_value - prev_v, 2),
-        "pct": round(((latest_value - prev_v) / prev_v) * 100, 2),
+        "usd": round(delta_usd, 2),
+        "pct": round((delta_usd / prev_v) * 100, 2),
         "prev_date": prev["date"],
+        "flows": round(flows, 2),  # útil para tooltip "incluyó +$X aportes"
     }
 
 

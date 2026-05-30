@@ -296,20 +296,38 @@ def compute_metrics_for_period(
         # week / day: snapshots para start/end
         snap_start = fetch_snapshot_at_or_before(conn, uid, period_start)
         snap_end = fetch_snapshot_at_or_before(conn, uid, period_end)
-        # Para "start" buscamos snapshot ANTES del período (cierre del día previo).
-        # Si snap_start coincide con period_start, está bien igual; si es más viejo, asumimos
-        # que el valor no cambió (es lo mejor que podemos hacer sin daily data).
         start_value = float(snap_start["total_value"]) if snap_start else 0.0
         if live_value is not None and is_period_current(period_type, period_start, period_end):
             end_value = float(live_value)
         else:
             end_value = float(snap_end["total_value"]) if snap_end else start_value
-        # deposits/withdrawals para week/day: este modelo NO tiene
-        # granularidad sub-mensual de flujos (solo monthly_entries lo trackea
-        # mes a mes). Asumimos flows=0 para day/week.
-        # Limitación conocida: si el user deposita capital intra-mes, el
-        # delta_usd del día/semana lo va a contar como ganancia hasta el
-        # cierre del mes (donde monthly_entries se reconcilia).
+        # Audit follow-up (2026-05-31): usar net_deposited de los snapshots
+        # como proxy de flows sub-mensuales. Antes asumíamos flows=0 → si el
+        # user depositaba/retiraba entre el inicio del período y hoy, el
+        # delta_usd raw lo contaba como ganancia/pérdida → "P&L semana"
+        # divergía del Dashboard chart "1S" (que sí descontaba flujos).
+        # Con net_deposited podemos calcular flows = end_netdep - start_netdep.
+        start_netdep = float(snap_start["net_deposited"] or 0) if snap_start else 0.0
+        if live_value is not None and is_period_current(period_type, period_start, period_end):
+            # Live: usamos cum_aportado (calculado más abajo, pero acá usamos
+            # SUM monthly_entries directamente para evitar referencia circular).
+            row = conn.execute(
+                """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
+                     FROM monthly_entries
+                    WHERE user_id=? AND broker=? AND broker <> 'global'""",
+                (uid, broker_filter),
+            ).fetchone() if broker_filter != "global" else conn.execute(
+                """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
+                     FROM monthly_entries
+                    WHERE user_id=? AND broker='global'""",
+                (uid,),
+            ).fetchone()
+            end_netdep = float(row["net"] or 0) if row else 0.0
+        else:
+            end_netdep = float(snap_end["net_deposited"] or 0) if snap_end else start_netdep
+        # flows sub-mensuales derivados de los snapshots
+        deposits = max(0.0, end_netdep - start_netdep)
+        withdrawals = max(0.0, start_netdep - end_netdep)
 
     flows = deposits - withdrawals
     delta_usd = end_value - start_value - flows
