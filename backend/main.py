@@ -7757,6 +7757,68 @@ def historical_cagr(uid: int = Depends(get_current_user)):
 # un hash SHA-256 al registrarse (ver _is_admin_email arriba).
 
 
+def _detect_and_remove_corrupt_snapshots(conn, uid: int) -> list:
+    """Audit follow-up (2026-05-31): detecta y borra snapshots con "V-shape"
+    (caída brusca + recuperación al día siguiente) — síntoma de un snapshot
+    tomado durante un estado incompleto (ej: ventana del bug del recalc,
+    re-import en progreso, etc).
+
+    Razón: la migración anterior arregló `net_deposited` (recomputable desde
+    monthly_entries) pero el `total_value` quedó como estaba — no podemos
+    recomputarlo porque dependería de precios históricos que no almacenamos.
+    Los snapshots con `total_value` corrupto inflan artificialmente el delta
+    del chart "Performance del portfolio" porque toman como `first.valueUsd`
+    un valor anómalo bajo.
+
+    Heurística conservadora: para cada snapshot D, mirar D-1 y D+1. Si:
+      • value[D] cae > 15% vs value[D-1]
+      • value[D+1] recupera > 20% vs value[D]
+      • D+1 está dentro de 3 días de D
+    → snapshot D es corrupto, eliminarlo.
+
+    Solo afecta snapshots con esa firma específica. NO toca grandes drops
+    legítimos (donde el drop persiste vs recupera en 1 día).
+
+    Devuelve list de IDs eliminados (para logging).
+    """
+    snaps = conn.execute(
+        "SELECT id, date, total_value FROM snapshots WHERE user_id=? ORDER BY date",
+        (uid,),
+    ).fetchall()
+    if len(snaps) < 3:
+        return []
+
+    from datetime import datetime as _dt
+    corrupt_ids = []
+    for i in range(1, len(snaps) - 1):
+        prev_v = float(snaps[i - 1]["total_value"] or 0)
+        cur_v = float(snaps[i]["total_value"] or 0)
+        next_v = float(snaps[i + 1]["total_value"] or 0)
+        if prev_v <= 0 or next_v <= 0 or cur_v <= 0:
+            continue
+        try:
+            cur_date = _dt.strptime(snaps[i]["date"], "%Y-%m-%d").date()
+            next_date = _dt.strptime(snaps[i + 1]["date"], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        days_to_next = (next_date - cur_date).days
+        if days_to_next > 3:
+            continue
+        drop_from_prev = (cur_v - prev_v) / prev_v
+        recovery_to_next = (next_v - cur_v) / cur_v
+        # V-shape: cae > 15% Y se recupera > 20% en ≤ 3 días.
+        if drop_from_prev < -0.15 and recovery_to_next > 0.20:
+            corrupt_ids.append(snaps[i]["id"])
+
+    if corrupt_ids:
+        placeholders = ",".join("?" * len(corrupt_ids))
+        conn.execute(
+            f"DELETE FROM snapshots WHERE id IN ({placeholders}) AND user_id=?",
+            (*corrupt_ids, uid),
+        )
+    return corrupt_ids
+
+
 def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool = False) -> dict:
     """Backfill `snapshots.net_deposited` para TODOS los snapshots del user
     usando la fórmula canónica:
@@ -7830,13 +7892,18 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
     automáticamente para TODOS los users en cada deploy. Este endpoint
     queda disponible solo para casos ad-hoc (re-run después de un import
     nuevo, debugging, etc).
+
+    Audit follow-up (2026-05-31): también ejecuta detección y remoción
+    de snapshots con V-shape (corruptos por ventana del bug del recalc).
     """
     conn = get_db()
     try:
         result = _recompute_snapshots_netdep_for_user(conn, uid, with_details=True)
+        corrupt_removed = _detect_and_remove_corrupt_snapshots(conn, uid)
         conn.commit()
         result["ok"] = True
         result["user_id"] = uid
+        result["corrupt_snapshots_removed"] = len(corrupt_removed)
         return result
     finally:
         conn.close()
@@ -13074,6 +13141,8 @@ def _migrate_snapshots_netdep():
                 total_snapshots_fixed = 0
                 affected_user_ids = []
 
+                total_corrupt_removed = 0
+                corrupt_user_ids = []
                 for u in users:
                     uid = u["user_id"]
                     try:
@@ -13081,9 +13150,19 @@ def _migrate_snapshots_netdep():
                         if result["snapshots_updated"] > 0:
                             total_snapshots_fixed += result["snapshots_updated"]
                             affected_user_ids.append(uid)
+                        # Audit follow-up (2026-05-31): después del net_deposited
+                        # recompute, también detectamos y removemos snapshots
+                        # con V-shape de total_value (corruptos por ventana del
+                        # bug del recalc). Esos inflan el delta del chart de
+                        # evolución porque toman como first.valueUsd un valor
+                        # anómalo bajo.
+                        removed = _detect_and_remove_corrupt_snapshots(conn, uid)
+                        if removed:
+                            total_corrupt_removed += len(removed)
+                            corrupt_user_ids.append(uid)
                     except Exception as ex:
                         _log.warning(
-                            "Snapshot netdep migration error for user %s: %s",
+                            "Snapshot migration error for user %s: %s",
                             uid, ex,
                         )
                 conn.commit()
@@ -13098,6 +13177,12 @@ def _migrate_snapshots_netdep():
                     _log.info(
                         "Snapshot netdep migration: 0 correcciones necesarias (%d users chequeados)",
                         total_users,
+                    )
+                if total_corrupt_removed > 0:
+                    _log.info(
+                        "Corrupt snapshot removal: %d snapshots con V-shape borrados en %d users. Affected user_ids: %s",
+                        total_corrupt_removed, len(corrupt_user_ids),
+                        corrupt_user_ids,
                     )
             finally:
                 conn.close()

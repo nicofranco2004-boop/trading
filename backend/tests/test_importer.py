@@ -3794,6 +3794,85 @@ class AutoRolloverServerSideTest(unittest.TestCase):
             "Sin historia previa, GET devuelve [] sin crear nada")
 
 
+class CorruptSnapshotDetectionTest(unittest.TestCase):
+    """Audit follow-up (2026-05-31): `_detect_and_remove_corrupt_snapshots`
+    debe identificar snapshots con V-shape de total_value (caída >15% +
+    recuperación >20% en ≤3 días) — síntoma de un snapshot tomado durante
+    estado incompleto. Y NO debe tocar snapshots con caídas legítimas
+    (drop persistente sin recuperación inmediata)."""
+
+    def setUp(self):
+        conn = main.get_db()
+        conn.execute("DELETE FROM snapshots")
+        self.uid = _new_user(conn, email=f"corruptsnap-{id(self)}@rendi.test")
+        conn.commit()
+        conn.close()
+
+    def _insert_snap(self, conn, date_str, value, netdep=0):
+        conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+               VALUES (?, ?, ?, ?, ?)""",
+            (self.uid, date_str, value, netdep, netdep),
+        )
+
+    def test_detects_v_shape(self):
+        """Snapshot con value=$5,696 entre $7,053 y $7,767 → V-shape detectado."""
+        conn = main.get_db()
+        with conn:
+            self._insert_snap(conn, "2026-04-30", 7053)
+            self._insert_snap(conn, "2026-05-21", 5696)  # ← outlier
+            self._insert_snap(conn, "2026-05-22", 7767)
+            removed = main._detect_and_remove_corrupt_snapshots(conn, self.uid)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE user_id=?", (self.uid,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(len(removed), 1, "Debe detectar 1 outlier")
+        self.assertEqual(n, 2, "El outlier debe haberse borrado")
+
+    def test_does_not_remove_legitimate_drop(self):
+        """Caída del 20% que SE MANTIENE → NO es V-shape, no borrar."""
+        conn = main.get_db()
+        with conn:
+            self._insert_snap(conn, "2026-04-30", 10000)
+            self._insert_snap(conn, "2026-05-01", 8000)   # -20% sustained
+            self._insert_snap(conn, "2026-05-02", 7900)   # se mantiene
+            removed = main._detect_and_remove_corrupt_snapshots(conn, self.uid)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE user_id=?", (self.uid,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(len(removed), 0, "Drop sustained no es V-shape")
+        self.assertEqual(n, 3)
+
+    def test_skips_when_less_than_3_snapshots(self):
+        """Con menos de 3 snapshots no se puede detectar V-shape."""
+        conn = main.get_db()
+        with conn:
+            self._insert_snap(conn, "2026-05-01", 1000)
+            self._insert_snap(conn, "2026-05-02", 500)
+            removed = main._detect_and_remove_corrupt_snapshots(conn, self.uid)
+        conn.close()
+        self.assertEqual(removed, [])
+
+    def test_respects_3_day_window(self):
+        """Si el "siguiente" snapshot está a >3 días, no detectar V-shape
+        (caída + recuperación lejana no es la firma del bug, podría ser
+        una corrección de mercado legítima)."""
+        conn = main.get_db()
+        with conn:
+            self._insert_snap(conn, "2026-04-30", 7053)
+            self._insert_snap(conn, "2026-05-01", 5696)  # drop
+            self._insert_snap(conn, "2026-05-10", 7767)  # recovery 9 días después
+            removed = main._detect_and_remove_corrupt_snapshots(conn, self.uid)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE user_id=?", (self.uid,)
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(len(removed), 0, "Recuperación >3 días no es V-shape")
+        self.assertEqual(n, 3)
+
+
 class DeleteBrokerGuardTest(unittest.TestCase):
     """Fase 5 (2026-05-30): DELETE /api/brokers/{bid} debe refuse-then-confirm.
     Si el broker tiene positions/operations/monthly_entries/imports asociados,
