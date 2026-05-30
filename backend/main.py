@@ -7682,6 +7682,35 @@ def admin_debug_movements_kpi(uid: int = Depends(get_admin_user)):
         total_imp_wit = sum(imp_wit_map.values())
         total_imp_fee = sum(imp_fee_map.values())
 
+        # Listado detallado de TODAS las DEPOSIT individuales (con notes/remarks
+        # del CSV original) para identificar transferencias internas mal-clasificadas.
+        deposit_details = conn.execute(
+            """SELECT t.id, t.date, t.broker, t.operation_type, t.gross_amount,
+                      t.currency, t.notes,
+                      b.parser_format AS parser, b.file_name AS file
+                 FROM import_normalized_tx t
+                 JOIN import_batches b ON t.batch_id = b.id
+                WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND UPPER(t.operation_type) = 'DEPOSIT'
+                ORDER BY t.date DESC, t.id DESC""",
+            (uid,),
+        ).fetchall()
+        deposit_list = [dict(r) for r in deposit_details]
+
+        # Idem para WITHDRAW (para entender retiros también)
+        wit_details = conn.execute(
+            """SELECT t.id, t.date, t.broker, t.operation_type, t.gross_amount,
+                      t.currency, t.notes,
+                      b.parser_format AS parser, b.file_name AS file
+                 FROM import_normalized_tx t
+                 JOIN import_batches b ON t.batch_id = b.id
+                WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND UPPER(t.operation_type) = 'WITHDRAW'
+                ORDER BY t.date DESC, t.id DESC""",
+            (uid,),
+        ).fetchall()
+        wit_list = [dict(r) for r in wit_details]
+
         return {
             "user_id": uid,
             "tc_blue": tc_blue,
@@ -7689,6 +7718,8 @@ def admin_debug_movements_kpi(uid: int = Depends(get_admin_user)):
             "monthly_entries": me_list,
             "imports_breakdown_per_op_type": imp_list,
             "residuals_per_entry": residuals,
+            "all_deposits_detail": deposit_list,
+            "all_withdraws_detail": wit_list,
             "totals": {
                 "me_deposits_sum": round(total_me_dep, 4),
                 "me_withdrawals_sum": round(total_me_wit, 4),
