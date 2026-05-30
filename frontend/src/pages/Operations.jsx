@@ -760,50 +760,38 @@ function MovementsView() {
 }
 
 // Compute KPI strip dinámico. Cada filtro de tipo tiene su set propio de
-// métricas relevantes (no tiene sentido mostrar P&L Realizado si el user
-// está mirando solo depósitos).
+// métricas relevantes.
+//
+// SEMÁNTICA "Aportado Neto" (vista all):
+// El KPI principal cuando el user mira "Todos los movimientos" es el NETO
+// (deposits − withdrawals), no el bruto de cada lado. Razón:
+//   • Algunos brokers clasifican P2P trades como DEPOSIT en el CSV. Un user
+//     que hace flips (compra USDT con ARS + venta inmediata por ARS) genera
+//     $X en deposits Y $X en withdrawals — el bruto infla 2× sin que cambie
+//     el capital aportado. El NETO refleja capital nuevo real.
+//   • Coincide exactamente con "Capital Aportado" del Dashboard, evitando
+//     que el user vea dos números distintos en pantallas distintas.
+// El bruto sigue accesible filtrando por DEPÓSITOS o RETIROS individualmente
+// (en esa vista mostramos bruto + promedio, que es lo que tiene sentido ahí).
 function computeMovementKpis(rows, filterType) {
   const sumByType = (t) => rows.filter(r => r.type === t).reduce((s, r) => s + (r.amount_usd || 0), 0)
   const countByType = (t) => rows.filter(r => r.type === t).length
 
-  // Fix 2026-05-27 (bug reportado por user): los KPIs Depositado/Retirado
-  // antes sumaban TODOS los DEPOSIT/WITHDRAW, incluyendo los importados de
-  // CSV de brokers (Binance especialmente). Esos imports incluyen movimientos
-  // INTERNOS del broker (FUNDING, conversions, settlements, transfers entre
-  // wallets) que no son "capital nuevo" desde la vida del user a su portfolio.
-  // Resultado: un user con 7 depósitos reales ($2.5k) veía $28k con 65 eventos.
-  //
-  // Solución: el KPI de "capital nuevo" (Depositado/Retirado) cuenta SOLO los
-  // que el user marca manualmente en /mensual (source='monthly'). Los flujos
-  // de import siguen apareciendo en la tabla, pero no inflan el KPI.
-  const sumByTypeManual = (t) =>
-    rows.filter(r => r.type === t && r.source === 'monthly')
-        .reduce((s, r) => s + (r.amount_usd || 0), 0)
-  const countByTypeManual = (t) =>
-    rows.filter(r => r.type === t && r.source === 'monthly').length
-
   if (filterType === 'DEPOSIT' || filterType === 'WITHDRAW') {
     const t = filterType
-    // Total = solo manuales (capital nuevo). En la tabla abajo el user ve
-    // todos los eventos individualmente.
-    const totalManual = sumByTypeManual(t)
-    const totalAll = sumByType(t)
-    const countManual = countByTypeManual(t)
-    const countAll = countByType(t)
-    const hasImports = countAll > countManual
+    const total = sumByType(t)
+    const count = countByType(t)
     return [
       {
         label: `Total ${t === 'DEPOSIT' ? 'depositado' : 'retirado'}`,
-        value: fmtUsd(totalManual),
+        value: fmtUsd(total),
         tone: t === 'DEPOSIT' ? 'pos' : 'neg',
-        sub: hasImports
-          ? `${countManual} manuales · ${countAll - countManual} de imports (no contados)`
-          : `${countManual} eventos`,
+        sub: `${count} eventos · bruto histórico`,
       },
       {
         label: 'Promedio',
-        value: countManual > 0 ? fmtUsd(totalManual / countManual) : '—',
-        sub: 'por evento manual',
+        value: count > 0 ? fmtUsd(total / count) : '—',
+        sub: 'por evento',
       },
     ]
   }
@@ -818,32 +806,20 @@ function computeMovementKpis(rows, filterType) {
     ]
   }
 
-  // Vista "Todos" o por trade type → KPIs generales de cash flow
-  // (Depositado/Retirado SOLO suman manuales — ver comentario arriba.)
-  const depositos = sumByTypeManual('DEPOSIT')
-  const retiros = sumByTypeManual('WITHDRAW')
+  // Vista "Todos" o por trade type — KPI principal es el NETO
+  const dep = sumByType('DEPOSIT')
+  const wit = sumByType('WITHDRAW')
+  const neto = dep - wit
+  const depCount = countByType('DEPOSIT')
+  const witCount = countByType('WITHDRAW')
   const dividendos = sumByType('DIVIDEND') + sumByType('INTEREST')
   const comisiones = sumByType('FEE')
-  const depositCountManual = countByTypeManual('DEPOSIT')
-  const depositCountAll = countByType('DEPOSIT')
-  const wdrCountManual = countByTypeManual('WITHDRAW')
-  const wdrCountAll = countByType('WITHDRAW')
   return [
     {
-      label: 'Depositado',
-      value: fmtUsd(depositos),
-      tone: depositos > 0 ? 'pos' : null,
-      sub: depositCountAll > depositCountManual
-        ? `${depositCountManual} manuales (+${depositCountAll - depositCountManual} de imports)`
-        : `${depositCountManual} eventos`,
-    },
-    {
-      label: 'Retirado',
-      value: fmtUsd(retiros),
-      tone: retiros > 0 ? 'neg' : null,
-      sub: wdrCountAll > wdrCountManual
-        ? `${wdrCountManual} manuales (+${wdrCountAll - wdrCountManual} de imports)`
-        : `${wdrCountManual} eventos`,
+      label: 'Aportado neto',
+      value: fmtUsd(neto),
+      tone: neto > 0 ? 'pos' : neto < 0 ? 'neg' : null,
+      sub: `${depCount} depósitos · ${witCount} retiros`,
     },
     { label: 'Cobrado',    value: fmtUsd(dividendos), tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
     { label: 'Comisiones', value: fmtUsd(comisiones), tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales' },
