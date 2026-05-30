@@ -6284,6 +6284,14 @@ class OperationIn(BaseModel):
     pnl_usd: Optional[float] = Field(None, ge=-_FINITE_BOUND, le=_FINITE_BOUND)
     pnl_pct: Optional[float] = Field(None, ge=-1e6, le=1e6)
     commissions: Optional[float] = Field(0, ge=0, le=_FINITE_BOUND)
+    # currency/fx_to_usd (Fase 6, 2026-05-30): operations creadas via form
+    # antes no stampaban moneda → quedaban NULL. Eso rompía cualquier
+    # consumer downstream que filtrara/agregara por currency (ej: futuro
+    # split por moneda en /reportes, exports CSV con currency, etc).
+    # Si vienen NULL en el payload, el endpoint lookup broker.currency
+    # como default — transparente para el frontend.
+    currency: Optional[str] = Field(None, max_length=10)
+    fx_to_usd: Optional[float] = Field(None, gt=0, le=_FINITE_BOUND)
 
     @field_validator('date')
     @classmethod
@@ -6297,7 +6305,14 @@ class OperationIn(BaseModel):
     def clean_asset(cls, v):
         return v.strip().upper()
 
-    @field_validator('entry_price', 'exit_price', 'quantity', 'pnl_usd', 'pnl_pct')
+    @field_validator('currency')
+    @classmethod
+    def clean_currency(cls, v):
+        if v is None or v == '':
+            return None
+        return v.strip().upper()
+
+    @field_validator('entry_price', 'exit_price', 'quantity', 'pnl_usd', 'pnl_pct', 'fx_to_usd')
     @classmethod
     def finite_check(cls, v):
         return _finite(v)
@@ -7231,14 +7246,31 @@ def behavioral_insights(uid: int = Depends(get_current_user)):
     return build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue)
 
 
+def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional[str]) -> str:
+    """Default currency desde broker si el payload no la trae. Si el broker
+    no existe (raro pero posible si el frontend manda un broker nombre
+    libre), default a 'USD' como fallback seguro. Devuelve siempre uppercase."""
+    if currency_in:
+        return currency_in.upper()
+    row = conn.execute(
+        "SELECT currency FROM brokers WHERE user_id=? AND name=?",
+        (uid, broker_name),
+    ).fetchone()
+    if row and row["currency"]:
+        return str(row["currency"]).upper()
+    return "USD"
+
+
 @app.post("/api/operations")
 def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
     conn = get_db()
+    currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
     cur = conn.execute(
         """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price, exit_price,
-           quantity, pnl_usd, pnl_pct, commissions) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           quantity, pnl_usd, pnl_pct, commissions, currency, fx_to_usd)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (uid, op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
-         op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0),
+         op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, currency, op.fx_to_usd),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
@@ -7250,12 +7282,15 @@ def create_operation(op: OperationIn, uid: int = Depends(get_current_user)):
 @app.put("/api/operations/{oid}")
 def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_current_user)):
     conn = get_db()
+    currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
     conn.execute(
         """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
-           exit_price=?, quantity=?, pnl_usd=?, pnl_pct=?, commissions=?
+           exit_price=?, quantity=?, pnl_usd=?, pnl_pct=?, commissions=?,
+           currency=?, fx_to_usd=?
            WHERE id=? AND user_id=?""",
         (op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
-         op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, oid, uid),
+         op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0,
+         currency, op.fx_to_usd, oid, uid),
     )
     conn.commit()
     # FIXED: include user_id in SELECT to prevent IDOR data leak

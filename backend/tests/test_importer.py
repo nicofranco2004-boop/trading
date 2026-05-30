@@ -3350,6 +3350,118 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         self.assertGreaterEqual(body["rows_updated"], 1)
 
 
+class OperationCurrencyStampingTest(unittest.TestCase):
+    """Fase 6 (2026-05-30): operations creadas via POST/PUT /api/operations
+    deben stampar `currency`. Antes el OperationIn no incluía el campo,
+    así que las ops manuales quedaban con currency=NULL y rompían
+    consumers downstream que filtraban por moneda.
+
+    Default behavior: si el frontend no manda currency, el backend
+    hace lookup en brokers.currency y stampa transparentemente.
+    """
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries", "brokers"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"opcurrency-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        _add_broker(conn, self.uid, "Binance", "USDT")
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _post_op(self, body):
+        return self.client.post(
+            "/api/operations",
+            json=body,
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def test_currency_defaults_from_broker_when_omitted(self):
+        """POST sin currency en payload → toma broker.currency."""
+        res = self._post_op({
+            "date": "2026-05-01",
+            "broker": "Cocos",
+            "asset": "AL30",
+            "op_type": "Venta",
+            "pnl_usd": 50,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["currency"], "ARS",
+            "Cocos es ARS → operation debe stampar currency=ARS")
+
+    def test_currency_defaults_from_broker_usd(self):
+        """POST con broker USD (Binance) → currency='USDT'."""
+        res = self._post_op({
+            "date": "2026-05-01",
+            "broker": "Binance",
+            "asset": "BTC",
+            "op_type": "Venta",
+            "pnl_usd": 100,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["currency"], "USDT")
+
+    def test_currency_in_payload_overrides_broker(self):
+        """Si el frontend manda currency explícita, se usa esa (no lookup)."""
+        res = self._post_op({
+            "date": "2026-05-01",
+            "broker": "Cocos",
+            "asset": "AAPL",
+            "op_type": "Venta",
+            "pnl_usd": 25,
+            "currency": "usd",  # lowercase para verificar normalización
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["currency"], "USD",
+            "currency del payload se normaliza a uppercase")
+
+    def test_currency_fallback_to_usd_if_broker_unknown(self):
+        """Si el broker no existe en brokers (raro pero posible si el
+        frontend manda un nombre libre), default 'USD'."""
+        res = self._post_op({
+            "date": "2026-05-01",
+            "broker": "BrokerInexistente",
+            "asset": "FOO",
+            "op_type": "Venta",
+            "pnl_usd": 10,
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["currency"], "USD")
+
+    def test_put_also_stamps_currency(self):
+        """PUT /api/operations/{id} también stampa currency (no solo POST)."""
+        # Crear primero sin currency
+        res = self._post_op({
+            "date": "2026-05-01",
+            "broker": "Cocos",
+            "asset": "GGAL",
+            "pnl_usd": 5,
+        })
+        op_id = res.json()["id"]
+        # Update sin currency en payload — debe lookup-ear de nuevo
+        res = self.client.put(
+            f"/api/operations/{op_id}",
+            json={
+                "date": "2026-05-01",
+                "broker": "Binance",  # cambio de broker
+                "asset": "ETH",
+                "pnl_usd": 5,
+            },
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["currency"], "USDT",
+            "PUT con nuevo broker debe re-lookup currency")
+
+
 class RepairMonthlyChainOpenMonthTest(unittest.TestCase):
     """Bug fix (2026-05-30): `_repair_monthly_chain` detectaba "open month"
     como la última row del query (i == len(rows) - 1), no como el mes
