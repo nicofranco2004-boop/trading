@@ -7682,6 +7682,153 @@ def admin_debug_movements_kpi(uid: int = Depends(get_admin_user)):
         total_imp_wit = sum(imp_wit_map.values())
         total_imp_fee = sum(imp_fee_map.values())
 
+        # ── Accounting identity check ───────────────────────────────────────
+        # Identidad contable canónica:
+        #   Capital Aportado (Net) = Portfolio Total − (Realized PnL + Unrealized PnL)
+        # equivalente a:
+        #   Total = Net Aportado + Realized + Unrealized
+        # Si la identidad NO se cumple, hay drift entre las distintas tablas/cálculos.
+
+        # Lado izquierdo: Net aportado desde monthly_entries (global)
+        net_global_row = conn.execute(
+            """SELECT COALESCE(SUM(deposits) - SUM(withdrawals), 0) AS net,
+                      COALESCE(SUM(deposits), 0) AS dep,
+                      COALESCE(SUM(withdrawals), 0) AS wit
+                 FROM monthly_entries
+                WHERE user_id=? AND broker='global'""",
+            (uid,),
+        ).fetchone()
+        net_global = float(net_global_row["net"] or 0)
+        dep_global = float(net_global_row["dep"] or 0)
+        wit_global = float(net_global_row["wit"] or 0)
+
+        # Net aportado calculado sumando los brokers no-global (debería matchear global)
+        net_brokers_row = conn.execute(
+            """SELECT COALESCE(SUM(deposits) - SUM(withdrawals), 0) AS net,
+                      COALESCE(SUM(deposits), 0) AS dep,
+                      COALESCE(SUM(withdrawals), 0) AS wit
+                 FROM monthly_entries
+                WHERE user_id=? AND broker<>'global'""",
+            (uid,),
+        ).fetchone()
+        net_brokers = float(net_brokers_row["net"] or 0)
+        dep_brokers = float(net_brokers_row["dep"] or 0)
+        wit_brokers = float(net_brokers_row["wit"] or 0)
+
+        # Realized PnL desde operations (fuente canónica)
+        realized_row = conn.execute(
+            "SELECT COALESCE(SUM(pnl_usd), 0) AS s FROM operations WHERE user_id=?",
+            (uid,),
+        ).fetchone()
+        realized_pnl_ops = float(realized_row["s"] or 0)
+
+        # Realized PnL desde monthly_entries.pnl_realized (cache; debería matchear ops)
+        realized_me_row = conn.execute(
+            """SELECT COALESCE(SUM(pnl_realized), 0) AS s
+                 FROM monthly_entries WHERE user_id=? AND broker='global'""",
+            (uid,),
+        ).fetchone()
+        realized_pnl_me_global = float(realized_me_row["s"] or 0)
+
+        # Cost basis (invested) desde positions — cash + no-cash separados
+        cost_rows = conn.execute(
+            """SELECT
+                  COALESCE(SUM(CASE WHEN is_cash=1 THEN COALESCE(invested,0) ELSE 0 END), 0) AS cash_invested,
+                  COALESCE(SUM(CASE WHEN is_cash=0 THEN COALESCE(invested,0) ELSE 0 END), 0) AS positions_cost_basis,
+                  p.broker,
+                  b.currency
+                 FROM positions p
+                 LEFT JOIN brokers b ON b.user_id=p.user_id AND b.name=p.broker
+                WHERE p.user_id=?
+                GROUP BY p.broker, b.currency""",
+            (uid,),
+        ).fetchall()
+        # Convertir a USD (cash y cost basis) por broker
+        cash_usd_total = 0.0
+        cost_usd_total = 0.0
+        for r in cost_rows:
+            cash_native = float(r["cash_invested"] or 0)
+            cost_native = float(r["positions_cost_basis"] or 0)
+            cur = (r["currency"] or "USD").upper()
+            if cur == "ARS" and tc_blue and tc_blue > 0:
+                cash_usd_total += cash_native / tc_blue
+                cost_usd_total += cost_native / tc_blue
+            else:
+                cash_usd_total += cash_native
+                cost_usd_total += cost_native
+
+        # Latest snapshot (Dashboard ya consume esto)
+        snap = conn.execute(
+            """SELECT date, total_value, total_invested, net_deposited
+                 FROM snapshots WHERE user_id=?
+                ORDER BY date DESC LIMIT 1""",
+            (uid,),
+        ).fetchone()
+        snap_dict = dict(snap) if snap else None
+
+        # Implied unrealized PnL = latest_snapshot.total_value - cash - cost_basis
+        if snap_dict:
+            total_value_snap = float(snap_dict["total_value"] or 0)
+            implied_unrealized = total_value_snap - cash_usd_total - cost_usd_total
+        else:
+            total_value_snap = None
+            implied_unrealized = None
+
+        # IDENTIDAD: Total = NetAportado + Realized + Unrealized
+        # equivalent: Drift = Total - (NetAportado + Realized + Unrealized)
+        identity_drift = None
+        if total_value_snap is not None:
+            identity_drift = total_value_snap - (net_global + realized_pnl_ops + (implied_unrealized or 0))
+
+        accounting_check = {
+            "definitions": {
+                "identity": "Total = Net Aportado + Realized PnL + Unrealized PnL",
+                "data_sources": {
+                    "net_aportado": "monthly_entries (broker='global') sum(deposits)-sum(withdrawals)",
+                    "realized": "sum(operations.pnl_usd)",
+                    "total": "latest snapshots.total_value",
+                    "implied_unrealized": "total - cash - cost_basis (derived)",
+                },
+            },
+            "net_aportado_from_global_monthly": {
+                "net": round(net_global, 2),
+                "deposits": round(dep_global, 2),
+                "withdrawals": round(wit_global, 2),
+            },
+            "net_aportado_from_broker_monthly_sum": {
+                "net": round(net_brokers, 2),
+                "deposits": round(dep_brokers, 2),
+                "withdrawals": round(wit_brokers, 2),
+                "_check": "should equal net_aportado_from_global_monthly (drift indicates global row out of sync)",
+                "drift_vs_global": round(net_brokers - net_global, 2),
+            },
+            "realized_pnl": {
+                "from_operations_table": round(realized_pnl_ops, 2),
+                "from_monthly_entries_cache": round(realized_pnl_me_global, 2),
+                "drift": round(realized_pnl_me_global - realized_pnl_ops, 2),
+            },
+            "portfolio_total": {
+                "latest_snapshot_value_usd": round(total_value_snap, 2) if total_value_snap is not None else None,
+                "latest_snapshot_date": snap_dict["date"] if snap_dict else None,
+                "cash_usd_total": round(cash_usd_total, 2),
+                "non_cash_cost_basis_usd": round(cost_usd_total, 2),
+                "implied_unrealized_pnl": round(implied_unrealized, 2) if implied_unrealized is not None else None,
+            },
+            "identity_verification": {
+                "left_side_total": round(total_value_snap, 2) if total_value_snap is not None else None,
+                "right_side_net_plus_realized_plus_unrealized": round(
+                    net_global + realized_pnl_ops + (implied_unrealized or 0), 2
+                ) if total_value_snap is not None else None,
+                "drift": round(identity_drift, 2) if identity_drift is not None else None,
+                "interpretation": (
+                    "drift ≈ 0 → identidad se cumple, data internamente consistente. "
+                    "El bruto inflado del KPI Depositado/Retirado es solo display (P2P flips). "
+                    "drift >> 0 → falta capital aportado en monthly_entries (deposits no registrados). "
+                    "drift << 0 → exceso de capital aportado (deposits inflados por imports espurios)."
+                ),
+            },
+        }
+
         # Listado detallado de TODAS las DEPOSIT individuales (con notes/remarks
         # del CSV original) para identificar transferencias internas mal-clasificadas.
         deposit_details = conn.execute(
@@ -7720,6 +7867,7 @@ def admin_debug_movements_kpi(uid: int = Depends(get_admin_user)):
             "residuals_per_entry": residuals,
             "all_deposits_detail": deposit_list,
             "all_withdraws_detail": wit_list,
+            "accounting_check": accounting_check,
             "totals": {
                 "me_deposits_sum": round(total_me_dep, 4),
                 "me_withdrawals_sum": round(total_me_wit, 4),
