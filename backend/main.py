@@ -1174,6 +1174,17 @@ def init_db():
         conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN fingerprint TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_fingerprint ON import_normalized_tx(fingerprint)")
 
+    # Fase 4 (2026-05-30): `gross_amount_usd` stamped al WRITE time.
+    # Antes monthly_entries.deposits acumulaba USD vía `gross_amount / tc_blue
+    # (current)`. Si el user cambiaba tc_blue en config y luego corría
+    # `_recalc_pnl_realized_from_ops`, el USD se re-convertía con el nuevo
+    # rate → drift histórico. Con el campo stamped, los readers usan el USD
+    # fijado al momento del import (estable contra cambios de TC config).
+    # NULL para rows legacy → readers caen a la conversión runtime.
+    norm_cols = _table_cols(conn, 'import_normalized_tx')
+    if norm_cols and 'gross_amount_usd' not in norm_cols:
+        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN gross_amount_usd REAL")
+
     # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
     # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.
     batch_cols = _table_cols(conn, 'import_batches')
@@ -4719,10 +4730,18 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         # 2) deposits + withdrawals desde imports (solo batches confirmed)
         tx_broker_filter = "" if broker == "global" else " AND n.broker = ?"
         tx_broker_args = () if broker == "global" else (broker,)
+        # Fase 4 (2026-05-30): preferimos gross_amount_usd stamped al write
+        # time. Rows legacy (NULL) caen a la conversión runtime con tc_blue
+        # actual — mismo comportamiento que antes.
         flow_row = conn.execute(
             f"""SELECT n.operation_type AS op,
-                       COALESCE(SUM(n.gross_amount), 0) AS s,
-                       n.currency AS cur
+                       COALESCE(SUM(
+                         CASE WHEN n.gross_amount_usd IS NOT NULL
+                              THEN n.gross_amount_usd
+                              WHEN UPPER(n.currency)='ARS' AND ? > 0
+                              THEN n.gross_amount / ?
+                              ELSE n.gross_amount END
+                       ), 0) AS s_usd
                 FROM import_normalized_tx n
                 JOIN import_batches b ON b.id = n.batch_id
                 WHERE b.user_id=? AND b.status='confirmed'
@@ -4730,15 +4749,13 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
                   AND strftime('%Y', n.date)=?
                   AND strftime('%m', n.date)=?
                   {tx_broker_filter}
-                GROUP BY n.operation_type, n.currency""",
-            (uid, year_str, month_str, *tx_broker_args),
+                GROUP BY n.operation_type""",
+            (tc_blue, tc_blue, uid, year_str, month_str, *tx_broker_args),
         ).fetchall()
         imp_deposits = 0.0
         imp_withdrawals = 0.0
         for f in flow_row:
-            amt = float(f["s"] or 0)
-            cur_norm = (f["cur"] or "").upper()
-            amt_usd = amt / tc_blue if cur_norm == "ARS" else amt
+            amt_usd = float(f["s_usd"] or 0)
             if f["op"] == "DEPOSIT":
                 imp_deposits += amt_usd
             else:
@@ -6663,20 +6680,24 @@ def get_movements(uid: int = Depends(get_current_user)):
         # ⚠ PRECONDICIÓN: _recalc_pnl_realized_from_ops NO debe sobreescribir
         # deposits/withdrawals (fix 2026-05-27). Antes lo hacía y borraba los
         # manuales del user.
+        # Fase 4 (2026-05-30): preferir gross_amount_usd stamped (estable),
+        # fallback a conversión runtime para rows legacy (NULL).
         imp_agg_rows = conn.execute(
             """SELECT
                   t.broker AS broker,
                   CAST(strftime('%Y', t.date) AS INTEGER) AS y,
                   CAST(strftime('%m', t.date) AS INTEGER) AS m,
                   SUM(CASE WHEN UPPER(t.operation_type)='DEPOSIT'
-                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
-                                      THEN t.gross_amount/?
-                                      ELSE t.gross_amount END)
+                           THEN COALESCE(t.gross_amount_usd,
+                                CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                     THEN t.gross_amount/?
+                                     ELSE t.gross_amount END)
                            ELSE 0 END) AS dep_usd,
                   SUM(CASE WHEN UPPER(t.operation_type)='WITHDRAW'
-                           THEN (CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
-                                      THEN t.gross_amount/?
-                                      ELSE t.gross_amount END)
+                           THEN COALESCE(t.gross_amount_usd,
+                                CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
+                                     THEN t.gross_amount/?
+                                     ELSE t.gross_amount END)
                            ELSE 0 END) AS wit_usd
                 FROM import_normalized_tx t
                 JOIN import_batches b ON t.batch_id = b.id
@@ -13298,6 +13319,23 @@ def _user_tc_blue(conn, uid: int) -> float:
         return v if v > 0 else 1415.0
     except (TypeError, ValueError):
         return 1415.0
+
+
+def _compute_gross_amount_usd(currency: Optional[str], gross_amount: Optional[float],
+                              tc_blue: float) -> Optional[float]:
+    """Helper canónico para convertir gross_amount a USD-equivalente.
+    Usado al stampar `import_normalized_tx.gross_amount_usd` (Fase 4) y
+    como fallback al leer rows legacy (NULL). Reglas:
+      • currency=ARS y tc_blue > 0 → amount / tc_blue
+      • currency USD/USDT/cualquier-otro → amount (passthrough)
+      • amount=None → None
+    """
+    if gross_amount is None:
+        return None
+    cur = (currency or "").upper()
+    if cur == "ARS" and tc_blue and tc_blue > 0:
+        return float(gross_amount) / float(tc_blue)
+    return float(gross_amount)
 
 
 @app.get("/api/reports/timeline")

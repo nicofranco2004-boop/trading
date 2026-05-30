@@ -93,15 +93,23 @@ def persist_batch(
                 )
                 raw_id = cur.lastrowid
                 raw_row_ids_by_index[st.row_index] = raw_id
+                # Fase 4: stamp gross_amount_usd al momento del seed (con
+                # tc_blue actual del user — el seed corre ahora, no en el
+                # pasado, así que esto refleja el FX del momento del import).
+                from .pipeline import _stamp_gross_amount_usd, _read_user_tc_blue
+                _tc_blue_seed = _read_user_tc_blue(conn, uid)
+                gross_usd = _stamp_gross_amount_usd(st.currency, st.gross_amount, _tc_blue_seed)
                 conn.execute(
                     """INSERT INTO import_normalized_tx
                        (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
-                        quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
+                        gross_amount_usd)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (batch_id, raw_id, st.date, st.broker, st.operation_type,
                      st.asset_symbol, st.asset_name, st.asset_type,
                      st.quantity, st.unit_price, st.gross_amount,
-                     st.fees, st.taxes, st.currency, st.settlement_currency, st.notes),
+                     st.fees, st.taxes, st.currency, st.settlement_currency, st.notes,
+                     gross_usd),
                 )
             txs = list(seed_txs) + list(txs)
 
@@ -991,12 +999,19 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
         elif op == "DEPOSIT":
             amount = float(tx["gross_amount"] or 0)
             row_currency = (tx["currency"] or "").upper() if "currency" in tx.keys() else ""
-            # Convertir a USD para revertir monthly_flow (mismo TC que persist)
-            broker_row = conn.execute(
-                "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, tx["broker"]),
-            ).fetchone()
-            broker_currency = broker_row["currency"] if broker_row else ""
-            amount_usd = (amount / tc_blue) if (row_currency == "ARS" or broker_currency == "ARS") else amount
+            # Fase 4 (2026-05-30): preferimos gross_amount_usd stamped (USD
+            # exacto del momento del persist) → revert restaura monthly_entries
+            # con valor IDÉNTICO al que se sumó. Fallback a tc_blue actual para
+            # rows legacy sin stamp.
+            stamped_usd = tx["gross_amount_usd"] if "gross_amount_usd" in tx.keys() else None
+            if stamped_usd is not None:
+                amount_usd = float(stamped_usd)
+            else:
+                broker_row = conn.execute(
+                    "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, tx["broker"]),
+                ).fetchone()
+                broker_currency = broker_row["currency"] if broker_row else ""
+                amount_usd = (amount / tc_blue) if (row_currency == "ARS" or broker_currency == "ARS") else amount
             # Revertir el cash movement (en moneda nativa del broker).
             # Aceptamos saldo negativo resultante — consistente con la policy
             # del módulo ("se permiten balances negativos — señal visible de
@@ -1050,7 +1065,12 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
         elif op in ("WITHDRAW", "FEE"):
             amount = float(tx["gross_amount"] or 0)
             row_currency = (tx["currency"] or "").upper() if "currency" in tx.keys() else ""
-            amount_usd = (amount / tc_blue) if row_currency == "ARS" else amount
+            # Fase 4: prefer stamped USD (idem DEPOSIT revert).
+            stamped_usd = tx["gross_amount_usd"] if "gross_amount_usd" in tx.keys() else None
+            if stamped_usd is not None:
+                amount_usd = float(stamped_usd)
+            else:
+                amount_usd = (amount / tc_blue) if row_currency == "ARS" else amount
             helpers._adjust_broker_cash(conn, uid, tx["broker"], amount)
             # Bug C fix (2026-05-30): el revert de un WITHDRAW/FEE debe RESTAR
             # de `withdrawals`, no sumar a `deposits`. Antes inflaba deposits

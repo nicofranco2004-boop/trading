@@ -3350,6 +3350,153 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         self.assertGreaterEqual(body["rows_updated"], 1)
 
 
+class FxStampedPerEventTest(unittest.TestCase):
+    """Fase 4 (2026-05-30): `gross_amount_usd` se stamp al WRITE time en
+    import_normalized_tx. Readers downstream (_recalc, /api/movements,
+    revert) usan el valor stamped → estable contra cambios futuros de
+    tc_blue config. Rows legacy (NULL) caen a conversión runtime."""
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries", "brokers"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"fxstamp-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        # Set tc_blue inicial = 1000
+        conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, 'tc_blue', '1000')",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_preview_stamps_gross_amount_usd(self):
+        """Al hacer preview con tc_blue=1000, las rows en import_normalized_tx
+        quedan con gross_amount_usd = gross_amount / 1000 para ARS."""
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-06-15,DEPOSITO,Cocos,,,,500000,,,,ARS,
+"""
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="dep.csv",
+                    broker_hint="Cocos", parser_format="rendi_generic",
+                )
+            session_id = payload["session_id"]
+            row = conn.execute(
+                """SELECT gross_amount, currency, gross_amount_usd
+                     FROM import_normalized_tx WHERE batch_id=?""",
+                (session_id,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(float(row["gross_amount"]), 500000.0)
+            self.assertEqual(row["currency"], "ARS")
+            # 500000 / 1000 = 500
+            self.assertAlmostEqual(float(row["gross_amount_usd"]), 500.0, places=2)
+        finally:
+            conn.close()
+
+    def test_recalc_uses_stamped_usd_invariant_to_tc_change(self):
+        """Después de cambiar tc_blue post-import, _recalc lee el stamped
+        gross_amount_usd → el monto USD calculado no cambia."""
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-07-01,DEPOSITO,Cocos,,,,1000000,,,,ARS,
+"""
+        conn = main.get_db()
+        try:
+            # Import y confirm con tc=1000 → stamp 1000 USD
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="dep.csv",
+                    broker_hint="Cocos", parser_format="rendi_generic",
+                )
+            session_id = payload["session_id"]
+            with conn:
+                txs, raw_map = pl.load_session_for_confirm(conn, uid=self.uid, session_id=session_id)
+                ps.persist_batch(conn, uid=self.uid, batch_id=session_id, txs=txs,
+                                 raw_row_ids_by_index=raw_map, helpers=_helpers())
+
+            # Verificar stamped = 1000 USD
+            stamped = conn.execute(
+                "SELECT gross_amount_usd FROM import_normalized_tx WHERE batch_id=?",
+                (session_id,),
+            ).fetchone()
+            self.assertAlmostEqual(float(stamped["gross_amount_usd"]), 1000.0, places=2)
+
+            # Cambiar tc_blue a 1500 — simula el bug del audit
+            with conn:
+                conn.execute(
+                    "UPDATE config SET value='1500' WHERE user_id=? AND key='tc_blue'",
+                    (self.uid,),
+                )
+
+            # _recalc — antes recalculaba con tc=1500 (drift). Ahora usa stamped.
+            with conn:
+                main._recalc_pnl_realized_from_ops(conn, self.uid)
+
+            # Imports USD acumulado en monthly_entries (broker Cocos, julio 2024)
+            # = stamped 1000 (no 1000000/1500 = 666.67)
+            row = conn.execute(
+                """SELECT deposits FROM monthly_entries
+                    WHERE user_id=? AND broker='Cocos' AND year=2024 AND month=7""",
+                (self.uid,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            # deposits debería estar cerca de 1000 USD (stamped) más cualquier
+            # manual residual. En este test no hay manuales → 1000 exacto.
+            self.assertAlmostEqual(float(row["deposits"]), 1000.0, places=2,
+                msg="Con stamped USD, deposits es invariante al cambio de tc_blue")
+        finally:
+            conn.close()
+
+    def test_legacy_row_without_stamp_falls_back_to_runtime_conversion(self):
+        """Backwards-compat: rows con gross_amount_usd=NULL (legacy) usan
+        conversión runtime con tc_blue actual. No crash, no datos perdidos."""
+        # Insertar manualmente una row legacy (sin stamp)
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES ('legacy-1', ?, 'cocos', 'old.csv', 'hash1', 'Cocos', 'confirmed')""",
+                (self.uid,),
+            )
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+                   VALUES ('legacy-1', 1, '{}', 'valid', NULL)""",
+            )
+            conn.execute(
+                """INSERT INTO import_normalized_tx
+                   (batch_id, raw_row_id, date, broker, operation_type,
+                    gross_amount, currency, gross_amount_usd)
+                   VALUES ('legacy-1', ?, '2023-12-01', 'Cocos', 'DEPOSIT', 500000, 'ARS', NULL)""",
+                (cur.lastrowid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2023, 12, 'Cocos', 500, 0, 0, 0, 0, 500)""",
+                (self.uid,),
+            )
+
+        # _recalc con tc=1000 → para legacy row sin stamp, usa runtime conversion
+        # = 500000 / 1000 = 500 USD
+        with conn:
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+
+        row = conn.execute(
+            """SELECT deposits FROM monthly_entries
+                WHERE user_id=? AND broker='Cocos' AND year=2023 AND month=12""",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # Manuales residual = 500 - imports(500) = 0, + imports(500) = 500
+        self.assertAlmostEqual(float(row["deposits"]), 500.0, places=2,
+            msg="Legacy row (NULL stamp) usa runtime conversion → mismo número")
+
+
 class NetDepositedSSoTTest(unittest.TestCase):
     """Fase 3 (2026-05-30): SSoT canónica `compute_net_deposited_db`.
     Las 3 implementaciones inline (snapshots_job list-based, reports

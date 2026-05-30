@@ -28,6 +28,35 @@ MAX_TOTAL_BYTES = 5_000_000     # 5 MB sumado al cargar multi-file (cap del endp
 MAX_ROWS = 10_000
 
 
+def _read_user_tc_blue(conn, uid: int) -> float:
+    """Lee tc_blue de la config del user. Replicado acá (no importado de main.py)
+    para evitar circular dependency entre pipeline ↔ main. Mismo default y
+    fallback que `main._user_tc_blue`."""
+    row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
+    ).fetchone()
+    try:
+        v = float(row["value"]) if row else 1415.0
+        return v if v > 0 else 1415.0
+    except (TypeError, ValueError):
+        return 1415.0
+
+
+def _stamp_gross_amount_usd(currency, gross_amount, tc_blue):
+    """Fase 4 (2026-05-30): convierte gross_amount a USD usando el tc_blue
+    del momento del import. Stampado en `import_normalized_tx.gross_amount_usd`.
+    Readers downstream (recalc, /api/movements) usan este valor stamped en
+    vez de re-calcularlo con tc_blue actual — estable contra cambios de TC.
+    Devuelve None si gross_amount es None.
+    """
+    if gross_amount is None:
+        return None
+    cur = (currency or "").upper()
+    if cur == "ARS" and tc_blue and tc_blue > 0:
+        return float(gross_amount) / float(tc_blue)
+    return float(gross_amount)
+
+
 def sanitize_filename(name: Optional[str]) -> str:
     """Sanitiza un nombre de archivo que llega del cliente. Reduce a chars
     seguros (alfanuméricos + ._- + espacio) y trunca a 80 chars.
@@ -446,21 +475,25 @@ def run_preview(
     )
     duplicate_row_indices: List[int] = []
 
+    # Fase 4: tc_blue stamp at write time
+    tc_blue_at_import = _read_user_tc_blue(conn, uid)
+
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
         if fp in existing_fingerprints:
             duplicate_row_indices.append(tx.row_index)
+        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_import)
         conn.execute(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
              tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
-             fp),
+             fp, gross_usd),
         )
 
     preview_payload = build_preview(
@@ -730,19 +763,22 @@ def load_session_with_seed_revalidate(
     # Las filas previamente válidas + las promovidas por el seed quedan ahí;
     # las que siguen inválidas se descartan (no van a persister).
     conn.execute("DELETE FROM import_normalized_tx WHERE batch_id=?", (session_id,))
+    # Fase 4: tc_blue stamp at write time
+    tc_blue_at_confirm = _read_user_tc_blue(conn, uid)
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
+        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue_at_confirm)
         conn.execute(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (session_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
              tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
-             fp),
+             fp, gross_usd),
         )
 
     return valid_txs, raw_id_by_index
