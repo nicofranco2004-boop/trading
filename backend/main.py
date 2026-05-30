@@ -7446,6 +7446,79 @@ def historical_cagr(uid: int = Depends(get_current_user)):
 # un hash SHA-256 al registrarse (ver _is_admin_email arriba).
 
 
+@app.post("/api/admin/recompute-snapshots-netdep")
+def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
+    """Backfill `snapshots.net_deposited` para TODOS los snapshots del user
+    usando la fórmula canónica:
+
+        net_deposited(D) = SUM(monthly_entries.deposits - withdrawals)
+                           WHERE broker <> 'global'
+                             AND midpoint del mes (día 15) <= D
+
+    HISTORIA: el viejo `_recalc_pnl_realized_from_ops` zero-eaba los cash
+    flows manuales de monthly_entries. Como el snapshot job se ejecuta
+    cada vez que el user entra al Dashboard, captura el state corrupto
+    momentáneo, dejando `net_deposited` retrocediendo o saltando
+    erráticamente entre snapshots consecutivos. Esto rompe el "Period
+    Change" del chart de evolución (la fórmula compara
+    Resultado_Total = value - net_deposited entre primer y último punto
+    de la ventana).
+
+    El fix definitivo (commit 75d8634) previene el daño futuro. Este
+    endpoint backfilea los snapshots ya corruptos.
+
+    No destructivo (preserva total_value y total_invested). Idempotente.
+    """
+    conn = get_db()
+    try:
+        snaps = conn.execute(
+            "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
+            (uid,),
+        ).fetchall()
+
+        details = []
+        updated = 0
+        for snap in snaps:
+            snap_date = snap["date"]
+            old_net = float(snap["net_deposited"] or 0)
+
+            # Fórmula canónica: sumar monthly_entries (no-global) cuyos
+            # meses tengan midpoint (día 15) <= snap_date. Eso da una
+            # serie monotónica creciente (excepto retiros explícitos).
+            row = conn.execute(
+                """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
+                     FROM monthly_entries
+                    WHERE user_id=? AND broker <> 'global'
+                      AND printf('%04d-%02d-15', year, month) <= ?""",
+                (uid, snap_date),
+            ).fetchone()
+            new_net = float(row["net"] or 0)
+
+            if abs(new_net - old_net) > 0.01:
+                conn.execute(
+                    "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?",
+                    (round(new_net, 4), snap["id"], uid),
+                )
+                updated += 1
+            details.append({
+                "date": snap_date,
+                "old_net_deposited": round(old_net, 2),
+                "new_net_deposited": round(new_net, 2),
+                "delta": round(new_net - old_net, 2),
+            })
+
+        conn.commit()
+        return {
+            "ok": True,
+            "user_id": uid,
+            "snapshots_count": len(snaps),
+            "snapshots_updated": updated,
+            "details": details,
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/stats")
 def admin_stats(uid: int = Depends(get_admin_user)):
     conn = get_db()
