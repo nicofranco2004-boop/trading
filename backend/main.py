@@ -7446,8 +7446,7 @@ def historical_cagr(uid: int = Depends(get_current_user)):
 # un hash SHA-256 al registrarse (ver _is_admin_email arriba).
 
 
-@app.post("/api/admin/recompute-snapshots-netdep")
-def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
+def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool = False) -> dict:
     """Backfill `snapshots.net_deposited` para TODOS los snapshots del user
     usando la fórmula canónica:
 
@@ -7455,51 +7454,49 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
                            WHERE broker <> 'global'
                              AND midpoint del mes (día 15) <= D
 
-    HISTORIA: el viejo `_recalc_pnl_realized_from_ops` zero-eaba los cash
-    flows manuales de monthly_entries. Como el snapshot job se ejecuta
-    cada vez que el user entra al Dashboard, captura el state corrupto
-    momentáneo, dejando `net_deposited` retrocediendo o saltando
-    erráticamente entre snapshots consecutivos. Esto rompe el "Period
-    Change" del chart de evolución (la fórmula compara
-    Resultado_Total = value - net_deposited entre primer y último punto
-    de la ventana).
+    HISTORIA: el viejo `_recalc_pnl_realized_from_ops` (pre-commit 75d8634)
+    zero-eaba los cash flows manuales de monthly_entries cuando se llamaba
+    desde imports/reverts. El snapshot job capturaba ese state corrupto.
+    Resultado: `net_deposited` no monotónico → chart de evolución mostraba
+    pérdidas/ganancias falsas porque la fórmula del Period Change usa
+    Resultado_Total = value - net_deposited entre primer y último punto.
 
-    El fix definitivo (commit 75d8634) previene el daño futuro. Este
-    endpoint backfilea los snapshots ya corruptos.
+    No destructivo: preserva total_value y total_invested. Idempotente:
+    solo updatea rows con drift > $0.01.
 
-    No destructivo (preserva total_value y total_invested). Idempotente.
+    Args:
+        with_details: si True devuelve list de cada snapshot pre/post (para
+                      debug manual desde endpoint admin). Default False
+                      para no inflar logs cuando corre como migración.
     """
-    conn = get_db()
-    try:
-        snaps = conn.execute(
-            "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
-            (uid,),
-        ).fetchall()
+    snaps = conn.execute(
+        "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
+        (uid,),
+    ).fetchall()
 
-        details = []
-        updated = 0
-        for snap in snaps:
-            snap_date = snap["date"]
-            old_net = float(snap["net_deposited"] or 0)
+    updated = 0
+    details = [] if with_details else None
+    for snap in snaps:
+        snap_date = snap["date"]
+        old_net = float(snap["net_deposited"] or 0)
 
-            # Fórmula canónica: sumar monthly_entries (no-global) cuyos
-            # meses tengan midpoint (día 15) <= snap_date. Eso da una
-            # serie monotónica creciente (excepto retiros explícitos).
-            row = conn.execute(
-                """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
-                     FROM monthly_entries
-                    WHERE user_id=? AND broker <> 'global'
-                      AND printf('%04d-%02d-15', year, month) <= ?""",
-                (uid, snap_date),
-            ).fetchone()
-            new_net = float(row["net"] or 0)
+        row = conn.execute(
+            """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
+                 FROM monthly_entries
+                WHERE user_id=? AND broker <> 'global'
+                  AND printf('%04d-%02d-15', year, month) <= ?""",
+            (uid, snap_date),
+        ).fetchone()
+        new_net = float(row["net"] or 0)
 
-            if abs(new_net - old_net) > 0.01:
-                conn.execute(
-                    "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?",
-                    (round(new_net, 4), snap["id"], uid),
-                )
-                updated += 1
+        if abs(new_net - old_net) > 0.01:
+            conn.execute(
+                "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?",
+                (round(new_net, 4), snap["id"], uid),
+            )
+            updated += 1
+
+        if details is not None:
             details.append({
                 "date": snap_date,
                 "old_net_deposited": round(old_net, 2),
@@ -7507,14 +7504,29 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
                 "delta": round(new_net - old_net, 2),
             })
 
+    return {
+        "snapshots_count": len(snaps),
+        "snapshots_updated": updated,
+        "details": details,
+    }
+
+
+@app.post("/api/admin/recompute-snapshots-netdep")
+def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
+    """Emergency button: re-run el backfill para el admin logueado.
+
+    NOTA: el startup hook `_migrate_snapshots_netdep` ya corre esto
+    automáticamente para TODOS los users en cada deploy. Este endpoint
+    queda disponible solo para casos ad-hoc (re-run después de un import
+    nuevo, debugging, etc).
+    """
+    conn = get_db()
+    try:
+        result = _recompute_snapshots_netdep_for_user(conn, uid, with_details=True)
         conn.commit()
-        return {
-            "ok": True,
-            "user_id": uid,
-            "snapshots_count": len(snaps),
-            "snapshots_updated": updated,
-            "details": details,
-        }
+        result["ok"] = True
+        result["user_id"] = uid
+        return result
     finally:
         conn.close()
 
@@ -12710,6 +12722,77 @@ def _prewarm_news_cache():
             _ensure_news_batch_parallel(specs, NEWS_MARKET_TTL)
         except Exception as ex:
             logging.getLogger(__name__).warning("prewarm news cache failed: %s", ex)
+    threading.Thread(target=worker, daemon=True).start()
+
+
+@app.on_event("startup")
+def _migrate_snapshots_netdep():
+    """Migración automática al deploy: backfill `snapshots.net_deposited`
+    corrupto para TODOS los users.
+
+    Causa raíz: el viejo `_recalc_pnl_realized_from_ops` (pre-commit 75d8634)
+    zero-eaba cash flows manuales de monthly_entries cuando se invocaba
+    desde imports/reverts. Cada snapshot tomado durante esa ventana capturó
+    el state corrupto momentáneo. Esto resulta en una serie temporal de
+    `net_deposited` no monotónica → el chart de evolución muestra pérdidas
+    o ganancias artificiales que no existieron.
+
+    Corre en background al startup (sleep 5s para dejar DB / otros tasks
+    inicializarse). Idempotente: solo updatea rows con drift > $0.01.
+    Si todo está OK no hace nada.
+
+    Defensa en profundidad: aunque el fix raíz (75d8634) previene daño
+    futuro, este hook protege contra cualquier corrupción residual que
+    haya quedado en producción, y se ejecuta automáticamente sin acción
+    del usuario.
+    """
+    import threading
+
+    def worker():
+        try:
+            import time as _time
+            _time.sleep(5)
+
+            _log = logging.getLogger(__name__)
+            conn = get_db()
+            try:
+                users = conn.execute(
+                    "SELECT DISTINCT user_id FROM snapshots"
+                ).fetchall()
+                total_users = len(users)
+                total_snapshots_fixed = 0
+                affected_user_ids = []
+
+                for u in users:
+                    uid = u["user_id"]
+                    try:
+                        result = _recompute_snapshots_netdep_for_user(conn, uid)
+                        if result["snapshots_updated"] > 0:
+                            total_snapshots_fixed += result["snapshots_updated"]
+                            affected_user_ids.append(uid)
+                    except Exception as ex:
+                        _log.warning(
+                            "Snapshot netdep migration error for user %s: %s",
+                            uid, ex,
+                        )
+                conn.commit()
+
+                if total_snapshots_fixed > 0:
+                    _log.info(
+                        "Snapshot netdep migration: %d snapshots corregidos en %d users (de %d total). Affected user_ids: %s",
+                        total_snapshots_fixed, len(affected_user_ids), total_users,
+                        affected_user_ids,
+                    )
+                else:
+                    _log.info(
+                        "Snapshot netdep migration: 0 correcciones necesarias (%d users chequeados)",
+                        total_users,
+                    )
+            finally:
+                conn.close()
+        except Exception as ex:
+            logging.getLogger(__name__).warning("_migrate_snapshots_netdep falló: %s", ex)
+
     threading.Thread(target=worker, daemon=True).start()
 
 
