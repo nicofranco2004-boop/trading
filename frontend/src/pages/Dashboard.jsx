@@ -673,7 +673,13 @@ export default function Dashboard() {
         <div className="flex items-start justify-between gap-3 flex-wrap mb-5">
           <div>
             <p className="eyebrow mb-1">Evolución</p>
-            <h2 className="text-lg font-semibold text-ink-0 leading-tight">Performance del portfolio</h2>
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-lg font-semibold text-ink-0 leading-tight">Performance del portfolio</h2>
+              <InfoTooltip size={12} align="left">
+                <p>Línea verde: valor de tu portfolio. Línea punteada: capital aportado.</p>
+                <p className="text-ink-3 mt-1">El delta de abajo descuenta tus aportes/retiros — refleja solo lo que ganaron tus inversiones.</p>
+              </InfoTooltip>
+            </div>
             <p className="text-xs text-ink-2 mt-1 max-w-md">
               Rendimiento ajustado por flujos de capital — aportes y retiros se neutralizan para reflejar performance pura.
             </p>
@@ -827,7 +833,12 @@ export default function Dashboard() {
         <div>
           <div className="mb-4">
             <p className="eyebrow mb-1">Brokers</p>
-            <h3 className="text-base font-semibold text-ink-0 leading-tight">Detalle por cuenta</h3>
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-base font-semibold text-ink-0 leading-tight">Detalle por cuenta</h3>
+              <InfoTooltip size={12} align="left">
+                <p>Valor actual de tus posiciones por broker, con P&L total (incluye cash).</p>
+              </InfoTooltip>
+            </div>
           </div>
           <div className={`grid gap-3 ${brokers.length === 1 ? 'grid-cols-1 max-w-sm' : brokers.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 md:grid-cols-3'}`}>
             {brokerTotals.map(b => {
