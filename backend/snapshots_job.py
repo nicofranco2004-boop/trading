@@ -213,7 +213,14 @@ def take_snapshot_for_user(
     net_deposited, symbols_fetched, errors}.
     """
     if target_date is None:
-        target_date = datetime.utcnow().strftime('%Y-%m-%d')
+        # Audit follow-up (2026-05-31): fecha del snapshot = día ART, no UTC.
+        # Target users son argentinos. Si el cron corre a las 02:59 UTC del
+        # sábado (= 23:59 ART del viernes), la fecha debe ser "viernes",
+        # no "sábado" (que es lo que utcnow().date() devolvería).
+        # Conversión: UTC - 3h = ART.
+        from datetime import timedelta as _td
+        art_dt = datetime.utcnow() - _td(hours=3)
+        target_date = art_dt.strftime('%Y-%m-%d')
 
     # 1. Cargar brokers, positions y monthly del user
     brokers = [dict(r) for r in conn.execute(

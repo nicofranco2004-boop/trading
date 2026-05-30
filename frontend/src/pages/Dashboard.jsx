@@ -602,9 +602,10 @@ export default function Dashboard() {
               <p>Tu rendimiento en distintos horizontes, <strong>sin contar</strong> depósitos ni retiros (la plata que aportás no cuenta como ganancia).</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-medium text-ink-0">Cada cuadro</p>
-              <p className="text-ink-2"><strong className="text-ink-1">Hoy / Este mes:</strong> cuánto cambió tu resultado en el período. En el mes, "realizado" es lo que cerraste (ventas, dividendos).</p>
+              <p className="text-ink-2"><strong className="text-ink-1">Hoy:</strong> cambio en USD desde el cierre de ayer (23:59 ART). Incluye movimientos del dólar blue — tus posiciones en ARS valen más/menos en USD aunque el precio ARS no haya cambiado.</p>
+              <p className="text-ink-2"><strong className="text-ink-1">Este mes:</strong> cuánto cambió tu resultado en el mes. "Realizado" es lo que cerraste (ventas, dividendos).</p>
               <p className="text-ink-2"><strong className="text-ink-1">Total:</strong> rendimiento acumulado desde que empezaste.</p>
-              <p className="text-ink-2"><strong className="text-ink-1">Anual:</strong> tasa anual compuesta (CAGR) en USD, comparable con un plazo fijo, la inflación o el S&P. Con menos de 12 meses está anualizada (extrapola el período, amplifica ruido).</p>
+              <p className="text-ink-2"><strong className="text-ink-1">Anual:</strong> tasa anual compuesta (CAGR) en USD, comparable con plazo fijo, inflación o S&P. Con menos de 12 meses está anualizada.</p>
             </InfoTooltip>
           </div>
           {/* Mini-strip compacto (no full-width) con el mismo lenguaje visual que

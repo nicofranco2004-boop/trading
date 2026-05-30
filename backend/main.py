@@ -11663,7 +11663,12 @@ def _process_payment_event(conn, payment_id: str, payload: dict):
 
 
 def _iso_today() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d")
+    """Audit follow-up (2026-05-31): retorna día ART (UTC-3), no UTC.
+    Target users son argentinos — "hoy" debe ser el día calendar local.
+    Sin esto, snapshots, KPIs "HOY", "Δ último cierre" estaban desfasados
+    hasta 3 horas vs lo que el user percibe como "hoy"."""
+    from datetime import timedelta as _td
+    return (datetime.utcnow() - _td(hours=3)).strftime("%Y-%m-%d")
 
 
 def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
@@ -13234,25 +13239,32 @@ def _migrate_snapshots_netdep():
 
 @app.on_event("startup")
 def _start_scheduler():
-    # 01:00 UTC todos los días = 22:00 ART
+    # Audit follow-up (2026-05-31): cron a las 02:59 UTC = 23:59 ART.
+    # Antes corría a 01:00 UTC (= 22:00 ART) → capturaba el portfolio 2 horas
+    # ANTES de fin del día Argentina, dejando 2 horas de movimientos sin
+    # registrar. Para users argentinos (target del producto) ahora "el cierre
+    # del día" coincide con medianoche local. NYSE/BCBA ya cerraron hace
+    # mucho (NYSE: ~22 UTC, BCBA: 20 UTC), así que tenemos los closing prices
+    # establecidos. Crypto sigue moviéndose pero capturamos el snapshot del
+    # último minuto del día ART.
     _scheduler.add_job(
         _run_daily_snapshot_job,
-        CronTrigger(hour=1, minute=0),
+        CronTrigger(hour=2, minute=59),
         id='daily_snapshot',
         replace_existing=True,
     )
-    # 02:00 UTC todos los días — después del snapshot. Bajamos a Free los
+    # 03:30 UTC todos los días — después del snapshot. Bajamos a Free los
     # users con suscripción cancelada+vencida, limpiamos pendings stale,
     # syncronizamos con MP.
     _scheduler.add_job(
         _run_subscription_lifecycle_job,
-        CronTrigger(hour=2, minute=0),
+        CronTrigger(hour=3, minute=30),
         id='subscription_lifecycle',
         replace_existing=True,
     )
     _scheduler.start()
-    _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 01:00 UTC)")
-    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 02:00 UTC)")
+    _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 02:59 UTC = 23:59 ART)")
+    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC)")
 
 
 @app.on_event("shutdown")
