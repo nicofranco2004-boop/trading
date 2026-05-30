@@ -3350,6 +3350,101 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         self.assertGreaterEqual(body["rows_updated"], 1)
 
 
+class NetDepositedSSoTTest(unittest.TestCase):
+    """Fase 3 (2026-05-30): SSoT canónica `compute_net_deposited_db`.
+    Las 3 implementaciones inline (snapshots_job list-based, reports
+    fetch_cum_deposits_until, main _portfolio_snapshot_summary) deben
+    devolver los mismos números para el mismo input."""
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries", "brokers"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"netdep-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        # Sembrar monthly_entries — broker 'global' (cross-broker, USD)
+        rows = [
+            (2025, 1, "global", 100, 0,  0, 0, 0, 100),       # +100
+            (2025, 2, "global", 200, 50, 0, 0, 100, 250),     # +150 (350 acum)
+            (2025, 3, "global", 0, 100,  0, 0, 250, 150),     # -100 (250 acum)
+            (2025, 4, "global", 50, 0,   0, 0, 150, 200),     # +50  (300 acum)
+        ]
+        for row in rows:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (self.uid, *row),
+            )
+        conn.commit()
+        conn.close()
+
+    def test_ssot_no_baseline_full_history(self):
+        """Sin baseline, full history: 100+200+0+50 - 0-50-100-0 = 350-150 = 200."""
+        from snapshots_job import compute_net_deposited_db
+        conn = main.get_db()
+        net = compute_net_deposited_db(conn, self.uid, include_baseline=False)
+        conn.close()
+        self.assertAlmostEqual(net, 200.0, places=2)
+
+    def test_ssot_with_baseline_full_history(self):
+        """Con baseline (cap_inicio del 1er row = 0): mismo resultado 200."""
+        from snapshots_job import compute_net_deposited_db
+        conn = main.get_db()
+        net = compute_net_deposited_db(conn, self.uid, include_baseline=True)
+        conn.close()
+        self.assertAlmostEqual(net, 200.0, places=2)
+
+    def test_ssot_time_bounded(self):
+        """Hasta 2025-02 (incl): 100+200 - 0-50 = 250."""
+        from snapshots_job import compute_net_deposited_db
+        conn = main.get_db()
+        net = compute_net_deposited_db(
+            conn, self.uid, as_of_date="2025-02-15", include_baseline=False
+        )
+        conn.close()
+        self.assertAlmostEqual(net, 250.0, places=2)
+
+    def test_ssot_matches_legacy_list_variant(self):
+        """La variante list-based (compute_net_deposited) debe coincidir
+        con la SSoT (compute_net_deposited_db) cuando se usa baseline."""
+        from snapshots_job import compute_net_deposited, compute_net_deposited_db
+        conn = main.get_db()
+        rows = conn.execute(
+            "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month",
+            (self.uid,),
+        ).fetchall()
+        legacy = compute_net_deposited([dict(r) for r in rows])
+        canonical = compute_net_deposited_db(conn, self.uid, include_baseline=True)
+        conn.close()
+        self.assertAlmostEqual(legacy, canonical, places=2,
+            msg=f"List-based ({legacy}) vs SSoT-DB ({canonical}) deben coincidir")
+
+    def test_ssot_baseline_picks_first_row_cap_inicio(self):
+        """Si la 1er row tiene cap_inicio != 0 (historia parcial importada),
+        el baseline se incluye y SSoT > flows."""
+        # Insertar primera row con cap_inicio = 500 (baseline pre-importer)
+        conn = main.get_db()
+        with conn:
+            conn.execute("DELETE FROM monthly_entries WHERE user_id=?", (self.uid,))
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2024, 1, 'global', 100, 0, 0, 0, 500, 600)""",
+                (self.uid,),
+            )
+        from snapshots_job import compute_net_deposited_db
+        flows_only = compute_net_deposited_db(conn, self.uid, include_baseline=False)
+        with_baseline = compute_net_deposited_db(conn, self.uid, include_baseline=True)
+        conn.close()
+        self.assertAlmostEqual(flows_only, 100.0, places=2)
+        self.assertAlmostEqual(with_baseline, 600.0, places=2)
+        self.assertAlmostEqual(with_baseline - flows_only, 500.0, places=2,
+            msg="diff = cap_inicio del primer row")
+
+
 class AutoRolloverServerSideTest(unittest.TestCase):
     """Fase 7 (2026-05-30): GET /api/monthly hace lazy rollover — si la row
     del current calendar month no existe para algún broker, la crea antes

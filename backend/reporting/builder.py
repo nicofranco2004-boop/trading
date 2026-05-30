@@ -160,16 +160,18 @@ def fetch_cum_deposits_until(conn, uid: int, end_date: str,
     """Σ(deposits − withdrawals) en monthly_entries hasta `end_date` (incl).
 
     Sirve como denominador para la métrica alternativa "% sobre aportado".
+
+    Fase 3 (2026-05-30): delega en la SSoT `compute_net_deposited_db`.
+    Mantenemos `include_baseline=False` para preservar la semántica
+    histórica del endpoint /reportes (que nunca incluyó capital_inicio).
     """
-    y, m = (int(x) for x in end_date[:7].split("-"))
-    row = conn.execute(
-        """SELECT COALESCE(SUM(deposits) - SUM(withdrawals), 0) AS net
-             FROM monthly_entries
-            WHERE user_id = ? AND broker = ?
-              AND (year < ? OR (year = ? AND month <= ?))""",
-        (uid, broker_filter, y, y, m),
-    ).fetchone()
-    return float(row["net"] or 0)
+    from snapshots_job import compute_net_deposited_db
+    return compute_net_deposited_db(
+        conn, uid,
+        as_of_date=end_date,
+        broker_filter=broker_filter,
+        include_baseline=False,
+    )
 
 
 # ─── Benchmarks ──────────────────────────────────────────────────────────────

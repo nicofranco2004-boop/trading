@@ -13123,13 +13123,15 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
         latest_date = latest_snap["date"] if latest_snap else None
 
     # Capital aportado neto (cum deposits − cum withdrawals)
-    row = conn.execute(
-        f"""SELECT COALESCE(SUM(deposits) - SUM(withdrawals), 0) AS net
-              FROM monthly_entries
-             WHERE user_id = ?{br_clause}""",
-        (uid, *br_args),
-    ).fetchone()
-    cum_deposited = float(row["net"] or 0)
+    # Fase 3 (2026-05-30): delega en la SSoT `compute_net_deposited_db`.
+    # Mantenemos include_baseline=False para preservar semántica histórica
+    # de este endpoint (que nunca incluyó capital_inicio).
+    from snapshots_job import compute_net_deposited_db
+    cum_deposited = compute_net_deposited_db(
+        conn, uid,
+        broker_filter=(broker_filter if broker_filter != "global" else "global"),
+        include_baseline=False,
+    )
 
     # # posiciones no-cash abiertas (qty != 0)
     pos_row = conn.execute(

@@ -86,11 +86,64 @@ def compute_broker_value_usd(
     return {'value': value, 'invested': invested}
 
 
-# ─── Net deposited (port de Dashboard.jsx netDeposited useMemo) ─────────────
+# ─── Net deposited — Single Source of Truth ─────────────────────────────────
+# Fase 3 (2026-05-30): unificar las 3 implementaciones inline del audit en
+# UNA función canónica. Diferentes callers tienen necesidades distintas
+# (con/sin baseline, con/sin time bound, por broker), pero la lógica vive
+# en un solo lugar. Eliminamos drift por copy-paste evolution.
+
+def compute_net_deposited_db(conn, uid: int, *,
+                              as_of_date: Optional[str] = None,
+                              broker_filter: str = "global",
+                              include_baseline: bool = True) -> float:
+    """SSoT canónica para `net_deposited`.
+
+    Σ(deposits − withdrawals) en monthly_entries para el user, opcionalmente:
+      • Limitado en tiempo: hasta `as_of_date` (formato 'YYYY-MM-DD' o
+        'YYYY-MM'). Si None → todo el historial.
+      • Por broker: default 'global' (cross-broker en USD). Pasar nombre
+        de broker para filtrar a uno.
+      • Con baseline: si True (default), agrega `capital_inicio` de la
+        primera row matching como "seed state" para users con historia
+        parcial importada. Si False, solo suma flows.
+
+    Devuelve float USD (snapshots conventions: todo lo de monthly_entries
+    está en USD).
+    """
+    where = "user_id = ? AND broker = ?"
+    args = [uid, broker_filter]
+
+    if as_of_date:
+        y, m = (int(x) for x in as_of_date[:7].split("-"))
+        where += " AND (year < ? OR (year = ? AND month <= ?))"
+        args.extend([y, y, m])
+
+    flows_row = conn.execute(
+        f"SELECT COALESCE(SUM(deposits) - SUM(withdrawals), 0) AS net "
+        f"FROM monthly_entries WHERE {where}",
+        tuple(args),
+    ).fetchone()
+    flows = float(flows_row["net"] or 0)
+
+    if not include_baseline:
+        return flows
+
+    baseline_row = conn.execute(
+        f"SELECT capital_inicio FROM monthly_entries WHERE {where} "
+        f"ORDER BY year, month LIMIT 1",
+        tuple(args),
+    ).fetchone()
+    baseline = float(baseline_row["capital_inicio"] or 0) if baseline_row else 0.0
+    return baseline + flows
+
 
 def compute_net_deposited(monthly_entries: list) -> float:
-    """capital_inicio del primer mes 'global' + sum(deposits - withdrawals).
-    Sin esto el % de retorno se infla porque divide por un base falso.
+    """Variante in-memory de la SSoT — para callers que ya tienen los rows
+    fetcheados y no quieren hacer otra query. Mismo comportamiento que
+    `compute_net_deposited_db(include_baseline=True, broker_filter='global')`.
+
+    Útil específicamente en `take_snapshot_for_user` que ya tiene el SELECT
+    completo de monthly hecho para iterar valuations.
     """
     globals_entries = [m for m in monthly_entries if m['broker'] == 'global']
     if not globals_entries:
