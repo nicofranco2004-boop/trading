@@ -41,10 +41,27 @@ export function buildPortfolioValueSeries(snapshots, days = null, liveValue = nu
   if (days != null && days > 0 && points.length > 0) {
     const cutoff = Date.now() - days * 86400000
     const filtered = points.filter(p => new Date(p.date).getTime() >= cutoff)
-    // Always keep at least 2 points so the chart can draw a line
-    if (filtered.length >= 2) return filtered
+
+    // AUDIT FOLLOW-UP (2026-05-31): siempre PREPEND el último snapshot
+    // ANTES del cutoff como ancla del período. Sin este anchor, si el user
+    // no entró a Rendi durante varios días al inicio del período, el chart
+    // tomaba como `first.value` el primer snapshot DENTRO de la ventana
+    // (ej: 22 de mayo) y mostraba un delta más chico que el KPI "Este mes"
+    // (que sí ancla en el primer día calendar del mes). Resultado: 3
+    // números distintos para "rendimiento del mes" en distintas pantallas.
+    // Con el anchor, chart y KPI convergen al mismo número.
+    const beforeCutoff = points.filter(p => new Date(p.date).getTime() < cutoff)
+    const anchor = beforeCutoff.length > 0 ? beforeCutoff[beforeCutoff.length - 1] : null
+
+    if (filtered.length >= 2) {
+      return anchor ? [anchor, ...filtered] : filtered
+    }
+    if (filtered.length === 1 && anchor) {
+      return [anchor, filtered[0]]
+    }
     if (filtered.length === 1 && points.length >= 2) {
-      // Prepend the last point before the cutoff for context
+      // Sin anchor disponible (la ventana captura el primer snapshot de
+      // todos los tiempos), preserve previous behavior.
       const idx = points.findIndex(p => p.date === filtered[0].date)
       if (idx > 0) return [points[idx - 1], filtered[0]]
     }
