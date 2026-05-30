@@ -3350,6 +3350,127 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         self.assertGreaterEqual(body["rows_updated"], 1)
 
 
+class AutoRolloverServerSideTest(unittest.TestCase):
+    """Fase 7 (2026-05-30): GET /api/monthly hace lazy rollover — si la row
+    del current calendar month no existe para algún broker, la crea antes
+    de devolver. Antes esto vivía 100% en frontend (autoRolloverIfNeeded),
+    así que si el user no abría /mensual nunca, el sync-unrealized del
+    Dashboard no-opeaba y las métricas del mes corriente fallaban."""
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries", "brokers"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"rollover-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def test_rollover_creates_current_month_when_missing(self):
+        """Sembrar una row vieja → GET /api/monthly debe crear rows hasta
+        el current calendar month."""
+        from datetime import datetime
+        now = datetime.utcnow()
+
+        # Sembrar 1 row de hace muchos meses (descartando que esté en el
+        # current month por timing — usamos year-1 para garantizar gap).
+        old_year = now.year - 1
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, ?, 6, 'Cocos', 500, 0, 0, 50, 0, 550)""",
+                (self.uid, old_year),
+            )
+
+        # Fetch monthly — debe trigger el lazy rollover
+        res = self.client.get(
+            "/api/monthly",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+
+        # Verificar que existe row para el current month
+        current_row = conn.execute(
+            """SELECT capital_inicio, capital_final, pnl_unrealized
+                 FROM monthly_entries
+                WHERE user_id=? AND broker='Cocos' AND year=? AND month=?""",
+            (self.uid, now.year, now.month),
+        ).fetchone()
+        # Verificar que la row vieja quedó "cerrada" correctamente
+        old_row = conn.execute(
+            """SELECT pnl_unrealized, capital_final FROM monthly_entries
+                WHERE user_id=? AND broker='Cocos' AND year=? AND month=6""",
+            (self.uid, old_year),
+        ).fetchone()
+        conn.close()
+
+        self.assertIsNotNone(current_row,
+            "Lazy rollover debe haber creado la row del current month")
+        # La row vieja debe haber sido "cerrada" (pnl_unrealized=0, cap_final
+        # recalculado con fórmula canónica = 0 + 500 - 0 + 0 = 500)
+        self.assertAlmostEqual(old_row["pnl_unrealized"], 0.0, places=2,
+            msg="Row vieja: pnl_unrealized debe zero-earse al rollover")
+        self.assertAlmostEqual(old_row["capital_final"], 500.0, places=2,
+            msg="Row vieja: cap_final recalculado canónicamente (sin pnl_unrealized stale)")
+        # La row nueva del current month: cap_inicio = cap_final de la row anterior
+        self.assertAlmostEqual(current_row["capital_inicio"], 500.0, places=2,
+            msg="cap_inicio del current month = cap_final del previo (chain integrity)")
+        self.assertAlmostEqual(current_row["pnl_unrealized"], 0.0, places=2,
+            msg="current month nuevo arranca con pnl_unrealized=0")
+
+    def test_rollover_is_idempotent(self):
+        """Llamar GET /api/monthly dos veces no crea rows duplicadas."""
+        from datetime import datetime
+        now = datetime.utcnow()
+        old_year = now.year - 1
+
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, ?, 6, 'Cocos', 100, 0, 0, 0, 0, 100)""",
+                (self.uid, old_year),
+            )
+
+        # Primer GET — crea rows
+        self.client.get("/api/monthly", headers={"Authorization": f"Bearer {self.token}"})
+        n1 = conn.execute(
+            "SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (self.uid,),
+        ).fetchone()[0]
+
+        # Segundo GET — no debe crear más
+        self.client.get("/api/monthly", headers={"Authorization": f"Bearer {self.token}"})
+        n2 = conn.execute(
+            "SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (self.uid,),
+        ).fetchone()[0]
+        conn.close()
+
+        self.assertEqual(n1, n2,
+            "Segundo GET /api/monthly no debe crear rows duplicadas (idempotencia)")
+
+    def test_rollover_skips_when_no_history(self):
+        """User sin entradas previas → rollover no-op (no podemos crear
+        un current month sin cap_inicio del previo)."""
+        # No sembrar nada
+        res = self.client.get(
+            "/api/monthly",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json(), [],
+            "Sin historia previa, GET devuelve [] sin crear nada")
+
+
 class DeleteBrokerGuardTest(unittest.TestCase):
     """Fase 5 (2026-05-30): DELETE /api/brokers/{bid} debe refuse-then-confirm.
     Si el broker tiene positions/operations/monthly_entries/imports asociados,

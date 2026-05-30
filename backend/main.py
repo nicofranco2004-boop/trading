@@ -6243,14 +6243,131 @@ class MonthlyIn(BaseModel):
         return _finite(v)
 
 
+def _rollover_to_current_month(conn, uid: int, broker: str) -> int:
+    """Asegura que exista la row del mes calendar actual para (uid, broker).
+    Camina hacia adelante desde la última row existente, creando rows vacías
+    mes-por-mes (con capital_inicio = capital_final del mes anterior, y
+    pnl_unrealized = 0 en los meses intermedios cerrados).
+
+    HISTORIA (Fase 7, 2026-05-30): el rollover vivía 100% en el frontend
+    (autoRolloverIfNeeded en MonthlySummary.jsx). Solo corría cuando el user
+    abría /mensual. Si el user dejaba de visitar la página varios meses, las
+    métricas del current month no existían — `sync-unrealized` no-opeaba
+    silenciosamente, el chart de evolución mostraba data stale, etc.
+
+    Idempotente: UNIQUE constraint en (user_id, year, month, broker) absorbe
+    races concurrentes (ej: dos requests al mismo tiempo el día 1).
+    Safety cap: máximo 36 meses de catch-up por llamada (evita loops mal
+    formados si la última row está en el lejano pasado por bug en data).
+
+    Devuelve la cantidad de rows nuevas creadas.
+    """
+    now = datetime.utcnow()
+    target_year, target_month = now.year, now.month
+
+    last = conn.execute(
+        """SELECT id, year, month, capital_inicio, capital_final, deposits,
+                  withdrawals, pnl_realized, pnl_unrealized
+             FROM monthly_entries
+            WHERE user_id=? AND broker=?
+            ORDER BY year DESC, month DESC LIMIT 1""",
+        (uid, broker),
+    ).fetchone()
+    if not last:
+        return 0  # Sin historial — nada de qué rollover
+
+    last_year, last_month = int(last["year"]), int(last["month"])
+    if (last_year, last_month) >= (target_year, target_month):
+        return 0  # Ya tiene row del current month (o futura)
+
+    # Antes de avanzar, cerrar correctamente la última row: zero
+    # pnl_unrealized + recalc cap_final con la fórmula canónica.
+    cap_inicio_last = float(last["capital_inicio"] or 0)
+    deposits_last   = float(last["deposits"]   or 0)
+    withdrawals_last= float(last["withdrawals"]or 0)
+    pnl_realized_last = float(last["pnl_realized"] or 0)
+    pnl_unr_last      = float(last["pnl_unrealized"] or 0)
+    clean_cap_final = cap_inicio_last + deposits_last - withdrawals_last + pnl_realized_last
+    cur_cap_final = float(last["capital_final"] or 0)
+    if pnl_unr_last != 0 or abs(cur_cap_final - clean_cap_final) > 0.0001:
+        conn.execute(
+            "UPDATE monthly_entries SET pnl_unrealized=0, capital_final=? WHERE id=?",
+            (round(clean_cap_final, 4), last["id"]),
+        )
+        cur_cap_final = clean_cap_final
+
+    # Walk forward creando rows vacías
+    created = 0
+    cur_year, cur_month = last_year, last_month
+    MAX_MONTHS = 36
+    for _ in range(MAX_MONTHS):
+        cur_month += 1
+        if cur_month > 12:
+            cur_month = 1
+            cur_year += 1
+        if (cur_year, cur_month) > (target_year, target_month):
+            break  # Pasamos el current → fin del loop
+
+        try:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?)""",
+                (uid, cur_year, cur_month, broker,
+                 round(cur_cap_final, 4), round(cur_cap_final, 4)),
+            )
+            created += 1
+        except sqlite3.IntegrityError:
+            # Race: otra request creó la row. Leerla y seguir desde su cap_final.
+            existing = conn.execute(
+                """SELECT capital_final FROM monthly_entries
+                    WHERE user_id=? AND broker=? AND year=? AND month=?""",
+                (uid, broker, cur_year, cur_month),
+            ).fetchone()
+            if existing:
+                cur_cap_final = float(existing["capital_final"] or cur_cap_final)
+
+        if (cur_year, cur_month) == (target_year, target_month):
+            break
+    return created
+
+
+def _rollover_all_brokers(conn, uid: int) -> int:
+    """Conveniencia: ejecuta `_rollover_to_current_month` para cada broker
+    distinto en monthly_entries del user (incluye 'global'). Idempotente."""
+    brokers = conn.execute(
+        "SELECT DISTINCT broker FROM monthly_entries WHERE user_id=?",
+        (uid,),
+    ).fetchall()
+    total_created = 0
+    for b in brokers:
+        try:
+            total_created += _rollover_to_current_month(conn, uid, b["broker"])
+        except Exception as ex:
+            logging.getLogger(__name__).warning(
+                "Rollover error for user=%d broker=%s: %s", uid, b["broker"], ex,
+            )
+    return total_created
+
+
 @app.get("/api/monthly")
 def get_monthly(uid: int = Depends(get_current_user)):
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month, broker", (uid,)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        # Lazy trigger del rollover: garantiza que el current month existe
+        # para todos los brokers antes de devolver. Antes vivía solo en el
+        # frontend (autoRolloverIfNeeded), y si el user no abría /mensual el
+        # mes nuevo no se creaba — rompía sync-unrealized y métricas del
+        # current month. Idempotente y safe contra races.
+        with conn:
+            _rollover_all_brokers(conn, uid)
+        rows = conn.execute(
+            "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month, broker", (uid,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 @app.post("/api/monthly")
