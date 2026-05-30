@@ -3350,6 +3350,97 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         self.assertGreaterEqual(body["rows_updated"], 1)
 
 
+class RepairMonthlyChainOpenMonthTest(unittest.TestCase):
+    """Bug fix (2026-05-30): `_repair_monthly_chain` detectaba "open month"
+    como la última row del query (i == len(rows) - 1), no como el mes
+    calendar actual. Si el user tenía gaps (rows en Mar + May, sin Apr) y
+    el calendar marcaba Jun, May era tratado como abierto y su
+    pnl_unrealized stale no se zero-eaba."""
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "monthly_entries"):
+            conn.execute(f"DELETE FROM {t}")
+        self.uid = _new_user(conn, email=f"repair-open-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "ARS")
+        conn.commit()
+        conn.close()
+
+    def test_non_current_month_is_closed_even_if_last_row(self):
+        """Row en el pasado (≠ current calendar month) debe tratarse como
+        cerrada aunque sea la última row del query. pnl_unrealized se
+        zero-ea y cap_final se reconstruye con la fórmula canónica."""
+        conn = main.get_db()
+        with conn:
+            # 2020-01 y 2020-03 (gap en feb). Como hoy ≥ 2026, ninguna es
+            # current. Inyectamos pnl_unrealized=999 en la última row para
+            # ver si se preserva (bug) o se zero-ea (fix).
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2020, 1, 'Cocos', 100, 0, 0, 0, 0, 100)""",
+                (self.uid,),
+            )
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2020, 3, 'Cocos', 50, 0, 0, 999, 100, 1149)""",
+                (self.uid,),
+            )
+            main._repair_monthly_chain(conn, self.uid, 'Cocos')
+
+        row_mar = conn.execute(
+            """SELECT pnl_unrealized, capital_inicio, capital_final
+                 FROM monthly_entries
+                WHERE user_id=? AND broker='Cocos' AND year=2020 AND month=3""",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+
+        # Antes del fix: 2020-03 era la última row → tratada como "open" →
+        # pnl_unrealized=999 quedaba preservado, cap_final inflado.
+        # Después del fix: 2020-03 NO es el current calendar month → closed.
+        self.assertAlmostEqual(row_mar["pnl_unrealized"], 0.0, places=2,
+            msg="pnl_unrealized debe ser 0 en mes no-current aunque sea la última row")
+        # cap_inicio debe propagarse desde 2020-01 (capital_final = 100)
+        self.assertAlmostEqual(row_mar["capital_inicio"], 100.0, places=2)
+        # cap_final = 100 + 50 - 0 + 0 = 150 (sin pnl_unrealized para cerrado)
+        self.assertAlmostEqual(row_mar["capital_final"], 150.0, places=2)
+
+    def test_current_month_preserves_pnl_unrealized(self):
+        """Sanity check: si la row ES el current calendar month, sus
+        valores live (pnl_unrealized, capital_final) deben preservarse."""
+        from datetime import datetime
+        now = datetime.utcnow()
+        y, m = now.year, now.month
+
+        conn = main.get_db()
+        with conn:
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, ?, ?, 'Cocos', 100, 0, 0, 42, 0, 142)""",
+                (self.uid, y, m),
+            )
+            main._repair_monthly_chain(conn, self.uid, 'Cocos')
+
+        row = conn.execute(
+            """SELECT pnl_unrealized, capital_final
+                 FROM monthly_entries
+                WHERE user_id=? AND broker='Cocos' AND year=? AND month=?""",
+            (self.uid, y, m),
+        ).fetchone()
+        conn.close()
+
+        self.assertAlmostEqual(row["pnl_unrealized"], 42.0, places=2,
+            msg="current month debe preservar pnl_unrealized (es live)")
+        self.assertAlmostEqual(row["capital_final"], 142.0, places=2,
+            msg="current month preserva capital_final ya que cap_inicio matcheaba")
+
+
 class CombineCsvFilesTest(unittest.TestCase):
     """Unit tests del helper combine_csv_files (multi-file upload)."""
 

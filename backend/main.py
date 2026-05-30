@@ -4774,11 +4774,18 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
 
     Invariantes garantizados después de la llamada:
       • capital_inicio[N+1] = capital_final[N]  (chain integrity)
-      • Meses cerrados (no el último): pnl_unrealized = 0 y
+      • Meses cerrados (NO el current calendar month): pnl_unrealized = 0 y
         capital_final = capital_inicio + deposits − withdrawals + pnl_realized
-      • El último mes (en curso) conserva su pnl_unrealized y capital_final
-        — son live, los maneja sync-unrealized. Si su capital_inicio drifta del
-        previo, capital_final se recalcula con la fórmula completa.
+      • El current calendar month conserva su pnl_unrealized y capital_final
+        — son live, los maneja sync-unrealized. Si su capital_inicio drifta
+        del previo, capital_final se recalcula con la fórmula completa.
+
+    HISTORIA (bug fix 2026-05-30): antes el "mes abierto" se detectaba como
+    la ÚLTIMA row del query (i == len(rows) - 1). Si el user tenía gaps
+    (ej: rows en Mar + May, sin Apr) y hoy era Jun, May era la última row
+    y se trataba como abierta — su pnl_unrealized stale quedaba sin
+    zero-ear, contaminando Capital Final y métricas downstream. Ahora la
+    detección es por calendario: solo el mes (year, month) == hoy es open.
 
     Idempotente. El caller es responsable del commit (funciona dentro o fuera
     de `with conn:`).
@@ -4796,9 +4803,14 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
 
     EPS = 0.01
     prev_cap_final = None
+    now = datetime.utcnow()
+    current_year, current_month = now.year, now.month
 
-    for i, row in enumerate(rows):
-        is_last = (i == len(rows) - 1)
+    for row in rows:
+        # "Open" SOLO cuando coincide con el calendario actual. Filas
+        # futuras (ej: Jul 2099 cargado por error) se tratan como
+        # cerradas — propagan el chain pero zero-ean pnl_unrealized.
+        is_open = (row['year'] == current_year and row['month'] == current_month)
         cur_cap_inicio = row['capital_inicio'] or 0
         cur_cap_final  = row['capital_final'] or 0
         cur_pnl_unr    = row['pnl_unrealized'] or 0
@@ -4811,7 +4823,7 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
         if prev_cap_final is not None and abs(cur_cap_inicio - prev_cap_final) > EPS:
             new_cap_inicio = prev_cap_final
 
-        if not is_last:
+        if not is_open:
             # Closed month: aplicar fórmula canónica y zero pnl_unrealized
             new_cap_final = round(
                 new_cap_inicio + deposits - withdrawals + pnl_realized, 4
@@ -4830,8 +4842,8 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
                 )
             prev_cap_final = new_cap_final
         else:
-            # Open (current) month: respetar pnl_unrealized; recalcular cap_final
-            # solo si cap_inicio drifta del mes anterior.
+            # Open (current calendar) month: respetar pnl_unrealized;
+            # recalcular cap_final solo si cap_inicio drifta del mes anterior.
             if abs(cur_cap_inicio - new_cap_inicio) > EPS:
                 new_cap_final = round(
                     new_cap_inicio + deposits - withdrawals + pnl_realized + cur_pnl_unr, 4
@@ -4840,6 +4852,10 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
                     "UPDATE monthly_entries SET capital_inicio = ?, capital_final = ? WHERE id = ?",
                     (new_cap_inicio, new_cap_final, row['id']),
                 )
+                prev_cap_final = new_cap_final
+            else:
+                # Use whatever cap_final the row currently has (live, managed by sync)
+                prev_cap_final = cur_cap_final
 
 
 def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
