@@ -18,6 +18,41 @@ import { lookupHistoricalDolar } from './fx'
  *
  * @returns {Array<{ date, label, valueUsd, netDeposited }>}
  */
+/**
+ * convertSeriesToArs — convierte cada punto de una serie USD a ARS usando
+ * FX histórico per-punto (Phase C audit fix C1).
+ *
+ * Prioridad de FX por punto:
+ *   1. punto.fxToUsdBlue stampeado en el snapshot original (más auténtico)
+ *   2. getFxForDate(punto.date) — lookup en la historia de blue
+ *
+ * Retorna una nueva serie con `valueUsd` y `netDeposited` convertidos a ARS
+ * (los nombres de las keys se preservan por compat con el chart que ya las usa),
+ * y agrega `_fxUsed` para inspección/transparencia (chart muestra el TC blue
+ * usado en el tooltip).
+ *
+ * @param {Array} series — output de buildPortfolioValueSeries (cada item con
+ *                          { date, valueUsd, netDeposited, fxToUsdBlue? })
+ * @param {(dateIso: string) => number} getFxForDate — resolver del FX por fecha
+ * @returns {Array} serie con valores convertidos a ARS
+ */
+export function convertSeriesToArs(series, getFxForDate) {
+  if (!Array.isArray(series)) return []
+  return series.map(p => {
+    const stamped = p.fxToUsdBlue
+    const fx = (stamped && stamped > 0)
+      ? stamped
+      : (typeof getFxForDate === 'function' ? getFxForDate(p.date) : null)
+    const safeFx = (fx && fx > 0) ? fx : 1  // último fallback: no convertir
+    return {
+      ...p,
+      valueUsd: p.valueUsd * safeFx,
+      netDeposited: p.netDeposited * safeFx,
+      _fxUsed: safeFx,
+    }
+  })
+}
+
 export function buildPortfolioValueSeries(snapshots, days = null, liveValue = null, liveNet = null, liveFx = null) {
   const sorted = [...(snapshots || [])].sort((a, b) => a.date < b.date ? -1 : 1)
   const points = sorted.map(s => ({

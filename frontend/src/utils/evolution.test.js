@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
-import { buildEvolutionFromSnapshots, computeDailyPnl, computeReturnDelta } from './evolution.js'
+import {
+  buildEvolutionFromSnapshots,
+  buildPortfolioValueSeries,
+  convertSeriesToArs,
+  computeDailyPnl,
+  computeReturnDelta,
+} from './evolution.js'
 
 const TCB = 1500
 
@@ -319,3 +325,101 @@ describe('computeReturnDelta — variación mensual (sinceDate)', () => {
     expect(r.prevDate).toBe('2026-05-03')
   })
 })
+
+
+// ─── Phase C audit fix C1: convertSeriesToArs + fxToUsdBlue propagation ─────
+// Verifica:
+//   • buildPortfolioValueSeries propaga fx_to_usd_blue del snapshot al output
+//   • convertSeriesToArs aplica el FX correcto por punto (stamped > lookup)
+//   • _fxUsed se expone en cada punto para que el chart pueda mostrarlo
+
+describe("buildPortfolioValueSeries propaga fx_to_usd_blue (Phase C)", () => {
+  it("snapshot con fx_to_usd_blue lo expone como fxToUsdBlue en el output", () => {
+    const snaps = [
+      { date: "2025-06-01", total_value: 1000, total_invested: 800, net_deposited: 800, fx_to_usd_blue: 1200 },
+      { date: "2025-06-02", total_value: 1050, total_invested: 800, net_deposited: 800, fx_to_usd_blue: 1210 },
+    ]
+    const series = buildPortfolioValueSeries(snaps)
+    expect(series).toHaveLength(2)
+    expect(series[0].fxToUsdBlue).toBe(1200)
+    expect(series[1].fxToUsdBlue).toBe(1210)
+  })
+
+  it("snapshot sin fx_to_usd_blue → fxToUsdBlue=null en el output", () => {
+    const snaps = [
+      { date: "2025-06-01", total_value: 1000, total_invested: 800, net_deposited: 800 },
+      { date: "2025-06-02", total_value: 1050, total_invested: 800, net_deposited: 800, fx_to_usd_blue: null },
+    ]
+    const series = buildPortfolioValueSeries(snaps)
+    expect(series[0].fxToUsdBlue).toBe(null)
+    expect(series[1].fxToUsdBlue).toBe(null)
+  })
+
+  it("liveFx se aplica al punto today appended", () => {
+    const snaps = [
+      { date: "2025-06-01", total_value: 1000, total_invested: 800, net_deposited: 800, fx_to_usd_blue: 1200 },
+    ]
+    const series = buildPortfolioValueSeries(snaps, null, 1100, 850, 1466)
+    expect(series).toHaveLength(2)
+    expect(series[1].fxToUsdBlue).toBe(1466)
+  })
+})
+
+describe("convertSeriesToArs (Phase C audit fix C1)", () => {
+  const getFx = (date) => {
+    const m = { "2025-06-01": 1200, "2025-06-02": 1210, "2025-06-03": 1220 }
+    return m[date] || null
+  }
+
+  it("usa fxToUsdBlue stampeado cuando está presente (prioridad 1)", () => {
+    const series = [
+      { date: "2025-06-01", valueUsd: 1000, netDeposited: 800, fxToUsdBlue: 1234 },
+    ]
+    const out = convertSeriesToArs(series, getFx)
+    // 1000 * 1234 = 1234000 (stamped gana sobre el lookup de 1200)
+    expect(out[0].valueUsd).toBe(1234000)
+    expect(out[0].netDeposited).toBe(800 * 1234)
+    expect(out[0]._fxUsed).toBe(1234)
+  })
+
+  it("hace fallback a getFxForDate si no hay stamped (prioridad 2)", () => {
+    const series = [
+      { date: "2025-06-02", valueUsd: 500, netDeposited: 400, fxToUsdBlue: null },
+    ]
+    const out = convertSeriesToArs(series, getFx)
+    expect(out[0].valueUsd).toBe(500 * 1210)
+    expect(out[0]._fxUsed).toBe(1210)
+  })
+
+  it("último fallback es 1 (no convierte) cuando getFx devuelve null", () => {
+    const series = [
+      { date: "2030-12-25", valueUsd: 1000, netDeposited: 800, fxToUsdBlue: null },
+    ]
+    const out = convertSeriesToArs(series, () => null)
+    expect(out[0].valueUsd).toBe(1000)
+    expect(out[0]._fxUsed).toBe(1)
+  })
+
+  it("preserva otras keys del punto", () => {
+    const series = [
+      { date: "2025-06-01", label: "06-01", valueUsd: 1000, netDeposited: 800, fxToUsdBlue: 1200 },
+    ]
+    const out = convertSeriesToArs(series, getFx)
+    expect(out[0].date).toBe("2025-06-01")
+    expect(out[0].label).toBe("06-01")
+  })
+
+  it("input vacío / inválido devuelve []", () => {
+    expect(convertSeriesToArs([], getFx)).toEqual([])
+    expect(convertSeriesToArs(null, getFx)).toEqual([])
+    expect(convertSeriesToArs(undefined, getFx)).toEqual([])
+  })
+
+  it("getFxForDate no-function: no rompe, usa fallback=1", () => {
+    const series = [{ date: "2025-06-01", valueUsd: 100, netDeposited: 80, fxToUsdBlue: null }]
+    expect(() => convertSeriesToArs(series, null)).not.toThrow()
+    const out = convertSeriesToArs(series, null)
+    expect(out[0].valueUsd).toBe(100)
+  })
+})
+

@@ -17,17 +17,34 @@ import {
 } from '../contexts/CurrencyContext'
 import { useFxHistory } from './useFxHistory'
 
+/**
+ * resolveHistoricalFx — chain de prioridad para conseguir el FX a aplicar a
+ * un valor USD. Pure function — testeable sin React.
+ *
+ * @param {string} currency — 'USD' | 'ARS' (toggle global)
+ * @param {number} tcBlue — blue actual (fallback final)
+ * @param {object} opts — { stampedFx?, dateIso? }
+ * @param {(date: string) => number | null} getRateForDate — lookup histórico
+ * @returns {number} FX para multiplicar. 1 si currency='USD' (no convertir).
+ */
+export function resolveHistoricalFx(currency, tcBlue, opts, getRateForDate) {
+  if (currency !== 'ARS') return 1
+  const stamped = opts?.stampedFx
+  if (stamped && stamped > 0) return stamped
+  const date = opts?.dateIso
+  if (date && typeof getRateForDate === 'function') {
+    const r = getRateForDate(date)
+    if (r && r > 0) return r
+  }
+  return tcBlue > 0 ? tcBlue : 1
+}
+
 export function useHistoricalMoney() {
   const { currency, tcBlue } = useCurrency()
   const { getRateOrFallback } = useFxHistory(tcBlue)
 
   function resolveFx(opts) {
-    if (currency !== 'ARS') return 1
-    const stamped = opts?.stampedFx
-    if (stamped && stamped > 0) return stamped
-    const date = opts?.dateIso
-    if (date) return getRateOrFallback(date)
-    return tcBlue
+    return resolveHistoricalFx(currency, tcBlue, opts, getRateOrFallback)
   }
 
   function convertedValue(usdValue, opts) {

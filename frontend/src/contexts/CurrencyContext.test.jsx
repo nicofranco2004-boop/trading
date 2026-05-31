@@ -7,7 +7,14 @@
 // PositionsMobile, Positions) — si rompen, falla el build y/o smoke tests.
 
 import { describe, it, expect } from 'vitest'
-import { fromUsd, fromArs, fmtMoneyRaw, fmtMoneyCompactRaw } from './CurrencyContext'
+import {
+  fromUsd,
+  fromArs,
+  fmtMoneyRaw,
+  fmtMoneyCompactRaw,
+  fmtConvertedRaw,
+  fmtConvertedCompactRaw,
+} from './CurrencyContext'
 
 describe('fromUsd / fromArs helpers', () => {
   it('fromUsd con USD currency no cambia el valor', () => {
@@ -143,5 +150,69 @@ describe('fmtMoneyCompactRaw (Phase B abbreviated)', () => {
   it('null / NaN devuelven —', () => {
     expect(fmtMoneyCompactRaw(null, 'USD', 1415)).toBe('—')
     expect(fmtMoneyCompactRaw(NaN, 'ARS', 1415)).toBe('—')
+  })
+})
+
+// ─── fmtConvertedRaw / fmtConvertedCompactRaw (audit fix H1) ─────────────────
+// Estos helpers reciben un valor que YA está en la currency target (la
+// conversión la hace el caller con FX histórico). Son la pieza usada por
+// useHistoricalMoney para formatear sin re-convertir.
+
+describe('fmtConvertedRaw (helper sin conversión)', () => {
+  it('USD: formato con US$ + es-AR locale', () => {
+    expect(fmtConvertedRaw(1234.5, 'USD')).toBe('US$1.235')
+  })
+
+  it('ARS: formato con $ + es-AR locale (input YA en ARS)', () => {
+    // Diferencia con fmtMoneyRaw: no multiplica por tcBlue. El caller pasa
+    // 220000 que YA es ARS, devolvemos "$220.000" tal cual.
+    expect(fmtConvertedRaw(220_000, 'ARS')).toBe('$220.000')
+  })
+
+  it('valores negativos: signo − sin signed:true', () => {
+    expect(fmtConvertedRaw(-500, 'USD')).toBe('−US$500')
+  })
+
+  it('signed:true muestra + para positivos', () => {
+    expect(fmtConvertedRaw(500, 'USD', { signed: true })).toBe('+US$500')
+    expect(fmtConvertedRaw(-500, 'USD', { signed: true })).toBe('−US$500')
+  })
+
+  it('decimals:2 muestra 2 decimales', () => {
+    expect(fmtConvertedRaw(1234.56, 'USD', { decimals: 2 })).toBe('US$1.234,56')
+  })
+
+  it('null / NaN / Infinity → "—"', () => {
+    expect(fmtConvertedRaw(null, 'USD')).toBe('—')
+    expect(fmtConvertedRaw(NaN, 'ARS')).toBe('—')
+    expect(fmtConvertedRaw(Infinity, 'USD')).toBe('—')
+  })
+})
+
+describe('fmtConvertedCompactRaw (helper sin conversión, abreviado)', () => {
+  it('k bucket: USD', () => {
+    expect(fmtConvertedCompactRaw(5000, 'USD')).toBe('US$5.0k')
+  })
+
+  it('k bucket: ARS (input YA en ARS, no se multiplica)', () => {
+    expect(fmtConvertedCompactRaw(200_000, 'ARS')).toBe('$200k')
+  })
+
+  it('M bucket: ARS', () => {
+    expect(fmtConvertedCompactRaw(5_500_000, 'ARS')).toBe('$5.5M')
+  })
+
+  it('boundary smooth: 9999 → "10k" sin flicker', () => {
+    expect(fmtConvertedCompactRaw(9999, 'USD')).toBe('US$10k')
+  })
+
+  it('signed funciona con compact', () => {
+    expect(fmtConvertedCompactRaw(-50_000, 'ARS', { signed: true })).toBe('−$50k')
+    expect(fmtConvertedCompactRaw(50_000, 'ARS', { signed: true })).toBe('+$50k')
+  })
+
+  it('null / NaN → "—"', () => {
+    expect(fmtConvertedCompactRaw(null, 'USD')).toBe('—')
+    expect(fmtConvertedCompactRaw(NaN, 'ARS')).toBe('—')
   })
 })

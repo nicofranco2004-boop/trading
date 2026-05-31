@@ -25,7 +25,7 @@ import CurrencyToggle from '../components/CurrencyToggle'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
-import { buildPortfolioValueSeries, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
+import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
 
@@ -297,18 +297,10 @@ export default function Dashboard() {
   // → inconsistencia visible. Ahora la DATA está convertida ANTES de pasar
   // al chart, así axis + tooltip muestran el mismo número.
   // En USD view, pasamos el evoSeries tal cual (sin conversión).
+  // Helper `convertSeriesToArs` es testeable como función pura.
   const evoSeriesDisplay = useMemo(() => {
     if (currency !== 'ARS') return evoSeries
-    return evoSeries.map(p => {
-      const stamped = p.fxToUsdBlue
-      const fx = (stamped && stamped > 0) ? stamped : getHistoricalFx(p.date)
-      return {
-        ...p,
-        valueUsd: p.valueUsd * fx,          // ahora en ARS (renombrar sería breaking)
-        netDeposited: p.netDeposited * fx,  // idem
-        _fxUsed: fx,
-      }
-    })
+    return convertSeriesToArs(evoSeries, getHistoricalFx)
   }, [evoSeries, currency, getHistoricalFx])
 
   // For chart Y-axis nice domain — usa evoSeriesDisplay para que el dominio

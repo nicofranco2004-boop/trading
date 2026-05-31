@@ -50,7 +50,7 @@ let _fxCacheError = false
 let _fxCacheErrorAt = 0
 const RETRY_COOLDOWN_MS = 30_000
 
-function fetchFxHistory() {
+export function fetchFxHistory() {
   // Request en vuelo → comparte la misma promesa
   if (_fxCachePromise) return _fxCachePromise
   // Data válida cacheada → resolve directo
