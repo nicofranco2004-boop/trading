@@ -8088,6 +8088,22 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+@app.post("/api/admin/backup-trigger")
+def admin_backup_trigger(uid: int = Depends(get_admin_user)):
+    """Manual trigger del backup diario — útil para verificar end-to-end
+    sin esperar al cron de las 03:45 UTC. Devuelve los stats del run.
+
+    Restringido a admin. Idempotente: si lo corrés 2 veces seguidas, el
+    segundo backup pisa al primero (mismo nombre por día) — no duplica.
+    """
+    from scripts.backup_db import run_backup
+    stats = run_backup(db_path=DB_PATH)
+    return {
+        "ok": not bool(stats.get("errors")),
+        "stats": stats,
+    }
+
+
 @app.get("/api/admin/stats")
 def admin_stats(uid: int = Depends(get_admin_user)):
     conn = get_db()
