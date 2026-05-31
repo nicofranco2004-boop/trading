@@ -274,14 +274,17 @@ def take_snapshot_for_user(
 
     # 5. UPSERT en snapshots
     # SQLite UPSERT syntax: INSERT...ON CONFLICT(user_id, date) DO UPDATE
+    # Phase C: stampamos fx_to_usd_blue (= tc_blue del día) para que cuando
+    # el user mire la curva en ARS, cada punto use SU PROPIO blue (no el de hoy).
     conn.execute("""
-        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id, date) DO UPDATE SET
             total_value = excluded.total_value,
             total_invested = excluded.total_invested,
-            net_deposited = excluded.net_deposited
-    """, (uid, target_date, total_value, total_invested, net_deposited))
+            net_deposited = excluded.net_deposited,
+            fx_to_usd_blue = COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue)
+    """, (uid, target_date, total_value, total_invested, net_deposited, tc_blue))
 
     return {
         'ok': True,
@@ -406,6 +409,24 @@ def run_daily_snapshot(
     conn.row_factory = sqlite3.Row
 
     try:
+        # Phase C: persist el blue de HOY en fx_rates_daily. Idempotent —
+        # si ya existe, hace overwrite con el nuevo valor (presumiblemente
+        # más actualizado). Si la tabla no existe (migration pendiente en
+        # un deploy mid-rollout), capturamos el error y seguimos.
+        try:
+            conn.execute(
+                """INSERT INTO fx_rates_daily (date, blue_venta, source)
+                   VALUES (?, ?, 'snapshot_cron')
+                   ON CONFLICT(date) DO UPDATE SET
+                     blue_venta = excluded.blue_venta,
+                     source = excluded.source,
+                     fetched_at = datetime('now')""",
+                (target, float(tc_blue)),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            log.warning(f"fx_rates_daily insert falló (migration pendiente?): {e}")
+
         user_ids = [r[0] for r in conn.execute(
             "SELECT id FROM users WHERE id IS NOT NULL"
         ).fetchall()]

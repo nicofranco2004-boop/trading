@@ -637,6 +637,26 @@ def init_db():
     snap_cols = _table_cols(conn, 'snapshots')
     if 'net_deposited' not in snap_cols:
         conn.execute("ALTER TABLE snapshots ADD COLUMN net_deposited REAL NOT NULL DEFAULT 0")
+    # Phase C (2026-05-31) — fx_to_usd_blue stamping al momento del snapshot.
+    # Cuando el user mira el dashboard en ARS, queremos que la curva refleje
+    # la realidad histórica: el valor en pesos de tu portfolio HACE 6 MESES
+    # se calcula con el blue de esa fecha (no el de hoy). Frontend lee esta
+    # columna y, si está presente, prioriza sobre la conversión live.
+    # NULL en filas legacy → frontend hace fallback al tcBlue actual.
+    if 'fx_to_usd_blue' not in snap_cols:
+        conn.execute("ALTER TABLE snapshots ADD COLUMN fx_to_usd_blue REAL")
+    # Phase C — tabla global de FX rates diarios. NO está particionada por
+    # user (el dólar blue es público y único). Se rellena con backfill desde
+    # argentinadatos.com al startup si está vacía, y se actualiza cada día
+    # via el cron de snapshots.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS fx_rates_daily (
+            date TEXT PRIMARY KEY,         -- YYYY-MM-DD
+            blue_venta REAL NOT NULL,
+            source TEXT DEFAULT 'unknown', -- 'dolarapi' | 'argentinadatos' | 'snapshot_cron' | 'manual'
+            fetched_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS goals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2317,6 +2337,93 @@ def _fetch_dolar(casa: str):
         return None
 
 
+# ─── Phase C: FX rates historical tracking ────────────────────────────────────
+# Mantenemos una tabla global `fx_rates_daily` con el blue de cada día.
+# Fuentes:
+#   • Cron diario (snapshots_job) → persiste el blue del día post-fetch
+#   • POST /api/snapshots (manual desde frontend) → idempotent upsert
+#   • Backfill al startup desde argentinadatos.com (~5 años de historia)
+#
+# Sin este tracking, cuando un user pasa el toggle a ARS, las curvas
+# históricas se calcularían al blue HOY — distorsionando totalmente la
+# realidad de "cuánto valía mi portfolio en pesos en julio 2024".
+
+def _persist_blue_for_date(date_str: str, blue: float, source: str = 'snapshot_cron') -> bool:
+    """Upsert idempotente del blue en fx_rates_daily. NO falla si ya existe
+    (overwrite con el valor más reciente, asumimos que la última lectura es
+    más confiable). Devuelve True si el insert/update se aplicó.
+    """
+    if not blue or blue <= 0 or not date_str:
+        return False
+    conn = None
+    try:
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO fx_rates_daily (date, blue_venta, source)
+               VALUES (?, ?, ?)
+               ON CONFLICT(date) DO UPDATE SET
+                 blue_venta = excluded.blue_venta,
+                 source = excluded.source,
+                 fetched_at = datetime('now')""",
+            (date_str, float(blue), source),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logging.warning(f"_persist_blue_for_date({date_str}) failed: {e}")
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _backfill_fx_rates_if_empty():
+    """Si fx_rates_daily está vacía, hace pull de argentinadatos.com
+    (~5 años de daily blue). Idempotent — solo corre una vez.
+    Llamado al startup desde init_db(). Si falla la red, no rompe el boot.
+    """
+    conn = None
+    try:
+        conn = get_db()
+        cnt = conn.execute("SELECT COUNT(*) FROM fx_rates_daily").fetchone()[0]
+        if cnt > 0:
+            return  # Ya seedeado
+        logging.info("fx_rates_daily vacío — iniciando backfill desde argentinadatos.com")
+        try:
+            r = requests.get("https://api.argentinadatos.com/v1/cotizaciones/dolares/blue", timeout=10)
+            if r.status_code != 200:
+                return
+            rows = []
+            for item in r.json():
+                fecha = item.get("fecha", "")
+                venta = item.get("venta")
+                if fecha and venta is not None and len(fecha) == 10:
+                    try:
+                        rows.append((fecha, float(venta), 'argentinadatos'))
+                    except (TypeError, ValueError):
+                        continue
+            if rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, source) VALUES (?, ?, ?)",
+                    rows,
+                )
+                conn.commit()
+                logging.info(f"fx_rates_daily backfill: {len(rows)} filas insertadas")
+        except Exception as e:
+            logging.warning(f"backfill fx_rates_daily failed: {e}")
+    except Exception as e:
+        logging.warning(f"_backfill_fx_rates_if_empty outer error: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 @app.get("/api/dolar")
 def get_dolar(uid: int = Depends(get_current_user)):
     now = time.time()
@@ -2350,32 +2457,79 @@ class SnapshotIn(BaseModel):
 @app.post("/api/snapshots")
 def post_snapshot(data: SnapshotIn, uid: int = Depends(get_current_user)):
     today = datetime.utcnow().strftime("%Y-%m-%d")
+    # Phase C: stampamos fx_to_usd_blue al momento del snapshot. Usamos el
+    # blue actual desde el cache (TTL 5min) — más fresco que ir a fx_rates_daily
+    # y suficiente para snapshots frontend-triggered. Idempotent: el upsert
+    # también actualiza fx si llega cambiado.
+    blue_now = None
+    try:
+        if _dolar_cache["data"]:
+            blue_now = (_dolar_cache["data"].get("blue") or {}).get("venta")
+        if not blue_now:
+            b = _fetch_dolar("blue")
+            blue_now = b.get("venta") if b else None
+    except Exception:
+        blue_now = None
+    # Si conseguimos el blue, persistimos en fx_rates_daily también
+    if blue_now and blue_now > 0:
+        _persist_blue_for_date(today, float(blue_now), source='dolarapi')
+
     conn = get_db()
     conn.execute(
-        """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
-           VALUES (?, ?, ?, ?, ?)
+        """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id, date) DO UPDATE SET
              total_value=excluded.total_value,
              total_invested=excluded.total_invested,
-             net_deposited=excluded.net_deposited""",
-        (uid, today, data.total_value, data.total_invested, data.net_deposited),
+             net_deposited=excluded.net_deposited,
+             fx_to_usd_blue=COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue)""",
+        (uid, today, data.total_value, data.total_invested, data.net_deposited, blue_now),
     )
     conn.commit()
     conn.close()
-    return {"ok": True, "date": today}
+    return {"ok": True, "date": today, "fx_to_usd_blue": blue_now}
 
 
 @app.get("/api/snapshots")
 def get_snapshots(days: int = 30, uid: int = Depends(get_current_user)):
     # Phase 6 — cap subido de 365 → 3650 (10 años) para soportar histórico multi-año.
+    # Phase C — devolvemos fx_to_usd_blue para que el frontend pueda convertir
+    # snapshots viejos a ARS con el TC HISTÓRICO de cada fecha, no el de hoy.
     days = max(1, min(days, 3650))
     conn = get_db()
     rows = conn.execute(
-        "SELECT date, total_value, total_invested, net_deposited FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT ?",
+        "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue "
+        "FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT ?",
         (uid, days),
     ).fetchall()
     conn.close()
     return list(reversed([dict(r) for r in rows]))
+
+
+# ─── Phase C: FX history endpoint ────────────────────────────────────────────
+@app.get("/api/fx-rates")
+def get_fx_rates(
+    days: int = 3650,
+    uid: int = Depends(get_current_user),
+):
+    """Devuelve la historia de blue diaria. Default 10 años (mismo cap que
+    snapshots). El frontend la fetcha una vez por session y la cachea en
+    memoria para hacer conversión a ARS por fecha histórica.
+
+    Shape:
+        [{ "date": "2025-12-31", "blue": 1450.0 }, ...]  (ordenado asc)
+    """
+    days = max(1, min(int(days or 3650), 3650))
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT date, blue_venta FROM fx_rates_daily "
+        "ORDER BY date DESC LIMIT ?",
+        (days,),
+    ).fetchall()
+    conn.close()
+    # Reverse to ascending order — el frontend espera de viejo → nuevo
+    out = [{"date": r["date"], "blue": r["blue_venta"]} for r in reversed(rows)]
+    return out
 
 
 # ─── Benchmarks (inflación AR, S&P 500, dólar blue histórico) ────────────────
@@ -13084,6 +13238,25 @@ def _run_subscription_lifecycle_job():
 
 # Scheduler in-process
 _scheduler = BackgroundScheduler(timezone='UTC')
+
+@app.on_event("startup")
+def _backfill_fx_rates_on_boot():
+    """Phase C: si fx_rates_daily está vacía al arrancar, hace pull histórico
+    desde argentinadatos.com en background. Idempotente — solo corre una vez.
+
+    Background thread para no bloquear el boot (la llamada HTTP puede tardar
+    varios segundos). Si falla, el server arranca igual y el siguiente cron
+    diario va a poblar al menos el día actual.
+    """
+    import threading
+    def worker():
+        try:
+            _backfill_fx_rates_if_empty()
+        except Exception as e:
+            log.warning(f"fx_rates backfill background falló: {e}")
+    t = threading.Thread(target=worker, daemon=True, name="fx-backfill")
+    t.start()
+
 
 @app.on_event("startup")
 def _validate_rebill_config():

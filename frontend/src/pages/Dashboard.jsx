@@ -22,6 +22,7 @@ import AssetLogo from '../components/AssetLogo'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency } from '../contexts/CurrencyContext'
 import CurrencyToggle from '../components/CurrencyToggle'
+import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import { buildPortfolioValueSeries, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
@@ -131,6 +132,13 @@ export default function Dashboard() {
   useEffect(() => {
     if (tcBlue > 0) publishTcBlue(tcBlue)
   }, [tcBlue, publishTcBlue])
+
+  // Fase C (2026-05-31): historia de blue para conversión histórica del
+  // chart. Cuando el toggle está en ARS, cada punto del chart usa SU
+  // PROPIO blue (no el actual), reflejando la realidad histórica.
+  // fxToUsdBlue stampeado en el snapshot tiene prioridad sobre el
+  // lookup del hook (es el más auténtico al momento del snapshot).
+  const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcBlue)
 
   const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue) }))
   const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0)
@@ -740,9 +748,9 @@ export default function Dashboard() {
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={v => {
-                      // Fase B: la escala del axis es lineal en USD vs ARS
-                      // (ARS = USD × tcBlue), así que la curva no cambia —
-                      // solo cambian las etiquetas. Compact (k/M) en ambas.
+                      // Y-axis ticks usan tcBlue ACTUAL (no histórico) porque
+                      // un solo eje no puede representar múltiples FX. El
+                      // tooltip (que es punto-específico) sí usa FX histórico.
                       const v2 = currency === 'ARS' ? v * tcBlue : v
                       const abs = Math.abs(v2)
                       const sym = currency === 'ARS' ? '$' : 'US$'
@@ -766,11 +774,34 @@ export default function Dashboard() {
                     }}
                     labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.12em' }}
                     itemStyle={{ color: '#F4F4F0', fontSize: 12, padding: '2px 0' }}
-                    formatter={(v, name) => [
-                      currency === 'ARS' ? fmtArs(v * tcBlue) : fmtUsd(v),
-                      name === 'valueUsd' ? 'Valor' : 'Aportado',
-                    ]}
-                    labelFormatter={l => l}
+                    formatter={(v, name, props) => {
+                      // Fase C: en ARS view, usamos el FX HISTÓRICO del punto:
+                      //   1. fxToUsdBlue stampeado en el snapshot (más auténtico)
+                      //   2. fallback a useFxHistory por la fecha del punto
+                      //   3. último fallback: tcBlue actual
+                      // En USD view, el valor es directo (sin conversión).
+                      if (currency !== 'ARS') {
+                        return [fmtUsd(v), name === 'valueUsd' ? 'Valor' : 'Aportado']
+                      }
+                      const stamped = props?.payload?.fxToUsdBlue
+                      const dateStr = props?.payload?.date
+                      const fx = (stamped && stamped > 0)
+                        ? stamped
+                        : getHistoricalFx(dateStr)
+                      return [fmtArs(v * fx), name === 'valueUsd' ? 'Valor' : 'Aportado']
+                    }}
+                    labelFormatter={(label, payload) => {
+                      // Mostramos la fecha completa + el FX usado en este punto
+                      // si estamos en ARS (debugging + transparencia).
+                      const p = payload?.[0]?.payload
+                      if (!p) return label
+                      if (currency === 'ARS') {
+                        const stamped = p.fxToUsdBlue
+                        const fx = (stamped && stamped > 0) ? stamped : getHistoricalFx(p.date)
+                        return `${p.date}  ·  TC blue ${Math.round(fx)}`
+                      }
+                      return p.date || label
+                    }}
                   />
                   <Area
                     type="monotone"

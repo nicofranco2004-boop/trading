@@ -18,13 +18,18 @@ import { lookupHistoricalDolar } from './fx'
  *
  * @returns {Array<{ date, label, valueUsd, netDeposited }>}
  */
-export function buildPortfolioValueSeries(snapshots, days = null, liveValue = null, liveNet = null) {
+export function buildPortfolioValueSeries(snapshots, days = null, liveValue = null, liveNet = null, liveFx = null) {
   const sorted = [...(snapshots || [])].sort((a, b) => a.date < b.date ? -1 : 1)
   const points = sorted.map(s => ({
     date: s.date,
     label: s.date.slice(5), // MM-DD
     valueUsd: +(s.total_value || 0),
     netDeposited: +(s.net_deposited || s.total_invested || 0),
+    // Phase C: fx_to_usd_blue stampeado al momento del snapshot. Cuando
+    // el toggle global está en ARS, el chart usa este FX (no el actual)
+    // para mostrar la realidad histórica. NULL en filas legacy → frontend
+    // hace fallback al fx histórico de useFxHistory, después al tcBlue actual.
+    fxToUsdBlue: s.fx_to_usd_blue != null ? +s.fx_to_usd_blue : null,
   }))
 
   // Append "today" if live value supplied and last snapshot isn't already today
@@ -35,6 +40,7 @@ export function buildPortfolioValueSeries(snapshots, days = null, liveValue = nu
       label: today.slice(5),
       valueUsd: +liveValue,
       netDeposited: liveNet != null ? +liveNet : (points[points.length - 1]?.netDeposited ?? +liveValue),
+      fxToUsdBlue: liveFx != null ? +liveFx : null,
     })
   }
 

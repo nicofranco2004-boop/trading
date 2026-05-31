@@ -199,7 +199,14 @@ class TestSnapshotEndToEnd(unittest.TestCase):
                 total_value REAL NOT NULL,
                 total_invested REAL NOT NULL,
                 net_deposited REAL NOT NULL DEFAULT 0,
+                fx_to_usd_blue REAL,
                 UNIQUE(user_id, date)
+            );
+            CREATE TABLE fx_rates_daily (
+                date TEXT PRIMARY KEY,
+                blue_venta REAL NOT NULL,
+                source TEXT DEFAULT 'unknown',
+                fetched_at TEXT DEFAULT (datetime('now'))
             );
             INSERT INTO users (id, email) VALUES (1, 'test@example.com');
             INSERT INTO brokers (user_id, name, currency) VALUES (1, 'Binance', 'USDT');
@@ -262,6 +269,132 @@ class TestSnapshotEndToEnd(unittest.TestCase):
                                         crypto_yf={}, target_date='2026-01-15')
         self.assertFalse(r['ok'])
         self.assertEqual(r['reason'], 'no_data')
+        conn.close()
+
+    def test_take_snapshot_stamps_fx_to_usd_blue(self):
+        """Phase C: cada snapshot persiste el tc_blue usado, para que el
+        frontend pueda renderizar el valor histórico en ARS con el TC de
+        esa fecha (no el actual)."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        with conn:
+            take_snapshot_for_user(conn, uid=1, tc_blue=1500.5,
+                                    crypto_yf={'BTC': 'BTC-USD'},
+                                    target_date='2026-01-15')
+        snap = conn.execute(
+            "SELECT fx_to_usd_blue FROM snapshots WHERE user_id=1 AND date='2026-01-15'"
+        ).fetchone()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap['fx_to_usd_blue'], 1500.5)
+        conn.close()
+
+    def test_take_snapshot_upsert_preserves_existing_fx(self):
+        """Si el snapshot ya tenía fx stampeado y el upsert llega con NULL,
+        no perdemos el dato — COALESCE(excluded.fx, snapshots.fx)."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        # Primera escritura con fx=1500
+        with conn:
+            take_snapshot_for_user(conn, 1, 1500, {'BTC': 'BTC-USD'}, '2026-01-15')
+        # Update manual a NULL (simulando un legacy upsert sin fx)
+        conn.execute(
+            "UPDATE snapshots SET total_value=9999 WHERE user_id=1 AND date='2026-01-15'"
+        )
+        conn.commit()
+        # Segunda escritura con fx=1600 — debería actualizar
+        with conn:
+            take_snapshot_for_user(conn, 1, 1600, {'BTC': 'BTC-USD'}, '2026-01-15')
+        snap = conn.execute(
+            "SELECT fx_to_usd_blue FROM snapshots WHERE user_id=1 AND date='2026-01-15'"
+        ).fetchone()
+        # El nuevo valor (1600) prevalece — última fuente confiable
+        self.assertEqual(snap['fx_to_usd_blue'], 1600)
+        conn.close()
+
+
+class TestRunDailySnapshotFxPersistence(unittest.TestCase):
+    """Phase C: el cron también persiste el blue del día en fx_rates_daily
+    (tabla global, no per-user). Verifica que esto funciona."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.db_path = self.tmp.name
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
+            CREATE TABLE brokers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL, name TEXT NOT NULL,
+                currency TEXT NOT NULL, parent_broker_id INTEGER
+            );
+            CREATE TABLE positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL, broker TEXT NOT NULL,
+                asset TEXT NOT NULL, is_cash INTEGER DEFAULT 0,
+                invested REAL, quantity REAL, commissions REAL DEFAULT 0,
+                price_override REAL
+            );
+            CREATE TABLE monthly_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL, year INTEGER NOT NULL,
+                month INTEGER NOT NULL, broker TEXT NOT NULL,
+                capital_inicio REAL DEFAULT 0, capital_final REAL DEFAULT 0,
+                deposits REAL DEFAULT 0, withdrawals REAL DEFAULT 0,
+                pnl_realized REAL DEFAULT 0, pnl_unrealized REAL DEFAULT 0
+            );
+            CREATE TABLE snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL, date TEXT NOT NULL,
+                total_value REAL NOT NULL, total_invested REAL NOT NULL,
+                net_deposited REAL NOT NULL DEFAULT 0,
+                fx_to_usd_blue REAL,
+                UNIQUE(user_id, date)
+            );
+            CREATE TABLE fx_rates_daily (
+                date TEXT PRIMARY KEY,
+                blue_venta REAL NOT NULL,
+                source TEXT DEFAULT 'unknown',
+                fetched_at TEXT DEFAULT (datetime('now'))
+            );
+            INSERT INTO users (id, email) VALUES (1, 'test@example.com');
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_run_daily_persists_fx_rate(self):
+        """El cron del job persiste el blue del día en fx_rates_daily."""
+        r = run_daily_snapshot(
+            self.db_path,
+            fetch_tc_blue=lambda: 1425.5,
+            crypto_yf={},
+            target_date='2026-02-20',
+        )
+        self.assertTrue(r['ok'])
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT blue_venta, source FROM fx_rates_daily WHERE date='2026-02-20'"
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row['blue_venta'], 1425.5)
+        self.assertEqual(row['source'], 'snapshot_cron')
+        conn.close()
+
+    def test_run_daily_fx_rate_idempotent(self):
+        """Correr el cron dos veces el mismo día upsertea sin duplicar."""
+        run_daily_snapshot(self.db_path, lambda: 1500, {}, '2026-02-20')
+        run_daily_snapshot(self.db_path, lambda: 1510, {}, '2026-02-20')
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT blue_venta FROM fx_rates_daily WHERE date='2026-02-20'"
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['blue_venta'], 1510)  # último valor gana
         conn.close()
 
 
