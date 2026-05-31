@@ -70,6 +70,29 @@ def is_sandbox() -> bool:
     return _api_key().startswith("sk_test_")
 
 
+def is_likely_production() -> bool:
+    """Best-effort detection de ambiente productivo.
+
+    True si CUALQUIERA de estas señales aplica:
+      1. RENDI_ENV=prod (explícito)
+      2. RAILWAY_ENVIRONMENT=production (lo setea Railway automáticamente)
+      3. REBILL_API_KEY existe Y no arranca con sk_test_
+
+    El criterio #3 es defensivo: si tenés una key que no es explícitamente
+    sandbox, asumimos prod. Sino, un deploy mal configurado (sin RENDI_ENV)
+    pero con key real podría aceptar webhooks fake sin firma — exactamente
+    el bug que estamos arreglando.
+    """
+    if (os.environ.get("RENDI_ENV") or "").lower() == "prod":
+        return True
+    if (os.environ.get("RAILWAY_ENVIRONMENT") or "").lower() == "production":
+        return True
+    api_key = (os.environ.get("REBILL_API_KEY") or "").strip()
+    if api_key and not api_key.startswith("sk_test_"):
+        return True
+    return False
+
+
 # ─── Crear payment link con metadata del user ────────────────────────────────
 
 def create_payment_link(
@@ -210,9 +233,20 @@ def validate_config() -> dict:
     if not sandbox and not is_live:
         warnings.append(f"REBILL_API_KEY no tiene prefijo sk_test_ o sk_live_ (key prefix: {raw_key[:8]}...)")
 
-    # Webhook secret
+    # Webhook secret — en prod debe estar configurada o rechazamos webhooks (post-fix
+    # de seguridad 2026-05-31). Escalamos a ERROR si parece prod sin secret.
     if not (os.environ.get("REBILL_WEBHOOK_SECRET") or "").strip():
-        warnings.append("REBILL_WEBHOOK_SECRET no configurada — los webhooks se aceptan SIN validar signature")
+        if is_likely_production():
+            errors.append(
+                "REBILL_WEBHOOK_SECRET no configurada y parece estar en producción — "
+                "los webhooks van a ser RECHAZADOS hasta que la setees. "
+                "Pegá el secret del dashboard de Rebill en Railway env vars."
+            )
+        else:
+            warnings.append(
+                "REBILL_WEBHOOK_SECRET no configurada (estás en dev local, los webhooks "
+                "se aceptan sin validar). En prod esto se vuelve un error crítico."
+            )
 
     # Plan IDs: 4 combinaciones esperadas
     plan_combos = [
@@ -286,8 +320,16 @@ def cancel_subscription(subscription_id: str) -> dict:
 def verify_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
     """Valida HMAC-SHA256 del body usando REBILL_WEBHOOK_SECRET.
 
-    SECURITY: en prod (RENDI_ENV=prod) sin secret configurado, FALLAMOS
-    cerrado (return False). En dev permitimos saltear (con warning).
+    SECURITY: si parece que estamos en prod (ver is_likely_production)
+    SIN secret configurado, FALLAMOS cerrado (return False). En dev local
+    permitimos saltear con warning.
+
+    Antes del fix (2026-05-31): el chequeo era `if RENDI_ENV == 'prod'`,
+    pero Nicolas no tenía esa env var seteada en Railway → en producción
+    real con API key live, el código aceptaba CUALQUIER webhook sin firma.
+    Vulnerabilidad: atacante podía gatillar `subscription.activated` fake
+    y dar tier Pro gratis a sí mismo. Ahora is_likely_production() detecta
+    prod via múltiples señales (RAILWAY_ENVIRONMENT, API key no-test_, etc).
 
     FORMATO INCIERTO: la doc pública de Rebill v3 no expone el formato exacto
     del header de signature. Probamos múltiples formatos comunes en LATAM
@@ -300,20 +342,18 @@ def verify_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
 
     Si CUALQUIERA matchea con HMAC-SHA256(secret, body) → OK.
     Si NINGUNO matchea, loguea el formato recibido para debug y devuelve False.
-
-    Cuando llegue el primer webhook real de sandbox vas a ver en los logs
-    qué formato usa Rebill y podés simplificar este código a ese formato.
     """
     import base64
     secret = _webhook_secret()
     if not secret:
-        if os.environ.get("RENDI_ENV") == "prod":
+        if is_likely_production():
             log.error(
-                "REBILL_WEBHOOK_SECRET no configurada en PROD — webhook rechazado. "
-                "Configurá la env var en Railway."
+                "REBILL_WEBHOOK_SECRET no configurada en producción — webhook rechazado. "
+                "Configurá la env var en Railway con el secret del dashboard de Rebill. "
+                "Esto NO debería pasar si estás en prod — los webhooks NO se aplican."
             )
             return False
-        log.warning("REBILL_WEBHOOK_SECRET no configurada — saltando validación (dev only)")
+        log.warning("REBILL_WEBHOOK_SECRET no configurada — saltando validación (dev local only)")
         return True
 
     if not signature_header:

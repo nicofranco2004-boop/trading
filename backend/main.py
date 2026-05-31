@@ -31,6 +31,42 @@ import yfinance as yf
 import requests
 import logging
 log = logging.getLogger(__name__)
+
+
+def _setup_yfinance_cache():
+    """Apunta el TzCache de yfinance a un path bajo nuestro control.
+
+    Antes (2026-05-31): yfinance defaulteaba a `/root/.cache/py-yfinance` en
+    Railway. Pero ese path existía como FILE (no folder) — probablemente
+    creado por una versión anterior del image. Cada llamada a yf.Ticker(...)
+    loggeaba un warning fastidioso ("TzCache will not be used") y, peor,
+    yfinance hacía requests extra a Yahoo Finance para resolver timezones
+    cada vez (sin cache).
+
+    Fix: apuntamos a `/tmp/yf-cache/` (efímero, borrado entre deploys, OK
+    porque el cache es regenerable). Override con env var YF_TZ_CACHE_LOCATION
+    si querés persistencia en el volume.
+
+    Si la config falla, no rompe la app — yfinance sigue funcionando sin
+    cache (solo con el warning original).
+    """
+    cache_path = (os.environ.get("YF_TZ_CACHE_LOCATION") or "/tmp/yf-cache").strip()
+    try:
+        # Limpiar entrada corrupta si existe como file (no folder)
+        if os.path.exists(cache_path) and not os.path.isdir(cache_path):
+            try:
+                os.remove(cache_path)
+                log.info(f"yfinance cache: removí entrada corrupta (era file, no dir): {cache_path}")
+            except OSError as e:
+                log.warning(f"yfinance cache: no pude remover {cache_path}: {e}")
+        os.makedirs(cache_path, exist_ok=True)
+        yf.set_tz_cache_location(cache_path)
+        log.info(f"yfinance TzCache → {cache_path}")
+    except Exception as e:
+        log.warning(f"yfinance cache setup falló: {e} (yfinance sigue funcionando sin cache)")
+
+
+_setup_yfinance_cache()
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import (
@@ -11110,15 +11146,21 @@ async def rebill_webhook(request: Request):
     log.info("Rebill payload keys: %s", list(payload.keys()))
     log.info("Rebill payload (truncated): %s", json.dumps(payload, default=str)[:1500])
 
-    # Validar signature
+    # Validar signature.
+    # verify_webhook_signature maneja la lógica de prod vs dev:
+    #   - dev local sin secret → devuelve True (skipea validación con warning)
+    #   - prod (is_likely_production) sin secret → devuelve False (fail-closed)
+    #   - cualquier env con secret → valida HMAC y devuelve True/False
+    # Antes del fix (2026-05-31) había una condición redundante
+    # `and rebill._webhook_secret()` que cortocircuitaba el fail-closed.
     sig_valid = rebill.verify_webhook_signature(raw, sig)
-    if not sig_valid and rebill._webhook_secret():
-        log.warning("Rebill webhook with INVALID signature, rejecting")
-        return Response(status_code=401)
 
+    # Audit log SIEMPRE — incluso si la firma es inválida, queremos el evento
+    # registrado para forensics y eventual replay manual cuando se configure
+    # el webhook secret. Sino, perderíamos historia de pagos legítimos que
+    # llegaron mientras el secret no estaba seteado.
     conn = get_db()
     try:
-        # Audit log — siempre guardamos el evento (replay/debug)
         with conn:
             conn.execute(
                 """INSERT INTO billing_events
@@ -11133,6 +11175,14 @@ async def rebill_webhook(request: Request):
                     json.dumps(payload),
                 ),
             )
+
+        # Si la firma falló, rechazamos DESPUÉS de guardar el audit log.
+        if not sig_valid:
+            log.warning(
+                "Rebill webhook signature invalid o no validable — rechazado. "
+                "El evento se guardó en billing_events para replay manual."
+            )
+            return Response(status_code=401)
 
         if not rendi_user_id:
             log.warning("Rebill webhook sin rendi_user_id en metadata, skipping")

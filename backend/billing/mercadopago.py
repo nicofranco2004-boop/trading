@@ -206,13 +206,18 @@ def verify_webhook_signature(
     """
     secret = _webhook_secret()
     if not secret:
-        if os.environ.get("RENDI_ENV") == "prod":
+        # Fix 2026-05-31: detección de prod via múltiples señales (no solo
+        # RENDI_ENV, también RAILWAY_ENVIRONMENT y heurística de API key).
+        # Antes solo chequeaba RENDI_ENV=prod → si no estaba seteada, aceptaba
+        # cualquier webhook sin firma en producción real.
+        from billing import rebill as _rebill
+        if _rebill.is_likely_production():
             log.error(
-                "MP_WEBHOOK_SECRET no configurada en PROD — webhook rechazado. "
-                "Configurá la env var en Railway."
+                "MP_WEBHOOK_SECRET no configurada en producción — webhook rechazado. "
+                "Configurá la env var en Railway con el secret del dashboard de Mercado Pago."
             )
             return False
-        log.warning("MP_WEBHOOK_SECRET no configurada — saltando validación (dev only)")
+        log.warning("MP_WEBHOOK_SECRET no configurada — saltando validación (dev local only)")
         return True   # En dev, sin secret, dejamos pasar.
 
     try:
