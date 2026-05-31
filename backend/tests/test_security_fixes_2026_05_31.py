@@ -41,6 +41,7 @@ class EnvIsolation(unittest.TestCase):
         "RAILWAY_ENVIRONMENT",
         "REBILL_API_KEY",
         "REBILL_WEBHOOK_SECRET",
+        "REBILL_WEBHOOK_TOKEN",
         "MP_WEBHOOK_SECRET",
         "YF_TZ_CACHE_LOCATION",
     ]
@@ -206,6 +207,73 @@ class TestVerifyWebhookSignatureFailClosed(EnvIsolation):
         self.assertFalse(result,
             "REGRESIÓN: webhooks sin firma se aceptan en prod (escenario exacto del bug original)")
 
+    def test_url_token_only_auth_works_in_prod(self):
+        """Fallback Opción 3: Rebill no firma → usamos token en query string.
+        Si REBILL_WEBHOOK_TOKEN está configurado y el query param matchea,
+        webhook OK aún en prod sin HMAC.
+        """
+        os.environ["RENDI_ENV"] = "prod"
+        os.environ["REBILL_WEBHOOK_TOKEN"] = "super_secret_random_xxx"
+        from billing import rebill
+        success, method, _ = rebill.verify_webhook_auth(
+            b'{"event": "test"}', "", "super_secret_random_xxx"
+        )
+        self.assertTrue(success)
+        self.assertEqual(method, "url_token")
+
+    def test_url_token_mismatch_rejects_in_prod(self):
+        os.environ["RENDI_ENV"] = "prod"
+        os.environ["REBILL_WEBHOOK_TOKEN"] = "super_secret_random_xxx"
+        from billing import rebill
+        success, method, reason = rebill.verify_webhook_auth(
+            b'{"event": "test"}', "", "wrong_token"
+        )
+        self.assertFalse(success)
+        self.assertEqual(method, "rejected")
+        self.assertIn("URL token", reason)
+
+    def test_url_token_missing_rejects_in_prod(self):
+        os.environ["RENDI_ENV"] = "prod"
+        os.environ["REBILL_WEBHOOK_TOKEN"] = "super_secret_random_xxx"
+        from billing import rebill
+        success, _, _ = rebill.verify_webhook_auth(b'{}', "", "")
+        self.assertFalse(success)
+
+    def test_hmac_takes_precedence_over_url_token(self):
+        """Si ambos están configurados, HMAC se prueba primero. URL token
+        ignorado si HMAC válido.
+        """
+        os.environ["RENDI_ENV"] = "prod"
+        os.environ["REBILL_WEBHOOK_SECRET"] = "hmac_secret"
+        os.environ["REBILL_WEBHOOK_TOKEN"] = "url_token"
+        from billing import rebill
+        body = b'{"event": "x"}'
+        expected_hmac = hmac.new(b"hmac_secret", body, hashlib.sha256).hexdigest()
+        success, method, _ = rebill.verify_webhook_auth(body, expected_hmac, "url_token")
+        self.assertTrue(success)
+        self.assertEqual(method, "hmac")  # NO "url_token"
+
+    def test_hmac_invalid_does_not_fall_back_to_url_token(self):
+        """Si HMAC está configurado y firma inválida, REJECT — NO intentamos
+        URL token como bypass. Seguridad: si elegiste HMAC, esperá HMAC válido.
+        """
+        os.environ["RENDI_ENV"] = "prod"
+        os.environ["REBILL_WEBHOOK_SECRET"] = "hmac_secret"
+        os.environ["REBILL_WEBHOOK_TOKEN"] = "url_token"
+        from billing import rebill
+        success, method, _ = rebill.verify_webhook_auth(
+            b'{}', "wrong_hmac", "url_token"
+        )
+        self.assertFalse(success)
+        self.assertEqual(method, "rejected")
+
+    def test_dev_local_no_auth_configured_permits(self):
+        """Dev local (sin señales de prod) sin nada → permite con warning."""
+        from billing import rebill
+        success, method, _ = rebill.verify_webhook_auth(b'{}', "", "")
+        self.assertTrue(success)
+        self.assertEqual(method, "dev_skip")
+
     def test_secret_with_leading_trailing_spaces_normalized(self):
         """Si el user setea el secret con espacios extra (typo en Railway),
         el strip() debe limpiarlo. Sino fail-closed lo trataría como ausente.
@@ -229,35 +297,56 @@ class TestValidateConfigEscalation(EnvIsolation):
     ERROR (no warning) — para que aparezca como crítico en los logs de boot.
     """
 
+    def _is_webhook_auth_msg(self, msg: str) -> bool:
+        """Match flexible: el texto del warning/error puede mencionar
+        REBILL_WEBHOOK_SECRET, REBILL_WEBHOOK_TOKEN o "Webhook auth"."""
+        return any(s in msg for s in (
+            "WEBHOOK_SECRET", "WEBHOOK_TOKEN", "Webhook auth", "webhook auth",
+        ))
+
     def test_no_secret_in_prod_is_error(self):
-        """Producción + sin secret → errors[] tiene el item, warnings no."""
+        """Producción + sin auth (ni HMAC ni token) → errors[] tiene el item."""
         os.environ["REBILL_API_KEY"] = "sk_live_abc"
-        # Set required plan IDs to isolate the test
         for combo in ["PLUS_MONTHLY", "PLUS_ANNUAL", "PRO_MONTHLY", "PRO_ANNUAL"]:
             os.environ[f"REBILL_PLAN_ID_{combo}"] = "pln_xxx"
         from billing import rebill
         result = rebill.validate_config()
-        # En prod sin secret, debe estar en errors
-        webhook_errors = [e for e in result["errors"] if "WEBHOOK_SECRET" in e]
-        webhook_warnings = [w for w in result["warnings"] if "WEBHOOK_SECRET" in w]
+        webhook_errors = [e for e in result["errors"] if self._is_webhook_auth_msg(e)]
+        webhook_warnings = [w for w in result["warnings"] if self._is_webhook_auth_msg(w)]
         self.assertEqual(len(webhook_errors), 1,
-                         f"Esperaba 1 error de webhook secret, vi: {result}")
+                         f"Esperaba 1 error de webhook auth, vi: {result}")
         self.assertEqual(len(webhook_warnings), 0)
-        # Cleanup
         for combo in ["PLUS_MONTHLY", "PLUS_ANNUAL", "PRO_MONTHLY", "PRO_ANNUAL"]:
             os.environ.pop(f"REBILL_PLAN_ID_{combo}", None)
 
     def test_no_secret_in_dev_is_warning(self):
-        """Dev local sin secret → warning (no error)."""
+        """Dev local sin auth → warning (no error)."""
         os.environ["REBILL_API_KEY"] = "sk_test_abc"
         for combo in ["PLUS_MONTHLY", "PLUS_ANNUAL", "PRO_MONTHLY", "PRO_ANNUAL"]:
             os.environ[f"REBILL_PLAN_ID_{combo}"] = "test_pln_xxx"
         from billing import rebill
         result = rebill.validate_config()
-        webhook_errors = [e for e in result["errors"] if "WEBHOOK_SECRET" in e]
-        webhook_warnings = [w for w in result["warnings"] if "WEBHOOK_SECRET" in w]
+        webhook_errors = [e for e in result["errors"] if self._is_webhook_auth_msg(e)]
+        webhook_warnings = [w for w in result["warnings"] if self._is_webhook_auth_msg(w)]
         self.assertEqual(len(webhook_errors), 0)
         self.assertEqual(len(webhook_warnings), 1)
+        for combo in ["PLUS_MONTHLY", "PLUS_ANNUAL", "PRO_MONTHLY", "PRO_ANNUAL"]:
+            os.environ.pop(f"REBILL_PLAN_ID_{combo}", None)
+
+    def test_only_url_token_configured_no_warning(self):
+        """Si REBILL_WEBHOOK_TOKEN está seteado (sin HMAC), validate_config
+        NO debería quejarse — auth está cubierta."""
+        os.environ["REBILL_API_KEY"] = "sk_live_abc"
+        os.environ["REBILL_WEBHOOK_TOKEN"] = "some_random_token_xxx"
+        for combo in ["PLUS_MONTHLY", "PLUS_ANNUAL", "PRO_MONTHLY", "PRO_ANNUAL"]:
+            os.environ[f"REBILL_PLAN_ID_{combo}"] = "pln_xxx"
+        from billing import rebill
+        result = rebill.validate_config()
+        webhook_errors = [e for e in result["errors"] if self._is_webhook_auth_msg(e)]
+        webhook_warnings = [w for w in result["warnings"] if self._is_webhook_auth_msg(w)]
+        self.assertEqual(len(webhook_errors), 0,
+                         f"No esperaba errors de auth, vi: {result}")
+        self.assertEqual(len(webhook_warnings), 0)
         for combo in ["PLUS_MONTHLY", "PLUS_ANNUAL", "PRO_MONTHLY", "PRO_ANNUAL"]:
             os.environ.pop(f"REBILL_PLAN_ID_{combo}", None)
 

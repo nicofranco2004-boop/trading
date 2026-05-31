@@ -46,6 +46,25 @@ def _webhook_secret() -> str:
     return (os.environ.get("REBILL_WEBHOOK_SECRET") or "").strip()
 
 
+def _webhook_url_token() -> str:
+    """Token secreto que va en el query string de la URL del webhook.
+
+    Fallback de auth cuando Rebill no expone webhook signing (situación actual
+    en su API v3). El user genera un token largo random, lo guarda acá como
+    env var, y lo pone en la URL configurada en el dashboard de Rebill:
+
+        https://rendi.finance/api/billing/rebill-webhook?token=<token>
+
+    Defensa: atacante que no conoce el token no puede gatillar el endpoint.
+    Más débil que HMAC (no protege contra MITM si la URL queda loggeada),
+    pero suficiente para evitar el bypass más obvio (POST anónimo).
+
+    Cuando Rebill agregue HMAC signing real, configurás REBILL_WEBHOOK_SECRET
+    y el token URL queda redundante. No hace falta tocar este código.
+    """
+    return (os.environ.get("REBILL_WEBHOOK_TOKEN") or "").strip()
+
+
 def _plan_id(plan: str, period: str) -> str:
     """Resolve REBILL_PLAN_ID_{PLAN}_{PERIOD} desde env.
     Ej: REBILL_PLAN_ID_PLUS_MONTHLY = test_pln_xxx
@@ -233,18 +252,24 @@ def validate_config() -> dict:
     if not sandbox and not is_live:
         warnings.append(f"REBILL_API_KEY no tiene prefijo sk_test_ o sk_live_ (key prefix: {raw_key[:8]}...)")
 
-    # Webhook secret — en prod debe estar configurada o rechazamos webhooks (post-fix
-    # de seguridad 2026-05-31). Escalamos a ERROR si parece prod sin secret.
-    if not (os.environ.get("REBILL_WEBHOOK_SECRET") or "").strip():
+    # Webhook auth — necesitás CUALQUIERA de los dos en prod:
+    #   - REBILL_WEBHOOK_SECRET (HMAC, preferido, requiere que Rebill firme)
+    #   - REBILL_WEBHOOK_TOKEN (URL ?token=, fallback porque Rebill v3 no firma)
+    # Sin ninguno en prod → webhooks rechazados (fix de seguridad 2026-05-31).
+    has_hmac = bool((os.environ.get("REBILL_WEBHOOK_SECRET") or "").strip())
+    has_token = bool((os.environ.get("REBILL_WEBHOOK_TOKEN") or "").strip())
+    if not has_hmac and not has_token:
         if is_likely_production():
             errors.append(
-                "REBILL_WEBHOOK_SECRET no configurada y parece estar en producción — "
-                "los webhooks van a ser RECHAZADOS hasta que la setees. "
-                "Pegá el secret del dashboard de Rebill en Railway env vars."
+                "Webhook auth no configurada (ni REBILL_WEBHOOK_SECRET ni "
+                "REBILL_WEBHOOK_TOKEN) y parece estar en producción — los webhooks "
+                "van a ser RECHAZADOS hasta que setees uno. Recomendado: "
+                "REBILL_WEBHOOK_TOKEN=<random_string_largo> + agregarlo al query "
+                "param de la URL del webhook en el dashboard de Rebill."
             )
         else:
             warnings.append(
-                "REBILL_WEBHOOK_SECRET no configurada (estás en dev local, los webhooks "
+                "Webhook auth no configurada (estás en dev local, los webhooks "
                 "se aceptan sin validar). En prod esto se vuelve un error crítico."
             )
 
@@ -316,6 +341,64 @@ def cancel_subscription(subscription_id: str) -> dict:
 
 
 # ─── Webhook signature verification ─────────────────────────────────────────
+
+def verify_webhook_url_token(received_token: str) -> bool:
+    """Valida el token que llega como query param `?token=<value>`.
+
+    Compara constant-time contra REBILL_WEBHOOK_TOKEN (env var).
+    Returns:
+        True  — token matchea (y existe). Webhook autenticado.
+        False — token no matchea o uno de los dos lados está vacío.
+    """
+    expected = _webhook_url_token()
+    if not expected:
+        return False
+    if not received_token:
+        return False
+    return hmac.compare_digest(expected, received_token.strip())
+
+
+def verify_webhook_auth(raw_body: bytes, signature_header: str, url_token: str) -> tuple:
+    """Wrapper que valida un webhook usando CUALQUIERA de los métodos
+    disponibles. Devuelve (success, method, reason).
+
+    Orden de validación:
+      1. HMAC signature (si REBILL_WEBHOOK_SECRET configurado)
+      2. URL token (si REBILL_WEBHOOK_TOKEN configurado)
+      3. En dev local sin nada → permite (skip auth con warning)
+      4. En prod sin nada → REJECT (fail-closed)
+
+    Args:
+        raw_body: body bytes del request
+        signature_header: header de signature (x-rebill-signature o similar)
+        url_token: valor del query param ?token=<value>
+
+    Returns:
+        (success: bool, method: str, reason: str or None)
+        method ∈ {'hmac', 'url_token', 'dev_skip', 'rejected'}
+    """
+    # Método 1: HMAC signature (si está configurado)
+    if _webhook_secret():
+        if verify_webhook_signature(raw_body, signature_header):
+            return True, 'hmac', None
+        # Secret configurado pero firma inválida → REJECT (no probamos URL token
+        # como bypass — si pusiste HMAC, esperá HMAC válido)
+        return False, 'rejected', 'HMAC signature inválida'
+
+    # Método 2: URL token (si está configurado)
+    if _webhook_url_token():
+        if verify_webhook_url_token(url_token):
+            return True, 'url_token', None
+        return False, 'rejected', 'URL token inválido o ausente'
+
+    # Sin ninguno configurado
+    if is_likely_production():
+        return False, 'rejected', (
+            'Producción sin auth de webhook configurada. Setear '
+            'REBILL_WEBHOOK_SECRET (HMAC) o REBILL_WEBHOOK_TOKEN (URL ?token=).'
+        )
+    return True, 'dev_skip', 'dev local sin auth (warning, permitido)'
+
 
 def verify_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
     """Valida HMAC-SHA256 del body usando REBILL_WEBHOOK_SECRET.

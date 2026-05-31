@@ -11146,19 +11146,25 @@ async def rebill_webhook(request: Request):
     log.info("Rebill payload keys: %s", list(payload.keys()))
     log.info("Rebill payload (truncated): %s", json.dumps(payload, default=str)[:1500])
 
-    # Validar signature.
-    # verify_webhook_signature maneja la lógica de prod vs dev:
-    #   - dev local sin secret → devuelve True (skipea validación con warning)
-    #   - prod (is_likely_production) sin secret → devuelve False (fail-closed)
-    #   - cualquier env con secret → valida HMAC y devuelve True/False
-    # Antes del fix (2026-05-31) había una condición redundante
-    # `and rebill._webhook_secret()` que cortocircuitaba el fail-closed.
-    sig_valid = rebill.verify_webhook_signature(raw, sig)
+    # Validar webhook con verify_webhook_auth (probá ambos métodos):
+    #   - HMAC signature (REBILL_WEBHOOK_SECRET) — preferido pero Rebill v3
+    #     todavía no lo soporta en su API.
+    #   - URL token (REBILL_WEBHOOK_TOKEN) — fallback práctico: token random
+    #     en el query param ?token=<value>. Defensa débil pero suficiente
+    #     contra POST anónimo desde internet.
+    #   - Dev local sin nada configurado → permite con warning.
+    #   - Prod sin nada → REJECT (fail-closed).
+    url_token = request.query_params.get("token", "")
+    sig_valid, auth_method, auth_reason = rebill.verify_webhook_auth(raw, sig, url_token)
+    log.info(
+        "Rebill webhook auth: valid=%s method=%s reason=%s",
+        sig_valid, auth_method, auth_reason,
+    )
 
-    # Audit log SIEMPRE — incluso si la firma es inválida, queremos el evento
+    # Audit log SIEMPRE — incluso si la auth es inválida, queremos el evento
     # registrado para forensics y eventual replay manual cuando se configure
-    # el webhook secret. Sino, perderíamos historia de pagos legítimos que
-    # llegaron mientras el secret no estaba seteado.
+    # el secret/token. Sino, perderíamos historia de pagos legítimos que
+    # llegaron mientras la auth no estaba seteada.
     conn = get_db()
     try:
         with conn:
@@ -11176,11 +11182,12 @@ async def rebill_webhook(request: Request):
                 ),
             )
 
-        # Si la firma falló, rechazamos DESPUÉS de guardar el audit log.
+        # Si la auth falló, rechazamos DESPUÉS de guardar el audit log.
         if not sig_valid:
             log.warning(
-                "Rebill webhook signature invalid o no validable — rechazado. "
-                "El evento se guardó en billing_events para replay manual."
+                "Rebill webhook auth failed (%s) — rechazado. "
+                "El evento se guardó en billing_events para replay manual.",
+                auth_reason,
             )
             return Response(status_code=401)
 
