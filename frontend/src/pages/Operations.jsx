@@ -7,7 +7,8 @@ import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, SlidersH
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import { usd, fmtUsd, pctSigned, colorClass } from '../utils/format'
+import { usd, fmtUsd as fmtUsdRaw, pctSigned, colorClass } from '../utils/format'
+import { useMoneyFormat } from '../contexts/CurrencyContext'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import EmptyState from '../components/EmptyState'
@@ -47,6 +48,13 @@ function OperationsDesktop() {
   // Persistimos selección en localStorage para que respete preferencia del user.
   const [tab, setTab] = useState(() => localStorage.getItem('rendi_operations_tab') || 'all')
   useEffect(() => { localStorage.setItem('rendi_operations_tab', tab) }, [tab])
+  // Fase B: P&L realizado y montos respetan el toggle global ARS/USD.
+  // Los valores históricos usan tcBlue ACTUAL (limitación MVP — Fase C
+  // trackeará TC por fecha para que P&L histórico no se vea afectado por
+  // movimientos del blue posteriores).
+  const money = useMoneyFormat()
+  const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
+  const fmtUsdSigned = (v) => money.fmtMoney(v, { signed: true })
 
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -347,9 +355,7 @@ function OperationsDesktop() {
                     <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
                     <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.quantity ?? '—'}</td>
                     <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)}`}>
-                      {op.pnl_usd == null
-                        ? '—'
-                        : `${op.pnl_usd > 0 ? '+' : op.pnl_usd < 0 ? '−' : ''}US$${usd(Math.abs(op.pnl_usd))}`}
+                      {op.pnl_usd == null ? '—' : fmtUsdSigned(op.pnl_usd)}
                     </td>
                     <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)}`}>
                       {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
@@ -585,6 +591,10 @@ const TYPE_META = {
 const MOV_PAGE_SIZE = 50
 
 function MovementsView() {
+  // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
+  // computeMovementKpis y a MovementRow vía props para evitar shadow.
+  const money = useMoneyFormat()
+  const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -615,8 +625,10 @@ function MovementsView() {
     })
   }, [movements, filterType, filterBroker, filterYear])
 
-  // KPIs adaptativos según filtro
-  const kpis = useMemo(() => computeMovementKpis(filtered, filterType), [filtered, filterType])
+  // KPIs adaptativos según filtro. fmtUsd se pasa explícito para que
+  // computeMovementKpis no dependa del scope module-level (que ya quedó
+  // aliased a fmtUsdRaw — desconectado del toggle global).
+  const kpis = useMemo(() => computeMovementKpis(filtered, filterType, fmtUsd), [filtered, filterType, fmtUsd])
 
   const brokersAvailable = useMemo(() => {
     const set = new Set(movements.map(m => m.broker).filter(Boolean))
@@ -720,7 +732,7 @@ function MovementsView() {
                 <th className="text-left px-3 py-2">Activo</th>
                 <th className="text-right px-3 py-2">Cant.</th>
                 <th className="text-right px-3 py-2">Precio</th>
-                <th className="text-right px-3 py-2">Monto USD</th>
+                <th className="text-right px-3 py-2">Monto {money.currency}</th>
                 <th className="text-left px-3 py-2">Notas</th>
               </tr>
             </thead>
@@ -773,7 +785,7 @@ function MovementsView() {
 //     que el user vea dos números distintos en pantallas distintas.
 // El bruto sigue accesible filtrando por DEPÓSITOS o RETIROS individualmente
 // (en esa vista mostramos bruto + promedio, que es lo que tiene sentido ahí).
-function computeMovementKpis(rows, filterType) {
+function computeMovementKpis(rows, filterType, fmtUsd) {
   const sumByType = (t) => rows.filter(r => r.type === t).reduce((s, r) => s + (r.amount_usd || 0), 0)
   const countByType = (t) => rows.filter(r => r.type === t).length
 
@@ -827,6 +839,10 @@ function computeMovementKpis(rows, filterType) {
 }
 
 function MovementRow({ m }) {
+  // Fase B: cada fila lee el formatter del context — es barato (mismo
+  // memoizado context value para todos los rows del listado).
+  const money = useMoneyFormat()
+  const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
   const meta = TYPE_META[m.type] || { label: m.type, Icon: Repeat, color: 'text-ink-3' }
   const { Icon } = meta
   const isPositive = ['DEPOSIT', 'DIVIDEND', 'INTEREST'].includes(m.type)

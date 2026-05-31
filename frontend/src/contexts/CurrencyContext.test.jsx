@@ -7,7 +7,7 @@
 // PositionsMobile, Positions) — si rompen, falla el build y/o smoke tests.
 
 import { describe, it, expect } from 'vitest'
-import { fromUsd, fromArs } from './CurrencyContext'
+import { fromUsd, fromArs, fmtMoneyRaw, fmtMoneyCompactRaw } from './CurrencyContext'
 
 describe('fromUsd / fromArs helpers', () => {
   it('fromUsd con USD currency no cambia el valor', () => {
@@ -51,5 +51,80 @@ describe('fromUsd / fromArs helpers', () => {
     const ars = fromUsd(original, 'ARS', 1415)
     const back = fromArs(ars, 'USD', 1415)
     expect(back).toBeCloseTo(original, 6)
+  })
+})
+
+// ─── Phase B: fmtMoneyRaw / fmtMoneyCompactRaw ─────────────────────────────
+
+describe('fmtMoneyRaw (Phase B formatter)', () => {
+  it('USD: símbolo US$ y formato es-AR', () => {
+    expect(fmtMoneyRaw(1234.56, 'USD', 1415)).toBe('US$1.235')
+  })
+
+  it('ARS: convierte por tcBlue y usa símbolo $', () => {
+    // 100 * 1415 = 141500
+    expect(fmtMoneyRaw(100, 'ARS', 1415)).toBe('$141.500')
+  })
+
+  it('valores negativos llevan signo − (no -)', () => {
+    expect(fmtMoneyRaw(-100, 'USD', 1415)).toBe('−US$100')
+  })
+
+  it('signed: true agrega + a positivos', () => {
+    expect(fmtMoneyRaw(50, 'USD', 1415, { signed: true })).toBe('+US$50')
+    expect(fmtMoneyRaw(-50, 'USD', 1415, { signed: true })).toBe('−US$50')
+  })
+
+  it('null / undefined / NaN devuelven —', () => {
+    expect(fmtMoneyRaw(null, 'USD', 1415)).toBe('—')
+    expect(fmtMoneyRaw(undefined, 'ARS', 1415)).toBe('—')
+    expect(fmtMoneyRaw(NaN, 'ARS', 1415)).toBe('—')
+    expect(fmtMoneyRaw(Infinity, 'USD', 1415)).toBe('—')
+  })
+
+  it('ARS con tcBlue=0 cae a USD (defensa, no muestra $0)', () => {
+    expect(fmtMoneyRaw(100, 'ARS', 0)).toBe('US$100')
+  })
+
+  it('decimals: 2 muestra centavos', () => {
+    expect(fmtMoneyRaw(1234.56, 'USD', 1415, { decimals: 2 })).toBe('US$1.234,56')
+  })
+})
+
+describe('fmtMoneyCompactRaw (Phase B abbreviated)', () => {
+  it('< 1k: muestra entero con separador', () => {
+    expect(fmtMoneyCompactRaw(500, 'USD', 1415)).toBe('US$500')
+  })
+
+  it('1k-10k: abrevia con 1 decimal', () => {
+    expect(fmtMoneyCompactRaw(5000, 'USD', 1415)).toBe('US$5.0k')
+  })
+
+  it('10k-1M: abrevia con k', () => {
+    expect(fmtMoneyCompactRaw(50000, 'USD', 1415)).toBe('US$50k')
+  })
+
+  it('1M+: abrevia con M', () => {
+    expect(fmtMoneyCompactRaw(5_000_000, 'USD', 1415)).toBe('US$5.0M')
+    expect(fmtMoneyCompactRaw(50_000_000, 'USD', 1415)).toBe('US$50M')
+  })
+
+  it('1B+: abrevia con B', () => {
+    expect(fmtMoneyCompactRaw(5_000_000_000, 'USD', 1415)).toBe('US$5.0B')
+  })
+
+  it('ARS convierte y abrevia: 50k USD → ~71M ARS al blue 1415', () => {
+    // 50000 * 1415 = 70_750_000 → toFixed(0) "71" (rounds up)
+    expect(fmtMoneyCompactRaw(50000, 'ARS', 1415)).toBe('$71M')
+  })
+
+  it('signed funciona con compact', () => {
+    expect(fmtMoneyCompactRaw(-50000, 'USD', 1415, { signed: true })).toBe('−US$50k')
+    expect(fmtMoneyCompactRaw(50000, 'USD', 1415, { signed: true })).toBe('+US$50k')
+  })
+
+  it('null / NaN devuelven —', () => {
+    expect(fmtMoneyCompactRaw(null, 'USD', 1415)).toBe('—')
+    expect(fmtMoneyCompactRaw(NaN, 'ARS', 1415)).toBe('—')
   })
 })

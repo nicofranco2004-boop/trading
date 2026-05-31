@@ -8,6 +8,8 @@
 // Visual: tipografía mono operativa, celdas con altura generosa, colores
 // con buen contraste sobre bg-bg-1.
 
+import { useMoneyFormat } from '../../contexts/CurrencyContext'
+
 const MONTH_SHORT = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC']
 
 function monthNum(period_key) {
@@ -46,11 +48,8 @@ function fmtPctValue(p) {
   return `${sign}${abs >= 10 ? p.toFixed(0) : p.toFixed(2)}`
 }
 
-function fmtUsdSigned(v) {
-  if (v == null) return '—'
-  const sign = v >= 0 ? '+' : '−'
-  return `${sign}US$${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
-}
+// fmtUsdSigned reemplazado por money.fmtMoney(v, { signed: true }) en el
+// componente — respeta el toggle global ARS/USD (Fase B).
 
 // ─── KPI strip data ──────────────────────────────────────────────────────────
 function computeKpis(yearGroups) {
@@ -96,6 +95,9 @@ function KpiCell({ label, value, sub, tone, first }) {
 
 export default function PerformanceCalendar({ yearGroups }) {
   const kpis = computeKpis(yearGroups)
+  // Fase B: el P&L Realizado 12M respeta el toggle global ARS/USD.
+  // Los % no cambian (son ratios) — solo el valor monetario se convierte.
+  const money = useMoneyFormat()
   if (!kpis) return null
 
   return (
@@ -105,7 +107,7 @@ export default function PerformanceCalendar({ yearGroups }) {
         <KpiCell
           first
           label="P&L Realizado · 12M"
-          value={fmtUsdSigned(kpis.realizedSum)}
+          value={money.fmtMoney(kpis.realizedSum, { signed: true })}
           tone={kpis.realizedSum >= 0 ? 'pos' : 'neg'}
           sub={`${kpis.totalCount} ${kpis.totalCount === 1 ? 'mes activo' : 'meses activos'}`}
         />

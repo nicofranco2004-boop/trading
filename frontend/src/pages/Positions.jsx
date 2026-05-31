@@ -60,7 +60,7 @@ export default function Positions() {
 function PositionsDesktop() {
   // Fase A: currency global compartido — Positions desktop respeta el toggle
   // global USD/ARS (mismo state que Dashboard, HomeMobile, PositionsMobile).
-  const { currency: displayCurrency } = useCurrency()
+  const { currency: displayCurrency, setTcBlue: publishTcBlue } = useCurrency()
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
   // Cierre del día anterior por símbolo (mismo keying que `prices`: ASSET para
@@ -121,6 +121,12 @@ function PositionsDesktop() {
   // zone si JS evalúa el array de deps antes de la declaración de `const`.
   const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
   const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
+
+  // Fase B: publicamos tcBlue al CurrencyContext (mismo pattern que las
+  // otras pages que ya fetchean /dolar — Reports / charts lo leen sin re-fetch).
+  useEffect(() => {
+    if (tcBlue > 0) publishTcBlue(tcBlue)
+  }, [tcBlue, publishTcBlue])
 
   // Carga la serie CER del backend (idempotente — sólo la primera llamada
   // dispara fetch real, las siguientes son cache hit en `cerSeries`).

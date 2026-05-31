@@ -18,6 +18,7 @@ import EmptyState from '../components/EmptyState'
 import BottomSheet from '../components/mobile/BottomSheet'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
+import { useMoneyFormat } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
 
 const PERIOD_OPTIONS = [
@@ -33,6 +34,11 @@ const RESULT_OPTIONS = [
 ]
 
 export default function OperationsMobile() {
+  // Fase B: P&L respeta el toggle global ARS/USD. Conversión usa tcBlue
+  // ACTUAL — para P&L histórico de hace meses, esto significa que un
+  // movimiento del blue posterior va a inflar/deflactar el ARS equivalente
+  // mostrado. Limitación MVP; Fase C va a trackear TC por fecha.
+  const money = useMoneyFormat()
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -109,7 +115,7 @@ export default function OperationsMobile() {
               P&L acumulado · {filtered.length} ops
             </div>
             <div className={`text-xl font-medium tabular leading-none ${colorClass(totalPnl)}`}>
-              {totalPnl >= 0 ? '+' : '−'}${Math.abs(Math.round(totalPnl)).toLocaleString('en-US')}
+              {money.fmtMoney(totalPnl, { signed: true })}
             </div>
           </div>
           {winRate != null && (
@@ -224,6 +230,7 @@ export default function OperationsMobile() {
 // ─── Day group ────────────────────────────────────────────────────────────
 
 function DayGroup({ date, ops }) {
+  const money = useMoneyFormat()
   const subtotal = ops.reduce((s, o) => s + (o.pnl_usd || 0), 0)
   const label = formatDateLabel(date)
   return (
@@ -239,7 +246,7 @@ function DayGroup({ date, ops }) {
           </span>
         </div>
         <span className={`text-[11px] font-mono tabular ${colorClass(subtotal)}`}>
-          {subtotal >= 0 ? '+' : '−'}${Math.abs(Math.round(subtotal)).toLocaleString('en-US')}
+          {money.fmtMoneyCompact(subtotal, { signed: true })}
         </span>
       </div>
       <ul>
@@ -252,6 +259,7 @@ function DayGroup({ date, ops }) {
 // ─── Row ──────────────────────────────────────────────────────────────────
 
 function OperationRow({ op }) {
+  const money = useMoneyFormat()
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const type = (op.op_type || '').toLowerCase()
@@ -290,7 +298,7 @@ function OperationRow({ op }) {
         {op.pnl_usd != null && (
           <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(op.pnl_usd)}`}>
             {isWin ? <TrendingUp size={11} strokeWidth={1.75} /> : isLoss ? <TrendingDown size={11} strokeWidth={1.75} /> : null}
-            {op.pnl_usd >= 0 ? '+' : '−'}${Math.abs(Math.round(op.pnl_usd)).toLocaleString('en-US')}
+            {money.fmtMoneyCompact(op.pnl_usd, { signed: true })}
           </div>
         )}
         {op.pnl_pct != null && (

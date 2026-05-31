@@ -70,7 +70,7 @@ function brokerColor(name) {
 
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
-  const { currency, toggle: toggleCurrency } = useCurrency()
+  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue } = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
   const [positions, setPositions] = useState([])
@@ -389,6 +389,12 @@ export default function PositionsMobile() {
   }
 
   const tcBlue = dolar?.blue?.venta || 1415
+
+  // Fase B: publish tcBlue al CurrencyContext (mismo pattern que Dashboard/HomeMobile)
+  useEffect(() => {
+    if (tcBlue > 0) publishTcBlue(tcBlue)
+  }, [tcBlue, publishTcBlue])
+
   const arsBrokerSet = useMemo(
     () => new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name)),
     [brokers]

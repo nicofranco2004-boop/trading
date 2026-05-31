@@ -5,12 +5,12 @@
 //
 // Diseño: mini-cards con bars/grids/comparisons en vez de listas planas.
 // El objetivo es que el user "vea" la evidencia, no que la lea.
+//
+// Fase B (2026-05-31): los valores USD respetan el toggle global ARS/USD
+// via useMoneyFormat(). La conversión usa tcBlue actual — limitación MVP
+// para data histórica (Fase C trackeará TC por fecha).
 
-function fmtUsd(v) {
-  if (v == null) return '—'
-  const sign = v < 0 ? '−' : ''
-  return `${sign}US$${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
-}
+import { useMoneyFormat } from '../../contexts/CurrencyContext'
 
 function fmtPct(p, withSign = true) {
   if (p == null) return '—'
@@ -41,7 +41,7 @@ function ConcentrationRiskEvidence({ ev }) {
   )
 }
 
-function DriverEvidence({ ev }) {
+function DriverEvidence({ ev, fmtUsd }) {
   return (
     <div className="rounded-sm bg-bg-3/40 px-2.5 py-2 text-[11px]">
       <div className="flex items-baseline justify-between mb-0.5">
@@ -95,7 +95,7 @@ function WinRateEvidence({ ev }) {
   )
 }
 
-function DepositsDriveEvidence({ ev }) {
+function DepositsDriveEvidence({ ev, fmtUsd }) {
   const deps = ev.deposits || 0
   const market = ev.market_growth || 0
   const totalAbs = deps + Math.abs(market) || 1
@@ -127,7 +127,7 @@ function DepositsDriveEvidence({ ev }) {
   )
 }
 
-function CashDragEvidence({ ev }) {
+function CashDragEvidence({ ev, fmtUsd }) {
   return (
     <div className="space-y-1.5 text-[11px]">
       <div className="flex items-baseline justify-between">
@@ -164,7 +164,7 @@ function StreakEvidence({ ev }) {
   )
 }
 
-function RealizedVsUnrealizedEvidence({ ev }) {
+function RealizedVsUnrealizedEvidence({ ev, fmtUsd }) {
   return (
     <div className="grid grid-cols-2 gap-2 text-[11px]">
       <div className="rounded-sm bg-rendi-pos/[0.08] px-2 py-1.5 border border-rendi-pos/20">
@@ -199,7 +199,7 @@ function ReversalEvidence({ ev }) {
   )
 }
 
-function DividendHeavyEvidence({ ev }) {
+function DividendHeavyEvidence({ ev, fmtUsd }) {
   const totalPos = (ev.total_realized || 0) > 0 ? ev.total_realized : 1
   const divPct = ((ev.dividends_interest || 0) / totalPos) * 100
   const tradingPct = 100 - divPct
@@ -283,6 +283,10 @@ const RENDERERS = {
 
 export default function InsightEvidence({ insight }) {
   const Renderer = RENDERERS[insight.code]
+  // Hook se llama incondicionalmente (rules of hooks) — formatter atado al
+  // toggle global. Los renderers individuales lo reciben como prop.
+  const money = useMoneyFormat()
+  const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
   if (!insight.evidence || Object.keys(insight.evidence).length === 0) return null
   if (!Renderer) {
     // Fallback: JSON crudo (debug-only — debería no ocurrir en prod)
@@ -292,5 +296,5 @@ export default function InsightEvidence({ insight }) {
       </pre>
     )
   }
-  return <Renderer ev={insight.evidence} />
+  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} />
 }

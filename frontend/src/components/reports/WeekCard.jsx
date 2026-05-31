@@ -8,6 +8,7 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import InsightChip from './InsightChip'
+import { useMoneyFormat } from '../../contexts/CurrencyContext'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -15,15 +16,12 @@ function fmtPct(p) {
   return `${sign}${Math.abs(p).toFixed(2)}%`
 }
 
-function fmtUsd(v) {
-  if (v == null) return '—'
-  const sign = v >= 0 ? '+' : '−'
-  return `${sign}US$${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
-}
-
 export default function WeekCard({ week }) {
   const [open, setOpen] = useState(false)
   const positive = week.metrics.delta_pct >= 0
+  // Fase B: delta_usd y realized_pnl respetan el toggle global ARS/USD.
+  const money = useMoneyFormat()
+  const fmtUsd = (v) => money.fmtMoney(v, { signed: true })
 
   // Sin actividad: chip minimal, no expandible
   if (!week.is_relevant) {

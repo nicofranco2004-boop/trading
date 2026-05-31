@@ -31,18 +31,12 @@ import HighlightsRail from './HighlightsRail'
 import WeekCard from './WeekCard'
 import Pill from '../Pill'
 import AskAIAbout from '../ai/AskAIAbout'
+import { useMoneyFormat } from '../../contexts/CurrencyContext'
 
 function fmtPct(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : '−'
   return `${sign}${Math.abs(p).toFixed(2)}%`
-}
-
-function fmtUsd(v) {
-  if (v == null) return '—'
-  const abs = Math.abs(v)
-  const sign = v >= 0 ? '+' : '−'
-  return `${sign}US$${abs.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
 }
 
 function daysUntilPeriodEnd(period_end_iso) {
@@ -69,6 +63,10 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
   const [metricsOpen, setMetricsOpen] = useState(false)
   const deltaPct = p.metrics?.delta_pct
   const positive = (deltaPct ?? 0) >= 0
+  // Fase B: el delta_usd / valores monetarios respetan el toggle global
+  // ARS/USD. El backend siempre devuelve USD; la conversión a ARS usa
+  // tcBlue ACTUAL (limitación MVP — Fase C trackeará TC histórico).
+  const money = useMoneyFormat()
 
   // Caso minimal: período sin actividad y no en curso → colapsado a 1 línea sticky
   if (!p.is_relevant && !p.is_current) {
@@ -114,7 +112,7 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
               {fmtPct(deltaPct)}
             </span>
             <span className="text-xs tabular text-ink-3">
-              {fmtUsd(p.metrics?.delta_usd)}
+              {money.fmtMoney(p.metrics?.delta_usd, { signed: true })}
             </span>
           </div>
         </div>
@@ -200,7 +198,7 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
             ? <ChevronUp size={12} strokeWidth={1.75} aria-hidden="true" />
             : <ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />}
         </button>
-        {metricsOpen && <MetricsGrid metrics={p.metrics} />}
+        {metricsOpen && <MetricsGrid metrics={p.metrics} money={money} />}
       </div>
     </article>
     </AskAIAbout>
@@ -209,15 +207,17 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
 
 // ─── Grid de métricas técnicas ───────────────────────────────────────────────
 
-function MetricsGrid({ metrics: m }) {
+function MetricsGrid({ metrics: m, money }) {
+  // Fallback al formatter inyectado o, si no llega (defensa), USD plano.
+  const fmt = money?.fmtMoney || ((v) => v == null ? '—' : `US$${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`)
   return (
     <div className="px-5 pb-4 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-      <Cell label="Valor inicio" value={m.start_value != null ? fmtUsdRaw(m.start_value) : '—'} />
-      <Cell label="Valor cierre" value={m.end_value != null ? fmtUsdRaw(m.end_value) : '—'} />
-      <Cell label="Depósitos" value={m.deposits ? fmtUsdRaw(m.deposits) : 'US$0'} />
-      <Cell label="Retiros"   value={m.withdrawals ? fmtUsdRaw(m.withdrawals) : 'US$0'} />
-      <Cell label="Realizado" value={fmtUsdSigned(m.realized_pnl)} accent />
-      <Cell label="No realizado" value={fmtUsdSigned(m.unrealized_pnl)} accent />
+      <Cell label="Valor inicio" value={m.start_value != null ? fmt(m.start_value) : '—'} />
+      <Cell label="Valor cierre" value={m.end_value != null ? fmt(m.end_value) : '—'} />
+      <Cell label="Depósitos" value={m.deposits ? fmt(m.deposits) : fmt(0)} />
+      <Cell label="Retiros"   value={m.withdrawals ? fmt(m.withdrawals) : fmt(0)} />
+      <Cell label="Realizado" value={fmt(m.realized_pnl, { signed: true })} accent />
+      <Cell label="No realizado" value={fmt(m.unrealized_pnl, { signed: true })} accent />
       <Cell label="Trades" value={m.trades_count} />
       <Cell label="Win rate" value={m.win_rate != null ? `${m.win_rate.toFixed(0)}%` : '—'} />
       {m.vs_sp500_pct != null && (
@@ -240,14 +240,4 @@ function Cell({ label, value, accent = false }) {
       <div className={`font-mono tabular ${accent ? 'text-ink-0' : 'text-ink-1'}`}>{value}</div>
     </div>
   )
-}
-
-function fmtUsdRaw(v) {
-  return `US$${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
-}
-
-function fmtUsdSigned(v) {
-  if (v == null) return '—'
-  const sign = v >= 0 ? '+' : '−'
-  return `${sign}US$${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
 }

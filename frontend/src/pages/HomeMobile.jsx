@@ -36,7 +36,9 @@ import { useCurrency } from '../contexts/CurrencyContext'
 
 export default function HomeMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard.
-  const { currency, toggle: toggleCurrency } = useCurrency()
+  // Fase B: además publicamos tcBlue al context para que Reports / charts
+  // puedan leer sin re-fetchear /dolar.
+  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue } = useCurrency()
   const [positions, setPositions] = useState([])
   const [monthly, setMonthly] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -88,6 +90,12 @@ export default function HomeMobile() {
   }
 
   const tcBlue = dolar?.blue?.venta || 1415
+
+  // Fase B: publicamos tcBlue al CurrencyContext (sin reemplazar el local;
+  // el componente sigue usando `tcBlue` para sus propios memos).
+  useEffect(() => {
+    if (tcBlue > 0) publishTcBlue(tcBlue)
+  }, [tcBlue, publishTcBlue])
 
   const totals = useMemo(() => {
     const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue) }))

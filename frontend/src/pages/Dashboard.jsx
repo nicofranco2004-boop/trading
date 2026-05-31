@@ -47,7 +47,7 @@ export default function Dashboard() {
   // por página → inconsistencias entre desktop y mobile.
   // Migración soft: si el user tenía 'rendi_dashboard_currency' viejo, lo
   // migra al nuevo storage key al primer load.
-  const { currency, setCurrency } = useCurrency()
+  const { currency, setCurrency, setTcBlue: publishTcBlue } = useCurrency()
   useEffect(() => {
     try {
       const legacy = localStorage.getItem('rendi_dashboard_currency')
@@ -124,6 +124,13 @@ export default function Dashboard() {
   }
 
   const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
+
+  // Fase B (2026-05-31): publicamos tcBlue al CurrencyContext para que
+  // los components que solo necesitan formatear (Reports cards, charts)
+  // no tengan que fetchear /dolar por su cuenta.
+  useEffect(() => {
+    if (tcBlue > 0) publishTcBlue(tcBlue)
+  }, [tcBlue, publishTcBlue])
 
   const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue) }))
   const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0)
@@ -732,9 +739,20 @@ export default function Dashboard() {
                     tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
                     axisLine={false}
                     tickLine={false}
-                    tickFormatter={v => usdCompact(v)}
+                    tickFormatter={v => {
+                      // Fase B: la escala del axis es lineal en USD vs ARS
+                      // (ARS = USD × tcBlue), así que la curva no cambia —
+                      // solo cambian las etiquetas. Compact (k/M) en ambas.
+                      const v2 = currency === 'ARS' ? v * tcBlue : v
+                      const abs = Math.abs(v2)
+                      const sym = currency === 'ARS' ? '$' : 'US$'
+                      if (abs >= 1e9) return `${sym}${(v2 / 1e9).toFixed(1)}B`
+                      if (abs >= 1e6) return `${sym}${(v2 / 1e6).toFixed(1)}M`
+                      if (abs >= 1e3) return `${sym}${Math.round(v2 / 1e3)}k`
+                      return `${sym}${Math.round(v2)}`
+                    }}
                     domain={[chartMin > 0 ? chartMin * 0.97 : 0, chartMax * 1.02]}
-                    width={56}
+                    width={64}
                   />
                   <Tooltip
                     cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
@@ -748,7 +766,10 @@ export default function Dashboard() {
                     }}
                     labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.12em' }}
                     itemStyle={{ color: '#F4F4F0', fontSize: 12, padding: '2px 0' }}
-                    formatter={(v, name) => [fmtUsd(v), name === 'valueUsd' ? 'Valor' : 'Aportado']}
+                    formatter={(v, name) => [
+                      currency === 'ARS' ? fmtArs(v * tcBlue) : fmtUsd(v),
+                      name === 'valueUsd' ? 'Valor' : 'Aportado',
+                    ]}
                     labelFormatter={l => l}
                   />
                   <Area
