@@ -9,6 +9,7 @@ import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import { usd, fmtUsd as fmtUsdRaw, pctSigned, colorClass } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
+import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import EmptyState from '../components/EmptyState'
@@ -48,11 +49,14 @@ function OperationsDesktop() {
   // Persistimos selección en localStorage para que respete preferencia del user.
   const [tab, setTab] = useState(() => localStorage.getItem('rendi_operations_tab') || 'all')
   useEffect(() => { localStorage.setItem('rendi_operations_tab', tab) }, [tab])
-  // Fase B: P&L realizado y montos respetan el toggle global ARS/USD.
-  // Los valores históricos usan tcBlue ACTUAL (limitación MVP — Fase C
-  // trackeará TC por fecha para que P&L histórico no se vea afectado por
-  // movimientos del blue posteriores).
+  // Fase B+C: P&L realizado respeta el toggle global ARS/USD. Para operaciones
+  // individuales usamos FX HISTÓRICO (op.fx_to_usd stampeado al cierre del
+  // trade > lookup por op.date > tcBlue actual). Para los KPIs agregados
+  // (totalPnl, bestTrade) que no tienen una fecha única, usamos tcBlue actual
+  // via useMoneyFormat — limitación aceptada porque mezclan trades de
+  // múltiples fechas.
   const money = useMoneyFormat()
+  const histMoney = useHistoricalMoney()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
   const fmtUsdSigned = (v) => money.fmtMoney(v, { signed: true })
 
@@ -355,7 +359,13 @@ function OperationsDesktop() {
                     <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
                     <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.quantity ?? '—'}</td>
                     <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)}`}>
-                      {op.pnl_usd == null ? '—' : fmtUsdSigned(op.pnl_usd)}
+                      {op.pnl_usd == null
+                        ? '—'
+                        : histMoney.fmtMoneyAt(op.pnl_usd, {
+                            stampedFx: op.fx_to_usd,
+                            dateIso: op.date,
+                            signed: true,
+                          })}
                     </td>
                     <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)}`}>
                       {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
@@ -593,7 +603,12 @@ const MOV_PAGE_SIZE = 50
 function MovementsView() {
   // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
   // computeMovementKpis y a MovementRow vía props para evitar shadow.
+  // Phase C audit fix H1: el HM (historical money) se usa en MovementRow
+  // para cada fila individual (cada movimiento tiene su date). Los KPIs
+  // agregados (totales / promedios) usan tcBlue actual via `money` porque
+  // mezclan movimientos de múltiples fechas.
   const money = useMoneyFormat()
+  const histMoney = useHistoricalMoney()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
@@ -839,10 +854,17 @@ function computeMovementKpis(rows, filterType, fmtUsd) {
 }
 
 function MovementRow({ m }) {
-  // Fase B: cada fila lee el formatter del context — es barato (mismo
-  // memoizado context value para todos los rows del listado).
-  const money = useMoneyFormat()
-  const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
+  // Phase C (audit fix H1): cada movimiento usa SU PROPIO FX histórico para
+  // la conversión a ARS. m.fx_to_usd (si stampeado) > lookup por m.date >
+  // tcBlue actual. Esto evita que un retiro de $1000 USD en 2024 (blue era
+  // 1100) se muestre hoy como $1.466.000 ARS (al blue actual ~1466) cuando
+  // en realidad fueron ~$1.100.000 ARS al tipo de cambio del momento.
+  const histMoney = useHistoricalMoney()
+  const fmtUsd = (v) => histMoney.fmtMoneyAt(v, {
+    stampedFx: m.fx_to_usd,
+    dateIso: m.date,
+    signed: false,
+  })
   const meta = TYPE_META[m.type] || { label: m.type, Icon: Repeat, color: 'text-ink-3' }
   const { Icon } = meta
   const isPositive = ['DEPOSIT', 'DIVIDEND', 'INTEREST'].includes(m.type)

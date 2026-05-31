@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, useMemo } from 'react'
+import { api } from '../utils/api'
 
 // Fase A — Toggle global ARS/USD (2026-05-31).
 // El user elige en qué moneda ver TODOS los números del Dashboard / Home /
@@ -34,6 +35,27 @@ export function CurrencyProvider({ children }) {
   // convertir para display (Reports cards, charts) lo leen sin re-fetchear.
   // Default 1415 evita división-por-cero y NaN durante el primer render.
   const [tcBlue, setTcBlueRaw] = useState(DEFAULT_TC_BLUE)
+
+  // Audit fix H2 (2026-05-31): el Provider fetcha /dolar al mount para que
+  // el tcBlue real esté disponible desde el primer render — antes había una
+  // ventana de ~500ms donde Reports cards / Operations renderizaban ARS con
+  // el default 1415 hasta que Dashboard publicara su valor.
+  // Refresh cada 5min para mantenerlo sincronizado con el resto de la app
+  // (las páginas individuales todavía fetchean /dolar para sus live prices,
+  // pero al menos el FX de display ya está listo desde la primera pintada).
+  useEffect(() => {
+    let cancelled = false
+    const fetchAndPublish = () => {
+      api.get('/dolar').then(d => {
+        if (cancelled) return
+        const blue = d?.blue?.venta
+        if (blue > 0) setTcBlueRaw(Number(blue))
+      }).catch(() => { /* silent — usa default + páginas publican lo que tengan */ })
+    }
+    fetchAndPublish()
+    const id = setInterval(fetchAndPublish, 300_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
 
   function setCurrency(next) {
     const norm = next === 'ARS' ? 'ARS' : 'USD'
@@ -96,6 +118,41 @@ export function fmtMoneyRaw(usdValue, currency, tcBlue, opts = {}) {
   return `${sign}${sym}${abs.toLocaleString('es-AR', { maximumFractionDigits: decimals })}`
 }
 
+// fmtConvertedRaw: formatea un valor que YA está en la currency target.
+// Útil cuando hicimos la conversión nosotros mismos (ej. FX histórico) y
+// solo queremos el formato final (símbolo + locale).
+export function fmtConvertedRaw(value, targetCurrency, opts = {}) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const { signed = false, decimals = 0 } = opts
+  const isArs = targetCurrency === 'ARS'
+  const abs = Math.abs(value)
+  const sign = signed ? (value < 0 ? '−' : '+') : (value < 0 ? '−' : '')
+  const sym = isArs ? '$' : 'US$'
+  return `${sign}${sym}${abs.toLocaleString('es-AR', { maximumFractionDigits: decimals })}`
+}
+
+export function fmtConvertedCompactRaw(value, targetCurrency, opts = {}) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const { signed = false } = opts
+  const abs = Math.abs(value)
+  const sign = signed ? (value < 0 ? '−' : '+') : (value < 0 ? '−' : '')
+  const sym = targetCurrency === 'ARS' ? '$' : 'US$'
+  let body
+  if (abs >= 1e9) {
+    const b = abs / 1e9
+    body = (b < 9.95 ? b.toFixed(1) : String(Math.round(b))) + 'B'
+  } else if (abs >= 1e6) {
+    const m = abs / 1e6
+    body = (m < 9.95 ? m.toFixed(1) : String(Math.round(m))) + 'M'
+  } else if (abs >= 1e3) {
+    const k = abs / 1e3
+    body = (k < 9.95 ? k.toFixed(1) : String(Math.round(k))) + 'k'
+  } else {
+    body = Math.round(abs).toLocaleString('es-AR')
+  }
+  return `${sign}${sym}${body}`
+}
+
 export function fmtMoneyCompactRaw(usdValue, currency, tcBlue, opts = {}) {
   if (usdValue == null || !Number.isFinite(usdValue)) return '—'
   const { signed = false } = opts
@@ -104,12 +161,22 @@ export function fmtMoneyCompactRaw(usdValue, currency, tcBlue, opts = {}) {
   const abs = Math.abs(v)
   const sign = signed ? (v < 0 ? '−' : '+') : (v < 0 ? '−' : '')
   const sym = isArs ? '$' : 'US$'
+  // Smooth boundaries: cuando la representación con 1 decimal redondearía
+  // a "10.X" (>= 9.95), saltamos al siguiente bucket SIN decimal para
+  // evitar "10.0k → 10k" flicker en el borde 9999/10000.
   let body
-  if (abs >= 1e9) body = (abs / 1e9).toFixed(abs >= 1e10 ? 0 : 1) + 'B'
-  else if (abs >= 1e6) body = (abs / 1e6).toFixed(abs >= 1e7 ? 0 : 1) + 'M'
-  else if (abs >= 1e4) body = Math.round(abs / 1e3) + 'k'
-  else if (abs >= 1e3) body = (abs / 1e3).toFixed(1) + 'k'
-  else body = Math.round(abs).toLocaleString('es-AR')
+  if (abs >= 1e9) {
+    const b = abs / 1e9
+    body = (b < 9.95 ? b.toFixed(1) : String(Math.round(b))) + 'B'
+  } else if (abs >= 1e6) {
+    const m = abs / 1e6
+    body = (m < 9.95 ? m.toFixed(1) : String(Math.round(m))) + 'M'
+  } else if (abs >= 1e3) {
+    const k = abs / 1e3
+    body = (k < 9.95 ? k.toFixed(1) : String(Math.round(k))) + 'k'
+  } else {
+    body = Math.round(abs).toLocaleString('es-AR')
+  }
   return `${sign}${sym}${body}`
 }
 
@@ -118,8 +185,8 @@ export function fmtMoneyCompactRaw(usdValue, currency, tcBlue, opts = {}) {
 //   - fmtMoney(usdValue, { signed, decimals })
 //   - fmtMoneyCompact(usdValue, { signed }) → k / M / B abbreviation
 // El input siempre es USD canónico (lo que devuelve el backend).
-// La conversión a ARS usa tcBlue ACTUAL — limitación conocida para data
-// histórica (Fase C va a agregar tcBlue per-fecha).
+// La conversión a ARS usa tcBlue ACTUAL (Phase B) — para histórico usar
+// `useHistoricalMoneyFormat()` que combina FX stamped + lookup por fecha.
 export function useMoneyFormat() {
   const { currency, tcBlue } = useCurrency()
   const isArs = currency === 'ARS'

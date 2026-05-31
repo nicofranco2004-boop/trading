@@ -2457,20 +2457,21 @@ class SnapshotIn(BaseModel):
 @app.post("/api/snapshots")
 def post_snapshot(data: SnapshotIn, uid: int = Depends(get_current_user)):
     today = datetime.utcnow().strftime("%Y-%m-%d")
-    # Phase C: stampamos fx_to_usd_blue al momento del snapshot. Usamos el
-    # blue actual desde el cache (TTL 5min) — más fresco que ir a fx_rates_daily
-    # y suficiente para snapshots frontend-triggered. Idempotent: el upsert
-    # también actualiza fx si llega cambiado.
+    # Phase C: stampamos fx_to_usd_blue desde el cache de /dolar (TTL 5min).
+    #
+    # Audit fix C2 (2026-05-31): NO hacemos fetch sincrónico al dolarapi acá.
+    # Antes: si el cache estaba stale, _fetch_dolar("blue") bloqueaba hasta 5s
+    # adentro del request → UX degradada en cada snapshot manual.
+    # Ahora: si no hay cache, escribimos snapshot con fx=NULL y el cron
+    # diario (o el siguiente GET /api/dolar de cualquier user) hidrata fx_rates_daily.
+    # El frontend hace fallback automático al tcBlue actual via useFxHistory.
     blue_now = None
     try:
         if _dolar_cache["data"]:
             blue_now = (_dolar_cache["data"].get("blue") or {}).get("venta")
-        if not blue_now:
-            b = _fetch_dolar("blue")
-            blue_now = b.get("venta") if b else None
     except Exception:
         blue_now = None
-    # Si conseguimos el blue, persistimos en fx_rates_daily también
+    # Si conseguimos el blue desde cache, persistimos en fx_rates_daily también
     if blue_now and blue_now > 0:
         _persist_blue_for_date(today, float(blue_now), source='dolarapi')
 

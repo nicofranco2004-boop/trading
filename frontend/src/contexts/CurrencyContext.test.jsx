@@ -104,6 +104,23 @@ describe('fmtMoneyCompactRaw (Phase B abbreviated)', () => {
     expect(fmtMoneyCompactRaw(50000, 'USD', 1415)).toBe('US$50k')
   })
 
+  it('boundary 9.95k-10k: no muestra "10.0k" (smooth jump)', () => {
+    // Antes del fix: 9999 → "10.0k", 10000 → "10k" (flicker visual)
+    // Después: ambos → "10k" (consistente)
+    expect(fmtMoneyCompactRaw(9499, 'USD', 1415)).toBe('US$9.5k')
+    expect(fmtMoneyCompactRaw(9949, 'USD', 1415)).toBe('US$9.9k')
+    expect(fmtMoneyCompactRaw(9950, 'USD', 1415)).toBe('US$10k')   // ← clave
+    expect(fmtMoneyCompactRaw(9999, 'USD', 1415)).toBe('US$10k')
+    expect(fmtMoneyCompactRaw(10000, 'USD', 1415)).toBe('US$10k')
+  })
+
+  it('boundary 9.95M-10M: misma lógica', () => {
+    expect(fmtMoneyCompactRaw(9_499_999, 'USD', 1415)).toBe('US$9.5M')
+    expect(fmtMoneyCompactRaw(9_949_999, 'USD', 1415)).toBe('US$9.9M')
+    expect(fmtMoneyCompactRaw(9_950_000, 'USD', 1415)).toBe('US$10M')
+    expect(fmtMoneyCompactRaw(10_000_000, 'USD', 1415)).toBe('US$10M')
+  })
+
   it('1M+: abrevia con M', () => {
     expect(fmtMoneyCompactRaw(5_000_000, 'USD', 1415)).toBe('US$5.0M')
     expect(fmtMoneyCompactRaw(50_000_000, 'USD', 1415)).toBe('US$50M')

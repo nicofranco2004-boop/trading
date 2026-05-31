@@ -38,24 +38,57 @@ export function lookupRate(rows, dateIso) {
 
 // Cache módulo-level: una sola request por sesión / página. Compartido
 // entre todos los consumers (Dashboard chart, Reports cards, etc).
+//
+// Audit fix C3 (2026-05-31): trackeamos failure state aparte, con retry
+// cooldown. Antes: si el primer fetch fallaba (network blip), _fxCacheData
+// quedaba `[]` permanente y nunca reintentábamos en la sesión. Ahora: tras
+// fallo esperamos RETRY_COOLDOWN_MS y permitimos un nuevo intento (típico
+// next mount o cuando otro consumer llama).
 let _fxCachePromise = null
 let _fxCacheData = null
+let _fxCacheError = false
+let _fxCacheErrorAt = 0
+const RETRY_COOLDOWN_MS = 30_000
 
 function fetchFxHistory() {
+  // Request en vuelo → comparte la misma promesa
   if (_fxCachePromise) return _fxCachePromise
-  if (_fxCacheData) return Promise.resolve(_fxCacheData)
+  // Data válida cacheada → resolve directo
+  if (_fxCacheData && _fxCacheData.length > 0) return Promise.resolve(_fxCacheData)
+  // Error reciente → no reintentar hasta cooldown (devuelve cache vacío sin
+  // disparar más network calls; el caller usa fallback tcBlue automáticamente)
+  if (_fxCacheError && Date.now() - _fxCacheErrorAt < RETRY_COOLDOWN_MS) {
+    return Promise.resolve(_fxCacheData || [])
+  }
+  // Reintento permitido
+  _fxCacheError = false
   _fxCachePromise = api.get('/fx-rates?days=3650')
     .then(rows => {
       _fxCacheData = Array.isArray(rows) ? rows : []
       _fxCachePromise = null
+      // Empty response cuenta como soft-failure (backend nunca devolvió data)
+      if (_fxCacheData.length === 0) {
+        _fxCacheError = true
+        _fxCacheErrorAt = Date.now()
+      }
       return _fxCacheData
     })
     .catch(() => {
       _fxCachePromise = null
       _fxCacheData = []
+      _fxCacheError = true
+      _fxCacheErrorAt = Date.now()
       return _fxCacheData
     })
   return _fxCachePromise
+}
+
+// Export para tests — permite resetear el module-level cache entre tests.
+export function _resetFxCacheForTesting() {
+  _fxCachePromise = null
+  _fxCacheData = null
+  _fxCacheError = false
+  _fxCacheErrorAt = 0
 }
 
 /**

@@ -19,6 +19,7 @@ import BottomSheet from '../components/mobile/BottomSheet'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
+import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import { track } from '../utils/track'
 
 const PERIOD_OPTIONS = [
@@ -230,9 +231,15 @@ export default function OperationsMobile() {
 // ─── Day group ────────────────────────────────────────────────────────────
 
 function DayGroup({ date, ops }) {
-  const money = useMoneyFormat()
+  // Phase C audit fix H1: el subtotal del DÍA es de operaciones que TODAS
+  // tienen la misma fecha → usamos FX histórico de esa fecha. Si las ops
+  // tienen fx_to_usd stampeado, sumamos los valores ya convertidos para
+  // máxima precisión. Sino, usamos el FX del día (el del primer op como proxy).
+  const histMoney = useHistoricalMoney()
   const subtotal = ops.reduce((s, o) => s + (o.pnl_usd || 0), 0)
   const label = formatDateLabel(date)
+  // Para el subtotal, usamos la fecha del día (todos los ops la comparten).
+  const stampedFx = ops.find(o => o.fx_to_usd && o.fx_to_usd > 0)?.fx_to_usd
   return (
     <li className="border-t border-line/30">
       <div className="flex items-baseline justify-between px-4 py-2 bg-bg-1/50">
@@ -246,7 +253,11 @@ function DayGroup({ date, ops }) {
           </span>
         </div>
         <span className={`text-[11px] font-mono tabular ${colorClass(subtotal)}`}>
-          {money.fmtMoneyCompact(subtotal, { signed: true })}
+          {histMoney.fmtMoneyCompactAt(subtotal, {
+            stampedFx,
+            dateIso: date,
+            signed: true,
+          })}
         </span>
       </div>
       <ul>
@@ -259,7 +270,8 @@ function DayGroup({ date, ops }) {
 // ─── Row ──────────────────────────────────────────────────────────────────
 
 function OperationRow({ op }) {
-  const money = useMoneyFormat()
+  // Phase C audit fix H1: cada operación usa su propio FX histórico.
+  const histMoney = useHistoricalMoney()
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const type = (op.op_type || '').toLowerCase()
@@ -298,7 +310,11 @@ function OperationRow({ op }) {
         {op.pnl_usd != null && (
           <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(op.pnl_usd)}`}>
             {isWin ? <TrendingUp size={11} strokeWidth={1.75} /> : isLoss ? <TrendingDown size={11} strokeWidth={1.75} /> : null}
-            {money.fmtMoneyCompact(op.pnl_usd, { signed: true })}
+            {histMoney.fmtMoneyCompactAt(op.pnl_usd, {
+              stampedFx: op.fx_to_usd,
+              dateIso: op.date,
+              signed: true,
+            })}
           </div>
         )}
         {op.pnl_pct != null && (

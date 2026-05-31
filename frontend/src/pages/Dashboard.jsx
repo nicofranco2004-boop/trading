@@ -291,15 +291,36 @@ export default function Dashboard() {
     return buildPortfolioValueSeries(snapshots, rangeDays ?? null, totalValue > 0 ? totalValue : null, netDeposited)
   }, [snapshots, rangeDays, totalValue, netDeposited])
 
-  // For chart Y-axis nice domain
+  // Audit fix C1 (2026-05-31): cuando el toggle global está en ARS,
+  // convertimos CADA punto usando su FX histórico (stamped > lookup > current).
+  // Antes el Y-axis usaba tcBlue actual y el tooltip usaba FX histórico
+  // → inconsistencia visible. Ahora la DATA está convertida ANTES de pasar
+  // al chart, así axis + tooltip muestran el mismo número.
+  // En USD view, pasamos el evoSeries tal cual (sin conversión).
+  const evoSeriesDisplay = useMemo(() => {
+    if (currency !== 'ARS') return evoSeries
+    return evoSeries.map(p => {
+      const stamped = p.fxToUsdBlue
+      const fx = (stamped && stamped > 0) ? stamped : getHistoricalFx(p.date)
+      return {
+        ...p,
+        valueUsd: p.valueUsd * fx,          // ahora en ARS (renombrar sería breaking)
+        netDeposited: p.netDeposited * fx,  // idem
+        _fxUsed: fx,
+      }
+    })
+  }, [evoSeries, currency, getHistoricalFx])
+
+  // For chart Y-axis nice domain — usa evoSeriesDisplay para que el dominio
+  // refleje los valores realmente graficados (ARS o USD según toggle).
   const chartMin = useMemo(() => {
-    if (evoSeries.length === 0) return 0
-    return Math.min(...evoSeries.map(p => Math.min(p.valueUsd, p.netDeposited)))
-  }, [evoSeries])
+    if (evoSeriesDisplay.length === 0) return 0
+    return Math.min(...evoSeriesDisplay.map(p => Math.min(p.valueUsd, p.netDeposited)))
+  }, [evoSeriesDisplay])
   const chartMax = useMemo(() => {
-    if (evoSeries.length === 0) return 0
-    return Math.max(...evoSeries.map(p => Math.max(p.valueUsd, p.netDeposited)))
-  }, [evoSeries])
+    if (evoSeriesDisplay.length === 0) return 0
+    return Math.max(...evoSeriesDisplay.map(p => Math.max(p.valueUsd, p.netDeposited)))
+  }, [evoSeriesDisplay])
 
   // Period change (start → end of visible range)
   // Δ(Total Return) cashflow-adjusted: (value − net_deposited)_fin − (…)_inicio.
@@ -728,7 +749,7 @@ export default function Dashboard() {
             const fillId = isProfit ? 'grad-value-pos' : 'grad-value-neg'
             return (
               <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={evoSeries} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
+                <AreaChart data={evoSeriesDisplay} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
                   <defs>
                     <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={lineColor} stopOpacity={0.18} />
@@ -748,16 +769,14 @@ export default function Dashboard() {
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={v => {
-                      // Y-axis ticks usan tcBlue ACTUAL (no histórico) porque
-                      // un solo eje no puede representar múltiples FX. El
-                      // tooltip (que es punto-específico) sí usa FX histórico.
-                      const v2 = currency === 'ARS' ? v * tcBlue : v
-                      const abs = Math.abs(v2)
+                      // Audit fix C1: evoSeriesDisplay YA está convertido a la
+                      // currency del toggle. Acá solo formateamos con símbolo.
+                      const abs = Math.abs(v)
                       const sym = currency === 'ARS' ? '$' : 'US$'
-                      if (abs >= 1e9) return `${sym}${(v2 / 1e9).toFixed(1)}B`
-                      if (abs >= 1e6) return `${sym}${(v2 / 1e6).toFixed(1)}M`
-                      if (abs >= 1e3) return `${sym}${Math.round(v2 / 1e3)}k`
-                      return `${sym}${Math.round(v2)}`
+                      if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1)}B`
+                      if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(1)}M`
+                      if (abs >= 1e3) return `${sym}${Math.round(v / 1e3)}k`
+                      return `${sym}${Math.round(v)}`
                     }}
                     domain={[chartMin > 0 ? chartMin * 0.97 : 0, chartMax * 1.02]}
                     width={64}
@@ -774,31 +793,19 @@ export default function Dashboard() {
                     }}
                     labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.12em' }}
                     itemStyle={{ color: '#F4F4F0', fontSize: 12, padding: '2px 0' }}
-                    formatter={(v, name, props) => {
-                      // Fase C: en ARS view, usamos el FX HISTÓRICO del punto:
-                      //   1. fxToUsdBlue stampeado en el snapshot (más auténtico)
-                      //   2. fallback a useFxHistory por la fecha del punto
-                      //   3. último fallback: tcBlue actual
-                      // En USD view, el valor es directo (sin conversión).
-                      if (currency !== 'ARS') {
-                        return [fmtUsd(v), name === 'valueUsd' ? 'Valor' : 'Aportado']
-                      }
-                      const stamped = props?.payload?.fxToUsdBlue
-                      const dateStr = props?.payload?.date
-                      const fx = (stamped && stamped > 0)
-                        ? stamped
-                        : getHistoricalFx(dateStr)
-                      return [fmtArs(v * fx), name === 'valueUsd' ? 'Valor' : 'Aportado']
+                    formatter={(v, name) => {
+                      // Audit fix C1: data ya está en la currency target.
+                      // Solo formateamos. Mismo valor que el axis.
+                      const label = name === 'valueUsd' ? 'Valor' : 'Aportado'
+                      return [currency === 'ARS' ? fmtArs(v) : fmtUsd(v), label]
                     }}
                     labelFormatter={(label, payload) => {
-                      // Mostramos la fecha completa + el FX usado en este punto
-                      // si estamos en ARS (debugging + transparencia).
+                      // Mostramos la fecha + el FX que se usó para ese punto
+                      // (transparencia: el user puede ver QUÉ blue se aplicó).
                       const p = payload?.[0]?.payload
                       if (!p) return label
-                      if (currency === 'ARS') {
-                        const stamped = p.fxToUsdBlue
-                        const fx = (stamped && stamped > 0) ? stamped : getHistoricalFx(p.date)
-                        return `${p.date}  ·  TC blue ${Math.round(fx)}`
+                      if (currency === 'ARS' && p._fxUsed) {
+                        return `${p.date}  ·  TC blue ${Math.round(p._fxUsed)}`
                       }
                       return p.date || label
                     }}
