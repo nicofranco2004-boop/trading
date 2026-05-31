@@ -110,45 +110,56 @@ def compress_gzip(src_path: str, dest_gz_path: str) -> int:
 
 def _make_s3_client():
     """Crea un cliente boto3 S3 con la config de env vars.
-    Devuelve None si la config no está completa o boto3 no está instalado.
+    Devuelve (client, reason) — si client es None, reason explica por qué
+    (env var faltante, boto3 ausente, etc.) para reportar en stats.
     """
     bucket = os.environ.get('BACKUP_S3_BUCKET')
     access = os.environ.get('BACKUP_S3_ACCESS_KEY')
     secret = os.environ.get('BACKUP_S3_SECRET_KEY')
-    if not (bucket and access and secret):
-        return None
+    missing = []
+    if not bucket: missing.append('BACKUP_S3_BUCKET')
+    if not access: missing.append('BACKUP_S3_ACCESS_KEY')
+    if not secret: missing.append('BACKUP_S3_SECRET_KEY')
+    if missing:
+        return None, f"env vars faltantes: {', '.join(missing)}"
     try:
         import boto3
     except ImportError:
-        log.warning("boto3 no instalado; skip upload remoto. Agregalo a requirements.txt si querés backups remotos.")
-        return None
-    return boto3.client(
-        's3',
-        endpoint_url=os.environ.get('BACKUP_S3_ENDPOINT'),
-        aws_access_key_id=access,
-        aws_secret_access_key=secret,
-        region_name=os.environ.get('BACKUP_S3_REGION', 'us-east-1'),
-    )
+        return None, "boto3 no instalado (agregalo a requirements.txt)"
+    try:
+        client = boto3.client(
+            's3',
+            endpoint_url=os.environ.get('BACKUP_S3_ENDPOINT'),
+            aws_access_key_id=access,
+            aws_secret_access_key=secret,
+            region_name=os.environ.get('BACKUP_S3_REGION', 'us-east-1'),
+        )
+        return client, None
+    except Exception as e:
+        return None, f"boto3.client init falló: {type(e).__name__}: {e}"
 
 
-def upload_to_s3(local_path: str, key: str) -> bool:
-    """Sube un archivo al bucket configurado. Devuelve True si OK."""
-    client = _make_s3_client()
+def upload_to_s3(local_path: str, key: str) -> tuple:
+    """Sube un archivo al bucket configurado.
+    Returns: (success: bool, error_msg: str or None)
+    """
+    client, reason = _make_s3_client()
     if client is None:
-        return False
+        return False, reason
     bucket = os.environ.get('BACKUP_S3_BUCKET')
     try:
         client.upload_file(local_path, bucket, key)
         log.info(f"Backup remoto OK: s3://{bucket}/{key}")
-        return True
+        return True, None
     except Exception as e:
-        log.error(f"Upload remoto falló: {e}")
-        return False
+        msg = f"upload_file falló: {type(e).__name__}: {e}"
+        log.error(msg)
+        return False, msg
 
 
 def list_s3_backups(prefix: str) -> list:
     """Lista las keys del bucket bajo el prefix dado. Devuelve [] si falla."""
-    client = _make_s3_client()
+    client, _ = _make_s3_client()
     if client is None:
         return []
     bucket = os.environ.get('BACKUP_S3_BUCKET')
@@ -165,7 +176,7 @@ def list_s3_backups(prefix: str) -> list:
 
 
 def delete_s3_key(key: str) -> bool:
-    client = _make_s3_client()
+    client, _ = _make_s3_client()
     if client is None:
         return False
     bucket = os.environ.get('BACKUP_S3_BUCKET')
@@ -288,6 +299,7 @@ def run_backup(db_path: Optional[str] = None) -> dict:
         'db_path': db_path,
         'local_path': None,
         'remote_key': None,
+        'remote_skip_reason': None,  # explica por qué remote_uploaded=False
         'size_bytes': None,
         'local_pruned': 0,
         'remote_pruned': 0,
@@ -327,11 +339,17 @@ def run_backup(db_path: Optional[str] = None) -> dict:
         # Remote upload (opcional)
         try:
             remote_key = f"{remote_prefix}trading-{today}.db.gz"
-            if upload_to_s3(gz_path, remote_key):
+            success, err_reason = upload_to_s3(gz_path, remote_key)
+            if success:
                 stats['remote_uploaded'] = True
                 stats['remote_key'] = remote_key
+            else:
+                # No-throw: skip silencioso (env vars faltantes) ó error real
+                # se reportan en remote_skip_reason para que el caller sepa.
+                stats['remote_skip_reason'] = err_reason
         except Exception as e:
             stats['errors'].append(f"remote upload falló: {e}")
+            stats['remote_skip_reason'] = str(e)
 
     # Prune (siempre, independiente de errores arriba)
     try:
