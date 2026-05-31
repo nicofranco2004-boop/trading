@@ -31,6 +31,7 @@ import { PositionFormModal, SellModal, EMPTY_POS, today } from './Positions'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
+import { useCurrency } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
@@ -68,6 +69,8 @@ function brokerColor(name) {
 }
 
 export default function PositionsMobile() {
+  // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
+  const { currency, toggle: toggleCurrency } = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
   const [positions, setPositions] = useState([])
@@ -538,8 +541,14 @@ export default function PositionsMobile() {
               Cartera total
             </div>
             <div className="text-xl font-medium tabular text-ink-0 leading-none">
-              ${Math.round(total).toLocaleString('en-US')}
-              <span className="text-xs text-ink-3 ml-1 font-normal">USD</span>
+              ${Math.round(currency === 'ARS' ? total * tcBlue : total).toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')}
+              <button
+                onClick={toggleCurrency}
+                className="text-xs text-ink-3 ml-1 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"
+                title={`Cambiar a ${currency === 'USD' ? 'ARS' : 'USD'}`}
+              >
+                {currency}
+              </button>
             </div>
           </div>
           {/* Acciones derechas: count + botón rápido para agregar posición.
@@ -674,6 +683,8 @@ export default function PositionsMobile() {
               positions={g.positions}
               totalUsd={g.totalUsd}
               showDetail={showDetail}
+              displayCurrency={currency}
+              tcBlue={tcBlue}
               onEdit={() => setEditingBroker({ ...g.broker })}
               onDelete={() => deleteBrokerAction(g.broker)}
               onSellPosition={openSell}
@@ -686,13 +697,15 @@ export default function PositionsMobile() {
       ) : (
         // Vista filtrada — lista plana del broker seleccionado
         <>
-          <ColumnHeader currency={selectedCurrency} />
+          <ColumnHeader currency={selectedCurrency} totalCurrency={currency} />
           <ul className="divide-y divide-line/30">
             {flatList?.map(p => (
               <PositionRow
                 key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
                 p={p}
                 showDetail={showDetail}
+                displayCurrency={currency}
+                tcBlue={tcBlue}
                 onSell={openSell}
                 onCashFlow={openCashFlow}
                 onEditPos={openEditPosition}
@@ -1041,17 +1054,18 @@ function BrokerFilterChip({ active, onClick, label, currency }) {
 // ─── ColumnHeader ────────────────────────────────────────────────────────────
 // Fila de rótulos para que cada columna "diga" qué muestra (antes no había
 // labels y no se entendía qué era cada número). Currency-aware: en ARS la
-// var. día y el P&L van en pesos; el total siempre en USD (suma a la cartera).
+// var. día y el P&L van en pesos; el total respeta el toggle global ARS/USD.
 // El grid-template debe coincidir EXACTO con el de PositionRow para alinear.
-function ColumnHeader({ currency }) {
+function ColumnHeader({ currency, totalCurrency = 'USD' }) {
   const code = String(currency || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
+  const totalCode = String(totalCurrency || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
   const numCls = 'flex flex-col items-end text-[9px] font-mono uppercase tracking-caps text-ink-3 leading-tight'
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_56px_64px_76px] gap-1.5 items-end px-3 py-1.5 bg-bg-1/50 border-b border-line/20">
       <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 self-end">Activo</span>
       <span className={numCls}><span>Var. día</span><span className="text-ink-3/60">{code}</span></span>
       <span className={numCls}><span>{'P&L'}</span><span className="text-ink-3/60">{code}</span></span>
-      <span className={numCls}><span>Total</span><span className="text-ink-3/60">USD</span></span>
+      <span className={numCls}><span>Total</span><span className="text-ink-3/60">{totalCode}</span></span>
     </div>
   )
 }
@@ -1061,7 +1075,8 @@ function ColumnHeader({ currency }) {
 // Debajo, las positions del broker (cash siempre al final).
 
 const BrokerSection = memo(function BrokerSection({
-  broker, positions, totalUsd, showDetail, onEdit, onDelete,
+  broker, positions, totalUsd, showDetail, displayCurrency = 'USD', tcBlue = 1,
+  onEdit, onDelete,
   onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition,
 }) {
   // Color asignado por nombre — estable entre re-renders. Antes el header
@@ -1098,7 +1113,10 @@ const BrokerSection = memo(function BrokerSection({
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-sm font-semibold tabular text-ink-0">
-            ${Math.round(totalUsd).toLocaleString('en-US')}
+            {compactValue(displayCurrency === 'ARS' ? totalUsd * tcBlue : totalUsd, displayCurrency)}
+            <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 ml-1">
+              {displayCurrency}
+            </span>
           </span>
           <button
             type="button"
@@ -1118,13 +1136,15 @@ const BrokerSection = memo(function BrokerSection({
           </button>
         </div>
       </div>
-      <ColumnHeader currency={broker.currency} />
+      <ColumnHeader currency={broker.currency} totalCurrency={displayCurrency} />
       <ul className="divide-y divide-line/20">
         {positions.map(p => (
           <PositionRow
             key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
             p={p}
             showDetail={showDetail}
+            displayCurrency={displayCurrency}
+            tcBlue={tcBlue}
             onSell={onSellPosition}
             onCashFlow={onCashFlowPosition}
             onEditPos={onEditPosition}
@@ -1154,7 +1174,7 @@ const BrokerSection = memo(function BrokerSection({
 // porque los callbacks se definen en el padre con closure sobre el state.
 // Esto corta los re-render de la fila cada vez que prices cambia.
 
-const PositionRow = memo(function PositionRow({ p, showDetail, onSell, onCashFlow, onEditPos, onDeletePos }) {
+const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos }) {
   const cur = p.isAR ? 'ARS' : 'USD'
   const [aiOpen, setAiOpen] = useState(false)
 
@@ -1311,13 +1331,15 @@ const PositionRow = memo(function PositionRow({ p, showDetail, onSell, onCashFlo
         )}
       </div>
 
-      {/* Col 4 — Total: valor actual, siempre en USD (suma a la cartera) */}
+      {/* Col 4 — Total: valor actual; respeta el toggle global USD/ARS.
+          En ARS los montos son grandes — usamos compactValue (k/M) para
+          que no se rompa la columna. */}
       <div className="text-right min-w-0">
         <div className="text-[13px] font-medium tabular text-ink-0 leading-none">
-          ${Math.round(p.valueUsd).toLocaleString('en-US')}
+          {compactValue(displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd, displayCurrency)}
         </div>
         <div className="text-[9px] font-mono uppercase tracking-caps text-ink-2 leading-none mt-1">
-          USD
+          {displayCurrency}
         </div>
       </div>
       </div>
@@ -1360,6 +1382,22 @@ function compactAmount(n, currency) {
     return `${sign}${body}`
   }
   return `${sign}$${Math.round(abs).toLocaleString('en-US')}`
+}
+
+// Total compacto (sin signo, siempre positivo) para la columna Total que es
+// la más angosta. Misma lógica de abreviación que compactAmount pero sin
+// prefijo y SIN '+'/'−'. Usado por Cartera total y por la columna Total de
+// cada PositionRow cuando el toggle global está en ARS.
+function compactValue(n, currency) {
+  if (n == null || isNaN(n)) return '—'
+  const abs = Math.abs(Math.round(n))
+  if (String(currency).toUpperCase() === 'ARS') {
+    if (abs >= 1e6) return '$' + (abs / 1e6).toFixed(abs >= 1e7 ? 0 : 1) + 'M'
+    if (abs >= 1e4) return '$' + Math.round(abs / 1e3) + 'k'
+    if (abs >= 1e3) return '$' + (abs / 1e3).toFixed(1) + 'k'
+    return '$' + abs.toLocaleString('es-AR')
+  }
+  return '$' + abs.toLocaleString('en-US')
 }
 
 

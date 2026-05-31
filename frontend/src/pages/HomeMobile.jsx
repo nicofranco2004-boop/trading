@@ -31,9 +31,12 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import { computeDailyPnl } from '../utils/evolution'
-import { fmtUsd, pctSigned, colorClass } from '../utils/format'
+import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
+import { useCurrency } from '../contexts/CurrencyContext'
 
 export default function HomeMobile() {
+  // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard.
+  const { currency, toggle: toggleCurrency } = useCurrency()
   const [positions, setPositions] = useState([])
   const [monthly, setMonthly] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -185,10 +188,19 @@ export default function HomeMobile() {
           </div>
         )}
 
-        {/* Balance grande */}
+        {/* Balance grande — toggle USD/ARS al tap del badge.
+            Fase A: sincronizado con Dashboard via CurrencyContext. */}
         <div className="text-5xl font-medium tabular tracking-tight text-ink-0 leading-none mb-3">
-          ${fmtNumber(totals.totalValue)}
-          <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
+          {currency === 'ARS'
+            ? `$${fmtNumber(totals.totalValue * tcBlue)}`
+            : `$${fmtNumber(totals.totalValue)}`}
+          <button
+            onClick={toggleCurrency}
+            className="text-base text-ink-3 ml-1.5 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"
+            title={`Cambiar a ${currency === 'USD' ? 'ARS' : 'USD'}`}
+          >
+            {currency}
+          </button>
         </div>
 
         {/* Sparkline 30d con delta del MISMO período (no histórico) */}
@@ -207,7 +219,7 @@ export default function HomeMobile() {
                 </span>
               </div>
               <span className={`text-xs font-mono tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {series30d.positive ? '+' : '−'}${fmtNumber(Math.abs(series30d.deltaUsd))}
+                {series30d.positive ? '+' : '−'}${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcBlue : series30d.deltaUsd))}
               </span>
             </div>
             <div className="h-12 -mx-1">
@@ -219,8 +231,8 @@ export default function HomeMobile() {
               />
             </div>
             <div className="flex items-baseline justify-between mt-1.5 text-[10px] font-mono text-ink-3">
-              <span className="tabular">Hace 30d · ${fmtNumber(series30d.first)}</span>
-              <span className="tabular">Hoy · ${fmtNumber(series30d.last)}</span>
+              <span className="tabular">Hace 30d · ${fmtNumber(currency === 'ARS' ? series30d.first * tcBlue : series30d.first)}</span>
+              <span className="tabular">Hoy · ${fmtNumber(currency === 'ARS' ? series30d.last * tcBlue : series30d.last)}</span>
             </div>
           </div>
         ) : (
@@ -235,7 +247,7 @@ export default function HomeMobile() {
         <div className="grid grid-cols-2 border border-line/60 rounded-lg overflow-hidden bg-bg-1">
           <KpiCell
             label={kpis.pnlDayMeta && kpis.pnlDayMeta.dayDiff > 1 ? `P&L ${kpis.pnlDayMeta.dayDiff}d` : 'P&L Día'}
-            value={kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(kpis.pnlDay))}` : '—'}
+            value={kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlDay * tcBlue : kpis.pnlDay))}` : '—'}
             sub={kpis.pnlDay != null && kpis.pnlDayMeta ? pctSigned(kpis.pnlDayMeta.pct) : null}
             subTone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
             tone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
@@ -243,15 +255,15 @@ export default function HomeMobile() {
           />
           <KpiCell
             label="P&L Mes"
-            value={kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(kpis.pnlMonth))}` : '—'}
+            value={kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlMonth * tcBlue : kpis.pnlMonth))}` : '—'}
             tone={kpis.pnlMonth != null ? (kpis.pnlMonth >= 0 ? 'pos' : 'neg') : null}
             bordered
             leftBorder
           />
           <KpiCell
             label="Capital aportado"
-            value={kpis.aportado > 0 ? `$${fmtNumber(kpis.aportado)}` : '—'}
-            sub="USD neto"
+            value={kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? kpis.aportado * tcBlue : kpis.aportado)}` : '—'}
+            sub={`${currency} neto`}
             topBorder
           />
           <KpiCell

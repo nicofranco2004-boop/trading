@@ -20,6 +20,8 @@ import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
 import AssetLogo from '../components/AssetLogo'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
+import { useCurrency } from '../contexts/CurrencyContext'
+import CurrencyToggle from '../components/CurrencyToggle'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
 import { buildPortfolioValueSeries, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
@@ -40,10 +42,23 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [range, setRange] = useState('1M')
-  const [currency, setCurrency] = useState(() => localStorage.getItem('rendi_dashboard_currency') || 'USD')
+  // Fase A (2026-05-31): toggle currency global compartido entre Dashboard,
+  // HomeMobile, PositionsMobile via CurrencyContext. Antes era local state
+  // por página → inconsistencias entre desktop y mobile.
+  // Migración soft: si el user tenía 'rendi_dashboard_currency' viejo, lo
+  // migra al nuevo storage key al primer load.
+  const { currency, setCurrency } = useCurrency()
+  useEffect(() => {
+    try {
+      const legacy = localStorage.getItem('rendi_dashboard_currency')
+      if (legacy && (legacy === 'ARS' || legacy === 'USD')) {
+        if (legacy !== currency) setCurrency(legacy)
+        localStorage.removeItem('rendi_dashboard_currency')
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const latestRef = useRef({})
-
-  useEffect(() => { localStorage.setItem('rendi_dashboard_currency', currency) }, [currency])
 
   useEffect(() => {
     loadAll()
@@ -370,21 +385,9 @@ export default function Dashboard() {
               source="dashboard_header"
               variant="compact"
             />
-            <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
-              {['USD', 'ARS'].map(c => (
-                <button
-                  key={c}
-                  onClick={() => setCurrency(c)}
-                  className={`px-3 py-1 text-xs font-mono uppercase tracking-caps rounded-sm transition-colors ${
-                    currency === c
-                      ? 'bg-bg-3 text-ink-0'
-                      : 'text-ink-2 hover:text-ink-0'
-                  }`}
-                >
-                  {c}
-                </button>
-              ))}
-            </div>
+            <CurrencyToggle variant="pill" />
+            {/* Toggle global Phase A: este mismo state se comparte con mobile
+                (HomeMobile, PositionsMobile) y persiste en localStorage. */}
           </div>
         }
       />

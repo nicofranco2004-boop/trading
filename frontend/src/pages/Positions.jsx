@@ -23,6 +23,8 @@ import {
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue } from '../utils/valuation'
+import { useCurrency } from '../contexts/CurrencyContext'
+import CurrencyToggle from '../components/CurrencyToggle'
 import PageHeader from '../components/PageHeader'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import BrokerManager from '../components/BrokerManager'
@@ -56,6 +58,9 @@ export default function Positions() {
 }
 
 function PositionsDesktop() {
+  // Fase A: currency global compartido — Positions desktop respeta el toggle
+  // global USD/ARS (mismo state que Dashboard, HomeMobile, PositionsMobile).
+  const { currency: displayCurrency } = useCurrency()
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
   // Cierre del día anterior por símbolo (mismo keying que `prices`: ASSET para
@@ -766,25 +771,34 @@ function PositionsDesktop() {
 
       {/* ══════════════════════════════════════════════════════════════════════
           HERO — 'Tu portfolio hoy' agregado total. Single hero per page rule.
+          Phase A: respeta el toggle global USD/ARS — los pesos siguen al user
+          a través de todas las pantallas.
           ══════════════════════════════════════════════════════════════════════ */}
       <div className="mb-4">
         <StatCard
           tone="hero"
           label="Tu portfolio hoy"
-          value={fmtUsd(totals.value)}
+          value={displayCurrency === 'ARS' ? fmtArs(totals.value * tcBlue) : fmtUsd(totals.value)}
           sub={
             <span className="inline-flex items-center gap-3 flex-wrap">
               <span className="text-ink-2">P&L no realizado</span>
               <span className={`inline-flex items-center gap-1 font-semibold ${totals.pnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                 {totals.pnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
-                USD {usd(Math.abs(totals.pnl))}
+                {displayCurrency === 'ARS'
+                  ? `ARS ${ars(Math.abs(totals.pnl * tcBlue))}`
+                  : `USD ${usd(Math.abs(totals.pnl))}`}
               </span>
               <span className={`tabular ${totals.pnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                 ({pctSigned(totals.pct)})
               </span>
+              <CurrencyToggle variant="compact" className="ml-auto" />
             </span>
           }
-          hint={`Invertido USD ${usd(totals.invested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`}
+          hint={
+            displayCurrency === 'ARS'
+              ? `Invertido ARS ${ars(totals.invested * tcBlue)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
+              : `Invertido USD ${usd(totals.invested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
+          }
         />
       </div>
 

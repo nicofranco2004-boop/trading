@@ -2,6 +2,7 @@ import { useEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
+import { CurrencyProvider } from './contexts/CurrencyContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import Sidebar from './components/Sidebar'
 import MobileTabBar from './components/mobile/MobileTabBar'
@@ -304,14 +305,16 @@ export default function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <CoachDrawerProvider>
-          <div className="min-h-screen bg-bg-0 text-ink-0">
-            <Layout />
-            {/* Drawer global del Coach IA — mounted una vez al nivel de App,
-                cualquier componente lo abre via useCoachDrawer().open() */}
-            <AICoachDrawer />
-          </div>
-        </CoachDrawerProvider>
+        <CurrencyProvider>
+          <CoachDrawerProvider>
+            <div className="min-h-screen bg-bg-0 text-ink-0">
+              <Layout />
+              {/* Drawer global del Coach IA — mounted una vez al nivel de App,
+                  cualquier componente lo abre via useCoachDrawer().open() */}
+              <AICoachDrawer />
+            </div>
+          </CoachDrawerProvider>
+        </CurrencyProvider>
       </AuthProvider>
     </ThemeProvider>
   )
