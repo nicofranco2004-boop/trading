@@ -13218,6 +13218,31 @@ def _run_daily_snapshot_job():
         _snapshot_log.error(f"Daily snapshot job failed: {e}", exc_info=True)
 
 
+def _run_backup_db_job():
+    """Cron diario que dumpea la SQLite y la guarda local + remoto (S3).
+
+    Sin env vars de S3 → solo backup local en el disco Railway (protege contra
+    bugs propios pero NO contra pérdida del disco).
+    Con env vars de S3 → además sube a Backblaze/R2/AWS (protege contra todo).
+    Ver `backend/scripts/backup_db.py` para detalles y env vars requeridas.
+    """
+    from scripts.backup_db import run_backup
+    _backup_log = logging.getLogger("backup_db")
+    try:
+        stats = run_backup(db_path=DB_PATH)
+        if stats.get('errors'):
+            _backup_log.error(f"Backup con errores: {stats}")
+        else:
+            _backup_log.info(
+                f"Backup OK — size={stats.get('size_bytes', 0)} bytes, "
+                f"local={stats.get('local_path')}, "
+                f"remote={'OK' if stats.get('remote_uploaded') else 'skip'}, "
+                f"pruned local={stats.get('local_pruned')} remote={stats.get('remote_pruned')}"
+            )
+    except Exception as e:
+        _backup_log.error(f"Backup job falló: {e}", exc_info=True)
+
+
 def _run_subscription_lifecycle_job():
     """Cron diario que mantiene sano el estado de subscripciones:
       - downgrade post-cancelación cuando period_end pasó
@@ -13436,9 +13461,19 @@ def _start_scheduler():
         id='subscription_lifecycle',
         replace_existing=True,
     )
+    # 03:45 UTC — backup diario de la SQLite. Después del snapshot + lifecycle
+    # para no pisar transacciones. Va a `./backups/` local (Railway disk) +
+    # opcionalmente sube a S3-compatible si están las env vars BACKUP_S3_*.
+    _scheduler.add_job(
+        _run_backup_db_job,
+        CronTrigger(hour=3, minute=45),
+        id='backup_db',
+        replace_existing=True,
+    )
     _scheduler.start()
     _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 02:59 UTC = 23:59 ART)")
     _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC)")
+    _snapshot_log.info("Backup DB scheduler iniciado (cron: 03:45 UTC)")
 
 
 @app.on_event("shutdown")
