@@ -33,7 +33,9 @@ const Goals = lazy(() => import('./Goals'))
 
 const TABS = [
   { id: 'posiciones',  label: 'Posiciones',   icon: Briefcase,  desc: 'Tus tenencias actuales' },
-  { id: 'evolucion',   label: 'Evolución',    icon: TrendingUp, desc: 'Equity curve, composición y heatmap' },
+  // ID se mantiene 'evolucion' para no romper bookmarks ni el alias
+  // legacy de ?tab=composicion (TAB_ALIASES abajo).
+  { id: 'evolucion',   label: 'Dashboard',    icon: TrendingUp, desc: 'Equity curve, composición y heatmap' },
   { id: 'objetivos',   label: 'Objetivos',    icon: Target,     desc: 'Tus metas financieras y proyección' },
 ]
 
