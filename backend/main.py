@@ -2460,8 +2460,13 @@ def _backfill_fx_rates_if_empty():
                 pass
 
 
-@app.get("/api/dolar")
-def get_dolar(uid: int = Depends(get_current_user)):
+def _get_dolar_data():
+    """Cotizaciones del día (blue/mep/ccl/cripto) con caché en memoria (TTL).
+
+    El dato es un precio de mercado global — idéntico para todos, no depende del
+    usuario. Por eso lo comparten el endpoint autenticado (/api/dolar) y el
+    público (/api/public/dolar): una sola fuente de verdad y un solo caché.
+    """
     now = time.time()
     if _dolar_cache["data"] and now - _dolar_cache["ts"] < DOLAR_TTL:
         return _dolar_cache["data"]
@@ -2480,6 +2485,24 @@ def get_dolar(uid: int = Depends(get_current_user)):
         _dolar_cache["data"] = data
         _dolar_cache["ts"] = now
     return data
+
+
+@app.get("/api/dolar")
+def get_dolar(uid: int = Depends(get_current_user)):
+    return _get_dolar_data()
+
+
+@app.get("/api/public/dolar")
+def get_public_dolar():
+    """Blue del día SIN auth — para mostrar precios en ARS en la landing pública
+    (pre-login). Misma fuente y caché que /api/dolar, pero sólo expone el blue;
+    el resto de las casas quedan en el endpoint autenticado.
+
+    Sin esto, la landing no puede leer el TC vivo y su precio queda congelado al
+    fallback, divergiendo de /planes cuando el blue se mueve.
+    """
+    d = _get_dolar_data()
+    return {"blue": d.get("blue"), "fetched_at": d.get("fetched_at")}
 
 
 # ─── Portfolio snapshots (daily) ─────────────────────────────────────────────
@@ -7985,19 +8008,34 @@ def _detect_and_remove_corrupt_snapshots(conn, uid: int) -> list:
     del chart "Performance del portfolio" porque toman como `first.valueUsd`
     un valor anómalo bajo.
 
-    Heurística conservadora: para cada snapshot D, mirar D-1 y D+1. Si:
+    Heurística (mejorada 2026-06-01): para cada snapshot D, mirar D-1 y D+1.
+
+    DOS tracks de detección:
+
+    Track 1 — V-shape extrema (drop > 15%):
       • value[D] cae > 15% vs value[D-1]
       • value[D+1] recupera > 20% vs value[D]
       • D+1 está dentro de 3 días de D
-    → snapshot D es corrupto, eliminarlo.
+    → corrupto (caso original, mantenido para back-compat).
 
-    Solo afecta snapshots con esa firma específica. NO toca grandes drops
-    legítimos (donde el drop persiste vs recupera en 1 día).
+    Track 2 — V-shape sutil con flujos consistentes (drop 5-15%):
+      • value[D] cae 5-15% vs value[D-1]
+      • value[D+1] recupera ≥ 80% del drop (volver cerca del valor previo)
+      • net_deposited NO cambió entre D-1, D, D+1 (sin flujos que justifiquen)
+      • D+1 está dentro de 2 días de D
+    → corrupto (caso real del bug del 2026-06-01: 6.2% drop sin flujos +
+      recovery casi exacta al día siguiente — firma de cron tomando precios
+      parciales / fetch incompleto de yfinance).
+
+    La diferencia clave: si hubo un retiro grande, net_deposited baja igual
+    que total_value y NO es corrupto. Track 2 requiere "value cayó SIN que
+    haya habido cashflow", lo que es la firma del bug real.
 
     Devuelve list de IDs eliminados (para logging).
     """
     snaps = conn.execute(
-        "SELECT id, date, total_value FROM snapshots WHERE user_id=? ORDER BY date",
+        "SELECT id, date, total_value, net_deposited FROM snapshots "
+        "WHERE user_id=? ORDER BY date",
         (uid,),
     ).fetchall()
     if len(snaps) < 3:
@@ -8021,9 +8059,27 @@ def _detect_and_remove_corrupt_snapshots(conn, uid: int) -> list:
             continue
         drop_from_prev = (cur_v - prev_v) / prev_v
         recovery_to_next = (next_v - cur_v) / cur_v
-        # V-shape: cae > 15% Y se recupera > 20% en ≤ 3 días.
+
+        # Track 1: V-shape extrema (drop > 15% + recovery > 20%)
         if drop_from_prev < -0.15 and recovery_to_next > 0.20:
             corrupt_ids.append(snaps[i]["id"])
+            continue
+
+        # Track 2: V-shape sutil — drop 5-15% SIN cambio de net_deposited
+        # (firma del bug 2026-06-01 con fetch parcial de yfinance).
+        if -0.15 <= drop_from_prev < -0.05 and days_to_next <= 2:
+            prev_nd = float(snaps[i - 1]["net_deposited"] or 0)
+            cur_nd = float(snaps[i]["net_deposited"] or 0)
+            next_nd = float(snaps[i + 1]["net_deposited"] or 0)
+            # Sin flujos que expliquen el drop (tolerancia $5 por rounding)
+            flows_consistent = (
+                abs(cur_nd - prev_nd) < 5.0 and abs(next_nd - cur_nd) < 5.0
+            )
+            # Recovery cubre >= 80% del drop (vuelve cerca del valor previo)
+            drop_abs = prev_v - cur_v
+            recovery_abs = next_v - cur_v
+            if flows_consistent and recovery_abs >= 0.80 * drop_abs:
+                corrupt_ids.append(snaps[i]["id"])
 
     if corrupt_ids:
         placeholders = ",".join("?" * len(corrupt_ids))
@@ -8120,6 +8176,47 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
         result["user_id"] = uid
         result["corrupt_snapshots_removed"] = len(corrupt_removed)
         return result
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/delete-snapshot")
+def admin_delete_snapshot(date: str, uid: int = Depends(get_admin_user)):
+    """Borra un snapshot específico del user admin logueado (no afecta otros).
+
+    Use case: limpiar snapshots corruptos por fetch parcial de yfinance que
+    no llegan al threshold del detector automático (heurística V-shape).
+
+    Parameter:
+      date: YYYY-MM-DD del snapshot a borrar
+
+    Returns:
+      { ok, deleted_count, snapshot: { date, total_value, ... } }
+    """
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date or ""):
+        raise HTTPException(400, "date debe ser YYYY-MM-DD")
+    conn = get_db()
+    try:
+        existing = conn.execute(
+            "SELECT date, total_value, total_invested, net_deposited, fx_to_usd_blue "
+            "FROM snapshots WHERE user_id=? AND date=?",
+            (uid, date),
+        ).fetchone()
+        if not existing:
+            return {"ok": False, "deleted_count": 0, "reason": f"No hay snapshot del {date} para este user"}
+        snap_dict = dict(existing)
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM snapshots WHERE user_id=? AND date=?",
+                (uid, date),
+            )
+            deleted = cur.rowcount
+        log.info(
+            "Admin delete_snapshot: user=%d date=%s value=%s (deleted=%d)",
+            uid, date, snap_dict.get("total_value"), deleted,
+        )
+        return {"ok": True, "deleted_count": deleted, "snapshot": snap_dict}
     finally:
         conn.close()
 
