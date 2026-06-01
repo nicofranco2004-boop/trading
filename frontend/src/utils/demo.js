@@ -141,6 +141,90 @@ const OPERATIONS = (() => {
   return ops.map((o, i) => ({ id: 1000 + i, ...o, commissions: 0 }))
 })()
 
+// Precios actuales fake (snapshot del momento). Definido ARRIBA de MONTHLY a
+// propósito: MONTHLY hace una simulación stochastic desde un valor inicial,
+// pero el VALOR FINAL del portfolio (lo que el user ve en el hero del
+// Dashboard) sale de POSITIONS × PRICES. Si MONTHLY no termina cerca de
+// (POSITIONS × PRICES), la "P&L Últimos N días" se infla por el gap entre
+// las dos simulaciones independientes. Necesitamos PRICES acá para
+// computar el target y scalear MONTHLY.
+const PRICES = {
+  // US stocks
+  NVDA: 178.50, AAPL: 192.40, MSFT: 438.20, TSLA: 248.10, AMD: 152.80, SPY: 568.20, GOOGL: 195.60,
+  META: 612.40, AVGO: 198.40, MELI: 1985.00,
+  // Crypto
+  BTC: 81595.00, ETH: 3320.00, SOL: 198.40,
+  // BCBA / CEDEARs (en ARS)
+  'GGAL.BA': 4820, 'YPFD.BA': 31200, 'AAPL.BA': 22400, 'AL30.BA': 78500,
+  // Watchlist
+  PLTR: 24.85, COIN: 215.30,
+}
+
+// Precios "cierre día anterior" derivados de PRICES — necesarios para que
+// la columna VAR. DÍA en /posiciones muestre data en modo demo (antes
+// devolvía vacío y todas las posiciones quedaban con "—").
+//
+// Derivamos con un hash determinístico por símbolo (mismo prev_close en
+// cada render → no parpadea entre refreshes). Drift -2% a +2.5% con bias
+// hacia positivo (más symbols "en verde" hoy = portfolio demo se ve más
+// atractivo para marketing).
+const PREV_CLOSE = (() => {
+  const out = {}
+  for (const [sym, price] of Object.entries(PRICES)) {
+    // Hash simple del symbol para drift estable per-render
+    let hash = 0
+    for (let i = 0; i < sym.length; i++) hash = (hash * 31 + sym.charCodeAt(i)) & 0xffff
+    // Distribución: -2% a +2.5% (bias positivo levemente)
+    const dailyChange = ((hash % 450) - 200) / 10000
+    // prev_close = current / (1 + change) → si change > 0, today subió
+    const prev = price / (1 + dailyChange)
+    // Redondeo: 4 decimales para crypto chico, 2 para resto
+    out[sym] = price < 10 ? +prev.toFixed(4) : +prev.toFixed(2)
+  }
+  return out
+})()
+
+// Total USD del portfolio computado desde POSITIONS × PRICES, con el mismo
+// algoritmo que `computeBrokerValue` del frontend (valuation.js):
+//   • USD broker → price × quantity en USD directo (o invested para cash).
+//   • ARS broker (Cocos) → precio[asset+'.BA'] × quantity en ARS, / tcBlue.
+//     Si no hay precio (ej. asset ya tiene '.BA' en el nombre y el lookup
+//     duplicaría el sufijo), fallback a cost basis (invested) / tcBlue.
+//   • Cash ARS → quantity / tcBlue; cash USD/USDT → invested.
+//
+// Este es el target al que MONTHLY tiene que converger en su último mes
+// para que el Dashboard no muestre un "Últimos 10 días" inflado.
+const _DEMO_TC_BLUE = 1415  // matches /config en demo
+const _COMPUTED_PORTFOLIO_TOTAL_USD = (() => {
+  let total = 0
+  for (const p of POSITIONS) {
+    if (p.is_cash) {
+      // Cocos cash: p.quantity está en ARS, lo convertimos a USD.
+      // Schwab USD / Binance USDT: invested ya es USD.
+      total += p.broker === 'Cocos' ? (p.quantity || 0) / _DEMO_TC_BLUE : (p.invested || 0)
+      continue
+    }
+    if (p.broker === 'Cocos') {
+      // valuation.js hace prices[p.asset + '.BA']. Para 'GGAL' → 'GGAL.BA' ✓.
+      // Para 'AAPL.BA' → 'AAPL.BA.BA' (undefined) → fallback a cost basis.
+      const priceArs = PRICES[p.asset + '.BA']
+      if (priceArs != null) {
+        total += (priceArs * (p.quantity || 0)) / _DEMO_TC_BLUE
+      } else {
+        total += (p.invested || 0) / _DEMO_TC_BLUE
+      }
+    } else {
+      const priceUsd = PRICES[p.asset]
+      if (priceUsd != null) {
+        total += priceUsd * (p.quantity || 0)
+      } else {
+        total += p.invested || 0  // fallback
+      }
+    }
+  }
+  return total
+})()
+
 // Cierres mensuales (para Monthly Reports / Reports timeline / Insights chart).
 // CRÍTICO: tiene que incluir capital_final para que buildCumulativeReturnSeries
 // pueda computar el TWR correctamente. Sin este campo, monthlyReturn = -100% y
@@ -205,6 +289,28 @@ const MONTHLY = (() => {
       })
     }
     start.setMonth(start.getMonth() + 1)
+  }
+
+  // ── Reconcile MONTHLY's final value con POSITIONS × PRICES ─────────────
+  // MONTHLY simula stochastic desde $18.5k (Apr 2024) → algo random en hoy.
+  // POSITIONS × PRICES es hardcoded → ~$41k. Si no alineamos, el Dashboard
+  // toma liveValue (positions × prices) y lo compara contra snapshots[1]
+  // (interpolado de MONTHLY) → P&L "Últimos N días" = gap entre las 2
+  // simulaciones (puede ser +$10k de la nada). Scaleamos todo MONTHLY
+  // proporcionalmente para que su última capital_final ≈ POSITIONS×PRICES.
+  // Los retornos mensuales (%) se preservan; sólo cambian los absolutos.
+  const lastGlobal = [...out].reverse().find(m => m.broker === 'global')
+  if (lastGlobal && lastGlobal.capital_final > 0 && _COMPUTED_PORTFOLIO_TOTAL_USD > 0) {
+    const scale = _COMPUTED_PORTFOLIO_TOTAL_USD / lastGlobal.capital_final
+    if (Math.abs(scale - 1) > 0.01) {
+      for (const m of out) {
+        m.capital_inicio = Math.round(m.capital_inicio * scale)
+        m.capital_final = Math.round(m.capital_final * scale)
+        m.deposits = Math.round((m.deposits || 0) * scale)
+        m.pnl_realized = Math.round((m.pnl_realized || 0) * scale)
+        m.pnl_unrealized = Math.round((m.pnl_unrealized || 0) * scale)
+      }
+    }
   }
   return out
 })()
@@ -1513,18 +1619,8 @@ const WATCHLIST_BASE = [
   { symbol: 'COIN', asset_type: 'stock', added_at: '2025-05-01', price: 215.30, change_pct: 4.5 },
 ]
 
-// Precios actuales fake (snapshot del momento)
-const PRICES = {
-  // US stocks
-  NVDA: 178.50, AAPL: 192.40, MSFT: 438.20, TSLA: 248.10, AMD: 152.80, SPY: 568.20, GOOGL: 195.60,
-  META: 612.40, AVGO: 198.40, MELI: 1985.00,
-  // Crypto
-  BTC: 81595.00, ETH: 3320.00, SOL: 198.40,
-  // BCBA / CEDEARs (en ARS)
-  'GGAL.BA': 4820, 'YPFD.BA': 31200, 'AAPL.BA': 22400, 'AL30.BA': 78500,
-  // Watchlist
-  PLTR: 24.85, COIN: 215.30,
-}
+// PRICES + PREV_CLOSE: ver arriba (movidos antes de MONTHLY para que el
+// scaling de MONTHLY pueda computar el target POSITIONS × PRICES).
 
 // Benchmarks mensuales para Insights chart (S&P / Inflación AR / Dólar Blue)
 const BENCHMARKS = (() => {
@@ -1802,6 +1898,17 @@ export function handleDemoRequest(method, path, body) {
       const out = {}
       for (const s of symbols) {
         if (PRICES[s] != null) out[s] = PRICES[s]
+      }
+      return out
+    }
+    if (basePath === '/prices/prev-close') {
+      // Mismo shape que /prices pero con PREV_CLOSE (cierre del día anterior).
+      // Positions/PositionsMobile lo usan para calcular la VAR. DÍA por fila.
+      // Sin este intercept en demo la columna queda en "—" para todo el book.
+      const symbols = (query || '').match(/symbols=([^&]+)/)?.[1]?.split(',') || []
+      const out = {}
+      for (const s of symbols) {
+        if (PREV_CLOSE[s] != null) out[s] = PREV_CLOSE[s]
       }
       return out
     }
