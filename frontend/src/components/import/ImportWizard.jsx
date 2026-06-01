@@ -72,10 +72,15 @@ const STEP_SEED = 'seed'
 const STEP_DONE = 'done'
 
 // Plataformas cuya importación está temporalmente deshabilitada (parser
-// incompleto — falta data del CSV). La plataforma sigue apareciendo en el
-// dropdown para que el user la encuentre por nombre, pero al seleccionarla
-// mostramos un card de contacto por WhatsApp en vez del uploader, y se
-// bloquea el botón Continuar. Para reactivar: borrá la entrada de acá.
+// incompleto o todavía inexistente — falta data del CSV). La plataforma
+// aparece en el dropdown de "Plataforma" para que el user la encuentre por
+// nombre, pero al seleccionarla mostramos un card de contacto por WhatsApp
+// en vez del uploader, y se bloquea el botón Continuar. Para reactivar:
+// borrá la entrada de acá.
+//
+// Las que NO tienen parser en el backend (ej: IOL) se inyectan en el dropdown
+// vía withBlockedPlatforms(); las que sí lo tienen (ej: Balanz) ya vienen del
+// registry, así que no se duplican.
 const BLOCKED_IMPORT_PLATFORMS = {
   balanz: {
     label: 'Balanz',
@@ -83,6 +88,29 @@ const BLOCKED_IMPORT_PLATFORMS = {
     body: 'Estamos terminando de soportar el formato de exportación de Balanz. Si tenés operaciones de Balanz, escribinos por WhatsApp y te ayudamos a cargarlas.',
     waMessage: 'Hola, tengo operaciones de Balanz y quiero importarlas a Rendi.',
   },
+  iol: {
+    label: 'IOL',
+    title: 'La importación de IOL todavía no está disponible',
+    body: 'Estamos terminando de soportar el formato de exportación de IOL. Si tenés operaciones de IOL, escribinos por WhatsApp y te ayudamos a cargarlas.',
+    waMessage: 'Hola, tengo operaciones de IOL y quiero importarlas a Rendi.',
+  },
+}
+
+// Inyecta en la lista de parserGroups las plataformas bloqueadas que NO tienen
+// un parser real en el backend (ej: IOL), para que aparezcan en el dropdown y
+// disparen el card de contacto. No duplica las que ya vienen del registry
+// (ej: Balanz). El export sintético queda como `supported: false`.
+function withBlockedPlatforms(groups) {
+  const list = Array.isArray(groups) ? groups : []
+  const present = new Set(list.map(g => g.platform))
+  const synthetic = Object.entries(BLOCKED_IMPORT_PLATFORMS)
+    .filter(([id]) => !present.has(id))
+    .map(([id, info]) => ({
+      platform: id,
+      platform_label: info.label,
+      exports: [{ id, label: info.label, supported: false }],
+    }))
+  return [...list, ...synthetic]
 }
 
 const OP_LABELS = {
@@ -135,7 +163,9 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
 
   useEffect(() => {
     api.get('/imports/parsers').then(setParsers).catch(() => setParsers([]))
-    api.get('/imports/parsers/grouped').then(setParserGroups).catch(() => setParserGroups([]))
+    api.get('/imports/parsers/grouped')
+      .then(g => setParserGroups(withBlockedPlatforms(g)))
+      .catch(() => setParserGroups(withBlockedPlatforms([])))
     api.get('/brokers').then(bs => {
       setBrokers(bs)
       if (!singleBroker && bs.length > 0) setSingleBroker(bs[0].name)
