@@ -1546,8 +1546,11 @@ def register(data: RegisterIn, request: Request, response: Response):
     conn = get_db()
     try:
         h = pwd_ctx.hash(data.password)
-        # admin se auto-aprueba + auto-verifica; resto queda pending + sin verificar
-        approved = 1 if is_admin_signup else 0
+        # Registro abierto: TODOS quedan aprobados automáticamente (sin
+        # aprobación manual del admin). El único gate que queda para users no
+        # admin es la verificación de email (OTP). El admin además se
+        # auto-verifica el email (acceso interno directo).
+        approved = 1
         email_verified = 1 if is_admin_signup else 0
         cur = conn.execute(
             """INSERT INTO users (email, name, password_hash, is_admin, approved, email_verified)
@@ -1642,9 +1645,9 @@ def login(data: LoginIn, request: Request, response: Response):
             "error": "Confirmá tu email antes de ingresar.",
             "email": email_norm,
         })
-    if not row["approved"]:
-        conn.close()
-        raise HTTPException(403, "Cuenta pendiente de aprobación por el administrador")
+    # Nota: el gate de aprobación manual del admin fue removido — el registro
+    # es abierto. La columna `approved` se mantiene (todos en 1) por compat de
+    # esquema, pero ya no bloquea el login.
     # Update last_login
     try:
         conn.execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (row["id"],))

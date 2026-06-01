@@ -143,9 +143,10 @@ export default function Login() {
             ? 'El email o la contraseña no coinciden. Revisá que estén bien escritos — si olvidaste tu contraseña, podés resetearla con el link de arriba.'
             : 'Las credenciales no son válidas.'
         } else if (res.status === 403) {
-          // Cuenta pendiente de aprobación, deshabilitada, etc.
+          // Acceso denegado (ej.: registro deshabilitado). El caso de email
+          // sin verificar se maneja arriba con redirect a /verify-email.
           const backendMsg = typeof data.detail === 'string' ? data.detail : (data.detail?.error || data.detail?.message)
-          friendly = backendMsg || 'Tu cuenta está pendiente de aprobación. Recibirás un email cuando podamos habilitarla.'
+          friendly = backendMsg || 'No pudimos completar la acción. Probá de nuevo en un momento.'
         } else if (res.status === 429) {
           friendly = 'Demasiados intentos. Esperá un minuto antes de intentar de nuevo.'
         } else if (res.status === 422 || res.status === 400) {
@@ -168,13 +169,6 @@ export default function Login() {
       // Registro con verificación pendiente → llevar a /verify-email
       if (data.needs_verification) {
         navigate(`/verify-email?email=${encodeURIComponent(data.email || cleanEmail)}`)
-        return
-      }
-      // Registro pendiente: el admin debe aprobar
-      if (data.pending) {
-        setInfo(data.message || 'Cuenta creada. Pendiente de aprobación.')
-        setMode('login')
-        setPassword('')
         return
       }
       login(data.token, data.name, { is_admin: !!data.is_admin })

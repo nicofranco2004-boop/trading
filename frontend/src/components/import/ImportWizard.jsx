@@ -3,6 +3,8 @@ import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Sa
 import InfoTooltip from '../InfoTooltip'
 import BrokerInstructions from './BrokerInstructions'
 import { api } from '../../utils/api'
+import { whatsappUrl } from '../../utils/support'
+import { WhatsAppIcon } from '../SupportWhatsAppFab'
 
 // Explicaciones por campo Rendi — se muestran en un (?) al lado del label.
 const FIELD_HELP = {
@@ -68,6 +70,20 @@ const STEP_MAP = 'map'
 const STEP_PREVIEW = 'preview'
 const STEP_SEED = 'seed'
 const STEP_DONE = 'done'
+
+// Plataformas cuya importación está temporalmente deshabilitada (parser
+// incompleto — falta data del CSV). La plataforma sigue apareciendo en el
+// dropdown para que el user la encuentre por nombre, pero al seleccionarla
+// mostramos un card de contacto por WhatsApp en vez del uploader, y se
+// bloquea el botón Continuar. Para reactivar: borrá la entrada de acá.
+const BLOCKED_IMPORT_PLATFORMS = {
+  balanz: {
+    label: 'Balanz',
+    title: 'La importación de Balanz todavía no está disponible',
+    body: 'Estamos terminando de soportar el formato de exportación de Balanz. Si tenés operaciones de Balanz, escribinos por WhatsApp y te ayudamos a cargarlas.',
+    waMessage: 'Hola, tengo operaciones de Balanz y quiero importarlas a Rendi.',
+  },
+}
 
 const OP_LABELS = {
   BUY: 'Compra',
@@ -233,6 +249,11 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   // Parsers específicos (Binance, Balanz, etc.) ya saben qué significa cada
   // columna del archivo del broker — no hace falta que el usuario mapee.
   const isSpecificParser = format && format !== 'rendi_generic'
+
+  // Plataforma con importación bloqueada (ver BLOCKED_IMPORT_PLATFORMS).
+  // Cuando está activa, el paso de upload muestra un card de contacto y no
+  // se puede continuar.
+  const isBlockedPlatform = !!BLOCKED_IMPORT_PLATFORMS[platform]
 
   async function uploadAndInspect() {
     if (!files || files.length === 0) {
@@ -512,7 +533,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                 Cancelar
               </button>
             )}
-            {step === STEP_UPLOAD && (
+            {step === STEP_UPLOAD && !isBlockedPlatform && (
               <button
                 onClick={uploadAndInspect}
                 disabled={busy || files.length === 0}
@@ -668,6 +689,9 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
   const [detection, setDetection] = useState(null)  // { platform, label } | null
   const isSpecific = format && format !== 'rendi_generic'
   const parserLabel = parsers.find(p => p.id === format)?.label || format
+  // Si la plataforma seleccionada está bloqueada, mostramos el card de
+  // contacto en vez del uploader (ver BLOCKED_IMPORT_PLATFORMS).
+  const blockedInfo = BLOCKED_IMPORT_PLATFORMS[platform]
 
   // Grupo activo de la plataforma seleccionada
   const activeGroup = parserGroups.find(g => g.platform === platform)
@@ -779,7 +803,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
       <BrokerInstructions defaultBrokerId={instructionsBrokerId} />
 
       {/* Para parsers específicos, el broker lo hardcodea el parser. */}
-      {isSpecific && (
+      {isSpecific && !blockedInfo && (
         <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
           <span className="text-ink-1">
             Este parser crea automáticamente el broker correspondiente
@@ -927,6 +951,28 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
           </div>
         )}
       </div>
+
+      {blockedInfo ? (
+        <div className="px-4 py-5 rounded-lg border border-rendi-accent/30 bg-rendi-accent/[0.06] text-center">
+          <h3 className="text-base font-medium text-ink-0 mb-1.5">{blockedInfo.title}</h3>
+          <p className="text-sm text-ink-2 leading-relaxed max-w-md mx-auto mb-4">
+            {blockedInfo.body}
+          </p>
+          <a
+            href={whatsappUrl(blockedInfo.waMessage)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 text-sm font-medium bg-[#25D366] hover:bg-[#1ebe5d] text-white rounded-md px-4 py-2 transition-colors"
+          >
+            <WhatsAppIcon size={16} />
+            Contactar por WhatsApp
+          </a>
+          <p className="text-xs text-ink-3 mt-3">
+            Mientras tanto podés importar operaciones de otros brokers eligiéndolos arriba.
+          </p>
+        </div>
+      ) : (
+      <>
       <p className="text-xs text-ink-3 -mt-2">
         {platform === 'generic'
           ? 'El template genérico funciona con cualquier CSV — vas a poder mapear las columnas en el siguiente paso.'
@@ -1049,6 +1095,8 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
         <p>Antes de importar, generamos una vista previa: vas a poder revisar fila por fila lo que Rendi entendió antes de guardar nada.</p>
         <p>Si tu archivo tiene errores, las filas válidas se importan igual y te mostramos cuáles fallaron.</p>
       </div>
+      </>
+      )}
     </div>
   )
 }
