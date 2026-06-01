@@ -27,49 +27,68 @@ import { trackEvent } from '../utils/analytics'
 import { isSafePaymentUrl } from '../utils/safeUrl'
 import { api } from '../utils/api'
 
-// Precios USD/mes — fuente de "valor" del producto. El COBRO real se hace
-// en ARS calculado con TC blue del día, redondeado a la centena más cercana
-// (Math.round(price / 100) * 100). Ejemplo Pro USD 9 × 1415 = 12735 → 12700 ARS.
-// El display en cards muestra ARS principal + USD como ref menor.
-export const PLUS_PRICE_USD = '4'
-export const PRO_PRICE_USD = '9'
-// Anual con ~16.5% off vs monthly × 12
-export const PLUS_PRICE_ANNUAL_USD = '40'
-export const PRO_PRICE_ANNUAL_USD = '90'
+// ─── Pricing en ARS hardcoded (2026-05-31) ──────────────────────────────────
+// Cobramos en pesos fijo (no convertido al blue). Razón:
+//   1. Rebill cobra fee mínimo USD 500/mes si facturás en USD — inviable
+//      hasta tener ~200 users pagos.
+//   2. ARS fijo = pricing simple sin sorpresas para el user.
+//   3. Cuando el blue suba significativamente (+15%), ajustamos manualmente
+//      con anuncio previo. Ver "Playbook de ajuste" en project_rebill_pricing.md
+//
+// Antes: pricing en USD con conversión arsPriceRounded(usd, tcBlue) → ARS.
+// Ahora: ARS hardcoded como source of truth.
+export const PLUS_PRICE_ARS_MONTHLY = '5990'
+export const PRO_PRICE_ARS_MONTHLY = '13990'
+// Anual con ~16% off vs monthly × 12 (mismo ratio que tenían los USD)
+export const PLUS_PRICE_ARS_ANNUAL = '59900'   // vs 12×5990=71880 → 16.7% off
+export const PRO_PRICE_ARS_ANNUAL = '139900'   // vs 12×13990=167880 → 16.7% off
 
-// Precios ARS legacy (usados como fallback si TC no carga). Calculados a
-// TC 1415 con la regla del redondeo: Plus 4×1415=5660→5700, Pro 9×1415=12735→12700.
-// Cuando TC carga del backend, estos no se usan. fallback only.
-export const ARS_PLUS_MONTHLY = '5.700'
-export const ARS_PLUS_ANNUAL = '56.600'  // 40 × 1415 = 56600 → 56600 (ya en centena)
-export const ARS_PLUS_ANNUAL_MONTHLY_EQ = '4.717'
-export const ARS_MONTHLY = '12.700'
-const ARS_ANNUAL  = '127.400'  // 90 × 1415 = 127350 → 127400
-const ARS_ANNUAL_MONTHLY_EQ = '10.617'
+// Mensual equivalente cuando elige plan anual (para display "X/mes · facturado anual")
+// Math.round(annual / 12)
+export const PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ = '4992'   // 59900/12 = 4991.67
+export const PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ = '11658'   // 139900/12 = 11658.33
 
-/**
- * Calcula el precio ARS a mostrar para un USD dado.
- *
- * Regla del cobro: el pago se hace en ARS, calculado con TC blue del día y
- * redondeado a la centena más cercana. Mismo helper para Plus, Pro, mensual,
- * anual — un solo lugar para la regla de pricing.
- *
- *   USD 4 × 1415 = 5660  → round(5660/100)*100 = 5700
- *   USD 9 × 1415 = 12735 → round(12735/100)*100 = 12700
- *   USD 40 × 1415 = 56600 → 56600 (ya centena)
- *   USD 90 × 1415 = 127350 → 127400
- *
- * Devuelve string formateado tipo argentino: "5.700" / "12.700" / "127.400".
- */
-export function arsPriceRounded(usdAmount, tcBlue) {
-  const raw = Number(usdAmount) * Number(tcBlue || 1415)
-  const rounded = Math.round(raw / 100) * 100
-  return rounded.toLocaleString('es-AR')
+// Helper: formatea un número ARS al estilo argentino con punto miles.
+//   5990 → "5.990"
+//   59900 → "59.900"
+//   139900 → "139.900"
+export function fmtArs(amount) {
+  const n = typeof amount === 'string' ? parseInt(amount, 10) : amount
+  if (!Number.isFinite(n)) return String(amount)
+  return n.toLocaleString('es-AR')
 }
 
-// Back-compat helper — alias del de arriba con nombre legacy.
-function fmtArsConverted(usdPrice, tcBlue) {
-  return arsPriceRounded(usdPrice, tcBlue)
+// ─── Aliases back-compat (deprecated) ───────────────────────────────────────
+// Mantenemos estas exports para no romper imports existentes durante la
+// transición. Los callers nuevos deben usar las constants ARS de arriba.
+//
+// @deprecated — usar PLUS_PRICE_ARS_MONTHLY directamente
+export const PLUS_PRICE_USD = '4'
+// @deprecated — usar PRO_PRICE_ARS_MONTHLY directamente
+export const PRO_PRICE_USD = '9'
+// @deprecated — usar PLUS_PRICE_ARS_ANNUAL directamente
+export const PLUS_PRICE_ANNUAL_USD = '40'
+// @deprecated — usar PRO_PRICE_ARS_ANNUAL directamente
+export const PRO_PRICE_ANNUAL_USD = '90'
+// @deprecated — ya no convertimos, usamos precios ARS fijos
+export const ARS_PLUS_MONTHLY = PLUS_PRICE_ARS_MONTHLY
+export const ARS_PLUS_ANNUAL = PLUS_PRICE_ARS_ANNUAL
+export const ARS_PLUS_ANNUAL_MONTHLY_EQ = PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ
+export const ARS_MONTHLY = PRO_PRICE_ARS_MONTHLY
+// @deprecated — ya no hace falta convertir, precios son ARS fijos
+export function arsPriceRounded(usdAmount, _tcBlueIgnored) {
+  // Fallback de back-compat: si alguien todavía llama esto con USD 4 o USD 9,
+  // mapeamos a los ARS hardcoded. Cualquier otro valor cae a un cálculo
+  // legacy con TC 1466 (solo para no romper en lugares oscuros).
+  const usd = String(usdAmount).trim()
+  if (usd === '4' || usd === '4.0') return PLUS_PRICE_ARS_MONTHLY
+  if (usd === '9' || usd === '9.0') return PRO_PRICE_ARS_MONTHLY
+  if (usd === '40') return PLUS_PRICE_ARS_ANNUAL
+  if (usd === '90') return PRO_PRICE_ARS_ANNUAL
+  // Fallback genérico (no debería ejecutarse en producción)
+  const raw = Number(usdAmount) * 1466
+  const rounded = Math.round(raw / 100) * 100
+  return rounded.toLocaleString('es-AR')
 }
 
 // ─── Listas de features por plan (template 3-secciones) ──────────────────────
@@ -452,22 +471,22 @@ export default function Planes() {
                 hasCredit,
                 isCancelledMode,
               })
-              // Pricing ARS-first: el cobro real se hace en ARS, calculado
-              // con TC blue del día y redondeado a centena (arsPriceRounded).
-              // El USD aparece como referencia menor en el footnote.
-              const monthlyUsd = billingPeriod === 'annual' ? (+PLUS_PRICE_ANNUAL_USD / 12) : +PLUS_PRICE_USD
-              const arsMonthly = arsPriceRounded(monthlyUsd, tcBlue)
-              const arsAnnualTotal = billingPeriod === 'annual' ? arsPriceRounded(PLUS_PRICE_ANNUAL_USD, tcBlue) : null
+              // Pricing ARS hardcoded (2026-05-31): cobramos pesos fijos.
+              // No hay conversión a USD ni dependencia del blue para el display.
+              const arsMonthly = billingPeriod === 'annual'
+                ? fmtArs(PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ)
+                : fmtArs(PLUS_PRICE_ARS_MONTHLY)
+              const arsAnnualTotal = billingPeriod === 'annual' ? fmtArs(PLUS_PRICE_ARS_ANNUAL) : null
               return (
                 <PlanCard
                   variant="plus"
                   name="Plus"
                   tagline="Multi-broker + features avanzadas"
-                  price={`ARS ${arsMonthly}`}
+                  price={`$${arsMonthly}`}
                   priceSub={billingPeriod === 'annual'
-                    ? `por mes · facturado anual (ARS ${arsAnnualTotal})`
+                    ? `por mes · facturado anual ($${arsAnnualTotal})`
                     : 'por mes'}
-                  priceFootnote={`≈ USD ${billingPeriod === 'annual' ? PLUS_PRICE_ANNUAL_USD + ' anual' : PLUS_PRICE_USD} · pago en pesos al blue de hoy`}
+                  priceFootnote="Sin sorpresas. Pago mensual en pesos."
                   features={PLUS_FEATURES}
                   isCurrent={plusIsCurrent || isPlus}
                   ctaLabel={plusCtaInfo.label}
@@ -497,19 +516,20 @@ export default function Planes() {
                 hasCredit,
                 isCancelledMode,
               })
-              const monthlyUsd = billingPeriod === 'annual' ? (+PRO_PRICE_ANNUAL_USD / 12) : +PRO_PRICE_USD
-              const arsMonthly = arsPriceRounded(monthlyUsd, tcBlue)
-              const arsAnnualTotal = billingPeriod === 'annual' ? arsPriceRounded(PRO_PRICE_ANNUAL_USD, tcBlue) : null
+              const arsMonthly = billingPeriod === 'annual'
+                ? fmtArs(PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ)
+                : fmtArs(PRO_PRICE_ARS_MONTHLY)
+              const arsAnnualTotal = billingPeriod === 'annual' ? fmtArs(PRO_PRICE_ARS_ANNUAL) : null
               return (
                 <PlanCard
                   variant="pro"
                   name="Pro"
                   tagline="IA premium + brokers ilimitados"
-                  price={`ARS ${arsMonthly}`}
+                  price={`$${arsMonthly}`}
                   priceSub={billingPeriod === 'annual'
-                    ? `por mes · facturado anual (ARS ${arsAnnualTotal})`
+                    ? `por mes · facturado anual ($${arsAnnualTotal})`
                     : 'por mes'}
-                  priceFootnote={`≈ USD ${billingPeriod === 'annual' ? PRO_PRICE_ANNUAL_USD + ' anual' : PRO_PRICE_USD} · pago en pesos al blue de hoy`}
+                  priceFootnote="Sin sorpresas. Pago mensual en pesos."
                   features={PRO_FEATURES}
                   badge="Más completo"
                   isCurrent={proIsCurrent || hasProTier}

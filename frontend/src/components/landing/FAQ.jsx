@@ -40,7 +40,7 @@ const FAQS = [
   },
   {
     q: '¿Cobran en pesos argentinos o en dólares?',
-    a: 'Cobramos en pesos argentinos al dólar blue del día. Los precios se publican en USD como referencia (Plus USD 4 / Pro USD 9 por mes) pero el cargo efectivo en tu tarjeta es en ARS, con el TC blue al momento del cobro. Esto puede variar levemente día a día por la volatilidad del blue.',
+    a: 'Cobramos en pesos argentinos a precio fijo. Plus $5.990 / Pro $13.990 por mes, sin sorpresas. El cargo en tu tarjeta es el mismo número que ves en la página de planes. Periódicamente ajustamos los precios para mantenernos en equilibrio con la inflación — siempre con anuncio previo y respetando el precio actual de tu próximo cobro si ya estás suscripto.',
   },
   {
     q: '¿Qué hace el Coach IA y en qué planes está incluido?',

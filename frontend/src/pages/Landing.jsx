@@ -13,10 +13,11 @@ import {
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import {
-  ARS_MONTHLY, ARS_PLUS_MONTHLY,
+  fmtArs,
   FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES,
-  PLUS_PRICE_USD, PRO_PRICE_USD,
+  PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY,
 } from './Planes'
+import { api } from '../utils/api'
 import { whatsappUrl } from '../utils/support'
 import SupportWhatsAppFab, { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import FAQ from '../components/landing/FAQ'
@@ -1009,13 +1010,16 @@ function MockChat() {
 
 function Pricing() {
   const ref = useReveal()
+  // Pricing ARS hardcoded (2026-05-31): cobramos pesos fijos, sin conversión
+  // al blue. Ver Planes.jsx para constants + razones operativas (Rebill cobra
+  // USD 500/mes mínimo si facturás en USD).
   return (
     <section id="pricing" ref={ref} className="reveal-up relative max-w-6xl mx-auto px-4 sm:px-6 pb-24">
       <div className="text-center mb-12">
         <div className="text-[11px] font-mono uppercase tracking-label text-ink-3 mb-3">/ pricing</div>
         <h2 className="display-heading mb-2">Empezá gratis. Subí cuando lo necesites.</h2>
         <p className="text-sm text-ink-3 max-w-2xl mx-auto">
-          Cobramos en pesos al TC blue del día. Free para empezar. Plus para sumar brokers, reportes históricos y export.
+          Pago mensual en pesos, sin sorpresas. Free para empezar. Plus para sumar brokers, reportes históricos y export.
           Pro para IA premium y features avanzadas.
         </p>
       </div>
@@ -1033,16 +1037,14 @@ function Pricing() {
           ctaTo="/login?mode=register"
         />
 
-        {/* Plus — cyan distintivo. Precio ARS calculado del USD × TC blue
-            (1415 fallback en landing pública — no llamamos /api/tc/blue acá
-            para no agregar fetch innecesario antes de login). */}
+        {/* Plus — cyan distintivo. Pricing fijo en pesos. */}
         <PlanCard
           variant="plus"
           name="Plus"
           tagline="Multi-broker + reportes completos"
-          price={`ARS ${ARS_PLUS_MONTHLY}`}
+          price={`$${fmtArs(PLUS_PRICE_ARS_MONTHLY)}`}
           priceSub="/ mes"
-          priceFootnote={`≈ USD ${PLUS_PRICE_USD} · pago en pesos al blue de hoy`}
+          priceFootnote="Sin sorpresas. Pago mensual en pesos."
           features={PLUS_FEATURES}
           ctaLabel="Empezar con Plus"
           ctaTo="/login?mode=register"
@@ -1054,9 +1056,9 @@ function Pricing() {
           badge="Más completo"
           name="Pro"
           tagline="IA premium + brokers ilimitados"
-          price={`ARS ${ARS_MONTHLY}`}
+          price={`$${fmtArs(PRO_PRICE_ARS_MONTHLY)}`}
           priceSub="/ mes"
-          priceFootnote={`≈ USD ${PRO_PRICE_USD} · pago en pesos al blue de hoy`}
+          priceFootnote="Sin sorpresas. Pago mensual en pesos."
           features={PRO_FEATURES}
           ctaLabel="Empezar con Pro"
           ctaTo="/login?mode=register"
