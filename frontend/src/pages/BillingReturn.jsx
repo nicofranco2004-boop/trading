@@ -18,15 +18,14 @@
 // (Pre-migración usábamos /api/billing/sync que pegaba a MP — eso quedó
 // muerto pero el endpoint todavía existe en el backend hasta que limpiemos.)
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CheckCircle2, Clock, XCircle, ArrowRight, Sparkles, Loader2 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import PageMeta from '../components/PageMeta'
-import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { track } from '../utils/track'
 import { trackEvent } from '../utils/analytics'
-import { api } from '../utils/api'
+import { useAuth } from '../contexts/AuthContext'
 
 const POLL_INTERVAL_MS = 2_000   // /auth/me cada 2s
 const POLL_TIMEOUT_MS = 30_000   // hasta 30s totales
@@ -38,6 +37,16 @@ function useTierPolling(intent) {
   const [timedOut, setTimedOut] = useState(false)
   const [unauthenticated, setUnauthenticated] = useState(false)
 
+  // Usamos refreshUser (no un api.get suelto) para que cada poll actualice el
+  // `user` canónico del AuthContext — así el navbar y el banner de Config se
+  // actualizan EN VIVO apenas el webhook activa el tier, sin esperar un reload
+  // manual. Vía ref para que el cambio de identidad de la función no re-dispare
+  // el efecto (deps siguen siendo [intent]). refreshUser ya llama
+  // refreshPlanFeatures internamente, así que el cache de plan también refresca.
+  const { refreshUser } = useAuth()
+  const refreshUserRef = useRef(refreshUser)
+  refreshUserRef.current = refreshUser
+
   useEffect(() => {
     track('billing_return', { intent })
     let cancelled = false
@@ -46,12 +55,11 @@ function useTierPolling(intent) {
 
     async function poll() {
       try {
-        const me = await api.get('/auth/me')
+        const me = await refreshUserRef.current()
         if (cancelled) return
         const currentTier = me?.tier || 'free'
         setTier(currentTier)
         setLoading(false)
-        refreshPlanFeatures()
         if (currentTier === 'plus' || currentTier === 'pro' || currentTier === 'admin') {
           if (interval) clearInterval(interval)
         } else if (Date.now() - startedAt >= POLL_TIMEOUT_MS) {

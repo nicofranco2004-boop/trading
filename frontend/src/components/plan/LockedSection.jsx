@@ -34,8 +34,9 @@ function useGoToPlanes() {
 // sin mostrar la data. CTA grande para upgrade.
 //
 // `targetTier`: 'plus' | 'pro' (default 'pro'). Cambia el copy del CTA y la
-// paleta. Features Plus-tier (Volatilidad, Beta) usan acento cyan; features
-// Pro (Sharpe, Sortino, Alpha, IR) mantienen el violet histórico.
+// paleta. Features Plus-tier (Volatilidad, Beta, Sharpe, Sortino, CAGR) usan
+// acento cyan; features Pro (Alpha, Information Ratio, Calmar) mantienen el
+// violet histórico.
 function Placeholder({
   feature,
   title,

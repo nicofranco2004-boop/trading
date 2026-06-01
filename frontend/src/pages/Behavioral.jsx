@@ -674,9 +674,9 @@ function BehavioralCards({ cards, onCardClick }) {
   const locked = cards.slice(visibleCount)
 
   // Cuántas cards puede ver Plus (debe coincidir con plan.py PLUS limits).
-  // Free ve 1, Plus ve 4, Pro ve todas. Para Free, las cards en posiciones
-  // 1-3 (las que ve Plus que él no) tienen CTA "Plus"; las 4-11 son Pro-only.
-  const PLUS_VISIBLE_COUNT = 4
+  // Free ve 1, Plus ve 6, Pro ve todas. Para Free, las cards en posiciones
+  // 1-5 (las que ve Plus que él no) tienen CTA "Plus"; las 6-11 son Pro-only.
+  const PLUS_VISIBLE_COUNT = 6
 
   return (
     <div className="space-y-3">

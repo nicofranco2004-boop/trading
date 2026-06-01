@@ -63,11 +63,11 @@ PLAN_LIMITS = {
     "plus": {
         "brokers_max": 3,
         "insights_diagnostic_visible": 6,
-        "behavioral_tags_visible": 4,
+        "behavioral_tags_visible": 6,
         "can_access": {
             "ai.followup": False,                  # Pro-only
             "ai.hub": False,                       # Pro-only
-            "comportamiento.full": False,          # mitad (behavioral_tags_visible=4)
+            "comportamiento.full": False,          # parcial (behavioral_tags_visible=6 de 12)
             "insights.distribucion_activo": True,
             "reportes.historicos": True,
             "export.csv": True,

@@ -121,7 +121,8 @@ export const PLUS_FEATURES = {
   essentials: [
     { label: 'Todo lo del Free' },
     { label: 'Diagnóstico de Insights completo con 6 observaciones' },
-    { label: '4 detectores de comportamiento visibles (de 12 disponibles)' },
+    { label: '6 detectores de comportamiento visibles (de 12 disponibles)' },
+    { label: 'Métricas de riesgo avanzadas (5)', sub: 'Volatilidad, beta, Sharpe, Sortino y CAGR' },
     { label: 'Distribución por activo desbloqueada' },
     { label: 'Reportes históricos completos (todos los meses)' },
     { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
@@ -133,7 +134,8 @@ export const PLUS_FEATURES = {
       'Hasta 3 brokers (3× más)',
       '3× más Chat Coach IA (9 vs 3 /sem)',
       '6 observaciones de diagnóstico (2× más)',
-      '4 detectores de comportamiento (4× más)',
+      '6 detectores de comportamiento (6× más)',
+      'Métricas de riesgo: Sharpe, Sortino, volatilidad y más',
       'Reportes históricos + Export CSV',
     ],
   },
@@ -155,6 +157,7 @@ export const PRO_FEATURES = {
     { label: 'Brokers ilimitados' },
     { label: '12 detectores de comportamiento completos' },
     { label: 'Diagnóstico de Insights ilimitado' },
+    { label: 'Métricas exclusivas: Alpha, Information Ratio y Calmar', sub: 'Rendimiento ajustado por riesgo de mercado y drawdown' },
   ],
   diff: {
     title: 'Vs Plus',
@@ -162,7 +165,8 @@ export const PRO_FEATURES = {
       '10× más análisis IA (60/sem vs 6/sem)',
       'Chat libre del Coach (vs 12 preguntas guiadas)',
       'IA con causalidad y memoria persistente',
-      'Brokers ilimitados, comportamiento completo',
+      'Comportamiento completo (12 vs 6) + brokers ilimitados',
+      'Métricas exclusivas: Alpha, Information Ratio y Calmar',
     ],
   },
   quotas: [

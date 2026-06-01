@@ -26,6 +26,40 @@ const DEMO_USER = {
   created_at: '2024-04-01T00:00:00Z',
 }
 
+// Mapea la respuesta de /auth/me al shape de `user` que consume la app.
+// Centralizado para que el bootstrap inicial Y refreshUser() produzcan
+// EXACTAMENTE el mismo objeto — antes el mapeo vivía inline solo en el
+// bootstrap, así que cualquier refresh mid-sesión tenía que duplicarlo (o
+// no existía, que era el bug: el tier quedaba stale tras un pago).
+function mapMeToUser(me) {
+  return {
+    name: me.name || me.email,
+    email: me.email,
+    is_admin: !!me.is_admin,
+    tier: me.tier || 'free',
+    // Estado de la suscripción Rebill — usado por Config/Planes para
+    // distinguir authorized (mostrar "Cancelar") de cancelled
+    // (mostrar "Reactivar" + permitir re-suscribirse).
+    subscription_status: me.subscription_status || null,
+    subscription_period_end: me.subscription_period_end || null,
+    subscription_cancelled_at: me.subscription_cancelled_at || null,
+    subscription_period: me.subscription_period || null,
+    // Crédito (modelo Rendi-managed proration). Si credit_active_until
+    // > NOW el user tiene acceso al tier sin necesidad de tener una
+    // sub Rebill autorizada — viene de un upgrade/downgrade mid-período.
+    credit_active_until:   me.credit_active_until || null,
+    credit_days_remaining: me.credit_days_remaining ?? 0,
+    credit_remaining_usd:  me.credit_remaining_usd ?? 0,
+    credit_anchor_plan:    me.credit_anchor_plan || null,
+    credit_anchor_period:  me.credit_anchor_period || null,
+    // access_mode: single source of truth para el estado del acceso.
+    // Valores: 'authorized' (sub Rebill renovable) | 'credit_only'
+    // (cambió plan, vive del crédito) | 'cancelled' (canceló manual,
+    // grace period) | 'free'.
+    access_mode:           me.access_mode || 'free',
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
     // Activación de demo via query param. Soporta `?demo=1` y `?demo=true`.
@@ -56,32 +90,7 @@ export function AuthProvider({ children }) {
     if (isDemoMode()) { setBootstrapped(true); return }
     api.get('/auth/me')
       .then(me => {
-        const fresh = {
-          name: me.name || me.email,
-          email: me.email,
-          is_admin: !!me.is_admin,
-          tier: me.tier || 'free',
-          // Estado de la suscripción Rebill — usado por Config/Planes para
-          // distinguir authorized (mostrar "Cancelar") de cancelled
-          // (mostrar "Reactivar" + permitir re-suscribirse).
-          subscription_status: me.subscription_status || null,
-          subscription_period_end: me.subscription_period_end || null,
-          subscription_cancelled_at: me.subscription_cancelled_at || null,
-          subscription_period: me.subscription_period || null,
-          // Crédito (modelo Rendi-managed proration). Si credit_active_until
-          // > NOW el user tiene acceso al tier sin necesidad de tener una
-          // sub Rebill autorizada — viene de un upgrade/downgrade mid-período.
-          credit_active_until:   me.credit_active_until || null,
-          credit_days_remaining: me.credit_days_remaining ?? 0,
-          credit_remaining_usd:  me.credit_remaining_usd ?? 0,
-          credit_anchor_plan:    me.credit_anchor_plan || null,
-          credit_anchor_period:  me.credit_anchor_period || null,
-          // access_mode: single source of truth para el estado del acceso.
-          // Valores: 'authorized' (sub Rebill renovable) | 'credit_only'
-          // (cambió plan, vive del crédito) | 'cancelled' (canceló manual,
-          // grace period) | 'free'.
-          access_mode:           me.access_mode || 'free',
-        }
+        const fresh = mapMeToUser(me)
         localStorage.setItem('rendi_user', JSON.stringify(fresh))
         setUser(fresh)
         refreshPlanFeatures()
@@ -131,6 +140,25 @@ export function AuthProvider({ children }) {
       localStorage.setItem('rendi_user', JSON.stringify(next))
       return next
     })
+  }
+
+  // Re-fetcha /auth/me y actualiza el `user` canónico + el cache de plan
+  // features. Llamar cuando el tier puede haber cambiado DENTRO de la misma
+  // sesión sin un reload completo — el caso crítico es el retorno de un pago
+  // Rebill: BillingReturn navega por SPA (no hard reload), así que el
+  // AuthProvider no se re-monta y `/auth/me` no se vuelve a llamar solo. Sin
+  // esto, el navbar y el banner de Config seguían mostrando el tier viejo
+  // (free) aunque la cuenta ya estuviera activada en plus/pro.
+  //
+  // Propaga el error (ej. 401 si la sesión venció) para que el caller decida
+  // qué hacer; no toca el estado local en ese caso.
+  async function refreshUser() {
+    const me = await api.get('/auth/me')
+    const fresh = mapMeToUser(me)
+    localStorage.setItem('rendi_user', JSON.stringify(fresh))
+    setUser(fresh)
+    refreshPlanFeatures()
+    return fresh
   }
 
   function logout() {
@@ -186,7 +214,7 @@ export function AuthProvider({ children }) {
   const isDemo = !!user?.demo
 
   return (
-    <AuthContext.Provider value={{ user, isDemo, login, logout, exitDemo, updateUser, bootstrapped }}>
+    <AuthContext.Provider value={{ user, isDemo, login, logout, exitDemo, updateUser, refreshUser, bootstrapped }}>
       {children}
     </AuthContext.Provider>
   )

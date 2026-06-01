@@ -1670,13 +1670,19 @@ function InsightsDesktop({ _embeddedTab }) {
       })()}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          HERO — Diagnóstico como 3 tarjetas accionables (audit pattern).
+          HERO — Diagnóstico como tarjetas accionables priorizadas (audit pattern).
+          Cantidad visible por tier: Free 3, Plus 6, Pro todas.
           Cada tarjeta: badge de severidad + título corto + contexto + CTA.
           Severidad codificada solo en el BADGE, no en todo el bloque.
           'Resultado del portfolio' eliminado (duplicaba Dashboard).
           ══════════════════════════════════════════════════════════════════════ */}
       {diagnosis.length > 0 && (() => {
-        const balanced = pickBalancedDiagnosis(diagnosis, 3)
+        // Tomamos hasta 6 observaciones balanceadas para el hero: 6 es el techo
+        // del tier gateado más alto (Plus → insights_diagnostic_visible=6). Free
+        // recorta a 3 con slice(0, visibleLimit); Plus ve las 6; Pro las ve todas
+        // (estas + el resto en el <details>). Antes era 3 fijo, lo que capaba a
+        // Plus en 3 aunque su límite fuese 6.
+        const balanced = pickBalancedDiagnosis(diagnosis, 6)
         const balancedIds = new Set(balanced.map(d => d.id))
         // Truncamos al múltiplo de 3 inmediatamente inferior. Si quedan
         // 1-2 observaciones huérfanas en la última fila quedaba un hueco
@@ -2250,7 +2256,7 @@ function InsightsDesktop({ _embeddedTab }) {
         return (
         <Section
           title="Métricas pro"
-          subtitle="Volatilidad y Beta en Plus; Sharpe, Sortino, Alpha e Information Ratio en Pro."
+          subtitle="Volatilidad, Beta, Sharpe, Sortino y CAGR en Plus; Alpha, Information Ratio y Calmar en Pro."
         >
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* ── PLUS — Volatilidad anualizada ─────────────────────────── */}
@@ -2374,8 +2380,8 @@ function InsightsDesktop({ _embeddedTab }) {
               />
             )}
 
-            {/* ── PRO — Sharpe Ratio ──────────────────────────────────── */}
-            {plan.hasFullAccess ? wrapAI('sharpe', {
+            {/* ── PLUS — Sharpe Ratio ──────────────────────────────────── */}
+            {plan.isPaid ? wrapAI('sharpe', {
               value: proMetrics.sharpe.sharpe,
               months: proMetrics.sharpe.months,
               return_annual_pct: +(proMetrics.sharpe.returnAnnual * 100).toFixed(2),
@@ -2424,15 +2430,16 @@ function InsightsDesktop({ _embeddedTab }) {
               </InsightCard>
             ) : (
               <LockedSection.Placeholder
-                feature="insights.metrics_pro_sharpe"
+                feature="insights.metrics_plus_sharpe"
                 title="Sharpe Ratio"
                 description="¿Vale la pena el riesgo que tomás? Compara tu rendimiento contra dejar la plata en T-Bills. Arriba de 1 = ganás bien por lo que arriesgás. La métrica que usa todo el mundo en finanzas."
-                source="insights_metrics_pro"
+                source="insights_metrics_plus"
+                targetTier="plus"
               />
             )}
 
-            {/* ── PRO — Sortino Ratio ─────────────────────────────────── */}
-            {plan.hasFullAccess ? (
+            {/* ── PLUS — Sortino Ratio ─────────────────────────────────── */}
+            {plan.isPaid ? (
               proMetrics.sortino ? wrapAI('sortino', {
                 value: proMetrics.sortino.sortino,
                 months: proMetrics.sortino.months,
@@ -2486,10 +2493,11 @@ function InsightsDesktop({ _embeddedTab }) {
               )
             ) : (
               <LockedSection.Placeholder
-                feature="insights.metrics_pro_sortino"
+                feature="insights.metrics_plus_sortino"
                 title="Sortino Ratio"
                 description="Como Sharpe pero más justo: solo cuenta como 'riesgo' tus meses malos. Si tuviste un mes excelente, eso no debería penalizar tu score. Más cercano a cómo realmente vivís el riesgo."
-                source="insights_metrics_pro"
+                source="insights_metrics_plus"
+                targetTier="plus"
               />
             )}
 
