@@ -136,11 +136,9 @@ def create_payment_link(
     # opcional: isSingleUse, metadata, successUrl, cancelUrl
     #
     # IMPORTANTE: paymentMethods.currency DEBE matchear la currency del
-    # plan. Nuestros planes están en USD (creados en dashboard como $4/$9),
-    # por eso acá va USD. Rebill rebota con "All prices must have a payment
-    # method" si la currency no matchea.
-    #
-    # bank_transfer no aplica para USD en AR — solo card.
+    # plan. Nuestros planes están en ARS en el dashboard de Rebill, por eso
+    # acá va ARS. Si no matchea, Rebill rebota con 400 "Payment method card
+    # for currency X not available in organization".
     #
     # successUrl / cancelUrl REMOVIDOS del payload (Rebill v3 los rechaza
     # con 400 "property successUrl should not exist"). En la API v3 actual
@@ -158,7 +156,7 @@ def create_payment_link(
             "rendi_period": period,
         },
         "paymentMethods": [
-            {"methods": ["card"], "currency": "USD"},
+            {"methods": ["card"], "currency": "ARS"},
         ],
     }
 
