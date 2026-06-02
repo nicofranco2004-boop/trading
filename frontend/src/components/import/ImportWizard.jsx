@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw, Sparkles } from 'lucide-react'
+import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw } from 'lucide-react'
 import InfoTooltip from '../InfoTooltip'
 import BrokerInstructions from './BrokerInstructions'
 import { api } from '../../utils/api'
@@ -65,11 +65,23 @@ const FIELD_HELP = {
   },
 }
 
+const STEP_INTRO = 'intro'    // Paso 0: ¿propio o de un broker? + config inicial
 const STEP_UPLOAD = 'upload'
 const STEP_MAP = 'map'
 const STEP_PREVIEW = 'preview'
 const STEP_SEED = 'seed'
 const STEP_DONE = 'done'
+
+// Moneda base por plataforma soportada (rama "de un broker"). Define si
+// preguntamos por el sub-broker USD (solo brokers ARS lo necesitan) y con qué
+// moneda se auto-crea el broker. Si sumás un broker ARS nuevo (ej. IOL),
+// agregalo acá. Plataformas no listadas caen a null → sin pregunta de USD ops.
+const PLATFORM_BASE_CURRENCY = {
+  cocos: 'ARS',
+  binance: 'USDT',
+  schwab: 'USD',
+  ibkr: 'USD',
+}
 
 // Plataformas cuya importación está temporalmente deshabilitada (parser
 // incompleto o todavía inexistente — falta data del CSV). La plataforma
@@ -127,9 +139,15 @@ const OP_LABELS = {
 }
 
 export default function ImportWizard({ onClose, onConfirmed, initialPreview = null, redoBanner = null }) {
-  const [step, setStep] = useState(initialPreview ? STEP_PREVIEW : STEP_UPLOAD)
-  const [parsers, setParsers] = useState([])
-  // Parsers agrupados por plataforma — para el dropdown a 2 niveles.
+  const [step, setStep] = useState(initialPreview ? STEP_PREVIEW : STEP_INTRO)
+  // Paso 0: de dónde viene el archivo. null = todavía no eligió.
+  //   'broker'   → export de un broker soportado (parser específico)
+  //   'personal' → CSV/Excel propio del usuario (parser genérico)
+  const [sourceType, setSourceType] = useState(null)
+  // Rama 'personal': moneda declarada de las operaciones del archivo. Define
+  // el default al crear el broker inline y si preguntamos por ops en USD.
+  const [personalCurrency, setPersonalCurrency] = useState(null)  // 'ARS' | 'USD' | null
+  // Parsers agrupados por plataforma — alimentan el grid de brokers del Paso 0.
   const [parserGroups, setParserGroups] = useState([])
   const [platform, setPlatform] = useState('generic')
   const [format, setFormat] = useState('rendi_generic')
@@ -162,7 +180,6 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   const inputRef = useRef(null)
 
   useEffect(() => {
-    api.get('/imports/parsers').then(setParsers).catch(() => setParsers([]))
     api.get('/imports/parsers/grouped')
       .then(g => setParserGroups(withBlockedPlatforms(g)))
       .catch(() => setParserGroups(withBlockedPlatforms([])))
@@ -213,7 +230,13 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   }
 
   function reset() {
-    setStep(STEP_UPLOAD)
+    setStep(STEP_INTRO)
+    setSourceType(null)
+    setPersonalCurrency(null)
+    setPlatform('generic')
+    setFormat('rendi_generic')
+    setImportMode('single')
+    setHasUsdOps(false)
     setFiles([])
     setInspect(null)
     setMapping({ columns: {}, defaults: {} })
@@ -222,6 +245,46 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     setSkippedRowIndices(new Set())
     setSeedState(null)
     setError(null)
+  }
+
+  // Crea un broker desde el Paso 0 (rama propio) sin salir del wizard. Reusa
+  // POST /brokers, lo agrega al estado y lo deja seleccionado como destino.
+  async function createBrokerInline(name, currency) {
+    const clean = (name || '').trim()
+    if (!clean) { setError('Poné un nombre para el broker.'); return false }
+    setError(null)
+    try {
+      const created = await api.post('/brokers', { name: clean, currency })
+      setBrokers(prev => [...prev, created])
+      setSingleBroker(created.name)
+      return true
+    } catch (ex) {
+      setError(ex.message || 'No se pudo crear el broker.')
+      return false
+    }
+  }
+
+  // Rama "de un broker" (Paso 0): elegir un broker soportado. Setea el parser
+  // específico (el backend auto-crea el broker, por eso singleBroker queda
+  // vacío) para que el upload salte el mapeo y vaya directo a preview.
+  function chooseBrokerPlatform(group) {
+    setSourceType('broker')
+    setImportMode('single')
+    setSingleBroker('')
+    setPlatform(group.platform)
+    const supported = (group.exports || []).find(e => e.supported) || group.exports?.[0]
+    if (supported) setFormat(supported.id)
+    setHasUsdOps(false)
+  }
+
+  // Rama "archivo propio" (Paso 0): parser genérico + mapeo manual. Resetea
+  // cualquier parser específico que hubiera quedado de una elección previa.
+  function choosePersonal() {
+    setSourceType('personal')
+    setPlatform('generic')
+    setFormat('rendi_generic')
+    setImportMode('single')
+    setHasUsdOps(false)
   }
 
   function toggleSkipRow(rowIndex) {
@@ -269,20 +332,23 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     }
   }
 
-  // ¿El broker seleccionado en modo single es ARS?
   const singleBrokerObj = brokers.find(b => b.name === singleBroker)
-  const isArsBroker = importMode === 'single' && singleBrokerObj?.currency === 'ARS'
-  // El ruteo USD→sub-broker solo aplica cuando el broker padre es ARS y el
-  // usuario marcó que el archivo tiene operaciones en USD.
-  const useCurrencyRouting = isArsBroker && hasUsdOps
+  // Moneda "de contexto": en la rama broker la define la plataforma elegida
+  // (Cocos=ARS, Schwab=USD, etc.); en la rama propio la define la elección de
+  // moneda del Paso 0 (o, si ya hay broker destino, su moneda).
+  const effectiveCurrency = sourceType === 'broker'
+    ? (PLATFORM_BASE_CURRENCY[platform] || null)
+    : (personalCurrency || singleBrokerObj?.currency || null)
+  const isArsContext = effectiveCurrency === 'ARS'
+  // El ruteo USD→sub-broker solo aplica cuando el broker base es ARS y el
+  // usuario marcó que el archivo además tiene operaciones en USD.
+  const useCurrencyRouting = isArsContext && hasUsdOps
 
-  // Parsers específicos (Binance, Balanz, etc.) ya saben qué significa cada
+  // Parsers específicos (Binance, Cocos, etc.) ya saben qué significa cada
   // columna del archivo del broker — no hace falta que el usuario mapee.
   const isSpecificParser = format && format !== 'rendi_generic'
 
   // Plataforma con importación bloqueada (ver BLOCKED_IMPORT_PLATFORMS).
-  // Cuando está activa, el paso de upload muestra un card de contacto y no
-  // se puede continuar.
   const isBlockedPlatform = !!BLOCKED_IMPORT_PLATFORMS[platform]
 
   async function uploadAndInspect() {
@@ -468,20 +534,40 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             </div>
           )}
 
+          {step === STEP_INTRO && (
+            <IntroStep
+              parserGroups={parserGroups}
+              sourceType={sourceType} setSourceType={setSourceType}
+              platform={platform}
+              onChooseBroker={chooseBrokerPlatform}
+              onChoosePersonal={choosePersonal}
+              personalCurrency={personalCurrency} setPersonalCurrency={setPersonalCurrency}
+              importMode={importMode} setImportMode={setImportMode}
+              brokers={brokers}
+              singleBroker={singleBroker} setSingleBroker={setSingleBroker}
+              onCreateBroker={createBrokerInline}
+              effectiveCurrency={effectiveCurrency}
+              isArsContext={isArsContext}
+              hasUsdOps={hasUsdOps} setHasUsdOps={setHasUsdOps}
+            />
+          )}
+
           {step === STEP_UPLOAD && (
             <UploadStep
-              parsers={parsers}
+              sourceType={sourceType}
+              platform={platform}
+              format={format}
               parserGroups={parserGroups}
-              platform={platform} setPlatform={setPlatform}
-              format={format} setFormat={setFormat}
               files={files} setFiles={setFiles}
               downloadTemplate={downloadTemplate}
               inputRef={inputRef}
-              importMode={importMode} setImportMode={setImportMode}
-              singleBroker={singleBroker} setSingleBroker={setSingleBroker}
-              brokers={brokers}
-              isArsBroker={isArsBroker}
-              hasUsdOps={hasUsdOps} setHasUsdOps={setHasUsdOps}
+              importMode={importMode}
+              singleBroker={singleBroker}
+              effectiveCurrency={effectiveCurrency}
+              isArsContext={isArsContext}
+              hasUsdOps={hasUsdOps}
+              useCurrencyRouting={useCurrencyRouting}
+              onBack={() => setStep(STEP_INTRO)}
             />
           )}
 
@@ -529,6 +615,14 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
 
         <div className="flex justify-between gap-2 px-5 py-3 border-t border-line flex-shrink-0">
           <div>
+            {step === STEP_UPLOAD && (
+              <button
+                onClick={() => setStep(STEP_INTRO)}
+                className="px-3 py-2 text-sm text-ink-3 hover:text-ink-0 dark:hover:text-ink-0"
+              >
+                ← Volver
+              </button>
+            )}
             {step === STEP_MAP && (
               <button
                 onClick={() => setStep(STEP_UPLOAD)}
@@ -563,6 +657,25 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                 Cancelar
               </button>
             )}
+            {step === STEP_INTRO && (() => {
+              // Habilitar "Continuar" solo cuando el Paso 0 está completo:
+              //  • broker: eligió un broker soportado (parser específico seteado)
+              //  • personal: eligió moneda y (mezcla, o un broker destino)
+              const canContinue = sourceType === 'broker'
+                ? isSpecificParser
+                : sourceType === 'personal'
+                  ? !!personalCurrency && (importMode === 'general' || !!singleBroker)
+                  : false
+              return (
+                <button
+                  onClick={() => { setError(null); setStep(STEP_UPLOAD) }}
+                  disabled={!canContinue}
+                  className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  Continuar
+                </button>
+              )
+            })()}
             {step === STEP_UPLOAD && !isBlockedPlatform && (
               <button
                 onClick={uploadAndInspect}
@@ -640,10 +753,12 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
 function Stepper({ step, skipMap, hasSeed }) {
   const baseSteps = skipMap
     ? [
+        { id: STEP_INTRO, label: 'Inicio' },
         { id: STEP_UPLOAD, label: 'Archivo' },
         { id: STEP_PREVIEW, label: 'Previsualización' },
       ]
     : [
+        { id: STEP_INTRO, label: 'Inicio' },
         { id: STEP_UPLOAD, label: 'Archivo' },
         { id: STEP_MAP, label: 'Mapear columnas' },
         { id: STEP_PREVIEW, label: 'Previsualización' },
@@ -670,79 +785,278 @@ function Stepper({ step, skipMap, hasSeed }) {
 }
 
 
-// ─── CSV format auto-detection ───────────────────────────────────────────────
-// Lee las primeras líneas del archivo y intenta identificar el broker por
-// firma de columnas. Devuelve el `platform` id (no `format`) — el caller
-// puede llamar a changePlatform() y dejar que se auto-seleccione el export
-// soportado.
-//
-// Patrones se actualizan cuando el broker cambia su export. Tests por
-// fixture en backend/tests/test_imports_*.
-async function detectPlatformFromCsv(file) {
-  if (!file) return null
-  try {
-    // Solo leemos ~2KB — los headers están en las primeras filas
-    const text = await file.slice(0, 4096).text()
-    const firstLines = text.split(/\r?\n/).slice(0, 8).join('\n').toLowerCase()
-
-    // Cocos Capital: incluye "tipo","activo","tc compra" o similar
-    if (/tc.{0,4}compra/.test(firstLines) || /\bcocos\b/.test(firstLines)) {
-      return { platform: 'cocos', format: null }
-    }
-    // Binance Spot Trade History: "date(utc)","pair","side","executed"
-    if (/date\(utc\)/.test(firstLines) && /\bpair\b/.test(firstLines)) {
-      return { platform: 'binance', format: 'binance' }
-    }
-    // Binance Transaction History: headers "user id","time","account","operation","coin","change"
-    if (/\boperation\b/.test(firstLines) && /\baccount\b/.test(firstLines) && /\bcoin\b/.test(firstLines)) {
-      return { platform: 'binance', format: 'binance_transaction_history' }
-    }
-    // Schwab: header con "Date","Action","Symbol","Description","Quantity","Price"
-    if (/^date,action,symbol/.test(firstLines)) {
-      return { platform: 'schwab', format: null }
-    }
-    // IBKR: header tipo "ClientAccountID,AccountAlias,Model"
-    if (/clientaccountid/.test(firstLines)) {
-      return { platform: 'ibkr', format: null }
-    }
-    return null
-  } catch {
-    return null
-  }
+// Pregunta reutilizable: ¿el archivo además tiene operaciones en USD? Solo
+// aparece cuando el broker base es ARS — sí ⇒ se crea un sub-broker USD y se
+// rutea cada fila por moneda.
+function UsdOpsQuestion({ hasUsdOps, setHasUsdOps, brokerLabel }) {
+  return (
+    <div className="px-3 py-3 rounded-md border border-line bg-bg-2 dark:bg-bg-1/40">
+      <div className="text-xs text-ink-1 mb-2 font-medium">
+        ¿Este archivo además tiene operaciones en dólares?
+      </div>
+      <div className="flex gap-2 mb-2">
+        <button
+          type="button"
+          onClick={() => setHasUsdOps(true)}
+          className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
+            hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
+                      : 'border-line text-ink-2 hover:border-line'
+          }`}
+        >
+          Sí, hay operaciones en USD
+        </button>
+        <button
+          type="button"
+          onClick={() => setHasUsdOps(false)}
+          className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
+            !hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
+                       : 'border-line text-ink-2 hover:border-line'
+          }`}
+        >
+          No, todo es en pesos
+        </button>
+      </div>
+      <p className="text-xs text-ink-3">
+        {hasUsdOps
+          ? `Vamos a crear un sub-broker USD${brokerLabel ? ` asociado a ${brokerLabel}` : ''} y rutear cada fila según su moneda: las ARS al broker en pesos, las USD al sub-broker.`
+          : 'Todas las filas se importan al broker en pesos.'}
+      </p>
+    </div>
+  )
 }
 
-function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
-                      format, setFormat, files, setFiles, downloadTemplate, inputRef,
-                      importMode, setImportMode, singleBroker, setSingleBroker, brokers,
-                      isArsBroker, hasUsdOps, setHasUsdOps }) {
-  const [fileError, setFileError] = useState(null)
-  const [detection, setDetection] = useState(null)  // { platform, label } | null
-  const isSpecific = format && format !== 'rendi_generic'
-  const parserLabel = parsers.find(p => p.id === format)?.label || format
-  // Si la plataforma seleccionada está bloqueada, mostramos el card de
-  // contacto en vez del uploader (ver BLOCKED_IMPORT_PLATFORMS).
-  const blockedInfo = BLOCKED_IMPORT_PLATFORMS[platform]
 
-  // Grupo activo de la plataforma seleccionada
-  const activeGroup = parserGroups.find(g => g.platform === platform)
-  const exportsForPlatform = activeGroup?.exports || []
-  // Si la plataforma tiene un solo export, no mostramos el segundo dropdown.
-  const hasMultipleExports = exportsForPlatform.length > 1
+// ─── Paso 0 — IntroStep ──────────────────────────────────────────────────────
+// Dos preguntas antes de subir nada:
+//   1. ¿El archivo es de un broker o es propio?
+//      • broker  → grid de brokers soportados (parser específico, auto-crea el
+//        broker). "No encuentro mi broker" → CTA WhatsApp (acá entran Balanz/IOL
+//        y cualquier broker sin parser).
+//      • propio  → moneda + broker destino (elegir o crear inline) + mezcla.
+//   2. Moneda: en la rama broker la define la plataforma; en la propia, la elige
+//      el user. Si es ARS, se pregunta por operaciones en USD (sub-broker).
+function IntroStep({ parserGroups, sourceType, setSourceType, platform,
+                     onChooseBroker, onChoosePersonal, personalCurrency, setPersonalCurrency,
+                     importMode, setImportMode, brokers, singleBroker, setSingleBroker,
+                     onCreateBroker, isArsContext, hasUsdOps, setHasUsdOps }) {
+  // Brokers soportados para la rama "de un broker": del registry, excluyendo el
+  // genérico y las plataformas bloqueadas (Balanz/IOL → "no encuentro mi broker").
+  const supportedBrokers = (parserGroups || []).filter(g =>
+    g.platform !== 'generic' &&
+    !BLOCKED_IMPORT_PLATFORMS[g.platform] &&
+    (g.exports || []).some(e => e.supported)
+  )
+  const brokerLabel = supportedBrokers.find(g => g.platform === platform)?.platform_label
 
-  // Cuando cambia la plataforma, autoseleccionar el primer export soportado
-  function changePlatform(newPlatform) {
-    setPlatform(newPlatform)
-    const group = parserGroups.find(g => g.platform === newPlatform)
-    if (group && group.exports.length > 0) {
-      const first = group.exports.find(e => e.supported) || group.exports[0]
-      setFormat(first.id)
-    }
+  const [showCreate, setShowCreate] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [creating, setCreating] = useState(false)
+
+  async function handleCreate() {
+    setCreating(true)
+    const ok = await onCreateBroker(newName, personalCurrency === 'ARS' ? 'ARS' : 'USD')
+    setCreating(false)
+    if (ok) { setShowCreate(false); setNewName('') }
   }
 
-  // Acumula files: en cada pickFiles agregamos al state existente (no
-  // reemplazamos). Permite seleccionar archivos en pasos o por drag-and-drop
-  // múltiples veces. Dedup por (name, size).
-  async function pickFiles(newFiles) {
+  const bigCard = (active) =>
+    `text-left px-4 py-3.5 rounded-lg border transition ${
+      active ? 'border-rendi-accent bg-rendi-accent/10' : 'border-line hover:border-line-2'
+    }`
+
+  return (
+    <div className="space-y-5">
+      {/* ── P1: origen del archivo ───────────────────────────────────── */}
+      <div>
+        <label className="block text-sm font-medium text-ink-0 mb-2">¿De dónde viene este archivo?</label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button type="button" onClick={() => setSourceType('broker')} className={bigCard(sourceType === 'broker')}>
+            <div className="text-sm font-medium text-ink-0">🏦 El export de mi broker</div>
+            <div className="text-xs text-ink-3 mt-0.5">Lo descargaste de Cocos, Binance, Schwab, etc.</div>
+          </button>
+          <button type="button" onClick={onChoosePersonal} className={bigCard(sourceType === 'personal')}>
+            <div className="text-sm font-medium text-ink-0">📝 Un archivo propio</div>
+            <div className="text-xs text-ink-3 mt-0.5">Un CSV o Excel que armaste vos.</div>
+          </button>
+        </div>
+      </div>
+
+      {/* ── Rama: de un broker ───────────────────────────────────────── */}
+      {sourceType === 'broker' && (
+        <div className="space-y-3">
+          <label className="block text-xs text-ink-3">Elegí tu broker</label>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {supportedBrokers.map(g => {
+              const active = platform === g.platform
+              const cur = PLATFORM_BASE_CURRENCY[g.platform]
+              return (
+                <button
+                  key={g.platform}
+                  type="button"
+                  onClick={() => onChooseBroker(g)}
+                  className={`flex items-center justify-between gap-2 px-3 py-2.5 rounded-md border text-left transition ${
+                    active ? 'border-rendi-accent bg-rendi-accent/10' : 'border-line hover:border-line-2'
+                  }`}
+                >
+                  <span className="text-sm font-medium text-ink-0 truncate">{g.platform_label}</span>
+                  {cur && <span className="text-[10px] font-mono text-ink-3 flex-shrink-0">{cur}</span>}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* No encuentro mi broker → WhatsApp (Balanz/IOL/otros caen acá) */}
+          <a
+            href={whatsappUrl('Hola, quiero importar a Rendi operaciones de un broker que todavía no está en la lista. Mi broker es: ')}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 text-xs text-ink-2 hover:text-ink-0 transition-colors"
+          >
+            <WhatsAppIcon size={14} />
+            <span>No encuentro mi broker — <span className="underline underline-offset-2">escribinos y lo agregamos</span></span>
+          </a>
+
+          {/* Cómo descargar el CSV del broker elegido */}
+          {platform && platform !== 'generic' && (
+            <BrokerInstructions lockBrokerId={platform} />
+          )}
+
+          {/* Sub-broker USD para brokers en pesos */}
+          {isArsContext && (
+            <UsdOpsQuestion hasUsdOps={hasUsdOps} setHasUsdOps={setHasUsdOps} brokerLabel={brokerLabel} />
+          )}
+        </div>
+      )}
+
+      {/* ── Rama: archivo propio ─────────────────────────────────────── */}
+      {sourceType === 'personal' && (
+        <div className="space-y-4">
+          {/* P2: moneda */}
+          <div>
+            <label className="block text-xs text-ink-3 mb-2">¿En qué moneda están las operaciones?</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPersonalCurrency('ARS')}
+                className={`text-sm px-3 py-2 rounded-md border transition ${
+                  personalCurrency === 'ARS' ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
+                                             : 'border-line text-ink-2 hover:border-line-2'
+                }`}
+              >
+                Pesos (ARS)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPersonalCurrency('USD')}
+                className={`text-sm px-3 py-2 rounded-md border transition ${
+                  personalCurrency === 'USD' ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
+                                             : 'border-line text-ink-2 hover:border-line-2'
+                }`}
+              >
+                Dólares (USD)
+              </button>
+            </div>
+          </div>
+
+          {/* Broker destino (solo si no es mezcla) */}
+          {personalCurrency && importMode !== 'general' && (
+            <div>
+              <label className="block text-xs text-ink-3 mb-1">¿A qué broker se importan estas operaciones?</label>
+              {brokers.length > 0 && !showCreate && (
+                <select
+                  value={singleBroker}
+                  onChange={e => setSingleBroker(e.target.value)}
+                  className="w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
+                >
+                  <option value="">Elegí un broker…</option>
+                  {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>)}
+                </select>
+              )}
+              {!showCreate ? (
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(true)}
+                  className="mt-2 text-xs text-rendi-accent hover:underline"
+                >
+                  + Crear un broker nuevo
+                </button>
+              ) : (
+                <div className="mt-2 p-3 rounded-md border border-line bg-bg-2/40 space-y-2">
+                  <input
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    autoFocus
+                    placeholder="Nombre del broker (ej.: Mi cuenta IOL)"
+                    className="w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2"
+                  />
+                  <div className="text-[11px] text-ink-3">
+                    Se crea en {personalCurrency === 'ARS' ? 'pesos (ARS)' : 'dólares (USD)'} — la moneda que elegiste arriba.
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCreate}
+                      disabled={creating || !newName.trim()}
+                      className="text-xs bg-rendi-accent text-white rounded-md px-3 py-1.5 font-medium disabled:opacity-50"
+                    >
+                      {creating ? 'Creando…' : 'Crear broker'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowCreate(false); setNewName('') }}
+                      className="text-xs text-ink-3 hover:text-ink-0 px-2"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Sub-broker USD para archivos propios en pesos */}
+          {personalCurrency && isArsContext && importMode !== 'general' && (
+            <UsdOpsQuestion hasUsdOps={hasUsdOps} setHasUsdOps={setHasUsdOps} brokerLabel={singleBroker} />
+          )}
+
+          {/* Avanzado: mezcla de brokers */}
+          {personalCurrency && (
+            <button
+              type="button"
+              onClick={() => setImportMode(importMode === 'general' ? 'single' : 'general')}
+              className="text-xs text-ink-3 hover:text-ink-1 transition-colors underline underline-offset-2"
+            >
+              {importMode === 'general'
+                ? '← Mi archivo es de un solo broker'
+                : 'Mi archivo mezcla varios brokers (tiene una columna que lo indica)'}
+            </button>
+          )}
+          {importMode === 'general' && (
+            <p className="text-xs text-ink-3 px-3 py-2 rounded-md bg-bg-2/60 border border-line">
+              En el paso de mapeo vas a indicar qué columna del archivo dice a qué broker pertenece cada fila. Los brokers que no existan se crean automáticamente.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ─── UploadStep ──────────────────────────────────────────────────────────────
+// Después del Paso 0 ya sabemos origen + broker + moneda. Acá solo: resumen de
+// lo elegido (con "Cambiar"), instrucciones de descarga (rama broker) o template
+// (rama propia), y el dropzone de archivos.
+function UploadStep({ sourceType, platform, format, parserGroups = [], files, setFiles,
+                      downloadTemplate, inputRef, importMode, singleBroker,
+                      effectiveCurrency, isArsContext, hasUsdOps, useCurrencyRouting, onBack }) {
+  const [fileError, setFileError] = useState(null)
+  const isSpecific = sourceType === 'broker' && format && format !== 'rendi_generic'
+  const brokerLabel = (parserGroups || []).find(g => g.platform === platform)?.platform_label || platform
+
+  // Acumula files (no reemplaza). Dedup por (name, size). Sin auto-detección:
+  // el broker/parser ya se eligió explícitamente en el Paso 0.
+  function pickFiles(newFiles) {
     if (!newFiles || newFiles.length === 0) return
     const incoming = Array.from(newFiles)
     const errors = []
@@ -755,51 +1069,17 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
       }
       valid.push(f)
     }
-
-    // Detección automática del formato — solo si el user no eligió todavía
-    // una plataforma específica. Le damos un hint, NO cambiamos por él.
-    if (valid.length > 0 && (!platform || platform === 'generic')) {
-      const detected = await detectPlatformFromCsv(valid[0])
-      if (detected) {
-        const group = parserGroups.find(g => g.platform === detected.platform)
-        if (group) {
-          setDetection({
-            platform: detected.platform,
-            format: detected.format,
-            label: group.platform_label,
-          })
-        }
-      } else {
-        setDetection(null)
-      }
-    } else if (valid.length > 0) {
-      // Plataforma ya seleccionada → si detectamos un sub-formato distinto
-      // dentro de la misma plataforma (ej: Binance Spot vs Transaction History),
-      // auto-ajustamos el format. Cambio low-risk porque mantiene la plataforma.
-      const detected = await detectPlatformFromCsv(valid[0])
-      if (detected && detected.platform === platform && detected.format && detected.format !== format) {
-        const group = parserGroups.find(g => g.platform === platform)
-        const exportExists = group?.exports.some(e => e.id === detected.format && e.supported)
-        if (exportExists) setFormat(detected.format)
-      }
-    }
-    // Dedup + feedback de duplicates
     let dupCount = 0
     setFiles(prev => {
       const seen = new Set(prev.map(f => `${f.name}::${f.size}`))
       const merged = [...prev]
       for (const f of valid) {
         const key = `${f.name}::${f.size}`
-        if (seen.has(key)) {
-          dupCount++
-        } else {
-          merged.push(f)
-          seen.add(key)
-        }
+        if (seen.has(key)) dupCount++
+        else { merged.push(f); seen.add(key) }
       }
       return merged
     })
-    // Feedback humano: combinamos errores (no-CSV) + duplicates ignorados.
     if (errors.length > 0) {
       const hasPdf = errors.some(e => /\.pdf/i.test(e))
       const hasXlsx = errors.some(e => /\.xlsx?/i.test(e))
@@ -809,243 +1089,66 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
       else helpText += 'Si tu broker no exporta CSV, podés pegar los datos en Google Sheets y descargar como CSV.'
       setFileError(errors.join(' ') + helpText)
     } else if (dupCount > 0) {
-      setFileError(
-        `${dupCount} ${dupCount === 1 ? 'archivo ya estaba' : 'archivos ya estaban'} en la lista — lo ignoramos.`,
-      )
+      setFileError(`${dupCount} ${dupCount === 1 ? 'archivo ya estaba' : 'archivos ya estaban'} en la lista — lo ignoramos.`)
     } else {
       setFileError(null)
     }
   }
 
-  // Quita un archivo por (name+size) — key estable independiente del orden.
   function removeFile(name, size) {
     setFiles(prev => prev.filter(f => !(f.name === name && f.size === size)))
   }
-  // Mapeo platform (parser) → broker en el widget de instrucciones.
-  // 'generic' no tiene correspondencia 1-a-1 → caemos a 'cocos' como default.
-  const instructionsBrokerId = ['cocos', 'balanz', 'binance', 'iol'].includes(platform)
-    ? platform
-    : 'cocos'
+
+  const curWord = effectiveCurrency === 'ARS' ? 'pesos' : effectiveCurrency === 'USD' ? 'dólares' : effectiveCurrency
 
   return (
     <div className="space-y-4">
-      {/* Instrucciones de cómo bajar el archivo de cada broker (colapsable) */}
-      <BrokerInstructions defaultBrokerId={instructionsBrokerId} />
-
-      {/* Para parsers específicos, el broker lo hardcodea el parser. */}
-      {isSpecific && !blockedInfo && (
-        <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
-          <span className="text-ink-1">
-            Este parser crea automáticamente el broker correspondiente
-            (<span className="font-semibold">{parserLabel}</span>) si no existe — no necesitás seleccionar uno.
-          </span>
-        </div>
-      )}
-
-      {/* ¿Qué clase de archivo es? — solo cuando NO usás parser específico */}
-      {!isSpecific && (
-      <div className="space-y-4">
-      <div>
-        <label className="block text-xs text-ink-3 mb-2">¿De qué tipo es este archivo?</label>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => setImportMode('single')}
-            className={`text-left px-3 py-2.5 rounded-md border transition ${
-              importMode === 'single'
-                ? 'border-rendi-accent bg-rendi-accent/10'
-                : 'border-line hover:border-line dark:hover:border-line-2'
-            }`}
-          >
-            <div className="text-sm font-medium text-ink-0">Un solo broker</div>
-            <div className="text-xs text-ink-3 mt-0.5">
-              Es un export de IBKR, Cocos, Binance, etc. Todas las filas pertenecen al mismo broker.
-            </div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setImportMode('general')}
-            className={`text-left px-3 py-2.5 rounded-md border transition ${
-              importMode === 'general'
-                ? 'border-rendi-accent bg-rendi-accent/10'
-                : 'border-line hover:border-line dark:hover:border-line-2'
-            }`}
-          >
-            <div className="text-sm font-medium text-ink-0">Mezcla de brokers</div>
-            <div className="text-xs text-ink-3 mt-0.5">
-              Tu archivo tiene una columna que indica a qué broker pertenece cada fila.
-            </div>
-          </button>
-        </div>
-      </div>
-
-      {importMode === 'single' && (
-        <div>
-          <label className="block text-xs text-ink-3 mb-1">Broker del archivo</label>
-          {brokers.length > 0 ? (
-            <select
-              value={singleBroker}
-              onChange={e => setSingleBroker(e.target.value)}
-              className="w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
-            >
-              {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>)}
-            </select>
+      {/* Resumen de lo elegido en el Paso 0 + cambiar */}
+      <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-md bg-rendi-accent/[0.07] border border-rendi-accent/25">
+        <div className="text-sm text-ink-1 min-w-0">
+          {sourceType === 'broker' ? (
+            <>Importando un export de <span className="font-semibold text-ink-0">{brokerLabel}</span>
+              {effectiveCurrency ? ` · ${effectiveCurrency}` : ''}{useCurrencyRouting ? ' (+ sub-broker USD)' : ''}</>
           ) : (
-            <div className="text-xs text-amber-600 dark:text-amber-400 px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/20">
-              Todavía no tenés brokers cargados.
-              <a href="/posiciones" className="ml-1 underline font-medium">Crear uno en Posiciones</a>
-              {' '}o usá <button
-                type="button"
-                onClick={() => setImportMode('general')}
-                className="underline font-medium"
-              >Mezcla de brokers</button> para que se auto-cree.
-            </div>
-          )}
-          <p className="text-xs text-ink-3 mt-1">
-            Todas las filas del archivo se van a importar a este broker. No necesitás una columna de broker en el CSV.
-          </p>
-        </div>
-      )}
-
-      {isArsBroker && (
-        <div className="px-3 py-3 rounded-md border border-line bg-bg-2 dark:bg-bg-1/40">
-          <div className="text-xs text-ink-1 mb-2 font-medium">
-            ¿Este archivo tiene operaciones en dólares?
-          </div>
-          <div className="flex gap-2 mb-2">
-            <button
-              type="button"
-              onClick={() => setHasUsdOps(true)}
-              className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
-                hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
-                          : 'border-line text-ink-2 hover:border-line'
-              }`}
-            >
-              Sí, hay operaciones en USD
-            </button>
-            <button
-              type="button"
-              onClick={() => setHasUsdOps(false)}
-              className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
-                !hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
-                           : 'border-line text-ink-2 hover:border-line'
-              }`}
-            >
-              No, todo es en ARS
-            </button>
-          </div>
-          {hasUsdOps && (
-            <p className="text-xs text-ink-3">
-              Vamos a crear automáticamente un sub-broker USD asociado a {singleBroker} y rutear cada fila según la moneda: las ARS al broker padre, las USD al sub-broker.
-            </p>
-          )}
-          {!hasUsdOps && (
-            <p className="text-xs text-ink-3">
-              Todas las filas se van a importar al broker en ARS. Si después aparecen filas con moneda USD, se van a registrar igual al broker padre.
-            </p>
+            <>Archivo propio{curWord ? ` en ${curWord}` : ''}
+              {importMode === 'general'
+                ? ' · mezcla de brokers'
+                : (singleBroker ? <> → <span className="font-semibold text-ink-0">{singleBroker}</span></> : '')}
+              {useCurrencyRouting ? ' (+ sub-broker USD)' : ''}</>
           )}
         </div>
-      )}
-      </div>
-      )}
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs text-ink-3 mb-1">Plataforma</label>
-          <select
-            value={platform}
-            onChange={e => changePlatform(e.target.value)}
-            className="w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
-          >
-            {parserGroups.map(g => (
-              <option key={g.platform} value={g.platform}>
-                {g.platform_label}
-              </option>
-            ))}
-          </select>
-        </div>
-        {hasMultipleExports && (
-          <div>
-            <label className="block text-xs text-ink-3 mb-1">Tipo de export</label>
-            <select
-              value={format}
-              onChange={e => setFormat(e.target.value)}
-              className="w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
-            >
-              {exportsForPlatform.map(e => (
-                <option key={e.id} value={e.id} disabled={!e.supported}>
-                  {e.label}{!e.supported ? ' (próximamente)' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+        <button type="button" onClick={onBack} className="text-xs text-rendi-accent hover:underline flex-shrink-0">
+          Cambiar
+        </button>
       </div>
 
-      {blockedInfo ? (
-        <div className="px-4 py-5 rounded-lg border border-rendi-accent/30 bg-rendi-accent/[0.06] text-center">
-          <h3 className="text-base font-medium text-ink-0 mb-1.5">{blockedInfo.title}</h3>
-          <p className="text-sm text-ink-2 leading-relaxed max-w-md mx-auto mb-4">
-            {blockedInfo.body}
+      {/* Instrucciones de descarga del broker (rama broker) */}
+      {isSpecific && platform !== 'generic' && (
+        <BrokerInstructions lockBrokerId={platform} />
+      )}
+
+      {/* Template genérico (rama propia) */}
+      {!isSpecific && (
+        <>
+          <p className="text-xs text-ink-3">
+            El template genérico funciona con cualquier CSV — en el próximo paso vas a mapear tus columnas a las de Rendi.
           </p>
-          <a
-            href={whatsappUrl(blockedInfo.waMessage)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 text-sm font-medium bg-[#25D366] hover:bg-[#1ebe5d] text-white rounded-md px-4 py-2 transition-colors"
+          <button
+            onClick={downloadTemplate}
+            className="inline-flex items-center gap-1.5 text-sm text-rendi-accent hover:underline"
           >
-            <WhatsAppIcon size={16} />
-            Contactar por WhatsApp
-          </a>
-          <p className="text-xs text-ink-3 mt-3">
-            Mientras tanto podés importar operaciones de otros brokers eligiéndolos arriba.
-          </p>
-        </div>
-      ) : (
-      <>
-      <p className="text-xs text-ink-3 -mt-2">
-        {platform === 'generic'
-          ? 'El template genérico funciona con cualquier CSV — vas a poder mapear las columnas en el siguiente paso.'
-          : 'Elegí desde dónde lo descargaste en tu broker — los headers tienen que coincidir.'}
-      </p>
+            <Download size={14} /> Descargar template de ejemplo
+          </button>
+        </>
+      )}
 
-      <button
-        onClick={downloadTemplate}
-        className="inline-flex items-center gap-1.5 text-sm text-rendi-accent hover:underline"
-      >
-        <Download size={14} /> Descargar template de ejemplo
-      </button>
-
+      {/* Dropzone */}
       <div>
         <label className="block text-xs text-ink-3 mb-1">Archivo CSV</label>
         {fileError && (
           <div className="mb-2 flex items-start gap-2 px-3 py-2 rounded-sm bg-rendi-warn/[0.08] border border-rendi-warn/25 text-rendi-warn text-xs">
             <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
             <span>{fileError}</span>
-          </div>
-        )}
-        {detection && detection.platform !== platform && (
-          <div className="mb-2 flex items-start gap-2 px-3 py-2 rounded-sm bg-rendi-pos/[0.06] border border-rendi-pos/25 text-xs">
-            <Sparkles size={12} strokeWidth={1.75} className="mt-0.5 flex-shrink-0 text-rendi-pos" />
-            <div className="flex-1 text-ink-1">
-              Detectamos que tu archivo parece de{' '}
-              <span className="font-medium text-ink-0">{detection.label}</span>.
-              <button
-                type="button"
-                onClick={() => { changePlatform(detection.platform); if (detection.format) setFormat(detection.format); setDetection(null) }}
-                className="ml-2 text-rendi-pos hover:text-ink-0 underline underline-offset-2"
-              >
-                Usar este parser
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => setDetection(null)}
-              className="text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0"
-              aria-label="Descartar sugerencia"
-            >
-              <X size={11} strokeWidth={1.75} />
-            </button>
           </div>
         )}
         <div
@@ -1060,10 +1163,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
             }
           }}
           onDragOver={e => { e.preventDefault() }}
-          onDrop={e => {
-            e.preventDefault()
-            pickFiles(e.dataTransfer?.files)
-          }}
+          onDrop={e => { e.preventDefault(); pickFiles(e.dataTransfer?.files) }}
           className="border-2 border-dashed border-line-2 rounded-lg p-6 text-center cursor-pointer hover:border-rendi-accent/50 focus:border-rendi-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-rendi-accent/40 transition"
         >
           <input
@@ -1079,7 +1179,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
               <Upload size={20} className="mx-auto mb-2 opacity-60" />
               Soltá uno o varios CSV o hacé clic para seleccionarlos
               <div className="mt-1 text-[11px] text-ink-3">
-                Tip: para importar varios años de Cocos, seleccioná los CSVs juntos
+                Tip: para importar varios años, seleccioná los CSVs juntos
               </div>
             </div>
           ) : (
@@ -1112,8 +1212,7 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
               </ul>
               {!isSpecific && files.length > 1 && (
                 <div className="mt-2 text-[11px] text-ink-3 max-w-md mx-auto">
-                  Nota: vamos a mapear las columnas del primer archivo. Los demás
-                  deben tener el mismo header.
+                  Nota: vamos a mapear las columnas del primer archivo. Los demás deben tener el mismo header.
                 </div>
               )}
             </div>
@@ -1125,8 +1224,6 @@ function UploadStep({ parsers, parserGroups = [], platform, setPlatform,
         <p>Antes de importar, generamos una vista previa: vas a poder revisar fila por fila lo que Rendi entendió antes de guardar nada.</p>
         <p>Si tu archivo tiene errores, las filas válidas se importan igual y te mostramos cuáles fallaron.</p>
       </div>
-      </>
-      )}
     </div>
   )
 }

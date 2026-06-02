@@ -1871,6 +1871,28 @@ export function handleDemoRequest(method, path, body) {
       }
     }
     if (basePath === '/imports')     return []
+    // Parsers agrupados — alimentan el grid de brokers del Paso 0 del wizard.
+    // Mismo shape que parser_options_grouped() del backend. Sin esto, en demo
+    // el grid de "elegí tu broker" quedaría vacío.
+    if (basePath === '/imports/parsers/grouped') {
+      return [
+        { platform: 'binance', platform_label: 'Binance', exports: [
+          { id: 'binance', label: 'Spot → Trade History', supported: true },
+          { id: 'binance_transaction_history', label: 'Transaction History (completo)', supported: true },
+          { id: 'binance_futures_trade_history', label: 'Futures → Trade History', supported: false },
+        ] },
+        { platform: 'cocos', platform_label: 'Cocos Capital', exports: [
+          { id: 'cocos', label: 'Cocos Capital', supported: true },
+        ] },
+        { platform: 'schwab', platform_label: 'Charles Schwab', exports: [
+          { id: 'schwab', label: 'Charles Schwab', supported: true },
+        ] },
+        { platform: 'generic', platform_label: 'Genérico (cualquier broker)', exports: [
+          { id: 'rendi_generic', label: 'Template Rendi (genérico)', supported: true },
+        ] },
+      ]
+    }
+    if (basePath === '/imports/mappings') return []
     if (basePath === '/config')      return { tc_mep: 1424, tc_blue: 1415 }
     if (basePath === '/home/personal') {
       return { cards: [

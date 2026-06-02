@@ -49,6 +49,16 @@ function IolLogo({ size = 18 }) {
   )
 }
 
+function SchwabLogo({ size = 18 }) {
+  // Charles Schwab brand: celeste sobre fondo azul marino.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect width="24" height="24" rx="4" fill="#00A0DF" />
+      <text x="12" y="16" textAnchor="middle" fontFamily="-apple-system,sans-serif" fontWeight="800" fontSize="11" fill="#FFFFFF">S</text>
+    </svg>
+  )
+}
+
 // Diccionario broker → contenido. El user va a actualizar `steps` y `summary`
 // cuando mande los ejemplos reales.
 const BROKERS = [
@@ -91,6 +101,19 @@ const BROKERS = [
     parserNote: null,
   },
   {
+    id: 'schwab',
+    label: 'Charles Schwab',
+    Logo: SchwabLogo,
+    summary: 'Usamos el export de History (transacciones) en formato CSV.',
+    steps: [
+      'Entrá a schwab.com → Accounts → History (Historial).',
+      'Elegí la cuenta y el rango de fechas (lo más amplio posible: desde que abriste la cuenta hasta hoy).',
+      'Hacé clic en el ícono de export (arriba a la derecha de la tabla) y elegí CSV.',
+      'Subí ese CSV acá. Si tenés varias cuentas, exportá una por una.',
+    ],
+    parserNote: 'Schwab exporta en USD — Rendi crea el broker en dólares automáticamente.',
+  },
+  {
     id: 'iol',
     label: 'IOL',
     Logo: IolLogo,
@@ -104,10 +127,14 @@ const BROKERS = [
   },
 ]
 
-export default function BrokerInstructions({ defaultBrokerId = 'cocos' }) {
+// lockBrokerId: si viene, el widget queda fijo a ese broker (sin chips ni
+// selector) — lo usa el Paso 0 del wizard, donde el broker ya fue elegido.
+export default function BrokerInstructions({ defaultBrokerId = 'cocos', lockBrokerId = null }) {
   const [open, setOpen] = useState(true)
-  const [selectedId, setSelectedId] = useState(defaultBrokerId)
-  const selected = BROKERS.find(b => b.id === selectedId) || BROKERS[0]
+  const [selectedId, setSelectedId] = useState(lockBrokerId || defaultBrokerId)
+  const locked = !!lockBrokerId
+  const effectiveId = lockBrokerId || selectedId
+  const selected = BROKERS.find(b => b.id === effectiveId) || BROKERS[0]
   const SelectedLogo = selected.Logo
 
   return (
@@ -127,9 +154,11 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos' }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-2 border border-line/60 rounded-sm px-2 py-0.5">
-            Cocos · Balanz · Binance · IOL
-          </span>
+          {!locked && (
+            <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-2 border border-line/60 rounded-sm px-2 py-0.5">
+              Cocos · Balanz · Binance · IOL
+            </span>
+          )}
           {open
             ? <ChevronUp size={14} strokeWidth={1.75} className="text-ink-3" />
             : <ChevronDown size={14} strokeWidth={1.75} className="text-ink-3" />}
@@ -138,31 +167,33 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos' }) {
 
       {open && (
         <div className="border-t border-line/50">
-          {/* Chips de broker */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3">
-            {BROKERS.map(b => {
-              const Logo = b.Logo
-              const active = b.id === selectedId
-              return (
-                <button
-                  key={b.id}
-                  type="button"
-                  onClick={() => setSelectedId(b.id)}
-                  className={`inline-flex items-center gap-2 px-3 py-2 rounded-md border transition-all text-left ${
-                    active
-                      ? 'border-data-violet/60 bg-data-violet/10 text-data-violet'
-                      : 'border-line bg-bg-2/40 hover:border-line-3 text-ink-1'
-                  }`}
-                >
-                  <Logo size={20} />
-                  <span className="text-sm font-medium truncate">{b.label}</span>
-                </button>
-              )
-            })}
-          </div>
+          {/* Chips de broker — ocultos cuando el broker ya viene fijado (Paso 0) */}
+          {!locked && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3">
+              {BROKERS.map(b => {
+                const Logo = b.Logo
+                const active = b.id === selectedId
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => setSelectedId(b.id)}
+                    className={`inline-flex items-center gap-2 px-3 py-2 rounded-md border transition-all text-left ${
+                      active
+                        ? 'border-data-violet/60 bg-data-violet/10 text-data-violet'
+                        : 'border-line bg-bg-2/40 hover:border-line-3 text-ink-1'
+                    }`}
+                  >
+                    <Logo size={20} />
+                    <span className="text-sm font-medium truncate">{b.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
 
           {/* Pasos del broker seleccionado */}
-          <div className="mx-3 mb-3 rounded-md border border-data-violet/30 bg-data-violet/[0.04] p-3">
+          <div className={`mx-3 mb-3 ${locked ? 'mt-3' : ''} rounded-md border border-data-violet/30 bg-data-violet/[0.04] p-3`}>
             <div className="flex items-start gap-3">
               <div className="flex-shrink-0 mt-0.5">
                 <SelectedLogo size={28} />
