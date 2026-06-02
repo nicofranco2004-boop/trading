@@ -74,13 +74,27 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
     return () => { alive = false }
   }, [])
 
+  // Moneda del broker elegido → filtramos el catálogo FCI a fondos de esa
+  // moneda. Un fondo en USD no puede vivir en un broker ARS (se valuaría como
+  // si el precio fuera en pesos). Para el resto de activos no aplica esta regla.
+  const brokerCurrency = (brokers.find(b => b.name === chosenBroker) || {}).currency || null
+  const fciForBroker = useMemo(() => {
+    if (!brokerCurrency) return fciList
+    const wantUSD = brokerCurrency !== 'ARS'  // ARS broker → fondos ARS; USDT/USD → fondos USD
+    return fciList.filter(f => (f._moneda === 'USD') === wantUSD)
+  }, [fciList, brokerCurrency])
+
   const categories = useMemo(() => ([
     ...CATEGORIES,
     {
-      id: 'fci', label: 'Fondos (FCI)', icon: PiggyBank, list: fciList,
-      hint: 'FIMA, money market, renta fija…',
+      id: 'fci', label: 'Fondos (FCI)', icon: PiggyBank, list: fciForBroker,
+      hint: brokerCurrency === 'ARS'
+        ? 'FIMA, money market, renta fija (en pesos)'
+        : brokerCurrency
+          ? 'Fondos en dólares (FIMA Dólares, etc.)'
+          : 'FIMA, money market, renta fija…',
     },
-  ]), [fciList])
+  ]), [fciForBroker, brokerCurrency])
 
   // Derivamos la categoría del id para que refleje siempre la lista actual
   // (importa para FCI, que se llena async después del fetch).
