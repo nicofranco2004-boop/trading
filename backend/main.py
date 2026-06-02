@@ -4525,6 +4525,21 @@ def _prevclose_cache_set(values: dict) -> None:
 def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     raw = [s.strip().upper() for s in symbols.split(",") if s.strip()]
 
+    # FCI (fondos comunes): no pasan el _SYMBOL_RE de tickers yfinance — los
+    # resolvemos aparte desde la tabla fci_prices (refrescada 1x/día por cron).
+    # El precio guardado ya es por cuotaparte (vcp/1000). Se mergea en cada return.
+    fci_prices = {}
+    fci_syms = [s for s in raw if s.startswith("FCI:")]
+    if fci_syms:
+        _fci_conn = get_db()
+        try:
+            from pricing import fci as _fci_mod
+            fci_prices = _fci_mod.get_prices_for(_fci_conn, fci_syms)
+        except Exception as _fci_ex:
+            log.warning("FCI price resolve falló: %s", _fci_ex)
+        finally:
+            _fci_conn.close()
+
     # Validate each symbol format
     sym_list = [s for s in raw if _SYMBOL_RE.match(s)]
 
@@ -4532,7 +4547,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     sym_list = sym_list[:MAX_SYMBOLS]
 
     if not sym_list:
-        return {}
+        return dict(fci_prices)
 
     # ─── Layer 1: cache hit fast path ───────────────────────────────────────
     # Si TODOS los símbolos están cacheados frescos (< 60s), devolvemos sin
@@ -4540,7 +4555,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     # en < 5ms.
     cached_results, uncached_symbols = _prices_cache_get(sym_list)
     if not uncached_symbols:
-        return cached_results
+        return {**cached_results, **fci_prices}
 
     # Hay misses — procesamos solo los uncached. Resultado base incluye lo
     # que ya teníamos cacheado para no perderlo en el merge final.
@@ -4564,7 +4579,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     if not yf_targets:
         # Solo había símbolos resolved por data912 — persistir y salir.
         _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
-        return result
+        return {**result, **fci_prices}
 
     sym_to_yf = {}
     for sym in yf_targets:
@@ -4610,7 +4625,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     # Persistir todos los uncached que acabamos de fetchear (incluyendo None
     # para los que fallaron — evita retry storm si Yahoo está down).
     _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
-    return result
+    return {**result, **fci_prices}
 
 
 @app.get("/api/prices/prev-close")
@@ -4766,7 +4781,7 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_cu
 
 class PositionIn(BaseModel):
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=48)  # 48 para símbolos FCI: 'FCI:FIMA-PREMIUM-A'
     is_cash: bool = False
     buy_price: Optional[float] = Field(None, ge=0)
     quantity: Optional[float] = Field(None, ge=0)
@@ -8790,6 +8805,30 @@ def admin_fci_probe(uid: int = Depends(get_admin_user)):
                  "Fase 1. go_auto=false → geo-proxy AR o modo manual."),
     }
     return result
+
+
+@app.get("/api/fci/catalog")
+def fci_catalog(uid: int = Depends(get_current_user)):
+    """Catálogo de FCI elegibles para el selector de alta de posición, con el
+    último precio por cuotaparte conocido (price puede ser null si nunca refrescó)."""
+    conn = get_db()
+    try:
+        from pricing import fci as fci_mod
+        return fci_mod.list_catalog(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/fci/refresh")
+def admin_fci_refresh(uid: int = Depends(get_admin_user)):
+    """Dispara manualmente seed del catálogo + refresh de precios FCI. Para
+    testear en local sin esperar al cron diario. Devuelve counts."""
+    conn = get_db()
+    try:
+        from pricing import fci as fci_mod
+        return fci_mod.bootstrap(conn)
+    finally:
+        conn.close()
 
 
 @app.post("/api/admin/users/{user_id}/approve")
@@ -13965,6 +14004,36 @@ def _migrate_snapshots_netdep():
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _run_fci_refresh_job():
+    """Cron diario: refresca precios de cuotaparte de FCI desde ArgentinaDatos."""
+    conn = get_db()
+    try:
+        from pricing import fci as fci_mod
+        res = fci_mod.refresh_prices(conn)
+        _snapshot_log.info("FCI refresh job: %s", res)
+    except Exception as ex:
+        logging.getLogger("pricing.fci").error("FCI refresh job falló: %s", ex)
+    finally:
+        conn.close()
+
+
+def _fci_bootstrap_async():
+    """Boot: crea tablas + seedea catálogo + primer refresh, en thread daemon
+    para no bloquear el arranque (hace red)."""
+    def worker():
+        try:
+            conn = get_db()
+            try:
+                from pricing import fci as fci_mod
+                res = fci_mod.bootstrap(conn)
+                _snapshot_log.info("FCI bootstrap: %s", res)
+            finally:
+                conn.close()
+        except Exception as ex:
+            logging.getLogger("pricing.fci").warning("FCI bootstrap falló: %s", ex)
+    threading.Thread(target=worker, daemon=True).start()
+
+
 @app.on_event("startup")
 def _start_scheduler():
     # Audit follow-up (2026-05-31): cron a las 02:59 UTC = 23:59 ART.
@@ -13999,8 +14068,19 @@ def _start_scheduler():
         id='backup_db',
         replace_existing=True,
     )
+    # 12:10 UTC (~09:10 ART) — refresca precios de cuotaparte FCI. CAFCI publica
+    # el valor del día hábil anterior a la mañana siguiente (T+1), así que a esta
+    # hora ya está disponible.
+    _scheduler.add_job(
+        _run_fci_refresh_job,
+        CronTrigger(hour=12, minute=10),
+        id='fci_refresh',
+        replace_existing=True,
+    )
     _scheduler.start()
+    _fci_bootstrap_async()
     _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 02:59 UTC = 23:59 ART)")
+    _snapshot_log.info("FCI refresh scheduler iniciado (cron: 12:10 UTC) + bootstrap on boot")
     _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC)")
     _snapshot_log.info("Backup DB scheduler iniciado (cron: 03:45 UTC)")
 
