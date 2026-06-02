@@ -14020,6 +14020,7 @@ def _run_fci_refresh_job():
 def _fci_bootstrap_async():
     """Boot: crea tablas + seedea catálogo + primer refresh, en thread daemon
     para no bloquear el arranque (hace red)."""
+    import threading
     def worker():
         try:
             conn = get_db()
@@ -14078,7 +14079,10 @@ def _start_scheduler():
         replace_existing=True,
     )
     _scheduler.start()
-    _fci_bootstrap_async()
+    try:
+        _fci_bootstrap_async()
+    except Exception as _fci_ex:
+        logging.getLogger("pricing.fci").warning("FCI bootstrap no se pudo lanzar: %s", _fci_ex)
     _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 02:59 UTC = 23:59 ART)")
     _snapshot_log.info("FCI refresh scheduler iniciado (cron: 12:10 UTC) + bootstrap on boot")
     _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC)")

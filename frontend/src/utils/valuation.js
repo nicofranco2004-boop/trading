@@ -50,6 +50,22 @@
  *     ARS broker → result.pnlArs / tcBlue
  *     USD broker → result.pnlUsd
  */
+/**
+ * priceSymbol — símbolo con el que se pide/busca el precio de un asset.
+ *
+ * Los FCI (prefijo 'FCI:') se piden tal cual: el backend los resuelve desde la
+ * tabla fci_prices (valor de cuotaparte), no pasan por yfinance. El resto de
+ * los activos en un broker ARS llevan el sufijo .BA (BCBA via yfinance).
+ *
+ * @param {string} asset  Símbolo crudo de la posición (p.asset)
+ * @param {boolean} isARS Si el broker es ARS
+ * @returns {string}
+ */
+export function priceSymbol(asset, isARS) {
+  if ((asset || '').startsWith('FCI:')) return asset
+  return isARS ? `${asset}.BA` : asset
+}
+
 export function computeBrokerValue(allPositions, prices, broker, tcBlue) {
   const bpos = allPositions.filter(p => p.broker === broker.name)
   let value = 0, invested = 0
@@ -78,7 +94,7 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue) {
         const invUsd = realCost / tcBlue
         invested += invUsd
 
-        const priceArs = p.price_override ?? prices[p.asset + '.BA']
+        const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceArs != null) {
           const mktArs = priceArs * (p.quantity || 0)
           valueArs += mktArs

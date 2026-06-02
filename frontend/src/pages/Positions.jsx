@@ -22,7 +22,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { useCurrency } from '../contexts/CurrencyContext'
 import CurrencyToggle from '../components/CurrencyToggle'
 import PageHeader from '../components/PageHeader'
@@ -340,7 +340,7 @@ function PositionsDesktop() {
     const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
 
     const arsSyms = [...new Set(
-      pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA')
+      pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true))
     )]
     const usdtSyms = [...new Set(
       pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset)
@@ -613,7 +613,7 @@ function PositionsDesktop() {
     if (p.is_cash) {
       return { valueArs: p.invested, valueUsd: p.invested / tcBlue, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null }
     }
-    const priceArs = p.price_override ?? prices[p.asset + '.BA']
+    const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
     if (priceArs == null) return { valueArs: null, valueUsd: null, pnlArs: null, pnlUsd: null, pnlPct: null, priceArs: null }
     // Cost basis ARS = invested + commissions (ambos en pesos para broker ARS).
     const realCostArs = (p.invested || 0) + (p.commissions || 0)
@@ -831,7 +831,7 @@ function PositionsDesktop() {
         let brokerDay = 0
         let brokerHasDay = false
         for (const p of bpos) {
-          const symKey = isARS ? p.asset + '.BA' : p.asset
+          const symKey = priceSymbol(p.asset, isARS)
           const curPrice = p.price_override ?? prices[symKey]
           const dv = dayVarOf(p, symKey, curPrice)
           if (dv) { brokerDay += dv.amount; brokerHasDay = true }
@@ -955,7 +955,7 @@ function PositionsDesktop() {
                         : c.pnlPct
                       const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
-                      const dvArs = dayVarOf(p, p.asset + '.BA', c.priceArs)
+                      const dvArs = dayVarOf(p, priceSymbol(p.asset, true), c.priceArs)
                       const expanded = isBond && expandedBonds.has(bondKey)
                       const arsColSpan = showDetail ? 14 : 11
                       const pnlTooltip = (isBond && pnlContrib !== 0)
@@ -2544,7 +2544,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
   // pisar lo que ya estaba al editar).
   async function fetchAndFillPrice(ticker) {
     if (!ticker || mode === 'edit') return
-    const symbol = isARS ? `${ticker}.BA` : ticker
+    const symbol = priceSymbol(ticker, isARS)
     try {
       const data = await api.get(`/prices?symbols=${symbol}`)
       const price = data?.[symbol]

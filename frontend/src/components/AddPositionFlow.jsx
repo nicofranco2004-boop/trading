@@ -16,11 +16,12 @@
 //   • Mobile         → bottom sheet full-width con safe-area
 
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark } from 'lucide-react'
+import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank } from 'lucide-react'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
   BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF,
 } from '../utils/tickers'
+import { api } from '../utils/api'
 import AssetLogo from './AssetLogo'
 
 // ─── Categorías ──────────────────────────────────────────────────────────────
@@ -48,7 +49,34 @@ const CATEGORIES = [
 
 export default function AddPositionFlow({ onClose, onAssetSelected }) {
   const [step, setStep] = useState(1)
-  const [category, setCategory] = useState(null)
+  const [categoryId, setCategoryId] = useState(null)
+  const [fciList, setFciList] = useState([])
+
+  // El catálogo de FCI es dinámico (viene del backend); el resto de categorías
+  // son listas estáticas de utils/tickers. Lo cargamos al montar.
+  useEffect(() => {
+    let alive = true
+    api.get('/fci/catalog')
+      .then(rows => {
+        if (alive) setFciList((rows || []).map(r => ({
+          s: r.symbol, n: r.display_name, _sub: r.emisor, _moneda: r.moneda,
+        })))
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  const categories = useMemo(() => ([
+    ...CATEGORIES,
+    {
+      id: 'fci', label: 'Fondos (FCI)', icon: PiggyBank, list: fciList,
+      hint: 'FIMA, money market, renta fija…',
+    },
+  ]), [fciList])
+
+  // Derivamos la categoría del id para que refleje siempre la lista actual
+  // (importa para FCI, que se llena async después del fetch).
+  const category = categories.find(c => c.id === categoryId) || null
 
   // Esc cierra el flow desde cualquier step (a11y standard)
   useEffect(() => {
@@ -58,16 +86,16 @@ export default function AddPositionFlow({ onClose, onAssetSelected }) {
   }, [onClose])
 
   function selectCategory(cat) {
-    setCategory(cat)
+    setCategoryId(cat.id)
     setStep(2)
   }
   function selectTicker(t) {
-    onAssetSelected({ asset: t.s, name: t.n, category: category?.id })
+    onAssetSelected({ asset: t.s, name: t.n, category: categoryId })
   }
   function back() {
     if (step === 2) {
       setStep(1)
-      setCategory(null)
+      setCategoryId(null)
     }
   }
 
@@ -86,7 +114,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected }) {
           onBack={step > 1 ? back : null}
           onClose={onClose}
         />
-        {step === 1 && <Step1AssetType onPick={selectCategory} />}
+        {step === 1 && <Step1AssetType categories={categories} onPick={selectCategory} />}
         {step === 2 && <Step2TickerPicker category={category} onPick={selectTicker} />}
       </div>
     </div>
@@ -134,11 +162,11 @@ function FlowHeader({ step, category, onBack, onClose }) {
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 1 — Asset Type Picker (grid de categorías)
 // ════════════════════════════════════════════════════════════════════════════
-function Step1AssetType({ onPick }) {
+function Step1AssetType({ categories, onPick }) {
   return (
     <div className="overflow-y-auto flex-1 p-5">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {CATEGORIES.map(cat => {
+        {categories.map(cat => {
           const Icon = cat.icon
           return (
             <button
