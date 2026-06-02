@@ -262,7 +262,7 @@ def _table_cols(conn, table: str) -> set:
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
                'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
-               'ai_tool_usage', 'yfinance_cache', 'credit_ledger'}
+               'ai_tool_usage', 'yfinance_cache', 'credit_ledger', 'plazos_fijos'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -725,12 +725,20 @@ def init_db():
             plazo_dias INTEGER NOT NULL,
             fecha_vencimiento TEXT NOT NULL,
             renovacion_auto INTEGER NOT NULL DEFAULT 0,
+            modalidad TEXT NOT NULL DEFAULT 'vencimiento',
             notes TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             closed_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_pf_user ON plazos_fijos(user_id);
     """)
+    # Migración: columna `modalidad` para DBs creadas antes de este campo.
+    # 'vencimiento' = interés al final (default); 'periodico' = pago de renta
+    # (fast-follow, todavía no valuado distinto).
+    _pf_cols = _table_cols(conn, 'plazos_fijos')
+    if _pf_cols and 'modalidad' not in _pf_cols:
+        conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN modalidad TEXT NOT NULL DEFAULT 'vencimiento';")
+        conn.commit()
 
     # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────
     # Tickers que el user "sigue" sin tenerlos en portfolio. Se renderiza en el
@@ -4936,6 +4944,7 @@ class PlazoFijoIn(BaseModel):
     fecha_inicio: str = Field(..., max_length=10)
     plazo_dias: int = Field(..., gt=0, le=3650)
     renovacion_auto: bool = False
+    modalidad: str = Field('vencimiento')   # 'vencimiento' | 'periodico'
     notes: Optional[str] = Field(None, max_length=MAX_NOTES)
 
     @field_validator('moneda')
@@ -4944,6 +4953,14 @@ class PlazoFijoIn(BaseModel):
         v = (v or 'ARS').strip().upper()
         if v not in ('ARS', 'USD'):
             raise ValueError('Moneda inválida')
+        return v
+
+    @field_validator('modalidad')
+    @classmethod
+    def valid_modalidad(cls, v):
+        v = (v or 'vencimiento').strip().lower()
+        if v not in ('vencimiento', 'periodico'):
+            raise ValueError('Modalidad inválida (vencimiento o periodico)')
         return v
 
     @field_validator('rate_type')
@@ -4996,10 +5013,10 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
     cur = conn.execute(
         """INSERT INTO plazos_fijos
                (user_id, banco, capital, moneda, tasa, rate_type,
-                fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, modalidad, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (uid, p.banco, p.capital, p.moneda, p.tasa, p.rate_type,
-         p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.notes),
+         p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad, p.notes),
     )
     conn.commit()
     pid = cur.lastrowid
@@ -5018,10 +5035,11 @@ def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_current_u
         raise HTTPException(404, "Plazo fijo no encontrado")
     conn.execute(
         """UPDATE plazos_fijos SET banco=?, capital=?, moneda=?, tasa=?, rate_type=?,
-               fecha_inicio=?, plazo_dias=?, fecha_vencimiento=?, renovacion_auto=?, notes=?
+               fecha_inicio=?, plazo_dias=?, fecha_vencimiento=?, renovacion_auto=?,
+               modalidad=?, notes=?
            WHERE id=? AND user_id=?""",
         (p.banco, p.capital, p.moneda, p.tasa, p.rate_type, p.fecha_inicio,
-         p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.notes, pid, uid),
+         p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad, p.notes, pid, uid),
     )
     conn.commit()
     conn.close()

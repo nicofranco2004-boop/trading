@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue } from './valuation.js'
+import { computeBrokerValue, computePf } from './valuation.js'
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -338,4 +338,60 @@ describe('Cash positions ignoran commissions (no aplican)', () => {
   it('cash value = invested',     () => expect(r.value).toBeCloseTo(5_000))
   it('cash invested = invested',  () => expect(r.invested).toBeCloseTo(5_000))
   it('cash pnl = 0',              () => expect(r.pnlUsd).toBeCloseTo(0))
+})
+
+// ─── Plazos fijos: computePf ──────────────────────────────────────────────────
+describe('computePf — valuación de plazo fijo (al vencimiento)', () => {
+  const base = { capital: 1_000_000, tasa: 0.30, fecha_inicio: '2026-06-02', plazo_dias: 125 }
+  const pfTNA = { ...base, rate_type: 'TNA' }
+  const pfTEA = { ...base, rate_type: 'TEA' }
+
+  it('TNA 30% a 125 días → interés simple (10,27%)', () => {
+    const r = computePf(pfTNA, '2026-06-02')   // día 0
+    expect(r.tasaPeriodo).toBeCloseTo(0.30 * 125 / 365, 8)  // fórmula exacta
+    expect(r.tasaPeriodo).toBeCloseTo(0.1027, 3)            // sanity
+    expect(r.interes).toBeCloseTo(1_000_000 * r.tasaPeriodo, 2)
+    expect(r.valorVencimiento).toBeCloseTo(1_000_000 + r.interes, 2)
+    expect(r.teaEquiv).toBeCloseTo(0.3305, 2)               // 30% TNA = 33,05% TEA a 125d
+    expect(r.tnaEquiv).toBeCloseTo(0.30, 6)
+  })
+
+  it('TEA 30% a 125 días → interés compuesto (9,40%)', () => {
+    const r = computePf(pfTEA, '2026-06-02')
+    expect(r.tasaPeriodo).toBeCloseTo(Math.pow(1.30, 125 / 365) - 1, 8)  // fórmula exacta
+    expect(r.tasaPeriodo).toBeCloseTo(0.0940, 3)            // sanity
+    expect(r.interes).toBeCloseTo(1_000_000 * r.tasaPeriodo, 2)
+    expect(r.tnaEquiv).toBeCloseTo(0.2745, 2)               // 30% TEA = 27,45% TNA a 125d
+    expect(r.teaEquiv).toBeCloseTo(0.30, 6)
+  })
+
+  it('TNA y TEA con el mismo número dan distinto (compuesta < simple en parcial)', () => {
+    const tna = computePf(pfTNA, '2026-06-02')
+    const tea = computePf(pfTEA, '2026-06-02')
+    expect(tea.interes).toBeLessThan(tna.interes)
+  })
+
+  it('devenga lineal en TNA (mitad del plazo = mitad del interés)', () => {
+    const pf = { capital: 1_000_000, tasa: 0.30, rate_type: 'TNA', fecha_inicio: '2026-06-02', plazo_dias: 30 }
+    const full = computePf(pf, '2026-07-02')   // 30 días
+    const half = computePf(pf, '2026-06-17')   // 15 días
+    expect(half.diasTranscurridos).toBe(15)
+    expect(half.diasRestantes).toBe(15)
+    expect(half.devengadoHoy).toBeCloseTo(full.interes / 2, 4)
+  })
+
+  it('vencido → devengado = interés total + flag', () => {
+    const r = computePf(pfTNA, '2026-12-31')
+    expect(r.vencido).toBe(true)
+    expect(r.diasTranscurridos).toBe(125)
+    expect(r.devengadoHoy).toBeCloseTo(r.interes, 4)
+    expect(r.valorHoy).toBeCloseTo(r.valorVencimiento, 4)
+  })
+
+  it('antes del inicio → sin devengado', () => {
+    const r = computePf(pfTNA, '2026-05-01')
+    expect(r.diasTranscurridos).toBe(0)
+    expect(r.devengadoHoy).toBe(0)
+    expect(r.valorHoy).toBe(1_000_000)
+  })
 })
