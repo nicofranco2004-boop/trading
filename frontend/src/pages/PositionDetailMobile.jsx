@@ -17,6 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
+import { priceSymbol } from '../utils/valuation'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
 export default function PositionDetailMobile() {
@@ -53,7 +54,7 @@ export default function PositionDetailMobile() {
       setOperations((ops || []).filter(o => o.asset === p.asset && o.broker === p.broker))
       // Fetchar precio
       const isAR = (bkrs || []).find(b => b.name === p.broker)?.currency === 'ARS'
-      const sym = isAR && !p.is_cash ? `${p.asset}.BA` : p.asset
+      const sym = !p.is_cash ? priceSymbol(p.asset, isAR) : p.asset
       if (!p.is_cash) {
         try { setPrices(await api.get(`/prices?symbols=${sym}`)) } catch { /* silent */ }
       }
@@ -91,7 +92,7 @@ export default function PositionDetailMobile() {
   if (p.is_cash) {
     valueUsd = isAR ? invested / tcBlue : invested
   } else if (isAR) {
-    priceLocal = p.price_override ?? prices[`${p.asset}.BA`]
+    priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
     valueUsd = priceLocal != null ? (priceLocal * qty) / tcBlue : invested / tcBlue
     const investedUsd = invested / tcBlue
     pnlUsd = valueUsd - investedUsd
@@ -169,7 +170,7 @@ export default function PositionDetailMobile() {
               Precio · últimos 30 días
             </div>
             <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
-              <AssetMiniChart symbol={isAR ? `${p.asset}.BA` : p.asset} />
+              <AssetMiniChart symbol={priceSymbol(p.asset, isAR)} />
             </div>
           </section>
         </AskAIAbout>

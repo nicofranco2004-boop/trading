@@ -22,7 +22,7 @@ import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/for
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
-import { computeBrokerValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import {
@@ -230,7 +230,7 @@ function InsightsDesktop({ _embeddedTab }) {
       const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
       // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
       const usdtBrokers = new Set(bkrs.filter(x => x.currency !== 'ARS').map(x => x.name))
-      const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
+      const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
       const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
       const all = [...arsSyms, ...usdtSyms].join(',')
       if (all) {
@@ -265,7 +265,7 @@ function InsightsDesktop({ _embeddedTab }) {
       const broker = brokers.find(b => b.name === p.broker)
       let val = 0
       if (broker?.currency === 'ARS') {
-        const priceArs = p.price_override ?? prices[p.asset + '.BA']
+        const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
       } else {
         const price = p.price_override ?? prices[p.asset]
@@ -303,7 +303,7 @@ function InsightsDesktop({ _embeddedTab }) {
       const broker = brokers.find(b => b.name === p.broker)
       let val = 0
       if (broker?.currency === 'ARS') {
-        const priceArs = p.price_override ?? prices[p.asset + '.BA']
+        const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
       } else {
         const price = p.price_override ?? prices[p.asset]
@@ -1180,7 +1180,7 @@ function InsightsDesktop({ _embeddedTab }) {
     const realCost = (p.invested || 0) + (p.commissions || 0)
     let valueUsd, investedUsd
     if (isARS) {
-      const priceArs = p.price_override ?? prices[p.asset + '.BA']
+      const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
       valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
       investedUsd = realCost / tcBlue
     } else {
@@ -1534,7 +1534,7 @@ function InsightsDesktop({ _embeddedTab }) {
   const hasMissingPrices = positions.some(p => {
     if (p.is_cash) return false
     if (p.price_override != null) return false
-    return prices[p.asset] == null && prices[p.asset + '.BA'] == null
+    return prices[p.asset] == null && prices[priceSymbol(p.asset, true)] == null
   })
 
   // Helper de moneda activa: convierte un monto USD al ARS actual cuando el

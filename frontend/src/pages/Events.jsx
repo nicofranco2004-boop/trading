@@ -26,7 +26,7 @@ import EventBadge from '../components/EventBadge'
 import { api } from '../utils/api'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
-import { computeBrokerValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { pct } from '../utils/format'
 import {
   upcomingBondEvents,
@@ -797,7 +797,7 @@ function collectPriceSymbols(positions, brokers) {
   const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
   const usdtBrokers = new Set(brokers.filter(b => b.currency !== 'ARS').map(b => b.name))
   const arsSyms = [...new Set(
-    positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA')
+    positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true))
   )]
   const usdtSyms = [...new Set(
     positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset)

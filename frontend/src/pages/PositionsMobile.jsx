@@ -31,6 +31,7 @@ import { PositionFormModal, SellModal, EMPTY_POS, today } from './Positions'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
+import { priceSymbol } from '../utils/valuation'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
@@ -147,7 +148,7 @@ export default function PositionsMobile() {
     if (p.is_cash) return
     const broker = brokers.find(b => b.name === p.broker)
     const isARS = broker?.currency === 'ARS'
-    const price = prices[isARS ? `${p.asset}.BA` : p.asset]
+    const price = prices[priceSymbol(p.asset, isARS)]
     const suggested = price ?? p.buy_price ?? ''
     setSellForm({
       broker: p.broker,
@@ -314,7 +315,7 @@ export default function PositionsMobile() {
   async function loadPrices(pos, bkrs) {
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
     const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
-    const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
+    const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
     const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
     const all = [...arsSyms, ...usdtSyms].join(',')
     if (!all) return
@@ -417,7 +418,7 @@ export default function PositionsMobile() {
           pnlLocal: null, dayVarLocal: null, dayVarUsd: null, dayVarPct: null, isAR,
         }
       } else if (isAR) {
-        priceLocal = p.price_override ?? prices[p.asset + '.BA']
+        priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceLocal) valueUsd = (priceLocal * qty) / tcBlue
         else valueUsd = invested / tcBlue
       } else {
@@ -437,7 +438,7 @@ export default function PositionsMobile() {
       // cierre de mercado → comparación inválida). Cash ya retornó arriba.
       let dayVarLocal = null, dayVarUsd = null, dayVarPct = null
       if (!p.price_override && priceLocal != null) {
-        const prev = prevClose[isAR ? p.asset + '.BA' : p.asset]
+        const prev = prevClose[isAR ? priceSymbol(p.asset, true) : p.asset]
         if (prev != null && prev > 0) {
           const perUnit = priceLocal - prev
           dayVarLocal = perUnit * qty

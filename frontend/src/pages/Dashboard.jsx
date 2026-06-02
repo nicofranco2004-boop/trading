@@ -24,7 +24,7 @@ import { useCurrency } from '../contexts/CurrencyContext'
 import CurrencyToggle from '../components/CurrencyToggle'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
-import { computeBrokerValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
@@ -110,7 +110,7 @@ export default function Dashboard() {
     const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
 
     const arsSyms = [...new Set(
-      pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA')
+      pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true))
     )]
     const usdtSyms = [...new Set(
       pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset)
@@ -203,7 +203,7 @@ export default function Dashboard() {
       let valueUsd = null
       let pnlUsd = null
       if (isARS) {
-        const priceArs = p.price_override ?? prices[p.asset + '.BA']
+        const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceArs != null) {
           valueUsd = (priceArs * (p.quantity || 0)) / tcBlue
           // FX-phantom fix: cost basis USD al blue actual (no al tc_compra)
@@ -228,7 +228,7 @@ export default function Dashboard() {
   // ── Snapshot 1×/day (only when real prices loaded) ──────────────────────────
   useEffect(() => {
     if (loading || !lastUpdated || totalValue <= 0) return
-    const hasRealPrices = positions.some(p => !p.is_cash && (p.price_override != null || prices[p.asset] != null || prices[p.asset + '.BA'] != null))
+    const hasRealPrices = positions.some(p => !p.is_cash && (p.price_override != null || prices[p.asset] != null || prices[priceSymbol(p.asset, true)] != null))
     if (!hasRealPrices) return
     const today = new Date().toISOString().slice(0, 10)
     const key = 'rendi_snapshot_date'
@@ -242,7 +242,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (loading || !lastUpdated || totalValue <= 0) return
     const hasRealPrices = positions.some(
-      p => !p.is_cash && (p.price_override != null || prices[p.asset] != null || prices[p.asset + '.BA'] != null)
+      p => !p.is_cash && (p.price_override != null || prices[p.asset] != null || prices[priceSymbol(p.asset, true)] != null)
     )
     if (!hasRealPrices) return
 
@@ -256,7 +256,7 @@ export default function Dashboard() {
         let pnlArs = 0
         for (const p of bpos) {
           if (p.is_cash) continue
-          const priceArs = p.price_override ?? prices[p.asset + '.BA']
+          const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
           if (priceArs == null) continue
           // Cost basis ARS = invested + commissions (ambos en pesos para broker ARS)
           const costArs = (p.invested || 0) + (p.commissions || 0)

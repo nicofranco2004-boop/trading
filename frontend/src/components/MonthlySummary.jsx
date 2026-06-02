@@ -7,7 +7,7 @@ import EmptyState from './EmptyState'
 import ShareCardModal from './ShareCardModal'
 import { usd, ars, pct, pctSigned, colorClass, MONTHS } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
@@ -250,7 +250,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       }
 
       const arsBrokerSet = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
-      const arsSyms = [...new Set(pos.filter(p => arsBrokerSet.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
+      const arsSyms = [...new Set(pos.filter(p => arsBrokerSet.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
       const usdSyms = [...new Set(pos.filter(p => !arsBrokerSet.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
       const allSyms = [...arsSyms, ...usdSyms].join(',')
       const pricesData = allSyms ? await api.get(`/prices?symbols=${allSyms}`).catch(() => ({})) : {}

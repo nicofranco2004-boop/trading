@@ -12,7 +12,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
-import { computeBrokerValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
 import { track } from '../utils/track'
@@ -53,7 +53,7 @@ export default function FirstInsight() {
       // Fetch precios de los assets
       const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
       const usdSyms = [...new Set((pos || []).filter(p => !arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset))]
-      const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
+      const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
       const all = [...usdSyms, ...arsSyms].join(',')
       if (all) {
         try {
@@ -86,7 +86,7 @@ export default function FirstInsight() {
       const cost = (p.invested || 0) + (p.commissions || 0)
       let valueUsd = null, pnlUsd = null
       if (isARS) {
-        const priceArs = p.price_override ?? prices[p.asset + '.BA']
+        const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceArs != null) {
           valueUsd = (priceArs * (p.quantity || 0)) / tcBlue
           pnlUsd = valueUsd - cost / tcBlue

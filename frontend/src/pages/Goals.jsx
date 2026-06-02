@@ -9,6 +9,7 @@ import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import { useToast } from '../components/Toast'
 import { usd, fmtUsd } from '../utils/format'
+import { priceSymbol } from '../utils/valuation'
 import { api } from '../utils/api'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
@@ -54,7 +55,7 @@ export default function Goals() {
       const tcBlue = dolar?.blue?.venta || 1415
       const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       const usdtBrokers = new Set(brokers.filter(b => b.currency !== 'ARS').map(b => b.name))
-      const arsSyms = [...new Set(positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
+      const arsSyms = [...new Set(positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
       const usdtSyms = [...new Set(positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
       const all = [...arsSyms, ...usdtSyms].join(',')
       let pr = {}
@@ -69,7 +70,7 @@ export default function Goals() {
           continue
         }
         if (isAR) {
-          const px = p.price_override ?? pr[p.asset + '.BA']
+          const px = p.price_override ?? pr[priceSymbol(p.asset, true)]
           val += px != null ? (px * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
         } else {
           const px = p.price_override ?? pr[p.asset]

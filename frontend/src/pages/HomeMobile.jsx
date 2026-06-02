@@ -29,7 +29,7 @@ import Eyebrow from '../components/Eyebrow'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
-import { computeBrokerValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { computeDailyPnl } from '../utils/evolution'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency } from '../contexts/CurrencyContext'
@@ -82,7 +82,7 @@ export default function HomeMobile() {
     if (!pos?.length || !bkrs?.length) return
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
     const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
-    const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
+    const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
     const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
     const all = [...arsSyms, ...usdtSyms].join(',')
     if (!all) return
@@ -147,7 +147,7 @@ export default function HomeMobile() {
     let bestPct = -Infinity
     for (const p of positions) {
       if (p.is_cash) continue
-      const px = p.price_override ?? prices[p.asset] ?? prices[p.asset + '.BA']
+      const px = p.price_override ?? prices[p.asset] ?? prices[priceSymbol(p.asset, true)]
       if (!px || !p.invested) continue
       const value = px * (p.quantity || 0)
       const pct = (value - p.invested) / p.invested

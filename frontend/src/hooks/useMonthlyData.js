@@ -35,7 +35,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
-import { computeBrokerValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { computeBestWorstClosedOp } from '../utils/insightsModel'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -182,7 +182,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         // Cargar precios para que el live value por broker sea exacto
         const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
         const usdtBrokers = new Set((bkrs || []).filter(b => b.currency !== 'ARS').map(b => b.name))
-        const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset + '.BA'))]
+        const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
         const usdtSyms = [...new Set((pos || []).filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
         const all = [...arsSyms, ...usdtSyms].join(',')
         if (all) {
