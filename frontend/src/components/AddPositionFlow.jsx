@@ -16,7 +16,7 @@
 //   • Mobile         → bottom sheet full-width con safe-area
 
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank } from 'lucide-react'
+import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet } from 'lucide-react'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
   BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF,
@@ -47,10 +47,18 @@ const CATEGORIES = [
   { id: 'indices', label: 'Índices',       icon: Activity,   list: INDICES,       hint: 'S&P 500, Merval, IBOV…' },
 ]
 
-export default function AddPositionFlow({ onClose, onAssetSelected }) {
-  const [step, setStep] = useState(1)
+export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null }) {
+  // Secuencia de pasos. Si ya viene un broker preseleccionado (alta desde el
+  // menú de un broker puntual, o "Cambiar" activo), salteamos el paso de broker.
+  const needsBrokerStep = !initialBroker
+  const SEQ = needsBrokerStep ? ['broker', 'type', 'ticker'] : ['type', 'ticker']
+  const TOTAL = SEQ.length + 1  // +1 = el form de precio/cantidad (lo abre el padre)
+
+  const [stepIdx, setStepIdx] = useState(0)
+  const [chosenBroker, setChosenBroker] = useState(initialBroker || null)
   const [categoryId, setCategoryId] = useState(null)
   const [fciList, setFciList] = useState([])
+  const current = SEQ[stepIdx]
 
   // El catálogo de FCI es dinámico (viene del backend); el resto de categorías
   // son listas estáticas de utils/tickers. Lo cargamos al montar.
@@ -85,18 +93,24 @@ export default function AddPositionFlow({ onClose, onAssetSelected }) {
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  function selectBroker(b) {
+    setChosenBroker(b.name)
+    setStepIdx(i => i + 1)
+  }
   function selectCategory(cat) {
     setCategoryId(cat.id)
-    setStep(2)
+    setStepIdx(i => i + 1)
   }
   function selectTicker(t) {
-    onAssetSelected({ asset: t.s, name: t.n, category: categoryId })
+    onAssetSelected({ asset: t.s, name: t.n, category: categoryId, broker: chosenBroker })
   }
   function back() {
-    if (step === 2) {
-      setStep(1)
-      setCategoryId(null)
-    }
+    setStepIdx(i => {
+      const leaving = SEQ[i]
+      if (leaving === 'ticker') setCategoryId(null)
+      if (leaving === 'type' && needsBrokerStep) setChosenBroker(null)
+      return Math.max(0, i - 1)
+    })
   }
 
   return (
@@ -109,13 +123,17 @@ export default function AddPositionFlow({ onClose, onAssetSelected }) {
         onClick={e => e.stopPropagation()}
       >
         <FlowHeader
-          step={step}
+          current={current}
+          stepNum={stepIdx + 1}
+          total={TOTAL}
           category={category}
-          onBack={step > 1 ? back : null}
+          chosenBroker={chosenBroker}
+          onBack={stepIdx > 0 ? back : null}
           onClose={onClose}
         />
-        {step === 1 && <Step1AssetType categories={categories} onPick={selectCategory} />}
-        {step === 2 && <Step2TickerPicker category={category} onPick={selectTicker} />}
+        {current === 'broker' && <StepBrokerPicker brokers={brokers} onPick={selectBroker} />}
+        {current === 'type' && <Step1AssetType categories={categories} onPick={selectCategory} />}
+        {current === 'ticker' && <Step2TickerPicker category={category} onPick={selectTicker} />}
       </div>
     </div>
   )
@@ -124,13 +142,19 @@ export default function AddPositionFlow({ onClose, onAssetSelected }) {
 // ════════════════════════════════════════════════════════════════════════════
 // Header — botón back (si aplica) + título + cerrar
 // ════════════════════════════════════════════════════════════════════════════
-function FlowHeader({ step, category, onBack, onClose }) {
-  const title = step === 1
-    ? 'Elegí el tipo de activo'
-    : `Buscar — ${category?.label || ''}`
-  const subtitle = step === 1
-    ? 'Empezá eligiendo qué tipo de activo querés agregar.'
-    : 'Buscá por ticker o nombre. Después cargás precio y cantidad.'
+function FlowHeader({ current, stepNum, total, category, chosenBroker, onBack, onClose }) {
+  const TITLES = {
+    broker: 'Elegí el broker',
+    type: 'Elegí el tipo de activo',
+    ticker: `Buscar — ${category?.label || ''}`,
+  }
+  const SUBTITLES = {
+    broker: '¿En qué broker entra esta posición?',
+    type: chosenBroker
+      ? `Va a ${chosenBroker}. Elegí qué tipo de activo querés agregar.`
+      : 'Empezá eligiendo qué tipo de activo querés agregar.',
+    ticker: 'Buscá por ticker o nombre. Después cargás precio y cantidad.',
+  }
 
   return (
     <div className="flex items-start gap-3 px-5 py-4 border-b border-line flex-shrink-0">
@@ -144,9 +168,9 @@ function FlowHeader({ step, category, onBack, onClose }) {
         </button>
       )}
       <div className="min-w-0 flex-1">
-        <p className="eyebrow mb-1">Paso {step} de 3</p>
-        <h2 className="text-lg font-semibold text-ink-0 leading-tight">{title}</h2>
-        <p className="text-xs text-ink-2 mt-0.5">{subtitle}</p>
+        <p className="eyebrow mb-1">Paso {stepNum} de {total}</p>
+        <h2 className="text-lg font-semibold text-ink-0 leading-tight">{TITLES[current]}</h2>
+        <p className="text-xs text-ink-2 mt-0.5">{SUBTITLES[current]}</p>
       </div>
       <button
         onClick={onClose}
@@ -155,6 +179,42 @@ function FlowHeader({ step, category, onBack, onClose }) {
       >
         <X size={16} strokeWidth={1.75} aria-hidden="true" />
       </button>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// STEP 0 — Broker Picker (en qué cartera entra la posición)
+// ════════════════════════════════════════════════════════════════════════════
+function StepBrokerPicker({ brokers, onPick }) {
+  if (!brokers || brokers.length === 0) {
+    return (
+      <div className="p-8 text-center text-sm text-ink-2">
+        No tenés brokers todavía. Creá uno desde Configuración para poder agregar posiciones.
+      </div>
+    )
+  }
+  return (
+    <div className="overflow-y-auto flex-1 p-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {brokers.map(b => (
+          <button
+            key={b.id ?? b.name}
+            onClick={() => onPick(b)}
+            className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+          >
+            <div className="flex items-center gap-3">
+              <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
+                <Wallet size={18} strokeWidth={1.5} aria-hidden="true" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="font-semibold text-ink-0 text-sm leading-tight truncate">{b.name}</h3>
+                <p className="text-[10px] font-mono text-ink-3 mt-1 uppercase tracking-[0.12em]">{b.currency}</p>
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

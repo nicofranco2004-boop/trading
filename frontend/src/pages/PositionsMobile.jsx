@@ -130,9 +130,10 @@ export default function PositionsMobile() {
   //   2. El botón "+ Nueva" del header de la página
   function openNewPositionFlow(source) {
     track('position_add_started', { source: source || 'unknown' })
+    // Sin broker default: el paso 1 del flow lo elige (salvo que se preseleccione).
     setAddForm({
       ...EMPTY_POS,
-      broker: brokers[0]?.name ?? '',
+      broker: '',
       entry_date: today(),
     })
     setAddModal('add-flow')
@@ -842,8 +843,10 @@ export default function PositionsMobile() {
         }>
           <AddPositionFlow
             onClose={() => setAddModal(null)}
-            onAssetSelected={({ asset }) => {
-              setAddForm(f => ({ ...f, asset }))
+            brokers={brokers}
+            initialBroker={addForm.broker || null}
+            onAssetSelected={({ asset, broker }) => {
+              setAddForm(f => ({ ...f, asset, broker: broker || f.broker }))
               setAddModal('add')
             }}
           />

@@ -361,17 +361,18 @@ function PositionsDesktop() {
   }
 
   function openAdd(broker) {
-    // El flujo nuevo siempre pasa por el AddPositionFlow (asset type → ticker
-    // → form). Si ya viene un broker preseleccionado (desde el menú de cada
-    // broker), lo cargamos en el form para que el step 3 lo tenga listo.
-    setForm({ ...EMPTY_POS, broker: broker || (brokers[0]?.name ?? ''), entry_date: today() })
+    // Flujo: (broker →) tipo de activo → ticker → form. Si viene un broker
+    // preseleccionado (menú de un broker puntual), el flow saltea el paso de
+    // broker; si no, lo elige el user en el paso 1. Por eso NO defaulteamos a
+    // brokers[0] cuando no hay broker — dejamos vacío para que muestre el paso.
+    setForm({ ...EMPTY_POS, broker: broker || '', entry_date: today() })
     setModal('add-flow')
   }
 
-  // Callback del AddPositionFlow cuando el user selecciona un ticker.
-  // Cierra el flow y abre el form (PositionFormModal) con el asset ya cargado.
-  function onAssetSelectedFromFlow({ asset }) {
-    setForm(f => ({ ...f, asset }))
+  // Callback del AddPositionFlow cuando el user selecciona un ticker. Trae el
+  // broker elegido en el paso 1 (o el preseleccionado). Abre el form.
+  function onAssetSelectedFromFlow({ asset, broker }) {
+    setForm(f => ({ ...f, asset, broker: broker || f.broker }))
     setModal('add')
   }
   function openEdit(p) {
@@ -1268,6 +1269,8 @@ function PositionsDesktop() {
         <AddPositionFlow
           onClose={() => setModal(null)}
           onAssetSelected={onAssetSelectedFromFlow}
+          brokers={brokers}
+          initialBroker={form.broker || null}
         />
       )}
 
@@ -2678,13 +2681,25 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-ink-3 mb-1">Broker</label>
-            <select
-              value={form.broker}
-              onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
-              className={inputClass}
-            >
-              {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>)}
-            </select>
+            {mode === 'add' ? (
+              // En 'add' el broker se elige en el paso 1 del flow; acá solo lo
+              // mostramos como contexto (no editable, para no duplicar el control).
+              <div className="flex items-center gap-2 bg-bg-2 border border-line rounded-md px-3 py-2 h-[38px]">
+                <Wallet size={14} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
+                <span className="text-sm text-ink-0 font-medium truncate">{form.broker || '—'}</span>
+                {selectedBrokerCurrency && (
+                  <span className="ml-auto text-[10px] font-mono uppercase tracking-caps text-ink-3">{selectedBrokerCurrency}</span>
+                )}
+              </div>
+            ) : (
+              <select
+                value={form.broker}
+                onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
+                className={inputClass}
+              >
+                {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>)}
+              </select>
+            )}
           </div>
           <div>
             <label className="block text-xs text-ink-3 mb-1">Activo</label>
