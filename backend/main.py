@@ -8436,6 +8436,152 @@ def admin_users(uid: int = Depends(get_admin_user)):
     return out
 
 
+@app.get("/api/admin/billing/inspect")
+def admin_billing_inspect(email: str, uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY del estado de billing de un user, por email.
+
+    Devuelve TODO lo necesario para entender por qué un user perdió (o
+    mantiene) su plan:
+      • user: columnas de tier + crédito (sin password_hash)
+      • computed: tier efectivo (quota.get_tier) + estado de crédito
+      • diagnosis: aplica la MISMA lógica de los dos downgrades del cron
+                   (_downgrade_expired_credit / _downgrade_expired_cancellations)
+                   para mostrar si el user está en zona de baja a free
+      • subscriptions: todas las filas del user
+      • credit_ledger: audit completo (la fila 'expiration' = el downgrade real)
+      • billing_events: webhooks de Rebill/MP recibidos para este user, con
+                        signature_valid (si lo aceptamos o rechazamos) + payload
+
+    NO escribe nada. Solo SELECTs. Pensado para que el admin lo abra logueado
+    y pueda pegar el resultado para diagnosticar.
+    """
+    from ai import quota
+    from billing import credits as billing_credits
+    from datetime import datetime as _dt
+
+    conn = get_db()
+    try:
+        urow = conn.execute(
+            """SELECT id, email, name, is_admin, approved, email_verified, tier,
+                      created_at, last_login_at,
+                      credit_active_until, credit_anchor_plan, credit_anchor_period,
+                      credit_anchor_amount_usd, credit_anchor_at
+               FROM users WHERE lower(email) = lower(?)""",
+            (email.strip(),),
+        ).fetchone()
+        if not urow:
+            raise HTTPException(404, f"No existe user con email {email!r}")
+        user = dict(urow)
+        user["is_admin"] = bool(user["is_admin"])
+        user["approved"] = bool(user["approved"])
+        user["email_verified"] = bool(user["email_verified"])
+        target_uid = user["id"]
+        raw_tier = (user["tier"] or "").strip().lower()
+
+        # ── Tier efectivo + estado de crédito (lo que el user realmente ve) ──
+        effective_tier = quota.get_tier(conn, target_uid)
+        cstate = billing_credits.get_credit_state(conn, target_uid)
+
+        # ── Subscriptions (todas) ──
+        subs = [dict(r) for r in conn.execute(
+            """SELECT id, mp_subscription_id, external_reference, period, status,
+                      amount_ars, amount_usd, current_period_start, current_period_end,
+                      next_charge_date, last_payment_id, cancelled_at,
+                      created_at, updated_at
+               FROM subscriptions WHERE user_id = ?
+               ORDER BY created_at ASC""",
+            (target_uid,),
+        ).fetchall()]
+        has_authorized_sub = any(s["status"] == "authorized" for s in subs)
+
+        # ── Credit ledger (audit completo, más nuevo primero) ──
+        ledger = [dict(r) for r in conn.execute(
+            """SELECT id, kind, amount_usd, days_delta, from_plan, from_period,
+                      to_plan, to_period, active_until_before, active_until_after,
+                      source_subscription_id, payment_id, note, created_at
+               FROM credit_ledger WHERE user_id = ?
+               ORDER BY created_at DESC, id DESC""",
+            (target_uid,),
+        ).fetchall()]
+        last_expiration = next((l for l in ledger if l["kind"] == "expiration"), None)
+
+        # ── Billing events (webhooks). El rebill-webhook guarda el rendi_user_id
+        # en mp_data_id; el flujo MP setea user_id. Matcheamos ambos. ──
+        events = []
+        for r in conn.execute(
+            """SELECT id, mp_event_id, mp_event_type, mp_data_id, user_id,
+                      signature_valid, processed, raw_payload, created_at
+               FROM billing_events
+               WHERE mp_data_id = ? OR user_id = ?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 50""",
+            (str(target_uid), target_uid),
+        ).fetchall():
+            ev = dict(r)
+            ev["signature_valid"] = bool(ev["signature_valid"])
+            ev["processed"] = bool(ev["processed"])
+            # Resumen legible del payload (event name + status) + payload truncado.
+            summary = {}
+            raw = ev.pop("raw_payload", None) or ""
+            try:
+                p = json.loads(raw)
+                data = p.get("data") or {}
+                summary = {
+                    "event": (p.get("webhook") or {}).get("event") or p.get("event") or p.get("type"),
+                    "sub_status": (data.get("subscription") or {}).get("status"),
+                    "payment_status": (data.get("payment") or {}).get("status"),
+                }
+            except Exception:
+                pass
+            ev["summary"] = summary
+            ev["raw_payload"] = raw[:1500]
+            events.append(ev)
+
+        # ── Diagnóstico: replica EXACTA de la lógica de los dos downgrades ──
+        now_iso = _dt.utcnow().isoformat()
+        cau = user["credit_active_until"]
+        path1_would_downgrade = bool(
+            raw_tier in ("plus", "pro")
+            and cau is not None
+            and str(cau) < now_iso
+            and not has_authorized_sub
+        )
+        cancelled_expired = [
+            s for s in subs
+            if s["status"] == "cancelled"
+            and s["current_period_end"]
+            and str(s["current_period_end"]) < now_iso
+        ]
+        path2_would_downgrade = bool(raw_tier in ("plus", "pro") and cancelled_expired)
+
+        return {
+            "user": user,
+            "computed": {
+                "raw_tier_column": raw_tier or None,
+                "effective_tier": effective_tier,
+                "credit_state": cstate,
+                "has_authorized_sub": has_authorized_sub,
+                "subscription_statuses": [s["status"] for s in subs],
+                "now_utc": now_iso,
+            },
+            "diagnosis": {
+                "path1_downgrade_expired_credit_would_fire": path1_would_downgrade,
+                "path2_downgrade_expired_cancellation_would_fire": path2_would_downgrade,
+                "last_expiration_ledger": last_expiration,
+                "note": (
+                    "path1 = el cron lo bajaría a free porque tiene tier plus/pro, "
+                    "credit_active_until vencido y ninguna sub authorized. "
+                    "last_expiration_ledger != null significa que el cron YA lo bajó."
+                ),
+            },
+            "subscriptions": subs,
+            "credit_ledger": ledger,
+            "billing_events": events,
+        }
+    finally:
+        conn.close()
+
+
 @app.post("/api/admin/users/{user_id}/approve")
 def admin_approve_user(user_id: int, uid: int = Depends(get_admin_user)):
     conn = get_db()
