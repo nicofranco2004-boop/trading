@@ -706,6 +706,32 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id);
     """)
 
+    # ─── Plazos fijos ────────────────────────────────────────────────────────
+    # Depósitos a plazo fijo del user. NO cotizan: el valor se computa
+    # determinísticamente (capital + interés devengado según rate_type).
+    # `tasa` es fracción anual (0.19 = 19%). `rate_type` ∈ {TNA (simple),
+    # TEA (compuesta)}. `banco` viene del listado de la API de tasas. No se atan
+    # a `brokers`: viven en su propio grupo "Plazos fijos" en Cartera.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS plazos_fijos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            banco TEXT NOT NULL,
+            capital REAL NOT NULL,
+            moneda TEXT NOT NULL DEFAULT 'ARS',
+            tasa REAL NOT NULL,
+            rate_type TEXT NOT NULL DEFAULT 'TNA',
+            fecha_inicio TEXT NOT NULL,
+            plazo_dias INTEGER NOT NULL,
+            fecha_vencimiento TEXT NOT NULL,
+            renovacion_auto INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            closed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_pf_user ON plazos_fijos(user_id);
+    """)
+
     # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────
     # Tickers que el user "sigue" sin tenerlos en portfolio. Se renderiza en el
     # Home como sección dedicada. No tiene relación con `positions` — son
@@ -4890,6 +4916,123 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user
 def delete_position(pid: int, uid: int = Depends(get_current_user)):
     conn = get_db()
     conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (pid, uid))
+    conn.commit()
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True}
+
+
+# ─── Plazos fijos ─────────────────────────────────────────────────────────────
+# CRUD de depósitos a plazo fijo. No cotizan: la valuación (devengado) es
+# determinística y vive en el frontend (computePfValue, Fase 2). El backend solo
+# persiste. `tasa` es fracción anual (0.19 = 19%); `rate_type` ∈ {TNA, TEA}.
+
+class PlazoFijoIn(BaseModel):
+    banco: str = Field(..., min_length=1, max_length=120)
+    capital: float = Field(..., gt=0, le=1e15)
+    moneda: str = Field('ARS')
+    tasa: float = Field(..., gt=0, le=10)        # fracción: 0.19 = 19%. le=10 (1000%) = sanity cap
+    rate_type: str = Field('TNA')
+    fecha_inicio: str = Field(..., max_length=10)
+    plazo_dias: int = Field(..., gt=0, le=3650)
+    renovacion_auto: bool = False
+    notes: Optional[str] = Field(None, max_length=MAX_NOTES)
+
+    @field_validator('moneda')
+    @classmethod
+    def valid_moneda(cls, v):
+        v = (v or 'ARS').strip().upper()
+        if v not in ('ARS', 'USD'):
+            raise ValueError('Moneda inválida')
+        return v
+
+    @field_validator('rate_type')
+    @classmethod
+    def valid_rate_type(cls, v):
+        v = (v or 'TNA').strip().upper()
+        if v not in ('TNA', 'TEA'):
+            raise ValueError('rate_type inválido (TNA o TEA)')
+        return v
+
+    @field_validator('fecha_inicio')
+    @classmethod
+    def valid_fecha(cls, v):
+        if not _DATE_RE.match(v or ''):
+            raise ValueError('Fecha inválida')
+        return v
+
+    @field_validator('banco')
+    @classmethod
+    def clean_banco(cls, v):
+        return v.strip()
+
+
+def _pf_vencimiento(fecha_inicio: str, plazo_dias: int) -> str:
+    from datetime import datetime as _dt, timedelta as _td
+    return (_dt.strptime(fecha_inicio, '%Y-%m-%d') + _td(days=int(plazo_dias))).strftime('%Y-%m-%d')
+
+
+@app.get("/api/plazos-fijos")
+def list_plazos_fijos(uid: int = Depends(get_current_user)):
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL
+           ORDER BY fecha_vencimiento ASC, id ASC""",
+        (uid,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["renovacion_auto"] = bool(d["renovacion_auto"])
+        out.append(d)
+    return out
+
+
+@app.post("/api/plazos-fijos")
+def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
+    venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
+    conn = get_db()
+    cur = conn.execute(
+        """INSERT INTO plazos_fijos
+               (user_id, banco, capital, moneda, tasa, rate_type,
+                fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (uid, p.banco, p.capital, p.moneda, p.tasa, p.rate_type,
+         p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.notes),
+    )
+    conn.commit()
+    pid = cur.lastrowid
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "id": pid, "fecha_vencimiento": venc}
+
+
+@app.put("/api/plazos-fijos/{pid}")
+def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_current_user)):
+    venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
+    conn = get_db()
+    row = conn.execute("SELECT id FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Plazo fijo no encontrado")
+    conn.execute(
+        """UPDATE plazos_fijos SET banco=?, capital=?, moneda=?, tasa=?, rate_type=?,
+               fecha_inicio=?, plazo_dias=?, fecha_vencimiento=?, renovacion_auto=?, notes=?
+           WHERE id=? AND user_id=?""",
+        (p.banco, p.capital, p.moneda, p.tasa, p.rate_type, p.fecha_inicio,
+         p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.notes, pid, uid),
+    )
+    conn.commit()
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "fecha_vencimiento": venc}
+
+
+@app.delete("/api/plazos-fijos/{pid}")
+def delete_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    conn.execute("DELETE FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid))
     conn.commit()
     conn.close()
     _ai_cache_invalidate(uid)
