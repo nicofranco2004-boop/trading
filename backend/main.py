@@ -8414,24 +8414,55 @@ def admin_plan_conversion(uid: int = Depends(get_admin_user)):
 
 @app.get("/api/admin/users")
 def admin_users(uid: int = Depends(get_admin_user)):
-    """Lista de usuarios con métricas básicas. NO devuelve password hashes."""
+    """Lista de usuarios con métricas básicas + estado de billing. NO devuelve
+    password hashes.
+
+    Campos de billing por user:
+      • plan: 'admin' | 'plus' | 'pro' | 'free' (lo que efectivamente tiene)
+      • credit_active: bool — si credit_active_until sigue en el futuro
+      • billing_affected: bool — pagó (crédito vigente con anchor de plan pago)
+        pero el tier quedó en 'free'. Es el síntoma del bug de downgrade del
+        cron. El panel los resalta con un botón "Restaurar" que pega a
+        /api/admin/billing/restore-tier (no recobra, solo realinea tier)."""
+    from datetime import datetime as _dt
     conn = get_db()
     rows = conn.execute("""
         SELECT
             u.id, u.email, u.name, u.is_admin, u.approved, u.created_at, u.last_login_at,
+            u.tier, u.credit_active_until, u.credit_anchor_plan,
             (SELECT COUNT(*) FROM positions p WHERE p.user_id = u.id) AS positions_count,
             (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS operations_count,
             (SELECT COUNT(*) FROM brokers b WHERE b.user_id = u.id) AS brokers_count,
-            (SELECT COUNT(*) FROM monthly_entries m WHERE m.user_id = u.id) AS monthly_count
+            (SELECT COUNT(*) FROM monthly_entries m WHERE m.user_id = u.id) AS monthly_count,
+            (SELECT COUNT(*) FROM subscriptions s
+              WHERE s.user_id = u.id AND s.status = 'authorized') AS authorized_subs
         FROM users u
         ORDER BY u.created_at DESC
     """).fetchall()
     conn.close()
+    now_iso = _dt.utcnow().isoformat()
     out = []
     for r in rows:
         d = dict(r)
         d["is_admin"] = bool(d["is_admin"])
         d["approved"] = bool(d["approved"])
+        cau = d.get("credit_active_until")
+        credit_active = cau is not None and str(cau) > now_iso
+        raw_tier = (d.get("tier") or "").strip().lower()
+        anchor = (d.get("credit_anchor_plan") or "").strip().lower()
+        if d["is_admin"]:
+            d["plan"] = "admin"
+        elif raw_tier in ("plus", "pro"):
+            d["plan"] = raw_tier
+        else:
+            d["plan"] = "free"
+        d["credit_active"] = credit_active
+        d["authorized_subs"] = int(d.get("authorized_subs") or 0)
+        # Afectado por el bug: crédito vigente + anchor de plan pago, pero el
+        # tier quedó en free → restaurable sin recobrar.
+        d["billing_affected"] = bool(
+            credit_active and anchor in ("plus", "pro") and d["plan"] == "free"
+        )
         out.append(d)
     return out
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp } from 'lucide-react'
+import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle } from 'lucide-react'
 import { api } from '../utils/api'
 import StatCard from '../components/StatCard'
 import { useAuth } from '../contexts/AuthContext'
@@ -56,6 +56,23 @@ export default function Admin() {
     }
   }
 
+  async function restoreTier(u) {
+    if (!confirm(`¿Restaurar el plan de ${u.email}? Usa el crédito que ya pagó (vigente), no recobra ni mueve fechas.`)) return
+    try {
+      const res = await api.post('/admin/billing/restore-tier?email=' + encodeURIComponent(u.email))
+      if (res?.ok && res?.changed) {
+        toast.push(`Plan restaurado a ${res.after_tier} para ${u.email}.`, { type: 'success' })
+      } else if (res?.ok) {
+        toast.push(res.detail || 'Sin cambios: el tier ya estaba alineado.', { type: 'info' })
+      } else {
+        toast.push(res?.detail || 'No se pudo restaurar el plan.', { type: 'warn' })
+      }
+      load()
+    } catch (e) {
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
+    }
+  }
+
   if (!user?.is_admin) {
     return (
       <div className="page-shell max-w-3xl">
@@ -69,6 +86,8 @@ export default function Admin() {
   }
 
   if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
+
+  const affected = users.filter(u => u.billing_affected)
 
   return (
     <div className="page-shell space-y-6">
@@ -124,16 +143,37 @@ export default function Admin() {
       {/* ── Conversión Pro (paywall analytics) ─────────────────────────── */}
       <ConversionPanel data={conversion} />
 
+      {/* ── Alerta de billing: pagaron pero figuran en Free ──────────────── */}
+      {affected.length > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle size={18} className="text-amber-500 flex-shrink-0 mt-0.5" />
+          <div className="text-sm min-w-0">
+            <p className="font-medium text-amber-800 dark:text-amber-300">
+              {affected.length} usuario{affected.length > 1 ? 's' : ''} con crédito activo figura{affected.length > 1 ? 'n' : ''} en Free
+            </p>
+            <p className="text-amber-700/80 dark:text-amber-400/70 text-xs mt-0.5 leading-relaxed">
+              Pagaron pero el tier quedó en free (clobber del cron de downgrade). Restauralos con el botón “Restaurar” en la tabla de abajo —
+              usa el crédito que ya pagaron, no recobra ni mueve fechas.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-line/50 flex items-center gap-2">
           <Users size={16} className="text-ink-3" />
           <h2 className="font-semibold text-ink-0">Usuarios ({users.length})</h2>
+          {affected.length > 0 && (
+            <span className="ml-1 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide">
+              <AlertTriangle size={10} /> {affected.length} a restaurar
+            </span>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line/50">
-                {['ID', 'Email', 'Nombre', 'Registro', 'Último login', 'Pos', 'Ops', 'Mes', ''].map(h => (
+                {['ID', 'Email', 'Nombre', 'Plan', 'Registro', 'Último login', 'Pos', 'Ops', 'Mes', ''].map(h => (
                   <th key={h} className="px-3 py-2 text-left text-xs text-ink-3 font-medium">{h}</th>
                 ))}
               </tr>
@@ -148,6 +188,7 @@ export default function Admin() {
                     {!u.approved && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
                   </td>
                   <td className="px-3 py-2 text-ink-2">{u.name || '—'}</td>
+                  <td className="px-3 py-2"><PlanBadge plan={u.plan} affected={u.billing_affected} creditActive={u.credit_active} /></td>
                   <td className="px-3 py-2 text-ink-3 text-xs">{u.created_at?.slice(0, 16) || '—'}</td>
                   <td className="px-3 py-2 text-ink-3 text-xs">{u.last_login_at?.slice(0, 16) || '—'}</td>
                   <td className="px-3 py-2 text-ink-2">{u.positions_count}</td>
@@ -155,6 +196,15 @@ export default function Admin() {
                   <td className="px-3 py-2 text-ink-2">{u.monthly_count}</td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
+                      {u.billing_affected && (
+                        <button
+                          onClick={() => restoreTier(u)}
+                          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25"
+                          title="Restaurar plan desde el crédito activo (no recobra)"
+                        >
+                          <RotateCcw size={12} /> Restaurar
+                        </button>
+                      )}
                       {!u.approved && !u.is_admin && (
                         <button
                           onClick={() => approveUser(u)}
@@ -194,6 +244,36 @@ function Row({ label, children }) {
       <p className="text-xs text-ink-3 mb-0.5">{label}</p>
       <p className="text-ink-1">{children}</p>
     </div>
+  )
+}
+
+// Badge de plan en la tabla de usuarios. `affected` = pagó pero quedó en free
+// (mostramos "afectado" en ámbar). Caso contrario, color por plan.
+function PlanBadge({ plan, affected, creditActive }) {
+  if (affected) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide"
+        title="Tiene crédito vigente pero el tier quedó en free — restaurable"
+      >
+        <AlertTriangle size={10} /> afectado
+      </span>
+    )
+  }
+  const styles = {
+    admin: 'bg-rendi-accent/15 text-rendi-accent',
+    plus: 'bg-data-violet/15 text-data-violet',
+    pro: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
+    free: 'bg-bg-2 text-ink-3 dark:bg-bg-2/60',
+  }
+  const cls = styles[plan] || styles.free
+  return (
+    <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ${cls}`}>
+      {plan || 'free'}
+      {creditActive && plan !== 'free' && plan !== 'admin' && (
+        <span className="ml-1 normal-case font-normal opacity-70" title="Crédito vigente">· crédito</span>
+      )}
+    </span>
   )
 }
 
