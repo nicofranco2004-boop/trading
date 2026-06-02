@@ -8831,6 +8831,54 @@ def admin_fci_refresh(uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+@app.get("/api/admin/pf/probe")
+def admin_pf_probe(uid: int = Depends(get_admin_user)):
+    """Fase 0 (Plazos Fijos) — Probe READ-ONLY de la fuente de tasas
+    (argentinadatos, mismo host que FCI). Confirma que el endpoint de tasas de
+    plazo fijo responde desde el server y muestra una muestra de bancos con su
+    TNA. NO escribe nada, no toca la DB."""
+    import urllib.request, urllib.error, json as _json, time as _time
+
+    url = "https://api.argentinadatos.com/v1/finanzas/tasas/plazoFijo"
+    out = {"url": url, "ok": False}
+    t0 = _time.monotonic()
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Rendi PF probe)"}, method="GET")
+        with urllib.request.urlopen(req, timeout=12) as r:
+            code = r.getcode()
+            out["status"] = code
+            out["ok"] = 200 <= code < 300
+            if out["ok"]:
+                data = _json.loads(r.read())
+                out["count"] = len(data) if isinstance(data, list) else None
+                sample = []
+                for b in (data[:8] if isinstance(data, list) else []):
+                    tna = b.get("tnaClientes")
+                    sample.append({
+                        "banco": b.get("entidad"),
+                        "tna_clientes": tna,
+                        "tna_clientes_pct": (round(tna * 100, 2) if isinstance(tna, (int, float)) else None),
+                        "tna_no_clientes": b.get("tnaNoClientes"),
+                        "tiene_logo": bool(b.get("logo")),
+                    })
+                out["sample"] = sample
+    except urllib.error.HTTPError as e:
+        out["status"] = e.code
+        out["error"] = f"HTTP {e.code}"
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    finally:
+        out["ms"] = int((_time.monotonic() - t0) * 1000)
+
+    out["verdict"] = {
+        "reachable": bool(out.get("ok")),
+        "go": bool(out.get("ok") and out.get("count", 0) > 0),
+        "note": ("go=true → la fuente de tasas responde con bancos; seguimos con "
+                 "Fase 1 (modelo). go=false → revisar error/alcance."),
+    }
+    return out
+
+
 @app.post("/api/admin/users/{user_id}/approve")
 def admin_approve_user(user_id: int, uid: int = Depends(get_admin_user)):
     conn = get_db()
