@@ -8703,6 +8703,95 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+@app.get("/api/admin/fci/probe")
+def admin_fci_probe(uid: int = Depends(get_admin_user)):
+    """Fase 0 — Probe READ-ONLY desde el server (Railway) para validar si las
+    fuentes de precios de FCI son alcanzables EN PRODUCCIÓN. NO escribe nada,
+    no toca la DB. Hace fetches salientes y reporta status + latencia.
+
+    Decide el gate del plan de integración de FCI:
+      • argentinadatos (JSON, fuente primaria propuesta) — si responde con FIMA,
+        go_auto=true y seguimos con la integración.
+      • cafci_xlsx (api.pub.cafci.org.ar/pb_get, fallback XLSX) — solo status.
+      • cafci_json_api (api.cafci.org.ar) — la investigación lo marcó
+        geo-bloqueado (403 desde IPs no-AR); lo testeamos para confirmarlo
+        desde el IP real de Railway.
+    """
+    import urllib.request, urllib.error, json as _json, time as _time
+
+    UA = {"User-Agent": "Mozilla/5.0 (Rendi FCI probe)"}
+
+    def _probe(url, parse_json=False, want_fima=False, read_body=True, timeout=12):
+        out = {"url": url, "ok": False}
+        t0 = _time.monotonic()
+        try:
+            req = urllib.request.Request(url, headers=UA, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                code = r.getcode()
+                out["status"] = code
+                out["content_type"] = r.headers.get("Content-Type")
+                out["content_length"] = r.headers.get("Content-Length")
+                out["ok"] = 200 <= code < 300
+                if read_body and out["ok"]:
+                    body = r.read()
+                    out["bytes"] = len(body)
+                    if parse_json:
+                        data = _json.loads(body)
+                        out["count"] = len(data) if isinstance(data, list) else None
+                        if want_fima and isinstance(data, list):
+                            fima = [d for d in data
+                                    if "fima" in str(d.get("fondo", "")).lower()]
+                            out["fima_count"] = len(fima)
+                            sample = []
+                            for d in fima[:5]:
+                                vcp = d.get("vcp")
+                                per_unit = (round(vcp / 1000, 4)
+                                            if isinstance(vcp, (int, float)) else None)
+                                sample.append({
+                                    "fondo": d.get("fondo"),
+                                    "fecha": d.get("fecha"),
+                                    "vcp": vcp,
+                                    "precio_por_cuotaparte": per_unit,
+                                })
+                            out["fima_sample"] = sample
+        except urllib.error.HTTPError as e:
+            out["status"] = e.code
+            out["error"] = f"HTTP {e.code}"
+        except Exception as e:
+            out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        finally:
+            out["ms"] = int((_time.monotonic() - t0) * 1000)
+        return out
+
+    result = {
+        "argentinadatos": _probe(
+            "https://api.argentinadatos.com/v1/finanzas/fci/mercadoDinero/ultimo",
+            parse_json=True, want_fima=True,
+        ),
+        "cafci_xlsx": _probe(
+            "https://api.pub.cafci.org.ar/pb_get",
+            read_body=False,
+        ),
+        "cafci_json_api": _probe(
+            "https://api.cafci.org.ar/fondo/851/clase/2427/ficha",
+        ),
+    }
+
+    ad = result["argentinadatos"]
+    ad_go = bool(ad.get("ok") and ad.get("fima_count", 0) > 0)
+    result["verdict"] = {
+        "argentinadatos_reachable": bool(ad.get("ok")),
+        "argentinadatos_has_fima": ad_go,
+        "cafci_xlsx_reachable": bool(result["cafci_xlsx"].get("ok")),
+        "cafci_json_status": result["cafci_json_api"].get("status"),
+        "cafci_json_geoblocked": result["cafci_json_api"].get("status") == 403,
+        "go_auto": ad_go,
+        "note": ("go_auto=true → Railway alcanza la fuente primaria, seguimos con "
+                 "Fase 1. go_auto=false → geo-proxy AR o modo manual."),
+    }
+    return result
+
+
 @app.post("/api/admin/users/{user_id}/approve")
 def admin_approve_user(user_id: int, uid: int = Depends(get_admin_user)):
     conn = get_db()
