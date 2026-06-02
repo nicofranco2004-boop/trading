@@ -8582,6 +8582,96 @@ def admin_billing_inspect(email: str, uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+@app.post("/api/admin/billing/restore-tier")
+def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
+    """Realinea users.tier con el plan del crédito ACTIVO. Por email.
+
+    Caso de uso: un bug bajó tier a null/free pero el crédito sigue vigente
+    (credit_active_until en el futuro). Restaura el tier que el user pagó
+    leyendo credit_anchor_plan. NO crea crédito ni mueve fechas — solo
+    sincroniza la columna tier con lo que el crédito ya dice.
+
+    Salvaguardas (no toca nada si no se cumplen):
+      • Solo escribe si hay crédito activo (credit_active_until > now).
+      • Solo si credit_anchor_plan es 'plus' o 'pro'.
+      • Idempotente: si el tier ya coincide, no escribe.
+    Deja un audit row 'manual_adjust' en credit_ledger.
+    """
+    from datetime import datetime as _dt
+
+    conn = get_db()
+    try:
+        urow = conn.execute(
+            """SELECT id, email, tier, credit_active_until, credit_anchor_plan
+               FROM users WHERE lower(email) = lower(?)""",
+            (email.strip(),),
+        ).fetchone()
+        if not urow:
+            raise HTTPException(404, f"No existe user con email {email!r}")
+        target_uid = urow["id"]
+        now_iso = _dt.utcnow().isoformat()
+        cau = urow["credit_active_until"]
+        anchor_plan = (urow["credit_anchor_plan"] or "").strip().lower()
+        before_tier = urow["tier"]
+
+        credit_active = cau is not None and str(cau) > now_iso
+        if not credit_active:
+            return {
+                "ok": False,
+                "changed": False,
+                "reason": "credit_not_active",
+                "detail": "El crédito venció o no existe. No restauro tier sin crédito vigente.",
+                "credit_active_until": cau,
+            }
+        if anchor_plan not in ("plus", "pro"):
+            return {
+                "ok": False,
+                "changed": False,
+                "reason": "no_valid_anchor",
+                "detail": f"credit_anchor_plan inválido: {anchor_plan!r}",
+            }
+        if (before_tier or "").strip().lower() == anchor_plan:
+            return {
+                "ok": True,
+                "changed": False,
+                "detail": f"tier ya está en {anchor_plan}; nada que cambiar.",
+                "tier": before_tier,
+                "credit_active_until": cau,
+            }
+
+        with conn:
+            conn.execute(
+                "UPDATE users SET tier = ? WHERE id = ?",
+                (anchor_plan, target_uid),
+            )
+            conn.execute(
+                """INSERT INTO credit_ledger
+                       (user_id, kind, amount_usd, days_delta,
+                        from_plan, from_period, to_plan, to_period,
+                        active_until_before, active_until_after, note)
+                   VALUES (?, 'manual_adjust', 0, 0, ?, NULL, ?, NULL, ?, ?, ?)""",
+                (
+                    target_uid, before_tier, anchor_plan, cau, cau,
+                    f"Admin restore-tier: {before_tier!r} -> {anchor_plan} "
+                    f"(credito activo hasta {cau})",
+                ),
+            )
+        log.info(
+            "Admin %s restored tier for user %s: %r -> %s (credit_until=%s)",
+            uid, target_uid, before_tier, anchor_plan, cau,
+        )
+        return {
+            "ok": True,
+            "changed": True,
+            "before_tier": before_tier,
+            "after_tier": anchor_plan,
+            "credit_active_until": cau,
+            "detail": f"tier restaurado a {anchor_plan} para {email.strip()}.",
+        }
+    finally:
+        conn.close()
+
+
 @app.post("/api/admin/users/{user_id}/approve")
 def admin_approve_user(user_id: int, uid: int = Depends(get_admin_user)):
     conn = get_db()

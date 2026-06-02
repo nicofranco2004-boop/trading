@@ -308,16 +308,37 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
 def _downgrade_expired_cancellations(conn) -> int:
     """Encuentra subs canceladas cuyo `current_period_end` ya pasó y baja
     al user a tier='free' (limpiando el override de plus o pro).
-    Devuelve count de users degradados."""
+    Devuelve count de users degradados.
+
+    GUARDAS (defensa en profundidad — source of truth = credit_active_until):
+      • Solo baja si el crédito del user YA venció (credit_active_until null o
+        en el pasado). Si todavía tiene crédito vigente, el tier es legítimo y
+        NO se toca, aunque exista una sub cancelada vieja con period_end
+        vencido.
+      • Solo baja si el user NO tiene ninguna sub 'authorized'. Una authorized
+        = plan vigente que se renueva solo; una cancelada vieja no debe pisarlo.
+
+    Sin estas guardas, un user que se suscribe → cancela → vuelve a suscribirse
+    quedaba expuesto: la sub cancelada vieja (period_end en el pasado) actuaba
+    de mina y el primer cron tras la re-suscripción le borraba el tier recién
+    pagado. El path1 (_downgrade_expired_credit) ya tenía el guard de
+    'authorized'; este path era el que faltaba alinear."""
     now = datetime.utcnow().isoformat()
     rows = conn.execute(
-        """SELECT s.id, s.user_id, s.mp_subscription_id, s.current_period_end
+        """SELECT s.id, s.user_id, s.mp_subscription_id, s.current_period_end,
+                  u.tier, u.credit_active_until
            FROM subscriptions s
+           JOIN users u ON u.id = s.user_id
            WHERE s.status = 'cancelled'
              AND s.current_period_end IS NOT NULL
              AND s.current_period_end < ?
-             AND s.user_id IN (SELECT id FROM users WHERE tier IN ('pro', 'plus'))""",
-        (now,),
+             AND u.tier IN ('pro', 'plus')
+             AND (u.credit_active_until IS NULL OR u.credit_active_until < ?)
+             AND NOT EXISTS (
+                SELECT 1 FROM subscriptions a
+                WHERE a.user_id = s.user_id AND a.status = 'authorized'
+             )""",
+        (now, now),
     ).fetchall()
     if not rows:
         return 0
@@ -336,10 +357,25 @@ def _downgrade_expired_cancellations(conn) -> int:
                    updated_at = datetime('now') WHERE id = ?""",
                 (r["id"],),
             )
+            # Audit en el ledger — mismo formato que _downgrade_expired_credit,
+            # para que el endpoint de diagnóstico reconstruya el "por qué".
+            conn.execute(
+                """INSERT INTO credit_ledger
+                       (user_id, kind, amount_usd, days_delta,
+                        from_plan, from_period, to_plan, to_period,
+                        active_until_before, active_until_after, note)
+                   VALUES (?, 'expiration', 0, 0, ?, NULL, NULL, NULL, ?, ?, ?)""",
+                (
+                    r["user_id"], r["tier"], r["credit_active_until"],
+                    r["credit_active_until"],
+                    "Cancelled sub period_end passed — downgraded to free",
+                ),
+            )
             count += 1
             log.info(
-                "User %s downgraded (sub %s expired at %s)",
+                "User %s downgraded (sub %s expired at %s, credit_until=%s)",
                 r["user_id"], r["mp_subscription_id"], r["current_period_end"],
+                r["credit_active_until"],
             )
     return count
 
