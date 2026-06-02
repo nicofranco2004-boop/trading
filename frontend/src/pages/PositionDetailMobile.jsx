@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol } from '../utils/valuation'
+import { priceSymbol, fciLabel } from '../utils/valuation'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
 export default function PositionDetailMobile() {
@@ -122,7 +122,7 @@ export default function PositionDetailMobile() {
         </button>
         <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={28} />
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-ink-0 leading-none truncate">{p.asset}</div>
+          <div className="text-sm font-semibold text-ink-0 leading-none truncate">{fciLabel(p.asset)}</div>
           <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mt-1">
             {p.broker}
           </div>
@@ -133,7 +133,7 @@ export default function PositionDetailMobile() {
       <AskAIAbout
         topic="position"
         params={{ asset: p.asset, broker: p.broker }}
-        subtitle={`${p.asset} · ${p.broker}`}
+        subtitle={`${fciLabel(p.asset)} · ${p.broker}`}
       >
         <section className="px-4 pt-5 pb-3">
           <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">
@@ -163,7 +163,7 @@ export default function PositionDetailMobile() {
         <AskAIAbout
           topic="position.chart"
           params={{ asset: p.asset, broker: p.broker }}
-          subtitle={`Precio reciente · ${p.asset}`}
+          subtitle={`Precio reciente · ${fciLabel(p.asset)}`}
         >
           <section className="px-4 mb-5">
             <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
@@ -240,7 +240,7 @@ export default function PositionDetailMobile() {
       <AskAIAbout
         topic="position.lots"
         params={{ asset: p.asset, broker: p.broker }}
-        subtitle={`Historial · ${p.asset}`}
+        subtitle={`Historial · ${fciLabel(p.asset)}`}
       >
         <section className="px-4 mb-5">
           <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">

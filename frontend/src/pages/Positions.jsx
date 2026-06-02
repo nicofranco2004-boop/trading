@@ -22,7 +22,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel } from '../utils/valuation'
 import { useCurrency } from '../contexts/CurrencyContext'
 import CurrencyToggle from '../components/CurrencyToggle'
 import PageHeader from '../components/PageHeader'
@@ -1426,7 +1426,7 @@ function PositionsDesktop() {
                       >
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-sm font-semibold text-ink-0">{p.asset}</span>
+                            <span className="text-sm font-semibold text-ink-0">{fciLabel(p.asset)}</span>
                             <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded">
                               {p.broker}
                             </span>

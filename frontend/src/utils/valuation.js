@@ -66,6 +66,31 @@ export function priceSymbol(asset, isARS) {
   return isARS ? `${asset}.BA` : asset
 }
 
+/**
+ * fciLabel — nombre legible para un símbolo FCI ('FCI:FIMA-PREMIUM-A').
+ *
+ * Prettifica el slug sin necesidad de pegar al catálogo: saca el prefijo,
+ * separa la clase (última letra/dígito) y title-casea, con un par de fixes
+ * para siglas y acentos. Para no-FCI devuelve el símbolo tal cual.
+ *   'FCI:FIMA-PREMIUM-A'        → 'FIMA Premium · A'
+ *   'FCI:FIMA-MIX-DOLARES-B'    → 'FIMA Mix Dólares · B'
+ *   'FCI:1822-RAICES-AHORRO-PESOS' → '1822 Raices Ahorro Pesos'
+ */
+export function fciLabel(asset) {
+  if (!asset || !asset.startsWith('FCI:')) return asset
+  const parts = asset.slice(4).split('-')
+  let cls = null
+  if (parts.length > 1 && /^[A-Z0-9]$/.test(parts[parts.length - 1])) {
+    cls = parts.pop()
+  }
+  const SIGLAS = { FIMA: 'FIMA', PB: 'PB', FBA: 'FBA', QM: 'QM', ON: 'ON', CER: 'CER' }
+  const FIX = { DOLARES: 'Dólares', MEGAQM: 'MegaQM' }
+  const titled = parts
+    .map(w => SIGLAS[w] || FIX[w] || (w ? w.charAt(0) + w.slice(1).toLowerCase() : w))
+    .join(' ')
+  return cls ? `${titled} · ${cls}` : titled
+}
+
 export function computeBrokerValue(allPositions, prices, broker, tcBlue) {
   const bpos = allPositions.filter(p => p.broker === broker.name)
   let value = 0, invested = 0

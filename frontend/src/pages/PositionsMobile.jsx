@@ -31,7 +31,7 @@ import { PositionFormModal, SellModal, EMPTY_POS, today } from './Positions'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol } from '../utils/valuation'
+import { priceSymbol, fciLabel } from '../utils/valuation'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
@@ -1291,7 +1291,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
         <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={28} />
         <div className="min-w-0">
           <div className="text-[13px] font-semibold text-ink-0 leading-none truncate">
-            {p.asset}
+            {fciLabel(p.asset)}
           </div>
           <div className="text-[10px] font-mono text-ink-3 leading-none mt-1 truncate">
             {p.is_cash ? 'Cash' : `${formatQty(p.quantity)} · ${cur}`}
@@ -1361,7 +1361,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
         screen="position"
         params={{ asset: p.asset, broker: p.broker }}
         title="Análisis"
-        subtitle={`${p.asset} · ${p.broker}`}
+        subtitle={`${fciLabel(p.asset)} · ${p.broker}`}
       />
     )}
     </>

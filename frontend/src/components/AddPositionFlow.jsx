@@ -16,7 +16,7 @@
 //   • Mobile         → bottom sheet full-width con safe-area
 
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet } from 'lucide-react'
+import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp } from 'lucide-react'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
   BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF,
@@ -147,7 +147,11 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
         />
         {current === 'broker' && <StepBrokerPicker brokers={brokers} onPick={selectBroker} />}
         {current === 'type' && <Step1AssetType categories={categories} onPick={selectCategory} />}
-        {current === 'ticker' && <Step2TickerPicker category={category} onPick={selectTicker} />}
+        {current === 'ticker' && (
+          category?.id === 'fci'
+            ? <StepFciPicker list={category.list} onPick={selectTicker} />
+            : <Step2TickerPicker category={category} onPick={selectTicker} />
+        )}
       </div>
     </div>
   )
@@ -340,6 +344,122 @@ function Step2TickerPicker({ category, onPick }) {
                 </button>
               </li>
             ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// STEP 2 (FCI) — Picker agrupado por fondo. Cada fondo FIMA tiene varias clases
+// de cuotaparte (A/B/C/P); en vez de listarlas sueltas, agrupamos por fondo y
+// la clase se elige en un acordeón con una ayuda ("casi siempre es Clase A").
+// ════════════════════════════════════════════════════════════════════════════
+function StepFciPicker({ list, onPick }) {
+  const [query, setQuery] = useState('')
+  const [expanded, setExpanded] = useState(null)
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  const groups = useMemo(() => {
+    const map = new Map()
+    for (const t of (list || [])) {
+      const m = (t.n || '').match(/^(.*?)\s*-\s*Clase\s+(\w+)\s*$/i)
+      const base = m ? m[1].trim() : (t.n || '').trim()
+      const cls = m ? m[2] : null
+      if (!map.has(base)) map.set(base, { base, emisor: t._sub, classes: [] })
+      map.get(base).classes.push({ ...t, cls })
+    }
+    const arr = [...map.values()]
+    arr.forEach(g => g.classes.sort((a, b) => (a.cls || '').localeCompare(b.cls || '')))
+    arr.sort((a, b) => a.base.localeCompare(b.base))
+    return arr
+  }, [list])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return groups
+    return groups.filter(g =>
+      g.base.toLowerCase().includes(q) || (g.emisor || '').toLowerCase().includes(q)
+    )
+  }, [query, groups])
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      <div className="px-5 py-3 border-b border-line bg-bg-2/40 dark:bg-bg-2/30 flex-shrink-0">
+        <div className="relative">
+          <Search size={14} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" aria-hidden="true" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Buscar fondo (ej. Premium, Money Market…)"
+            autoComplete="off"
+            spellCheck="false"
+            className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
+          />
+        </div>
+        <p className="text-xs text-ink-3 font-mono mt-2">
+          {filtered.length} {filtered.length === 1 ? 'fondo' : 'fondos'}
+        </p>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {filtered.length === 0 ? (
+          <div className="p-8 text-center text-sm text-ink-2">
+            Sin resultados para <span className="font-mono">"{query}"</span>
+          </div>
+        ) : (
+          <ul className="divide-y divide-line/50 dark:divide-line/40">
+            {filtered.map(g => {
+              const single = g.classes.length === 1
+              const isOpen = expanded === g.base
+              return (
+                <li key={g.base}>
+                  <button
+                    onClick={() => single ? onPick(g.classes[0]) : setExpanded(isOpen ? null : g.base)}
+                    className="w-full flex items-center gap-3 px-5 py-3 hover:bg-bg-2 dark:hover:bg-bg-2/40 transition-colors text-left focus:outline-none focus:bg-bg-2 dark:focus:bg-bg-2/40"
+                  >
+                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-600 dark:text-amber-400 text-[10px] font-bold">
+                      FCI
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold text-ink-0 text-sm truncate">{g.base}</p>
+                      <p className="text-xs text-ink-2 truncate">{g.emisor}</p>
+                    </div>
+                    {single ? (
+                      <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3 flex-shrink-0">
+                        Clase {g.classes[0].cls || '—'}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3 flex items-center gap-1 flex-shrink-0">
+                        {g.classes.length} clases {isOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                      </span>
+                    )}
+                  </button>
+                  {!single && isOpen && (
+                    <div className="px-5 pb-3 pt-1 bg-bg-2/30">
+                      <p className="text-[11px] text-ink-3 mb-2 leading-relaxed">
+                        Elegí tu clase de cuotaparte. Si no la sabés, mirá tu resumen del broker — en la mayoría de los casos es <span className="text-ink-1 font-medium">Clase A</span>.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {g.classes.map(c => (
+                          <button
+                            key={c.s}
+                            onClick={() => onPick(c)}
+                            className="px-3 py-1.5 rounded-md border border-line bg-bg-1 hover:border-rendi-accent/50 hover:bg-rendi-accent/5 text-sm text-ink-1 transition-colors"
+                          >
+                            Clase {c.cls}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </div>
