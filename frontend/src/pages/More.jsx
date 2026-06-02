@@ -26,7 +26,7 @@ const GROUPS = [
     items: [
       { to: '/posiciones',  label: 'Cartera',      icon: List,   sub: 'Posiciones, evolución, objetivos' },
       { to: '/operaciones', label: 'Movimientos',  icon: List,   sub: 'Trades + depósitos + dividendos' },
-      { to: '/imports',     label: 'Importes',     icon: Upload, sub: 'Subí CSVs de tus brokers' },
+      { to: '/imports',     label: 'Importar CSV', icon: Upload, sub: 'Subí CSVs de tus brokers' },
     ],
   },
   {

@@ -24,8 +24,11 @@ import {
 // - Dashboard salió del nav (fusionado en Cartera /posiciones).
 // - Comportamiento + Reportes salieron (fusionados en Análisis /analisis con tabs).
 // - Insights renombrado a "Análisis" (más claro qué es).
-// - Importes se mantiene como item separado para descubrimiento (decisión del
-//   user — la carga de CSV es un job crítico que tiene que estar visible).
+// - "Importar CSV" se mantiene como item separado para descubrimiento (decisión
+//   del user — la carga de CSV es un job crítico que tiene que estar visible).
+//   Renombrado de "Importes" → "Importar CSV" 2026-06-01 (Importes confundía,
+//   parecía referirse a "importes" $ — Importar es claramente la acción y CSV
+//   precisa el formato).
 // - Wrapped quedó fuera desde antes (futuro trigger anual de diciembre).
 // - Perfil de inversor pasó a ser una TAB de Análisis (el test es input y las
 //   cards de cruce son output — viven juntos). Grupo "Personal" del sidebar
@@ -55,7 +58,7 @@ const GROUPS = [
       { to: '/',            label: 'Inicio',        icon: HomeIcon },
       { to: '/posiciones',  label: 'Cartera',       icon: Briefcase },
       { to: '/operaciones', label: 'Movimientos',   icon: List },
-      { to: '/imports',     label: 'Importes',      icon: Upload },
+      { to: '/imports',     label: 'Importar CSV',  icon: Upload },
     ],
   },
   {
