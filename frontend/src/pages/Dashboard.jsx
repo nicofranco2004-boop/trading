@@ -234,11 +234,33 @@ export default function Dashboard() {
 
   const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, positions: positionsForInsight }), [totalValue, netDeposited, positionsForInsight])
 
-  // ── Snapshot 1×/day (only when real prices loaded) ──────────────────────────
+  // Cobertura de precios: fracción del cost basis (no-cash, ponderado en USD)
+  // que tiene un precio real. Es el guard contra snapshots subvaluados: si
+  // yfinance devolvió null para varias posiciones (caen a costo), la cobertura
+  // baja y NO snapshoteamos — un snapshot con precios a medio cargar rompe la
+  // variación diaria del día siguiente (parece una ganancia/pérdida falsa).
+  // Un activo ilíquido chico (bono) no mueve la aguja; una caída masiva sí.
+  const priceCoverage = useMemo(() => {
+    const nonCash = positions.filter(p => !p.is_cash)
+    if (nonCash.length === 0) return 1
+    const hasPrice = (p) =>
+      p.price_override != null || prices[p.asset] != null || prices[priceSymbol(p.asset, true)] != null
+    const costUsd = (p) => {
+      const c = (p.invested || 0) + (p.commissions || 0)
+      return arsBrokerNames.has(p.broker) ? c / tcBlue : c
+    }
+    const total = nonCash.reduce((s, p) => s + costUsd(p), 0)
+    if (total <= 0) return 1
+    const priced = nonCash.reduce((s, p) => s + (hasPrice(p) ? costUsd(p) : 0), 0)
+    return priced / total
+  }, [positions, prices, arsBrokerNames, tcBlue])
+
+  const PRICE_COVERAGE_MIN = 0.9  // ≥90% del portfolio con precio real para escribir
+
+  // ── Snapshot 1×/day (solo con cobertura de precios alta) ────────────────────
   useEffect(() => {
-    if (loading || !lastUpdated || totalValue <= 0) return
-    const hasRealPrices = positions.some(p => !p.is_cash && (p.price_override != null || prices[p.asset] != null || prices[priceSymbol(p.asset, true)] != null))
-    if (!hasRealPrices) return
+    if (loading || !lastUpdated || totalValuePositions <= 0) return
+    if (priceCoverage < PRICE_COVERAGE_MIN) return  // precios a medio cargar → no snapshotear
     const today = new Date().toISOString().slice(0, 10)
     const key = 'rendi_snapshot_date'
     if (localStorage.getItem(key) === today) return
@@ -247,15 +269,12 @@ export default function Dashboard() {
     api.post('/snapshots', { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
       .then(() => localStorage.setItem(key, today))
       .catch(() => {})
-  }, [loading, lastUpdated, totalValuePositions, totalCostBasisPositions, netDepositedPositions, positions, prices])
+  }, [loading, lastUpdated, totalValuePositions, totalCostBasisPositions, netDepositedPositions, priceCoverage])
 
   // ── Sync pnl_unrealized for current month ───────────────────────────────────
   useEffect(() => {
     if (loading || !lastUpdated || totalValue <= 0) return
-    const hasRealPrices = positions.some(
-      p => !p.is_cash && (p.price_override != null || prices[p.asset] != null || prices[priceSymbol(p.asset, true)] != null)
-    )
-    if (!hasRealPrices) return
+    if (priceCoverage < PRICE_COVERAGE_MIN) return  // mismo guard: no sincronizar con precios a medio cargar
 
     let globalPnlUsd = 0
     brokers.forEach(b => {
