@@ -5065,6 +5065,117 @@ def delete_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
     return {"ok": True}
 
 
+def _pf_value(row, as_of_iso=None):
+    """Valuación determinística de un PF (espejo de computePf del frontend).
+    `tasa` es fracción anual. Devuelve valor_hoy / valor_vencimiento / interes /
+    vencido."""
+    from datetime import datetime as _dt
+    C = float(row["capital"] or 0)
+    r = float(row["tasa"] or 0)
+    P = int(row["plazo_dias"] or 0)
+    is_tea = (row["rate_type"] or "TNA").upper() == "TEA"
+    periodic = (row["modalidad"] or "vencimiento") == "periodico"
+    f = int(row["pago_frecuencia_meses"] or 0)
+    try:
+        start = _dt.strptime(row["fecha_inicio"], "%Y-%m-%d")
+    except Exception:
+        start = _dt.utcnow()
+    now = _dt.strptime(as_of_iso, "%Y-%m-%d") if as_of_iso else _dt.utcnow()
+    d = max(0, min((now - start).days, P))
+
+    def per_rate(days):
+        if days <= 0 or r <= 0:
+            return 0.0
+        return ((1 + r) ** (days / 365) - 1) if is_tea else (r * days / 365)
+
+    if periodic and f > 0:
+        period_days = (f / 12) * 365
+        i_per = ((1 + r) ** (f / 12) - 1) if is_tea else (r * (f / 12))
+        valor_venc = C * (1 + i_per) ** (P / period_days) if period_days else C
+        valor_hoy = C * (1 + i_per) ** (d / period_days) if period_days else C
+    else:
+        valor_venc = C * (1 + per_rate(P))
+        valor_hoy = C * (1 + per_rate(d))
+    return {
+        "valor_hoy": valor_hoy,
+        "valor_vencimiento": valor_venc,
+        "interes_hoy": valor_hoy - C,
+        "vencido": P > 0 and d >= P,
+    }
+
+
+@app.post("/api/plazos-fijos/{pid}/renovar")
+def renovar_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
+    """Renueva el PF: arranca un período nuevo desde el vencimiento, con capital
+    = capital + interés (reinvierte todo). Mismo plazo y tasa."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
+        (pid, uid),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Plazo fijo no encontrado")
+    val = _pf_value(row)
+    nuevo_capital = round(val["valor_vencimiento"], 2)
+    nuevo_inicio = row["fecha_vencimiento"]
+    nuevo_venc = _pf_vencimiento(nuevo_inicio, row["plazo_dias"])
+    conn.execute(
+        "UPDATE plazos_fijos SET capital=?, fecha_inicio=?, fecha_vencimiento=? WHERE id=? AND user_id=?",
+        (nuevo_capital, nuevo_inicio, nuevo_venc, pid, uid),
+    )
+    conn.commit()
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "capital": nuevo_capital, "fecha_inicio": nuevo_inicio, "fecha_vencimiento": nuevo_venc}
+
+
+class CobrarIn(BaseModel):
+    broker: Optional[str] = None   # si se indica, acredita el cash ahí; si no, solo cierra
+
+
+@app.post("/api/plazos-fijos/{pid}/cobrar")
+def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_current_user)):
+    """Cierra el PF (cobrado). Si se indica un broker, acredita capital+interés
+    como cash ahí (debe coincidir la moneda). El interés es la ganancia realizada
+    — el PF cerrado retiene sus datos para las métricas."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
+        (pid, uid),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Plazo fijo no encontrado")
+    val = _pf_value(row)
+    monto = round(val["valor_hoy"], 2)
+    credited = None
+    if data.broker:
+        br = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+            (uid, data.broker),
+        ).fetchone()
+        if not br:
+            conn.close()
+            raise HTTPException(400, "Broker no encontrado")
+        cur = (br["currency"] or "").upper()
+        pf_ars = (row["moneda"] or "ARS").upper() == "ARS"
+        ok_match = (pf_ars and cur == "ARS") or ((not pf_ars) and cur in ("USD", "USDT"))
+        if not ok_match:
+            conn.close()
+            raise HTTPException(400, "La moneda del broker no coincide con la del plazo fijo")
+        _adjust_broker_cash(conn, uid, data.broker, monto)
+        credited = data.broker
+    conn.execute(
+        "UPDATE plazos_fijos SET closed_at=datetime('now') WHERE id=? AND user_id=?",
+        (pid, uid),
+    )
+    conn.commit()
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "monto": monto, "interes": round(val["interes_hoy"], 2), "acreditado_en": credited}
+
+
 # Cache en memoria de las tasas de PF (cambian 1×/día). TTL 6h; si el fetch
 # falla, se sirve lo último bueno (degradación con gracia).
 _PF_BANKS_CACHE = {"data": None, "at": 0.0}

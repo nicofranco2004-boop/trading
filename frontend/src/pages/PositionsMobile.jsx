@@ -710,7 +710,7 @@ export default function PositionsMobile() {
             ))}
           </div>
           <div className="px-4 pb-2">
-            <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} />
+            <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} />
           </div>
         </>
       ) : (

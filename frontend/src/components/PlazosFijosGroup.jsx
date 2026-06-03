@@ -4,8 +4,8 @@
 //   • reloadKey: cambia → refetch (cuando se agrega un PF desde afuera)
 //   • onAdd: abre el form de alta
 // Cada PF se valúa con computePf (devengado a hoy + valor + cuenta regresiva).
-import { useState, useEffect } from 'react'
-import { Plus, Landmark, Trash2, Clock } from 'lucide-react'
+import { useState, useEffect, Fragment } from 'react'
+import { Plus, Landmark, Trash2, Clock, RotateCcw } from 'lucide-react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
@@ -14,10 +14,11 @@ const pct = (x) => (x * 100).toFixed(2) + '%'
 const todayStr = () => new Date().toISOString().slice(0, 10)
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 
-export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals }) {
+export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers = [] }) {
   const toast = useToast()
   const [pfs, setPfs] = useState([])
   const [loaded, setLoaded] = useState(false)
+  const [cobrando, setCobrando] = useState(null)   // id del PF en proceso de cobro
 
   async function load() {
     try {
@@ -50,6 +51,30 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals }) {
     try { await api.delete(`/plazos-fijos/${pf.id}`); load() }
     catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
   }
+
+  async function renovar(pf) {
+    if (!confirm(`¿Renovar el plazo fijo en ${pf.banco}? Arranca un período nuevo con capital + interés, mismo plazo y tasa.`)) return
+    try { await api.post(`/plazos-fijos/${pf.id}/renovar`); load() }
+    catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
+  }
+
+  async function cobrar(pf, broker) {
+    try {
+      const res = await api.post(`/plazos-fijos/${pf.id}/cobrar`, { broker: broker || null })
+      setCobrando(null)
+      toast.push(
+        broker ? `Cobrado: ${moneyOf(pf.moneda)(res.monto)} acreditado en ${broker}.` : 'Plazo fijo cobrado.',
+        { type: 'success' },
+      )
+      load()
+    } catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
+  }
+
+  // Brokers cuya moneda matchea la del PF (para acreditar el cobro).
+  const matchingBrokers = (pf) => (brokers || []).filter(b => {
+    const c = (b.currency || '').toUpperCase()
+    return (pf.moneda === 'ARS') ? c === 'ARS' : (c === 'USD' || c === 'USDT')
+  })
 
   if (!loaded) return null
 
@@ -101,33 +126,68 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals }) {
                 const v = computePf(pf, now)
                 const money = moneyOf(pf.moneda)
                 return (
-                  <tr key={pf.id} className="border-b border-line/40 dark:border-line/30 hover:bg-bg-2 dark:hover:bg-bg-2/20">
-                    <td className="px-3 py-2">
-                      <div className="font-medium text-ink-0">{pf.banco}</div>
-                      <div className="text-[11px] text-ink-3">
-                        {pf.rate_type} {pct(pf.tasa)} · {pf.plazo_dias}d · {pf.moneda}
-                        {pf.modalidad === 'periodico' && pf.pago_frecuencia_meses ? ` · capitaliza c/${pf.pago_frecuencia_meses}m` : ''}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-ink-1 tabular">{money(pf.capital)}</td>
-                    <td className="px-3 py-2 text-ink-2 text-[11px] leading-tight">
-                      <div>TNA {pct(v.tnaEquiv)}</div>
-                      <div>TEA {pct(v.teaEquiv)}</div>
-                    </td>
-                    <td className="px-3 py-2 text-[11px] leading-tight">
-                      <div className="text-ink-1">{pf.fecha_vencimiento}</div>
-                      <div className={`flex items-center gap-1 ${v.vencido ? 'text-rendi-pos' : 'text-ink-3'}`}>
-                        <Clock size={10} /> {v.vencido ? 'Vencido' : `faltan ${v.diasRestantes}d`}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-rendi-pos tabular">+{money(v.devengadoHoy)}</td>
-                    <td className="px-3 py-2 text-ink-0 font-semibold tabular">{money(v.valorHoy)}</td>
-                    <td className="px-3 py-2">
-                      <button onClick={() => del(pf)} className="text-ink-3 hover:text-red-500 transition" title="Eliminar plazo fijo">
-                        <Trash2 size={13} />
-                      </button>
-                    </td>
-                  </tr>
+                  <Fragment key={pf.id}>
+                    <tr className="border-b border-line/40 dark:border-line/30 hover:bg-bg-2 dark:hover:bg-bg-2/20">
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-ink-0">{pf.banco}</div>
+                        <div className="text-[11px] text-ink-3">
+                          {pf.rate_type} {pct(pf.tasa)} · {pf.plazo_dias}d · {pf.moneda}
+                          {pf.modalidad === 'periodico' && pf.pago_frecuencia_meses ? ` · capitaliza c/${pf.pago_frecuencia_meses}m` : ''}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-ink-1 tabular">{money(pf.capital)}</td>
+                      <td className="px-3 py-2 text-ink-2 text-[11px] leading-tight">
+                        <div>TNA {pct(v.tnaEquiv)}</div>
+                        <div>TEA {pct(v.teaEquiv)}</div>
+                      </td>
+                      <td className="px-3 py-2 text-[11px] leading-tight">
+                        <div className="text-ink-1">{pf.fecha_vencimiento}</div>
+                        <div className={`flex items-center gap-1 ${v.vencido ? 'text-rendi-pos' : 'text-ink-3'}`}>
+                          <Clock size={10} /> {v.vencido ? 'Vencido' : `faltan ${v.diasRestantes}d`}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-rendi-pos tabular">+{money(v.devengadoHoy)}</td>
+                      <td className="px-3 py-2 text-ink-0 font-semibold tabular">{money(v.valorHoy)}</td>
+                      <td className="px-3 py-2">
+                        {v.vencido ? (
+                          <div className="flex items-center gap-1 justify-end">
+                            <button onClick={() => renovar(pf)} title="Renovar"
+                              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 transition">
+                              <RotateCcw size={11} /> Renovar
+                            </button>
+                            <button onClick={() => setCobrando(cobrando === pf.id ? null : pf.id)}
+                              className="text-[11px] px-2 py-1 rounded bg-rendi-pos/15 text-rendi-pos hover:bg-rendi-pos/25 transition">
+                              Cobrar
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => del(pf)} className="text-ink-3 hover:text-red-500 transition" title="Eliminar plazo fijo">
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {cobrando === pf.id && (
+                      <tr className="bg-bg-2/40">
+                        <td colSpan={7} className="px-3 py-2.5">
+                          <div className="flex items-center gap-2 flex-wrap text-xs">
+                            <span className="text-ink-2">Cobrar <span className="font-semibold text-ink-0">{money(v.valorHoy)}</span> y acreditar en:</span>
+                            {matchingBrokers(pf).map(b => (
+                              <button key={b.id ?? b.name} onClick={() => cobrar(pf, b.name)}
+                                className="px-2.5 py-1 rounded-md border border-line bg-bg-1 hover:border-rendi-accent/50 hover:bg-rendi-accent/5 text-ink-1 transition">
+                                {b.name}
+                              </button>
+                            ))}
+                            <button onClick={() => cobrar(pf, null)}
+                              className="px-2.5 py-1 rounded-md border border-dashed border-line text-ink-3 hover:text-ink-1 transition">
+                              A mi banco (no trackear)
+                            </button>
+                            <button onClick={() => setCobrando(null)} className="ml-auto text-ink-3 hover:text-ink-1">Cancelar</button>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </tbody>
