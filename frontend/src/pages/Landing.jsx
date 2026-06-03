@@ -450,8 +450,8 @@ function HowItWorks() {
       Icon: Upload,
       meta: 'CARTERA · CSV o MANUAL',
       title: 'Cargá tu cartera',
-      body: 'Importás el CSV de Cocos, Schwab, Binance o Balanz — el parser detecta el formato y mapea cada movimiento (o usá el formato genérico para otros brokers). Si preferís control total, desde Cartera tocás "Agregar posición", elegís broker, activo, cantidad y precio de entrada. Los depósitos y retiros se registran desde la caja de cada broker. Cada activo queda agrupado por broker, con moneda original, valor live en USD y P&L.',
-      chips: ['CSV importer', 'Agregar posición', 'Depósitos y retiros'],
+      body: 'Importás el CSV de Cocos, Schwab, Binance o Balanz — el parser detecta el formato y mapea cada movimiento (o usá el formato genérico para otros brokers). Si preferís control total, desde Cartera tocás "Agregar posición", elegís broker y activo —acciones, CEDEARs, cripto, bonos y ONs, fondos comunes (FCI) y plazos fijos—, cantidad y precio de entrada. Los depósitos y retiros se registran desde la caja de cada broker. Cada activo queda agrupado por broker, con moneda original, valor live en USD y P&L.',
+      chips: ['CSV o manual', 'Acciones · CEDEARs · Cripto · Bonos · FCI · Plazo fijo', 'Depósitos y retiros'],
       Visual: MockPositions,
     },
     {

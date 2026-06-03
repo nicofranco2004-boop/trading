@@ -8,6 +8,8 @@ import StatCard from '../components/StatCard'
 import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
+import PlazosFijosGroup from '../components/PlazosFijosGroup'
+import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import { isBondTicker } from '../utils/tickers'
@@ -73,6 +75,10 @@ function PositionsDesktop() {
   const [snapshots, setSnapshots] = useState([])
   const toast = useToast()
   const [modal, setModal] = useState(null)
+  // Plazos fijos: el form se abre desde el flujo de alta o el header del grupo.
+  const [pfFormOpen, setPfFormOpen] = useState(false)
+  const [pfReloadKey, setPfReloadKey] = useState(0)
+  const [pfTotals, setPfTotals] = useState({})  // {ARS, USD} reportado por el grupo PF
   // Modales nuevos del header (3 botones: Compra, Venta, Cash):
   //   - sell-selector: lista todas las posiciones no-cash y deja elegir cuál vender
   //   - cash-menu: selector broker + direction (deposit/withdraw) antes de abrir cashflow
@@ -698,6 +704,16 @@ function PositionsDesktop() {
     return { delta, pct, badgeLabel, refLabel, lastValue: lastClose.total_value, dayDiff }
   }, [totals.value, snapshots])
 
+  // Plazos fijos → USD, coherente: valor (capital + devengado), capital
+  // (invertido) y P&L (devengado). Suma al titular del patrimonio. No entra en
+  // la variación diaria (los snapshots históricos no tienen PF).
+  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcBlue
+  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcBlue
+  const heroValue = totals.value + pfValueUsd
+  const heroInvested = totals.invested + pfInvestedUsd
+  const heroPnl = heroValue - heroInvested
+  const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
+
   if (brokers.length === 0) {
     return (
       <div className="page-shell-wide">
@@ -785,26 +801,26 @@ function PositionsDesktop() {
         <StatCard
           tone="hero"
           label="Tu portfolio hoy"
-          value={displayCurrency === 'ARS' ? fmtArs(totals.value * tcBlue) : fmtUsd(totals.value)}
+          value={displayCurrency === 'ARS' ? fmtArs(heroValue * tcBlue) : fmtUsd(heroValue)}
           sub={
             <span className="inline-flex items-center gap-3 flex-wrap">
               <span className="text-ink-2">P&L no realizado</span>
-              <span className={`inline-flex items-center gap-1 font-semibold ${totals.pnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {totals.pnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
+              <span className={`inline-flex items-center gap-1 font-semibold ${heroPnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                {heroPnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
                 {displayCurrency === 'ARS'
-                  ? `ARS ${ars(Math.abs(totals.pnl * tcBlue))}`
-                  : `USD ${usd(Math.abs(totals.pnl))}`}
+                  ? `ARS ${ars(Math.abs(heroPnl * tcBlue))}`
+                  : `USD ${usd(Math.abs(heroPnl))}`}
               </span>
-              <span className={`tabular ${totals.pnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
-                ({pctSigned(totals.pct)})
+              <span className={`tabular ${heroPnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
+                ({pctSigned(heroPct)})
               </span>
               <CurrencyToggle variant="compact" className="ml-auto" />
             </span>
           }
           hint={
             displayCurrency === 'ARS'
-              ? `Invertido ARS ${ars(totals.invested * tcBlue)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
-              : `Invertido USD ${usd(totals.invested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
+              ? `Invertido ARS ${ars(heroInvested * tcBlue)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
+              : `Invertido USD ${usd(heroInvested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
           }
         />
       </div>
@@ -1265,12 +1281,23 @@ function PositionsDesktop() {
         )
       })}
 
+      {/* Grupo Plazos fijos + su form de alta (lo dispara el flujo o el header del grupo) */}
+      <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
+      {pfFormOpen && (
+        <PfFormModal
+          onClose={() => setPfFormOpen(false)}
+          onSaved={() => { setPfFormOpen(false); setPfReloadKey(k => k + 1); loadAll() }}
+          brokers={brokers}
+        />
+      )}
+
       {modal === 'add-flow' && (
         <AddPositionFlow
           onClose={() => setModal(null)}
           onAssetSelected={onAssetSelectedFromFlow}
           brokers={brokers}
           initialBroker={form.broker || null}
+          onPlazoFijo={() => { setModal(null); setPfFormOpen(true) }}
         />
       )}
 

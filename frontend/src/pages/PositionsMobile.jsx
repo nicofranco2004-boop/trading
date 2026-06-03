@@ -28,6 +28,8 @@ import UpgradeModal from '../components/plan/UpgradeModal'
 // render de /cartera no espere a parsearlo — solo cuando el user abre el flow.
 const AddPositionFlow = lazy(() => import('../components/AddPositionFlow'))
 import { PositionFormModal, SellModal, EMPTY_POS, today } from './Positions'
+import PlazosFijosGroup from '../components/PlazosFijosGroup'
+import PfFormModal from '../components/PfFormModal'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
@@ -113,6 +115,9 @@ export default function PositionsMobile() {
   //              'sell'       → modal de venta con FIFO preview
   //              'cashflow'   → depositar / retirar (solo cash positions)
   const [addModal, setAddModal] = useState(null)
+  const [pfFormOpen, setPfFormOpen] = useState(false)
+  const [pfReloadKey, setPfReloadKey] = useState(0)
+  const [pfTotals, setPfTotals] = useState({})
   const [addForm, setAddForm] = useState(EMPTY_POS)
   // Venta FIFO: reusa el SellModal de desktop (form shape compartido).
   const [sellForm, setSellForm] = useState({
@@ -510,6 +515,7 @@ export default function PositionsMobile() {
   }, [filteredByBroker, brokerFilter, sortBy])
 
   const total = enriched.reduce((s, p) => s + (p.valueUsd || 0), 0)
+  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcBlue  // PF → USD para el total
   const visibleCount = brokerFilter === ALL_FILTER
     ? filteredByBroker.length
     : (flatList?.length || 0)
@@ -549,7 +555,7 @@ export default function PositionsMobile() {
               Cartera total
             </div>
             <div className="text-xl font-medium tabular text-ink-0 leading-none">
-              ${Math.round(currency === 'ARS' ? total * tcBlue : total).toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')}
+              ${Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd)).toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')}
               <button
                 onClick={toggleCurrency}
                 className="text-xs text-ink-3 ml-1 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"
@@ -683,25 +689,30 @@ export default function PositionsMobile() {
         </div>
       ) : brokerFilter === ALL_FILTER ? (
         // Vista agrupada por broker
-        <div className="divide-y divide-line/20">
-          {grouped?.map(g => (
-            <BrokerSection
-              key={g.broker.name}
-              broker={g.broker}
-              positions={g.positions}
-              totalUsd={g.totalUsd}
-              showDetail={showDetail}
-              displayCurrency={currency}
-              tcBlue={tcBlue}
-              onEdit={() => setEditingBroker({ ...g.broker })}
-              onDelete={() => deleteBrokerAction(g.broker)}
-              onSellPosition={openSell}
-              onCashFlowPosition={openCashFlow}
-              onEditPosition={openEditPosition}
-              onDeletePosition={deletePosition}
-            />
-          ))}
-        </div>
+        <>
+          <div className="divide-y divide-line/20">
+            {grouped?.map(g => (
+              <BrokerSection
+                key={g.broker.name}
+                broker={g.broker}
+                positions={g.positions}
+                totalUsd={g.totalUsd}
+                showDetail={showDetail}
+                displayCurrency={currency}
+                tcBlue={tcBlue}
+                onEdit={() => setEditingBroker({ ...g.broker })}
+                onDelete={() => deleteBrokerAction(g.broker)}
+                onSellPosition={openSell}
+                onCashFlowPosition={openCashFlow}
+                onEditPosition={openEditPosition}
+                onDeletePosition={deletePosition}
+              />
+            ))}
+          </div>
+          <div className="px-4 pb-2">
+            <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
+          </div>
+        </>
       ) : (
         // Vista filtrada — lista plana del broker seleccionado
         <>
@@ -846,12 +857,20 @@ export default function PositionsMobile() {
             onClose={() => setAddModal(null)}
             brokers={brokers}
             initialBroker={addForm.broker || null}
+            onPlazoFijo={() => { setAddModal(null); setPfFormOpen(true) }}
             onAssetSelected={({ asset, broker }) => {
               setAddForm(f => ({ ...f, asset, broker: broker || f.broker }))
               setAddModal('add')
             }}
           />
         </Suspense>
+      )}
+      {pfFormOpen && (
+        <PfFormModal
+          onClose={() => setPfFormOpen(false)}
+          onSaved={() => { setPfFormOpen(false); setPfReloadKey(k => k + 1); loadAll() }}
+          brokers={brokers}
+        />
       )}
       {addModal === 'add' && (
         <PositionFormModal

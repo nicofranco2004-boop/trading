@@ -47,7 +47,7 @@ const CATEGORIES = [
   { id: 'indices', label: 'Índices',       icon: Activity,   list: INDICES,       hint: 'S&P 500, Merval, IBOV…' },
 ]
 
-export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null }) {
+export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null, onPlazoFijo }) {
   // Secuencia de pasos. Si ya viene un broker preseleccionado (alta desde el
   // menú de un broker puntual, o "Cambiar" activo), salteamos el paso de broker.
   const needsBrokerStep = !initialBroker
@@ -145,7 +145,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
           onBack={stepIdx > 0 ? back : null}
           onClose={onClose}
         />
-        {current === 'broker' && <StepBrokerPicker brokers={brokers} onPick={selectBroker} />}
+        {current === 'broker' && <StepBrokerPicker brokers={brokers} onPick={selectBroker} onPlazoFijo={onPlazoFijo} />}
         {current === 'type' && <Step1AssetType categories={categories} onPick={selectCategory} />}
         {current === 'ticker' && (
           category?.id === 'fci'
@@ -204,35 +204,64 @@ function FlowHeader({ current, stepNum, total, category, chosenBroker, onBack, o
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 0 — Broker Picker (en qué cartera entra la posición)
 // ════════════════════════════════════════════════════════════════════════════
-function StepBrokerPicker({ brokers, onPick }) {
-  if (!brokers || brokers.length === 0) {
-    return (
-      <div className="p-8 text-center text-sm text-ink-2">
-        No tenés brokers todavía. Creá uno desde Configuración para poder agregar posiciones.
-      </div>
-    )
-  }
+function StepBrokerPicker({ brokers, onPick, onPlazoFijo }) {
+  const hasBrokers = brokers && brokers.length > 0
   return (
     <div className="overflow-y-auto flex-1 p-5">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {brokers.map(b => (
+      {hasBrokers && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {brokers.map(b => (
+            <button
+              key={b.id ?? b.name}
+              onClick={() => onPick(b)}
+              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
+                  <Wallet size={18} strokeWidth={1.5} aria-hidden="true" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-semibold text-ink-0 text-sm leading-tight truncate">{b.name}</h3>
+                  <p className="text-[10px] font-mono text-ink-3 mt-1 uppercase tracking-[0.12em]">{b.currency}</p>
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {!hasBrokers && !onPlazoFijo && (
+        <div className="p-8 text-center text-sm text-ink-2">
+          No tenés brokers todavía. Creá uno desde Configuración para poder agregar posiciones.
+        </div>
+      )}
+
+      {/* Plazo fijo — no entra a un broker, va a un banco. Abre su propio form. */}
+      {onPlazoFijo && (
+        <>
+          {hasBrokers && (
+            <div className="flex items-center gap-3 my-4">
+              <div className="flex-1 h-px bg-line" />
+              <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">o</span>
+              <div className="flex-1 h-px bg-line" />
+            </div>
+          )}
           <button
-            key={b.id ?? b.name}
-            onClick={() => onPick(b)}
-            className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+            onClick={onPlazoFijo}
+            className="w-full text-left bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
           >
             <div className="flex items-center gap-3">
               <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
-                <Wallet size={18} strokeWidth={1.5} aria-hidden="true" />
+                <Landmark size={18} strokeWidth={1.5} aria-hidden="true" />
               </div>
               <div className="min-w-0 flex-1">
-                <h3 className="font-semibold text-ink-0 text-sm leading-tight truncate">{b.name}</h3>
-                <p className="text-[10px] font-mono text-ink-3 mt-1 uppercase tracking-[0.12em]">{b.currency}</p>
+                <h3 className="font-semibold text-ink-0 text-sm leading-tight">Plazo fijo</h3>
+                <p className="text-xs text-ink-2 mt-1 leading-snug">En un banco — cargás banco, capital, tasa y plazo.</p>
               </div>
             </div>
           </button>
-        ))}
-      </div>
+        </>
+      )}
     </div>
   )
 }

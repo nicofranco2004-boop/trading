@@ -158,3 +158,82 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue) {
     pnlArs: valueArs - invArs,
   }
 }
+
+// ─── Plazos fijos ─────────────────────────────────────────────────────────────
+// Valuación determinística (modalidad "al vencimiento"). No usa precios de
+// mercado: el interés se devenga según rate_type.
+//   • TNA (nominal)  → interés simple:    i = tasa × días/365
+//   • TEA (efectiva) → interés compuesto: i = (1 + tasa)^(días/365) − 1
+// `tasa` es fracción anual (0.19 = 19%).
+
+function _pfDate(x) {
+  if (x instanceof Date) return x
+  if (typeof x === 'string') {
+    const [y, m, d] = x.split('-').map(Number)
+    return new Date(y, (m || 1) - 1, d || 1)
+  }
+  return new Date()
+}
+
+// Tasa del período según convención. dias = tramo a valuar.
+function _pfPeriodRate(tasa, dias, isTea) {
+  if (dias <= 0 || tasa <= 0) return 0
+  return isTea ? Math.pow(1 + tasa, dias / 365) - 1 : tasa * dias / 365
+}
+
+/**
+ * computePf — valúa un plazo fijo a una fecha dada.
+ *
+ * @param {Object} pf  { capital, tasa, rate_type, fecha_inicio, plazo_dias }
+ * @param {Date|string} [asOf]  fecha de referencia (default hoy)
+ * @returns {{
+ *   tasaPeriodo:number, interes:number, valorVencimiento:number,
+ *   diasTranscurridos:number, diasRestantes:number, vencido:boolean,
+ *   devengadoHoy:number, valorHoy:number, tnaEquiv:number, teaEquiv:number
+ * }}
+ */
+export function computePf(pf, asOf) {
+  const C = +pf.capital || 0
+  const r = +pf.tasa || 0
+  const P = +pf.plazo_dias || 0
+  const isTea = String(pf.rate_type || 'TNA').toUpperCase() === 'TEA'
+  const periodic = String(pf.modalidad || 'vencimiento') === 'periodico'
+  const f = +pf.pago_frecuencia_meses || 0   // meses entre capitalizaciones
+
+  // Días transcurridos, clampeados a [0, P].
+  const dRaw = Math.floor((_pfDate(asOf) - _pfDate(pf.fecha_inicio)) / 86400000)
+  const diasTranscurridos = Math.max(0, Math.min(dRaw, P))
+  const diasRestantes = Math.max(0, P - diasTranscurridos)
+  const vencido = P > 0 && diasTranscurridos >= P
+
+  let valorVencimiento, valorHoy, tnaEquiv = r, teaEquiv = r
+  if (periodic && f > 0) {
+    // Capitalización periódica: el interés se reinvierte cada `f` meses → compone.
+    const periodDays = (f / 12) * 365
+    const iPer = isTea ? Math.pow(1 + r, f / 12) - 1 : r * (f / 12)
+    const factor = (d) => Math.pow(1 + iPer, d / periodDays)
+    valorVencimiento = C * factor(P)
+    valorHoy = C * factor(diasTranscurridos)
+    tnaEquiv = iPer * (12 / f)                    // nominal anual
+    teaEquiv = Math.pow(1 + iPer, 12 / f) - 1     // efectiva anual (compuesta)
+  } else {
+    // Al vencimiento: interés simple (TNA) o compuesto al plazo (TEA).
+    valorVencimiento = C * (1 + _pfPeriodRate(r, P, isTea))
+    valorHoy = C * (1 + _pfPeriodRate(r, diasTranscurridos, isTea))
+    if (P > 0) {
+      const tp = C > 0 ? valorVencimiento / C - 1 : 0
+      if (isTea) tnaEquiv = (tp * 365) / P
+      else teaEquiv = Math.pow(1 + tp, 365 / P) - 1
+    }
+  }
+
+  const interes = valorVencimiento - C
+  const devengadoHoy = valorHoy - C
+  const tasaPeriodo = C > 0 ? valorVencimiento / C - 1 : 0
+
+  return {
+    tasaPeriodo, interes, valorVencimiento,
+    diasTranscurridos, diasRestantes, vencido,
+    devengadoHoy, valorHoy, tnaEquiv, teaEquiv,
+  }
+}

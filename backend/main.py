@@ -262,7 +262,7 @@ def _table_cols(conn, table: str) -> set:
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
                'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
-               'ai_tool_usage', 'yfinance_cache', 'credit_ledger'}
+               'ai_tool_usage', 'yfinance_cache', 'credit_ledger', 'plazos_fijos'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -705,6 +705,44 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id);
     """)
+
+    # ─── Plazos fijos ────────────────────────────────────────────────────────
+    # Depósitos a plazo fijo del user. NO cotizan: el valor se computa
+    # determinísticamente (capital + interés devengado según rate_type).
+    # `tasa` es fracción anual (0.19 = 19%). `rate_type` ∈ {TNA (simple),
+    # TEA (compuesta)}. `banco` viene del listado de la API de tasas. No se atan
+    # a `brokers`: viven en su propio grupo "Plazos fijos" en Cartera.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS plazos_fijos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            banco TEXT NOT NULL,
+            capital REAL NOT NULL,
+            moneda TEXT NOT NULL DEFAULT 'ARS',
+            tasa REAL NOT NULL,
+            rate_type TEXT NOT NULL DEFAULT 'TNA',
+            fecha_inicio TEXT NOT NULL,
+            plazo_dias INTEGER NOT NULL,
+            fecha_vencimiento TEXT NOT NULL,
+            renovacion_auto INTEGER NOT NULL DEFAULT 0,
+            modalidad TEXT NOT NULL DEFAULT 'vencimiento',
+            pago_frecuencia_meses INTEGER,
+            notes TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            closed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_pf_user ON plazos_fijos(user_id);
+    """)
+    # Migración: columna `modalidad` para DBs creadas antes de este campo.
+    # 'vencimiento' = interés al final (default); 'periodico' = pago de renta
+    # (fast-follow, todavía no valuado distinto).
+    _pf_cols = _table_cols(conn, 'plazos_fijos')
+    if _pf_cols and 'modalidad' not in _pf_cols:
+        conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN modalidad TEXT NOT NULL DEFAULT 'vencimiento';")
+        conn.commit()
+    if _pf_cols and 'pago_frecuencia_meses' not in _pf_cols:
+        conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN pago_frecuencia_meses INTEGER;")
+        conn.commit()
 
     # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────
     # Tickers que el user "sigue" sin tenerlos en portfolio. Se renderiza en el
@@ -4896,6 +4934,325 @@ def delete_position(pid: int, uid: int = Depends(get_current_user)):
     return {"ok": True}
 
 
+# ─── Plazos fijos ─────────────────────────────────────────────────────────────
+# CRUD de depósitos a plazo fijo. No cotizan: la valuación (devengado) es
+# determinística y vive en el frontend (computePfValue, Fase 2). El backend solo
+# persiste. `tasa` es fracción anual (0.19 = 19%); `rate_type` ∈ {TNA, TEA}.
+
+class PlazoFijoIn(BaseModel):
+    banco: str = Field(..., min_length=1, max_length=120)
+    capital: float = Field(..., gt=0, le=1e15)
+    moneda: str = Field('ARS')
+    tasa: float = Field(..., gt=0, le=10)        # fracción: 0.19 = 19%. le=10 (1000%) = sanity cap
+    rate_type: str = Field('TNA')
+    fecha_inicio: str = Field(..., max_length=10)
+    plazo_dias: int = Field(..., gt=0, le=3650)
+    renovacion_auto: bool = False
+    modalidad: str = Field('vencimiento')   # 'vencimiento' | 'periodico'
+    pago_frecuencia_meses: Optional[int] = Field(None, ge=1, le=12)  # solo si periodico
+    source_broker: Optional[str] = Field(None, max_length=MAX_STR)   # de qué broker salió el capital (debita su cash)
+    notes: Optional[str] = Field(None, max_length=MAX_NOTES)
+
+    @field_validator('moneda')
+    @classmethod
+    def valid_moneda(cls, v):
+        v = (v or 'ARS').strip().upper()
+        if v not in ('ARS', 'USD'):
+            raise ValueError('Moneda inválida')
+        return v
+
+    @field_validator('modalidad')
+    @classmethod
+    def valid_modalidad(cls, v):
+        v = (v or 'vencimiento').strip().lower()
+        if v not in ('vencimiento', 'periodico'):
+            raise ValueError('Modalidad inválida (vencimiento o periodico)')
+        return v
+
+    @field_validator('rate_type')
+    @classmethod
+    def valid_rate_type(cls, v):
+        v = (v or 'TNA').strip().upper()
+        if v not in ('TNA', 'TEA'):
+            raise ValueError('rate_type inválido (TNA o TEA)')
+        return v
+
+    @field_validator('fecha_inicio')
+    @classmethod
+    def valid_fecha(cls, v):
+        if not _DATE_RE.match(v or ''):
+            raise ValueError('Fecha inválida')
+        return v
+
+    @field_validator('banco')
+    @classmethod
+    def clean_banco(cls, v):
+        return v.strip()
+
+
+def _pf_vencimiento(fecha_inicio: str, plazo_dias: int) -> str:
+    from datetime import datetime as _dt, timedelta as _td
+    return (_dt.strptime(fecha_inicio, '%Y-%m-%d') + _td(days=int(plazo_dias))).strftime('%Y-%m-%d')
+
+
+@app.get("/api/plazos-fijos")
+def list_plazos_fijos(uid: int = Depends(get_current_user)):
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL
+           ORDER BY fecha_vencimiento ASC, id ASC""",
+        (uid,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["renovacion_auto"] = bool(d["renovacion_auto"])
+        out.append(d)
+    return out
+
+
+@app.post("/api/plazos-fijos")
+def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
+    venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
+    conn = get_db()
+    # Si el capital salió de un broker que ya estaba en Rendi, debitamos su cash
+    # (si no, sería doble conteo: el cash queda + el PF se suma). Si no se indica
+    # source_broker, se asume plata nueva de afuera de Rendi.
+    if p.source_broker:
+        br = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+            (uid, p.source_broker),
+        ).fetchone()
+        if not br:
+            conn.close()
+            raise HTTPException(400, "Broker de origen no encontrado")
+        cur_c = (br["currency"] or "").upper()
+        ok_match = (p.moneda == "ARS" and cur_c == "ARS") or (p.moneda != "ARS" and cur_c in ("USD", "USDT"))
+        if not ok_match:
+            conn.close()
+            raise HTTPException(400, "La moneda del broker de origen no coincide con la del plazo fijo")
+        _adjust_broker_cash(conn, uid, p.source_broker, -float(p.capital))
+    cur = conn.execute(
+        """INSERT INTO plazos_fijos
+               (user_id, banco, capital, moneda, tasa, rate_type,
+                fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, modalidad,
+                pago_frecuencia_meses, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (uid, p.banco, p.capital, p.moneda, p.tasa, p.rate_type,
+         p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
+         (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes),
+    )
+    conn.commit()
+    pid = cur.lastrowid
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "id": pid, "fecha_vencimiento": venc}
+
+
+@app.put("/api/plazos-fijos/{pid}")
+def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_current_user)):
+    venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
+    conn = get_db()
+    row = conn.execute("SELECT id FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Plazo fijo no encontrado")
+    conn.execute(
+        """UPDATE plazos_fijos SET banco=?, capital=?, moneda=?, tasa=?, rate_type=?,
+               fecha_inicio=?, plazo_dias=?, fecha_vencimiento=?, renovacion_auto=?,
+               modalidad=?, pago_frecuencia_meses=?, notes=?
+           WHERE id=? AND user_id=?""",
+        (p.banco, p.capital, p.moneda, p.tasa, p.rate_type, p.fecha_inicio,
+         p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
+         (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes, pid, uid),
+    )
+    conn.commit()
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "fecha_vencimiento": venc}
+
+
+@app.delete("/api/plazos-fijos/{pid}")
+def delete_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    conn.execute("DELETE FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid))
+    conn.commit()
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True}
+
+
+def _pf_value(row, as_of_iso=None):
+    """Valuación determinística de un PF (espejo de computePf del frontend).
+    `tasa` es fracción anual. Devuelve valor_hoy / valor_vencimiento / interes /
+    vencido."""
+    from datetime import datetime as _dt
+    C = float(row["capital"] or 0)
+    r = float(row["tasa"] or 0)
+    P = int(row["plazo_dias"] or 0)
+    is_tea = (row["rate_type"] or "TNA").upper() == "TEA"
+    periodic = (row["modalidad"] or "vencimiento") == "periodico"
+    f = int(row["pago_frecuencia_meses"] or 0)
+    try:
+        start = _dt.strptime(row["fecha_inicio"], "%Y-%m-%d")
+    except Exception:
+        start = _dt.utcnow()
+    now = _dt.strptime(as_of_iso, "%Y-%m-%d") if as_of_iso else _dt.utcnow()
+    d = max(0, min((now - start).days, P))
+
+    def per_rate(days):
+        if days <= 0 or r <= 0:
+            return 0.0
+        return ((1 + r) ** (days / 365) - 1) if is_tea else (r * days / 365)
+
+    if periodic and f > 0:
+        period_days = (f / 12) * 365
+        i_per = ((1 + r) ** (f / 12) - 1) if is_tea else (r * (f / 12))
+        valor_venc = C * (1 + i_per) ** (P / period_days) if period_days else C
+        valor_hoy = C * (1 + i_per) ** (d / period_days) if period_days else C
+    else:
+        valor_venc = C * (1 + per_rate(P))
+        valor_hoy = C * (1 + per_rate(d))
+    return {
+        "valor_hoy": valor_hoy,
+        "valor_vencimiento": valor_venc,
+        "interes_hoy": valor_hoy - C,
+        "vencido": P > 0 and d >= P,
+    }
+
+
+@app.post("/api/plazos-fijos/{pid}/renovar")
+def renovar_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
+    """Renueva el PF: arranca un período nuevo desde el vencimiento, con capital
+    = capital + interés (reinvierte todo). Mismo plazo y tasa."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
+        (pid, uid),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Plazo fijo no encontrado")
+    val = _pf_value(row)
+    nuevo_capital = round(val["valor_vencimiento"], 2)
+    nuevo_inicio = row["fecha_vencimiento"]
+    nuevo_venc = _pf_vencimiento(nuevo_inicio, row["plazo_dias"])
+    conn.execute(
+        "UPDATE plazos_fijos SET capital=?, fecha_inicio=?, fecha_vencimiento=? WHERE id=? AND user_id=?",
+        (nuevo_capital, nuevo_inicio, nuevo_venc, pid, uid),
+    )
+    conn.commit()
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "capital": nuevo_capital, "fecha_inicio": nuevo_inicio, "fecha_vencimiento": nuevo_venc}
+
+
+class CobrarIn(BaseModel):
+    broker: Optional[str] = None   # si se indica, acredita el cash ahí; si no, solo cierra
+
+
+@app.post("/api/plazos-fijos/{pid}/cobrar")
+def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_current_user)):
+    """Cierra el PF (cobrado). Si se indica un broker, acredita capital+interés
+    como cash ahí (debe coincidir la moneda). El interés es la ganancia realizada
+    — el PF cerrado retiene sus datos para las métricas."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
+        (pid, uid),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Plazo fijo no encontrado")
+    val = _pf_value(row)
+    monto = round(val["valor_hoy"], 2)
+    credited = None
+    if data.broker:
+        br = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+            (uid, data.broker),
+        ).fetchone()
+        if not br:
+            conn.close()
+            raise HTTPException(400, "Broker no encontrado")
+        cur = (br["currency"] or "").upper()
+        pf_ars = (row["moneda"] or "ARS").upper() == "ARS"
+        ok_match = (pf_ars and cur == "ARS") or ((not pf_ars) and cur in ("USD", "USDT"))
+        if not ok_match:
+            conn.close()
+            raise HTTPException(400, "La moneda del broker no coincide con la del plazo fijo")
+        _adjust_broker_cash(conn, uid, data.broker, monto)
+        credited = data.broker
+    interes = round(val["interes_hoy"], 2)
+    # Registrar el interés como movimiento (ganancia realizada) — mismo patrón
+    # que un cupón de bono → aparece en Movimientos. Broker = el cobrado, o el
+    # banco si se retiró. `pnl_usd` va en moneda nativa + currency/fx_to_usd.
+    if interes > 0:
+        from datetime import datetime as _dt_op
+        moneda = (row["moneda"] or "ARS").upper()
+        fx = 1.0 if moneda in ("USD", "USDT") else None
+        conn.execute(
+            """INSERT INTO operations
+                   (user_id, date, broker, asset, op_type, pnl_usd, currency, fx_to_usd, notes)
+               VALUES (?, ?, ?, ?, 'Interés PF', ?, ?, ?, ?)""",
+            (uid, _dt_op.utcnow().strftime('%Y-%m-%d'), data.broker or row["banco"],
+             row["banco"], interes, moneda, fx, f"Interés plazo fijo · {row['banco']}"),
+        )
+    conn.execute(
+        "UPDATE plazos_fijos SET closed_at=datetime('now') WHERE id=? AND user_id=?",
+        (pid, uid),
+    )
+    conn.commit()
+    conn.close()
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "monto": monto, "interes": interes, "acreditado_en": credited}
+
+
+# Cache en memoria de las tasas de PF (cambian 1×/día). TTL 6h; si el fetch
+# falla, se sirve lo último bueno (degradación con gracia).
+_PF_BANKS_CACHE = {"data": None, "at": 0.0}
+_PF_BANKS_TTL = 6 * 3600
+
+
+@app.get("/api/pf/banks")
+def pf_banks(uid: int = Depends(get_current_user)):
+    """Tasas de plazo fijo por banco (argentinadatos), para el prefill del alta
+    y el comparador. Devuelve [{banco, logo, tna_clientes, tna_no_clientes}]
+    ordenado por mejor tasa. Cacheado 6h en memoria."""
+    import time as _time, urllib.request, json as _json
+    now = _time.time()
+    cached = _PF_BANKS_CACHE.get("data")
+    if cached and (now - _PF_BANKS_CACHE["at"]) < _PF_BANKS_TTL:
+        return cached
+    try:
+        req = urllib.request.Request(
+            "https://api.argentinadatos.com/v1/finanzas/tasas/plazoFijo",
+            headers={"User-Agent": "Mozilla/5.0 (Rendi)"}, method="GET")
+        with urllib.request.urlopen(req, timeout=12) as r:
+            data = _json.loads(r.read())
+        out = []
+        for b in (data if isinstance(data, list) else []):
+            tna = b.get("tnaClientes")
+            if not isinstance(tna, (int, float)) or tna <= 0:
+                continue
+            out.append({
+                "banco": b.get("entidad"),
+                "logo": b.get("logo"),
+                "tna_clientes": tna,
+                "tna_no_clientes": b.get("tnaNoClientes"),
+            })
+        out.sort(key=lambda x: -(x["tna_clientes"] or 0))  # mejor tasa primero
+        _PF_BANKS_CACHE["data"] = out
+        _PF_BANKS_CACHE["at"] = now
+        return out
+    except Exception as ex:
+        log.warning("pf_banks fetch falló: %s", ex)
+        if cached:
+            return cached
+        raise HTTPException(503, "No se pudieron obtener las tasas de plazo fijo")
+
+
 # ─── Cash deposit / withdraw ─────────────────────────────────────────────────
 
 class CashFlowIn(BaseModel):
@@ -8829,6 +9186,54 @@ def admin_fci_refresh(uid: int = Depends(get_admin_user)):
         return fci_mod.bootstrap(conn)
     finally:
         conn.close()
+
+
+@app.get("/api/admin/pf/probe")
+def admin_pf_probe(uid: int = Depends(get_admin_user)):
+    """Fase 0 (Plazos Fijos) — Probe READ-ONLY de la fuente de tasas
+    (argentinadatos, mismo host que FCI). Confirma que el endpoint de tasas de
+    plazo fijo responde desde el server y muestra una muestra de bancos con su
+    TNA. NO escribe nada, no toca la DB."""
+    import urllib.request, urllib.error, json as _json, time as _time
+
+    url = "https://api.argentinadatos.com/v1/finanzas/tasas/plazoFijo"
+    out = {"url": url, "ok": False}
+    t0 = _time.monotonic()
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Rendi PF probe)"}, method="GET")
+        with urllib.request.urlopen(req, timeout=12) as r:
+            code = r.getcode()
+            out["status"] = code
+            out["ok"] = 200 <= code < 300
+            if out["ok"]:
+                data = _json.loads(r.read())
+                out["count"] = len(data) if isinstance(data, list) else None
+                sample = []
+                for b in (data[:8] if isinstance(data, list) else []):
+                    tna = b.get("tnaClientes")
+                    sample.append({
+                        "banco": b.get("entidad"),
+                        "tna_clientes": tna,
+                        "tna_clientes_pct": (round(tna * 100, 2) if isinstance(tna, (int, float)) else None),
+                        "tna_no_clientes": b.get("tnaNoClientes"),
+                        "tiene_logo": bool(b.get("logo")),
+                    })
+                out["sample"] = sample
+    except urllib.error.HTTPError as e:
+        out["status"] = e.code
+        out["error"] = f"HTTP {e.code}"
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    finally:
+        out["ms"] = int((_time.monotonic() - t0) * 1000)
+
+    out["verdict"] = {
+        "reachable": bool(out.get("ok")),
+        "go": bool(out.get("ok") and out.get("count", 0) > 0),
+        "note": ("go=true → la fuente de tasas responde con bancos; seguimos con "
+                 "Fase 1 (modelo). go=false → revisar error/alcance."),
+    }
+    return out
 
 
 @app.post("/api/admin/users/{user_id}/approve")
