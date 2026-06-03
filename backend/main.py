@@ -5184,6 +5184,21 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_current_u
             raise HTTPException(400, "La moneda del broker no coincide con la del plazo fijo")
         _adjust_broker_cash(conn, uid, data.broker, monto)
         credited = data.broker
+    interes = round(val["interes_hoy"], 2)
+    # Registrar el interés como movimiento (ganancia realizada) — mismo patrón
+    # que un cupón de bono → aparece en Movimientos. Broker = el cobrado, o el
+    # banco si se retiró. `pnl_usd` va en moneda nativa + currency/fx_to_usd.
+    if interes > 0:
+        from datetime import datetime as _dt_op
+        moneda = (row["moneda"] or "ARS").upper()
+        fx = 1.0 if moneda in ("USD", "USDT") else None
+        conn.execute(
+            """INSERT INTO operations
+                   (user_id, date, broker, asset, op_type, pnl_usd, currency, fx_to_usd, notes)
+               VALUES (?, ?, ?, ?, 'Interés PF', ?, ?, ?, ?)""",
+            (uid, _dt_op.utcnow().strftime('%Y-%m-%d'), data.broker or row["banco"],
+             row["banco"], interes, moneda, fx, f"Interés plazo fijo · {row['banco']}"),
+        )
     conn.execute(
         "UPDATE plazos_fijos SET closed_at=datetime('now') WHERE id=? AND user_id=?",
         (pid, uid),
@@ -5191,7 +5206,7 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_current_u
     conn.commit()
     conn.close()
     _ai_cache_invalidate(uid)
-    return {"ok": True, "monto": monto, "interes": round(val["interes_hoy"], 2), "acreditado_en": credited}
+    return {"ok": True, "monto": monto, "interes": interes, "acreditado_en": credited}
 
 
 # Cache en memoria de las tasas de PF (cambian 1×/día). TTL 6h; si el fetch
