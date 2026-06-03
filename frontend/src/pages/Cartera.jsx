@@ -26,6 +26,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { useSearchParams, useLocation } from 'react-router-dom'
 import { Briefcase, TrendingUp, Target } from 'lucide-react'
 import { track } from '../utils/track'
+import { markPositionsDiscovered } from '../utils/positionsDiscovered'
 
 const Positions = lazy(() => import('./Positions'))
 const Dashboard = lazy(() => import('./Dashboard'))
@@ -78,6 +79,14 @@ export default function Cartera() {
       setTab(DEFAULT_TAB)
     }
   }, [location.search])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Onboarding Paso 2 (descubrimiento): apenas se ve la tab de Posiciones —donde
+  // aparece seleccionar/crear broker y el alta de posiciones— marcamos el paso
+  // como descubierto. No requiere cargar una posición real. (El import no pasa
+  // por acá, así que no tilda este paso solo.)
+  useEffect(() => {
+    if (tab === 'posiciones') markPositionsDiscovered()
+  }, [tab])
 
   return (
     <div className="page-shell-wide">
