@@ -59,11 +59,15 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   }
 
   async function cobrar(pf, broker) {
+    if (!broker) {
+      const monto = computePf(pf, todayStr()).valorHoy
+      if (!confirm(`¿Retirar ${moneyOf(pf.moneda)(monto)}? La plata sale de tu cartera (no se trackea). El interés igual queda contabilizado como ganancia.`)) return
+    }
     try {
       const res = await api.post(`/plazos-fijos/${pf.id}/cobrar`, { broker: broker || null })
       setCobrando(null)
       toast.push(
-        broker ? `Cobrado: ${moneyOf(pf.moneda)(res.monto)} acreditado en ${broker}.` : 'Plazo fijo cobrado.',
+        broker ? `Cobrado: ${moneyOf(pf.moneda)(res.monto)} acreditado en ${broker}.` : 'Plazo fijo cobrado y retirado.',
         { type: 'success' },
       )
       load()
@@ -171,16 +175,22 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
                       <tr className="bg-bg-2/40">
                         <td colSpan={7} className="px-3 py-2.5">
                           <div className="flex items-center gap-2 flex-wrap text-xs">
-                            <span className="text-ink-2">Cobrar <span className="font-semibold text-ink-0">{money(v.valorHoy)}</span> y acreditar en:</span>
-                            {matchingBrokers(pf).map(b => (
-                              <button key={b.id ?? b.name} onClick={() => cobrar(pf, b.name)}
-                                className="px-2.5 py-1 rounded-md border border-line bg-bg-1 hover:border-rendi-accent/50 hover:bg-rendi-accent/5 text-ink-1 transition">
-                                {b.name}
-                              </button>
-                            ))}
-                            <button onClick={() => cobrar(pf, null)}
-                              className="px-2.5 py-1 rounded-md border border-dashed border-line text-ink-3 hover:text-ink-1 transition">
-                              A mi banco (no trackear)
+                            <span className="text-ink-2">Cobrás <span className="font-semibold text-ink-0">{money(v.valorHoy)}</span>.</span>
+                            {matchingBrokers(pf).length > 0 && (
+                              <>
+                                <span className="text-ink-3">Dejala como cash en:</span>
+                                {matchingBrokers(pf).map(b => (
+                                  <button key={b.id ?? b.name} onClick={() => cobrar(pf, b.name)}
+                                    className="px-2.5 py-1 rounded-md border border-line bg-bg-1 hover:border-rendi-accent/50 hover:bg-rendi-accent/5 text-ink-1 transition">
+                                    {b.name}
+                                  </button>
+                                ))}
+                                <span className="text-ink-3">o</span>
+                              </>
+                            )}
+                            <button onClick={() => cobrar(pf, null)} title="La plata sale de tu cartera (la retirás a tu banco)"
+                              className="px-2.5 py-1 rounded-md border border-dashed border-line text-ink-2 hover:text-ink-0 transition">
+                              Retirar
                             </button>
                             <button onClick={() => setCobrando(null)} className="ml-auto text-ink-3 hover:text-ink-1">Cancelar</button>
                           </div>
