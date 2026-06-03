@@ -7,6 +7,7 @@ import { X, ArrowLeft, Search, Landmark, Pencil } from 'lucide-react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
+import DateField from './DateField'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const pct = (x) => (x * 100).toFixed(2) + '%'
@@ -296,38 +297,36 @@ export default function PfFormModal({ onClose, onSaved }) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-ink-3 mb-1">Fecha de inicio</label>
-                  <input type="date" className={inputClass} value={form.fecha_inicio} onChange={e => set('fecha_inicio', e.target.value)} />
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-1 gap-2">
-                    <label className="text-xs text-ink-3">{plazoMode === 'dias' ? 'Plazo (días)' : 'Vencimiento'}</label>
-                    <div className="flex rounded-sm overflow-hidden border border-line-2">
-                      {[['dias', 'Días'], ['fecha', 'Fecha']].map(([m, lbl]) => (
-                        <button key={m} type="button" onClick={() => setPlazoMode(m)}
-                          className={`px-1.5 py-0.5 text-[10px] transition ${plazoMode === m ? 'bg-rendi-accent text-white' : 'bg-bg-2 text-ink-3 hover:text-ink-1'}`}>
-                          {lbl}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  {plazoMode === 'dias' ? (
-                    <input type="number" inputMode="numeric" className={inputClass} value={form.plazo_dias} onChange={e => set('plazo_dias', e.target.value)} placeholder="30" />
-                  ) : (
-                    <input type="date" className={inputClass} value={vencimiento} min={form.fecha_inicio}
-                      onChange={e => set('plazo_dias', Math.max(0, daysBetween(form.fecha_inicio, e.target.value)))} />
-                  )}
-                </div>
+              <div>
+                <label className="block text-xs text-ink-3 mb-1">Fecha de inicio</label>
+                <DateField value={form.fecha_inicio} onChange={(v) => set('fecha_inicio', v)} />
               </div>
-              <p className="text-[11px] text-ink-3 -mt-1.5 leading-relaxed">
+              <div>
+                <div className="flex items-center justify-between mb-1 gap-2">
+                  <label className="text-xs text-ink-3">{plazoMode === 'dias' ? 'Plazo (días)' : 'Vencimiento'}</label>
+                  <div className="flex rounded-sm overflow-hidden border border-line-2">
+                    {[['dias', 'Días'], ['fecha', 'Fecha']].map(([m, lbl]) => (
+                      <button key={m} type="button" onClick={() => setPlazoMode(m)}
+                        className={`px-1.5 py-0.5 text-[10px] transition ${plazoMode === m ? 'bg-rendi-accent text-white' : 'bg-bg-2 text-ink-3 hover:text-ink-1'}`}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 {plazoMode === 'dias' ? (
-                  <>El plazo es cuántos días dejás el dinero hasta el vencimiento.{form.plazo_dias > 0 && form.fecha_inicio ? <> Vence el <span className="text-ink-1 font-medium">{vencimiento}</span>.</> : null}</>
+                  <input type="number" inputMode="numeric" className={inputClass} value={form.plazo_dias} onChange={e => set('plazo_dias', e.target.value)} placeholder="30" />
                 ) : (
-                  form.plazo_dias > 0 ? <>Son <span className="text-ink-1 font-medium">{form.plazo_dias} días</span> desde el inicio.</> : 'Elegí la fecha de vencimiento.'
+                  <DateField value={vencimiento} min={form.fecha_inicio}
+                    onChange={(v) => set('plazo_dias', Math.max(0, daysBetween(form.fecha_inicio, v)))} />
                 )}
-              </p>
+                <p className="text-[11px] text-ink-3 mt-1 leading-relaxed">
+                  {plazoMode === 'dias' ? (
+                    <>El plazo es cuántos días dejás el dinero hasta el vencimiento.{form.plazo_dias > 0 && form.fecha_inicio ? <> Vence el <span className="text-ink-1 font-medium">{vencimiento}</span>.</> : null}</>
+                  ) : (
+                    form.plazo_dias > 0 ? <>Son <span className="text-ink-1 font-medium">{form.plazo_dias} días</span> desde el inicio.</> : 'Elegí la fecha de vencimiento.'
+                  )}
+                </p>
+              </div>
 
               <label className="flex items-center gap-2 text-sm text-ink-1 cursor-pointer">
                 <input type="checkbox" checked={form.renovacion_auto} onChange={e => set('renovacion_auto', e.target.checked)} />
