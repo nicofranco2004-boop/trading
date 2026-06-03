@@ -243,6 +243,9 @@ export default function Dashboard() {
   const priceCoverage = useMemo(() => {
     const nonCash = positions.filter(p => !p.is_cash)
     if (nonCash.length === 0) return 1
+    // Sin blue válido no podemos valuar posiciones ARS → cobertura 0 (bloquea).
+    const hasArs = nonCash.some(p => arsBrokerNames.has(p.broker))
+    if (hasArs && !(tcBlue > 0)) return 0
     const hasPrice = (p) =>
       p.price_override != null || prices[p.asset] != null || prices[priceSymbol(p.asset, true)] != null
     const costUsd = (p) => {
@@ -250,17 +253,18 @@ export default function Dashboard() {
       return arsBrokerNames.has(p.broker) ? c / tcBlue : c
     }
     const total = nonCash.reduce((s, p) => s + costUsd(p), 0)
-    if (total <= 0) return 1
+    if (!(total > 0)) return 1
     const priced = nonCash.reduce((s, p) => s + (hasPrice(p) ? costUsd(p) : 0), 0)
     return priced / total
   }, [positions, prices, arsBrokerNames, tcBlue])
 
-  const PRICE_COVERAGE_MIN = 0.9  // ≥90% del portfolio con precio real para escribir
+  const PRICE_COVERAGE_MIN = 0.95  // ≥95% del portfolio con precio real (alineado con el cron)
 
   // ── Snapshot 1×/day (solo con cobertura de precios alta) ────────────────────
   useEffect(() => {
     if (loading || !lastUpdated || totalValuePositions <= 0) return
-    if (priceCoverage < PRICE_COVERAGE_MIN) return  // precios a medio cargar → no snapshotear
+    // Comparación robusta: NaN/no-finito NO pasa (NaN < x es false → escribiría).
+    if (!(priceCoverage >= PRICE_COVERAGE_MIN)) return  // precios a medio cargar → no snapshotear
     const today = new Date().toISOString().slice(0, 10)
     const key = 'rendi_snapshot_date'
     if (localStorage.getItem(key) === today) return
@@ -274,7 +278,7 @@ export default function Dashboard() {
   // ── Sync pnl_unrealized for current month ───────────────────────────────────
   useEffect(() => {
     if (loading || !lastUpdated || totalValue <= 0) return
-    if (priceCoverage < PRICE_COVERAGE_MIN) return  // mismo guard: no sincronizar con precios a medio cargar
+    if (!(priceCoverage >= PRICE_COVERAGE_MIN)) return  // mismo guard robusto: no sincronizar con precios a medio cargar
 
     let globalPnlUsd = 0
     brokers.forEach(b => {
