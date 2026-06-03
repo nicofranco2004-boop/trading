@@ -4950,6 +4950,7 @@ class PlazoFijoIn(BaseModel):
     renovacion_auto: bool = False
     modalidad: str = Field('vencimiento')   # 'vencimiento' | 'periodico'
     pago_frecuencia_meses: Optional[int] = Field(None, ge=1, le=12)  # solo si periodico
+    source_broker: Optional[str] = Field(None, max_length=MAX_STR)   # de qué broker salió el capital (debita su cash)
     notes: Optional[str] = Field(None, max_length=MAX_NOTES)
 
     @field_validator('moneda')
@@ -5015,6 +5016,23 @@ def list_plazos_fijos(uid: int = Depends(get_current_user)):
 def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
     venc = _pf_vencimiento(p.fecha_inicio, p.plazo_dias)
     conn = get_db()
+    # Si el capital salió de un broker que ya estaba en Rendi, debitamos su cash
+    # (si no, sería doble conteo: el cash queda + el PF se suma). Si no se indica
+    # source_broker, se asume plata nueva de afuera de Rendi.
+    if p.source_broker:
+        br = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+            (uid, p.source_broker),
+        ).fetchone()
+        if not br:
+            conn.close()
+            raise HTTPException(400, "Broker de origen no encontrado")
+        cur_c = (br["currency"] or "").upper()
+        ok_match = (p.moneda == "ARS" and cur_c == "ARS") or (p.moneda != "ARS" and cur_c in ("USD", "USDT"))
+        if not ok_match:
+            conn.close()
+            raise HTTPException(400, "La moneda del broker de origen no coincide con la del plazo fijo")
+        _adjust_broker_cash(conn, uid, p.source_broker, -float(p.capital))
     cur = conn.execute(
         """INSERT INTO plazos_fijos
                (user_id, banco, capital, moneda, tasa, rate_type,

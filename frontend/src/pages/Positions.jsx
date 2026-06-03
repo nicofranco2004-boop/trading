@@ -1282,11 +1282,12 @@ function PositionsDesktop() {
       })}
 
       {/* Grupo Plazos fijos + su form de alta (lo dispara el flujo o el header del grupo) */}
-      <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} />
+      <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
       {pfFormOpen && (
         <PfFormModal
           onClose={() => setPfFormOpen(false)}
-          onSaved={() => { setPfFormOpen(false); setPfReloadKey(k => k + 1) }}
+          onSaved={() => { setPfFormOpen(false); setPfReloadKey(k => k + 1); loadAll() }}
+          brokers={brokers}
         />
       )}
 

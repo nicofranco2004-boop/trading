@@ -131,7 +131,7 @@ function BankPicker({ banks, onPick, onManual }) {
   )
 }
 
-export default function PfFormModal({ onClose, onSaved }) {
+export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
   const toast = useToast()
   const [banks, setBanks] = useState([])
   const [step, setStep] = useState('bank')   // 'bank' | 'form'
@@ -141,7 +141,7 @@ export default function PfFormModal({ onClose, onSaved }) {
   const [form, setForm] = useState({
     banco: '', logo: null, capital: '', moneda: 'ARS',
     tasa: '', rate_type: 'TNA', fecha_inicio: today(), plazo_dias: 30, renovacion_auto: false,
-    modalidad: 'vencimiento', pago_frecuencia_meses: 1,
+    modalidad: 'vencimiento', pago_frecuencia_meses: 1, source_broker: '',
   })
 
   useEffect(() => {
@@ -201,6 +201,7 @@ export default function PfFormModal({ onClose, onSaved }) {
         plazo_dias: plazo, renovacion_auto: form.renovacion_auto,
         modalidad: form.modalidad,
         pago_frecuencia_meses: form.modalidad === 'periodico' ? +form.pago_frecuencia_meses : null,
+        source_broker: form.source_broker || null,
       })
       toast.push('Plazo fijo agregado.', { type: 'success' })
       onSaved && onSaved()
@@ -272,12 +273,31 @@ export default function PfFormModal({ onClose, onSaved }) {
                 </div>
                 <div>
                   <label className="block text-xs text-ink-3 mb-1">Moneda</label>
-                  <select className={inputClass} value={form.moneda} onChange={e => set('moneda', e.target.value)}>
+                  <select className={inputClass} value={form.moneda} onChange={e => setForm(f => ({ ...f, moneda: e.target.value, source_broker: '' }))}>
                     <option value="ARS">ARS</option>
                     <option value="USD">USD</option>
                   </select>
                 </div>
               </div>
+
+              {/* Fuente del capital: si salió de un broker que ya está en Rendi, se
+                  debita su cash (evita el doble conteo). Si no, es plata nueva. */}
+              {brokers.length > 0 && (
+                <div>
+                  <label className="block text-xs text-ink-3 mb-1">¿De dónde sale el capital?</label>
+                  <select className={inputClass} value={form.source_broker} onChange={e => set('source_broker', e.target.value)}>
+                    <option value="">Plata nueva (de afuera de Rendi)</option>
+                    {brokers
+                      .filter(b => { const c = (b.currency || '').toUpperCase(); return form.moneda === 'ARS' ? c === 'ARS' : (c === 'USD' || c === 'USDT') })
+                      .map(b => <option key={b.id ?? b.name} value={b.name}>Salió de {b.name}</option>)}
+                  </select>
+                  {form.source_broker && (
+                    <p className="text-[11px] text-ink-3 mt-1">
+                      Se debita {form.capital ? money(+form.capital) : 'el capital'} del cash de {form.source_broker}.
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

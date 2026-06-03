@@ -14,7 +14,7 @@ const pct = (x) => (x * 100).toFixed(2) + '%'
 const todayStr = () => new Date().toISOString().slice(0, 10)
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 
-export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers = [] }) {
+export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers = [], onChange }) {
   const toast = useToast()
   const [pfs, setPfs] = useState([])
   const [loaded, setLoaded] = useState(false)
@@ -71,6 +71,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
         { type: 'success' },
       )
       load()
+      if (broker) onChange && onChange()   // el cash del broker cambió → refrescar posiciones
     } catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
   }
 

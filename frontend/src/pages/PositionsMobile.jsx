@@ -710,7 +710,7 @@ export default function PositionsMobile() {
             ))}
           </div>
           <div className="px-4 pb-2">
-            <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} />
+            <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
           </div>
         </>
       ) : (
@@ -868,7 +868,8 @@ export default function PositionsMobile() {
       {pfFormOpen && (
         <PfFormModal
           onClose={() => setPfFormOpen(false)}
-          onSaved={() => { setPfFormOpen(false); setPfReloadKey(k => k + 1) }}
+          onSaved={() => { setPfFormOpen(false); setPfReloadKey(k => k + 1); loadAll() }}
+          brokers={brokers}
         />
       )}
       {addModal === 'add' && (
