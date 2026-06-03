@@ -1,23 +1,23 @@
-// PlazosFijosGroup — grupo "Plazos fijos" en Cartera. Autocontenido: trae los
-// PF del user, permite agregar (PfFormModal) y borrar, y muestra cada uno
-// valuado con computePf (devengado a hoy + valor al vencimiento + cuenta
-// regresiva). Subtotal por moneda.
+// PlazosFijosGroup — grupo "Plazos fijos" en Cartera. Display + borrado. El alta
+// la dispara el flujo de "Agregar posición" (o el botón contextual del header),
+// que abre el PfFormModal a nivel de la página. Controlado por props:
+//   • reloadKey: cambia → refetch (cuando se agrega un PF desde afuera)
+//   • onAdd: abre el form de alta
+// Cada PF se valúa con computePf (devengado a hoy + valor + cuenta regresiva).
 import { useState, useEffect } from 'react'
 import { Plus, Landmark, Trash2, Clock } from 'lucide-react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
-import PfFormModal from './PfFormModal'
 
 const pct = (x) => (x * 100).toFixed(2) + '%'
 const todayStr = () => new Date().toISOString().slice(0, 10)
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 
-export default function PlazosFijosGroup() {
+export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals }) {
   const toast = useToast()
   const [pfs, setPfs] = useState([])
   const [loaded, setLoaded] = useState(false)
-  const [showForm, setShowForm] = useState(false)
 
   async function load() {
     try {
@@ -26,7 +26,18 @@ export default function PlazosFijosGroup() {
     } catch { /* noop */ }
     finally { setLoaded(true) }
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [reloadKey])
+
+  // Reporta el valor a hoy por moneda hacia el padre (para sumar al patrimonio).
+  useEffect(() => {
+    if (!onTotals) return
+    const now = todayStr()
+    const t = {}
+    for (const pf of pfs) t[pf.moneda] = (t[pf.moneda] || 0) + computePf(pf, now).valorHoy
+    onTotals(t)
+    // onTotals es un setter estable; dependemos solo de pfs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pfs])
 
   async function del(pf) {
     if (!confirm(`¿Eliminar el plazo fijo en ${pf.banco}? Esta acción no se puede deshacer.`)) return
@@ -42,7 +53,7 @@ export default function PlazosFijosGroup() {
         <Landmark size={14} aria-hidden="true" /> Plazos fijos{pfs.length > 0 ? ` (${pfs.length})` : ''}
       </h2>
       <button
-        onClick={() => setShowForm(true)}
+        onClick={onAdd}
         className="flex items-center gap-1 text-xs bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 px-2.5 py-1.5 rounded-sm transition"
       >
         <Plus size={13} /> Plazo fijo
@@ -55,7 +66,6 @@ export default function PlazosFijosGroup() {
       <div className="mt-6">
         {Header}
         <p className="text-xs text-ink-3">Todavía no cargaste ningún plazo fijo.</p>
-        {showForm && <PfFormModal onClose={() => setShowForm(false)} onSaved={load} />}
       </div>
     )
   }
@@ -125,7 +135,6 @@ export default function PlazosFijosGroup() {
       <p className="text-[11px] text-ink-3 mt-1.5">
         Los plazos fijos no cotizan: el valor se calcula con tu tasa y el plazo (interés devengado).
       </p>
-      {showForm && <PfFormModal onClose={() => setShowForm(false)} onSaved={load} />}
     </div>
   )
 }
