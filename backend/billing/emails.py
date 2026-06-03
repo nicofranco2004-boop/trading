@@ -29,6 +29,7 @@ Estilo:
 
 from __future__ import annotations
 import os
+import html
 import logging
 from typing import Optional
 
@@ -531,6 +532,45 @@ def send_welcome_free(*, to: str, user_name: str) -> bool:
     )
     return _send(to, subject, _wrap_html(body_html), text,
                  from_addr=_from_support())
+
+
+# ─── Email interno: alerta al equipo por cada signup real (primeros N) ───────
+
+def send_new_signup_admin(*, to: str, new_user_email: str,
+                          new_user_name: Optional[str], count: int) -> bool:
+    """Aviso INTERNO al equipo cuando un usuario nuevo completa el registro
+    (verifica su email). Pensado para los primeros usuarios — reachout temprano.
+    Best-effort, no afecta el flujo del user.
+
+    SECURITY: name/email son user-controlled → se escapan antes de ir al HTML
+    para evitar inyección de markup en el inbox del admin."""
+    name = new_user_name or new_user_email.split("@")[0]
+    safe_name = html.escape(name)
+    safe_email = html.escape(new_user_email)
+    subject = f"Rendi · nuevo usuario #{count}: {new_user_email}"
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Nuevo registro #{count}</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Un usuario nuevo se registró y verificó su email en Rendi.
+      </p>
+      <table cellpadding="0" cellspacing="0" border="0" style="width:100%;font-size:14px;color:#374151;margin:0 0 20px;">
+        <tr><td style="padding:6px 0;color:#6b7280;width:90px;">Nombre</td><td style="padding:6px 0;font-weight:600;">{safe_name}</td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Email</td><td style="padding:6px 0;font-weight:600;">{safe_email}</td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Número</td><td style="padding:6px 0;font-weight:600;">#{count}</td></tr>
+      </table>
+      <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:0;">
+        Buen momento para un saludo o pedirle feedback.
+      </p>
+    """
+    text = (
+        f"Nuevo registro #{count} en Rendi\n\n"
+        f"Nombre: {name}\n"
+        f"Email:  {new_user_email}\n"
+        f"Número: #{count}\n\n"
+        "Buen momento para un saludo o pedirle feedback.\n"
+    )
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
 
 
 # ─── Email #7: reset de contraseña (magic link) ─────────────────────────────

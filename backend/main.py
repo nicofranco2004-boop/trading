@@ -1432,6 +1432,13 @@ EMAIL_CODE_TTL_MINUTES = 15
 EMAIL_CODE_RESEND_COOLDOWN_SECONDS = 60
 PASSWORD_RESET_TTL_MINUTES = 30
 
+# Alerta interna por cada signup real (user que verifica su email). Pensado
+# para los primeros usuarios — reachout temprano. El email del admin vive solo
+# como hash, así que el destino de la alerta es configurable por env (default
+# soporte@, que el equipo ya lee; apuntalo a tu inbox personal si querés).
+ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "soporte@rendi.finance").strip()
+ADMIN_SIGNUP_ALERT_LIMIT = int(os.environ.get("ADMIN_SIGNUP_ALERT_LIMIT", "100"))
+
 
 def _frontend_url() -> str:
     """Base URL del frontend para construir magic links (password reset, etc).
@@ -1783,6 +1790,22 @@ def verify_email(data: VerifyEmailIn, request: Request, response: Response):
             )
         except Exception as ex:
             log.error("Welcome (free) email failed for uid=%s: %s", user["id"], ex)
+        # Alerta interna al equipo por cada signup real (primeros N usuarios),
+        # para reachout temprano. Best-effort + gated por count — nunca bloquea.
+        try:
+            signup_count = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE email_verified = 1 AND is_admin = 0"
+            ).fetchone()[0]
+            if signup_count <= ADMIN_SIGNUP_ALERT_LIMIT and ADMIN_NOTIFY_EMAIL:
+                from billing import emails
+                emails.send_new_signup_admin(
+                    to=ADMIN_NOTIFY_EMAIL,
+                    new_user_email=email_norm,
+                    new_user_name=user["name"],
+                    count=signup_count,
+                )
+        except Exception as ex:
+            log.error("Admin signup alert failed for uid=%s: %s", user["id"], ex)
         conn.close()
         token = create_token(user["id"], user["password_changed_at"])
         set_auth_cookie(response, token)
