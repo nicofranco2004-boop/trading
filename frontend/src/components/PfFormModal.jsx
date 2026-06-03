@@ -3,7 +3,7 @@
 //   2. Datos del PF (capital, tasa prefilleada, plazo…) + preview en vivo.
 // La tasa se prefilla con la TNA del banco elegido (cada vez que lo cambiás).
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { X, ArrowLeft, Search, Landmark } from 'lucide-react'
+import { X, ArrowLeft, Search, Landmark, Pencil } from 'lucide-react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
@@ -41,7 +41,7 @@ function BankLogo({ logo, name, size = 32 }) {
 }
 
 // ── Paso 1: picker de banco (buscable, con logo + tasa) ──────────────────────
-function BankPicker({ banks, onPick }) {
+function BankPicker({ banks, onPick, onManual }) {
   const [query, setQuery] = useState('')
   const inputRef = useRef(null)
   useEffect(() => { inputRef.current?.focus() }, [])
@@ -97,6 +97,21 @@ function BankPicker({ banks, onPick }) {
           </ul>
         )}
       </div>
+      {/* Opción de carga manual (banco que no está en la lista, o todo a mano) */}
+      <div className="border-t border-line px-5 py-3 flex-shrink-0">
+        <button
+          onClick={onManual}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md border border-dashed border-line hover:border-rendi-accent/40 hover:bg-bg-2 transition text-left"
+        >
+          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-bg-3 border border-line flex items-center justify-center text-ink-2">
+            <Pencil size={14} strokeWidth={1.75} aria-hidden="true" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-ink-0">Seguir sin banco de la lista</p>
+            <p className="text-xs text-ink-3">Cargás el banco y la tasa a mano</p>
+          </div>
+        </button>
+      </div>
     </div>
   )
 }
@@ -105,6 +120,7 @@ export default function PfFormModal({ onClose, onSaved }) {
   const toast = useToast()
   const [banks, setBanks] = useState([])
   const [step, setStep] = useState('bank')   // 'bank' | 'form'
+  const [manual, setManual] = useState(false)  // banco fuera de la lista / carga a mano
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     banco: '', logo: null, capital: '', moneda: 'ARS',
@@ -123,7 +139,15 @@ export default function PfFormModal({ onClose, onSaved }) {
   function pickBank(b) {
     // Prefill SIEMPRE con la TNA del banco elegido (fix del bug de antes, que
     // solo prefilleaba la primera vez). Si la cambiás a mano queda lo que pongas.
+    setManual(false)
     setForm(f => ({ ...f, banco: b.banco, logo: b.logo, tasa: +(b.tna_clientes * 100).toFixed(2), rate_type: 'TNA' }))
+    setStep('form')
+  }
+
+  function goManual() {
+    // Sin banco de la lista: banco como texto, tasa vacía (todo a mano).
+    setManual(true)
+    setForm(f => ({ ...f, banco: '', logo: null, tasa: '' }))
     setStep('form')
   }
 
@@ -192,16 +216,30 @@ export default function PfFormModal({ onClose, onSaved }) {
         </div>
 
         {step === 'bank' ? (
-          <BankPicker banks={banks} onPick={pickBank} />
+          <BankPicker banks={banks} onPick={pickBank} onManual={goManual} />
         ) : (
           <>
             <div className="overflow-y-auto flex-1 p-5 space-y-3">
-              {/* banco elegido */}
-              <div className="flex items-center gap-2.5 bg-bg-2 border border-line rounded-md px-3 py-2">
-                <BankLogo logo={form.logo} name={form.banco} size={28} />
-                <span className="text-sm font-medium text-ink-0 flex-1 truncate">{prettyBank(form.banco)}</span>
-                <button onClick={() => setStep('bank')} className="text-xs text-rendi-accent hover:underline flex-shrink-0">Cambiar</button>
-              </div>
+              {/* banco: chip si vino de la lista, input si es carga manual */}
+              {manual ? (
+                <div>
+                  <label className="block text-xs text-ink-3 mb-1">Banco / entidad</label>
+                  <input
+                    type="text"
+                    className={inputClass}
+                    value={form.banco}
+                    onChange={e => set('banco', e.target.value)}
+                    placeholder="Nombre del banco"
+                    autoFocus
+                  />
+                </div>
+              ) : (
+                <div className="flex items-center gap-2.5 bg-bg-2 border border-line rounded-md px-3 py-2">
+                  <BankLogo logo={form.logo} name={form.banco} size={28} />
+                  <span className="text-sm font-medium text-ink-0 flex-1 truncate">{prettyBank(form.banco)}</span>
+                  <button onClick={() => setStep('bank')} className="text-xs text-rendi-accent hover:underline flex-shrink-0">Cambiar</button>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
