@@ -15,6 +15,8 @@ BACKEND = os.path.dirname(HERE)
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
+from unittest.mock import patch
+
 from snapshots_job import (
     compute_broker_value_usd,
     compute_net_deposited,
@@ -219,6 +221,16 @@ class TestSnapshotEndToEnd(unittest.TestCase):
         """)
         conn.commit()
         conn.close()
+        # Mock de precios: determinístico (BTC=60000) y con cobertura completa.
+        # Sin esto, estos tests dependían de la red real de yfinance — y con el
+        # gate de cobertura (no escribir snapshot subvaluado) un fetch fallido
+        # los haría skipear. El mock los vuelve estables y offline.
+        self._price_patch = patch(
+            'snapshots_job.fetch_prices_for_symbols',
+            side_effect=lambda syms, cy: {s: 60000.0 for s in syms},
+        )
+        self._price_patch.start()
+        self.addCleanup(self._price_patch.stop)
 
     def tearDown(self):
         os.unlink(self.db_path)
@@ -395,6 +407,106 @@ class TestRunDailySnapshotFxPersistence(unittest.TestCase):
         ).fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['blue_venta'], 1510)  # último valor gana
+        conn.close()
+
+
+class TestSnapshotCoverageGate(unittest.TestCase):
+    """INTEGRIDAD: el cron NO debe persistir un snapshot subvaluado cuando
+    yfinance no devolvió precio para una porción grande del portfolio. Mejor
+    un día sin dato que un dato corrupto (que rompe la variación diaria)."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.db_path = self.tmp.name
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
+            CREATE TABLE brokers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, currency TEXT);
+            CREATE TABLE positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, broker TEXT, asset TEXT,
+                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL
+            );
+            CREATE TABLE monthly_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, year INTEGER, month INTEGER,
+                broker TEXT, capital_inicio REAL DEFAULT 0, deposits REAL DEFAULT 0, withdrawals REAL DEFAULT 0
+            );
+            CREATE TABLE snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
+                total_value REAL NOT NULL, total_invested REAL NOT NULL, net_deposited REAL DEFAULT 0,
+                fx_to_usd_blue REAL, UNIQUE(user_id, date)
+            );
+            INSERT INTO users (id, email) VALUES (1, 't@x.com');
+            INSERT INTO brokers (user_id, name, currency) VALUES (1, 'Schwab', 'USD');
+            -- AAPL grande (9700) + XYZ chico (100). Cubrir AAPL = 98.9% del cost.
+            INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
+            VALUES (1, 'Schwab', 'AAPL', 0, 9700, 50);
+            INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
+            VALUES (1, 'Schwab', 'XYZ', 0, 100, 1);
+            INSERT INTO monthly_entries (user_id, year, month, broker, capital_inicio)
+            VALUES (1, 2026, 1, 'global', 9000);
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def _snap_count(self, conn, date='2026-06-02'):
+        return conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE user_id=1 AND date=?", (date,)
+        ).fetchone()[0]
+
+    def test_low_coverage_skips_write(self):
+        """yfinance no devuelve ningún precio → cobertura 0% → NO escribe."""
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: None for s in syms}):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        self.assertFalse(r['ok'])
+        self.assertEqual(r['reason'], 'low_price_coverage')
+        self.assertEqual(self._snap_count(conn), 0)  # nada escrito
+        conn.close()
+
+    def test_low_coverage_does_not_overwrite_existing(self):
+        """Si ya hay un snapshot bueno y el fetch falla, NO lo pisa."""
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited) "
+            "VALUES (1, '2026-06-02', 12345.0, 9800.0, 9000.0)")
+        conn.commit()
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: None for s in syms}):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        self.assertFalse(r['ok'])
+        snap = conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=1 AND date='2026-06-02'").fetchone()
+        self.assertEqual(snap['total_value'], 12345.0)  # intacto
+        conn.close()
+
+    def test_full_coverage_writes(self):
+        """Todos los símbolos con precio → escribe normal."""
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: 100.0 for s in syms}):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        self.assertTrue(r['ok'])
+        self.assertEqual(self._snap_count(conn), 1)
+        conn.close()
+
+    def test_small_unpriced_fraction_still_writes(self):
+        """Un activo chico sin precio (98.9% cubierto) NO bloquea el snapshot."""
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        # AAPL con precio, XYZ (100 de 9800 = 1%) sin precio → cobertura 98.9%
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: (150.0 if s == 'AAPL' else None) for s in syms}):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        self.assertTrue(r['ok'])
+        self.assertEqual(self._snap_count(conn), 1)
         conn.close()
 
 

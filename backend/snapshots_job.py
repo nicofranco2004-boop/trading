@@ -260,6 +260,53 @@ def take_snapshot_for_user(
 
     prices = fetch_prices_for_symbols(all_symbols, crypto_yf) if all_symbols else {}
 
+    # 2b. Reintento de los símbolos que quedaron sin precio. yfinance es flaky
+    # en batch (a veces devuelve null para algunos tickers); una segunda pasada
+    # sobre los faltantes suele completar los huecos.
+    missing = [s for s in all_symbols if prices.get(s) is None]
+    if missing:
+        retry = fetch_prices_for_symbols(missing, crypto_yf)
+        for s, v in retry.items():
+            if v is not None:
+                prices[s] = v
+
+    # 2c. INTEGRIDAD: no persistir un snapshot subvaluado. Si después del retry
+    # sigue faltando precio para una porción grande del portfolio, esas
+    # posiciones caerían a cost basis (ver compute_broker_value_usd) y el total
+    # quedaría falsamente bajo → rompe la variación diaria del día siguiente
+    # (ganancia/pérdida fantasma). Preferimos NO escribir ese día antes que
+    # escribir un dato corrupto. Cobertura ponderada por cost basis (USD): un
+    # activo sin precio yfinance que sea fracción chica no bloquea; una caída
+    # masiva de cobertura (yfinance caído) sí. price_override cuenta como precio.
+    broker_ccy = {b['name']: b['currency'] for b in brokers}
+
+    def _cost_usd(p):
+        c = (p.get('invested') or 0) + (p.get('commissions') or 0)
+        ccy = broker_ccy.get(p['broker'], 'USD')
+        return (c / tc_blue) if (ccy == 'ARS' and tc_blue > 0) else c
+
+    def _has_price(p):
+        if p.get('price_override') is not None:
+            return True
+        ccy = broker_ccy.get(p['broker'], 'USD')
+        key = f"{p['asset']}.BA" if ccy == 'ARS' else p['asset']
+        return prices.get(key) is not None
+
+    non_cash = [p for p in positions if not p['is_cash']]
+    total_cost = sum(_cost_usd(p) for p in non_cash)
+    priced_cost = sum(_cost_usd(p) for p in non_cash if _has_price(p))
+    coverage = (priced_cost / total_cost) if total_cost > 0 else 1.0
+    MIN_COVERAGE = 0.95
+    if non_cash and coverage < MIN_COVERAGE:
+        log.warning(
+            f"user={uid}: cobertura de precios {coverage:.0%} < {MIN_COVERAGE:.0%} "
+            f"— NO escribo snapshot {target_date} (evita dato subvaluado)"
+        )
+        return {'ok': False, 'reason': 'low_price_coverage',
+                'coverage': round(coverage, 3),
+                'total_value': 0, 'total_invested': 0, 'net_deposited': 0,
+                'symbols_fetched': len(all_symbols)}
+
     # 3. Calcular total_value e invested por broker, sumar
     total_value = 0.0
     total_invested = 0.0
