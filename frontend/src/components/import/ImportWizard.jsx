@@ -871,11 +871,11 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
         <label className="block text-sm font-medium text-ink-0 mb-2">¿De dónde viene este archivo?</label>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <button type="button" onClick={() => setSourceType('broker')} className={bigCard(sourceType === 'broker')}>
-            <div className="text-sm font-medium text-ink-0">🏦 El export de mi broker</div>
+            <div className="text-sm font-medium text-ink-0">El export de mi broker</div>
             <div className="text-xs text-ink-3 mt-0.5">Lo descargaste de Cocos, Binance, Schwab, etc.</div>
           </button>
           <button type="button" onClick={onChoosePersonal} className={bigCard(sourceType === 'personal')}>
-            <div className="text-sm font-medium text-ink-0">📝 Un archivo propio</div>
+            <div className="text-sm font-medium text-ink-0">Un archivo propio</div>
             <div className="text-xs text-ink-3 mt-0.5">Un CSV o Excel que armaste vos.</div>
           </button>
         </div>
