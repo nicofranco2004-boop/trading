@@ -8,6 +8,7 @@ import StatCard from '../components/StatCard'
 import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
+import PlazosFijosGroup from '../components/PlazosFijosGroup'
 import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import { isBondTicker } from '../utils/tickers'
@@ -1264,6 +1265,9 @@ function PositionsDesktop() {
           </div>
         )
       })}
+
+      {/* Grupo Plazos fijos — autocontenido (alta + lista + valuación devengada) */}
+      <PlazosFijosGroup />
 
       {modal === 'add-flow' && (
         <AddPositionFlow

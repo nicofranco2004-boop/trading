@@ -5057,6 +5057,50 @@ def delete_plazo_fijo(pid: int, uid: int = Depends(get_current_user)):
     return {"ok": True}
 
 
+# Cache en memoria de las tasas de PF (cambian 1×/día). TTL 6h; si el fetch
+# falla, se sirve lo último bueno (degradación con gracia).
+_PF_BANKS_CACHE = {"data": None, "at": 0.0}
+_PF_BANKS_TTL = 6 * 3600
+
+
+@app.get("/api/pf/banks")
+def pf_banks(uid: int = Depends(get_current_user)):
+    """Tasas de plazo fijo por banco (argentinadatos), para el prefill del alta
+    y el comparador. Devuelve [{banco, logo, tna_clientes, tna_no_clientes}]
+    ordenado por mejor tasa. Cacheado 6h en memoria."""
+    import time as _time, urllib.request, json as _json
+    now = _time.time()
+    cached = _PF_BANKS_CACHE.get("data")
+    if cached and (now - _PF_BANKS_CACHE["at"]) < _PF_BANKS_TTL:
+        return cached
+    try:
+        req = urllib.request.Request(
+            "https://api.argentinadatos.com/v1/finanzas/tasas/plazoFijo",
+            headers={"User-Agent": "Mozilla/5.0 (Rendi)"}, method="GET")
+        with urllib.request.urlopen(req, timeout=12) as r:
+            data = _json.loads(r.read())
+        out = []
+        for b in (data if isinstance(data, list) else []):
+            tna = b.get("tnaClientes")
+            if not isinstance(tna, (int, float)) or tna <= 0:
+                continue
+            out.append({
+                "banco": b.get("entidad"),
+                "logo": b.get("logo"),
+                "tna_clientes": tna,
+                "tna_no_clientes": b.get("tnaNoClientes"),
+            })
+        out.sort(key=lambda x: -(x["tna_clientes"] or 0))  # mejor tasa primero
+        _PF_BANKS_CACHE["data"] = out
+        _PF_BANKS_CACHE["at"] = now
+        return out
+    except Exception as ex:
+        log.warning("pf_banks fetch falló: %s", ex)
+        if cached:
+            return cached
+        raise HTTPException(503, "No se pudieron obtener las tasas de plazo fijo")
+
+
 # ─── Cash deposit / withdraw ─────────────────────────────────────────────────
 
 class CashFlowIn(BaseModel):
