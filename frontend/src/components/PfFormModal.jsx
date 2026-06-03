@@ -11,6 +11,20 @@ import { useToast } from './Toast'
 const today = () => new Date().toISOString().slice(0, 10)
 const pct = (x) => (x * 100).toFixed(2) + '%'
 
+// Aritmética de fechas local (sin shift de timezone).
+function addDays(dateStr, days) {
+  if (!dateStr) return ''
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const dt = new Date(y, (m || 1) - 1, (d || 1) + (+days || 0))
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+}
+function daysBetween(aStr, bStr) {
+  if (!aStr || !bStr) return 0
+  const [ay, am, ad] = aStr.split('-').map(Number)
+  const [by, bm, bd] = bStr.split('-').map(Number)
+  return Math.round((new Date(by, bm - 1, bd) - new Date(ay, am - 1, ad)) / 86400000)
+}
+
 // Prettify del nombre del banco (la API los trae en mayúscula).
 const SMALL = new Set(['de', 'la', 'del', 'y', 'el', 'los', 'las', 'en'])
 const KEEP = new Set(['BBVA', 'ICBC', 'CMF', 'BIND', 'HSBC', 'BICE', 'BACS', 'S.A.', 'S.A.U.'])
@@ -121,6 +135,7 @@ export default function PfFormModal({ onClose, onSaved }) {
   const [banks, setBanks] = useState([])
   const [step, setStep] = useState('bank')   // 'bank' | 'form'
   const [manual, setManual] = useState(false)  // banco fuera de la lista / carga a mano
+  const [plazoMode, setPlazoMode] = useState('dias')  // 'dias' | 'fecha'
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     banco: '', logo: null, capital: '', moneda: 'ARS',
@@ -164,6 +179,7 @@ export default function PfFormModal({ onClose, onSaved }) {
 
   const sign = form.moneda === 'USD' ? 'US$' : '$'
   const money = (n) => sign + Math.round(n).toLocaleString('es-AR')
+  const vencimiento = addDays(form.fecha_inicio, form.plazo_dias)
 
   async function save() {
     const capital = +form.capital, tasa = (+form.tasa) / 100, plazo = +form.plazo_dias
@@ -279,10 +295,32 @@ export default function PfFormModal({ onClose, onSaved }) {
                   <input type="date" className={inputClass} value={form.fecha_inicio} onChange={e => set('fecha_inicio', e.target.value)} />
                 </div>
                 <div>
-                  <label className="block text-xs text-ink-3 mb-1">Plazo (días)</label>
-                  <input type="number" inputMode="numeric" className={inputClass} value={form.plazo_dias} onChange={e => set('plazo_dias', e.target.value)} placeholder="30" />
+                  <div className="flex items-center justify-between mb-1 gap-2">
+                    <label className="text-xs text-ink-3">{plazoMode === 'dias' ? 'Plazo (días)' : 'Vencimiento'}</label>
+                    <div className="flex rounded-sm overflow-hidden border border-line-2">
+                      {[['dias', 'Días'], ['fecha', 'Fecha']].map(([m, lbl]) => (
+                        <button key={m} type="button" onClick={() => setPlazoMode(m)}
+                          className={`px-1.5 py-0.5 text-[10px] transition ${plazoMode === m ? 'bg-rendi-accent text-white' : 'bg-bg-2 text-ink-3 hover:text-ink-1'}`}>
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {plazoMode === 'dias' ? (
+                    <input type="number" inputMode="numeric" className={inputClass} value={form.plazo_dias} onChange={e => set('plazo_dias', e.target.value)} placeholder="30" />
+                  ) : (
+                    <input type="date" className={inputClass} value={vencimiento} min={form.fecha_inicio}
+                      onChange={e => set('plazo_dias', Math.max(0, daysBetween(form.fecha_inicio, e.target.value)))} />
+                  )}
                 </div>
               </div>
+              <p className="text-[11px] text-ink-3 -mt-1.5 leading-relaxed">
+                {plazoMode === 'dias' ? (
+                  <>El plazo es cuántos días dejás el dinero hasta el vencimiento.{form.plazo_dias > 0 && form.fecha_inicio ? <> Vence el <span className="text-ink-1 font-medium">{vencimiento}</span>.</> : null}</>
+                ) : (
+                  form.plazo_dias > 0 ? <>Son <span className="text-ink-1 font-medium">{form.plazo_dias} días</span> desde el inicio.</> : 'Elegí la fecha de vencimiento.'
+                )}
+              </p>
 
               <label className="flex items-center gap-2 text-sm text-ink-1 cursor-pointer">
                 <input type="checkbox" checked={form.renovacion_auto} onChange={e => set('renovacion_auto', e.target.checked)} />
