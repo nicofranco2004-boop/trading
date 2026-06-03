@@ -1278,8 +1278,9 @@ const SUPPORT_EMAIL = 'hola@rendi.finance'
 
 const SOCIAL_LINKS = {
   instagram: 'https://www.instagram.com/rendifinance/',
-  // TODO: reemplazar con URLs reales cuando estén creadas las cuentas
-  linkedin:  'https://www.linkedin.com/company/rendi-finance',
+  // LinkedIn: perfil del fundador (build-in-public). Instagram ya es real.
+  // TODO: X sigue placeholder hasta crear la cuenta oficial.
+  linkedin:  'https://www.linkedin.com/in/nicolas-pussetto-6a656a1a8/',
   x:         'https://x.com/rendifinance',
 }
 
@@ -1400,7 +1401,7 @@ function Footer() {
                 target="_blank"
                 rel="noreferrer noopener"
                 className="text-ink-3 hover:text-ink-0 transition-colors"
-                title="Rendi en LinkedIn"
+                title="Nicolás Pussetto (fundador de Rendi) en LinkedIn"
                 aria-label="LinkedIn"
               >
                 <Linkedin size={16} strokeWidth={1.75} />
