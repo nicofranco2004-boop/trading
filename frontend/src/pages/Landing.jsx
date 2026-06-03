@@ -81,15 +81,17 @@ function NavBar() {
           <a href="#pricing" className="hidden sm:inline-flex text-xs font-mono uppercase tracking-label text-ink-3 hover:text-ink-1 px-3 py-1.5 transition-colors">
             Pricing
           </a>
-          <Link to="/login" className="text-xs font-mono uppercase tracking-label text-ink-1 hover:text-ink-0 px-3 py-1.5 transition-colors">
+          <Link
+            to="/login"
+            className="text-xs font-medium border border-data-violet text-data-violet hover:bg-data-violet/10 rounded-sm px-4 py-1.5 transition-colors"
+          >
             Login
           </Link>
           <Link
             to="/login?mode=register"
-            className="text-xs font-medium bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 transition-colors inline-flex items-center gap-1.5"
+            className="text-xs font-medium border border-data-violet bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-4 py-1.5 transition-colors"
           >
-            Empezar gratis
-            <ArrowRight size={12} strokeWidth={2} />
+            Registrarse
           </Link>
         </nav>
       </div>
