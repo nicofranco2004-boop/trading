@@ -1772,6 +1772,17 @@ def verify_email(data: VerifyEmailIn, request: Request, response: Response):
         # Verificar email = login implícito. Registramos en login_history
         # también (igual no manda alerta porque es el primer login post-signup).
         _record_login_and_maybe_alert(conn, user["id"], email_norm, user["name"], request)
+        # Registro completado → mail de bienvenida (best-effort, no bloquea el
+        # login). Se manda una sola vez: este branch solo corre en la transición
+        # no-verificado → verificado (si ya estaba verificado, cortamos arriba).
+        try:
+            from billing import emails
+            emails.send_welcome_free(
+                to=email_norm,
+                user_name=user["name"] or email_norm.split("@")[0],
+            )
+        except Exception as ex:
+            log.error("Welcome (free) email failed for uid=%s: %s", user["id"], ex)
         conn.close()
         token = create_token(user["id"], user["password_changed_at"])
         set_auth_cookie(response, token)

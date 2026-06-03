@@ -163,6 +163,8 @@ SUPPORT_WHATSAPP_URL = (
     f"https://wa.me/{SUPPORT_WHATSAPP_NUMBER}"
     "?text=Hola%2C%20quer%C3%ADa%20hacer%20una%20consulta%20acerca%20de%20Rendi."
 )
+SUPPORT_EMAIL = "soporte@rendi.finance"
+APP_URL = "https://rendi.finance"
 
 
 def _wrap_html(body: str) -> str:
@@ -487,6 +489,48 @@ def send_verification_code(*, to: str, user_name: str, code: str,
     )
     return _send(to, subject, _wrap_html(body_html), text,
                  from_addr=_from_noreply())
+
+
+# ─── Email #6b: bienvenida post-verificación (registro completado, plan Free) ─
+
+def send_welcome_free(*, to: str, user_name: str) -> bool:
+    """Se manda una vez, cuando el user verifica su email (= completa el
+    registro). Lo orienta al Home (mini guía de cómo funciona) e invita a
+    consultas/recomendaciones. Replies → soporte@ (usamos _from_support)."""
+    subject = "Completaste tu registro en Rendi"
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu cuenta está lista</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Hola {user_name}, completaste tu registro en Rendi. Ya podés cargar tu primer broker
+        y ver tu portfolio consolidado en dólares.
+      </p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 24px;">
+        En la sección <b>Home</b> tenés una mini guía de cómo funciona. Empezá por ahí.
+      </p>
+      <div style="text-align:center;margin:24px 0;">
+        <a href="{APP_URL}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
+          Entrar a Rendi
+        </a>
+      </div>
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:16px 0 0;">
+        Cualquier consulta o recomendación, no dudes en escribirnos a
+        <a href="mailto:{SUPPORT_EMAIL}" style="color:#8B7BFF;text-decoration:none;font-weight:600;">{SUPPORT_EMAIL}</a>
+        o por <a href="{SUPPORT_WHATSAPP_URL}" style="color:#25D366;text-decoration:none;font-weight:600;">WhatsApp ({SUPPORT_WHATSAPP_DISPLAY})</a>.
+        Leemos todo.
+      </p>
+    """
+    text = (
+        "Tu cuenta está lista\n\n"
+        f"Hola {user_name}, completaste tu registro en Rendi. Ya podés cargar tu primer "
+        "broker y ver tu portfolio consolidado en dólares.\n\n"
+        "En la sección Home tenés una mini guía de cómo funciona. Empezá por ahí.\n\n"
+        f"Entrá a Rendi: {APP_URL}\n\n"
+        f"Cualquier consulta o recomendación, escribinos a {SUPPORT_EMAIL} o por "
+        f"WhatsApp ({SUPPORT_WHATSAPP_DISPLAY}). Leemos todo.\n\n"
+        "— Rendi"
+    )
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_support())
 
 
 # ─── Email #7: reset de contraseña (magic link) ─────────────────────────────
