@@ -515,7 +515,7 @@ export default function PositionsMobile() {
   }, [filteredByBroker, brokerFilter, sortBy])
 
   const total = enriched.reduce((s, p) => s + (p.valueUsd || 0), 0)
-  const pfTotalUsd = (pfTotals.USD || 0) + (pfTotals.ARS || 0) / tcBlue  // PF → USD para el total
+  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcBlue  // PF → USD para el total
   const visibleCount = brokerFilter === ALL_FILTER
     ? filteredByBroker.length
     : (flatList?.length || 0)
@@ -555,7 +555,7 @@ export default function PositionsMobile() {
               Cartera total
             </div>
             <div className="text-xl font-medium tabular text-ink-0 leading-none">
-              ${Math.round(currency === 'ARS' ? (total + pfTotalUsd) * tcBlue : (total + pfTotalUsd)).toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')}
+              ${Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd)).toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')}
               <button
                 onClick={toggleCurrency}
                 className="text-xs text-ink-3 ml-1 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"

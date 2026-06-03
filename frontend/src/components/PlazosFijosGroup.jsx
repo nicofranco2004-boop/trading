@@ -28,12 +28,18 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals }) {
   }
   useEffect(() => { load() }, [reloadKey])
 
-  // Reporta el valor a hoy por moneda hacia el padre (para sumar al patrimonio).
+  // Reporta {valor, capital} por moneda hacia el padre. El padre arma el P&L
+  // coherente (valor = capital + devengado) y lo suma al patrimonio.
   useEffect(() => {
     if (!onTotals) return
     const now = todayStr()
     const t = {}
-    for (const pf of pfs) t[pf.moneda] = (t[pf.moneda] || 0) + computePf(pf, now).valorHoy
+    for (const pf of pfs) {
+      const m = pf.moneda || 'ARS'
+      if (!t[m]) t[m] = { valor: 0, capital: 0 }
+      t[m].valor += computePf(pf, now).valorHoy
+      t[m].capital += (+pf.capital || 0)
+    }
     onTotals(t)
     // onTotals es un setter estable; dependemos solo de pfs.
     // eslint-disable-next-line react-hooks/exhaustive-deps

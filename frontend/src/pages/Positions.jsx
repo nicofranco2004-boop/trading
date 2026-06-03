@@ -704,9 +704,15 @@ function PositionsDesktop() {
     return { delta, pct, badgeLabel, refLabel, lastValue: lastClose.total_value, dayDiff }
   }, [totals.value, snapshots])
 
-  // Plazos fijos → USD para sumar al titular del patrimonio. No entra en la
-  // variación diaria (los snapshots históricos no tienen PF).
-  const pfTotalUsd = (pfTotals.USD || 0) + (pfTotals.ARS || 0) / tcBlue
+  // Plazos fijos → USD, coherente: valor (capital + devengado), capital
+  // (invertido) y P&L (devengado). Suma al titular del patrimonio. No entra en
+  // la variación diaria (los snapshots históricos no tienen PF).
+  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcBlue
+  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcBlue
+  const heroValue = totals.value + pfValueUsd
+  const heroInvested = totals.invested + pfInvestedUsd
+  const heroPnl = heroValue - heroInvested
+  const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
 
   if (brokers.length === 0) {
     return (
@@ -795,26 +801,26 @@ function PositionsDesktop() {
         <StatCard
           tone="hero"
           label="Tu portfolio hoy"
-          value={displayCurrency === 'ARS' ? fmtArs((totals.value + pfTotalUsd) * tcBlue) : fmtUsd(totals.value + pfTotalUsd)}
+          value={displayCurrency === 'ARS' ? fmtArs(heroValue * tcBlue) : fmtUsd(heroValue)}
           sub={
             <span className="inline-flex items-center gap-3 flex-wrap">
               <span className="text-ink-2">P&L no realizado</span>
-              <span className={`inline-flex items-center gap-1 font-semibold ${totals.pnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {totals.pnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
+              <span className={`inline-flex items-center gap-1 font-semibold ${heroPnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                {heroPnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
                 {displayCurrency === 'ARS'
-                  ? `ARS ${ars(Math.abs(totals.pnl * tcBlue))}`
-                  : `USD ${usd(Math.abs(totals.pnl))}`}
+                  ? `ARS ${ars(Math.abs(heroPnl * tcBlue))}`
+                  : `USD ${usd(Math.abs(heroPnl))}`}
               </span>
-              <span className={`tabular ${totals.pnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
-                ({pctSigned(totals.pct)})
+              <span className={`tabular ${heroPnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
+                ({pctSigned(heroPct)})
               </span>
               <CurrencyToggle variant="compact" className="ml-auto" />
             </span>
           }
           hint={
             displayCurrency === 'ARS'
-              ? `Invertido ARS ${ars(totals.invested * tcBlue)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
-              : `Invertido USD ${usd(totals.invested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
+              ? `Invertido ARS ${ars(heroInvested * tcBlue)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
+              : `Invertido USD ${usd(heroInvested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
           }
         />
       </div>
