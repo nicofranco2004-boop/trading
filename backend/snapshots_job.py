@@ -197,6 +197,69 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
     return result
 
 
+# ─── Último precio conocido (fallback en vez de cost basis) ─────────────────
+# Cuando yfinance no devuelve precio, en vez de valuar una posición a su costo
+# (lo que inventa un salto fantasma en la variación diaria), la dejamos al
+# último precio real que vimos. Persistido en asset_last_price (key = símbolo
+# tal como se valúa: 'AAPL', 'GGAL.BA', 'BTC'). Best-effort: si la tabla no
+# existe (migration pendiente) no rompe nada.
+
+def persist_last_prices(conn, prices: dict) -> None:
+    """UPSERT de los precios reales (no-None) en asset_last_price."""
+    rows = []
+    for sym, p in (prices or {}).items():
+        try:
+            if p is not None and float(p) > 0:
+                rows.append((sym, float(p)))
+        except (TypeError, ValueError):
+            continue
+    if not rows:
+        return
+    now = datetime.utcnow().isoformat()
+    try:
+        conn.executemany(
+            """INSERT INTO asset_last_price (symbol, price, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(symbol) DO UPDATE SET
+                 price = excluded.price, updated_at = excluded.updated_at""",
+            [(s, p, now) for s, p in rows],
+        )
+    except sqlite3.OperationalError as e:
+        log.warning(f"persist_last_prices falló (migration pendiente?): {e}")
+
+
+def read_last_prices(conn, symbols: list) -> dict:
+    """Devuelve {symbol: price} para los símbolos con último precio guardado."""
+    syms = [s for s in (symbols or []) if s]
+    if not syms:
+        return {}
+    try:
+        placeholders = ",".join("?" * len(syms))
+        rows = conn.execute(
+            f"SELECT symbol, price FROM asset_last_price WHERE symbol IN ({placeholders})",
+            tuple(syms),
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+    except sqlite3.OperationalError:
+        return {}
+
+
+def apply_last_known_prices(conn, prices: dict) -> dict:
+    """(1) Persiste los precios reales (no-None) de `prices` como último conocido.
+    (2) Completa los símbolos en None con su último precio conocido guardado.
+    Muta y devuelve `prices`. Reemplaza el fallback a cost basis: sin precio hoy
+    → la posición queda al último valor real visto (no a lo que se pagó)."""
+    if not prices:
+        return prices
+    persist_last_prices(conn, {s: p for s, p in prices.items() if p is not None})
+    missing = [s for s, p in prices.items() if p is None]
+    if missing:
+        for s, p in read_last_prices(conn, missing).items():
+            if p is not None:
+                prices[s] = p
+    return prices
+
+
 # ─── Snapshot por usuario ───────────────────────────────────────────────────
 
 def take_snapshot_for_user(
@@ -269,6 +332,11 @@ def take_snapshot_for_user(
         for s, v in retry.items():
             if v is not None:
                 prices[s] = v
+
+    # 2b-bis. Último precio conocido: guarda los que conseguimos y completa los
+    # que siguen sin precio con su último valor real (no cost basis). Así una
+    # posición sin precio hoy queda "igual que ayer" en vez de saltar a su costo.
+    apply_last_known_prices(conn, prices)
 
     # 2c. INTEGRIDAD: no persistir un snapshot subvaluado. Si después del retry
     # sigue faltando precio para una porción grande del portfolio, esas

@@ -74,6 +74,7 @@ from snapshots_job import (
     compute_live_portfolio_value,
     fetch_prices_for_symbols,
     compute_broker_value_usd,
+    apply_last_known_prices,
 )
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -860,6 +861,20 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_yfinance_cache_fetched
             ON yfinance_cache(fetched_at DESC);
+
+        -- ─── asset_last_price: último precio conocido por símbolo ────────────
+        -- Cuando yfinance no devuelve precio para un símbolo (flaky, delisted,
+        -- rate limit), antes caíamos a cost basis → la posición "valía lo que
+        -- pagué", inventando un salto fantasma en la variación diaria. Ahora
+        -- usamos el ÚLTIMO precio real conocido: "sin precio hoy → la dejo
+        -- igual que la última vez que la vi". Lo escriben tanto /api/prices
+        -- (intradía) como el cron de snapshots (cierre). key = símbolo tal como
+        -- se valúa ('AAPL', 'GGAL.BA', 'BTC').
+        CREATE TABLE IF NOT EXISTS asset_last_price (
+            symbol TEXT PRIMARY KEY,
+            price REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        );
 
         -- ─── ai_user_facts: memoria persistente del coach IA ─────────────────
         -- "Hechos" textuales que el user le aclara al bot ("AL30 lo compré en
@@ -4561,6 +4576,22 @@ def _prices_cache_set(prices: dict) -> None:
             _PRICE_CACHE[sym] = (now, price)
 
 
+def _fill_last_known_prices(result: dict) -> None:
+    """Best-effort: persiste los precios reales recién obtenidos y completa los
+    símbolos en None con su ÚLTIMO precio conocido (tabla asset_last_price), en
+    vez de dejar que el frontend caiga a cost basis (lo que rompe la variación
+    diaria). Muta `result` in-place. Nunca levanta — si falla, deja todo igual."""
+    try:
+        conn = get_db()
+        try:
+            apply_last_known_prices(conn, result)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 # ─── Prev-close cache (variación diaria por posición) ───────────────────────
 # Cierre del día hábil ANTERIOR por símbolo. A diferencia del precio live,
 # cambia 1×/día (al cerrar el mercado) → TTL largo (10 min). Mismo patrón
@@ -4650,6 +4681,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
 
     if not yf_targets:
         # Solo había símbolos resolved por data912 — persistir y salir.
+        _fill_last_known_prices(result)
         _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
         return {**result, **fci_prices}
 
@@ -4693,6 +4725,10 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
         if price is None and not sym.endswith('.BA') and sym not in CRYPTO_YF:
             price = _fetch_one(f"{sym}-USD")
         result[sym] = price
+
+    # Último precio conocido: completa los que quedaron en None (yfinance/data912
+    # fallaron) con su último precio real → el frontend no cae a cost basis.
+    _fill_last_known_prices(result)
 
     # Persistir todos los uncached que acabamos de fetchear (incluyendo None
     # para los que fallaron — evita retry storm si Yahoo está down).

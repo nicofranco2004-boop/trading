@@ -436,6 +436,9 @@ class TestSnapshotCoverageGate(unittest.TestCase):
                 total_value REAL NOT NULL, total_invested REAL NOT NULL, net_deposited REAL DEFAULT 0,
                 fx_to_usd_blue REAL, UNIQUE(user_id, date)
             );
+            CREATE TABLE asset_last_price (
+                symbol TEXT PRIMARY KEY, price REAL NOT NULL, updated_at TEXT NOT NULL
+            );
             INSERT INTO users (id, email) VALUES (1, 't@x.com');
             INSERT INTO brokers (user_id, name, currency) VALUES (1, 'Schwab', 'USD');
             -- AAPL grande (9700) + XYZ chico (100). Cubrir AAPL = 98.9% del cost.
@@ -507,6 +510,37 @@ class TestSnapshotCoverageGate(unittest.TestCase):
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         self.assertTrue(r['ok'])
         self.assertEqual(self._snap_count(conn), 1)
+        conn.close()
+
+    def test_uses_last_known_price_not_cost(self):
+        """Sin precio hoy pero CON último precio conocido → valúa al último
+        precio real (no a cost basis) → sin salto fantasma + cobertura pasa."""
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        # Última vez: AAPL=200, XYZ=50 (costos: AAPL 9700/50u=194, XYZ 100/1u=100)
+        conn.execute("INSERT INTO asset_last_price VALUES ('AAPL', 200.0, '2026-06-01')")
+        conn.execute("INSERT INTO asset_last_price VALUES ('XYZ', 50.0, '2026-06-01')")
+        conn.commit()
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: None for s in syms}):  # yfinance caído hoy
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        self.assertTrue(r['ok'])  # cobertura OK porque last-known completa
+        snap = conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=1 AND date='2026-06-02'").fetchone()
+        # AAPL 200×50 + XYZ 50×1 = 10050 (NO el cost basis 9800)
+        self.assertAlmostEqual(snap['total_value'], 10050.0, places=1)
+        conn.close()
+
+    def test_persists_fresh_prices_as_last_known(self):
+        """Un fetch exitoso guarda el precio en asset_last_price para mañana."""
+        conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
+        with patch('snapshots_job.fetch_prices_for_symbols',
+                   side_effect=lambda syms, cy: {s: 175.0 for s in syms}):
+            with conn:
+                take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        row = conn.execute("SELECT price FROM asset_last_price WHERE symbol='AAPL'").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row['price'], 175.0)
         conn.close()
 
 
