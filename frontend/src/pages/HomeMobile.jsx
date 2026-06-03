@@ -30,6 +30,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { computeDailyPnl } from '../utils/evolution'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency } from '../contexts/CurrencyContext'
@@ -90,6 +91,7 @@ export default function HomeMobile() {
   }
 
   const tcBlue = dolar?.blue?.venta || 1415
+  const pf = pfUsd(usePfRollup(), tcBlue)  // plazos fijos → USD (suma al total mostrado)
 
   // Fase B: publicamos tcBlue al CurrencyContext (sin reemplazar el local;
   // el componente sigue usando `tcBlue` para sus propios memos).
@@ -200,8 +202,8 @@ export default function HomeMobile() {
             Fase A: sincronizado con Dashboard via CurrencyContext. */}
         <div className="text-5xl font-medium tabular tracking-tight text-ink-0 leading-none mb-3">
           {currency === 'ARS'
-            ? `$${fmtNumber(totals.totalValue * tcBlue)}`
-            : `$${fmtNumber(totals.totalValue)}`}
+            ? `$${fmtNumber((totals.totalValue + pf.valueUsd) * tcBlue)}`
+            : `$${fmtNumber(totals.totalValue + pf.valueUsd)}`}
           <button
             onClick={toggleCurrency}
             className="text-base text-ink-3 ml-1.5 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"

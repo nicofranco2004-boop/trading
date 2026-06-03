@@ -25,6 +25,7 @@ import CurrencyToggle from '../components/CurrencyToggle'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { computeMonthlyReturns, computeCAGR } from '../utils/insightsMetrics'
@@ -139,10 +140,11 @@ export default function Dashboard() {
   // fxToUsdBlue stampeado en el snapshot tiene prioridad sobre el
   // lookup del hook (es el más auténtico al momento del snapshot).
   const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcBlue)
+  const pf = pfUsd(usePfRollup(), tcBlue)   // plazos fijos → USD (valor + capital)
 
   const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue) }))
-  const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0)
-  const totalCostBasis = brokerTotals.reduce((s, b) => s + b.invested, 0)
+  const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0) + pf.valueUsd
+  const totalCostBasis = brokerTotals.reduce((s, b) => s + b.invested, 0) + pf.investedUsd
   const totalPnl = totalValue - totalCostBasis
   const totalPct = totalCostBasis > 0 ? totalPnl / totalCostBasis : 0
 
@@ -151,7 +153,7 @@ export default function Dashboard() {
   // Sin la baseline, el % "sobre lo aportado" se infla porque divide por un
   // monto chiquito (solo los flujos explícitos, no la plata que ya estaba).
   // Mismo criterio que usa Insights para la curva de evolución.
-  const netDeposited = useMemo(() => {
+  const netDepositedBase = useMemo(() => {
     const globals = monthly
       .filter(m => m.broker === 'global')
       .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month)
@@ -160,6 +162,13 @@ export default function Dashboard() {
     const flows = globals.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
     return baseline + flows
   }, [monthly])
+  // El capital del PF también es plata aportada → entra en el "neto depositado".
+  const netDeposited = netDepositedBase + pf.investedUsd
+  // Las comparaciones contra snapshots (que NO tienen PF) usan los totales
+  // positions-only, para que el PF no aparezca como un salto del día/mes.
+  const totalValuePositions = totalValue - pf.valueUsd
+  const netDepositedPositions = netDeposited - pf.investedUsd
+  const totalCostBasisPositions = totalCostBasis - pf.investedUsd
 
   // Realized P&L (cumulative across all months from monthly_entries global)
   const realizedPnl = monthly
@@ -233,10 +242,12 @@ export default function Dashboard() {
     const today = new Date().toISOString().slice(0, 10)
     const key = 'rendi_snapshot_date'
     if (localStorage.getItem(key) === today) return
-    api.post('/snapshots', { total_value: totalValue, total_invested: totalCostBasis, net_deposited: netDeposited })
+    // Snapshots positions-only (sin PF) → la historia/gráfico/daily se mantienen
+    // consistentes; el PF solo entra en las métricas estáticas del titular.
+    api.post('/snapshots', { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
       .then(() => localStorage.setItem(key, today))
       .catch(() => {})
-  }, [loading, lastUpdated, totalValue, totalCostBasis, netDeposited, positions, prices])
+  }, [loading, lastUpdated, totalValuePositions, totalCostBasisPositions, netDepositedPositions, positions, prices])
 
   // ── Sync pnl_unrealized for current month ───────────────────────────────────
   useEffect(() => {
@@ -288,8 +299,8 @@ export default function Dashboard() {
   // ── Portfolio evolution series (depends on range) ───────────────────────────
   const rangeDays = RANGES.find(r => r.id === range)?.days
   const evoSeries = useMemo(() => {
-    return buildPortfolioValueSeries(snapshots, rangeDays ?? null, totalValue > 0 ? totalValue : null, netDeposited)
-  }, [snapshots, rangeDays, totalValue, netDeposited])
+    return buildPortfolioValueSeries(snapshots, rangeDays ?? null, totalValuePositions > 0 ? totalValuePositions : null, netDepositedPositions)
+  }, [snapshots, rangeDays, totalValuePositions, netDepositedPositions])
 
   // Audit fix C1 (2026-05-31): cuando el toggle global está en ARS,
   // convertimos CADA punto usando su FX histórico (stamped > lookup > current).
@@ -334,15 +345,15 @@ export default function Dashboard() {
   // Guard: hasta que los precios live no llegaron, totalValue puede ser 0 y la
   // variación mostraría una pérdida falsa enorme. Esperamos a tener valor real.
   const dailyVar = useMemo(
-    () => (totalValue > 0 ? computeDailyPnl(snapshots, { liveValue: totalValue, liveNetDeposited: netDeposited }) : null),
-    [snapshots, totalValue, netDeposited],
+    () => (totalValuePositions > 0 ? computeDailyPnl(snapshots, { liveValue: totalValuePositions, liveNetDeposited: netDepositedPositions }) : null),
+    [snapshots, totalValuePositions, netDepositedPositions],
   )
   const monthlyVar = useMemo(() => {
-    if (!(totalValue > 0)) return null
+    if (!(totalValuePositions > 0)) return null
     const d = new Date()
     const monthStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
-    return computeReturnDelta(snapshots, { liveValue: totalValue, liveNetDeposited: netDeposited, sinceDate: monthStart })
-  }, [snapshots, totalValue, netDeposited])
+    return computeReturnDelta(snapshots, { liveValue: totalValuePositions, liveNetDeposited: netDepositedPositions, sinceDate: monthStart })
+  }, [snapshots, totalValuePositions, netDepositedPositions])
   // Realizado del MES en curso (flujo limpio: ventas cerradas + dividendos del mes).
   // Subdato del cuadro mensual — el único split realizado/no-realizado que aporta.
   const realizedThisMonth = useMemo(() => {
