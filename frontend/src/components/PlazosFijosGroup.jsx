@@ -98,7 +98,10 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals }) {
                   <tr key={pf.id} className="border-b border-line/40 dark:border-line/30 hover:bg-bg-2 dark:hover:bg-bg-2/20">
                     <td className="px-3 py-2">
                       <div className="font-medium text-ink-0">{pf.banco}</div>
-                      <div className="text-[11px] text-ink-3">{pf.rate_type} {pct(pf.tasa)} · {pf.plazo_dias}d · {pf.moneda}</div>
+                      <div className="text-[11px] text-ink-3">
+                        {pf.rate_type} {pct(pf.tasa)} · {pf.plazo_dias}d · {pf.moneda}
+                        {pf.modalidad === 'periodico' && pf.pago_frecuencia_meses ? ` · capitaliza c/${pf.pago_frecuencia_meses}m` : ''}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-ink-1 tabular">{money(pf.capital)}</td>
                     <td className="px-3 py-2 text-ink-2 text-[11px] leading-tight">

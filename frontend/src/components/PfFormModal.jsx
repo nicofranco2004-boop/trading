@@ -140,6 +140,7 @@ export default function PfFormModal({ onClose, onSaved }) {
   const [form, setForm] = useState({
     banco: '', logo: null, capital: '', moneda: 'ARS',
     tasa: '', rate_type: 'TNA', fecha_inicio: today(), plazo_dias: 30, renovacion_auto: false,
+    modalidad: 'vencimiento', pago_frecuencia_meses: 1,
   })
 
   useEffect(() => {
@@ -172,10 +173,14 @@ export default function PfFormModal({ onClose, onSaved }) {
     const plazo = +form.plazo_dias || 0
     if (capital <= 0 || tasaFrac <= 0 || plazo <= 0) return null
     return computePf(
-      { capital, tasa: tasaFrac, rate_type: form.rate_type, fecha_inicio: form.fecha_inicio, plazo_dias: plazo },
+      {
+        capital, tasa: tasaFrac, rate_type: form.rate_type,
+        fecha_inicio: form.fecha_inicio, plazo_dias: plazo,
+        modalidad: form.modalidad, pago_frecuencia_meses: form.pago_frecuencia_meses,
+      },
       form.fecha_inicio,
     )
-  }, [form.capital, form.tasa, form.rate_type, form.plazo_dias, form.fecha_inicio])
+  }, [form.capital, form.tasa, form.rate_type, form.plazo_dias, form.fecha_inicio, form.modalidad, form.pago_frecuencia_meses])
 
   const sign = form.moneda === 'USD' ? 'US$' : '$'
   const money = (n) => sign + Math.round(n).toLocaleString('es-AR')
@@ -193,6 +198,8 @@ export default function PfFormModal({ onClose, onSaved }) {
         banco: form.banco.trim(), capital, moneda: form.moneda, tasa,
         rate_type: form.rate_type, fecha_inicio: form.fecha_inicio,
         plazo_dias: plazo, renovacion_auto: form.renovacion_auto,
+        modalidad: form.modalidad,
+        pago_frecuencia_meses: form.modalidad === 'periodico' ? +form.pago_frecuencia_meses : null,
       })
       toast.push('Plazo fijo agregado.', { type: 'success' })
       onSaved && onSaved()
@@ -326,6 +333,33 @@ export default function PfFormModal({ onClose, onSaved }) {
                 <input type="checkbox" checked={form.renovacion_auto} onChange={e => set('renovacion_auto', e.target.checked)} />
                 Renovación automática
               </label>
+
+              {/* Modalidad de interés */}
+              <div>
+                <label className="block text-xs text-ink-3 mb-1">Modalidad de interés</label>
+                <div className="flex rounded-md overflow-hidden border border-line-2">
+                  {[['vencimiento', 'Al vencimiento'], ['periodico', 'Capitaliza periódico']].map(([m, lbl]) => (
+                    <button key={m} type="button" onClick={() => set('modalidad', m)}
+                      className={`flex-1 py-2 text-xs transition ${form.modalidad === m ? 'bg-rendi-accent text-white' : 'bg-bg-2 text-ink-2 hover:text-ink-0'}`}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+                {form.modalidad === 'periodico' && (
+                  <div className="mt-2">
+                    <label className="block text-[11px] text-ink-3 mb-1">Cada cuánto capitaliza</label>
+                    <div className="flex rounded-md overflow-hidden border border-line-2">
+                      {[[1, 'Mensual'], [3, 'Trimestral'], [6, 'Semestral']].map(([m, lbl]) => (
+                        <button key={m} type="button" onClick={() => set('pago_frecuencia_meses', m)}
+                          className={`flex-1 py-1.5 text-[11px] transition ${+form.pago_frecuencia_meses === m ? 'bg-rendi-accent/80 text-white' : 'bg-bg-2 text-ink-3 hover:text-ink-1'}`}>
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-ink-3 mt-1">El interés se reinvierte cada período (compone).</p>
+                  </div>
+                )}
+              </div>
 
               {preview && (
                 <div className="rounded-md border border-rendi-accent/30 bg-rendi-accent/[0.05] p-3 text-sm">

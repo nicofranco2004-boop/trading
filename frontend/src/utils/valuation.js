@@ -197,10 +197,8 @@ export function computePf(pf, asOf) {
   const r = +pf.tasa || 0
   const P = +pf.plazo_dias || 0
   const isTea = String(pf.rate_type || 'TNA').toUpperCase() === 'TEA'
-
-  const tasaPeriodo = _pfPeriodRate(r, P, isTea)
-  const interes = C * tasaPeriodo
-  const valorVencimiento = C + interes
+  const periodic = String(pf.modalidad || 'vencimiento') === 'periodico'
+  const f = +pf.pago_frecuencia_meses || 0   // meses entre capitalizaciones
 
   // Días transcurridos, clampeados a [0, P].
   const dRaw = Math.floor((_pfDate(asOf) - _pfDate(pf.fecha_inicio)) / 86400000)
@@ -208,18 +206,30 @@ export function computePf(pf, asOf) {
   const diasRestantes = Math.max(0, P - diasTranscurridos)
   const vencido = P > 0 && diasTranscurridos >= P
 
-  const devengadoHoy = C * _pfPeriodRate(r, diasTranscurridos, isTea)
-  const valorHoy = C + devengadoHoy
-
-  // Equivalencias TNA↔TEA para ESTE plazo (no anuales genéricas).
-  let tnaEquiv = r, teaEquiv = r
-  if (P > 0) {
-    if (isTea) {
-      tnaEquiv = (tasaPeriodo * 365) / P
-    } else {
-      teaEquiv = Math.pow(1 + tasaPeriodo, 365 / P) - 1
+  let valorVencimiento, valorHoy, tnaEquiv = r, teaEquiv = r
+  if (periodic && f > 0) {
+    // Capitalización periódica: el interés se reinvierte cada `f` meses → compone.
+    const periodDays = (f / 12) * 365
+    const iPer = isTea ? Math.pow(1 + r, f / 12) - 1 : r * (f / 12)
+    const factor = (d) => Math.pow(1 + iPer, d / periodDays)
+    valorVencimiento = C * factor(P)
+    valorHoy = C * factor(diasTranscurridos)
+    tnaEquiv = iPer * (12 / f)                    // nominal anual
+    teaEquiv = Math.pow(1 + iPer, 12 / f) - 1     // efectiva anual (compuesta)
+  } else {
+    // Al vencimiento: interés simple (TNA) o compuesto al plazo (TEA).
+    valorVencimiento = C * (1 + _pfPeriodRate(r, P, isTea))
+    valorHoy = C * (1 + _pfPeriodRate(r, diasTranscurridos, isTea))
+    if (P > 0) {
+      const tp = C > 0 ? valorVencimiento / C - 1 : 0
+      if (isTea) tnaEquiv = (tp * 365) / P
+      else teaEquiv = Math.pow(1 + tp, 365 / P) - 1
     }
   }
+
+  const interes = valorVencimiento - C
+  const devengadoHoy = valorHoy - C
+  const tasaPeriodo = C > 0 ? valorVencimiento / C - 1 : 0
 
   return {
     tasaPeriodo, interes, valorVencimiento,

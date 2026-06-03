@@ -726,6 +726,7 @@ def init_db():
             fecha_vencimiento TEXT NOT NULL,
             renovacion_auto INTEGER NOT NULL DEFAULT 0,
             modalidad TEXT NOT NULL DEFAULT 'vencimiento',
+            pago_frecuencia_meses INTEGER,
             notes TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             closed_at TEXT
@@ -738,6 +739,9 @@ def init_db():
     _pf_cols = _table_cols(conn, 'plazos_fijos')
     if _pf_cols and 'modalidad' not in _pf_cols:
         conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN modalidad TEXT NOT NULL DEFAULT 'vencimiento';")
+        conn.commit()
+    if _pf_cols and 'pago_frecuencia_meses' not in _pf_cols:
+        conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN pago_frecuencia_meses INTEGER;")
         conn.commit()
 
     # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────
@@ -4945,6 +4949,7 @@ class PlazoFijoIn(BaseModel):
     plazo_dias: int = Field(..., gt=0, le=3650)
     renovacion_auto: bool = False
     modalidad: str = Field('vencimiento')   # 'vencimiento' | 'periodico'
+    pago_frecuencia_meses: Optional[int] = Field(None, ge=1, le=12)  # solo si periodico
     notes: Optional[str] = Field(None, max_length=MAX_NOTES)
 
     @field_validator('moneda')
@@ -5013,10 +5018,12 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
     cur = conn.execute(
         """INSERT INTO plazos_fijos
                (user_id, banco, capital, moneda, tasa, rate_type,
-                fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, modalidad, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, modalidad,
+                pago_frecuencia_meses, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (uid, p.banco, p.capital, p.moneda, p.tasa, p.rate_type,
-         p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad, p.notes),
+         p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
+         (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes),
     )
     conn.commit()
     pid = cur.lastrowid
@@ -5036,10 +5043,11 @@ def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_current_u
     conn.execute(
         """UPDATE plazos_fijos SET banco=?, capital=?, moneda=?, tasa=?, rate_type=?,
                fecha_inicio=?, plazo_dias=?, fecha_vencimiento=?, renovacion_auto=?,
-               modalidad=?, notes=?
+               modalidad=?, pago_frecuencia_meses=?, notes=?
            WHERE id=? AND user_id=?""",
         (p.banco, p.capital, p.moneda, p.tasa, p.rate_type, p.fecha_inicio,
-         p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad, p.notes, pid, uid),
+         p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
+         (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes, pid, uid),
     )
     conn.commit()
     conn.close()

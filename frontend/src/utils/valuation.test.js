@@ -394,4 +394,15 @@ describe('computePf — valuación de plazo fijo (al vencimiento)', () => {
     expect(r.devengadoHoy).toBe(0)
     expect(r.valorHoy).toBe(1_000_000)
   })
+
+  it('capitalización periódica mensual: TNA 30% a 365d → TEA ≈ 34,49%', () => {
+    const pf = { capital: 1_000_000, tasa: 0.30, rate_type: 'TNA', fecha_inicio: '2026-06-02', plazo_dias: 365, modalidad: 'periodico', pago_frecuencia_meses: 1 }
+    const r = computePf(pf, '2027-06-02')   // a 365 días
+    expect(r.tnaEquiv).toBeCloseTo(0.30, 3)            // nominal sigue 30%
+    expect(r.teaEquiv).toBeCloseTo(0.3449, 3)          // efectiva compuesta mensual
+    expect(r.valorVencimiento).toBeCloseTo(1_000_000 * Math.pow(1.025, 12), 0)
+    // compuesto rinde más que simple "al vencimiento"
+    const simple = computePf({ ...pf, modalidad: 'vencimiento' }, '2027-06-02')
+    expect(r.interes).toBeGreaterThan(simple.interes)
+  })
 })
