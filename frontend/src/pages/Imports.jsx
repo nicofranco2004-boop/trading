@@ -54,6 +54,7 @@ export default function Imports() {
         ? `/imports/${batch.id}/revert?nuclear=1`
         : `/imports/${batch.id}/revert`
       await api.post(url, {})
+      window.dispatchEvent(new Event('rendi:portfolio-changed'))
       setInfo(`Importación del ${fmtDate(batch.created_at)} revertida correctamente.`)
       setConfirmRevert(null)
       await load()
@@ -79,6 +80,7 @@ export default function Imports() {
     setInfo(null)
     try {
       const data = await api.post(`/imports/${batch.id}/redo`, {})
+      window.dispatchEvent(new Event('rendi:portfolio-changed'))
       setRedoPreview({
         preview: data.preview,
         original_batch_id: data.original_batch_id,
@@ -100,6 +102,7 @@ export default function Imports() {
     setInfo(null)
     try {
       const data = await api.post('/imports/recalc-pnl', {})
+      window.dispatchEvent(new Event('rendi:portfolio-changed'))
       setInfo(`Aggregates mensuales recalculados desde las operaciones e imports confirmados (${data.rows_updated} entradas actualizadas).`)
     } catch (ex) {
       setError(ex.message || 'No pudimos recalcular los aggregates.')
@@ -116,6 +119,7 @@ export default function Imports() {
     setWiping(true); setError(null); setInfo(null)
     try {
       const data = await api.post(`/admin/wipe-broker-data?broker=${encodeURIComponent(name)}`, {})
+      window.dispatchEvent(new Event('rendi:portfolio-changed'))
       setInfo(`Broker "${name}" limpiado: ${data.operations_deleted} operations, ${data.positions_deleted} positions, ${data.monthly_entries_deleted} monthly_entries borrados. ${data.batches_marked_reverted} batches marcados revertidos.`)
       await load()
     } catch (ex) {

@@ -47,6 +47,7 @@ def build_suggestions(
     user_brokers: Dict[str, dict],
     existing_positions: Dict[Tuple[str, str], float],
     all_normalized: Optional[List[NormalizedTx]] = None,
+    final_balances: Optional[Dict[Tuple[str, str], float]] = None,  # (broker,cur)→saldo final del CSV
 ) -> Optional[Dict[str, Any]]:
     """Devuelve una sugerencia de seed si el CSV parece parcial, o None.
 
@@ -122,10 +123,18 @@ def build_suggestions(
             "broker_currency": (user_brokers.get(broker) or {}).get("currency", ""),
             "assets": [],
             "cash_overdraft": {},
+            # Saldo que da el CSV por sí solo (puede ser negativo). El front lo usa
+            # para back-calcular el depósito inicial pidiendo el saldo de HOY:
+            #   depósito_inicial = saldo_actual_del_usuario − final_balance
+            "final_balance": {},
             "trigger_count": 0,
         })
         for cur, amount in cur_map.items():
             info["cash_overdraft"][cur] = round(amount, 2)
+            if final_balances is not None:
+                fb = final_balances.get((broker, cur))
+                if fb is not None:
+                    info["final_balance"][cur] = round(fb, 2)
             info["trigger_count"] += 1
 
     return {

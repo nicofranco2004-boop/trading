@@ -72,6 +72,22 @@ export default function Dashboard() {
     return () => clearInterval(id)
   }, [])
 
+  // Re-fetch cuando el portfolio cambió en OTRA vista (revertir import,
+  // recalcular aggregates, wipe broker) o cuando el user vuelve a la ventana.
+  // Sin esto, el dashboard mostraba data vieja cacheada en el mount: tras un
+  // revert la DB ya estaba en cero pero los números (capital, retiradas)
+  // seguían inflados hasta un reload manual.
+  useEffect(() => {
+    function refresh() { loadAll() }
+    window.addEventListener('rendi:portfolio-changed', refresh)
+    window.addEventListener('focus', refresh)
+    return () => {
+      window.removeEventListener('rendi:portfolio-changed', refresh)
+      window.removeEventListener('focus', refresh)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function loadAll() {
     try {
       const [pos, mon, cfg, bkrs, dol, snaps] = await Promise.all([

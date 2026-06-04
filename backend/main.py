@@ -270,6 +270,96 @@ def _table_cols(conn, table: str) -> set:
     return {r[1] for r in rows}
 
 
+def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
+                             month_str: str, tc_blue: float):
+    """(imp_deposits_usd, imp_withdrawals_usd) — suma de DEPOSIT/WITHDRAW de batches
+    CONFIRMED para (uid, broker, período). broker='global' = cross-broker. Prefiere
+    gross_amount_usd stamped al write-time; fallback a conversión ARS con tc_blue."""
+    tx_broker_filter = "" if broker == "global" else " AND n.broker = ?"
+    tx_broker_args = () if broker == "global" else (broker,)
+    try:
+        flow_rows = conn.execute(
+            f"""SELECT n.operation_type AS op,
+                       COALESCE(SUM(
+                         CASE WHEN n.gross_amount_usd IS NOT NULL THEN n.gross_amount_usd
+                              WHEN UPPER(n.currency)='ARS' AND ? > 0 THEN n.gross_amount / ?
+                              ELSE n.gross_amount END
+                       ), 0) AS s_usd
+                FROM import_normalized_tx n
+                JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
+                  AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?
+                  {tx_broker_filter}
+                GROUP BY n.operation_type""",
+            (tc_blue, tc_blue, uid, year_str, month_str, *tx_broker_args),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0.0, 0.0          # tablas de import aún no existen (DB fresca)
+    dep = wit = 0.0
+    for f in flow_rows:
+        if f["op"] == "DEPOSIT":
+            dep += float(f["s_usd"] or 0)
+        else:
+            wit += float(f["s_usd"] or 0)
+    return dep, wit
+
+
+def _backfill_manual_flows(conn) -> None:
+    """One-time (migración): separa el residual manual de monthly_entries hacia las
+    columnas manual_*. manual = max(0, total − imports_confirmados). Es exactamente
+    lo que _recalc preservaba como 'residual manual' → sin regresión para manuales."""
+    rows = conn.execute(
+        "SELECT user_id, broker, year, month, deposits, withdrawals FROM monthly_entries",
+    ).fetchall()
+    tcb_cache: dict = {}
+    def _tcb(uid):
+        if uid not in tcb_cache:
+            row = conn.execute(
+                "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
+            ).fetchone()
+            try:
+                v = float(row["value"]) if row else 1415.0
+                tcb_cache[uid] = v if v > 0 else 1415.0
+            except (TypeError, ValueError):
+                tcb_cache[uid] = 1415.0
+        return tcb_cache[uid]
+    for r in rows:
+        uid, broker = r["user_id"], r["broker"]
+        ys, ms = f"{int(r['year']):04d}", f"{int(r['month']):02d}"
+        imp_dep, imp_wit = _import_flows_for_period(conn, uid, broker, ys, ms, _tcb(uid))
+        man_dep = max(0.0, float(r["deposits"] or 0) - imp_dep)
+        man_wit = max(0.0, float(r["withdrawals"] or 0) - imp_wit)
+        conn.execute(
+            """UPDATE monthly_entries SET manual_deposits=?, manual_withdrawals=?
+               WHERE user_id=? AND broker=? AND year=? AND month=?""",
+            (round(man_dep, 4), round(man_wit, 4), uid, broker, r["year"], r["month"]),
+        )
+
+
+def _derive_manual_flows(conn, uid: int, broker: str, year, month,
+                         deposits, withdrawals):
+    """Para el form /mensual (POST/PUT /api/monthly): la porción MANUAL de
+    deposits/withdrawals = lo que excede los imports confirmados del período
+    (misma fórmula que el backfill). Mantiene el form consistente con el recalc
+    autoritativo (deposits = imports + manual). Sin esto, el recalc borraba los
+    depósitos cargados a mano (o resucitaba los borrados)."""
+    row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
+    ).fetchone()
+    try:
+        tcb = float(row["value"]) if row else 1415.0
+        if tcb <= 0:
+            tcb = 1415.0
+    except (TypeError, ValueError):
+        tcb = 1415.0
+    imp_dep, imp_wit = _import_flows_for_period(
+        conn, uid, broker, f"{int(year):04d}", f"{int(month):02d}", tcb,
+    )
+    return (max(0.0, float(deposits or 0) - imp_dep),
+            max(0.0, float(withdrawals or 0) - imp_wit))
+
+
 def init_db():
     conn = get_db()
 
@@ -436,6 +526,24 @@ def init_db():
             DROP TABLE monthly_entries_old;
         """)
     conn.commit()
+
+    # monthly_entries: columnas manual_deposits/manual_withdrawals — rastrean SOLO
+    # los cash flows MANUALES (botón Cash + reconcile-cash), separados de los de
+    # import. Antes deposits/withdrawals mezclaba ambos y _recalc los separaba con
+    # una heurística (existing − imports_confirmados) que dejaba HUÉRFANOS cuando
+    # un import revertido no se restaba exacto (drift de redo cycles) → capital
+    # inflado y "ganancias retiradas" fantasma. Con la columna manual, _recalc es
+    # autoritativo: deposits = imports_confirmados + manual (sobrescribe huérfanos).
+    # Backfill one-time = la misma heurística vieja → sin regresión para manuales.
+    cols = _table_cols(conn, 'monthly_entries')
+    if cols and 'manual_deposits' not in cols:
+        conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_deposits REAL DEFAULT 0")
+        conn.execute("ALTER TABLE monthly_entries ADD COLUMN manual_withdrawals REAL DEFAULT 0")
+        try:
+            _backfill_manual_flows(conn)
+        except Exception as _ex:
+            logging.getLogger(__name__).warning("backfill manual_flows falló (no fatal): %s", _ex)
+        conn.commit()
 
     # operations
     cols = _table_cols(conn, 'operations')
@@ -5408,56 +5516,29 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         ).fetchone()
         new_pnl = round(float(pnl_row["s"] or 0), 4)
 
-        # 2) deposits + withdrawals desde imports (solo batches confirmed)
-        tx_broker_filter = "" if broker == "global" else " AND n.broker = ?"
-        tx_broker_args = () if broker == "global" else (broker,)
-        # Fase 4 (2026-05-30): preferimos gross_amount_usd stamped al write
-        # time. Rows legacy (NULL) caen a la conversión runtime con tc_blue
-        # actual — mismo comportamiento que antes.
-        flow_row = conn.execute(
-            f"""SELECT n.operation_type AS op,
-                       COALESCE(SUM(
-                         CASE WHEN n.gross_amount_usd IS NOT NULL
-                              THEN n.gross_amount_usd
-                              WHEN UPPER(n.currency)='ARS' AND ? > 0
-                              THEN n.gross_amount / ?
-                              ELSE n.gross_amount END
-                       ), 0) AS s_usd
-                FROM import_normalized_tx n
-                JOIN import_batches b ON b.id = n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed'
-                  AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
-                  AND strftime('%Y', n.date)=?
-                  AND strftime('%m', n.date)=?
-                  {tx_broker_filter}
-                GROUP BY n.operation_type""",
-            (tc_blue, tc_blue, uid, year_str, month_str, *tx_broker_args),
-        ).fetchall()
-        imp_deposits = 0.0
-        imp_withdrawals = 0.0
-        for f in flow_row:
-            amt_usd = float(f["s_usd"] or 0)
-            if f["op"] == "DEPOSIT":
-                imp_deposits += amt_usd
-            else:
-                imp_withdrawals += amt_usd
+        # 2) deposits + withdrawals desde imports CONFIRMED (helper compartido
+        #    con el backfill — prefiere gross_amount_usd stamped).
+        imp_deposits, imp_withdrawals = _import_flows_for_period(
+            conn, uid, broker, year_str, month_str, tc_blue,
+        )
 
-        # 3) Preservar residual MANUAL. Lo que está en monthly_entries por
-        #    encima de la suma de imports es manual (form /mensual + cash_flow
-        #    + reconcile-cash) y NO debe destruirse.
+        # 3) Cash flows MANUALES: ahora viven en columnas propias (manual_*),
+        #    escritas SOLO por el botón Cash + reconcile-cash. Ya NO inferimos el
+        #    residual con la heurística `existing − imports` (que preservaba para
+        #    siempre los huérfanos de imports revertidos mal restados). Esto hace
+        #    el recalc AUTORITATIVO: deposits = imports_confirmados + manual, y
+        #    sobrescribe cualquier drift huérfano que hubiera quedado en deposits.
         existing = conn.execute(
-            "SELECT deposits, withdrawals FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
+            "SELECT manual_deposits, manual_withdrawals FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
             (uid, broker, y, m),
         ).fetchone()
-        existing_dep = float(existing["deposits"] or 0) if existing else 0.0
-        existing_wit = float(existing["withdrawals"] or 0) if existing else 0.0
-        # Residual manual = max(0, existing - imports). Si el persister es
-        # correcto, existing >= imports siempre. El clamp a 0 protege contra
-        # drift que daría residual negativo.
-        manual_dep_residual = max(0.0, existing_dep - imp_deposits)
-        manual_wit_residual = max(0.0, existing_wit - imp_withdrawals)
-        new_deposits = round(imp_deposits + manual_dep_residual, 4)
-        new_withdrawals = round(imp_withdrawals + manual_wit_residual, 4)
+        # Clamp defensivo a ≥0 (alineado con el backfill): manual_* nunca debería
+        # ser negativo, pero si un fix futuro introdujera un decremento que cruce
+        # 0, esto evita que deposits se vuelva negativo.
+        manual_dep = max(0.0, float(existing["manual_deposits"] or 0)) if existing else 0.0
+        manual_wit = max(0.0, float(existing["manual_withdrawals"] or 0)) if existing else 0.0
+        new_deposits = round(imp_deposits + manual_dep, 4)
+        new_withdrawals = round(imp_withdrawals + manual_wit, 4)
 
         # Reseteamos pnl_unrealized: live snapshot que se recalcula desde
         # positions via /sync-unrealized. Si quedó stale de cycles previos
@@ -5701,9 +5782,14 @@ def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: 
 
 
 def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
-                         direction: str, amount: float) -> None:
+                         direction: str, amount: float, is_manual: bool = False) -> None:
     """Suma amount a deposits (o withdrawals) del mes actual del broker.
     Ajusta capital_final en la misma dirección.
+
+    is_manual=True (botón Cash / reconcile-cash): además acumula en manual_* —
+    la columna que _recalc usa como fuente autoritativa de los flujos manuales.
+    Los flujos de import (persist/revert) van con is_manual=False y NO tocan
+    manual_*, para que el recalc pueda sobrescribir deposits sin perder lo manual.
 
     `amount` puede ser NEGATIVO — se usa para revertir cash flows previos.
     Cuando se revierte una transacción importada (ej: revert de un batch
@@ -5722,18 +5808,24 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
 
     if row:
         if direction == 'deposit':
+            extra = ", manual_deposits = COALESCE(manual_deposits,0) + ?" if is_manual else ""
+            args = (amount, amount, amount, uid, broker, year, month) if is_manual \
+                else (amount, amount, uid, broker, year, month)
             conn.execute(
-                """UPDATE monthly_entries
-                   SET deposits = deposits + ?, capital_final = capital_final + ?
+                f"""UPDATE monthly_entries
+                   SET deposits = deposits + ?, capital_final = capital_final + ?{extra}
                    WHERE user_id=? AND broker=? AND year=? AND month=?""",
-                (amount, amount, uid, broker, year, month),
+                args,
             )
         else:
+            extra = ", manual_withdrawals = COALESCE(manual_withdrawals,0) + ?" if is_manual else ""
+            args = (amount, amount, amount, uid, broker, year, month) if is_manual \
+                else (amount, amount, uid, broker, year, month)
             conn.execute(
-                """UPDATE monthly_entries
-                   SET withdrawals = withdrawals + ?, capital_final = capital_final - ?
+                f"""UPDATE monthly_entries
+                   SET withdrawals = withdrawals + ?, capital_final = capital_final - ?{extra}
                    WHERE user_id=? AND broker=? AND year=? AND month=?""",
-                (amount, amount, uid, broker, year, month),
+                args,
             )
         return
 
@@ -5758,13 +5850,17 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
     cap_inicio = float(prev['capital_final']) if prev else 0.0
     deposits = amount if direction == 'deposit' else 0.0
     withdrawals = 0.0 if direction == 'deposit' else amount
+    man_dep = amount if (is_manual and direction == 'deposit') else 0.0
+    man_wit = amount if (is_manual and direction == 'withdraw') else 0.0
     cap_final = cap_inicio + (amount if direction == 'deposit' else -amount)
     conn.execute(
         """INSERT INTO monthly_entries
            (user_id, year, month, broker, deposits, withdrawals,
+            manual_deposits, manual_withdrawals,
             pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-           VALUES (?,?,?,?,?,?,0,0,?,?)""",
-        (uid, year, month, broker, deposits, withdrawals, cap_inicio, max(0.0, cap_final)),
+           VALUES (?,?,?,?,?,?,?,?,0,0,?,?)""",
+        (uid, year, month, broker, deposits, withdrawals,
+         man_dep, man_wit, cap_inicio, max(0.0, cap_final)),
     )
 
 
@@ -5856,9 +5952,9 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_cu
             amount_usd = magnitude / data.tc_blue if currency == 'ARS' else magnitude
 
             _update_monthly_flow(conn, uid, data.broker_name, target_year, target_month,
-                                 direction, amount_usd)
+                                 direction, amount_usd, is_manual=True)
             _update_monthly_flow(conn, uid, 'global', target_year, target_month,
-                                 direction, amount_usd)
+                                 direction, amount_usd, is_manual=True)
             _repair_monthly_chain(conn, uid, data.broker_name)
             _repair_monthly_chain(conn, uid, 'global')
 
@@ -5934,9 +6030,9 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_current_user)):
             now = datetime.utcnow()
             amount_usd = data.amount / data.tc_blue if currency == 'ARS' else data.amount
             _update_monthly_flow(conn, uid, data.broker_name, now.year, now.month,
-                                 data.direction, amount_usd)
+                                 data.direction, amount_usd, is_manual=True)
             _update_monthly_flow(conn, uid, 'global', now.year, now.month,
-                                 data.direction, amount_usd)
+                                 data.direction, amount_usd, is_manual=True)
             # Phase 8 — repair chain for both touched brokers.
             _repair_monthly_chain(conn, uid, data.broker_name)
             _repair_monthly_chain(conn, uid, 'global')
@@ -7101,12 +7197,15 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_current_user)):
             raise HTTPException(400, f"Broker '{e.broker}' no existe. Agregalo en Config primero.")
     try:
         with conn:  # tx: insert + repair atómico
+            man_dep, man_wit = _derive_manual_flows(
+                conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
             cur = conn.execute(
                 """INSERT INTO monthly_entries (user_id, year, month, broker, deposits, withdrawals,
+                   manual_deposits, manual_withdrawals,
                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (uid, e.year, e.month, e.broker, e.deposits, e.withdrawals,
-                 e.pnl_realized, e.pnl_unrealized, e.capital_inicio, e.capital_final),
+                 man_dep, man_wit, e.pnl_realized, e.pnl_unrealized, e.capital_inicio, e.capital_final),
             )
             new_id = cur.lastrowid
             _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
@@ -7123,10 +7222,13 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_current_user)):
 def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_current_user)):
     conn = get_db()
     with conn:  # tx: update + repair atómico
+        man_dep, man_wit = _derive_manual_flows(
+            conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
         conn.execute(
-            """UPDATE monthly_entries SET deposits=?, withdrawals=?, pnl_realized=?,
+            """UPDATE monthly_entries SET deposits=?, withdrawals=?,
+               manual_deposits=?, manual_withdrawals=?, pnl_realized=?,
                pnl_unrealized=?, capital_inicio=?, capital_final=? WHERE id=? AND user_id=?""",
-            (e.deposits, e.withdrawals, e.pnl_realized, e.pnl_unrealized,
+            (e.deposits, e.withdrawals, man_dep, man_wit, e.pnl_realized, e.pnl_unrealized,
              e.capital_inicio, e.capital_final, eid, uid),
         )
         _repair_monthly_chain(conn, uid, e.broker)  # Phase 8

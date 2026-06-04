@@ -1207,21 +1207,28 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                 (l["operation_id"], uid),
             )
 
-    # Repair chain
-    for b in brokers_touched:
-        helpers._repair_monthly_chain(conn, uid, b)
-    helpers._repair_monthly_chain(conn, uid, "global")
-
-    # Self-heal: recalcular pnl_realized desde operations. Sin esto, cycles
-    # de import/revert con bugs cross-currency dejaban drift acumulado en
-    # monthly_entries (operations se borraban correctamente, pero el resto
-    # del pnl_realized inflado quedaba como huérfano).
-    recalc_fn = getattr(helpers, "_recalc_pnl_realized_from_ops", None)
-    if recalc_fn:
-        recalc_fn(conn, uid)
-
+    # Marcar el batch como 'reverted' ANTES del repair/recalc. CRÍTICO: el
+    # self-heal `_recalc_pnl_realized_from_ops` reconstruye, de forma
+    # autoritativa, deposits = imports_CONFIRMED + manual_*. Si el batch
+    # siguiera 'confirmed' acá, el recalc volvería a sumar SUS deposits (que el
+    # loop de arriba ya restó vía _update_monthly_flow) → deposits huérfanos
+    # inflados, capital aportado inflado y "ganancias retiradas" fantasma. Este
+    # ordenamiento (status primero) es el root-cause-fix del bug reportado.
     conn.execute(
         "UPDATE import_batches SET status='reverted', reverted_at=datetime('now') WHERE id=? AND user_id=?",
         (batch_id, uid),
     )
+
+    # Repair chain (ya con el batch fuera de los flows confirmados)
+    for b in brokers_touched:
+        helpers._repair_monthly_chain(conn, uid, b)
+    helpers._repair_monthly_chain(conn, uid, "global")
+
+    # Self-heal: recalcular desde fuentes autoritativas (operations + imports
+    # confirmados + manual_*). El batch ya está 'reverted' → sus flows quedan
+    # excluidos y los deposits que el loop restó NO se re-inflan.
+    recalc_fn = getattr(helpers, "_recalc_pnl_realized_from_ops", None)
+    if recalc_fn:
+        recalc_fn(conn, uid)
+
     return {"reverted": True, "batch_id": batch_id}

@@ -593,6 +593,16 @@ def run_preview(
         for ridx in err_insufficient_indices
     ]
     cash_warnings_obj = sim.warnings if valid_txs else []
+    # final_balance para el back-cálculo del seed (front: deposit = saldo_hoy − F).
+    # Tiene que ser el saldo que el CSV produce ARRANCANDO DE CERO, NO el que
+    # incluye el cash que el user ya tenía en la DB (starting_cash) — el depósito
+    # sintético del seed es justamente lo que crea ese cash pre-CSV. Standalone =
+    # sim.final − starting_cash = Σ(deltas del CSV). Sin esto, en re-imports /
+    # "Editar y rehacer" (broker con cash previo) el back-cálculo daba mal.
+    standalone_final = (
+        {k: float(v) - float(starting_cash.get(k, 0.0)) for k, v in sim.final_balances.items()}
+        if valid_txs else {}
+    )
     seed_suggestions = _seed.build_suggestions(
         valid_txs=valid_txs,
         val_errors=shim_errors,
@@ -600,6 +610,7 @@ def run_preview(
         user_brokers=user_brokers,
         existing_positions=existing_pos,
         all_normalized=normalized,
+        final_balances=standalone_final,
     )
     if seed_suggestions:
         seed_suggestions = _seed.enrich_with_sell_assets(
@@ -607,6 +618,15 @@ def run_preview(
             all_normalized=normalized,
             err_row_indices=err_insufficient_indices,
         )
+        # Asegurar final_balance para TODO broker del seed — incluidos los
+        # sell-only que enrich agrega SIN cash_overdraft. Sin esto el front
+        # recibía F=undefined y back-calculaba deposit=saldo_hoy, ignorando los
+        # deltas de cash del CSV de ese broker (p.ej. el proceeds de la venta).
+        for b in seed_suggestions.get("brokers", []):
+            fb = b.setdefault("final_balance", {})
+            for (br, cur), val in standalone_final.items():
+                if br == b.get("broker") and cur not in fb:
+                    fb[cur] = round(float(val), 2)
         preview_payload["seed_suggestions"] = seed_suggestions
 
     # Routing summary: por cada broker ARS con filas USD, cuántas van al padre

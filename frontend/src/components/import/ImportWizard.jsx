@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw } from 'lucide-react'
+import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw, Info } from 'lucide-react'
 import InfoTooltip from '../InfoTooltip'
 import BrokerInstructions from './BrokerInstructions'
 import { api } from '../../utils/api'
@@ -437,6 +437,10 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
       broker: b.broker,
       broker_currency: b.broker_currency,
       cash_overdraft: b.cash_overdraft || {},
+      // Saldo que da el CSV por moneda (puede ser negativo). El campo `cash` ahora
+      // guarda el SALDO ACTUAL que tipea el user; el depósito inicial se back-calcula
+      // en buildSeedPayload como (saldo_actual − final_balance).
+      final_balance: b.final_balance || {},
       cash: Object.fromEntries(
         Object.keys(b.cash_overdraft || {}).map(c => [c, ''])
       ),
@@ -459,10 +463,17 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     const brokers = (seedState.brokers || [])
       .map(b => ({
         broker: b.broker,
+        // El user tipea su SALDO ACTUAL; el depósito inicial que necesita el
+        // backend = saldo_actual − saldo_que_da_el_CSV (final_balance, puede ser
+        // negativo). Solo mandamos si el depósito da > 0.
         cash: Object.fromEntries(
           Object.entries(b.cash || {})
-            .filter(([_, v]) => v !== '' && Number(v) > 0)
-            .map(([k, v]) => [k, Number(v)])
+            .filter(([_, v]) => v !== '')
+            .map(([cur, v]) => {
+              const F = Number(b.final_balance?.[cur] || 0)
+              return [cur, Number(v) - F]
+            })
+            .filter(([_, deposit]) => deposit > 0)
         ),
         assets: (b.assets || [])
           .filter(a => a.symbol && Number(a.qty) > 0 && a.cost_basis_unit !== '')
@@ -703,37 +714,61 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               const toImport = Math.max(0, valid - skipped)
               const totalSkip = invalid + skipped
               const hasSeedSug = !!preview?.seed_suggestions?.needed
-              const label = hasSeedSug
-                ? 'Confirmar sin estado inicial'
-                : totalSkip > 0
-                  ? `Importar ${toImport} filas (omitir ${totalSkip})`
-                  : 'Confirmar e importar'
+              // Si falta el saldo inicial, NO dejamos confirmar acá: el único
+              // camino hacia adelante es ir a resolverlo (paso siguiente). Así
+              // nadie importa con la caja en negativo sin querer.
+              if (hasSeedSug) {
+                return (
+                  <button
+                    onClick={goToSeedStep}
+                    className="px-4 py-2 text-sm rounded-md font-semibold transition bg-rendi-accent hover:bg-rendi-accent/90 text-white flex items-center gap-2"
+                  >
+                    Confirmar mi saldo →
+                  </button>
+                )
+              }
+              const label = totalSkip > 0
+                ? `Importar ${toImport} filas (omitir ${totalSkip})`
+                : 'Confirmar e importar'
               return (
                 <button
                   onClick={() => confirm({ withSeed: false })}
                   disabled={busy || toImport === 0}
-                  className={`px-4 py-2 text-sm rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 ${
-                    hasSeedSug
-                      ? 'border border-line-2 text-ink-1 hover:bg-bg-2 dark:hover:bg-bg-2'
-                      : 'bg-rendi-accent hover:bg-rendi-accent/90 text-white'
-                  }`}
-                  title={hasSeedSug ? 'Importar el CSV sin agregar el estado inicial sugerido' : ''}
+                  className="px-4 py-2 text-sm rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 bg-rendi-accent hover:bg-rendi-accent/90 text-white"
                 >
                   {busy && <Loader2 size={14} className="animate-spin" />}
                   {label}
                 </button>
               )
             })()}
-            {step === STEP_SEED && (
-              <button
-                onClick={() => confirm({ withSeed: true })}
-                disabled={busy}
-                className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                {busy && <Loader2 size={14} className="animate-spin" />}
-                Confirmar con estado inicial
-              </button>
-            )}
+            {step === STEP_SEED && (() => {
+              // No dejamos cerrar hasta que cada cuenta con saldo negativo tenga
+              // su monto confirmado (con el tick "es el mismo monto" o tipeando
+              // el real). El cash queda "resuelto" cuando el input no está vacío.
+              const cashComplete = (seedState?.brokers || []).every(b =>
+                Object.keys(b.cash_overdraft || {}).every(cur => {
+                  const v = b.cash?.[cur]
+                  return v !== '' && v != null
+                })
+              )
+              return (
+                <div className="flex flex-col items-end gap-1">
+                  <button
+                    onClick={() => confirm({ withSeed: true })}
+                    disabled={busy || !cashComplete}
+                    className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {busy && <Loader2 size={14} className="animate-spin" />}
+                    Confirmar e importar
+                  </button>
+                  {!cashComplete && (
+                    <span className="text-[11px] text-ink-3">
+                      Confirmá el saldo de cada cuenta para seguir.
+                    </span>
+                  )}
+                </div>
+              )
+            })()}
             {step === STEP_DONE && (
               <button
                 onClick={onClose}
@@ -763,7 +798,7 @@ function Stepper({ step, skipMap, hasSeed }) {
         { id: STEP_MAP, label: 'Mapear columnas' },
         { id: STEP_PREVIEW, label: 'Previsualización' },
       ]
-  const seedSteps = hasSeed ? [{ id: STEP_SEED, label: 'Estado inicial' }] : []
+  const seedSteps = hasSeed ? [{ id: STEP_SEED, label: 'Tu saldo' }] : []
   const steps = [...baseSteps, ...seedSteps, { id: STEP_DONE, label: 'Listo' }]
   // Si el step actual es SEED pero hasSeed=false (caso transitorio), igual lo
   // resaltamos comparando por id.
@@ -1490,31 +1525,24 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                 Editar y rehacer
               </div>
               <p className="text-xs text-ink-2">
-                Revertimos el import original y reprocesamos los mismos datos. Ajustá lo que haga falta (omitir filas, cargar estado inicial, etc.) y confirmá para crear un import nuevo.
+                Revertimos el import original y reprocesamos los mismos datos. Ajustá lo que haga falta (omitir filas, confirmar tu saldo, etc.) y confirmá para crear un import nuevo.
               </p>
             </div>
           </div>
         </div>
       )}
       {seedSug?.needed && (
-        <div className="px-3 py-3 rounded-md bg-blue-500/10 border border-blue-500/30 text-sm">
+        <div className="px-3 py-3 rounded-md bg-blue-500/10 border border-blue-500/40 text-sm">
           <div className="flex items-start gap-2 mb-2">
-            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-blue-500" />
+            <Info size={16} className="mt-0.5 flex-shrink-0 text-blue-500" />
             <div>
-              <div className="font-medium text-ink-0 mb-0.5">
-                Tu CSV parece arrancar mid-historia
+              <div className="font-semibold text-ink-0 mb-0.5">
+                Falta confirmar tu saldo — tranqui, no es un error
               </div>
               <p className="text-xs text-ink-2">
-                Detectamos {seedSug.totals?.sell_errors > 0 && (
-                  <span><span className="tabular font-medium">{seedSug.totals.sell_errors}</span> {seedSug.totals.sell_errors === 1 ? 'venta' : 'ventas'} sin compra previa</span>
-                )}
-                {seedSug.totals?.sell_errors > 0 && seedSug.totals?.cash_warnings > 0 && ' · '}
-                {seedSug.totals?.cash_warnings > 0 && (
-                  <span><span className="tabular font-medium">{seedSug.totals.cash_warnings}</span> {seedSug.totals.cash_warnings === 1 ? 'fila deja' : 'filas dejan'} el cash en negativo</span>
-                )}
-                . Si tenías cash y posiciones antes del{' '}
-                <span className="tabular font-medium">{seedSug.earliest_csv_date}</span>, cargálos y los aplicamos al{' '}
-                <span className="tabular font-medium">{seedSug.seed_date}</span> (1 día antes del primer movimiento).
+                Tu archivo arranca con la cuenta ya en uso. Para que las cuentas cierren, en el paso
+                siguiente te preguntamos cuánto cash tenés <span className="font-medium text-ink-1">hoy</span> en
+                el broker — nada de fechas viejas. Es rápido, casi siempre un solo clic.
               </p>
             </div>
           </div>
@@ -1523,7 +1551,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             onClick={onSeedClick}
             className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rendi-accent hover:bg-rendi-accent/90 text-white transition"
           >
-            Cargar estado inicial →
+            Confirmar mi saldo →
           </button>
         </div>
       )}
@@ -1666,7 +1694,10 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
         </div>
       )}
 
-      {(preview.cash_warnings || []).length > 0 && (
+      {/* Cuando hay seed sugerido, el banner azul de arriba ya explica el saldo
+          negativo de forma tranquila y lleva al fix → no repetimos este aviso
+          ámbar (alarmista). Solo lo mostramos si NO hay seed que resolver. */}
+      {(preview.cash_warnings || []).length > 0 && !seedSug?.needed && (
         <div className="px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-xs">
           <div className="font-medium text-amber-700 dark:text-amber-400 mb-1">
             Atención: {preview.cash_warnings.length} {preview.cash_warnings.length === 1 ? 'fila deja' : 'filas dejan'} el cash en negativo
@@ -1756,15 +1787,6 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
 
 function SeedStep({ suggestions, seedState, setSeedState }) {
   const brokers = seedState?.brokers || []
-  const seedDate = seedState?.seed_date || suggestions?.seed_date
-
-  function updateBroker(idx, patch) {
-    setSeedState(s => {
-      const next = { ...s, brokers: [...(s.brokers || [])] }
-      next.brokers[idx] = { ...next.brokers[idx], ...patch }
-      return next
-    })
-  }
 
   function setCash(idx, currency, value) {
     setSeedState(s => {
@@ -1776,53 +1798,27 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
     })
   }
 
-  function setAsset(brokerIdx, assetIdx, patch) {
-    setSeedState(s => {
-      const next = { ...s, brokers: [...(s.brokers || [])] }
-      const b = { ...next.brokers[brokerIdx], assets: [...(next.brokers[brokerIdx].assets || [])] }
-      b.assets[assetIdx] = { ...b.assets[assetIdx], ...patch }
-      next.brokers[brokerIdx] = b
-      return next
-    })
-  }
-
-  function addAsset(brokerIdx) {
-    setSeedState(s => {
-      const next = { ...s, brokers: [...(s.brokers || [])] }
-      const b = { ...next.brokers[brokerIdx], assets: [...(next.brokers[brokerIdx].assets || [])] }
-      b.assets.push({ symbol: '', qty: '', cost_basis_unit: '' })
-      next.brokers[brokerIdx] = b
-      return next
-    })
-  }
-
-  function removeAsset(brokerIdx, assetIdx) {
-    setSeedState(s => {
-      const next = { ...s, brokers: [...(s.brokers || [])] }
-      const b = { ...next.brokers[brokerIdx] }
-      b.assets = (b.assets || []).filter((_, i) => i !== assetIdx)
-      next.brokers[brokerIdx] = b
-      return next
-    })
-  }
-
   return (
     <div className="space-y-4">
-      <div className="px-3 py-2 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
-        <div className="flex flex-col gap-1">
-          <div className="text-ink-1 font-medium">
-            Estado inicial al {seedDate}
+      <div className="px-3 py-2.5 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
+        <div className="flex items-start gap-2">
+          <Info size={15} className="mt-0.5 flex-shrink-0 text-rendi-accent" />
+          <div className="flex flex-col gap-1">
+            <div className="text-ink-0 font-semibold">
+              ¿Cuánto cash tenés hoy?
+            </div>
+            <p className="text-xs text-ink-2">
+              Es lo único que falta para que tu cartera cierre. Poné el saldo que ves
+              <span className="font-medium text-ink-1"> hoy</span> en tu broker y nosotros calculamos
+              lo anterior solos. Si coincide con lo que estimó Rendi, tocá el tick y listo.
+            </p>
           </div>
-          <p className="text-xs text-ink-2">
-            Vamos a generar depósitos y compras sintéticas con esa fecha (1 día antes de la primera fila del CSV).
-            Eso le da al sistema el cash y las posiciones que ya tenías para que las ventas y los gastos del CSV cuadren.
-          </p>
         </div>
       </div>
 
       {brokers.length === 0 && (
         <div className="text-sm text-ink-3 text-center py-6">
-          No detectamos brokers que necesiten estado inicial.
+          Tu cartera ya cierra — no hay saldo para confirmar.
         </div>
       )}
 
@@ -1850,104 +1846,55 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
               {/* Cash */}
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1.5">
-                  Cash que tenías al {seedDate}
+                  ¿Cuánto cash tenés hoy en {b.broker}?
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {Array.from(cashCurrencies).map(cur => {
-                    const overdraft = b.cash_overdraft?.[cur]
+                    const F = b.final_balance?.[cur]          // saldo que da el CSV (puede ser <0)
+                    const hasF = F != null
+                    const current = b.cash?.[cur] ?? ''       // saldo de HOY que pone el user
+                    const isSame = hasF && F >= 0 && current !== '' &&
+                      Math.abs(Number(current) - F) < 0.01
                     return (
-                      <label key={cur} className="block">
-                        <div className="text-xs text-ink-2 mb-0.5 flex items-center gap-1">
-                          <span>{cur}</span>
-                          {overdraft > 0 && (
-                            <span className="text-[10px] text-amber-600 dark:text-amber-400">
-                              (sugerido: {overdraft.toLocaleString('es-AR', { maximumFractionDigits: 2 })})
+                      <div key={cur} className="block">
+                        <div className="text-xs mb-1 flex items-center gap-1.5 flex-wrap">
+                          <span className="font-medium text-ink-1">{cur}</span>
+                          {hasF && (
+                            <span className="text-[10px] text-ink-3">
+                              · según tu CSV: <span className="tabular">{F.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>
+                              {F < 0 && (
+                                <span className="text-amber-600 dark:text-amber-400"> (negativo → falta plata previa)</span>
+                              )}
                             </span>
                           )}
                         </div>
+                        {hasF && F >= 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setCash(bi, cur, String(F))}
+                            className={`w-full mb-1.5 flex items-center gap-1.5 px-2 py-1.5 rounded-md border text-xs font-medium transition ${
+                              isSame
+                                ? 'border-rendi-pos/40 bg-rendi-pos/10 text-rendi-pos'
+                                : 'border-line hover:border-rendi-accent text-ink-1 hover:bg-bg-2'
+                            }`}
+                          >
+                            <CheckCircle2 size={13} className={isSame ? 'text-rendi-pos' : 'text-ink-3'} />
+                            Es el mismo que calculó Rendi
+                          </button>
+                        )}
                         <input
                           type="number"
                           step="any"
                           min="0"
-                          value={b.cash?.[cur] ?? ''}
+                          value={current}
                           onChange={e => setCash(bi, cur, e.target.value)}
-                          placeholder="0"
+                          placeholder={`¿Cuánto ${cur} tenés hoy?`}
                           className="w-full bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0"
                         />
-                      </label>
+                      </div>
                     )
                   })}
                 </div>
-              </div>
-
-              {/* Assets */}
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1.5 flex items-center justify-between">
-                  <span>Posiciones que tenías al {seedDate}</span>
-                  <button
-                    type="button"
-                    onClick={() => addAsset(bi)}
-                    className="text-xs text-rendi-accent hover:underline normal-case"
-                  >
-                    + Agregar activo
-                  </button>
-                </div>
-                {(b.assets || []).length === 0 ? (
-                  <div className="text-xs text-ink-3 italic px-1">
-                    Si tenías posiciones, agregalas con el botón de arriba.
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    <div className="grid grid-cols-[1fr_1fr_1fr_24px] gap-2 text-[10px] uppercase tracking-wider text-ink-3 px-1">
-                      <span>Activo</span>
-                      <span>Cantidad</span>
-                      <span>Costo unitario</span>
-                      <span></span>
-                    </div>
-                    {(b.assets || []).map((a, ai) => (
-                      <div key={ai} className="grid grid-cols-[1fr_1fr_1fr_24px] gap-2 items-center">
-                        <input
-                          type="text"
-                          value={a.symbol}
-                          onChange={e => setAsset(bi, ai, { symbol: e.target.value.toUpperCase() })}
-                          placeholder="BTC"
-                          className="bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0 font-mono"
-                        />
-                        <input
-                          type="number"
-                          step="any"
-                          min="0"
-                          value={a.qty}
-                          onChange={e => setAsset(bi, ai, { qty: e.target.value })}
-                          placeholder={a.min_qty ? String(a.min_qty) : '0'}
-                          className="bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0 tabular"
-                        />
-                        <input
-                          type="number"
-                          step="any"
-                          min="0"
-                          value={a.cost_basis_unit}
-                          onChange={e => setAsset(bi, ai, { cost_basis_unit: e.target.value })}
-                          placeholder="precio promedio"
-                          className="bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0 tabular"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeAsset(bi, ai)}
-                          className="text-ink-3 hover:text-red-500"
-                          title="Quitar activo"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {(b.assets || []).some(a => a.min_qty > 0) && (
-                  <p className="text-[10px] text-ink-3 mt-1.5">
-                    La cantidad sugerida ({(b.assets || []).filter(a => a.min_qty > 0).map(a => `${a.symbol}: ${a.min_qty}`).join(', ')}) es lo mínimo para que las ventas del CSV cuadren. Si tenías más, ponelo igual.
-                  </p>
-                )}
               </div>
             </div>
           </div>
@@ -1955,7 +1902,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
       })}
 
       <div className="text-xs text-ink-3">
-        El estado inicial se guarda como filas sintéticas dentro del mismo lote — al revertir el import, también se borran.
+        Lo guardamos como un aporte inicial sintético dentro del mismo lote — si revertís el import, también se borra.
       </div>
     </div>
   )

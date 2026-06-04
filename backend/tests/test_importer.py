@@ -1139,6 +1139,49 @@ class PipelineE2ETest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_revert_with_recalc_does_not_leave_orphan_deposits(self):
+        """REGRESIÓN (root cause del bug 2026-06): cuando el revert llama al
+        self-heal `_recalc_pnl_realized_from_ops` (como en producción), el batch
+        debe estar marcado 'reverted' ANTES del recalc. Si no, el recalc lo ve
+        'confirmed', re-suma sus deposits (que el revert ya restó) → huérfanos →
+        capital inflado / 'ganancias retiradas' fantasma. Los tests de revert
+        existentes NO lo agarran porque su _helpers() mock no incluye el recalc."""
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2099-01-10,DEPOSITO,ORPHANTEST,,,,2500,,,,USD,Aporte
+"""
+        helpers = _helpers()
+        # Como producción: el revert dispara el self-heal.
+        helpers._recalc_pnl_realized_from_ops = main._recalc_pnl_realized_from_ops
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="orphan.csv",
+                    broker_hint="ORPHANTEST", parser_format="rendi_generic",
+                )
+            session_id = payload["session_id"]
+            with conn:
+                txs, raw_map = pl.load_session_for_confirm(conn, uid=self.uid, session_id=session_id)
+                ps.persist_batch(conn, uid=self.uid, batch_id=session_id, txs=txs,
+                                 raw_row_ids_by_index=raw_map, helpers=helpers)
+            row = conn.execute(
+                "SELECT deposits FROM monthly_entries WHERE user_id=? AND broker='ORPHANTEST' AND year=2099 AND month=1",
+                (self.uid,)).fetchone()
+            self.assertIsNotNone(row)
+            self.assertAlmostEqual(float(row["deposits"]), 2500.0, places=2)
+            # Revert CON recalc (path de producción).
+            with conn:
+                ps.revert_batch(conn, uid=self.uid, batch_id=session_id, helpers=helpers)
+            for broker in ("ORPHANTEST", "global"):
+                r = conn.execute(
+                    "SELECT deposits FROM monthly_entries WHERE user_id=? AND broker=? AND year=2099 AND month=1",
+                    (self.uid, broker)).fetchone()
+                self.assertTrue(
+                    r is None or abs(float(r["deposits"])) < 0.01,
+                    f"{broker}: deposits huérfanos tras revert+recalc = {r and r['deposits']}")
+        finally:
+            conn.close()
+
     def test_revert_withdraw_subtracts_from_withdrawals_not_deposits(self):
         """Bug C fix (2026-05-30) — caso simétrico: el revert de WITHDRAW/FEE
         debe restar de withdrawals, no inflar deposits."""
@@ -3131,25 +3174,27 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
         respaldando ese (broker, year, month) — los zero-eaba y la fila se
         borraba por el cleanup post-recalc.
 
-        Nueva semántica: cualquier valor en monthly_entries.deposits/withdrawals
-        que NO esté respaldado por imports DEPOSIT/WITHDRAW se considera
-        residual MANUAL y se preserva. pnl_realized sí se reconstruye desde
-        operations (que es fuente canónica)."""
+        Semántica (post-fix manual_*): los flujos manuales se rastrean en la
+        columna manual_deposits/withdrawals (las setea is_manual=True / el
+        backfill). El recalc preserva ese manual aunque NO haya imports.
+        pnl_realized sí se reconstruye desde operations (fuente canónica)."""
         conn = main.get_db()
         with conn:
-            # User cargó manualmente $831.58 (sin imports correspondientes)
+            # User cargó manualmente $831.58 (sin imports) → va en manual_deposits.
             conn.execute(
                 """INSERT INTO monthly_entries
                    (user_id, year, month, broker, deposits, withdrawals,
+                    manual_deposits, manual_withdrawals,
                     pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-                   VALUES (?, 2025, 5, 'Cocos', 831.58, 0, 0, 0, 0, 831.58)""",
+                   VALUES (?, 2025, 5, 'Cocos', 831.58, 0, 831.58, 0, 0, 0, 0, 831.58)""",
                 (self.uid,),
             )
             conn.execute(
                 """INSERT INTO monthly_entries
                    (user_id, year, month, broker, deposits, withdrawals,
+                    manual_deposits, manual_withdrawals,
                     pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-                   VALUES (?, 2025, 5, 'global', 831.58, 0, 0, 0, 0, 831.58)""",
+                   VALUES (?, 2025, 5, 'global', 831.58, 0, 831.58, 0, 0, 0, 0, 831.58)""",
                 (self.uid,),
             )
             main._recalc_pnl_realized_from_ops(conn, self.uid)
@@ -3158,6 +3203,7 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
             (self.uid,),
         ).fetchall()
         conn.close()
+        self.assertEqual(len(rows), 2, "ambas filas (broker + global) deben preservarse, no borrarse")
         for r in rows:
             self.assertAlmostEqual(r["deposits"], 831.58, places=2,
                 msg=f"{r['broker']}: manual residual debería preservarse, quedó {r['deposits']}")
@@ -3209,8 +3255,9 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
 
     def test_recalcs_preserves_manual_residual_above_imports(self):
         """Caso mixto: user cargó manualmente $200 EN ADICIÓN a un import de
-        $70.67 USD (la fila acumula 270.67 = 70.67 imports + 200 manual). El
-        recalc debe preservar el residual manual y dejar deposits=270.67."""
+        $70.67 USD. Desde el fix de manual_*, el manual se rastrea en su columna
+        propia (no se infiere con `existing − imports`). El recalc debe dejar
+        deposits = imports(70.67) + manual_deposits(200) = 270.67."""
         import uuid, json
         conn = main.get_db()
         batch_id = str(uuid.uuid4())
@@ -3233,12 +3280,14 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
                    VALUES (?, ?, '2025-05-15', 'Cocos', 'DEPOSIT', 100000, 'ARS')""",
                 (batch_id, raw_id),
             )
-            # 70.67 imports + 200 manual = 270.67 acumulado
+            # 70.67 imports + 200 manual = 270.67. El manual va explícito en
+            # manual_deposits (la fuente autoritativa del recalc).
             conn.execute(
                 """INSERT INTO monthly_entries
                    (user_id, year, month, broker, deposits, withdrawals,
+                    manual_deposits, manual_withdrawals,
                     pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-                   VALUES (?, 2025, 5, 'Cocos', 270.67, 0, 0, 0, 0, 270.67)""",
+                   VALUES (?, 2025, 5, 'Cocos', 270.67, 0, 200, 0, 0, 0, 0, 270.67)""",
                 (self.uid,),
             )
             main._recalc_pnl_realized_from_ops(conn, self.uid)
@@ -3247,8 +3296,139 @@ class RecalcPnlFromOpsTest(unittest.TestCase):
             (self.uid,),
         ).fetchone()
         conn.close()
-        # imp_deposits ≈ 70.67, manual_residual = 200 → new_deposits ≈ 270.67
+        # imp_deposits ≈ 70.67, manual_deposits = 200 → new_deposits ≈ 270.67
         self.assertAlmostEqual(row["deposits"], 270.67, delta=0.1)
+
+    def test_recalc_wipes_orphaned_import_deposits_after_revert(self):
+        """REGRESIÓN (bug reportado 2026-06): un import confirmado dejó deposits
+        en monthly_entries; al revertirlo (status='reverted') esos deposits ya
+        NO pertenecen a ningún import confirmado ni son manuales. El recalc viejo
+        los preservaba como 'residual manual' (existing − imports) → capital
+        inflado y 'ganancias retiradas' fantasma. Ahora el recalc es autoritativo
+        (deposits = imports_confirmados + manual_*) y los borra."""
+        import uuid
+        conn = main.get_db()
+        batch_id = str(uuid.uuid4())
+        with conn:
+            # Batch REVERTIDO (no 'confirmed') — el que el user revirtió.
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'x.csv', ?, 'Cocos', 'reverted')""",
+                (batch_id, self.uid, batch_id),
+            )
+            # deposits huérfanos (1000) del import revertido, SIN manual.
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    manual_deposits, manual_withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 1000, 0, 0, 0, 0, 0, 0, 1000)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        row = conn.execute(
+            "SELECT deposits FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # El huérfano se borró (deposits=0 → fila eliminada por el cleanup).
+        self.assertIsNone(row, "deposits huérfanos del import revertido deben desaparecer")
+
+    def test_recalc_keeps_manual_when_import_reverted(self):
+        """Contraparte del anterior: si además del import (luego revertido) el
+        user tenía un depósito MANUAL, ese manual se conserva."""
+        import uuid
+        conn = main.get_db()
+        batch_id = str(uuid.uuid4())
+        with conn:
+            conn.execute(
+                """INSERT INTO import_batches
+                   (id, user_id, parser_format, file_name, file_hash, broker, status)
+                   VALUES (?, ?, 'cocos', 'x.csv', ?, 'Cocos', 'reverted')""",
+                (batch_id, self.uid, batch_id),
+            )
+            # deposits=1300 = 1000 import (revertido) + 300 manual.
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id, year, month, broker, deposits, withdrawals,
+                    manual_deposits, manual_withdrawals,
+                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                   VALUES (?, 2025, 5, 'Cocos', 1300, 0, 300, 0, 0, 0, 0, 1300)""",
+                (self.uid,),
+            )
+            main._recalc_pnl_realized_from_ops(conn, self.uid)
+        row = conn.execute(
+            "SELECT deposits, manual_deposits FROM monthly_entries WHERE user_id=? AND broker='Cocos'",
+            (self.uid,),
+        ).fetchone()
+        conn.close()
+        # import revertido → 0; manual preservado → deposits=300.
+        self.assertIsNotNone(row)
+        self.assertAlmostEqual(row["deposits"], 300, delta=0.01)
+        self.assertAlmostEqual(row["manual_deposits"], 300, delta=0.01)
+
+    def test_backfill_separates_manual_from_import(self):
+        """El backfill de migración separa el residual manual:
+        manual = max(0, deposits − imports_confirmados). Import-backed → manual 0;
+        sin import → manual = deposits (preserva el manual existente)."""
+        import uuid
+        conn = main.get_db()
+        bid = str(uuid.uuid4())
+        with conn:
+            # Caso A: deposits respaldados por un import confirmado → manual debe quedar 0
+            conn.execute(
+                """INSERT INTO import_batches (id,user_id,parser_format,file_name,file_hash,broker,status)
+                   VALUES (?,?, 'cocos','x.csv',?, 'A', 'confirmed')""", (bid, self.uid, bid))
+            cur = conn.execute(
+                """INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status,errors_json)
+                   VALUES (?,1,'{}','valid',NULL)""", (bid,))
+            conn.execute(
+                """INSERT INTO import_normalized_tx
+                   (batch_id,raw_row_id,date,broker,operation_type,gross_amount,gross_amount_usd,currency)
+                   VALUES (?,?, '2025-05-15','A','DEPOSIT',100,100,'USD')""", (bid, cur.lastrowid))
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id,year,month,broker,deposits,withdrawals,manual_deposits,manual_withdrawals,
+                    pnl_realized,pnl_unrealized,capital_inicio,capital_final)
+                   VALUES (?,2025,5,'A', 100, 0, 0, 0, 0,0,0, 100)""", (self.uid,))
+            # Caso B: deposits SIN import → manual = deposits (250)
+            conn.execute(
+                """INSERT INTO monthly_entries
+                   (user_id,year,month,broker,deposits,withdrawals,manual_deposits,manual_withdrawals,
+                    pnl_realized,pnl_unrealized,capital_inicio,capital_final)
+                   VALUES (?,2025,5,'B', 250, 0, 0, 0, 0,0,0, 250)""", (self.uid,))
+            main._backfill_manual_flows(conn)
+        rows = {r["broker"]: r["manual_deposits"] for r in conn.execute(
+            "SELECT broker, manual_deposits FROM monthly_entries WHERE user_id=?", (self.uid,))}
+        conn.close()
+        self.assertAlmostEqual(rows["A"], 0, delta=0.5,
+            msg="deposits respaldados por import confirmado → manual 0")
+        self.assertAlmostEqual(rows["B"], 250, delta=0.5,
+            msg="deposits sin import → manual = deposits (preservado)")
+
+    def test_derive_manual_flows_for_monthly_form(self):
+        """El form /mensual (create/update_monthly) deriva manual_* = max(0,
+        total − imports_confirmados) para no perder/resucitar depósitos manuales
+        en el siguiente recalc autoritativo."""
+        import uuid
+        conn = main.get_db()
+        bid = str(uuid.uuid4())
+        with conn:
+            conn.execute("""INSERT INTO import_batches (id,user_id,parser_format,file_name,file_hash,broker,status)
+                            VALUES (?,?, 'cocos','x.csv',?, 'FORMB', 'confirmed')""", (bid, self.uid, bid))
+            cur = conn.execute("""INSERT INTO import_raw_rows (batch_id,row_index,raw_json,status,errors_json)
+                                  VALUES (?,1,'{}','valid',NULL)""", (bid,))
+            conn.execute("""INSERT INTO import_normalized_tx
+                            (batch_id,raw_row_id,date,broker,operation_type,gross_amount,gross_amount_usd,currency)
+                            VALUES (?,?, '2025-05-15','FORMB','DEPOSIT',200,200,'USD')""", (bid, cur.lastrowid))
+        # total 500 con 200 de import confirmado → manual = 300
+        man_dep, _ = main._derive_manual_flows(conn, self.uid, 'FORMB', 2025, 5, 500, 0)
+        # broker sin imports → manual = total (500)
+        man_dep2, _ = main._derive_manual_flows(conn, self.uid, 'NOIMP', 2025, 5, 500, 0)
+        conn.close()
+        self.assertAlmostEqual(man_dep, 300, delta=0.5)
+        self.assertAlmostEqual(man_dep2, 500, delta=0.5)
 
     def test_recalc_deletes_empty_rows_and_clears_baseline(self):
         """REGRESIÓN: tras recalc, una fila con todo en 0 pero capital_inicio
