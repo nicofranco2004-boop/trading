@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle } from 'lucide-react'
+import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send } from 'lucide-react'
 import { api } from '../utils/api'
 import StatCard from '../components/StatCard'
 import { useAuth } from '../contexts/AuthContext'
@@ -143,6 +143,9 @@ export default function Admin() {
       {/* ── Conversión Pro (paywall analytics) ─────────────────────────── */}
       <ConversionPanel data={conversion} />
 
+      {/* ── Re-engagement: mail a usuarios que no importaron su historial ── */}
+      <ReengagementPanel toast={toast} />
+
       {/* ── Alerta de billing: pagaron pero figuran en Free ──────────────── */}
       {affected.length > 0 && (
         <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
@@ -243,6 +246,134 @@ function Row({ label, children }) {
     <div>
       <p className="text-xs text-ink-3 mb-0.5">{label}</p>
       <p className="text-ink-1">{children}</p>
+    </div>
+  )
+}
+
+// ─── ReengagementPanel — mail a usuarios que se registraron pero no importaron ─
+// Preview (confirm:false) → muestra la lista exacta de destinatarios sin mandar
+// nada. Recién al apretar "Enviar" (confirm:true) el backend mailea por Resend,
+// stampea reengagement_email_sent_at y saltea a quien ya recibió. Idempotente:
+// re-correr no duplica; los fallidos se reintentan en la próxima corrida.
+function ReengagementPanel({ toast }) {
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState(null)
+
+  async function loadPreview() {
+    setLoading(true); setResult(null)
+    try {
+      setPreview(await api.post('/admin/email/re-engagement', { confirm: false }))
+    } catch (e) {
+      toast.push('Error al previsualizar: ' + e.message, { type: 'error' })
+    } finally { setLoading(false) }
+  }
+
+  async function send() {
+    const pending = (preview?.recipients || []).filter(r => !r.already_sent_at).length
+    if (pending === 0) return
+    if (!confirm(`¿Mandar el mail de re-engagement a ${pending} usuario${pending > 1 ? 's' : ''}? Los que ya lo recibieron se saltean.`)) return
+    setSending(true)
+    try {
+      const r = await api.post('/admin/email/re-engagement', { confirm: true })
+      setResult(r)
+      toast.push(
+        `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
+        { type: r.failed_count ? 'warn' : 'success' }
+      )
+      await loadPreview()
+    } catch (e) {
+      toast.push('Error al enviar: ' + e.message, { type: 'error' })
+    } finally { setSending(false) }
+  }
+
+  const recipients = preview?.recipients || []
+  const pending = recipients.filter(r => !r.already_sent_at)
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Mail size={16} className="text-data-violet" />
+          <h2 className="font-semibold text-ink-0">Re-engagement · importá tu historial</h2>
+        </div>
+        <button
+          onClick={loadPreview}
+          disabled={loading}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Recalcular' : 'Ver destinatarios'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Usuarios verificados con ≤1 operación cargada (se registraron pero no importaron su historial). El mail es el
+        tono “lite”, sin presión. Los que ya lo recibieron quedan excluidos automáticamente — podés re-correrlo sin
+        miedo a duplicar.
+      </p>
+
+      {preview && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <ConvCell label="Candidatos" value={preview.total_candidates} hint="≤1 operación" />
+            <ConvCell label="A enviar ahora" value={pending.length} hint="nunca recibieron" />
+            <ConvCell label="Ya recibieron" value={preview.already_sent} hint="se saltean" />
+          </div>
+
+          {recipients.length > 0 ? (
+            <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+                    <th className="text-left px-2 py-1">Email</th>
+                    <th className="text-left px-2 py-1">Nombre</th>
+                    <th className="text-right px-2 py-1">Actividad</th>
+                    <th className="text-left px-2 py-1">Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recipients.map(r => (
+                    <tr key={r.id} className="border-b border-line/20">
+                      <td className="px-2 py-1 text-ink-1">{r.email}</td>
+                      <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-2">{r.activity}</td>
+                      <td className="px-2 py-1">
+                        {r.already_sent_at
+                          ? <span className="text-emerald-600 dark:text-emerald-400">enviado</span>
+                          : <span className="text-ink-3">pendiente</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-ink-3">No hay usuarios que cumplan el criterio. 🎉</p>
+          )}
+
+          <div className="flex items-center justify-between gap-3 pt-1 border-t border-line/30 flex-wrap">
+            <p className="text-[11px] text-ink-3 max-w-md">
+              Envía vía Resend. Los que fallan no se marcan como enviados → se reintentan solos la próxima vez.
+            </p>
+            <button
+              onClick={send}
+              disabled={sending || pending.length === 0}
+              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${pending.length}`}
+            </button>
+          </div>
+
+          {result && (
+            <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
+              Resultado: <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
+              {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
+              {result.skipped_count > 0 && <> · {result.skipped_count} salteados</>}
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }

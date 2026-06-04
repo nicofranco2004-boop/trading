@@ -419,6 +419,12 @@ def init_db():
         # el test todavía. Se inyecta en el system prompt del Coach IA cuando hay
         # un valor, así la IA conoce horizonte/tolerancia/objetivo/estilo/etc.
         conn.execute("ALTER TABLE users ADD COLUMN investor_profile TEXT")
+    if user_cols and 'reengagement_email_sent_at' not in user_cols:
+        # Timestamp ISO del último mail de re-engagement ("importá tu historial").
+        # NULL = nunca se le mandó. El endpoint admin /api/admin/email/re-engagement
+        # lo usa como idempotencia: no re-mailea a quien ya recibió (salvo resend=True),
+        # y los envíos que fallan no se stampean → se reintentan en la próxima corrida.
+        conn.execute("ALTER TABLE users ADD COLUMN reengagement_email_sent_at TEXT")
     # Sincronizar is_admin + approved para usuarios con email admin
     rows = conn.execute("SELECT id, email FROM users").fetchall()
     for r in rows:
@@ -9009,6 +9015,122 @@ def admin_users(uid: int = Depends(get_admin_user)):
         )
         out.append(d)
     return out
+
+
+class ReengagementEmailIn(BaseModel):
+    confirm: bool = False        # False = DRY RUN (lista, no envía nada)
+    threshold: int = 1           # actividad máx (ops + posiciones no-cash) para targetear
+    only_verified: bool = True   # solo usuarios con email verificado
+    resend: bool = False         # re-mailear aunque ya se les haya mandado
+    limit: int = 0               # cap de destinatarios (0 = sin límite; sirve para tandas)
+
+
+@app.post("/api/admin/email/re-engagement")
+def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_admin_user)):
+    """Re-engagement a usuarios que se registraron pero casi no cargaron nada
+    (actividad = operaciones + posiciones no-cash ≤ `threshold`, default 1).
+
+    Seguridad / flujo:
+      • Solo admin.
+      • confirm=False (DEFAULT) → DRY RUN: devuelve la lista exacta de
+        destinatarios SIN enviar nada. Siempre revisá esto primero.
+      • confirm=True → envía vía Resend (emails.send_reengagement), stampea
+        users.reengagement_email_sent_at y NO re-mailea a quien ya recibió
+        (salvo resend=True). Los envíos que fallan NO se stampean → se
+        reintentan solos en la próxima corrida (idempotente y self-healing).
+      • limit>0 → cap de destinatarios para mandar en tandas.
+
+    Nota: en local sin RESEND_API_KEY, send_reengagement loguea y devuelve
+    False, así que en dev todos caen en `failed` (no se manda nada de verdad).
+    El envío real ocurre en prod, donde está la API key + los users reales."""
+    from billing import emails
+    from datetime import datetime as _dt
+
+    threshold = max(0, int(data.threshold))
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT u.id, u.email, u.name, u.created_at, u.email_verified,
+               u.reengagement_email_sent_at,
+               (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
+               (SELECT COUNT(*) FROM positions p
+                  WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
+        FROM users u
+        WHERE COALESCE(u.is_admin,0) = 0
+        ORDER BY u.created_at ASC
+    """).fetchall()
+
+    targets = []
+    for r in rows:
+        d = dict(r)
+        if data.only_verified and not d.get("email_verified"):
+            continue
+        if not (d.get("email") or "").strip():
+            continue
+        activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
+        if activity > threshold:
+            continue
+        d["activity"] = activity
+        targets.append(d)
+
+    # Primero los que nunca recibieron el mail, después por antigüedad.
+    targets.sort(key=lambda x: (x.get("reengagement_email_sent_at") is not None,
+                                x.get("created_at") or ""))
+    if data.limit and data.limit > 0:
+        targets = targets[: data.limit]
+
+    # ── DRY RUN: mostrar a quién le caería, sin enviar ──
+    if not data.confirm:
+        conn.close()
+        return {
+            "dry_run": True,
+            "threshold": threshold,
+            "only_verified": data.only_verified,
+            "total_candidates": len(targets),
+            "already_sent": sum(1 for t in targets if t.get("reengagement_email_sent_at")),
+            "recipients": [
+                {"id": t["id"], "email": t["email"], "name": t.get("name"),
+                 "activity": t["activity"], "ops": int(t.get("ops") or 0),
+                 "pos": int(t.get("pos") or 0), "created_at": t.get("created_at"),
+                 "already_sent_at": t.get("reengagement_email_sent_at")}
+                for t in targets
+            ],
+        }
+
+    # ── ENVÍO REAL ──
+    sent, failed, skipped = [], [], []
+    for t in targets:
+        if t.get("reengagement_email_sent_at") and not data.resend:
+            skipped.append({"id": t["id"], "email": t["email"]})
+            continue
+        ok = False
+        try:
+            ok = emails.send_reengagement(to=t["email"], user_name=(t.get("name") or ""))
+        except Exception as ex:
+            log.error("re-engagement send error for %s: %s", t["email"], ex)
+            ok = False
+        if ok:
+            try:
+                conn.execute(
+                    "UPDATE users SET reengagement_email_sent_at=? WHERE id=?",
+                    (_dt.utcnow().isoformat(), t["id"]),
+                )
+                conn.commit()
+            except Exception as ex:
+                log.error("re-engagement stamp failed for %s: %s", t["email"], ex)
+            sent.append({"id": t["id"], "email": t["email"]})
+        else:
+            failed.append({"id": t["id"], "email": t["email"]})
+    conn.close()
+    return {
+        "dry_run": False,
+        "threshold": threshold,
+        "sent_count": len(sent),
+        "failed_count": len(failed),
+        "skipped_count": len(skipped),
+        "sent": sent,
+        "failed": failed,
+        "skipped": skipped,
+    }
 
 
 @app.get("/api/admin/billing/inspect")
