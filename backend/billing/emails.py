@@ -536,49 +536,50 @@ def send_welcome_free(*, to: str, user_name: str) -> bool:
 
 def send_reengagement(*, to: str, user_name: str = "") -> bool:
     """Re-engagement para usuarios verificados que se registraron pero casi no
-    cargaron nada (≤1 operación). Tono lite, sin presión — les recuerda que con
-    el CSV de movimientos Rendi reconstruye la cartera sola. Replies → soporte@
-    (el copy invita a responder si se traban). Idempotencia y targeting los
-    maneja el endpoint admin que llama acá."""
+    cargaron nada (≤1 operación). Tono lite, sin presión. Replies → soporte@.
+
+    Formato deliberadamente PLANO — sin header con logo, sin botón grande, un
+    solo link de texto, alto ratio texto/markup — para caer en la pestaña
+    Principal de Gmail y no en Promociones. Los mails con pinta de "mailing"
+    (banner de imagen + CTA de color) tabulan a Promociones; un mail que parece
+    escrito 1-a-1 entra a Principal. Por eso NO usamos _wrap_html acá (ese
+    wrapper agrega el header dark con logo + footer = señales de promo).
+
+    El link apunta a la home (APP_URL), no a una sub-ruta: es la entrada más
+    confiable para un click "en frío" (no logueado) y un dominio pelado se lee
+    menos spammy que un deep-link."""
     safe_name = html.escape((user_name or "").strip())
     greeting_html = f"Hola {safe_name}," if safe_name else "Hola,"
     greeting_text = f"Hola {(user_name or '').strip()}," if (user_name or "").strip() else "Hola,"
     subject = "Tu historial en Rendi, cuando quieras"
-    body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu historial en Rendi, cuando quieras</h1>
-      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        {greeting_html} vimos que todavía no importaste tu historial — sin apuro,
-        sabemos que esas cosas quedan para después.
-      </p>
-      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Por si no lo sabías: no hace falta cargar operación por operación. Subís el
-        CSV de movimientos de tu broker (Cocos, IOL, Binance, Schwab) y Rendi te
-        reconstruye la cartera entera en segundos. Recién ahí se ve lo bueno — tu
-        P&amp;L real en dólares y cómo viene todo, junto.
-      </p>
-      <div style="text-align:center;margin:24px 0;">
-        <a href="{APP_URL}/imports" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
-          Importar mi historial
-        </a>
-      </div>
-      <p style="font-size:14px;line-height:1.6;color:#374151;margin:16px 0 0;">
-        Y si te trabás en algo, respondé este mail y te damos una mano.
-      </p>
-    """
+    body_html = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
+        'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
+        f'<p style="margin:0 0 14px;">{greeting_html} vimos que todavía no importaste '
+        'tu historial — sin apuro, sabemos que esas cosas quedan para después.</p>'
+        '<p style="margin:0 0 14px;">Por si no lo sabías: no hace falta cargar operación '
+        'por operación. Subís el CSV de movimientos de tu broker (Cocos, IOL, Binance, '
+        'Schwab) y Rendi te reconstruye la cartera entera en segundos. Recién ahí se ve '
+        'lo bueno — tu P&amp;L real en dólares y cómo viene todo, junto.</p>'
+        f'<p style="margin:0 0 14px;">Cuando tengas un rato, entrás en '
+        f'<a href="{APP_URL}" style="color:#5b4ddb;">rendi.finance</a> y lo importás.</p>'
+        '<p style="margin:0 0 14px;">Y si te trabás en algo, respondé este mail y te '
+        'damos una mano.</p>'
+        '<p style="margin:18px 0 0;">— Rendi</p>'
+        '</div>'
+    )
     text = (
-        "Tu historial en Rendi, cuando quieras\n\n"
         f"{greeting_text} vimos que todavía no importaste tu historial — sin apuro, "
         "sabemos que esas cosas quedan para después.\n\n"
         "Por si no lo sabías: no hace falta cargar operación por operación. Subís el "
         "CSV de movimientos de tu broker (Cocos, IOL, Binance, Schwab) y Rendi te "
         "reconstruye la cartera entera en segundos. Recién ahí se ve lo bueno — tu "
         "P&L real en dólares y cómo viene todo, junto.\n\n"
-        f"Importá tu historial: {APP_URL}/imports\n\n"
+        f"Cuando tengas un rato, entrás en {APP_URL} y lo importás.\n\n"
         "Y si te trabás en algo, respondé este mail y te damos una mano.\n\n"
         "— Rendi"
     )
-    return _send(to, subject, _wrap_html(body_html), text,
-                 from_addr=_from_support())
+    return _send(to, subject, body_html, text, from_addr=_from_support())
 
 
 # ─── Email interno: alerta al equipo por cada signup real (primeros N) ───────

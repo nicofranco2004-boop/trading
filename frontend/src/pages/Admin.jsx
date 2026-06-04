@@ -260,6 +260,7 @@ function ReengagementPanel({ toast }) {
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [result, setResult] = useState(null)
+  const [resend, setResend] = useState(false)
 
   async function loadPreview() {
     setLoading(true); setResult(null)
@@ -271,12 +272,16 @@ function ReengagementPanel({ toast }) {
   }
 
   async function send() {
-    const pending = (preview?.recipients || []).filter(r => !r.already_sent_at).length
-    if (pending === 0) return
-    if (!confirm(`¿Mandar el mail de re-engagement a ${pending} usuario${pending > 1 ? 's' : ''}? Los que ya lo recibieron se saltean.`)) return
+    const all = preview?.recipients || []
+    const n = resend ? all.length : all.filter(r => !r.already_sent_at).length
+    if (n === 0) return
+    const msg = resend
+      ? `¿Reenviar el mail a los ${n} destinatarios? Incluye a los que ya lo recibieron (re-test).`
+      : `¿Mandar el mail de re-engagement a ${n} usuario${n > 1 ? 's' : ''}? Los que ya lo recibieron se saltean.`
+    if (!confirm(msg)) return
     setSending(true)
     try {
-      const r = await api.post('/admin/email/re-engagement', { confirm: true })
+      const r = await api.post('/admin/email/re-engagement', { confirm: true, resend })
       setResult(r)
       toast.push(
         `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
@@ -290,6 +295,7 @@ function ReengagementPanel({ toast }) {
 
   const recipients = preview?.recipients || []
   const pending = recipients.filter(r => !r.already_sent_at)
+  const toSend = resend ? recipients : pending
 
   return (
     <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
@@ -353,15 +359,26 @@ function ReengagementPanel({ toast }) {
           )}
 
           <div className="flex items-center justify-between gap-3 pt-1 border-t border-line/30 flex-wrap">
-            <p className="text-[11px] text-ink-3 max-w-md">
-              Envía vía Resend. Los que fallan no se marcan como enviados → se reintentan solos la próxima vez.
-            </p>
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-ink-3 max-w-md">
+                Envía vía Resend. Los que fallan no se marcan como enviados → se reintentan solos la próxima vez.
+              </p>
+              <label className="flex items-center gap-1.5 text-[11px] text-ink-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={resend}
+                  onChange={e => setResend(e.target.checked)}
+                  className="accent-data-violet"
+                />
+                Reenviar a los que ya recibieron (para re-testear el email)
+              </label>
+            </div>
             <button
               onClick={send}
-              disabled={sending || pending.length === 0}
+              disabled={sending || toSend.length === 0}
               className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${pending.length}`}
+              <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${toSend.length}`}
             </button>
           </div>
 
