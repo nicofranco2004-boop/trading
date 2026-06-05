@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send } from 'lucide-react'
+import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift } from 'lucide-react'
 import { api } from '../utils/api'
 import StatCard from '../components/StatCard'
 import { useAuth } from '../contexts/AuthContext'
@@ -50,6 +50,28 @@ export default function Admin() {
     if (!confirm(`¿Eliminar la cuenta de ${u.email} junto a todos sus datos? Esta acción no se puede deshacer.`)) return
     try {
       await api.delete(`/admin/users/${u.id}`)
+      load()
+    } catch (e) {
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
+    }
+  }
+
+  async function grantPro(u) {
+    const days = 30
+    if (!confirm(`¿Dar Pro por ${days} días a ${u.email}? Es de cortesía (gratis) y se vence solo — vuelve a Free en ${days} días.`)) return
+    const url = `/admin/billing/grant-comp?email=${encodeURIComponent(u.email)}&plan=pro&days=${days}`
+    try {
+      let res = await api.post(url)
+      if (res?.ok === false && res?.reason === 'credit_already_active') {
+        const until = (res.credit_active_until || '').slice(0, 10)
+        if (!confirm(`${u.email} ya tiene plan activo hasta ${until}. ¿Sumar ${days} días más?`)) return
+        res = await api.post(url + '&force=true')
+      }
+      if (res?.ok) {
+        toast.push(res.detail || `Pro otorgado a ${u.email}.`, { type: 'success' })
+      } else {
+        toast.push(res?.detail || 'No se pudo otorgar el plan.', { type: 'warn' })
+      }
       load()
     } catch (e) {
       toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
@@ -199,6 +221,15 @@ export default function Admin() {
                   <td className="px-3 py-2 text-ink-2">{u.monthly_count}</td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
+                      {!u.is_admin && (
+                        <button
+                          onClick={() => grantPro(u)}
+                          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-data-violet/15 text-data-violet hover:bg-data-violet/25"
+                          title="Dar Pro gratis por 30 días (cortesía, se vence solo)"
+                        >
+                          <Gift size={12} /> Pro 1 mes
+                        </button>
+                      )}
                       {u.billing_affected && (
                         <button
                           onClick={() => restoreTier(u)}
