@@ -81,6 +81,7 @@ const PLATFORM_BASE_CURRENCY = {
   binance: 'USDT',
   schwab: 'USD',
   ibkr: 'USD',
+  bullmarket: 'ARS',
 }
 
 // Plataformas cuya importación está temporalmente deshabilitada (parser
@@ -1098,8 +1099,8 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
     const valid = []
     for (const f of incoming) {
       const name = (f.name || '').toLowerCase()
-      if (!(name.endsWith('.csv') || name.endsWith('.txt'))) {
-        errors.push(`"${f.name}" no es un CSV.`)
+      if (!(name.endsWith('.csv') || name.endsWith('.txt') || name.endsWith('.xlsx'))) {
+        errors.push(`"${f.name}" no es un CSV ni Excel.`)
         continue
       }
       valid.push(f)
@@ -1204,7 +1205,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
           <input
             ref={inputRef}
             type="file"
-            accept=".csv,text/csv,text/plain"
+            accept=".csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             multiple
             className="hidden"
             onChange={e => pickFiles(e.target.files)}
@@ -1212,7 +1213,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
           {files.length === 0 ? (
             <div className="text-sm text-ink-3">
               <Upload size={20} className="mx-auto mb-2 opacity-60" />
-              Soltá uno o varios CSV o hacé clic para seleccionarlos
+              Soltá tu CSV o Excel, o hacé clic para seleccionarlo
               <div className="mt-1 text-[11px] text-ink-3">
                 Tip: para importar varios años, seleccioná los CSVs juntos
               </div>

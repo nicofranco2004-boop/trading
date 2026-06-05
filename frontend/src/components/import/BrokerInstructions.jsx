@@ -59,6 +59,16 @@ function SchwabLogo({ size = 18 }) {
   )
 }
 
+function BullMarketLogo({ size = 18 }) {
+  // Bull Market Brokers: verde sobre fondo oscuro.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect width="24" height="24" rx="4" fill="#0E1A2B" />
+      <text x="12" y="16" textAnchor="middle" fontFamily="-apple-system,sans-serif" fontWeight="800" fontSize="11" fill="#22C55E">BM</text>
+    </svg>
+  )
+}
+
 // Diccionario broker → contenido. El user va a actualizar `steps` y `summary`
 // cuando mande los ejemplos reales.
 const BROKERS = [
@@ -113,6 +123,19 @@ const BROKERS = [
       'Subí ese CSV acá. Si tenés varias cuentas, exportá una por una.',
     ],
     parserNote: 'Schwab exporta en USD — Rendi crea el broker en dólares automáticamente.',
+  },
+  {
+    id: 'bullmarket',
+    label: 'Bull Market',
+    Logo: BullMarketLogo,
+    summary: 'Usamos el export de Cuenta Corriente (en pesos). Bull Market lo baja en Excel.',
+    steps: [
+      'Entrá a tu cuenta de Bull Market → Mi Cuenta → Cuenta Corriente.',
+      'Elegí la pestaña Pesos y el rango de fechas (lo más amplio posible).',
+      'Tocá Buscar y después Exportar → se descarga un Excel (.xlsx).',
+      'Subí ese Excel acá tal cual — no hace falta convertirlo a CSV.',
+    ],
+    parserNote: 'Importamos compras, ventas, depósitos y retiros. Las cauciones (caja) y los FCI se omiten — los FCI los cargás aparte desde Fondos.',
   },
   {
     id: 'iol',

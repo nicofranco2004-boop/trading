@@ -19,6 +19,7 @@ from .validator import validate
 from .preview import build_preview
 from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
 from .cash_sim import simulate as simulate_cash
+from .excel import to_csv_text, is_xlsx, xlsx_to_csv
 from . import seed as _seed
 
 
@@ -148,21 +149,24 @@ def inspect(file_bytes: bytes) -> Dict[str, Any]:
     if len(file_bytes) > MAX_FILE_BYTES:
         return {"error": f"El archivo excede el límite de {MAX_FILE_BYTES // 1_000_000} MB."}
     try:
-        content = file_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        try:
-            content = file_bytes.decode("latin-1")
-        except UnicodeDecodeError:
-            return {"error": "No pudimos decodificar el archivo. Probá guardarlo como UTF-8."}
+        content = to_csv_text(file_bytes)  # maneja .xlsx (convierte) y CSV (decodifica)
+    except ValueError as ex:
+        return {"error": str(ex)}
     return mapper_inspect(content)
 
 
 def _decode_csv(file_bytes: bytes) -> Optional[str]:
-    """Decodifica bytes a string. None si falla.
+    """Decodifica bytes a string CSV. None si falla.
 
-    Probamos en orden: utf-8 (con BOM), cp1252 (Excel Windows), latin-1 (catch-all).
+    Si es un .xlsx (multi-file con Excel), lo convierte a CSV primero. Para CSV
+    en texto probamos: utf-8 (con BOM), cp1252 (Excel Windows), latin-1 (catch-all).
     cp1252 cubre exports de Excel Windows que latin-1 muta mal (chars 0x80-0x9F).
     """
+    if is_xlsx(file_bytes):
+        try:
+            return xlsx_to_csv(file_bytes)
+        except ValueError:
+            return None
     for enc in ("utf-8-sig", "cp1252", "latin-1"):
         try:
             return file_bytes.decode(enc)
@@ -262,14 +266,12 @@ def run_preview(
     fh = _file_hash(file_bytes)
     duplicate_of = find_duplicate_batch(conn, uid, fh)
 
-    # Decode (intenta utf-8, latin-1)
+    # Decode / convertir a CSV. to_csv_text maneja .xlsx (convierte la primera
+    # hoja a CSV) y CSV en texto (utf-8-sig / latin-1).
     try:
-        content = file_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        try:
-            content = file_bytes.decode("latin-1")
-        except UnicodeDecodeError:
-            return {"error": "No pudimos decodificar el archivo. Probá guardarlo como UTF-8."}
+        content = to_csv_text(file_bytes)
+    except ValueError as ex:
+        return {"error": str(ex)}
 
     # Si viene un mapping explícito, lo aplicamos para traducir el CSV a los
     # headers internos de Rendi. Después corremos el RendiGenericParser sobre

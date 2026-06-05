@@ -1887,6 +1887,9 @@ export function handleDemoRequest(method, path, body) {
         { platform: 'schwab', platform_label: 'Charles Schwab', exports: [
           { id: 'schwab', label: 'Charles Schwab', supported: true },
         ] },
+        { platform: 'bullmarket', platform_label: 'Bull Market', exports: [
+          { id: 'bullmarket', label: 'Cuenta Corriente (Excel)', supported: true },
+        ] },
         { platform: 'generic', platform_label: 'Genérico (cualquier broker)', exports: [
           { id: 'rendi_generic', label: 'Template Rendi (genérico)', supported: true },
         ] },
