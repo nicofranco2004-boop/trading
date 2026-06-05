@@ -20,13 +20,16 @@ Mapeo de `Comprobante` al modelo Rendi:
     RECIBO DE COBRO              → DEPOSITO   Ingreso de plata (CREDITO CTA CTE)
     ORDEN DE PAGO                → RETIRO     Egreso (TRANSFERENCIA VIA MEP)
 
-Se DESCARTAN a propósito (decisión de producto, ver sesión 2026-06):
-    COMPRA CAUCION CONTADO / VENTA CAUCION TERMINO  (especie "VARIAS")
-        → cauciones: manejo de caja a corto plazo, no inversiones. Importarlas
-          crearía un activo fantasma "VARIAS".
-    SUSCRIPCION FCI / LIQUIDACION RESCATE FCI  (especie "PPII")
-        → el export trae la suscripción sin unidades → reconstruir la posición
-          de FCI sale incompleto. Se cargan aparte con el flujo de Fondos.
+Cauciones (COMPRA CAUCION CONTADO / VENTA CAUCION TERMINO, especie "VARIAS"):
+    NO se cargan como activo (manejo de caja, no inversión). Pero su NETO (lo
+    que volvió por encima de lo colocado) es interés real ganado → lo sumamos
+    como UNA fila de INTERÉS (cuenta como ganancia realizada, no como depósito).
+    Así no se pierde esa ganancia ni se crea el activo fantasma "VARIAS".
+
+FCI (SUSCRIPCION FCI / LIQUIDACION RESCATE FCI, especie "PPII"):
+    Se DESCARTAN. El export trae la suscripción sin unidades → no se puede
+    reconstruir ni la ganancia ni la tenencia. Si el usuario tiene un FCI
+    abierto hoy, lo carga manualmente desde Posiciones (aviso en el wizard).
 
 Particularidades:
 - Fecha = `Operado` (fecha de la operación, no la de liquidación). Ya viene ISO
@@ -58,9 +61,9 @@ _OP_MAP = {
     "orden de pago":   "RETIRO",
 }
 
-# Prefijos de comprobantes que descartamos silenciosamente (cauciones).
-_SKIP_PREFIXES = ("compra caucion", "venta caucion", "caucion")
-# FCI: descartados en v1 (ver docstring).
+# FCI: descartados (solo aviso al user para cargar el abierto manual). Las
+# cauciones NO van acá — se detectan por substring "caucion" y se netean a
+# interés (ver parse()).
 _SKIP_FCI = ("suscripcion fci", "liquidacion rescate fci", "rescate fci", "suscripcion fondo")
 
 # Normalización de tickers Bull Market → símbolo BYMA/Rendi. Pass-through si no
@@ -151,16 +154,36 @@ class BullMarketParser(Parser):
             col = norm_to_orig.get(norm_key)
             return _strip(row.get(col, "")) if col else ""
 
+        # Cauciones: acumulamos su neto (= interés) para cargarlo como UNA fila
+        # de INTERÉS al final. last_idx para indexar esa fila sintética.
+        caucion_net = 0.0
+        caucion_last_date = ""
+        last_idx = 0
+
         for idx, row in enumerate(reader, start=1):
+            last_idx = idx
             comprobante = G(row, "comprobante")
             comp_lc = comprobante.lower()
             if not comp_lc:
                 continue  # fila vacía
 
-            # Descartes silenciosos (cauciones + FCI).
-            if any(comp_lc.startswith(p) for p in _SKIP_PREFIXES):
+            # Cauciones (especie VARIAS): manejo de caja, no inversión en un
+            # activo. Acumulamos su neto = interés ganado y lo cargamos al final
+            # como una sola fila de INTERÉS (ganancia, NO depósito → no infla el
+            # capital aportado). Evita crear el activo fantasma "VARIAS".
+            if "caucion" in comp_lc:
+                v = _num(G(row, "importe"))
+                if v is not None:
+                    caucion_net += v
+                    d = G(row, "operado") or G(row, "liquida")
+                    if d > caucion_last_date:
+                        caucion_last_date = d
                 continue
-            if comp_lc in _SKIP_FCI or "caucion" in comp_lc:
+            # FCI: descartados. El export no trae las unidades de la suscripción
+            # → no se puede reconstruir ni la ganancia ni la posición. El usuario
+            # carga el FCI que tenga abierto hoy manualmente desde Posiciones
+            # (aviso en las instrucciones del wizard).
+            if comp_lc in _SKIP_FCI:
                 continue
 
             tipo_rendi = _OP_MAP.get(comp_lc)
@@ -214,5 +237,25 @@ class BullMarketParser(Parser):
                 "notas":      notas,
             }
             result.raw_rows.append(RawRow(row_index=idx, data=data))
+
+        # Interés de cauciones: el neto positivo (lo que volvió por encima de lo
+        # colocado) es interés ganado → una fila de INTERÉS. Solo si es > 0
+        # (un neto ≤ 0 implicaría una caución abierta al cierre → lo omitimos
+        # para no inventar una pérdida fantasma).
+        if caucion_net > 0:
+            result.raw_rows.append(RawRow(row_index=last_idx + 1, data={
+                "fecha":      caucion_last_date or "",
+                "tipo":       "INTERES",
+                "broker":     "Bull Market",
+                "activo":     "",
+                "cantidad":   "",
+                "precio":     "",
+                "monto":      f"{caucion_net:.2f}",
+                "monto_usd":  "",
+                "tc":         "",
+                "comisiones": "0",
+                "moneda":     "ARS",
+                "notas":      "Interés de cauciones",
+            }))
 
         return result

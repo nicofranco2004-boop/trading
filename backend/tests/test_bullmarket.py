@@ -34,9 +34,9 @@ def _build_bm_xlsx() -> bytes:
         [datetime(2025, 6, 24), datetime(2025, 6, 21), "VENTA", 5308533, -7, "GGAL", 27478.848015, 192351.94, 27618.78, None],
         [datetime(2025, 8, 12), datetime(2025, 8, 12), "RECIBO DE COBRO", 1176600, 0, None, 0, 1003000, 1030618.78, "CREDITO CTA. CTE."],
         [datetime(2025, 8, 11), datetime(2025, 8, 11), "ORDEN DE PAGO", 1240291, 0, None, 0, -737000, 293618.78, "TRANSFERENCIA VIA MEP"],
-        # Caución → debe descartarse
-        [datetime(2025, 8, 7), datetime(2025, 8, 7), "COMPRA CAUCION CONTADO", 6165202, 72, "VARIAS", 14082.147006, -1013914.58, -720295.8, None],
-        [datetime(2025, 8, 8), datetime(2025, 8, 7), "VENTA CAUCION TERMINO", 6188676, -124, "VARIAS", 14878.704946, 1844959.41, 1124663.61, None],
+        # Cauciones → no se cargan como activo; su neto (+5000) se carga como INTERÉS
+        [datetime(2025, 8, 7), datetime(2025, 8, 7), "COMPRA CAUCION CONTADO", 6165202, 72, "VARIAS", 14082.147006, -1000000, -1000000, None],
+        [datetime(2025, 8, 8), datetime(2025, 8, 8), "VENTA CAUCION TERMINO", 6188676, -124, "VARIAS", 14878.704946, 1005000, 5000, None],
         # FCI → debe descartarse
         [datetime(2025, 6, 28), datetime(2025, 6, 28), "SUSCRIPCION FCI", 478531, 0, "PPII", 0, -5060.18, -725355.98, None],
         [datetime(2025, 8, 12), datetime(2025, 8, 12), "LIQUIDACION RESCATE FCI", 766535, -800, "PPII", 7.514478, 6011.58, -719344.4, None],
@@ -78,13 +78,24 @@ class TestBullMarketParser(unittest.TestCase):
     def _parse(self):
         return self.parser.parse(self.csv, file_name="bm.xlsx")
 
-    def test_keeps_only_real_ops(self):
-        """Descarta cauciones (2) + FCI (2); deja compra, venta, depósito, retiro."""
+    def test_keeps_real_ops_plus_caucion_interest(self):
+        """Descarta FCI (2); deja compra, venta, depósito, retiro + 1 fila de
+        INTERÉS con el neto de las cauciones."""
         r = self._parse()
-        self.assertEqual(len(r.raw_rows), 4)
+        self.assertEqual(len(r.raw_rows), 5)
         self.assertEqual(len(r.parse_errors), 0)
         tipos = sorted(row.data["tipo"] for row in r.raw_rows)
-        self.assertEqual(tipos, ["COMPRA", "DEPOSITO", "RETIRO", "VENTA"])
+        self.assertEqual(tipos, ["COMPRA", "DEPOSITO", "INTERES", "RETIRO", "VENTA"])
+
+    def test_caucion_net_becomes_interest_gain(self):
+        """El neto de cauciones (+5000) se carga como INTERÉS (ganancia), sin
+        activo y sin crear VARIAS."""
+        r = self._parse()
+        interes = next(x for x in r.raw_rows if x.data["tipo"] == "INTERES")
+        self.assertEqual(float(interes.data["monto"]), 5000.0)
+        self.assertEqual(interes.data["activo"], "")
+        self.assertEqual(interes.data["moneda"], "ARS")
+        self.assertIn("caucion", interes.data["notas"].lower())
 
     def test_no_caucion_no_fci_assets(self):
         r = self._parse()

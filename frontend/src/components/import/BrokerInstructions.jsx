@@ -135,7 +135,7 @@ const BROKERS = [
       'Tocá Buscar y después Exportar → se descarga un Excel (.xlsx).',
       'Subí ese Excel acá tal cual — no hace falta convertirlo a CSV.',
     ],
-    parserNote: 'Importamos compras, ventas, depósitos y retiros. Las cauciones (caja) y los FCI se omiten — los FCI los cargás aparte desde Fondos.',
+    parserNote: 'Importamos compras, ventas, depósitos, retiros y el interés de tus cauciones. Si tenés un fondo común (FCI) abierto hoy, cargalo manualmente desde Posiciones — la importación no trae la tenencia actual del fondo.',
   },
   {
     id: 'iol',
