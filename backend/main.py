@@ -9369,6 +9369,130 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+@app.post("/api/admin/billing/grant-comp")
+def admin_billing_grant_comp(
+    email: str,
+    plan: str = "pro",
+    days: int = 30,
+    force: bool = False,
+    note: str = "",
+    uid: int = Depends(get_admin_user),
+):
+    """Otorga un plan pago GRATIS (comp / cortesía) a un user por N días.
+
+    Caso de uso: agradecer a alguien que ayudó (ej. testeó un import nuevo),
+    dar acceso de prueba, etc. NO cobra nada — no crea suscripción de Rebill.
+
+    Cómo funciona (reusa el modelo de crédito tiempo-based existente):
+      • Setea users.tier = plan + credit_active_until = base + days.
+      • El gating de features lee users.tier → el user ya tiene el plan.
+      • El cron diario (_downgrade_expired_credit) lo baja a Free SOLO cuando
+        credit_active_until vence. Auto-revierte, sin acción manual, y dispara
+        el mail de "tu plan vence en X días".
+      • Deja audit en credit_ledger (kind='comp', amount_usd=0).
+
+    Salvaguardas:
+      • plan ∈ {'plus','pro'}; days ∈ [1, 366].
+      • Si el user YA tiene crédito activo, NO apila por accidente: devuelve
+        ok:false salvo force=true. Con force, extiende DESDE el vencimiento
+        actual (suma `days`), nunca acorta.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
+    plan = (plan or "").strip().lower()
+    if plan not in ("plus", "pro"):
+        raise HTTPException(400, "plan inválido (usá 'plus' o 'pro').")
+    if days < 1 or days > 366:
+        raise HTTPException(400, "days fuera de rango (1..366).")
+
+    conn = get_db()
+    try:
+        from billing import credits as billing_credits
+        urow = conn.execute(
+            "SELECT id, email, tier FROM users WHERE lower(email) = lower(?)",
+            (email.strip(),),
+        ).fetchone()
+        if not urow:
+            raise HTTPException(404, f"No existe user con email {email!r}")
+        target_uid = urow["id"]
+        before_tier = urow["tier"]
+
+        state = billing_credits.get_credit_state(conn, target_uid)
+        now = _dt.utcnow()
+
+        if state["is_active"] and not force:
+            return {
+                "ok": False,
+                "changed": False,
+                "reason": "credit_already_active",
+                "detail": (
+                    f"{urow['email']} ya tiene crédito activo hasta "
+                    f"{state['active_until']} (plan {state['anchor_plan']}). "
+                    "Pasá force=true para extender/sumar igual."
+                ),
+                "credit_active_until": state["active_until"],
+                "days_remaining": round(state["days_remaining"], 1),
+            }
+
+        # Base = el vencimiento actual si sigue vigente (extiende), sino NOW.
+        base = now
+        if state["is_active"] and state["active_until"]:
+            try:
+                cur = _dt.fromisoformat(str(state["active_until"]).replace("Z", ""))
+                if cur > base:
+                    base = cur
+            except (ValueError, TypeError):
+                pass
+        new_active_until = base + _td(days=days)
+        after_iso = new_active_until.isoformat()
+        before_iso = state["active_until"]
+
+        with conn:
+            conn.execute(
+                """UPDATE users
+                   SET tier = ?,
+                       credit_active_until = ?,
+                       credit_anchor_plan = ?,
+                       credit_anchor_period = 'monthly',
+                       credit_anchor_amount_usd = 0,
+                       credit_anchor_at = ?
+                   WHERE id = ?""",
+                (plan, after_iso, plan, now.isoformat(), target_uid),
+            )
+            conn.execute(
+                """INSERT INTO credit_ledger
+                       (user_id, kind, amount_usd, days_delta,
+                        from_plan, from_period, to_plan, to_period,
+                        active_until_before, active_until_after, note)
+                   VALUES (?, 'comp', 0, ?, ?, ?, ?, 'monthly', ?, ?, ?)""",
+                (
+                    target_uid, float(days),
+                    before_tier, state["anchor_period"], plan,
+                    before_iso, after_iso,
+                    note.strip() or f"Comp {days}d {plan} otorgado por admin uid={uid}",
+                ),
+            )
+        log.info(
+            "Admin %s granted COMP to user %s (%s): %s for %s days (until %s)",
+            uid, target_uid, urow["email"], plan, days, after_iso,
+        )
+        return {
+            "ok": True,
+            "changed": True,
+            "email": urow["email"],
+            "before_tier": before_tier,
+            "after_tier": plan,
+            "days": days,
+            "credit_active_until": after_iso,
+            "detail": (
+                f"{plan.upper()} comp de {days} días otorgado a {urow['email']}. "
+                f"Vence {after_iso[:10]} y vuelve a Free solo (cron diario)."
+            ),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/fci/probe")
 def admin_fci_probe(uid: int = Depends(get_admin_user)):
     """Fase 0 — Probe READ-ONLY desde el server (Railway) para validar si las
@@ -14009,6 +14133,7 @@ def ai_delete_fact(
 
 from importing import pipeline as _import_pipeline
 from importing import persister as _import_persister
+from importing import rebuild as _import_rebuild
 from importing.parsers.registry import get_parser as _get_parser
 
 # Namespace simple con los helpers que el persister consume.
@@ -14209,6 +14334,21 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
             skip_set = set(data.skip_row_indices or [])
             if skip_set:
                 txs = [t for t in txs if t.row_index not in skip_set]
+                # CRÍTICO: las filas salteadas quedan en import_normalized_tx
+                # (las inserta load_session_*_revalidate ANTES de este filtro).
+                # Si no las sacamos, el LOG de "lo aplicado" miente: el rebuild
+                # FIFO las replaya, el revert intenta revertir cash que nunca se
+                # debitó, y _recalc cuenta sus DEPOSIT/WITHDRAW → corrupción
+                # silenciosa de holdings, P&L y capital aportado. Las borramos
+                # acá para que normalized_tx refleje SOLO lo que se persiste.
+                _ph = ",".join("?" * len(skip_set))
+                conn.execute(
+                    f"""DELETE FROM import_normalized_tx
+                         WHERE batch_id=? AND raw_row_id IN (
+                           SELECT id FROM import_raw_rows
+                            WHERE batch_id=? AND row_index IN ({_ph}))""",
+                    (data.session_id, data.session_id, *skip_set),
+                )
 
             try:
                 summary = _import_persister.persist_batch(
@@ -14223,17 +14363,48 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
             except _import_persister.PersistError as ex:
                 raise HTTPException(400, f"Error en fila {ex.row_index}: {ex.message}")
 
+            # Rebuild FIFO global: el persister es incremental (cada batch se
+            # aplica contra el estado actual), así que importar el historial en
+            # tandas FUERA de orden cronológico rompe el cost basis (una venta
+            # cuyo lote de compra todavía no se cargó usa un lote semilla al
+            # precio de venta → P&L 0 + tenencia fantasma). Esto reconstruye los
+            # lotes abiertos + ventas de cada (broker, activo) tocado replayando
+            # TODO su historial importado en orden de fecha. Idempotente para
+            # data ya ordenada; saltea (broker,activo) con ops manuales. No toca
+            # cash (order-independent). Best-effort: si falla, el batch ya está
+            # persistido — loggeamos y seguimos (el recalc de abajo corre igual).
+            try:
+                _tc_blue_rb = _import_persister._read_tc_blue(conn, uid)
+                _import_rebuild.rebuild_fifo_after_import(
+                    conn, uid, data.session_id, tc_blue=_tc_blue_rb,
+                )
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
             # Auto-recalc post-import: el persister es incremental (cada tx
             # actualiza monthly_entries por separado vía _update_monthly_*).
             # Si quedó drift residual de cycles previos (capital_inicio
             # negativo, pnl_unrealized stale), corremos el recalc canónico
             # para garantizar que los aggregates queden consistentes. Es
             # idempotente — re-corre la SUM desde operations + import_normalized_tx.
+            # Corre DESPUÉS del rebuild para que pnl_realized refleje las
+            # operations ya corregidas.
             try:
                 _recalc_pnl_realized_from_ops(conn, uid)
             except Exception:
                 # No queremos hacer fallar el confirm si el recalc rompe — el
                 # batch ya está persistido. Loggeamos pero seguimos.
+                import traceback
+                traceback.print_exc()
+
+            # Re-backfill de snapshots month-end: persist_batch ya los generó,
+            # pero ANTES del rebuild — con el capital_final viejo. Tras el rebuild
+            # + recalc, capital_final quedó corregido, así que lo re-corremos
+            # (UPSERT idempotente) para que el chart de evolución use el P&L bueno.
+            try:
+                _import_persister._backfill_snapshots_from_monthly(conn, uid)
+            except Exception:
                 import traceback
                 traceback.print_exc()
 
