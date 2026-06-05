@@ -59,6 +59,8 @@ _OP_MAP = {
     "venta":           "VENTA",
     "recibo de cobro": "DEPOSITO",
     "orden de pago":   "RETIRO",
+    "dividendos":      "DIVIDENDO",
+    "dividendo":       "DIVIDENDO",
 }
 
 # FCI: descartados (solo aviso al user para cargar el abierto manual). Las
@@ -114,6 +116,14 @@ def _norm_ticker(especie: str) -> Optional[str]:
     return _TICKER_MAP.get(t, t)
 
 
+def _currency_from_sheet(hoja: str) -> str:
+    """Moneda de la fila según el nombre de la hoja del Excel. Bull Market
+    nombra las hojas 'Cuenta Corriente PESOS …' / 'DOLARES …' / 'DOLARES CABLE …'.
+    El conversor de xlsx agrega ese nombre como columna sintética '_hoja' a cada
+    fila, así la moneda sobrevive a la combinación de varios archivos."""
+    return "USD" if "DOLAR" in (hoja or "").upper() else "ARS"
+
+
 class BullMarketParser(Parser):
     format_id = "bullmarket"
     display_name = "Bull Market"
@@ -154,10 +164,10 @@ class BullMarketParser(Parser):
             col = norm_to_orig.get(norm_key)
             return _strip(row.get(col, "")) if col else ""
 
-        # Cauciones: acumulamos su neto (= interés) para cargarlo como UNA fila
-        # de INTERÉS al final. last_idx para indexar esa fila sintética.
-        caucion_net = 0.0
-        caucion_last_date = ""
+        # Cauciones: acumulamos su neto (= interés) POR MONEDA → una fila de
+        # INTERÉS por moneda al final. last_idx indexa esas filas sintéticas.
+        caucion_net = {}        # moneda → neto
+        caucion_last_date = {}  # moneda → última fecha
         last_idx = 0
 
         for idx, row in enumerate(reader, start=1):
@@ -167,18 +177,27 @@ class BullMarketParser(Parser):
             if not comp_lc:
                 continue  # fila vacía
 
-            # Cauciones (especie VARIAS): manejo de caja, no inversión en un
-            # activo. Acumulamos su neto = interés ganado y lo cargamos al final
-            # como una sola fila de INTERÉS (ganancia, NO depósito → no infla el
-            # capital aportado). Evita crear el activo fantasma "VARIAS".
+            # Moneda de la fila por el nombre de la hoja (PESOS→ARS, DOLARES→USD).
+            moneda = _currency_from_sheet(G(row, "_hoja"))
+
+            # Cauciones (especie VARIAS): manejo de caja, no inversión. Acumulamos
+            # su neto = interés ganado (por moneda) → fila de INTERÉS al final.
+            # No crea el activo fantasma "VARIAS" ni infla el capital aportado.
             if "caucion" in comp_lc:
                 v = _num(G(row, "importe"))
                 if v is not None:
-                    caucion_net += v
+                    caucion_net[moneda] = caucion_net.get(moneda, 0.0) + v
                     d = G(row, "operado") or G(row, "liquida")
-                    if d > caucion_last_date:
-                        caucion_last_date = d
+                    if d > caucion_last_date.get(moneda, ""):
+                        caucion_last_date[moneda] = d
                 continue
+
+            # Conversiones internas cable↔MEP (NOTA DE CRÉDITO/DÉBITO U$S): mueven
+            # los mismos dólares entre sub-cuentas y se cancelan entre archivos →
+            # no son ingreso/egreso ni ganancia. Se omiten.
+            if "nota de" in comp_lc and "u$s" in comp_lc:
+                continue
+
             # FCI: descartados. El export no trae las unidades de la suscripción
             # → no se puede reconstruir ni la ganancia ni la posición. El usuario
             # carga el FCI que tenga abierto hoy manualmente desde Posiciones
@@ -210,7 +229,14 @@ class BullMarketParser(Parser):
                 monto = f"{abs(imp_v)}" if imp_v is not None else ""
                 precio = f"{abs(price_v)}" if price_v is not None else ""
                 activo = ticker
-                fees = "0"
+            elif tipo_rendi == "DIVIDENDO":
+                # Dividendo en USD: la especie es el activo (GOOGL, EWZ…), el
+                # monto es el importe. El persister lo trata como ganancia.
+                imp_v = _num(G(row, "importe"))
+                monto = f"{abs(imp_v)}" if imp_v is not None else ""
+                activo = _norm_ticker(G(row, "especie")) or ""
+                qty = ""
+                precio = ""
             else:
                 # DEPOSITO / RETIRO: solo plata.
                 imp_v = _num(G(row, "importe"))
@@ -218,7 +244,6 @@ class BullMarketParser(Parser):
                 qty = ""
                 precio = ""
                 activo = ""
-                fees = "0"
 
             notas = f"Op. {numero}" if numero else ""
 
@@ -232,30 +257,34 @@ class BullMarketParser(Parser):
                 "monto":      monto,
                 "monto_usd":  "",
                 "tc":         "",
-                "comisiones": fees,
-                "moneda":     "ARS",
+                "comisiones": "0",
+                "moneda":     moneda,
                 "notas":      notas,
             }
             result.raw_rows.append(RawRow(row_index=idx, data=data))
 
-        # Interés de cauciones: el neto positivo (lo que volvió por encima de lo
-        # colocado) es interés ganado → una fila de INTERÉS. Solo si es > 0
-        # (un neto ≤ 0 implicaría una caución abierta al cierre → lo omitimos
-        # para no inventar una pérdida fantasma).
-        if caucion_net > 0:
-            result.raw_rows.append(RawRow(row_index=last_idx + 1, data={
-                "fecha":      caucion_last_date or "",
-                "tipo":       "INTERES",
-                "broker":     "Bull Market",
-                "activo":     "",
-                "cantidad":   "",
-                "precio":     "",
-                "monto":      f"{caucion_net:.2f}",
-                "monto_usd":  "",
-                "tc":         "",
-                "comisiones": "0",
-                "moneda":     "ARS",
-                "notas":      "Interés de cauciones",
-            }))
+        # Interés de cauciones por moneda: el neto positivo (lo que volvió por
+        # encima de lo colocado) es interés ganado → una fila de INTERÉS por
+        # moneda. Solo si es > 0 (un neto ≤ 0 implicaría una caución abierta al
+        # cierre → lo omitimos para no inventar una pérdida fantasma).
+        for moneda, net in caucion_net.items():
+            if net > 0:
+                last_idx += 1
+                result.raw_rows.append(RawRow(row_index=last_idx, data={
+                    "fecha":      caucion_last_date.get(moneda, "") or "",
+                    "tipo":       "INTERES",
+                    "broker":     "Bull Market",
+                    "activo":     "",
+                    "cantidad":   "",
+                    "precio":     "",
+                    "monto":      f"{net:.2f}",
+                    "monto_usd":  "",
+                    "tc":         "",
+                    "comisiones": "0",
+                    "moneda":     moneda,
+                    "notas":      "Interés de cauciones",
+                }))
+
+        return result
 
         return result

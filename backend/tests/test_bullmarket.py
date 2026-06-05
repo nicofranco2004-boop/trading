@@ -134,5 +134,50 @@ class TestBullMarketParser(unittest.TestCase):
         self.assertFalse(self.parser.can_handle(["foo", "bar", "baz"]))
 
 
+class TestBullMarketMultiCurrency(unittest.TestCase):
+    """Multi-moneda: la moneda sale del nombre de la hoja (columna _hoja que
+    agrega el conversor de Excel). Dólares: dividendos = ganancia; las
+    conversiones cable↔MEP (NOTA DE CRÉDITO/DÉBITO U$S) se omiten."""
+
+    HEADER = ("Liquida,Operado,Comprobante,Numero,Cantidad,Especie,Precio,"
+              "Importe,Saldo,Referencia,_hoja\n")
+
+    def _parse(self, body):
+        return BullMarketParser().parse(self.HEADER + body)
+
+    def test_currency_detected_per_row_from_sheet(self):
+        body = (
+            "2025-06-21,2025-06-20,COMPRA NORMAL,1,8,YPF,20591.67,-164733.42,-164733.42,,Cuenta Corriente PESOS 05-06-26\n"
+            "2025-06-18,2025-06-18,DIVIDENDOS,2,0,GOOGL,0,0.28,0.28,GOOGL BYMA,Cuenta Corriente DOLARES CABLE 05-06-26\n"
+        )
+        r = self._parse(body)
+        by = {x.data["tipo"]: x.data for x in r.raw_rows}
+        self.assertEqual(by["COMPRA"]["moneda"], "ARS")
+        self.assertEqual(by["COMPRA"]["activo"], "YPFD")
+        self.assertEqual(by["DIVIDENDO"]["moneda"], "USD")
+        self.assertEqual(by["DIVIDENDO"]["activo"], "GOOGL")
+        self.assertEqual(float(by["DIVIDENDO"]["monto"]), 0.28)
+
+    def test_usd_internal_conversions_skipped(self):
+        body = (
+            "2025-05-07,2025-05-07,NOTA DE CREDITO U$S,1,0,,0,4.32,4.73,conv cable a me,Cuenta Corriente DOLARES 05-06-26\n"
+            "2025-05-07,2025-05-07,NOTA DE DEBITOS U$S,2,0,,0,-4.32,0,conv cable a me,Cuenta Corriente DOLARES CABLE 05-06-26\n"
+        )
+        r = self._parse(body)
+        self.assertEqual(len(r.raw_rows), 0)  # conversiones cable↔MEP → no se importan
+        self.assertEqual(len(r.parse_errors), 0)
+
+    def test_usd_caucion_interest_separate_from_ars(self):
+        body = (
+            "2025-08-07,2025-08-07,COMPRA CAUCION CONTADO,1,1,VARIAS,1,-100,-100,,Cuenta Corriente DOLARES 05-06-26\n"
+            "2025-08-08,2025-08-08,VENTA CAUCION TERMINO,2,-1,VARIAS,1,103,3,,Cuenta Corriente DOLARES 05-06-26\n"
+        )
+        r = self._parse(body)
+        interes = [x for x in r.raw_rows if x.data["tipo"] == "INTERES"]
+        self.assertEqual(len(interes), 1)
+        self.assertEqual(interes[0].data["moneda"], "USD")
+        self.assertEqual(float(interes[0].data["monto"]), 3.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,9 +47,10 @@ def xlsx_to_csv(file_bytes: bytes) -> str:
         raise ValueError("Falta la librería openpyxl para leer Excel.") from ex
 
     try:
-        wb = openpyxl.load_workbook(
-            io.BytesIO(file_bytes), data_only=True, read_only=True
-        )
+        # read_only=False a propósito: algunos exports (ej. Bull Market cuenta
+        # cable) graban mal la dimensión de la hoja y en modo read_only openpyxl
+        # trunca columnas. El modo normal lee la grilla real (ok para ≤5 MB).
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     except Exception as ex:
         raise ValueError(
             "No pudimos abrir el Excel. Verificá que sea un .xlsx válido."
@@ -59,15 +60,25 @@ def xlsx_to_csv(file_bytes: bytes) -> str:
         if not wb.worksheets:
             raise ValueError("El Excel no tiene hojas.")
         ws = wb.worksheets[0]
+        sheet_title = ws.title or ""
         buf = io.StringIO()
         writer = csv.writer(buf)
+        # Columna sintética '_hoja': al header le ponemos el nombre de la columna
+        # y a cada fila de datos el TÍTULO de la hoja. Así, si después se combinan
+        # varios archivos (ej. pesos + dólares de un mismo broker), cada fila
+        # conserva de qué hoja vino → el parser puede inferir la moneda. Inocua
+        # para parsers que no la usan.
+        header_done = False
         wrote_any = False
         for row in ws.iter_rows(values_only=True):
             cells = [_cell_to_str(v) for v in row]
             # Descartar filas completamente vacías (separadores, footer en blanco).
-            if any(c.strip() for c in cells):
-                writer.writerow(cells)
-                wrote_any = True
+            if not any(c.strip() for c in cells):
+                continue
+            cells.append("_hoja" if not header_done else sheet_title)
+            writer.writerow(cells)
+            header_done = True
+            wrote_any = True
         if not wrote_any:
             raise ValueError("La primera hoja del Excel está vacía.")
         return buf.getvalue()
