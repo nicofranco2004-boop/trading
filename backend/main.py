@@ -5221,6 +5221,10 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_current_user)):
         if not ok_match:
             conn.close()
             raise HTTPException(400, "La moneda del broker de origen no coincide con la del plazo fijo")
+        # El cash del broker de origen no puede quedar negativo: si el PF supera
+        # el cash disponible, auto-depositamos el faltante (sube cash + capital
+        # aportado) antes de debitar. Mismo criterio que en altas de posición.
+        _autodeposit_if_overdraw(conn, uid, p.source_broker, float(p.capital), p.fecha_inicio)
         _adjust_broker_cash(conn, uid, p.source_broker, -float(p.capital))
     cur = conn.execute(
         """INSERT INTO plazos_fijos

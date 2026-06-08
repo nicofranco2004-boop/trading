@@ -112,6 +112,20 @@ class CashAutodepositTest(unittest.TestCase):
         self.assertAlmostEqual(self._cash("Binance"), 500.0, places=2)
         self.assertAlmostEqual(self._global_deposits(), 0.0, places=2)
 
+    def test_plazo_fijo_funding_no_cash_floors_at_zero(self):
+        # Crear un PF desde un broker sin cash suficiente → mismo auto-deposit.
+        self._broker("Banco Galicia", "ARS")
+        self.conn.execute(
+            "INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+            (self.uid, "tc_blue", "1000"))
+        self.conn.commit()
+        pf = main.PlazoFijoIn(banco="Galicia", capital=100000.0, moneda="ARS",
+                              tasa=0.30, rate_type="TNA", fecha_inicio="2026-01-15",
+                              plazo_dias=30, source_broker="Banco Galicia")
+        main.create_plazo_fijo(pf, self.uid)
+        self.assertAlmostEqual(self._cash("Banco Galicia"), 0.0, places=2)   # no negativo
+        self.assertAlmostEqual(self._global_deposits(), 100.0, places=2)     # 100k ARS / 1000
+
 
 if __name__ == "__main__":
     unittest.main()
