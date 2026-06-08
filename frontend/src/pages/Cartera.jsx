@@ -27,6 +27,7 @@ import { useSearchParams, useLocation } from 'react-router-dom'
 import { Briefcase, TrendingUp, Target } from 'lucide-react'
 import { track } from '../utils/track'
 import Skeleton from '../components/Skeleton'
+import CurrencyToggle from '../components/CurrencyToggle'
 import { markPositionsDiscovered } from '../utils/positionsDiscovered'
 
 const Positions = lazy(() => import('./Positions'))
@@ -95,27 +96,34 @@ export default function Cartera() {
           prominente: en testing el user no descubría las tabs (tab strip chico
           + dentro de Posiciones con botones de acción competía por atención).
           Solución: pills más grandes (text-sm font-semibold, padding amplio) +
-          violet/15 + borde violet/40 en la activa para que sea inconfundible. */}
-      <div className="inline-flex flex-wrap gap-2 mb-5">
-        {TABS.map(t => {
-          const Icon = t.icon
-          const active = tab === t.id
-          return (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-                active
-                  ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-                  : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-              }`}
-              aria-pressed={active}
-            >
-              <Icon size={15} strokeWidth={1.75} aria-hidden="true" />
-              {t.label}
-            </button>
-          )
-        })}
+          violet/15 + borde violet/40 en la activa para que sea inconfundible.
+          A la derecha de la fila va el toggle de divisa (USD/ARS): vive a nivel
+          Cartera para que esté disponible en las 3 tabs (Posiciones / Evolución
+          / Objetivos) y no solo en una. Es global —cambiarlo acá lo cambia en
+          toda la app— pero la opción tiene que estar donde el user está. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div className="inline-flex flex-wrap gap-2">
+          {TABS.map(t => {
+            const Icon = t.icon
+            const active = tab === t.id
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
+                  active
+                    ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
+                    : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
+                }`}
+                aria-pressed={active}
+              >
+                <Icon size={15} strokeWidth={1.75} aria-hidden="true" />
+                {t.label}
+              </button>
+            )
+          })}
+        </div>
+        <CurrencyToggle variant="pill" size="lg" label="Ver en" />
       </div>
 
       <Suspense fallback={

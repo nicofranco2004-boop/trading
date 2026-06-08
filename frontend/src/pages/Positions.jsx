@@ -26,7 +26,6 @@ import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/f
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel } from '../utils/valuation'
 import { useCurrency } from '../contexts/CurrencyContext'
-import CurrencyToggle from '../components/CurrencyToggle'
 import PageHeader from '../components/PageHeader'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import BrokerManager from '../components/BrokerManager'
@@ -816,7 +815,6 @@ function PositionsDesktop() {
               <span className={`tabular ${heroPnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                 ({pctSigned(heroPct)})
               </span>
-              <CurrencyToggle variant="compact" className="ml-auto" />
             </span>
           }
           hint={

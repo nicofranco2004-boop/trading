@@ -23,7 +23,6 @@ import FlashValue from '../components/FlashValue'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency } from '../contexts/CurrencyContext'
-import CurrencyToggle from '../components/CurrencyToggle'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol } from '../utils/valuation'
@@ -465,9 +464,10 @@ export default function Dashboard() {
               source="dashboard_header"
               variant="compact"
             />
-            <CurrencyToggle variant="pill" />
-            {/* Toggle global Phase A: este mismo state se comparte con mobile
-                (HomeMobile, PositionsMobile) y persiste en localStorage. */}
+            {/* El toggle de divisa (USD/ARS) se movió a la fila de tabs de
+                Cartera.jsx — vive a nivel página para estar disponible en las
+                3 tabs, no solo en Evolución. State global compartido con mobile
+                (HomeMobile, PositionsMobile) y persistido en localStorage. */}
           </div>
         }
       />

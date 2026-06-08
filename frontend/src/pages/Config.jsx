@@ -14,6 +14,7 @@ import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import PageHeader from '../components/PageHeader'
+import CurrencyToggle from '../components/CurrencyToggle'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
@@ -159,6 +160,22 @@ export default function Config() {
 
       {/* ── Plan actual ──────────────────────────────────────────────────── */}
       <PlanHero tier={user?.tier || 'free'} usage={aiUsage} />
+
+      {/* ── Moneda de visualización ──────────────────────────────────────── */}
+      {/* Mismo state global que el toggle de Cartera/Análisis. Acá vive como
+          preferencia persistente y descubrible, para el user que prefiere
+          fijarla una vez en vez de cambiarla pantalla por pantalla. */}
+      <section className="mb-6">
+        <div className="border border-line rounded bg-bg-1 px-4 py-3.5 flex items-center justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <h2 className="text-sm font-medium text-ink-1">Moneda de visualización</h2>
+            <p className="text-xs text-ink-3 mt-0.5">
+              Elegí ver tus valores en dólares (USD) o pesos (ARS). Se aplica en toda la app.
+            </p>
+          </div>
+          <CurrencyToggle variant="pill" size="lg" />
+        </div>
+      </section>
 
       {/* ── FX rates ─────────────────────────────────────────────────────── */}
       <section className="mb-6">

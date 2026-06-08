@@ -24,6 +24,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom'
 import { Compass, TrendingUp, Brain, BarChart3, UserRound } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
+import CurrencyToggle from '../components/CurrencyToggle'
 import { track } from '../utils/track'
 
 const Insights = lazy(() => import('./Insights'))
@@ -86,27 +87,31 @@ export default function Analisis() {
 
       {/* Tab strip — filled pills con violet en la activa. Mismo diseño que
           Cartera.jsx para consistencia visual entre las 2 páginas con tabs
-          principales del producto. */}
-      <div className="inline-flex flex-wrap gap-2 mb-5">
-        {TABS.map(t => {
-          const Icon = t.icon
-          const active = tab === t.id
-          return (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-                active
-                  ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-                  : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-              }`}
-              aria-pressed={active}
-            >
-              <Icon size={15} strokeWidth={1.75} aria-hidden="true" />
-              {t.label}
-            </button>
-          )
-        })}
+          principales del producto. A la derecha, el toggle de divisa (mismo
+          que Cartera) para que el user pueda cambiar USD/ARS desde acá también. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div className="inline-flex flex-wrap gap-2">
+          {TABS.map(t => {
+            const Icon = t.icon
+            const active = tab === t.id
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
+                  active
+                    ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
+                    : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
+                }`}
+                aria-pressed={active}
+              >
+                <Icon size={15} strokeWidth={1.75} aria-hidden="true" />
+                {t.label}
+              </button>
+            )
+          })}
+        </div>
+        <CurrencyToggle variant="pill" size="lg" label="Ver en" />
       </div>
 
       {/* Tab content — lazy boundary por tab (cada uno es un chunk separado) */}
