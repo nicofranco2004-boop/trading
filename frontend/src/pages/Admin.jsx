@@ -408,7 +408,7 @@ function ReengagementPanel({ toast }) {
             <button
               onClick={send}
               disabled={sending || toSend.length === 0}
-              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed press"
             >
               <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${toSend.length}`}
             </button>

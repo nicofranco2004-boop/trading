@@ -1686,7 +1686,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
           </div>
           <p className="text-ink-2">
             Detectamos que estas filas coinciden con operaciones de imports anteriores (misma fecha + broker + tipo + activo + cantidad + precio).
-            Si confirmás, se van a duplicar en el portfolio. Filas: {' '}
+            Si confirmás, se van a duplicar en la cartera. Filas: {' '}
             <span className="font-mono text-ink-1">
               {preview.duplicate_row_indices.slice(0, 30).join(', ')}
               {preview.duplicate_row_indices.length > 30 && '…'}

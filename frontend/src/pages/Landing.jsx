@@ -1031,7 +1031,7 @@ function Pricing() {
         <PlanCard
           variant="free"
           name="Free"
-          tagline="Para empezar a entender tu portfolio"
+          tagline="Para empezar a entender tu cartera"
           price="Gratis"
           priceSub="Para siempre"
           features={FREE_FEATURES}

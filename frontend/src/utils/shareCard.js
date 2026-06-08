@@ -326,7 +326,7 @@ export function specFromMonth(monthRow) {
     eyebrow: label ? `Mi ${label} en Rendi` : 'Mi mes en Rendi',
     title: pctStr,
     subtitle: positive
-      ? 'Rendimiento mensual del portfolio'
+      ? 'Rendimiento mensual de la cartera'
       : 'Mes negativo — cierre del período',
     stats,
     pill: { label: positive ? 'Mes positivo' : 'Mes negativo', tone },

@@ -143,7 +143,7 @@ export default function AnalysisDrawer({
             {title}
           </span>
         }
-        title={subtitle || 'Análisis del portfolio'}
+        title={subtitle || 'Análisis de la cartera'}
         ariaLabel="Análisis IA"
         footer={
           <button
@@ -195,7 +195,7 @@ export default function AnalysisDrawer({
               </span>
             </div>
             <h2 className="text-base font-medium text-ink-0 leading-tight">
-              {subtitle || 'Análisis del portfolio'}
+              {subtitle || 'Análisis de la cartera'}
             </h2>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">

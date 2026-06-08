@@ -653,7 +653,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
         <div className="border border-line/40 bg-bg-1/40 rounded px-4 py-3 text-xs text-ink-2 leading-relaxed">
           {(m.trades_count === 0 || m.trades_count == null)
             ? `Sin operaciones cerradas en ${tab === 'day' ? 'el día' : tab === 'week' ? 'la semana' : tab === 'year' ? 'el año' : 'el período'}. `
-            : 'Sin variación en el valor del portfolio. '}
+            : 'Sin variación en el valor de la cartera. '}
           Esperando próxima actualización (snapshot diario al cierre del mercado o al
           registrar una operación).
         </div>

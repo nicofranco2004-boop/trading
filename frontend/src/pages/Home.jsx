@@ -37,7 +37,7 @@ export default function Home() {
           <h1 className="display-heading mt-1">El mercado hoy</h1>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <AnalyzeButton screen="home" subtitle="El mercado y tu portfolio hoy" />
+          <AnalyzeButton screen="home" subtitle="El mercado y tu cartera hoy" />
           <SearchBar />
         </div>
       </header>

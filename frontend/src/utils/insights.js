@@ -31,7 +31,7 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, positi
     const top2 = losers.slice(0, 2).map(p => p.asset).join(' y ')
     return {
       tone: 'negative',
-      text: `Tu portfolio rinde ${pctTxt} desde el inicio. Las mayores caídas provienen de ${top2}.`,
+      text: `Tu cartera rinde ${pctTxt} desde el inicio. Las mayores caídas provienen de ${top2}.`,
     }
   }
 
@@ -40,7 +40,7 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, positi
     const top2 = winners.slice(0, 2).map(p => p.asset).join(' y ')
     return {
       tone: 'positive',
-      text: `Tu portfolio rinde ${pctTxt} desde el inicio. Las posiciones que más aportan: ${top2}.`,
+      text: `Tu cartera rinde ${pctTxt} desde el inicio. Las posiciones que más aportan: ${top2}.`,
     }
   }
 
@@ -48,12 +48,12 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, positi
   if (totalReturn !== 0) {
     return {
       tone: totalReturn >= 0 ? 'positive' : 'negative',
-      text: `Tu portfolio rinde ${pctTxt} sobre el capital aportado (${fmtUsd(Math.abs(totalReturn))} ${totalReturn >= 0 ? 'a favor' : 'en contra'}).`,
+      text: `Tu cartera rinde ${pctTxt} sobre el capital aportado (${fmtUsd(Math.abs(totalReturn))} ${totalReturn >= 0 ? 'a favor' : 'en contra'}).`,
     }
   }
 
   return {
     tone: 'neutral',
-    text: 'Cargá tus movimientos y posiciones para ver el rendimiento real de tu portfolio.',
+    text: 'Cargá tus movimientos y posiciones para ver el rendimiento real de tu cartera.',
   }
 }

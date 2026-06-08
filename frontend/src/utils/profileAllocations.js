@@ -161,7 +161,7 @@ export const TYPICAL_CONCENTRATION_TOP3 = {
 // comparaciones single-value en el UI).
 
 export const DRAWDOWN_TOLERANCE_BY_BEHAVIOR = {
-  sell_all:  { min: 5,  max: 12, mid: 8,  label: 'vendería todo el portfolio' },
+  sell_all:  { min: 5,  max: 12, mid: 8,  label: 'vendería toda la cartera' },
   sell_some: { min: 12, max: 20, mid: 15, label: 'vendería una parte' },
   hold:      { min: 20, max: 30, mid: 25, label: 'mantendría la posición' },
   buy_more:  { min: 30, max: 60, mid: 40, label: 'compraría más para promediar abajo' },

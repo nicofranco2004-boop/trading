@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, TrendingUp, TrendingDown } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
+import FlashValue from '../components/FlashValue'
 import Skeleton from '../components/Skeleton'
 import BenchmarksLine from '../components/BenchmarksLine'
 import PersonalLayer from '../components/home/PersonalLayer'
@@ -191,13 +192,13 @@ export default function HomeMobile() {
       <section className="px-4 pt-5 pb-4">
         <div className="flex items-center justify-between mb-3">
           <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
-            Tu portfolio
+            Tu cartera
           </div>
           {/* Botón primario de análisis del portfolio — siempre visible
               y prominente (no es hover-reveal porque mobile). */}
           <AnalyzeButton
             screen="home"
-            subtitle="El mercado y tu portfolio hoy"
+            subtitle="El mercado y tu cartera hoy"
             label="Analizar"
           />
         </div>
@@ -210,9 +211,11 @@ export default function HomeMobile() {
         {/* Balance grande — toggle USD/ARS al tap del badge.
             Fase A: sincronizado con Dashboard via CurrencyContext. */}
         <div className="text-5xl font-medium tabular tracking-tight text-ink-0 leading-none mb-3">
-          {currency === 'ARS'
-            ? `$${fmtNumber((totals.totalValue + pf.valueUsd) * tcBlue)}`
-            : `$${fmtNumber(totals.totalValue + pf.valueUsd)}`}
+          <FlashValue value={totals.totalValue + pf.valueUsd}>
+            {currency === 'ARS'
+              ? `$${fmtNumber((totals.totalValue + pf.valueUsd) * tcBlue)}`
+              : `$${fmtNumber(totals.totalValue + pf.valueUsd)}`}
+          </FlashValue>
           <button
             onClick={toggleCurrency}
             className="text-base text-ink-3 ml-1.5 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"

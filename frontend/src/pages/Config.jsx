@@ -465,7 +465,7 @@ function PlanHeroFree({ usage }) {
         <button
           type="button"
           onClick={onUpgradeClick}
-          className="inline-flex items-center gap-2 text-sm font-medium bg-data-violet hover:bg-data-violet/90 text-white border border-data-violet rounded-sm px-5 py-3 transition-colors shadow-md shadow-data-violet/20"
+          className="inline-flex items-center gap-2 text-sm font-medium bg-data-violet hover:bg-data-violet/90 text-white border border-data-violet rounded-sm px-5 py-3 transition-colors shadow-md shadow-data-violet/20 press"
         >
           <Sparkles size={14} strokeWidth={1.75} />
           Mejorar plan

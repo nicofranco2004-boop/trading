@@ -330,7 +330,7 @@ export default function Login() {
                     setError('')
                     // Email queda pre-cargado para que solo tipee el password
                   }}
-                  className="w-full inline-flex items-center justify-center gap-1.5 bg-data-violet text-white rounded-lg py-2 text-sm font-medium hover:bg-data-violet/90 transition-colors"
+                  className="w-full inline-flex items-center justify-center gap-1.5 bg-data-violet text-white rounded-lg py-2 text-sm font-medium hover:bg-data-violet/90 transition-colors press"
                 >
                   Iniciar sesión con {email}
                   <ArrowRight size={13} strokeWidth={1.75} />

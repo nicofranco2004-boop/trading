@@ -57,7 +57,7 @@ export default function AnalyzeButton({
     <>
       <button
         onClick={handleClick}
-        className={`inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors ${className}`}
+        className={`inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors press ${className}`}
       >
         <Sparkles size={12} strokeWidth={1.75} />
         {label}

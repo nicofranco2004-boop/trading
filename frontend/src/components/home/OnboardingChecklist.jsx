@@ -268,7 +268,7 @@ export default function OnboardingChecklist() {
                     ? 'border-rendi-pos/30 bg-rendi-pos/[0.04] cursor-default'
                     : item.disabled
                       ? 'border-line/40 bg-bg-1/40 cursor-not-allowed opacity-60'
-                      : 'border-line hover:border-line-3 hover:bg-bg-2/40 cursor-pointer group'
+                      : 'border-line hover:border-line-3 hover:bg-bg-2/40 cursor-pointer group press'
                 }`}
               >
                 {/* Check icon */}

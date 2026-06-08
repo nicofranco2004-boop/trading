@@ -1395,7 +1395,7 @@ function InsightsDesktop({ _embeddedTab }) {
       alerts.push({
         level: 'warning',
         category: 'Concentración',
-        title: `${top.asset} representa el ${top.pct_of_portfolio.toFixed(0)}% del portfolio`,
+        title: `${top.asset} representa el ${top.pct_of_portfolio.toFixed(0)}% de la cartera`,
         text: 'Concentración elevada en un único activo. Una caída significativa de ese instrumento impactaría de forma desproporcionada en el resultado total.',
       })
     }
@@ -1406,8 +1406,8 @@ function InsightsDesktop({ _embeddedTab }) {
     alerts.push({
       level: 'warning',
       category: 'Drawdown',
-      title: `El portfolio está ${Math.abs(drawdown.current).toFixed(1)}% por debajo de su máximo histórico`,
-      text: 'Tu portfolio atraviesa un drawdown. Es momento de revisar si los fundamentos de tu estrategia siguen siendo válidos.',
+      title: `La cartera está ${Math.abs(drawdown.current).toFixed(1)}% por debajo de su máximo histórico`,
+      text: 'Tu cartera atraviesa un drawdown. Es momento de revisar si los fundamentos de tu estrategia siguen siendo válidos.',
     })
   }
 
@@ -1574,7 +1574,7 @@ function InsightsDesktop({ _embeddedTab }) {
         />
         <div className="border border-line rounded bg-bg-1 px-6 py-12 text-center max-w-2xl mx-auto">
           <Activity size={28} strokeWidth={1.5} className="mx-auto mb-3 text-ink-3" />
-          <h2 className="text-base font-medium text-ink-0 mb-1.5">Todavía no podemos analizar tu portfolio</h2>
+          <h2 className="text-base font-medium text-ink-0 mb-1.5">Todavía no podemos analizar tu cartera</h2>
           <p className="text-sm text-ink-2 leading-relaxed mb-4 max-w-md mx-auto">
             Los insights de concentración, drawdown y atribución necesitan al menos 30 días de historial. Importá tu CSV para empezar.
           </p>
@@ -1770,7 +1770,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
       {/* ── Alertas críticas (danger) — solo lo más urgente arriba ─────────── */}
       {criticalAlerts.length > 0 && (
-        <Section title="Requiere atención" subtitle="Situaciones críticas detectadas en tu portfolio.">
+        <Section title="Requiere atención" subtitle="Situaciones críticas detectadas en tu cartera.">
           <div className="space-y-2">
             {criticalAlerts.map((a, i) => (
               <AlertBanner key={i} level={a.level} category={a.category} title={a.title} text={a.text} />
@@ -1800,7 +1800,7 @@ function InsightsDesktop({ _embeddedTab }) {
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">
-              {currency === 'USD' ? `Portfolio vs ${benchmarkKey} (USD)` : `Portfolio vs ${benchmarkKey} (ARS)`}
+              {currency === 'USD' ? `Cartera vs ${benchmarkKey} (USD)` : `Cartera vs ${benchmarkKey} (ARS)`}
             </h2>
             <InfoTooltip>
               <p className="font-semibold text-ink-0">Qué mostramos</p>
@@ -1912,7 +1912,7 @@ function InsightsDesktop({ _embeddedTab }) {
       <AskAIAbout
         topic="insights.drawdown"
         params={{ window_days: 365 }}
-        subtitle="Drawdown del portfolio"
+        subtitle="Drawdown de la cartera"
       >
       <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
@@ -1927,7 +1927,7 @@ function InsightsDesktop({ _embeddedTab }) {
               <p><span className="text-rendi-warn">−10%</span>: caíste 10% desde el pico.</p>
               <p><span className="text-rendi-neg">&lt; −25%</span>: drawdown serio — recuperar +25% requiere +33% de retorno.</p>
               <div className="border-t border-line/60 my-1.5" />
-              <p className="text-ink-3">Calculado sobre el rendimiento ajustado por flujos (TWRR) — depósitos y retiros no se cuentan como subida/bajada del portfolio.</p>
+              <p className="text-ink-3">Calculado sobre el rendimiento ajustado por flujos (TWRR) — depósitos y retiros no se cuentan como subida/bajada de la cartera.</p>
             </InfoTooltip>
           </div>
           {drawdownTwrr && (
@@ -2107,7 +2107,7 @@ function InsightsDesktop({ _embeddedTab }) {
           tooltip={
             <>
               <p className="font-semibold text-ink-0">Qué es</p>
-              <p>Porcentaje del portfolio concentrado en los 3 activos más grandes (excluyendo cash).</p>
+              <p>Porcentaje de la cartera concentrado en los 3 activos más grandes (excluyendo cash).</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-0">Cómo leerlo</p>
               <p>Cuanto más alto, más dependés de esos 3 activos. Si uno cae fuerte, te afecta de lleno — no tenés diversificación que amortigüe.</p>
@@ -2133,7 +2133,7 @@ function InsightsDesktop({ _embeddedTab }) {
               {(!gainConcentration || gainConcentration.sharePct < 40) && (
                 <p className="text-xs text-ink-2 mt-3 leading-snug">
                   {concentration.sharePct >= 80
-                    ? 'Concentración elevada. Una caída en cualquiera de estos activos impacta fuertemente al portfolio.'
+                    ? 'Concentración elevada. Una caída en cualquiera de estos activos impacta fuertemente a la cartera.'
                     : concentration.sharePct >= 60
                     ? 'Concentración moderada. Aceptable si tenés convicción y conocimiento sobre los activos.'
                     : 'Cartera diversificada entre varios activos.'}
@@ -2210,7 +2210,7 @@ function InsightsDesktop({ _embeddedTab }) {
               <p className="text-xs text-ink-2 mt-3 leading-snug">
                 {commissionsStats.pctOfGrossWin != null && commissionsStats.pctOfGrossWin >= 1
                   ? <>Equivalen al <span className="font-semibold text-ink-0 dark:text-white">{commissionsStats.pctOfGrossWin.toFixed(1)}%</span> de tus ganancias brutas. {commissionsStats.pctOfGrossWin >= 20 ? 'Peso alto sobre el resultado — revisá si conviene operar menos o cambiar de broker.' : commissionsStats.pctOfGrossWin >= 10 ? 'Peso moderado: vale la pena monitorear que no crezca.' : 'Costo razonable en relación a lo generado.'}</>
-                  : 'Costo total de operar tu portfolio.'}
+                  : 'Costo total de operar tu cartera.'}
               </p>
             </>
           )}
@@ -2329,7 +2329,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 tooltip={
                   <>
                     <p className="font-semibold text-ink-0">Qué es</p>
-                    <p>Sensibilidad de tu cartera al mercado. Cuánto se mueve tu portfolio por cada movimiento del S&P 500.</p>
+                    <p>Sensibilidad de tu cartera al mercado. Cuánto se mueve tu cartera por cada movimiento del S&P 500.</p>
                     <div className="border-t border-line/60 my-1.5" />
                     <p className="font-semibold text-ink-0">Cómo leerlo</p>
                     <p><span className="text-ink-1">β = 1.0</span>: te movés igual que el S&P.</p>
@@ -3117,7 +3117,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <h2 className="font-semibold text-ink-0">Atribución del crecimiento</h2>
           <InfoTooltip>
             <p className="font-semibold text-ink-0">Cómo se calcula</p>
-            <p>El portfolio crece o decrece por dos vías: <span className="font-medium">aportes netos</span> (depósitos menos retiros) y <span className="font-medium">rendimiento del mercado</span> (P&L mensual).</p>
+            <p>La cartera crece o decrece por dos vías: <span className="font-medium">aportes netos</span> (depósitos menos retiros) y <span className="font-medium">rendimiento del mercado</span> (P&L mensual).</p>
             <p className="text-ink-3">Si el crecimiento proviene principalmente de aportes, no refleja gestión sino capital nuevo. La performance real es la rentabilidad generada sobre el capital ya invertido.</p>
           </InfoTooltip>
         </div>
@@ -3167,7 +3167,7 @@ function PerformanceAttribution({ discipline, amt }) {
         {pnlShare >= 60 && pnlPositive
           ? 'Más del 60% del crecimiento proviene del rendimiento del mercado. Indicador positivo de gestión.'
           : depShare >= 70
-          ? 'El portfolio creció principalmente por nuevos aportes, no por rendimiento. La rentabilidad real depende de lo que genere el capital ya invertido.'
+          ? 'La cartera creció principalmente por nuevos aportes, no por rendimiento. La rentabilidad real depende de lo que genere el capital ya invertido.'
           : pnlPositive
           ? 'Distribución equilibrada entre aportes y rendimiento del mercado.'
           : 'El mercado generó pérdidas en el período. El crecimiento neto se sostiene únicamente con los aportes.'}
@@ -3662,7 +3662,7 @@ function ProfileConcentrationCard({ data }) {
   const tooltip = (
     <>
       <p className="font-semibold text-ink-0">Cómo se calcula</p>
-      <p>Suma del % que representan tus 3 activos más grandes (por valor en USD, agregando entre brokers) sobre el total del portfolio. Excluye cash.</p>
+      <p>Suma del % que representan tus 3 activos más grandes (por valor en USD, agregando entre brokers) sobre el total de la cartera. Excluye cash.</p>
       <p className="text-ink-3">Rango típico por perfil: orientativo. Más concentración suele tolerarse en perfiles agresivos (que ya asumen más riesgo). Los rangos son referencia, no diagnóstico.</p>
     </>
   )

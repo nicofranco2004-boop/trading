@@ -26,7 +26,7 @@ const QUESTIONS = [
   },
   {
     id: 'drawdown',
-    label: 'Si tu portfolio cae 30% en un mes, ¿qué hacés?',
+    label: 'Si tu cartera cae 30% en un mes, ¿qué hacés?',
     options: [
       { id: 'sell_all',  label: 'Vendo todo',         sub: 'Corto la sangría' },
       { id: 'sell_some', label: 'Vendo una parte',    sub: 'Reduzco exposición' },

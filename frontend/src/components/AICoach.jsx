@@ -203,7 +203,7 @@ export default function AICoach({ snapshot, suggested }) {
             <p className="text-[11px] text-ink-3">
               {canChatFree
                 ? 'Preguntale lo que quieras sobre tu cartera'
-                : 'Preguntas con contexto de tu portfolio'}
+                : 'Preguntas con contexto de tu cartera'}
             </p>
           </div>
         </div>

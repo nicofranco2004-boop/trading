@@ -62,7 +62,7 @@ function VsBenchmarkEvidence({ ev }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[11px]">
-        <span className="text-ink-2">Portfolio</span>
+        <span className="text-ink-2">Cartera</span>
         <span className={`font-mono tabular ${portfolio >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
           {fmtPct(portfolio)}
         </span>
@@ -138,7 +138,7 @@ function CashDragEvidence({ ev, fmtUsd }) {
         <div className="h-full bg-ink-2/50" style={{ width: `${Math.min(100, ev.cash_pct)}%` }} aria-hidden="true" />
       </div>
       <p className="text-[10px] text-ink-3">
-        {fmtPct(ev.cash_pct, false)} del portfolio total.
+        {fmtPct(ev.cash_pct, false)} de la cartera total.
       </p>
     </div>
   )

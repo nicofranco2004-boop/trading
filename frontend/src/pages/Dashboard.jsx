@@ -19,6 +19,8 @@ import BenchmarksLine from '../components/BenchmarksLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
 import AssetLogo from '../components/AssetLogo'
+import FlashValue from '../components/FlashValue'
+import AnimatedNumber from '../components/AnimatedNumber'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency } from '../contexts/CurrencyContext'
 import CurrencyToggle from '../components/CurrencyToggle'
@@ -444,7 +446,7 @@ export default function Dashboard() {
     <div className="page-shell">
       <PageHeader
         eyebrow="Dashboard"
-        title="Estado del portfolio"
+        title="Estado de la cartera"
         meta={meta}
         action={
           <div className="flex items-center gap-2 flex-wrap">
@@ -452,7 +454,7 @@ export default function Dashboard() {
             <AnalyzeButton
               screen="dashboard"
               params={{ period: '30d' }}
-              subtitle="Estado de tu portfolio"
+              subtitle="Estado de tu cartera"
             />
             {/* Export consolidado: todos los movimientos (compras, ventas,
                 depósitos, retiros, dividendos, intereses) en una sola CSV.
@@ -481,7 +483,7 @@ export default function Dashboard() {
                 Empezá importando tu historial
               </h2>
               <p className="text-sm text-ink-2">
-                Andá a <strong>Configuración</strong> y subí un CSV con tus operaciones. Reconstruimos tu portfolio en segundos — vas a poder revisar fila por fila antes de guardar.
+                Andá a <strong>Configuración</strong> y subí un CSV con tus operaciones. Reconstruimos tu cartera en segundos — vas a poder revisar fila por fila antes de guardar.
               </p>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
@@ -511,10 +513,10 @@ export default function Dashboard() {
         <StatCard
           tone="hero"
           label={currency === 'ARS' ? 'Valor actual · ARS' : 'Valor actual · USD'}
-          value={fmt(portfolioTotal)}
+          value={<FlashValue value={portfolioTotal}><AnimatedNumber value={portfolioTotal} format={fmt} /></FlashValue>}
           tooltip={
             <>
-              <p className="font-semibold text-ink-0">Valor de mercado de tu portfolio</p>
+              <p className="font-semibold text-ink-0">Valor de mercado de tu cartera</p>
               <p>Suma del cash + posiciones abiertas valuadas a precios actuales del mercado.</p>
               <p className="text-ink-3">
                 {currency === 'ARS'
@@ -582,7 +584,7 @@ export default function Dashboard() {
           info={
             <>
               <p className="font-medium text-ink-0">Qué es</p>
-              <p>Cuánto vale tu portfolio HOY de más (o de menos) respecto a lo que pusiste neto.</p>
+              <p>Cuánto vale tu cartera HOY de más (o de menos) respecto a lo que pusiste neto.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-medium text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">= valor actual − capital aportado neto</p>
@@ -592,7 +594,7 @@ export default function Dashboard() {
                   <div className="border-t border-line/60 my-1.5" />
                   <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
                   <p className="text-ink-3">{gapIsOutflow
-                    ? 'Hubo retiros que incluían ganancias — esa plata salió del portfolio pero sigue contabilizada como realizada (ver KPI "Ganancias retiradas").'
+                    ? 'Hubo retiros que incluían ganancias — esa plata salió de la cartera pero sigue contabilizada como realizada (ver KPI "Ganancias retiradas").'
                     : 'La cartera tiene plusvalía no clasificada como P&L realizado, típicamente dividendos cobrados o intereses sobre cash (ver KPI "Dividendos e intereses").'}
                   </p>
                 </>
@@ -637,7 +639,7 @@ export default function Dashboard() {
             label={gapIsOutflow ? 'Ganancias retiradas' : 'Dividendos e intereses'}
             value={fmt(Math.abs(accountingGap))}
             tone={gapIsOutflow ? undefined : 'pos'}
-            sub={gapIsOutflow ? 'fuera del portfolio' : 'no cargados como P&L'}
+            sub={gapIsOutflow ? 'fuera de la cartera' : 'no cargados como P&L'}
             info={
               gapIsOutflow ? (
                 <>
@@ -649,12 +651,12 @@ export default function Dashboard() {
                   <p className="text-ink-3">Esto cierra el cálculo: lo que tenés HOY + lo que retiraste = todo lo que pusiste + todo lo que ganaste.</p>
                   <div className="border-t border-line/60 my-1.5" />
                   <p className="font-medium text-ink-1">Ejemplo</p>
-                  <p className="text-ink-3">Si retiraste $180k para impuestos y de esos $73k eran ganancias acumuladas en cash, esos $73k aparecen acá. El sistema los cuenta como realizados (porque se cobraron), pero ya no están en tu portfolio.</p>
+                  <p className="text-ink-3">Si retiraste $180k para impuestos y de esos $73k eran ganancias acumuladas en cash, esos $73k aparecen acá. El sistema los cuenta como realizados (porque se cobraron), pero ya no están en tu cartera.</p>
                 </>
               ) : (
                 <>
                   <p className="font-medium text-ink-0">Qué es</p>
-                  <p>Plata real que está en tu portfolio pero <strong>no se cargó como P&L realizado</strong>. Lo más común: <strong>dividendos cobrados</strong> e <strong>intereses sobre cash</strong> del broker.</p>
+                  <p>Plata real que está en tu cartera pero <strong>no se cargó como P&L realizado</strong>. Lo más común: <strong>dividendos cobrados</strong> e <strong>intereses sobre cash</strong> del broker.</p>
                   <div className="border-t border-line/60 my-1.5" />
                   <p className="font-medium text-ink-0">Cómo se calcula</p>
                   <p className="text-ink-3 font-mono text-[11px]">= resultado total − (realizado + no realizado)</p>
@@ -742,7 +744,7 @@ export default function Dashboard() {
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
       <AskAIAbout
         topic="dashboard.evolution"
-        subtitle="Evolución del portfolio"
+        subtitle="Evolución de la cartera"
         params={{ period_days: range === '1Y' ? 365 : range === '6M' ? 180 : range === '3M' ? 90 : range === '1M' ? 30 : 1825 }}
         className="mb-8"
         rounded={false}
@@ -752,9 +754,9 @@ export default function Dashboard() {
           <div>
             <p className="eyebrow mb-1">Evolución</p>
             <div className="flex items-center gap-1.5">
-              <h2 className="text-lg font-semibold text-ink-0 leading-tight">Performance del portfolio</h2>
+              <h2 className="text-lg font-semibold text-ink-0 leading-tight">Performance de la cartera</h2>
               <InfoTooltip size={12} align="left">
-                <p>Línea verde: valor de tu portfolio. Línea punteada: capital aportado.</p>
+                <p>Línea verde: valor de tu cartera. Línea punteada: capital aportado.</p>
                 <p className="text-ink-3 mt-1">El delta de abajo descuenta tus aportes/retiros — refleja solo lo que ganaron tus inversiones.</p>
               </InfoTooltip>
             </div>
@@ -780,7 +782,7 @@ export default function Dashboard() {
           <EmptyState
             icon={<TrendingUp size={20} />}
             title="Todavía no hay historial suficiente"
-            description="Vamos a registrar el valor de tu portfolio cada vez que entres al Dashboard. Con dos días registrados ya podemos mostrar la evolución."
+            description="Vamos a registrar el valor de tu cartera cada vez que entres al Dashboard. Con dos días registrados ya podemos mostrar la evolución."
           />
         ) : (
           (() => {
@@ -884,7 +886,7 @@ export default function Dashboard() {
                 className="inline-block w-3 h-0.5 rounded-full"
                 style={{ background: totalReturnUsd >= 0 ? '#21D07A' : '#FF5360' }}
               />
-              Valor del portfolio
+              Valor de la cartera
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span className="inline-block w-3 h-px border-t border-dashed border-ink-3" /> Capital aportado
@@ -899,7 +901,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-4 mb-8">
           <AskAIAbout
             topic="dashboard.composition"
-            subtitle="Composición del portfolio"
+            subtitle="Composición de la cartera"
             rounded={false}
           >
             <AssetBreakdownBar

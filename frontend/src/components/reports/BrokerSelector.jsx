@@ -28,7 +28,7 @@ export default function BrokerSelector({ value = 'global', onChange }) {
         disabled={loading}
         className="appearance-none bg-bg-2 border border-line text-ink-1 text-sm rounded-sm px-3 py-2 pr-8 cursor-pointer hover:bg-bg-3 transition-colors disabled:opacity-50 focus:outline-none focus:border-ink-2"
       >
-        <option value="global">Portfolio Global</option>
+        <option value="global">Cartera global</option>
         {brokers.map(b => (
           <option key={b.id || b.name} value={b.name}>
             {b.name}

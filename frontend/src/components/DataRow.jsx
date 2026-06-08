@@ -35,12 +35,13 @@ export default function DataRow({
   const Tag = onClick ? 'button' : 'div'
   const interactive = onClick ? 'text-left w-full' : ''
   const hover = hoverable ? 'hover:bg-bg-2/60 transition-colors' : ''
+  const pressable = onClick ? 'press' : ''
   const sel = selected ? 'border-l-2 border-l-rendi-pos pl-[10px]' : ''
 
   return (
     <Tag
       onClick={onClick}
-      className={`flex items-center gap-3 ${DENSITY[density] || DENSITY.default} ${hover} ${interactive} ${sel} ${className}`}
+      className={`flex items-center gap-3 ${DENSITY[density] || DENSITY.default} ${hover} ${interactive} ${pressable} ${sel} ${className}`}
       {...rest}
     >
       {children}

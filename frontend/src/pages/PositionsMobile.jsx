@@ -19,6 +19,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
+import FlashValue from '../components/FlashValue'
 import EmptyState from '../components/EmptyState'
 import SwipeRow from '../components/mobile/SwipeRow'
 import Modal from '../components/Modal'
@@ -555,7 +556,7 @@ export default function PositionsMobile() {
               Cartera total
             </div>
             <div className="text-xl font-medium tabular text-ink-0 leading-none">
-              ${Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd)).toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')}
+              <FlashValue value={total + pfValueUsd}>${Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcBlue : (total + pfValueUsd)).toLocaleString(currency === 'ARS' ? 'es-AR' : 'en-US')}</FlashValue>
               <button
                 onClick={toggleCurrency}
                 className="text-xs text-ink-3 ml-1 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"
@@ -586,7 +587,7 @@ export default function PositionsMobile() {
             <button
               type="button"
               onClick={() => setActionsSheet(true)}
-              className="inline-flex items-center gap-1 text-xs font-medium bg-data-violet hover:bg-data-violet/90 text-white rounded-md px-3 py-2 transition-colors whitespace-nowrap shadow-sm"
+              className="inline-flex items-center gap-1 text-xs font-medium bg-data-violet hover:bg-data-violet/90 text-white rounded-md px-3 py-2 transition-colors whitespace-nowrap shadow-sm press"
               aria-label="Acciones rápidas"
             >
               <Plus size={13} strokeWidth={2.5} />
@@ -1365,7 +1366,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           que no se rompa la columna. */}
       <div className="text-right min-w-0">
         <div className="text-[13px] font-medium tabular text-ink-0 leading-none">
-          {compactValue(displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd, displayCurrency)}
+          <FlashValue value={p.valueUsd}>{compactValue(displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd, displayCurrency)}</FlashValue>
         </div>
         <div className="text-[9px] font-mono uppercase tracking-caps text-ink-2 leading-none mt-1">
           {displayCurrency}

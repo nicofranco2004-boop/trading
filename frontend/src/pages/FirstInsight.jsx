@@ -126,7 +126,7 @@ export default function FirstInsight() {
     // Caso edge: el import no dejó posiciones valuables. Mandamos al dashboard.
     return (
       <div className="page-shell text-center py-20 space-y-3">
-        <p className="text-ink-2">Tu portfolio importado todavía no tiene precios valuables.</p>
+        <p className="text-ink-2">Tu cartera importada todavía no tiene precios valuables.</p>
         <button
           onClick={() => navigate('/dashboard')}
           className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-4 py-2 rounded-sm transition-colors"
@@ -149,13 +149,13 @@ export default function FirstInsight() {
         </div>
         <h1 className="display-heading mb-3">Bienvenido a Rendi.</h1>
         <p className="text-ink-2 text-sm max-w-md mx-auto leading-relaxed">
-          Importamos tu portfolio. Esto es lo que tenés hoy, calculado a precios de mercado.
+          Importamos tu cartera. Esto es lo que tenés hoy, calculado a precios de mercado.
         </p>
       </div>
 
       {/* Valor del portfolio */}
       <div className="border border-line rounded bg-bg-1 px-6 py-8 mb-4">
-        <div className="text-xs text-ink-3 mb-1">Valor de tu portfolio</div>
+        <div className="text-xs text-ink-3 mb-1">Valor de tu cartera</div>
         <div className="text-5xl font-medium tabular num text-ink-0 tracking-tight">
           {fmtUsd(stats.value)}
         </div>

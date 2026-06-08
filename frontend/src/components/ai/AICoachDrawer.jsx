@@ -95,7 +95,7 @@ export default function AICoachDrawer() {
         <div className="flex items-center justify-between px-4 py-3 border-b border-line bg-bg-2/40">
           <div>
             <div className="text-[10px] font-mono uppercase tracking-caps text-data-violet">Coach IA</div>
-            <div className="text-sm font-medium text-ink-0">Preguntas con contexto de tu portfolio</div>
+            <div className="text-sm font-medium text-ink-0">Preguntas con contexto de tu cartera</div>
           </div>
           <button
             onClick={close}
@@ -111,7 +111,7 @@ export default function AICoachDrawer() {
           {loading && (
             <div className="flex items-center gap-2 text-sm text-ink-3 py-8 justify-center">
               <Loader2 size={14} className="animate-spin" />
-              Cargando contexto del portfolio…
+              Cargando contexto de la cartera…
             </div>
           )}
 

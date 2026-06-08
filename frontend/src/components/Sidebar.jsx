@@ -53,7 +53,7 @@ const LS_KEY = 'rendi_sidebar_collapsed'
 // integra como tab dentro de Análisis. Nada de "Personal" como grupo aparte.
 const GROUPS = [
   {
-    label: 'Tu portfolio',
+    label: 'Tu cartera',
     items: [
       { to: '/',            label: 'Inicio',        icon: HomeIcon },
       { to: '/posiciones',  label: 'Cartera',       icon: Briefcase },

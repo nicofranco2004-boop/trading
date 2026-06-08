@@ -406,7 +406,7 @@ export default function SearchBar() {
                 {holdingsMatch.length > 0 && (
                   <section>
                     <SectionHeader
-                      label="En tu portfolio"
+                      label="En tu cartera"
                       count={holdingsMatch.length}
                       hint="Posiciones que ya tenés"
                     />

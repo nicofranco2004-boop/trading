@@ -32,6 +32,8 @@ import ExportCsvButton from '../components/plan/ExportCsvButton'
 import BrokerManager from '../components/BrokerManager'
 import EmptyState from '../components/EmptyState'
 import LazySparkline from '../components/LazySparkline'
+import FlashValue from '../components/FlashValue'
+import AnimatedNumber from '../components/AnimatedNumber'
 import PositionsMobile from './PositionsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 
@@ -659,7 +661,7 @@ function PositionsDesktop() {
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
 
-  // Totales agregados (USD) para el hero "Tu portfolio hoy".
+  // Totales agregados (USD) para el hero "Tu cartera hoy".
   // IMPORTANTE: useMemo va ANTES del early return — los hooks deben llamarse
   // en el mismo orden en cada render (rules of hooks).
   const totals = useMemo(() => {
@@ -719,7 +721,7 @@ function PositionsDesktop() {
       <div className="page-shell-wide">
         <PageHeader
           eyebrow="Posiciones / Activas"
-          title="Tu portfolio en vivo"
+          title="Tu cartera en vivo"
           subtitle="Para empezar, sumá el broker donde tenés tus inversiones."
         />
 
@@ -745,7 +747,7 @@ function PositionsDesktop() {
     <div className="page-shell-wide">
       <PageHeader
         eyebrow="Posiciones / Activas"
-        title="Tu portfolio en vivo"
+        title="Tu cartera en vivo"
         meta={meta}
         action={
           <div className="flex items-center gap-2 flex-wrap">
@@ -756,7 +758,7 @@ function PositionsDesktop() {
             <button
               type="button"
               onClick={() => openAdd()}
-              className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-3 py-2 text-xs transition-colors"
+              className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-3 py-2 text-xs transition-colors press"
             >
               <Plus size={13} strokeWidth={2} />
               Registrar compra
@@ -793,15 +795,15 @@ function PositionsDesktop() {
       />
 
       {/* ══════════════════════════════════════════════════════════════════════
-          HERO — 'Tu portfolio hoy' agregado total. Single hero per page rule.
+          HERO — 'Tu cartera hoy' agregado total. Single hero per page rule.
           Phase A: respeta el toggle global USD/ARS — los pesos siguen al user
           a través de todas las pantallas.
           ══════════════════════════════════════════════════════════════════════ */}
       <div className="mb-4">
         <StatCard
           tone="hero"
-          label="Tu portfolio hoy"
-          value={displayCurrency === 'ARS' ? fmtArs(heroValue * tcBlue) : fmtUsd(heroValue)}
+          label="Tu cartera hoy"
+          value={<FlashValue value={heroValue}><AnimatedNumber value={heroValue} format={(n) => displayCurrency === 'ARS' ? fmtArs(n * tcBlue) : fmtUsd(n)} /></FlashValue>}
           sub={
             <span className="inline-flex items-center gap-3 flex-wrap">
               <span className="text-ink-2">P&L no realizado</span>
@@ -1033,11 +1035,11 @@ function PositionsDesktop() {
                           </td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—'}</td>
-                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? `ARS ${ars(c.priceArs)}` : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{`ARS ${ars(c.priceArs)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                           <td className={`${tdClass} text-ink-1 tabular`}>{fmtArs(p.invested)}</td>
                           {showDetail && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
                           {showDetail && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? fmtUsd(c.invUsd) : '—'}</td>}
-                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.valueArs != null ? fmtArs(c.valueArs) : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.valueArs != null ? <FlashValue value={c.value}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                           <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlArs)} ${pnlBg}`} title={pnlTooltip}>
                             {adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—'}
                             {isBond && pnlContrib !== 0 && (
@@ -1206,9 +1208,9 @@ function PositionsDesktop() {
                         </td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? fmtUsd(avgPrice) : '—'}</td>
-                        <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? fmtUsd(c.price) : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                        <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{fmtUsd(p.invested)}</td>
-                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.value != null ? fmtUsd(c.value) : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.value != null ? <FlashValue value={c.value}>{fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(adjPnl)} ${pnlBg}`} title={pnlTooltip}>
                           {adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—'}
                           {isBond && pnlContrib !== 0 && (

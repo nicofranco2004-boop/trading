@@ -86,7 +86,7 @@ export default function InsightsKpiStrip({
         label={topAsset ? `Concentración · ${topAsset.name}` : 'Concentración'}
         value={topAsset ? `${fmtPctShort(topAsset.pct, { decimals: 0 })}%` : '—'}
         tone={concentrationTone}
-        sub={topAsset ? 'del portfolio total' : 'sin posiciones'}
+        sub={topAsset ? 'de la cartera total' : 'sin posiciones'}
       />
       <KpiCell
         label="Drawdown actual"

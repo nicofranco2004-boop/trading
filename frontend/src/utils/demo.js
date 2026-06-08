@@ -79,7 +79,7 @@ export function disableDemoMode() {
 
 // ─── Error helper para acciones bloqueadas ───────────────────────────────────
 // Para que api.js detecte y lance Error con mensaje custom.
-const BLOCKED_MSG = 'En modo demo no podés guardar este cambio. Creá una cuenta gratis para usar tu portfolio real.'
+const BLOCKED_MSG = 'En modo demo no podés guardar este cambio. Creá una cuenta gratis para usar tu cartera real.'
 
 function blocked() {
   return { __demoBlocked: true, message: BLOCKED_MSG }
@@ -714,7 +714,7 @@ const BEHAVIORAL_INSIGHTS = {
       detected: false,
       score: 28,
       value_label: '1.1× / año',
-      one_liner: 'Tu portfolio rota 1.1× por año. Estás en el rango del inversor a mediano plazo.',
+      one_liner: 'Tu cartera rota 1.1× por año. Estás en el rango del inversor a mediano plazo.',
       evidence: { total_trades: 14, period_days: 412, period_years: 1.13, annual_ops: 12.4, annual_turnover: 1.1, total_notional: 22500, capital_avg: 19200 },
       references: ['Barber & Odean (2000) — Trading is hazardous to your wealth.'],
     },
@@ -748,7 +748,7 @@ const BEHAVIORAL_INSIGHTS = {
       detected: true,
       score: 56,
       value_label: 'Top 1: 28%',
-      one_liner: 'Top 1 = 28%, Top 3 = 62%. El portfolio depende mucho de pocos activos.',
+      one_liner: 'Top 1 = 28%, Top 3 = 62%. La cartera depende mucho de pocos activos.',
       evidence: {
         top_asset: 'NVDA',
         top1_pct: 28.0,
@@ -884,7 +884,7 @@ const BEHAVIORAL_INSIGHTS = {
     },
     {
       code: 'sector_concentration',
-      title: 'Tech pesa fuerte en tu portfolio',
+      title: 'Tech pesa fuerte en tu cartera',
       severity: 'medium',
       detected: true,
       score: 64,

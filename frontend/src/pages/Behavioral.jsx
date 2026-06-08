@@ -141,7 +141,7 @@ export default function Behavioral() {
   }
 
   const cards = data?.cards || []
-  const allInsufficient = cards.every(c => c.insufficient_data)
+  const allInsufficient = cards.length > 0 && cards.every(c => c.insufficient_data)
 
   return (
     <div className="page-shell space-y-6">
@@ -168,20 +168,29 @@ export default function Behavioral() {
 
       {/* Empty state si no hay data */}
       {allInsufficient && (
-        <div className="border border-line rounded bg-bg-1 px-6 py-12 text-center max-w-2xl mx-auto">
-          <Brain size={28} strokeWidth={1.5} className="mx-auto mb-3 text-ink-3" />
-          <h2 className="text-base font-medium text-ink-0 mb-1.5">Necesitamos más historial</h2>
-          <p className="text-sm text-ink-2 leading-relaxed mb-4 max-w-md mx-auto">
-            Los detectores de sesgos comparan tus operaciones cerradas. Importá tu CSV
-            o cargá al menos 5 ventas para empezar a ver patrones.
-          </p>
-          <Link
-            to="/config"
-            className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-4 py-2 rounded-sm transition-colors"
-          >
-            Importar mi historial
-            <ArrowRight size={13} strokeWidth={1.75} />
-          </Link>
+        <div className="space-y-6">
+          <div className="border border-line rounded bg-bg-1 px-6 py-8 text-center max-w-2xl mx-auto">
+            <Brain size={28} strokeWidth={1.5} className="mx-auto mb-3 text-ink-3" />
+            <h2 className="text-base font-medium text-ink-0 mb-1.5">Necesitamos más historial</h2>
+            <p className="text-sm text-ink-2 leading-relaxed mb-4 max-w-md mx-auto">
+              Los detectores de sesgos comparan tus operaciones cerradas. Importá tu CSV
+              o cargá al menos 5 ventas para empezar a ver patrones. Mientras tanto,
+              esto es lo que Rendi va a analizar sobre tu cartera:
+            </p>
+            <Link
+              to="/config"
+              className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-4 py-2 rounded-sm transition-colors press"
+            >
+              Importar mi historial
+              <ArrowRight size={13} strokeWidth={1.75} />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {cards.map(card => (
+              <BehavioralCardPreviewStatic key={card.code} card={card} />
+            ))}
+          </div>
         </div>
       )}
 
@@ -527,7 +536,7 @@ function ModalEvidence({ card }) {
         <div className="space-y-3">
           <EvidenceRow label="Argentina" value={`${ev.ar_pct?.toFixed(1)}%`} count={`US$ ${ev.ar_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
           <EvidenceRow label="Internacional" value={`${ev.intl_pct?.toFixed(1)}%`} count={`US$ ${ev.intl_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} />
-          <EvidenceRow label="Total portfolio" value={`US$ ${ev.total_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Total cartera" value={`US$ ${ev.total_value_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           {/* Barra visual de mix AR / INTL */}
           <div className="pt-1">
             <div className="flex h-2 rounded-sm overflow-hidden bg-bg-2">
@@ -549,7 +558,7 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="Cash USD" value={`US$ ${ev.cash_usd_amount?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           <EvidenceRow label="Cash ARS (en USD)" value={`US$ ${ev.cash_ars_usd_equiv?.toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${ev.cash_ars_pct?.toFixed(1)}%)`} mono />
           <EvidenceRow label="Invertido" value={`US$ ${ev.invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
-          <EvidenceRow label="Total portfolio" value={`US$ ${ev.total_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
+          <EvidenceRow label="Total cartera" value={`US$ ${ev.total_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
         </div>
       )
 
@@ -713,6 +722,28 @@ function BehavioralCards({ cards, onCardClick }) {
       {locked.length > 0 && (
         <LockedCtaFooter hiddenCount={locked.length} />
       )}
+    </div>
+  )
+}
+
+// ─── BehavioralCardPreviewStatic ────────────────────────────────────────────
+// Variante no-clickeable del preview educativo. Se usa en el empty-state
+// (allInsufficient): el user no tiene data, así que el bloqueo es de historial,
+// no de plan — por eso no navega a /planes ni muestra badge de tier. Solo
+// muestra qué analiza cada uno de los 12 detectores.
+function BehavioralCardPreviewStatic({ card }) {
+  const meta = CARD_META[card.code] || { Icon: Info, label: card.code }
+  const { Icon } = meta
+  return (
+    <div className="w-full h-full border border-line/60 rounded bg-bg-1/60 p-4 flex flex-col">
+      <div className="flex items-center gap-2 min-w-0 mb-2.5">
+        <Icon size={14} strokeWidth={1.75} className="text-ink-3" />
+        <span className="text-xs font-mono uppercase tracking-caps text-ink-2">{meta.label}</span>
+      </div>
+      <h3 className="text-base font-medium text-ink-1 mb-1.5 leading-snug">Qué analiza Rendi</h3>
+      <p className="text-sm text-ink-3 leading-relaxed">
+        {meta.what || 'Análisis comportamental sobre tu historial de operaciones.'}
+      </p>
     </div>
   )
 }

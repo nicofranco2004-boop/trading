@@ -182,6 +182,16 @@ body {
   .kpi-cell {
     @apply px-4 py-3;
   }
+
+  /* Micro-feedback táctil — sumar a cualquier superficie clickeable.
+     `.press` da el "hundido" al tocar (scale 0.97). `.press-card` agrega lift
+     sutil al hover para cards de lista/navegación. Reduced-motion lo neutraliza. */
+  .press {
+    @apply transition-[transform,background-color,border-color,color] duration-[120ms] ease-out active:scale-[0.97];
+  }
+  .press-card {
+    @apply transition-[transform,background-color,border-color,color] duration-[120ms] ease-out active:scale-[0.97] hover:-translate-y-px;
+  }
 }
 
 /* Scrollbar — neutro, sin acento de marca */
@@ -341,6 +351,20 @@ body {
 }
 .value-pulse { animation: value-pulse 3s ease-in-out infinite; }
 
+/* Flash direccional one-shot — highlight de fondo al actualizarse un valor
+   "vivo" (precio/portfolio refrescado). Verde si subió, rojo si bajó. ~420ms.
+   Lo usa <FlashValue>. Distinto de value-pulse (glow de color en loop). */
+@keyframes flash-up {
+  0%   { background-color: rgba(33, 208, 122, 0.22); }
+  100% { background-color: rgba(33, 208, 122, 0); }
+}
+@keyframes flash-down {
+  0%   { background-color: rgba(255, 83, 96, 0.22); }
+  100% { background-color: rgba(255, 83, 96, 0); }
+}
+.flash-up   { animation: flash-up   420ms ease-out; border-radius: 4px; }
+.flash-down { animation: flash-down 420ms ease-out; border-radius: 4px; }
+
 /* Ticker horizontal — para strip de brokers */
 @keyframes ticker-scroll {
   0%   { transform: translateX(0); }
@@ -366,8 +390,13 @@ body {
 /* Respeta reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .grid-bg, .spotlight-pulse, .value-pulse, .ticker-scroll, .headline-sweep,
-  .terminal-cursor {
+  .terminal-cursor, .flash-up, .flash-down {
     animation: none !important;
   }
   .reveal-up { opacity: 1; }
+  /* Sin transform feedback si el user pidió reduced motion */
+  .press, .press-card {
+    transition: none !important;
+    transform: none !important;
+  }
 }

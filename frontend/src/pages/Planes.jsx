@@ -726,7 +726,7 @@ function ChangePlanModal({ state, subscribing, onConfirm, onClose }) {
                 type="button"
                 onClick={onConfirm}
                 disabled={subscribing}
-                className="flex-1 inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet text-white hover:bg-data-violet/90 border border-data-violet rounded-sm py-2 transition-colors disabled:opacity-60"
+                className="flex-1 inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-data-violet text-white hover:bg-data-violet/90 border border-data-violet rounded-sm py-2 transition-colors disabled:opacity-60 press"
               >
                 {subscribing
                   ? <Loader2 size={13} strokeWidth={1.75} className="animate-spin" />

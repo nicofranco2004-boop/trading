@@ -21,7 +21,7 @@ export default function DemoBanner() {
           <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
           <p className="text-xs text-ink-1 truncate">
             <span className="font-medium text-ink-0">Modo demo activo.</span>{' '}
-            <span className="text-ink-3">Estás viendo data simulada. Para usar Rendi con tu portfolio real, creá una cuenta.</span>
+            <span className="text-ink-3">Estás viendo data simulada. Para usar Rendi con tu cartera real, creá una cuenta.</span>
           </p>
         </div>
         <button
