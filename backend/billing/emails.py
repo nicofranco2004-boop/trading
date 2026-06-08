@@ -29,6 +29,7 @@ Estilo:
 
 from __future__ import annotations
 import os
+import sys
 import html
 import logging
 from typing import Optional
@@ -68,6 +69,24 @@ def _is_configured() -> bool:
     return _api_key() is not None
 
 
+# ─── Guarda anti-envío en tests / direcciones de prueba ──────────────────────
+# RFC 2606/6761: .test/.example/.invalid/.localhost están reservados y nunca
+# resuelven a un buzón real. Además, durante pytest NUNCA enviamos: los tests de
+# auth/verify crean usuarios reset-*/verify-*@rendi.test y, como main.py hace
+# load_dotenv del backend/.env (que tiene RESEND_API_KEY), sin esta guarda
+# mandaban alertas de "nuevo usuario" REALES al inbox del fundador.
+_TEST_EMAIL_SUFFIXES = (".test", ".example", ".invalid", ".localhost", ".local")
+
+
+def _running_under_pytest() -> bool:
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) or ("pytest" in sys.modules)
+
+
+def _is_test_address(addr: str) -> bool:
+    a = (addr or "").strip().lower()
+    return a.endswith(_TEST_EMAIL_SUFFIXES)
+
+
 # ─── Backend de envío ────────────────────────────────────────────────────────
 
 def _send(to: str, subject: str, html: str, text: str,
@@ -91,6 +110,12 @@ def _send(to: str, subject: str, html: str, text: str,
 
     Si no hay provider configurado, loguea a console (modo dev) y retorna
     False — el caller asume que el evento no se notificó pero no falla."""
+    # Guarda dura: nunca enviar de verdad bajo pytest ni a direcciones de dominio
+    # reservado (.test/.example/etc). Evita que la suite spamee el inbox real
+    # cuando RESEND_API_KEY está cargada desde backend/.env.
+    if _running_under_pytest() or _is_test_address(to):
+        log.info("EMAIL skip (test): to=%s subject=%s", to, subject)
+        return False
     sender = from_addr or _from_address()
     if append_footer:
         text = (
@@ -592,6 +617,11 @@ def send_new_signup_admin(*, to: str, new_user_email: str,
 
     SECURITY: name/email son user-controlled → se escapan antes de ir al HTML
     para evitar inyección de markup en el inbox del admin."""
+    # El `to` es el admin (real), pero si el usuario nuevo es de un dominio de
+    # prueba (reset-*/verify-*@rendi.test), no avisamos: es data de test, no un
+    # signup real. (El guard de _send no lo cubre porque `to` no es de test.)
+    if _is_test_address(new_user_email):
+        return False
     name = new_user_name or new_user_email.split("@")[0]
     safe_name = html.escape(name)
     safe_email = html.escape(new_user_email)
