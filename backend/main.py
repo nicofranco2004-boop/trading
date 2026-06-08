@@ -5070,6 +5070,11 @@ def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
                        (p.buy_price or 0) * (p.quantity or 0)
                 cost = (cost or 0) + (p.commissions or 0)
                 if cost and cost > 0:
+                    # El cash no puede quedar negativo en una alta manual: si el
+                    # user agrega una posición sin haber cargado el depósito, auto-
+                    # depositamos el faltante (sube cash + capital aportado) antes
+                    # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
+                    _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date)
                     _adjust_broker_cash(conn, uid, p.broker, -cost)
 
             row = conn.execute(
@@ -5742,6 +5747,57 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
         "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
         (new_invested, cash['id'], uid),
     )
+
+
+def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
+                             date_iso: str) -> float:
+    """En una acción MANUAL que debita cash (ej: agregar una posición sin haber
+    cargado el depósito antes), el cash NUNCA debe quedar negativo. Si `cost_native`
+    supera el cash actual del broker, auto-depositamos el faltante: subimos el cash
+    Y lo registramos como capital aportado (deposit) — asumimos que el user puso esa
+    plata para comprar.
+
+    Por qué registrar el deposit y no solo flotar el cash: sin el deposit el P&L
+    mentiría. Comprás $1000 sin cash → si solo floor-eáramos el cash a 0, el
+    portfolio valdría $1000 sobre $0 aportado = +$1000 de ganancia FALSA. Con el
+    auto-deposit: $1000 aportado, $1000 de valor, P&L 0 (correcto). Mismo criterio
+    que reconcile-cash.
+
+    Solo para acciones MANUALES. Los imports usan su propio seed y muestran cash
+    negativo a propósito (señal de cargar el estado inicial vía el wizard).
+
+    Llamar ANTES de debitar el costo. Devuelve el monto auto-depositado (nativo)."""
+    if not cost_native or cost_native <= 0:
+        return 0.0
+    cash_row = conn.execute(
+        "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+        (uid, broker),
+    ).fetchone()
+    current = float(cash_row["invested"] or 0) if cash_row else 0.0
+    shortfall = round(cost_native - current, 6)
+    if shortfall <= 0:
+        return 0.0  # hay cash suficiente, no hace falta
+
+    # 1. Subir el cash por el faltante (luego el caller debita el costo → cash = 0).
+    _adjust_broker_cash(conn, uid, broker, shortfall)
+
+    # 2. Registrar el faltante como capital aportado (deposit) en USD, mes de la compra.
+    br = conn.execute(
+        "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1", (uid, broker),
+    ).fetchone()
+    currency = (br["currency"] if br else "USDT")
+    tcb = _user_tc_blue(conn, uid)
+    amount_usd = (shortfall / tcb) if (currency == "ARS" and tcb > 0) else shortfall
+    try:
+        y, m = int(date_iso[:4]), int(date_iso[5:7])
+    except (ValueError, TypeError, IndexError):
+        now = datetime.utcnow()
+        y, m = now.year, now.month
+    _update_monthly_flow(conn, uid, broker, y, m, 'deposit', amount_usd, is_manual=True)
+    _update_monthly_flow(conn, uid, 'global', y, m, 'deposit', amount_usd, is_manual=True)
+    _repair_monthly_chain(conn, uid, broker)
+    _repair_monthly_chain(conn, uid, 'global')
+    return shortfall
 
 
 def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: int,
