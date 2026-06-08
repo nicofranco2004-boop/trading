@@ -702,12 +702,6 @@ export default function Dashboard() {
                 data: monthlyVar,
                 note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSigned(realizedThisMonth)}` : null,
               },
-              totalVar && {
-                key: 't',
-                label: 'Total',
-                data: totalVar,
-                note: 'desde el inicio',
-              },
               cagrVar && {
                 key: 'a',
                 label: 'Anual',

@@ -1,4 +1,4 @@
-// PositionStep — paso 3 del wizard: cargar primera posición.
+// PositionStep — paso 2 del wizard: cargar primera posición (+ broker inline).
 // ════════════════════════════════════════════════════════════════════════════
 // 1-2 min. Le damos 3 opciones al user:
 //   A. Importar CSV → redirige a /imports (flow existente, pero con flag de
@@ -13,19 +13,30 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowRight, ArrowLeft, Loader2, AlertCircle, Upload,
-  PlusCircle, SkipForward, Briefcase,
+  PlusCircle, SkipForward,
 } from 'lucide-react'
 import { api } from '../../utils/api'
 
-export default function PositionStep({ broker, onNext, onBack }) {
+// Brokers comunes en AR + moneda default sugerida (mismo set que el viejo
+// BrokerStep). El chip pre-llena nombre + moneda; el user puede tipear otro.
+const POPULAR_BROKERS = [
+  { name: 'Cocos Capital', currency: 'ARS' },
+  { name: 'IOL', currency: 'ARS' },
+  { name: 'Balanz', currency: 'ARS' },
+  { name: 'Bull Market', currency: 'ARS' },
+  { name: 'Binance', currency: 'USDT' },
+  { name: 'Interactive Brokers', currency: 'USD' },
+]
+
+export default function PositionStep({ onNext, onBack }) {
   const navigate = useNavigate()
   const [mode, setMode] = useState(null) // null | 'manual' | 'csv' | 'skip'
 
   if (!mode) {
-    return <ModeSelector broker={broker} setMode={setMode} onBack={onBack} navigate={navigate} onSkip={() => onNext({ skipped: true })} />
+    return <ModeSelector setMode={setMode} onBack={onBack} navigate={navigate} onSkip={() => onNext({ skipped: true })} />
   }
   if (mode === 'manual') {
-    return <ManualForm broker={broker} onNext={onNext} onBack={() => setMode(null)} />
+    return <ManualForm onNext={onNext} onBack={() => setMode(null)} />
   }
   // mode === 'skip' caso ya manejado en setMode
   return null
@@ -33,7 +44,7 @@ export default function PositionStep({ broker, onNext, onBack }) {
 
 // ─── Selector de modo ──────────────────────────────────────────────────────
 
-function ModeSelector({ broker, setMode, onBack, navigate, onSkip }) {
+function ModeSelector({ setMode, onBack, navigate, onSkip }) {
   function goImport() {
     // Marcar que volvemos a onboarding al terminar la importación.
     // pages/Imports.jsx ya redirige a /bienvenida en first-time import; el
@@ -52,8 +63,7 @@ function ModeSelector({ broker, setMode, onBack, navigate, onSkip }) {
           Tu primera operación
         </h1>
         <p className="text-sm md:text-base text-ink-2 max-w-md mx-auto leading-relaxed">
-          {broker?.name ? <>Cargá lo que tengas en <strong className="text-ink-1">{broker.name}</strong>.</> : 'Cargá tu primera posición o sumá CSV.'}
-          {' '}Podés sumar más después.
+          Cargá tu primera posición o sumá tu CSV. Podés sumar más después.
         </p>
       </div>
 
@@ -139,18 +149,31 @@ function ModeSelector({ broker, setMode, onBack, navigate, onSkip }) {
 
 // ─── Form manual ───────────────────────────────────────────────────────────
 
-function ManualForm({ broker, onNext, onBack }) {
+function ManualForm({ onNext, onBack }) {
+  const [brokerName, setBrokerName] = useState('')
+  const [brokerCurrency, setBrokerCurrency] = useState('ARS')
   const [asset, setAsset] = useState('')
   const [quantity, setQuantity] = useState('')
   const [buyPrice, setBuyPrice] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  function pickBroker(b) {
+    setBrokerName(b.name)
+    setBrokerCurrency(b.currency)
+    setError('')
+  }
+
   async function handleSubmit(e) {
     e?.preventDefault?.()
+    const cleanBroker = brokerName.trim()
     const cleanAsset = asset.trim().toUpperCase()
     const qty = parseFloat(quantity)
     const price = parseFloat(buyPrice)
+    if (!cleanBroker) {
+      setError('Elegí o tipeá el broker donde tenés esta posición.')
+      return
+    }
     if (!cleanAsset) {
       setError('Tipeá el ticker (ej. NVDA, AAPL, AL30, BTC).')
       return
@@ -165,9 +188,31 @@ function ManualForm({ broker, onNext, onBack }) {
     }
     setSaving(true)
     setError('')
+    // 1) Crear el broker (antes lo hacía BrokerStep). Si ya existe (409) seguimos.
+    //    El backend NO auto-crea el broker desde POST /positions, así que sin
+    //    esto la posición quedaría con un broker fantasma (moneda mal inferida).
+    try {
+      await api.post('/brokers', { name: cleanBroker, currency: brokerCurrency })
+    } catch (ex) {
+      // El backend devuelve 400 (IntegrityError) ante broker duplicado; algunos
+      // setups devuelven 409. Cubrimos ambos para no depender del texto del mensaje.
+      const dup = ex?.status === 409 || ex?.status === 400 || /existe|duplicate|UNIQUE/i.test(ex?.message || '')
+      if (ex?.status === 403) {
+        setError('Tu plan no permite más brokers. Importá por CSV o actualizá el plan.')
+        setSaving(false)
+        return
+      }
+      if (!dup) {
+        setError(ex?.message || 'No pudimos guardar el broker. Probá de nuevo.')
+        setSaving(false)
+        return
+      }
+      // 409 → el broker ya existía, seguimos a crear la posición.
+    }
+    // 2) Crear la posición en ese broker.
     try {
       await api.post('/positions', {
-        broker: broker?.name || 'Default',
+        broker: cleanBroker,
         asset: cleanAsset,
         quantity: qty,
         buy_price: price,
@@ -184,10 +229,6 @@ function ManualForm({ broker, onNext, onBack }) {
   return (
     <form onSubmit={handleSubmit}>
       <div className="text-center mb-8">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded bg-bg-2 border border-line text-xs text-ink-2 mb-4">
-          <Briefcase size={12} strokeWidth={1.75} />
-          {broker?.name || 'Broker'}
-        </div>
         <h2 className="text-2xl font-semibold text-ink-0 mb-2">Cargá una posición</h2>
         <p className="text-sm text-ink-2 max-w-md mx-auto">
           Sumá tu posición principal. Después podés agregar más desde Cartera.
@@ -195,6 +236,52 @@ function ManualForm({ broker, onNext, onBack }) {
       </div>
 
       <div className="space-y-4 max-w-md mx-auto">
+        {/* Broker — antes era un paso aparte; ahora se elige/crea acá inline */}
+        <div>
+          <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+            / broker
+          </label>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {POPULAR_BROKERS.map((b) => (
+              <button
+                key={b.name}
+                type="button"
+                onClick={() => pickBroker(b)}
+                className={`px-2.5 py-1 rounded border text-xs transition-colors ${
+                  brokerName === b.name
+                    ? 'border-data-violet bg-data-violet/10 text-ink-0'
+                    : 'border-line text-ink-2 hover:border-line-3'
+                }`}
+              >
+                {b.name}
+              </button>
+            ))}
+          </div>
+          <input
+            type="text"
+            value={brokerName}
+            onChange={(e) => setBrokerName(e.target.value)}
+            placeholder="ej. Cocos, IOL, Binance…"
+            maxLength={60}
+            className="w-full px-3 py-2.5 rounded bg-bg-1 border border-line focus:border-data-violet focus:outline-none text-base text-ink-0 placeholder-ink-3"
+          />
+          <div className="flex gap-2 mt-2">
+            {['ARS', 'USD', 'USDT'].map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setBrokerCurrency(c)}
+                className={`flex-1 px-2 py-1.5 rounded border text-xs font-mono transition-colors ${
+                  brokerCurrency === c
+                    ? 'border-data-violet bg-data-violet/5 text-ink-0'
+                    : 'border-line text-ink-2 hover:border-line-3'
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+        </div>
         {/* Ticker */}
         <div>
           <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
@@ -279,7 +366,7 @@ function ManualForm({ broker, onNext, onBack }) {
         </button>
         <button
           type="submit"
-          disabled={saving || !asset.trim() || !quantity || !buyPrice}
+          disabled={saving || !brokerName.trim() || !asset.trim() || !quantity || !buyPrice}
           className="group inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 disabled:bg-data-violet/40 disabled:cursor-not-allowed text-white font-medium rounded-sm px-5 py-2.5 transition-colors text-sm"
         >
           {saving ? (

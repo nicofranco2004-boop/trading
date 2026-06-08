@@ -2,11 +2,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Ruta: /onboarding
 //
-// Flow (4 steps):
+// Flow (3 steps):
 //   1. Welcome — bienvenida + valor prop + CTA "Empezar"
-//   2. Broker  — agregar primer broker (form simple con chips)
-//   3. Position — 3 opciones (CSV import / manual / saltar)
-//   4. Complete — celebración + 3 cards (Insights, Coach, Quiz)
+//   2. Position — cargar cartera: CSV import / manual (con broker inline) / saltar
+//   3. Complete — celebración + 3 cards (Insights, Coach, Quiz)
 //
 // Trigger automático: en VerifyEmail.jsx, tras login OK redirigimos acá si
 // el user no tiene brokers cargados (es fresh signup).
@@ -31,15 +30,14 @@ import { trackEvent } from '../utils/analytics'
 import { track } from '../utils/track'
 import ProgressBar from '../components/onboarding/ProgressBar'
 import WelcomeStep from '../components/onboarding/WelcomeStep'
-import BrokerStep from '../components/onboarding/BrokerStep'
 import PositionStep from '../components/onboarding/PositionStep'
 import CompleteStep from '../components/onboarding/CompleteStep'
 
 export const ONBOARDING_SKIPPED_KEY = 'rendi_onboarding_skipped'
 export const ONBOARDING_COMPLETED_KEY = 'rendi_onboarding_completed'
 
-const STEP_LABELS = ['Bienvenida', 'Broker', 'Cartera', 'Listo']
-const STEP_NAMES = ['welcome', 'broker', 'position', 'complete']
+const STEP_LABELS = ['Bienvenida', 'Cartera', 'Listo']
+const STEP_NAMES = ['welcome', 'position', 'complete']
 
 export default function Onboarding() {
   const { user } = useAuth()
@@ -156,19 +154,12 @@ export default function Onboarding() {
           />
         )}
         {step === 1 && (
-          <BrokerStep
+          <PositionStep
             onNext={(extra) => goNext(extra)}
             onBack={goBack}
           />
         )}
         {step === 2 && (
-          <PositionStep
-            broker={data.broker}
-            onNext={(extra) => goNext(extra)}
-            onBack={goBack}
-          />
-        )}
-        {step === 3 && (
           <CompleteStep
             skipped={!!data.skipped}
             position={data.position}

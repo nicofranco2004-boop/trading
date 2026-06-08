@@ -12,7 +12,6 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import Card from '../components/Card'
-import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
 import LockedSection from '../components/plan/LockedSection'
@@ -2915,116 +2914,9 @@ function InsightsDesktop({ _embeddedTab }) {
       </div>
       </Section>
 
-      {/* ── Comparativa con benchmarks (simulación con mismos aportes) ─────── */}
-      <Section
-        title="Comparativa con benchmarks"
-        subtitle="Qué hubieras obtenido aplicando los mismos aportes y retiros, en las mismas fechas, a inversiones alternativas."
-      >
-        {globalMonthly.length === 0 ? (
-          <Card>
-            <EmptyState
-              icon={<Scale size={20} />}
-              title="Sin meses registrados"
-              description="Cargá al menos un mes en el Resumen Mensual para habilitar las comparativas con benchmarks."
-            />
-          </Card>
-        ) : (
-          <>
-            {/* Grupo USD: alternativas en dólares */}
-            <div className="mb-3">
-              <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
-                Alternativas en USD
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <BenchmarkCard
-                  label="vs S&P 500"
-                  hint="Índice global de referencia"
-                  disabled={!sp500Sim}
-                  disabledHint="Datos del S&P 500 no disponibles."
-                  myValue={totalPortfolio}
-                  benchmarkValue={sp500Sim?.finalValue}
-                  delta={vsSp500}
-                  amt={amt}
-                />
-                <BenchmarkCard
-                  label="vs T-Bills USD"
-                  hint="Tasa libre de riesgo USD (ETF SHV)"
-                  disabled={!shvSim}
-                  disabledHint="Datos de T-Bills no disponibles."
-                  myValue={totalPortfolio}
-                  benchmarkValue={shvSim?.finalValue}
-                  delta={vsShv}
-                  amt={amt}
-                />
-                <BenchmarkCard
-                  label="vs Oro"
-                  hint="Hedge contra inflación (ETF GLD)"
-                  disabled={!goldSim}
-                  disabledHint="Datos del oro no disponibles."
-                  myValue={totalPortfolio}
-                  benchmarkValue={goldSim?.finalValue}
-                  delta={vsGold}
-                  amt={amt}
-                />
-                <BenchmarkCard
-                  label="vs Dólar quieto"
-                  hint="Si los dólares hubieran quedado en efectivo"
-                  disabled={false}
-                  myValue={totalPortfolio}
-                  benchmarkValue={dolarCashSim?.finalValue}
-                  delta={vsDolar}
-                  amt={amt}
-                />
-              </div>
-            </div>
-
-            {/* Grupo ARS: alternativas en pesos */}
-            <div>
-              <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
-                Alternativas en ARS
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <InflationCard inflation={inflationCum} />
-                <BenchmarkCard
-                  label="vs Merval"
-                  hint="Índice acciones argentinas (en USD-eq)"
-                  disabled={!mervalSim}
-                  disabledHint="Datos del Merval no disponibles."
-                  myValue={totalPortfolio}
-                  benchmarkValue={mervalSim?.finalValue}
-                  delta={vsMerval}
-                  amt={amt}
-                />
-                <BenchmarkCard
-                  label="vs Plazo fijo UVA"
-                  hint="PF ajustado por inflación (CER)"
-                  disabled={!plazoFijoSim}
-                  disabledHint="Datos de UVA no disponibles."
-                  myValue={totalPortfolio}
-                  benchmarkValue={plazoFijoSim?.finalValue}
-                  delta={vsPlazoFijo}
-                  amt={amt}
-                />
-                <BenchmarkCard
-                  label="vs Pesos cash"
-                  hint="Si cada aporte se hubiera convertido al blue"
-                  disabled={!arsCashSim}
-                  disabledHint="Datos históricos del blue no disponibles."
-                  myValue={totalPortfolio}
-                  benchmarkValue={arsCashSim?.finalValue}
-                  delta={vsArs}
-                  amt={amt}
-                />
-              </div>
-            </div>
-
-            <p className="text-[11px] text-ink-3 mt-3 leading-snug px-1">
-              <Info size={11} className="inline -mt-0.5 mr-1" />
-              Benchmarks calculados replicando tus depósitos y retiros en las mismas fechas. Datos con periodicidad mensual — algunos meses utilizan el último valor disponible si falta el cierre oficial.
-            </p>
-          </>
-        )}
-      </Section>
+      {/* Comparativa con benchmarks: eliminada — el chart interactivo de arriba
+          (Cartera vs benchmark) ya permite comparar contra cualquiera de estos
+          benchmarks vía su selector. Las cards duplicaban esa info. */}
 
       {/* Coach IA movido al sidebar (botón "Coach IA" arriba de todo) — abre
           un drawer global accesible desde cualquier página. */}

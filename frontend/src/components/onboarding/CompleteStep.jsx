@@ -1,4 +1,4 @@
-// CompleteStep — paso 4 del wizard: cierre.
+// CompleteStep — paso 3 del wizard: cierre.
 // ════════════════════════════════════════════════════════════════════════════
 // 10-20s. Celebración minimal + 3 cards que tipean qué hacer ahora:
 //   1. Ver primer Insight (lo lleva a Insights)
@@ -33,7 +33,7 @@ export default function CompleteStep({ skipped, position }) {
 
       <p className="text-base md:text-lg text-ink-2 max-w-lg mx-auto leading-relaxed mb-10">
         {skipped
-          ? 'Tu broker quedó configurado. Cuando cargues tus posiciones vas a ver el dashboard cobrar vida.'
+          ? 'Tu cuenta quedó lista. Cuando cargues tus posiciones vas a ver el dashboard cobrar vida.'
           : position
             ? <>Tu posición en <strong className="text-ink-1">{position.asset}</strong> ya está en tu cartera. Bienvenido a Rendi.</>
             : 'Tu cartera está cargada. Bienvenido a Rendi.'}
