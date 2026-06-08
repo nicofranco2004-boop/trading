@@ -12,6 +12,10 @@ const CoachDrawerContext = createContext({
 
 export function CoachDrawerProvider({ children }) {
   const [isOpen, setIsOpen] = useState(false)
+  // Pregunta opcional pre-cargada — cuando un caller abre el coach con una
+  // pregunta sugerida (ej. FirstInsight post-import), AICoach la auto-envía al
+  // montar. Se limpia al cerrar. Debe estar whitelisted (main.py) o Free/Plus 403.
+  const [initialQuestion, setInitialQuestion] = useState(null)
 
   // Marcar la feature como descubierta cada vez que el user abre el coach.
   // Bug fix 2026-05-26: antes markAIDiscovered() SOLO se llamaba al cerrar el
@@ -20,7 +24,8 @@ export function CoachDrawerProvider({ children }) {
   // checklist nunca detectaba que "ya probó el coach" y el item quedaba
   // pendiente eternamente. Fix: marcar como discovered en cada open() — es
   // la semántica correcta del flag ("descubrió la feature").
-  const open = () => {
+  const open = (question = null) => {
+    setInitialQuestion(question || null)
     setIsOpen(true)
     markAIDiscovered()
   }
@@ -31,8 +36,9 @@ export function CoachDrawerProvider({ children }) {
 
   const value = {
     isOpen,
+    initialQuestion,
     open,
-    close: () => setIsOpen(false),
+    close: () => { setInitialQuestion(null); setIsOpen(false) },
     toggle,
   }
   return (

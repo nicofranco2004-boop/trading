@@ -46,7 +46,7 @@ const DEFAULT_SUGGESTED = [
   '¿Qué activo es el que más riesgo me agrega?',
 ]
 
-export default function AICoach({ snapshot, suggested }) {
+export default function AICoach({ snapshot, suggested, autoAsk }) {
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const canChatFree = isPro || isAdmin  // chat libre = solo Pro/Admin
   const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 12) : DEFAULT_SUGGESTED
@@ -77,6 +77,19 @@ export default function AICoach({ snapshot, suggested }) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages, loading])
+
+  // Auto-envío de pregunta pre-cargada (ej. CTA del Coach en FirstInsight
+  // post-import). Se dispara una sola vez al montar, cuando ya hay snapshot y
+  // no hubo mensajes. El drawer remonta AICoach en cada apertura → el ref de
+  // "ya enviado" se resetea solo. La pregunta debe estar whitelisted o 403.
+  const autoAskedRef = useRef(false)
+  useEffect(() => {
+    if (autoAsk && snapshot && !autoAskedRef.current && messages.length === 0) {
+      autoAskedRef.current = true
+      send(autoAsk)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoAsk, snapshot])
 
   async function send(text) {
     const content = (text || '').trim()

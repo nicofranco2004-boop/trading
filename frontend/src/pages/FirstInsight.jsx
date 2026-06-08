@@ -17,14 +17,26 @@ import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
 import { track } from '../utils/track'
 import Panel from '../components/Panel'
+import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 
 export default function FirstInsight() {
   const navigate = useNavigate()
+  const coachDrawer = useCoachDrawer()
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
   const [dolar, setDolar] = useState(null)
   const [loading, setLoading] = useState(true)
+
+  // CTA al Coach IA post-import: abre el drawer con una pregunta pre-cargada
+  // que el bot responde con contexto de la cartera recién importada. Navegamos
+  // al dashboard primero (el drawer vive a nivel App; FirstInsight es full-screen)
+  // — mismo patrón que CompleteStep. La pregunta está en la whitelist (main.py).
+  function askCoach() {
+    track('first_insight_coach_cta')
+    navigate('/dashboard')
+    setTimeout(() => coachDrawer?.open?.('¿Mi nivel de concentración es elevado?'), 300)
+  }
 
   // Si el user llega acá desde el flow de onboarding (ImportWizard lo seteó),
   // lo redirigimos al CompleteStep del wizard en lugar del FirstInsight clásico.
@@ -209,6 +221,26 @@ export default function FirstInsight() {
           </Panel>
         )}
       </div>
+
+      {/* CTA al Coach IA — el diferencial de Rendi en el pico post-import. Abre
+          el drawer con una pregunta pre-cargada que el bot responde con contexto
+          de la cartera recién importada. */}
+      <button
+        type="button"
+        onClick={askCoach}
+        className="w-full text-left mb-4 p-4 border border-data-violet/40 bg-data-violet/[0.04] hover:bg-data-violet/[0.08] rounded transition-colors group flex items-start gap-3"
+      >
+        <div className="w-9 h-9 rounded bg-bg-2 border border-line flex items-center justify-center text-data-violet flex-shrink-0 group-hover:border-data-violet/30 transition-colors">
+          <Sparkles size={16} strokeWidth={1.75} />
+        </div>
+        <div className="flex-1">
+          <div className="text-sm font-medium text-ink-0 mb-0.5">Preguntale al Coach IA sobre tu cartera</div>
+          <p className="text-xs text-ink-2 leading-relaxed">
+            Empezá por “¿Mi nivel de concentración es elevado?” — lo analiza con tu data en segundos.
+          </p>
+        </div>
+        <ArrowRight size={15} strokeWidth={1.75} className="text-data-violet flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" />
+      </button>
 
       {/* Próximos pasos */}
       <Panel padding="md" className="mb-6">

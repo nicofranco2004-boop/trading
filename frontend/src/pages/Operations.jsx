@@ -13,6 +13,7 @@ import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import EmptyState from '../components/EmptyState'
+import InsightLine from '../components/InsightLine'
 import { api } from '../utils/api'
 import OperationsMobile from './OperationsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -128,6 +129,39 @@ function OperationsDesktop() {
   const losses = ops.filter(o => o.pnl_usd < 0).length
   const winRate = ops.length > 0 ? wins / ops.length : 0
   const bestTrade = ops.length > 0 ? Math.max(...ops.map(o => o.pnl_usd || 0)) : null
+
+  // Patrones derivados de las operaciones — observaciones escaneables arriba de
+  // la tabla. Cálculo inline (diagnostics.js espera el objeto `data` completo
+  // del portfolio + rotación por severidad — overkill para 1-2 líneas fijas).
+  const patterns = useMemo(() => {
+    if (ops.length < 3) return []
+    const out = []
+
+    // (1) Activo más operado (cualquier op_type). Solo si hay líder claro.
+    const countByAsset = {}
+    for (const o of ops) {
+      const a = (o.asset || '').trim()
+      if (!a) continue
+      countByAsset[a] = (countByAsset[a] || 0) + 1
+    }
+    const ranked = Object.entries(countByAsset).sort((a, b) => b[1] - a[1])
+    if (ranked.length > 0 && ranked[0][1] >= 3 && (ranked.length === 1 || ranked[0][1] > ranked[1][1])) {
+      out.push({ key: 'most_traded', asset: ranked[0][0], count: ranked[0][1] })
+    }
+
+    // (2) Racha ganadora más larga (cronológica, pnl_usd > 0 consecutivos).
+    const chron = [...ops]
+      .filter(o => o.date && o.pnl_usd != null)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    let best = 0, cur = 0
+    for (const o of chron) {
+      if (o.pnl_usd > 0) { cur++; if (cur > best) best = cur }
+      else cur = 0
+    }
+    if (best >= 3) out.push({ key: 'win_streak', streak: best })
+
+    return out
+  }, [ops])
 
   const yearsAvailable = useMemo(() => {
     const set = new Set(ops.map(o => o.date?.slice(0, 4)).filter(Boolean))
@@ -246,6 +280,27 @@ function OperationsDesktop() {
           sub="P&L individual"
         />
       </div>
+
+      {/* Strip de patrones — observaciones derivadas de las operaciones. */}
+      {patterns.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-4">
+          {patterns.map(p => (
+            <InsightLine key={p.key} tone="neutral">
+              {p.key === 'most_traded' && (
+                <>
+                  Operaste <strong className="font-semibold text-ink-0">{p.asset}</strong>{' '}
+                  <strong className="font-semibold text-ink-0">{p.count} veces</strong> — más que cualquier otro activo.
+                </>
+              )}
+              {p.key === 'win_streak' && (
+                <>
+                  Tu racha más larga: <strong className="font-semibold text-ink-0">{p.streak} ganadoras seguidas</strong>.
+                </>
+              )}
+            </InsightLine>
+          ))}
+        </div>
+      )}
 
       {/* Filtros — collapsable, abren con botón */}
       {ops.length > 0 && (

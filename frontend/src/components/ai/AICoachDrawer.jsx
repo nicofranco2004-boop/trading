@@ -18,7 +18,7 @@ import { api } from '../../utils/api'
 const SNAPSHOT_TTL_MS = 60_000
 
 export default function AICoachDrawer() {
-  const { isOpen, close } = useCoachDrawer()
+  const { isOpen, close, initialQuestion } = useCoachDrawer()
   const [snapshot, setSnapshot] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -123,7 +123,7 @@ export default function AICoachDrawer() {
           )}
 
           {snapshot && !loading && !error && (
-            <AICoach snapshot={snapshot} />
+            <AICoach snapshot={snapshot} autoAsk={initialQuestion} />
           )}
         </div>
       </div>

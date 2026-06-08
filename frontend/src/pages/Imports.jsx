@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Upload, RotateCcw, AlertTriangle, CheckCircle2, Trash2, FileText, ChevronLeft, Loader2, Edit3 } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Upload, RotateCcw, AlertTriangle, CheckCircle2, Trash2, ChevronLeft, Loader2, Edit3 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
@@ -17,6 +17,8 @@ const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 
 export default function Imports() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const fromOnboarding = searchParams.get('from') === 'onboarding'
   const { user } = useAuth()
   const [batches, setBatches] = useState([])
   const [loading, setLoading] = useState(true)
@@ -31,6 +33,12 @@ export default function Imports() {
   const [info, setInfo] = useState(null)
 
   useEffect(() => { load() }, [])
+
+  // Si el user viene del onboarding (?from=onboarding) abrimos el wizard
+  // automáticamente — un paso menos para ver su P&L real.
+  useEffect(() => {
+    if (fromOnboarding) setShowWizard(true)
+  }, [fromOnboarding])
 
   async function load() {
     setLoading(true)
@@ -129,25 +137,32 @@ export default function Imports() {
     }
   }
 
+  // Primer uso = sin historial de imports. Cambia el header a modo "bienvenida"
+  // y esconde los botones avanzados/admin para no parecer un panel técnico.
+  const isFirstUse = !loading && batches.length === 0
+
   return (
     <div className="page-shell">
       <PageHeader
-        eyebrow="Importaciones / CSV"
-        title="Histórico de lotes"
+        eyebrow={isFirstUse ? undefined : "Importaciones / CSV"}
+        title={isFirstUse ? "Importá tu cartera" : "Histórico de lotes"}
+        subtitle={isFirstUse ? "Subí el CSV de tu broker y en un minuto ves tu P&L real en dólares." : undefined}
         action={
           <div className="flex items-center gap-2">
-            <button
-              onClick={doRecalcPnl}
-              disabled={recalculating}
-              title="Recalcula P&L, deposits y withdrawals mensuales desde las operations e imports confirmados. Útil si el dashboard quedó con drift de cycles import/revert."
-              className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50"
-            >
-              {recalculating
-                ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
-                : <RotateCcw size={12} strokeWidth={1.75} />}
-              Recalcular aggregates
-            </button>
-            {user?.is_admin && (
+            {!isFirstUse && (
+              <button
+                onClick={doRecalcPnl}
+                disabled={recalculating}
+                title="Recalcula P&L, deposits y withdrawals mensuales desde las operations e imports confirmados. Útil si el dashboard quedó con drift de cycles import/revert."
+                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50"
+              >
+                {recalculating
+                  ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
+                  : <RotateCcw size={12} strokeWidth={1.75} />}
+                Recalcular aggregates
+              </button>
+            )}
+            {!isFirstUse && user?.is_admin && (
               <button
                 onClick={doWipeBroker}
                 disabled={wiping}
@@ -188,9 +203,9 @@ export default function Imports() {
           <div className="p-6 text-center text-ink-3 text-sm" aria-live="polite">Cargando…</div>
         ) : batches.length === 0 ? (
           <EmptyState
-            icon={<FileText size={20} />}
-            title="Todavía no importaste ningún archivo"
-            description="Cargá un CSV de tu broker (Cocos, Binance, Schwab o el template genérico). Acá vas a poder revertir o rehacer cada lote después."
+            icon={<Upload size={20} />}
+            title="Subí tu primer CSV"
+            description="Exportá el CSV de tu broker (Cocos, Binance, Schwab o el template genérico) y en un minuto ves tu P&L real en dólares."
             action={
               <button
                 onClick={() => setShowWizard(true)}
