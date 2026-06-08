@@ -6,6 +6,7 @@ import Modal from '../components/Modal'
 import DateInput from '../components/DateInput'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
+import { PageSkeleton } from '../components/Skeleton'
 import InfoTooltip from '../components/InfoTooltip'
 import { useToast } from '../components/Toast'
 import { usd, fmtUsd } from '../utils/format'
@@ -125,7 +126,7 @@ export default function Goals() {
     loadAll()
   }
 
-  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
+  if (loading) return <PageSkeleton />
 
   return (
     <div className="page-shell space-y-6">

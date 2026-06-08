@@ -80,7 +80,7 @@ export default function UpgradeModal({
           Ver planes y mejorar
         </button>
         <p className="mt-2 text-[10px] text-ink-3 text-center">
-          Pro está en desarrollo — te avisamos cuando esté listo.
+          Cancelás cuando quieras, sin permanencia.
         </p>
       </div>
     </div>

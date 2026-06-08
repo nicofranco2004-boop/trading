@@ -342,7 +342,7 @@ export default function Login() {
               <div className="bg-bg-2 dark:bg-bg-1/60 border border-line/60 rounded-lg p-3 space-y-2.5">
                 {forgotSent ? (
                   <>
-                    <p className="text-sm text-ink-0 font-medium">📬 Revisá tu inbox</p>
+                    <p className="text-sm text-ink-0 font-medium">Revisá tu correo</p>
                     <p className="text-xs text-ink-3 leading-relaxed">
                       Si <b className="text-ink-1">{email}</b> está registrado, te enviamos un link para
                       restablecer tu contraseña. El link vence en 30 minutos.

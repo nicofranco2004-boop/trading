@@ -5,6 +5,7 @@ import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import Sidebar from './components/Sidebar'
+import { PageSkeleton } from './components/Skeleton'
 import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
 import DemoBanner from './components/DemoBanner'
@@ -106,11 +107,7 @@ const GuiaCuentaYPlanes = lazy(() => import('./pages/guia/CuentaYPlanes'))
 // Fallback mínimo mientras carga el chunk. El shell (Sidebar / MobileTopBar)
 // queda montado, así que la nav no parpadea — solo el content area se reemplaza.
 function PageFallback() {
-  return (
-    <div className="min-h-[60vh] flex items-center justify-center">
-      <div className="text-ink-3 text-sm animate-pulse">Cargando…</div>
-    </div>
-  )
+  return <PageSkeleton />
 }
 
 function RouteTracker() {

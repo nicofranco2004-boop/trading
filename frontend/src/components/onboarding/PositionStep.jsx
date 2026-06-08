@@ -253,7 +253,7 @@ function ManualForm({ broker, onNext, onBack }) {
 
         {/* Tip */}
         <div className="text-[11px] text-ink-3 leading-relaxed bg-bg-1/40 border border-line/40 rounded p-3">
-          💡 El precio promedio es lo que pagaste por unidad (sin contar comisiones).
+          El precio promedio es lo que pagaste por unidad (sin contar comisiones).
           Si tenés varios lotes a precios distintos, podés cargarlos por separado después desde Cartera.
         </div>
 

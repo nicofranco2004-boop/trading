@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, TrendingUp, TrendingDown } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
+import Skeleton from '../components/Skeleton'
 import BenchmarksLine from '../components/BenchmarksLine'
 import PersonalLayer from '../components/home/PersonalLayer'
 import Heatmap from '../components/home/Heatmap'
@@ -163,8 +164,16 @@ export default function HomeMobile() {
 
   if (loading) {
     return (
-      <div className="px-4 py-8 text-center text-ink-3 text-sm" aria-live="polite">
-        Cargando tu portfolio…
+      <div className="px-4 py-6 space-y-5" aria-busy="true" aria-live="polite">
+        <div className="space-y-2">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-12 w-48" />
+          <Skeleton className="h-4 w-40" />
+        </div>
+        <Skeleton className="h-16 w-full rounded-lg" />
+        <div className="grid grid-cols-3 gap-3">
+          {[0, 1, 2].map(i => <Skeleton key={i} className="h-16 rounded-lg" />)}
+        </div>
       </div>
     )
   }

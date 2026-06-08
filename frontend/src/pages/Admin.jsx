@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift } from 'lucide-react'
 import { api } from '../utils/api'
 import StatCard from '../components/StatCard'
+import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
 
@@ -107,7 +108,7 @@ export default function Admin() {
     )
   }
 
-  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
+  if (loading) return <PageSkeleton />
 
   const affected = users.filter(u => u.billing_affected)
 
@@ -386,7 +387,7 @@ function ReengagementPanel({ toast }) {
               </table>
             </div>
           ) : (
-            <p className="text-sm text-ink-3">No hay usuarios que cumplan el criterio. 🎉</p>
+            <p className="text-sm text-ink-3">No hay usuarios que cumplan el criterio.</p>
           )}
 
           <div className="flex items-center justify-between gap-3 pt-1 border-t border-line/30 flex-wrap">

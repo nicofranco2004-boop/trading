@@ -19,6 +19,32 @@ export default function Skeleton({ className = '', ...rest }) {
   )
 }
 
+// Skeleton genérico de página (header + hero + KPIs + bloque). Fallback para
+// cualquier ruta lazy mientras carga el chunk, en vez del 'Cargando…' plano.
+export function PageSkeleton() {
+  return (
+    <div className="page-shell" aria-busy="true" aria-live="polite">
+      <div className="mb-8">
+        <Skeleton className="h-3 w-24 mb-2" />
+        <Skeleton className="h-7 w-48" />
+      </div>
+      <div className="mb-8 space-y-3">
+        <Skeleton className="h-14 w-2/3 max-w-sm" />
+        <Skeleton className="h-4 w-full max-w-md" />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        {[0, 1, 2, 3].map(i => (
+          <div key={i} className="space-y-2">
+            <Skeleton className="h-3 w-20" />
+            <Skeleton className="h-6 w-24" />
+          </div>
+        ))}
+      </div>
+      <Skeleton className="h-56 w-full rounded" />
+    </div>
+  )
+}
+
 // Skeleton compuesto que imita el layout del Dashboard mientras carga.
 // Mantiene exactamente el shape: hero + insight line + KPI strip + chart.
 export function DashboardSkeleton() {

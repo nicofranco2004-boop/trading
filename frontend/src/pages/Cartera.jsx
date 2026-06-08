@@ -26,6 +26,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { useSearchParams, useLocation } from 'react-router-dom'
 import { Briefcase, TrendingUp, Target } from 'lucide-react'
 import { track } from '../utils/track'
+import Skeleton from '../components/Skeleton'
 import { markPositionsDiscovered } from '../utils/positionsDiscovered'
 
 const Positions = lazy(() => import('./Positions'))
@@ -117,7 +118,13 @@ export default function Cartera() {
         })}
       </div>
 
-      <Suspense fallback={<div className="text-center py-20 text-ink-3 text-sm">Cargando…</div>}>
+      <Suspense fallback={
+        <div className="space-y-4 py-6" aria-busy="true">
+          <Skeleton className="h-12 w-56" />
+          <Skeleton className="h-4 w-full max-w-md" />
+          <Skeleton className="h-64 w-full rounded" />
+        </div>
+      }>
         {tab === 'posiciones' && <Positions />}
         {tab === 'evolucion'  && <Dashboard />}
         {tab === 'objetivos'  && <Goals />}

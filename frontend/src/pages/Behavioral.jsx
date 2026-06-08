@@ -535,8 +535,8 @@ function ModalEvidence({ card }) {
               <div className="bg-data-blue" style={{ width: `${ev.intl_pct}%` }} title={`INTL ${ev.intl_pct}%`} />
             </div>
             <div className="flex justify-between text-[10px] font-mono text-ink-3 mt-1">
-              <span>🇦🇷 AR</span>
-              <span>🌎 Internacional</span>
+              <span>AR</span>
+              <span>Internacional</span>
             </div>
           </div>
         </div>
