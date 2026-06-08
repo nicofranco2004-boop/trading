@@ -20,10 +20,12 @@ export function useCountUp(target, { duration = 600 } = {}) {
   const numericTarget = Number(target)
   const safeTarget = Number.isFinite(numericTarget) ? numericTarget : 0
 
-  const [value, setValue] = useState(safeTarget)
-  const fromRef = useRef(safeTarget)
+  // Arranca en 0 para que el hero "cuente" hacia el valor al montar (momento
+  // dopamina). En updates posteriores anima desde el último valor (no desde 0).
+  const [value, setValue] = useState(0)
+  const fromRef = useRef(0)
   const rafRef = useRef(null)
-  const latestRef = useRef(safeTarget) // último valor renderizado (para cleanup sin stale closure)
+  const latestRef = useRef(0) // último valor renderizado (para cleanup sin stale closure)
 
   useEffect(() => {
     // Sin animación: reduced-motion o valor no numérico → salto directo.
