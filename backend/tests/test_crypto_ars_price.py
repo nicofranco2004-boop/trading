@@ -87,6 +87,19 @@ class CryptoArsPriceTest(unittest.TestCase):
         self.assertAlmostEqual(out["GGAL.BA"], 4820.0, places=2)                  # CEDEAR ARS → sin tocar
         self.assertAlmostEqual(out["BTC"], 95000.0, places=2)                     # cripto USD → USD
 
+    def test_uses_live_blue_over_config(self):
+        # Si el blue LIVE está en caché (el mismo que usa el frontend como tcBlue),
+        # la cripto se convierte con ESE, no con el tc_blue del config (1435). Así
+        # sigue los updates automáticos del blue.
+        main._dolar_cache["data"] = {"blue": 1500.0}
+        main._dolar_cache["ts"] = 9e18
+        try:
+            out = self._get("BTC.BA")
+        finally:
+            main._dolar_cache["data"] = None
+            main._dolar_cache["ts"] = 0.0
+        self.assertAlmostEqual(out["BTC.BA"], 95000.0 * 1500.0, places=2)  # blue live, no config
+
 
 if __name__ == "__main__":
     unittest.main()
