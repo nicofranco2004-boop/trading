@@ -91,7 +91,8 @@ class CryptoArsPriceTest(unittest.TestCase):
         # Si el blue LIVE está en caché (el mismo que usa el frontend como tcBlue),
         # la cripto se convierte con ESE, no con el tc_blue del config (1435). Así
         # sigue los updates automáticos del blue.
-        main._dolar_cache["data"] = {"blue": 1500.0}
+        # forma real de /api/dolar: blue = {compra, venta, ...} (el front usa .venta)
+        main._dolar_cache["data"] = {"blue": {"compra": 1480.0, "venta": 1500.0}}
         main._dolar_cache["ts"] = 9e18
         try:
             out = self._get("BTC.BA")
