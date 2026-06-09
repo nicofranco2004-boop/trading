@@ -2703,9 +2703,14 @@ def _display_blue(conn, uid: int) -> float:
     consume igual)."""
     try:
         cached = _dolar_cache.get("data") if _dolar_cache else None
-        if cached and cached.get("blue"):
-            return float(cached["blue"])
-    except (TypeError, ValueError):
+        if cached:
+            # `blue` es {compra, venta, ...} (igual que lo consume el frontend con
+            # d.blue.venta). Tomamos `venta`. Fallback a número plano por las dudas.
+            blue_obj = cached.get("blue")
+            v = blue_obj.get("venta") if isinstance(blue_obj, dict) else blue_obj
+            if v and float(v) > 0:
+                return float(v)
+    except (TypeError, ValueError, AttributeError):
         pass
     return _user_tc_blue(conn, uid)
 
