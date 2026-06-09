@@ -4799,9 +4799,30 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
         _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
         return {**result, **fci_prices}
 
+    # Cripto en broker ARS: el frontend pide '<CRIPTO>.BA' (sufijo ARS, igual que
+    # un CEDEAR) pero la cripto NO cotiza en BYMA — cotiza en USD globalmente. La
+    # resolvemos como '<CRIPTO>-USD' y la devolvemos CONVERTIDA A PESOS con el
+    # tc_blue del user, así prices['BTC.BA'] queda en ARS como el resto de los
+    # símbolos .BA y el frontend la valúa sin cambios (antes daba None → el activo
+    # caía a cost basis y "no tomaba el valor actual en pesos").
+    crypto_ars = {s: s[:-3] for s in yf_targets
+                  if s.endswith('.BA') and s[:-3] in CRYPTO_SYMBOLS}
+    _tc_blue_ars = None
+    if crypto_ars:
+        _cdb = get_db()
+        try:
+            _tc_blue_ars = _user_tc_blue(_cdb, uid)
+        finally:
+            _cdb.close()
+
     sym_to_yf = {}
     for sym in yf_targets:
-        sym_to_yf[sym] = CRYPTO_YF[sym] if sym in CRYPTO_YF else sym
+        if sym in crypto_ars:
+            sym_to_yf[sym] = f"{crypto_ars[sym]}-USD"
+        elif sym in CRYPTO_YF:
+            sym_to_yf[sym] = CRYPTO_YF[sym]
+        else:
+            sym_to_yf[sym] = sym
 
     yf_tickers = list(set(sym_to_yf.values()))
 
@@ -4840,6 +4861,15 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
             price = _fetch_one(f"{sym}-USD")
         result[sym] = price
 
+    # Cripto-ARS: el precio recién fetcheado vino en USD (BTC-USD). Convertir a
+    # pesos con el blue del user → prices['BTC.BA'] queda en ARS (coherente con
+    # los demás .BA). Se hace ANTES de persistir/last-known para que el cache y
+    # el asset_last_price también guarden el valor en pesos.
+    if crypto_ars and _tc_blue_ars and _tc_blue_ars > 0:
+        for _csym in crypto_ars:
+            if result.get(_csym) is not None:
+                result[_csym] = round(result[_csym] * _tc_blue_ars, 6)
+
     # Último precio conocido: completa los que quedaron en None (yfinance/data912
     # fallaron) con su último precio real → el frontend no cae a cost basis.
     _fill_last_known_prices(result)
@@ -4877,8 +4907,30 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
     for sym in uncached_symbols:
         result[sym] = None
 
+    # Crypto-ARS ('BTC.BA'): mismo criterio que /api/prices — cotiza en USD,
+    # se resuelve como '<CRIPTO>-USD' y el cierre previo se devuelve en pesos
+    # (× blue del user), así la variación diaria reconcilia con el precio actual
+    # (que también viene en pesos). Sin esto, la var. día de una cripto en broker
+    # ARS quedaba en '—'.
+    crypto_ars = {s: s[:-3] for s in uncached_symbols
+                  if s.endswith('.BA') and s[:-3] in CRYPTO_SYMBOLS}
+    _tc_blue_ars = None
+    if crypto_ars:
+        _cdb = get_db()
+        try:
+            _tc_blue_ars = _user_tc_blue(_cdb, uid)
+        finally:
+            _cdb.close()
+
     # Crypto mapea a su ticker yfinance (BTC → BTC-USD, etc), igual que /api/prices.
-    sym_to_yf = {sym: (CRYPTO_YF[sym] if sym in CRYPTO_YF else sym) for sym in uncached_symbols}
+    sym_to_yf = {}
+    for sym in uncached_symbols:
+        if sym in crypto_ars:
+            sym_to_yf[sym] = f"{crypto_ars[sym]}-USD"
+        elif sym in CRYPTO_YF:
+            sym_to_yf[sym] = CRYPTO_YF[sym]
+        else:
+            sym_to_yf[sym] = sym
     yf_tickers = list(set(sym_to_yf.values()))
 
     try:
@@ -4913,6 +4965,12 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
         pc = _fetch_prev_close_one(sym_to_yf[sym])
         if pc is not None:
             result[sym] = pc
+
+    # Cripto-ARS: el cierre previo vino en USD → a pesos con el blue del user.
+    if crypto_ars and _tc_blue_ars and _tc_blue_ars > 0:
+        for _csym in crypto_ars:
+            if result.get(_csym) is not None:
+                result[_csym] = round(result[_csym] * _tc_blue_ars, 6)
 
     _prevclose_cache_set({sym: result[sym] for sym in uncached_symbols})
     return result
