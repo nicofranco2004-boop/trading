@@ -2691,6 +2691,25 @@ def _get_dolar_data():
     return data
 
 
+def _display_blue(conn, uid: int) -> float:
+    """Blue 'de display' — el MISMO que usa el frontend como tcBlue (el blue live
+    de /api/dolar). Lo leemos del caché en memoria SIN disparar un fetch
+    bloqueante a dolarapi (mismo criterio que post_snapshot, audit fix C2). Si el
+    caché está frío, caemos al tc_blue del config del user.
+
+    Lo usa la valuación de cripto en broker ARS: así el valor en pesos de la
+    cripto se convierte al MISMO blue que el resto de la cartera y sigue sus
+    updates automáticos (dolarapi refresca el caché cada 5 min; el frontend lo
+    consume igual)."""
+    try:
+        cached = _dolar_cache.get("data") if _dolar_cache else None
+        if cached and cached.get("blue"):
+            return float(cached["blue"])
+    except (TypeError, ValueError):
+        pass
+    return _user_tc_blue(conn, uid)
+
+
 @app.get("/api/dolar")
 def get_dolar(uid: int = Depends(get_current_user)):
     return _get_dolar_data()
@@ -4811,7 +4830,7 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     if crypto_ars:
         _cdb = get_db()
         try:
-            _tc_blue_ars = _user_tc_blue(_cdb, uid)
+            _tc_blue_ars = _display_blue(_cdb, uid)
         finally:
             _cdb.close()
 
@@ -4918,7 +4937,7 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
     if crypto_ars:
         _cdb = get_db()
         try:
-            _tc_blue_ars = _user_tc_blue(_cdb, uid)
+            _tc_blue_ars = _display_blue(_cdb, uid)
         finally:
             _cdb.close()
 
