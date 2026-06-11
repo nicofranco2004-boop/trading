@@ -25,7 +25,14 @@ def _make_db():
             is_admin INTEGER DEFAULT 0,
             tier TEXT,
             email_verified INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT (datetime('now'))
+            created_at TEXT DEFAULT (datetime('now')),
+            -- Modelo de crédito tiempo-based (ver main.py init_db). El código de
+            -- billing ya consulta estas columnas, así que el fixture debe tenerlas.
+            credit_active_until TEXT,
+            credit_anchor_plan TEXT,
+            credit_anchor_period TEXT,
+            credit_anchor_amount_usd REAL,
+            credit_anchor_at TEXT
         );
         CREATE TABLE subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +65,26 @@ def _make_db():
         CREATE TABLE operations (id INTEGER PRIMARY KEY, user_id INTEGER);
         CREATE TABLE monthly_entries (id INTEGER PRIMARY KEY, user_id INTEGER);
         CREATE TABLE brokers (id INTEGER PRIMARY KEY, user_id INTEGER);
+        -- Audit del modelo de crédito (ver main.py init_db). Los downgrades
+        -- (_downgrade_expired_credit / _downgrade_expired_cancellations) escriben
+        -- una fila 'expiration' acá, así que el fixture debe tener la tabla.
+        CREATE TABLE credit_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            amount_usd REAL NOT NULL,
+            days_delta REAL NOT NULL,
+            from_plan TEXT,
+            from_period TEXT,
+            to_plan TEXT,
+            to_period TEXT,
+            active_until_before TEXT,
+            active_until_after TEXT,
+            source_subscription_id TEXT,
+            payment_id TEXT,
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     return conn
 
