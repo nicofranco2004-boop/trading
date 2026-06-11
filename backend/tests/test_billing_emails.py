@@ -107,9 +107,13 @@ class CancellationEmailTest(unittest.TestCase):
 
     def test_cancellation_triggers_email(self):
         with patch("billing.emails._send") as mock_send, \
-             patch("billing.mercadopago.cancel_preapproval") as mp_cancel:
+             patch("billing.rebill.cancel_subscription") as rebill_cancel:
             mock_send.return_value = True
-            mp_cancel.return_value = {"id": self.sub_id, "status": "cancelled"}
+            rebill_cancel.return_value = {
+                "id": self.sub_id,
+                "status": "cancelled",
+                "nextChargeDate": "2026-06-18",
+            }
             r = self.client.post("/api/billing/cancel", headers=self.headers)
             self.assertEqual(r.status_code, 200)
             self.assertTrue(mock_send.called)

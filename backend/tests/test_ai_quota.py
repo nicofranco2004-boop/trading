@@ -26,6 +26,7 @@ def _make_db():
             date TEXT NOT NULL,
             analyses_count INTEGER DEFAULT 0,
             hub_queries_count INTEGER DEFAULT 0,
+            chat_count INTEGER NOT NULL DEFAULT 0,
             cost_usd_cents INTEGER DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
@@ -98,7 +99,8 @@ def test_get_tier_no_users_table():
     conn.execute("""
         CREATE TABLE ai_usage_daily (
             user_id INTEGER, date TEXT, analyses_count INTEGER DEFAULT 0,
-            hub_queries_count INTEGER DEFAULT 0, cost_usd_cents INTEGER DEFAULT 0,
+            hub_queries_count INTEGER DEFAULT 0, chat_count INTEGER NOT NULL DEFAULT 0,
+            cost_usd_cents INTEGER DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
     """)
