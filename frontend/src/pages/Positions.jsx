@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon } from 'lucide-react'
+import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Search, X } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -54,6 +54,17 @@ const BROKER_COLORS = [
   { text: 'text-cyan-500 dark:text-cyan-400', bg: 'bg-cyan-600/20', hover: 'hover:bg-cyan-600/30' },
 ]
 
+// Opciones de orden de la barra de filtros. Todas descendentes salvo Nombre
+// (A-Z). El cash siempre queda al final, no se rankea (ver sortPositions).
+const SORT_OPTIONS = [
+  { id: 'value',   label: 'Valor' },
+  { id: 'pnl_usd', label: 'P&L USD' },
+  { id: 'pnl_pct', label: 'P&L %' },
+  { id: 'day_pct', label: 'Var. día %' },
+  { id: 'name',    label: 'Nombre A-Z' },
+  { id: 'qty',     label: 'Cantidad' },
+]
+
 export default function Positions() {
   const isMobile = useIsMobile()
   if (isMobile) return <PositionsMobile />
@@ -103,6 +114,13 @@ function PositionsDesktop() {
   // Per-broker "show detail" state. Default = collapsed (clean view).
   // Stored as a Set of broker names; flipping a name toggles its detail mode.
   const [detailBrokers, setDetailBrokers] = useState(() => new Set())
+  // ─── Filtros + orden (barra arriba de las secciones por broker) ──────────
+  // Mismo patrón que Operaciones y la vista mobile. Todo client-side sobre las
+  // `positions` ya cargadas: filtrar por activo (texto), por broker (Todos |
+  // uno) y ordenar dentro de cada broker. NO toca el hero (cartera completa).
+  const [filterAsset, setFilterAsset] = useState('')
+  const [filterBroker, setFilterBroker] = useState('all')
+  const [sortBy, setSortBy] = useState('value')
   // Estado del modal de cobranza de bonos. null = cerrado; {flowType, broker, brokerCurrency, asset} = abierto.
   const [bondCashflow, setBondCashflow] = useState(null)
   // Posiciones de bono expandidas inline (mostrar meta + historial cobranzas).
@@ -236,6 +254,16 @@ function PositionsDesktop() {
     }, REFRESH_MS)
     return () => clearInterval(id)
   }, [])
+
+  // Si el broker filtrado desaparece (lo borraste/renombraste vía BrokerManager,
+  // que dispara loadAll y reconstruye `brokers`), el filtro quedaría apuntando a
+  // un nombre inexistente → todas las secciones se ocultan y se ve "Sin
+  // coincidencias" sin que lo hayas pedido. Lo reseteamos a 'Todos'.
+  useEffect(() => {
+    if (filterBroker !== 'all' && brokers.length > 0 && !brokers.some(b => b.name === filterBroker)) {
+      setFilterBroker('all')
+    }
+  }, [brokers, filterBroker])
 
   async function loadAll() {
     try {
@@ -606,6 +634,64 @@ function PositionsDesktop() {
 
   const sortCash = arr => [...arr.filter(p => !p.is_cash), ...arr.filter(p => p.is_cash)]
 
+  // Ordena las posiciones no-cash de un broker según `sortBy`; el cash siempre
+  // queda al final (no se rankea). Las posiciones sin precio/valor (null) van
+  // al fondo del grupo para no romper el orden. Por defecto: por valor (desc),
+  // consistente con la vista mobile. Para brokers ARS usamos el valor/P&L en
+  // USD como clave para que el orden sea comparable entre brokers de distinta
+  // moneda. Recibe `arr` ya filtrado (broker + activo) e `isARS` del broker.
+  function sortPositions(arr, isARS) {
+    const noCash = arr.filter(p => !p.is_cash)
+    const cash = arr.filter(p => p.is_cash)
+    const keyed = noCash.map(p => {
+      const c = isARS ? calcARS(p) : calcUSDT(p)
+      const symKey = priceSymbol(p.asset, isARS)
+      const curPrice = p.price_override ?? prices[symKey]
+      const dv = dayVarOf(p, symKey, curPrice)
+      // P&L para ordenar = el MISMO P&L que muestra la fila. Para bonos con
+      // cobranzas registradas la celda muestra el P&L aumentado con cupones +
+      // ganancia realizada de amorts (adjPnl/adjPnlPct); si ordenáramos por el
+      // mark-to-market crudo, un bono quedaría "fuera de lugar" respecto de su
+      // propia columna. Replicamos la augmentación en moneda nativa del broker
+      // (dentro de un broker el orden por nativa == por USD). El cash no entra.
+      const isBond = isBondTicker(p.asset) && !p.is_cash
+      const pnlContrib = isBond
+        ? (bondCashflowsByKey.get(`${p.broker}:${p.asset}`)?.pnlContribution || 0)
+        : 0
+      const basePnl = isARS ? c.pnlArs : c.pnl
+      const adjPnl = (basePnl != null && pnlContrib) ? basePnl + pnlContrib : basePnl
+      const adjPnlPct = (isBond && adjPnl != null && p.invested > 0)
+        ? adjPnl / p.invested
+        : c.pnlPct
+      return {
+        p,
+        value:  isARS ? c.valueUsd : c.value,
+        pnl:    adjPnl,
+        pnlPct: adjPnlPct,
+        dayPct: dv ? dv.pct : null,
+        qty:    p.quantity ?? null,
+        name:   (p.asset || '').toUpperCase(),
+      }
+    })
+    // Comparador descendente que empuja los null al fondo (sin generar NaN).
+    const descNum = (a, b) => {
+      if (a == null && b == null) return 0
+      if (a == null) return 1
+      if (b == null) return -1
+      return b - a
+    }
+    const cmp = {
+      value:   (a, b) => descNum(a.value, b.value),
+      pnl_usd: (a, b) => descNum(a.pnl, b.pnl),
+      pnl_pct: (a, b) => descNum(a.pnlPct, b.pnlPct),
+      day_pct: (a, b) => descNum(a.dayPct, b.dayPct),
+      qty:     (a, b) => descNum(a.qty, b.qty),
+      name:    (a, b) => a.name.localeCompare(b.name),
+    }[sortBy] || ((a, b) => descNum(a.value, b.value))
+    keyed.sort(cmp)
+    return [...keyed.map(k => k.p), ...cash]
+  }
+
   function calcUSDT(p) {
     if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null }
     const price = p.price_override ?? prices[p.asset]
@@ -742,6 +828,29 @@ function PositionsDesktop() {
 
   const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 
+  // ─── Estado derivado de los filtros ──────────────────────────────────────
+  // assetFiltering: hay texto de búsqueda. matchesAsset(p): la posición matchea
+  // ese texto (substring case-insensitive del ticker). isFiltering: hay algún
+  // filtro activo (activo o broker). visibleBrokerCount: cuántas secciones de
+  // broker quedan visibles tras filtrar (para el estado vacío). El orden NO
+  // cuenta como filtro — siempre hay un orden activo.
+  const assetQuery = filterAsset.trim().toLowerCase()
+  const assetFiltering = assetQuery !== ''
+  const matchesAsset = p => !assetFiltering || (p.asset || '').toLowerCase().includes(assetQuery)
+  const isFiltering = assetFiltering || filterBroker !== 'all'
+  const displayBrokers = sortBrokersForDisplay(brokers)
+  const visibleBrokerCount = displayBrokers.filter(({ broker }) => {
+    if (filterBroker !== 'all' && broker.name !== filterBroker) return false
+    if (assetFiltering) return positions.some(p => p.broker === broker.name && matchesAsset(p))
+    return true
+  }).length
+  // Contador de resultados (activos = posiciones no-cash) para feedback al
+  // filtrar, igual que Operaciones ("X de Y"). El cash no se cuenta.
+  const totalAssetCount = positions.filter(p => !p.is_cash).length
+  const visibleAssetCount = positions.filter(p =>
+    !p.is_cash && (filterBroker === 'all' || p.broker === filterBroker) && matchesAsset(p)
+  ).length
+
   return (
     <div className="page-shell-wide">
       <PageHeader
@@ -833,13 +942,62 @@ function PositionsDesktop() {
           vea sus cuentas conectadas de un vistazo. */}
       <BrokerManager brokers={brokers} onChange={loadAll} />
 
-      {sortBrokersForDisplay(brokers).map(({ broker, indent, parentName }, bi) => {
+      {/* ─── Barra de filtros + orden ─────────────────────────────────────
+          Buscar activo · filtrar por broker (Todos | uno) · ordenar dentro de
+          cada broker. Todo client-side. No es sticky a propósito: los headers
+          de columna de cada tabla ya son sticky y se taparían entre sí. */}
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div className="relative">
+          <Search size={13} strokeWidth={1.75} aria-hidden="true" className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" />
+          <input
+            value={filterAsset}
+            onChange={e => setFilterAsset(e.target.value)}
+            placeholder="Buscar activo…"
+            aria-label="Buscar activo"
+            className="bg-bg-2 border border-line rounded-sm pl-8 pr-2 py-1.5 text-xs text-ink-1 placeholder:text-ink-3 focus:outline-none focus:border-ink-2 w-44"
+          />
+        </div>
+        <FilterPill
+          label="Broker"
+          value={filterBroker}
+          onChange={setFilterBroker}
+          options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]}
+        />
+        <FilterPill label="Ordenar" value={sortBy} onChange={setSortBy} options={SORT_OPTIONS} />
+        {isFiltering && (
+          <button
+            type="button"
+            onClick={() => { setFilterAsset(''); setFilterBroker('all') }}
+            className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition"
+          >
+            <X size={12} strokeWidth={1.75} aria-hidden="true" /> Limpiar
+          </button>
+        )}
+        {isFiltering && (
+          <span className="text-[11px] font-mono text-ink-3 tabular ml-auto" aria-live="polite">
+            {visibleAssetCount} de {totalAssetCount} {totalAssetCount === 1 ? 'activo' : 'activos'}
+          </span>
+        )}
+      </div>
+
+      {displayBrokers.map(({ broker, indent, parentName }, bi) => {
+        // Filtro por broker (single-select): si hay uno elegido y no es éste,
+        // salteamos la sección. El color se mantiene estable porque `bi` sigue
+        // el índice del array completo (no del filtrado).
+        if (filterBroker !== 'all' && broker.name !== filterBroker) return null
         const color = BROKER_COLORS[bi % BROKER_COLORS.length]
-        const bpos = sortCash(positions.filter(p => p.broker === broker.name))
         const isARS = broker.currency === 'ARS'
+        // Filtro por activo: filas de este broker que matchean la búsqueda. Si
+        // hay búsqueda activa y no hay coincidencias, ocultamos la sección
+        // entera (no dejamos el header vacío). `bpos` queda ordenado + cash al
+        // final; `r` (header + footer) se calcula sobre el subset visible, así
+        // los totales reflejan lo que se ve. Sin filtros: idéntico a antes.
+        const bposRaw = positions.filter(p => p.broker === broker.name && matchesAsset(p))
+        if (assetFiltering && bposRaw.length === 0) return null
+        const bpos = sortPositions(bposRaw, isARS)
         const isSubBroker = broker.parent_broker_id != null
         const showDetail = detailBrokers.has(broker.name)
-        const r = computeBrokerValue(positions, prices, broker, tcBlue)
+        const r = computeBrokerValue(bposRaw, prices, broker, tcBlue)
 
         // Variación del día agregada del broker (suma de los Δ por posición con
         // cierre anterior disponible). En la moneda nativa del broker. `hasDay`
@@ -1098,7 +1256,7 @@ function PositionsDesktop() {
                       <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlArs)}`}>{r.pnlArs >= 0 ? '+' : '-'}ARS {ars(Math.abs(r.pnlArs))}</td>
                       {showDetail && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{r.pnlUsd >= 0 ? '+' : '-'}USD {usd(Math.abs(r.pnlUsd))}</td>}
                       <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
-                        {r.invUsd > 0 ? pctSigned(r.pnlUsd / r.invUsd) : '—'}
+                        {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-xs font-bold tabular">
                         {brokerHasDay
@@ -1280,6 +1438,18 @@ function PositionsDesktop() {
           </div>
         )
       })}
+
+      {/* Estado vacío: todos los brokers quedaron filtrados (búsqueda sin
+          coincidencias). El grupo de Plazos Fijos sigue mostrándose debajo —
+          es una clase de activo aparte y no entra en el filtro de posiciones. */}
+      {isFiltering && visibleBrokerCount === 0 && (
+        <div className="bg-bg-1 border border-line rounded mb-6">
+          <EmptyState
+            title="Sin coincidencias"
+            description="Ninguna posición coincide con los filtros. Probá limpiar la búsqueda o elegir otro broker."
+          />
+        </div>
+      )}
 
       {/* Grupo Plazos fijos + su form de alta (lo dispara el flujo o el header del grupo) */}
       <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
@@ -1811,6 +1981,23 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
 // Devuelve: [{ broker, indent, parentName }] donde:
 //   - indent: true si es hijo (sub-broker)
 //   - parentName: nombre del padre (solo en hijos)
+// Pill de filtro/orden (label + select). Mismo patrón visual que Operaciones;
+// definido local acá para no acoplar las dos páginas vía un export compartido.
+function FilterPill({ label, value, onChange, options }) {
+  return (
+    <label className="inline-flex items-center gap-1.5 text-xs">
+      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">{label}</span>
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="bg-bg-2 border border-line rounded-sm px-2 py-1 text-xs text-ink-1 font-mono focus:outline-none focus:border-ink-2"
+      >
+        {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+      </select>
+    </label>
+  )
+}
+
 function sortBrokersForDisplay(brokers) {
   const byId = new Map(brokers.map(b => [b.id, b]))
   const childrenByParent = new Map()
