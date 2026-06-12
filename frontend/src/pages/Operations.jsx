@@ -2,8 +2,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Header operativo + KPI strip denso + filtros mono caps + tabla compacta.
 
-import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, SlidersHorizontal, ChevronLeft, ChevronRight, ArrowDownToLine, ArrowUpFromLine, Coins, Receipt, Repeat } from 'lucide-react'
+import { useEffect, useMemo, useState, Fragment } from 'react'
+import { Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, Search, X, SlidersHorizontal, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowDownToLine, ArrowUpFromLine, Coins, Receipt, Repeat } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
@@ -71,6 +71,20 @@ function OperationsDesktop() {
   const [filterYear, setFilterYear] = useState('all')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [page, setPage] = useState(0)
+  // Agrupación del tab "Solo P/L". 'asset' por defecto (1 fila por activo,
+  // reduce ruido). Estado PROPIO de este tab — no se comparte con MovementsView
+  // (que tiene su 'rendi_movements_group'). Persistido en localStorage.
+  const [groupBy, setGroupBy] = useState(() => localStorage.getItem('rendi_trades_group') || 'asset')
+  useEffect(() => { localStorage.setItem('rendi_trades_group', groupBy) }, [groupBy])
+  // Grupos expandidos (Set de keys). Click en la fila-resumen togglea su detalle.
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set())
+  function toggleGroup(key) {
+    setExpandedGroups(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
 
   useEffect(() => {
     load()
@@ -187,11 +201,26 @@ function OperationsDesktop() {
     (filterYear !== 'all' ? 1 : 0)
   const filtersActive = filtersActiveCount > 0
 
-  // Reset a página 0 cuando cambian los filtros o el dataset cambia de tamaño
+  // Reset a página 0 cuando cambian los filtros, el modo de agrupado, o el
+  // dataset cambia de tamaño.
   useEffect(() => {
     setPage(0)
-  }, [filterAsset, filterBroker, filterResult, filterYear, ops.length])
+  }, [filterAsset, filterBroker, filterResult, filterYear, groupBy, ops.length])
 
+  const grouped = groupBy !== 'none'
+
+  // Grupos por activo / mes sobre lo YA filtrado (filtramos y después agrupamos,
+  // como en MovementsView). Reusa buildGroups module-level: es genérica y las
+  // ops del tab trades comparten shape suficiente (date/asset/broker/pnl_usd) —
+  // movPnl lee op.pnl_usd, y acá TODAS las filas son trades cerrados con P&L.
+  const groups = useMemo(
+    () => (grouped ? buildGroups(filteredOps, groupBy) : []),
+    [filteredOps, groupBy, grouped]
+  )
+
+  // Paginación SOLO en modo 'none' (lista plana). En modo agrupado mostramos
+  // todos los grupos sin paginar y ocultamos el control (mismo criterio que
+  // MovementsView).
   const totalPages = Math.max(1, Math.ceil(filteredOps.length / PAGE_SIZE))
   const currentPage = Math.min(page, totalPages - 1)
   const pagedOps = useMemo(
@@ -242,7 +271,7 @@ function OperationsDesktop() {
               : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
           }`}
         >
-          Solo trades
+          Solo P/L
         </button>
       </div>
 
@@ -355,6 +384,7 @@ function OperationsDesktop() {
                   options={[{ id: 'all', label: 'Todos' }, { id: 'wins', label: 'Ganadoras' }, { id: 'losses', label: 'Perdedoras' }]} />
                 <FilterPill label="Año" value={filterYear} onChange={setFilterYear}
                   options={[{ id: 'all', label: 'Todos' }, ...yearsAvailable.map(y => ({ id: y, label: y }))]} />
+                <FilterPill label="Agrupar" value={groupBy} onChange={setGroupBy} options={GROUP_OPTIONS} />
               </div>
             </Panel>
           )}
@@ -399,64 +429,34 @@ function OperationsDesktop() {
                   <EmptyState title="Sin resultados para los filtros aplicados" description="Ajustá los filtros para ampliar la búsqueda." dense />
                 </td></tr>
               )}
-              {pagedOps.map(op => {
-                const isWin = op.pnl_usd != null && op.pnl_usd > 0
-                const isLoss = op.pnl_usd != null && op.pnl_usd < 0
-                const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
-                const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
+              {/* Modo lista plana ('none') — la tabla de siempre, paginada. */}
+              {!grouped && pagedOps.map(op => (
+                <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} />
+              ))}
+              {/* Modo agrupado (por activo / mes) — fila-resumen expandible. */}
+              {grouped && groups.map(g => {
+                const isOpen = expandedGroups.has(g.key)
                 return (
-                  <tr key={op.id} className="border-b border-line/30 hover:bg-bg-2/40 transition-colors">
-                    <td className="px-4 py-2 text-xs font-mono tabular text-ink-2">{op.date}</td>
-                    <td className="px-3 py-2 text-xs text-ink-2">{op.broker}</td>
-                    <td className="px-3 py-2 text-sm font-medium text-ink-0">{op.asset}</td>
-                    <td className="px-3 py-2 text-[11px] font-mono uppercase tracking-caps text-ink-3">{prettyOpType(op.op_type)}</td>
-                    <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
-                    <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
-                    <td className="px-3 py-2 text-xs font-mono tabular text-right text-ink-2">{op.quantity ?? '—'}</td>
-                    <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)}`}>
-                      {op.pnl_usd == null
-                        ? '—'
-                        : histMoney.fmtMoneyAt(op.pnl_usd, {
-                            stampedFx: op.fx_to_usd,
-                            dateIso: op.date,
-                            signed: true,
-                          })}
-                    </td>
-                    <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)}`}>
-                      {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex gap-1 justify-end items-center">
-                        {op.pnl_usd != null && (
-                          <InlineAIButton
-                            topic="operations.trade"
-                            params={{ operation_id: op.id }}
-                            subtitle={`${op.asset} · ${op.date}`}
-                            ariaLabel={`Analizar trade de ${op.asset}`}
-                          />
-                        )}
-                        <button onClick={() => openEdit(op)} className="text-ink-3 hover:text-ink-0 transition-colors p-1" title="Editar" aria-label={`Editar operación ${op.asset}`}>
-                          <Pencil size={13} strokeWidth={1.75} aria-hidden="true" />
-                        </button>
-                        <button onClick={() => del(op.id)} className="text-ink-3 hover:text-rendi-neg transition-colors p-1" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
-                          <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
-                        </button>
-                      </div>
-                    </td>
-                    <td className="pr-4 pl-1 py-2 align-middle text-right">
-                      {ArrowIcon
-                        ? <ArrowIcon size={16} strokeWidth={2.25} className={`inline-block ${arrowColor}`} aria-label={isWin ? 'Ganancia' : 'Pérdida'} />
-                        : <span className="text-ink-3 text-xs">—</span>}
-                    </td>
-                  </tr>
+                  <Fragment key={g.key}>
+                    <TradeGroupRow
+                      group={g}
+                      groupBy={groupBy}
+                      isOpen={isOpen}
+                      onToggle={() => toggleGroup(g.key)}
+                      fmtPnl={fmtUsdSigned}
+                    />
+                    {isOpen && g.rows.map(op => (
+                      <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={openEdit} onDelete={del} indent />
+                    ))}
+                  </Fragment>
                 )
               })}
             </tbody>
           </table>
         </div>
 
-        {/* Paginación */}
-        {filteredOps.length > PAGE_SIZE && (
+        {/* Paginación — oculta en modo agrupado (mismo criterio que MovementsView). */}
+        {!grouped && filteredOps.length > PAGE_SIZE && (
           <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-line text-[11px] font-mono uppercase tracking-caps text-ink-3">
             <span className="tabular">
               {currentPage * PAGE_SIZE + 1}–{Math.min((currentPage + 1) * PAGE_SIZE, filteredOps.length)} de {filteredOps.length}
@@ -530,6 +530,126 @@ function FilterPill({ label, value, onChange, options }) {
         {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
       </select>
     </label>
+  )
+}
+
+// ─── Filas del tab "Solo P/L" ────────────────────────────────────────────────
+
+// Fila de un trade cerrado en la tabla del tab "Solo P/L". Se usa tanto en la
+// lista plana (modo 'none') como en el detalle de un grupo (modo agrupado),
+// donde va atenuada/indentada con "└" — mismo recurso visual que MovementRow.
+// Mantiene las acciones por-trade (analizar/editar/eliminar) en todos los modos.
+function TradeRow({ op, histMoney, onEdit, onDelete, indent = false }) {
+  const isWin = op.pnl_usd != null && op.pnl_usd > 0
+  const isLoss = op.pnl_usd != null && op.pnl_usd < 0
+  const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
+  const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
+  return (
+    <tr className={`border-b border-line/30 hover:bg-bg-2/40 transition-colors ${indent ? 'bg-bg-2/15' : ''}`}>
+      <td className={`px-4 py-2 text-xs font-mono tabular text-ink-2 ${indent ? 'pl-6 opacity-75' : ''}`}>
+        {indent && <span className="text-ink-3 font-mono select-none mr-1" title="Detalle">└</span>}
+        {op.date}
+      </td>
+      <td className={`px-3 py-2 text-xs text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.broker}</td>
+      <td className={`px-3 py-2 text-sm font-medium text-ink-0 ${indent ? 'opacity-75' : ''}`}>{op.asset}</td>
+      <td className={`px-3 py-2 text-[11px] font-mono uppercase tracking-caps text-ink-3 ${indent ? 'opacity-75' : ''}`}>{prettyOpType(op.op_type)}</td>
+      <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
+      <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
+      <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.quantity ?? '—'}</td>
+      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)} ${indent ? 'opacity-75' : ''}`}>
+        {op.pnl_usd == null
+          ? '—'
+          : histMoney.fmtMoneyAt(op.pnl_usd, {
+              stampedFx: op.fx_to_usd,
+              dateIso: op.date,
+              signed: true,
+            })}
+      </td>
+      <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)} ${indent ? 'opacity-75' : ''}`}>
+        {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
+      </td>
+      <td className="px-3 py-2">
+        <div className="flex gap-1 justify-end items-center">
+          {op.pnl_usd != null && (
+            <InlineAIButton
+              topic="operations.trade"
+              params={{ operation_id: op.id }}
+              subtitle={`${op.asset} · ${op.date}`}
+              ariaLabel={`Analizar trade de ${op.asset}`}
+            />
+          )}
+          <button onClick={() => onEdit(op)} className="text-ink-3 hover:text-ink-0 transition-colors p-1" title="Editar" aria-label={`Editar operación ${op.asset}`}>
+            <Pencil size={13} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          <button onClick={() => onDelete(op.id)} className="text-ink-3 hover:text-rendi-neg transition-colors p-1" title="Eliminar" aria-label={`Eliminar operación ${op.asset}`}>
+            <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        </div>
+      </td>
+      <td className="pr-4 pl-1 py-2 align-middle text-right">
+        {ArrowIcon
+          ? <ArrowIcon size={16} strokeWidth={2.25} className={`inline-block ${arrowColor}`} aria-label={isWin ? 'Ganancia' : 'Pérdida'} />
+          : <span className="text-ink-3 text-xs">—</span>}
+      </td>
+    </tr>
+  )
+}
+
+// Fila-resumen de un grupo de trades (modo agrupado por activo o por mes).
+// Click → toggle del detalle. Muestra: etiqueta (ticker o mes) · broker(s) ·
+// # de trades · P&L total con flecha ↗/↘. El P&L se formatea con el toggle
+// global vía fmtPnl (tcBlue actual — el grupo mezcla trades de distintas
+// fechas, igual que los KPIs agregados). Reusa buildGroups → group.pnl ya suma
+// los pnl_usd de las filas (acá todas son trades cerrados con P&L).
+function TradeGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
+  const { label, count, pnl, brokers } = group
+  const Chevron = isOpen ? ChevronUp : ChevronDown
+  const hasPnl = pnl !== 0
+  const Arrow = pnl > 0 ? ArrowUpRight : pnl < 0 ? ArrowDownRight : null
+  const brokersLabel = brokers.length === 0
+    ? '—'
+    : brokers.length <= 2
+    ? brokers.join(' · ')
+    : `${brokers.length} brokers`
+  return (
+    <tr
+      className="border-b border-line/40 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors"
+      onClick={onToggle}
+    >
+      {/* Etiqueta del grupo + chevron — ocupa Fecha */}
+      <td className="px-4 py-2.5">
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onToggle() }}
+          className="inline-flex items-center gap-1.5 text-ink-0 font-semibold text-sm"
+          aria-expanded={isOpen}
+        >
+          <Chevron size={13} strokeWidth={2} className="text-ink-3" aria-hidden="true" />
+          {label}
+        </button>
+      </td>
+      {/* Broker(s) — solo tiene sentido en agrupado por activo */}
+      <td className="px-3 py-2.5 text-ink-3 text-xs">
+        {groupBy === 'asset' ? brokersLabel : '—'}
+      </td>
+      {/* # trades — ocupa Activo … Cant. */}
+      <td className="px-3 py-2.5 text-ink-2" colSpan={5}>
+        <span className="font-mono uppercase tracking-caps text-[11px]">
+          {count} {count === 1 ? 'trade' : 'trades'}
+        </span>
+      </td>
+      {/* P&L total con flecha — bajo "P&L USD" */}
+      <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular ${colorClass(hasPnl ? pnl : null)}`}>
+        <span className="inline-flex items-center gap-1 justify-end">
+          {Arrow && <Arrow size={13} strokeWidth={2.25} aria-hidden="true" />}
+          {hasPnl ? fmtPnl(pnl) : '—'}
+        </span>
+      </td>
+      {/* Resto (P&L % · acciones · flecha) — hint del P&L */}
+      <td className="px-3 py-2.5 text-ink-3 text-[10px] font-mono uppercase tracking-caps text-right" colSpan={3}>
+        {hasPnl ? 'P&L total' : ''}
+      </td>
+    </tr>
   )
 }
 
@@ -655,6 +775,78 @@ const TYPE_META = {
 
 const MOV_PAGE_SIZE = 50
 
+// Opciones del pill "Agrupar". 'asset' es el default (reduce ruido: 1 fila por
+// activo). 'month' agrupa por YYYY-MM (útil para impuestos). 'none' = la lista
+// plana cronológica de siempre.
+const GROUP_OPTIONS = [
+  { id: 'asset', label: 'Activo' },
+  { id: 'month', label: 'Mes' },
+  { id: 'none',  label: 'Ninguno' },
+]
+
+const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+
+// Etiqueta legible de un YYYY-MM → "Mar 2026". Si no parsea, devuelve el raw.
+function prettyMonth(ym) {
+  if (!ym || ym.length < 7) return ym || 'Sin fecha'
+  const [y, m] = ym.split('-')
+  const idx = parseInt(m, 10) - 1
+  return idx >= 0 && idx < 12 ? `${MONTH_NAMES[idx]} ${y}` : ym
+}
+
+// P&L realizado de un movimiento. Solo las ventas (SELL, vía operations) traen
+// `pnl_usd` stampeado; el resto de los tipos (BUY/DEPOSIT/WITHDRAW/DIVIDEND/
+// INTEREST/FEE) no aportan P&L realizado y suman 0. Los dividendos/intereses
+// importados NO traen pnl_usd (su monto vive en amount_usd como ingreso), así
+// que acá cuentan 0 — el P&L realizado refleja estrictamente trades cerrados.
+function movPnl(m) {
+  return typeof m.pnl_usd === 'number' ? m.pnl_usd : 0
+}
+
+// Agrupa movimientos (ya filtrados) por activo o por mes. Devuelve grupos
+// { key, label, sublabel, rows, count, pnl } ordenados. Las filas de cada
+// grupo van por fecha desc (las movements ya vienen ordenadas así del backend,
+// pero re-ordenamos para robustez). El P&L del grupo suma movPnl de sus rows.
+function buildGroups(rows, groupBy) {
+  const map = new Map()
+  for (const m of rows) {
+    let key, label, sublabel
+    if (groupBy === 'month') {
+      key = (m.date || '').slice(0, 7) || 'Sin fecha'
+      label = prettyMonth(key)
+      sublabel = null
+    } else {
+      // 'asset' — ops sin activo (depósitos/retiros/conversiones) caen en un
+      // grupo "Sin activo" para no perderlas.
+      key = (m.asset || '').trim() || '__no_asset__'
+      label = key === '__no_asset__' ? 'Sin activo' : key
+      sublabel = null
+    }
+    if (!map.has(key)) map.set(key, { key, label, rows: [], pnl: 0, brokers: new Set() })
+    const g = map.get(key)
+    g.rows.push(m)
+    g.pnl += movPnl(m)
+    if (m.broker) g.brokers.add(m.broker)
+  }
+  const groups = [...map.values()].map(g => ({
+    key: g.key,
+    label: g.label,
+    rows: g.rows.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')),
+    count: g.rows.length,
+    pnl: g.pnl,
+    brokers: [...g.brokers],
+  }))
+  // Orden de los grupos: por mes → cronológico desc (más reciente arriba, igual
+  // que la lista plana). Por activo → P&L realizado desc (lo más relevante
+  // arriba), con desempate por # de movimientos y luego alfabético.
+  if (groupBy === 'month') {
+    groups.sort((a, b) => b.key.localeCompare(a.key))
+  } else {
+    groups.sort((a, b) => (b.pnl - a.pnl) || (b.count - a.count) || a.label.localeCompare(b.label))
+  }
+  return groups
+}
+
 function MovementsView() {
   // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
   // computeMovementKpis y a MovementRow vía props para evitar shadow.
@@ -665,6 +857,8 @@ function MovementsView() {
   const money = useMoneyFormat()
   const histMoney = useHistoricalMoney()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
+  // Variante con signo para el P&L realizado de cada grupo (modo agrupado).
+  const fmtUsdSigned = (v) => money.fmtMoney(v, { signed: true })
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -672,6 +866,20 @@ function MovementsView() {
   const [filterBroker, setFilterBroker] = useState('all')
   const [filterYear, setFilterYear] = useState('all')
   const [page, setPage] = useState(0)
+  // Agrupación de la lista. 'asset' por defecto (reduce ruido). Persistido en
+  // localStorage para respetar la preferencia del user entre sesiones.
+  const [groupBy, setGroupBy] = useState(() => localStorage.getItem('rendi_movements_group') || 'asset')
+  useEffect(() => { localStorage.setItem('rendi_movements_group', groupBy) }, [groupBy])
+  // Grupos expandidos (Set de keys). Mismo patrón que expandedTickers en
+  // Positions: click en la fila-resumen togglea el despliegue de sus filas.
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set())
+  function toggleGroup(key) {
+    setExpandedGroups(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -683,8 +891,8 @@ function MovementsView() {
     return () => { cancelled = true }
   }, [])
 
-  // Reset página al cambiar filtros
-  useEffect(() => { setPage(0) }, [filterType, filterBroker, filterYear])
+  // Reset página al cambiar filtros o el modo de agrupación.
+  useEffect(() => { setPage(0) }, [filterType, filterBroker, filterYear, groupBy])
 
   const filtered = useMemo(() => {
     return movements.filter(m => {
@@ -710,9 +918,25 @@ function MovementsView() {
     return [...set].sort().reverse()
   }, [movements])
 
+  const grouped = groupBy !== 'none'
+
+  // Grupos por activo / mes (sobre lo YA filtrado — filtramos y después
+  // agrupamos, como pide el spec). Vacío en modo 'none'.
+  const groups = useMemo(
+    () => (grouped ? buildGroups(filtered, groupBy) : []),
+    [filtered, groupBy, grouped]
+  )
+
+  // DECISIÓN PAGINACIÓN: la paginación con MOV_PAGE_SIZE aplica SOLO en modo
+  // 'none' (lista plana). En modo agrupado mostramos TODOS los grupos sin
+  // paginar — los grupos suelen ser pocos (1 por activo o 1 por mes) y paginar
+  // sobre grupos partiría la tabla-resumen de forma confusa. Las filas de
+  // detalle dentro de cada grupo tampoco se paginan (se ven al expandir).
   const totalPages = Math.max(1, Math.ceil(filtered.length / MOV_PAGE_SIZE))
   const currentPage = Math.min(page, totalPages - 1)
-  const pageRows = filtered.slice(currentPage * MOV_PAGE_SIZE, (currentPage + 1) * MOV_PAGE_SIZE)
+  const pageRows = grouped
+    ? filtered
+    : filtered.slice(currentPage * MOV_PAGE_SIZE, (currentPage + 1) * MOV_PAGE_SIZE)
 
   if (loading) {
     return <div className="text-center py-10 text-ink-3 text-sm" aria-live="polite">Cargando movimientos…</div>
@@ -755,7 +979,7 @@ function MovementsView() {
         })}
       </div>
 
-      {/* Filtros secundarios (broker, año) */}
+      {/* Filtros secundarios (broker, año) + pill Agrupar */}
       <div className="flex items-center gap-2 flex-wrap mb-3">
         {brokersAvailable.length > 1 && (
           <select
@@ -777,6 +1001,7 @@ function MovementsView() {
             {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         )}
+        <FilterPill label="Agrupar" value={groupBy} onChange={setGroupBy} options={GROUP_OPTIONS} />
         <span className="text-[11px] text-ink-3 font-mono">
           {filtered.length === movements.length
             ? `${movements.length} movimientos`
@@ -807,16 +1032,33 @@ function MovementsView() {
               </tr>
             </thead>
             <tbody>
-              {pageRows.map(m => (
+              {!grouped && pageRows.map(m => (
                 <MovementRow key={m.id} m={m} />
               ))}
+              {grouped && groups.map(g => {
+                const isOpen = expandedGroups.has(g.key)
+                return (
+                  <Fragment key={g.key}>
+                    <MovementGroupRow
+                      group={g}
+                      groupBy={groupBy}
+                      isOpen={isOpen}
+                      onToggle={() => toggleGroup(g.key)}
+                      fmtPnl={fmtUsdSigned}
+                    />
+                    {isOpen && g.rows.map(m => (
+                      <MovementRow key={m.id} m={m} indent />
+                    ))}
+                  </Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Pagination */}
-      {totalPages > 1 && (
+      {/* Pagination — solo en modo lista plana (ver DECISIÓN PAGINACIÓN). */}
+      {!grouped && totalPages > 1 && (
         <div className="flex items-center justify-between mt-3 text-xs text-ink-3">
           <span className="font-mono tabular">Página {currentPage + 1} de {totalPages}</span>
           <div className="flex items-center gap-1">
@@ -908,7 +1150,10 @@ function computeMovementKpis(rows, filterType, fmtUsd) {
   ]
 }
 
-function MovementRow({ m }) {
+// indent: cuando la fila es detalle de un grupo (modo agrupado), la atenuamos
+// e indentamos la primera celda con un marquito "└" — mismo recurso visual que
+// los lotes en Positions.
+function MovementRow({ m, indent = false }) {
   // Phase C (audit fix H1): cada movimiento usa SU PROPIO FX histórico para
   // la conversión a ARS. m.fx_to_usd (si stampeado) > lookup por m.date >
   // tcBlue actual. Esto evita que un retiro de $1000 USD en 2024 (blue era
@@ -926,8 +1171,9 @@ function MovementRow({ m }) {
   const isNegative = ['WITHDRAW', 'FEE'].includes(m.type)
   const amountClass = isPositive ? 'text-rendi-pos' : isNegative ? 'text-rendi-neg' : 'text-ink-1'
   return (
-    <tr className="border-t border-line/60 hover:bg-bg-2/40">
-      <td className="px-3 py-2 text-ink-2 tabular text-xs">
+    <tr className={`border-t border-line/60 hover:bg-bg-2/40 ${indent ? 'bg-bg-2/15' : ''}`}>
+      <td className={`px-3 py-2 text-ink-2 tabular text-xs ${indent ? 'pl-6 opacity-75' : ''}`}>
+        {indent && <span className="text-ink-3 font-mono select-none mr-1" title="Detalle">└</span>}
         {m.date || '—'}
         {m.approx_date && <span className="ml-1 text-[9px] text-ink-3" title="Fecha aproximada (agregado mensual)">~</span>}
       </td>
@@ -950,6 +1196,63 @@ function MovementRow({ m }) {
       </td>
       <td className="px-3 py-2 text-ink-3 text-xs max-w-xs truncate" title={m.notes}>
         {m.notes || (m.source === 'monthly' ? 'Agregado mensual' : m.source === 'import' ? 'Desde import CSV' : '')}
+      </td>
+    </tr>
+  )
+}
+
+// Fila-resumen de un grupo (modo agrupado por activo o por mes). Click → toggle
+// del despliegue de sus movimientos. Muestra: etiqueta del grupo (ticker o mes)
+// · broker(s) · # de movimientos · P&L realizado total con flecha ↗/↘. El P&L
+// se formatea con el toggle global vía fmtUsd (tcBlue actual — el grupo mezcla
+// movimientos de distintas fechas, igual que los KPIs agregados de arriba).
+function MovementGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
+  const { label, count, pnl, brokers } = group
+  const Chevron = isOpen ? ChevronUp : ChevronDown
+  const hasPnl = pnl !== 0
+  const Arrow = pnl > 0 ? ArrowUpRight : pnl < 0 ? ArrowDownRight : null
+  const brokersLabel = brokers.length === 0
+    ? '—'
+    : brokers.length <= 2
+    ? brokers.join(' · ')
+    : `${brokers.length} brokers`
+  return (
+    <tr
+      className="border-t border-line/60 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors"
+      onClick={onToggle}
+    >
+      {/* Etiqueta del grupo + chevron — ocupa Fecha + Tipo */}
+      <td className="px-3 py-2.5" colSpan={2}>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onToggle() }}
+          className="inline-flex items-center gap-1.5 text-ink-0 font-semibold text-sm"
+          aria-expanded={isOpen}
+        >
+          <Chevron size={13} strokeWidth={2} className="text-ink-3" aria-hidden="true" />
+          {label}
+        </button>
+      </td>
+      {/* Broker(s) */}
+      <td className="px-3 py-2.5 text-ink-3 text-xs">
+        {groupBy === 'asset' ? brokersLabel : '—'}
+      </td>
+      {/* # movimientos — bajo "Activo" */}
+      <td className="px-3 py-2.5 text-ink-2 text-xs" colSpan={3}>
+        <span className="font-mono uppercase tracking-caps text-[11px]">
+          {count} {count === 1 ? 'movimiento' : 'movimientos'}
+        </span>
+      </td>
+      {/* P&L realizado total con flecha — bajo "Monto" */}
+      <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular ${colorClass(hasPnl ? pnl : null)}`}>
+        <span className="inline-flex items-center gap-1 justify-end">
+          {Arrow && <Arrow size={13} strokeWidth={2.25} aria-hidden="true" />}
+          {hasPnl ? fmtPnl(pnl) : '—'}
+        </span>
+      </td>
+      {/* Notas — hint del P&L */}
+      <td className="px-3 py-2.5 text-ink-3 text-[10px] font-mono uppercase tracking-caps">
+        {hasPnl ? 'P&L realizado' : ''}
       </td>
     </tr>
   )
