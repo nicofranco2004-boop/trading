@@ -80,11 +80,14 @@ class SendPlanChangeAdminTest(unittest.TestCase):
         self.assertFalse(ret)
         send.assert_not_called()
 
-    def test_no_send_without_admin_email(self):
+    def test_falls_back_to_default_admin(self):
+        # Sin ADMIN_NOTIFY_EMAIL en el env, cae al default soporte@rendi.finance
+        # (mismo default que el aviso de signup) y SÍ manda. Antes quedaba con
+        # destinatario vacío → no salía nunca (bug del upgrade que no llegaba).
         ret, send = self._call(env_admin=None, user_email="buyer@gmail.com",
                                old_plan="free", new_plan="pro", source="payment")
-        self.assertFalse(ret)
-        send.assert_not_called()
+        self.assertTrue(ret)
+        self.assertEqual(send.call_args[0][0], "soporte@rendi.finance")
 
     # ── normalización de tiers ───────────────────────────────────────────────
     def test_none_normalizes_to_free(self):

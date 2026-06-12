@@ -708,7 +708,11 @@ def send_plan_change_admin(*, user_email: str, old_plan: Optional[str],
     # `to` (admin) no es de test.
     if _is_test_address(user_email):
         return False
-    to = (os.environ.get("ADMIN_NOTIFY_EMAIL") or "").strip()
+    # Mismo default que el aviso de signup (main.py): si ADMIN_NOTIFY_EMAIL no
+    # está seteada en el env, cae a soporte@rendi.finance. Sin esto, cuando la
+    # env var no estaba, el signup llegaba (usa el default) pero este mail
+    # quedaba con destinatario vacío y nunca salía.
+    to = (os.environ.get("ADMIN_NOTIFY_EMAIL") or "soporte@rendi.finance").strip()
     if not to:
         return False
 
