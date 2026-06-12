@@ -169,6 +169,9 @@ export default function Admin() {
       {/* ── Re-engagement: mail a usuarios que no importaron su historial ── */}
       <ReengagementPanel toast={toast} />
 
+      {/* ── Campaña regalo Pro: avisar que les regalamos un mes + cargá historial ── */}
+      <GiftPlanPanel toast={toast} />
+
       {/* ── Alerta de billing: pagaron pero figuran en Free ──────────────── */}
       {affected.length > 0 && (
         <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
@@ -409,6 +412,160 @@ function ReengagementPanel({ toast }) {
               onClick={send}
               disabled={sending || toSend.length === 0}
               className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed press"
+            >
+              <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${toSend.length}`}
+            </button>
+          </div>
+
+          {result && (
+            <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
+              Resultado: <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
+              {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
+              {result.skipped_count > 0 && <> · {result.skipped_count} salteados</>}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── GiftPlanPanel — mail "te regalamos un mes de Pro, cargá tu historial" ────
+// Para usuarios con ≤1 operación a los que YA se les regaló un mes de Pro (vía
+// grant-comp). Preview (confirm:false) muestra la lista + su tier/regalo sin
+// mandar nada; "Enviar" (confirm:true) mailea por Resend, stampea
+// gift_plan_email_sent_at y saltea a quien ya recibió. Idempotente.
+//   • only_gifted: solo a quienes tienen un comp Pro/Plus activo (no promete un
+//     regalo a quien no lo recibió). Default ON por seguridad.
+function GiftPlanPanel({ toast }) {
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState(null)
+  const [resend, setResend] = useState(false)
+  const [onlyGifted, setOnlyGifted] = useState(true)
+
+  async function loadPreview() {
+    setLoading(true); setResult(null)
+    try {
+      setPreview(await api.post('/admin/email/gift-plan', { confirm: false, only_gifted: onlyGifted }))
+    } catch (e) {
+      toast.push('Error al previsualizar: ' + e.message, { type: 'error' })
+    } finally { setLoading(false) }
+  }
+
+  async function send() {
+    const all = preview?.recipients || []
+    const n = resend ? all.length : all.filter(r => !r.already_sent_at).length
+    if (n === 0) return
+    const msg = resend
+      ? `¿Reenviar el mail de regalo Pro a los ${n} destinatarios? Incluye a los que ya lo recibieron.`
+      : `¿Mandar el mail "te regalamos un mes de Pro" a ${n} usuario${n > 1 ? 's' : ''}? Los que ya lo recibieron se saltean.`
+    if (!confirm(msg)) return
+    setSending(true)
+    try {
+      const r = await api.post('/admin/email/gift-plan', { confirm: true, resend, only_gifted: onlyGifted })
+      setResult(r)
+      toast.push(
+        `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
+        { type: r.failed_count ? 'warn' : 'success' }
+      )
+      await loadPreview()
+    } catch (e) {
+      toast.push('Error al enviar: ' + e.message, { type: 'error' })
+    } finally { setSending(false) }
+  }
+
+  const recipients = preview?.recipients || []
+  const pending = recipients.filter(r => !r.already_sent_at)
+  const toSend = resend ? recipients : pending
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Mail size={16} className="text-emerald-500" />
+          <h2 className="font-semibold text-ink-0">Regalo Pro · cargá tu historial</h2>
+        </div>
+        <button
+          onClick={loadPreview}
+          disabled={loading}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Recalcular' : 'Ver destinatarios'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Usuarios con ≤1 operación a los que les regalaste un mes de Pro. El mail les avisa del regalo y los empuja a
+        importar su historial para aprovecharlo. Con <b>“solo con regalo activo”</b> se manda únicamente a quienes
+        tienen un comp Pro/Plus vigente (no promete un regalo a quien no lo tiene). Los que ya lo recibieron se saltean.
+      </p>
+
+      <label className="flex items-center gap-1.5 text-[11px] text-ink-3 cursor-pointer select-none">
+        <input type="checkbox" checked={onlyGifted} onChange={e => setOnlyGifted(e.target.checked)} className="accent-emerald-500" />
+        Solo a quienes tienen el regalo (Pro/Plus) activo
+      </label>
+
+      {preview && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <ConvCell label="Candidatos" value={preview.total_candidates} hint="≤1 operación" />
+            <ConvCell label="Con regalo activo" value={preview.with_gift} hint="comp Pro/Plus vigente" />
+            <ConvCell label="A enviar ahora" value={pending.length} hint="nunca recibieron" />
+          </div>
+
+          {recipients.length > 0 ? (
+            <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+                    <th className="text-left px-2 py-1">Email</th>
+                    <th className="text-left px-2 py-1">Nombre</th>
+                    <th className="text-right px-2 py-1">Actividad</th>
+                    <th className="text-left px-2 py-1">Plan</th>
+                    <th className="text-left px-2 py-1">Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recipients.map(r => (
+                    <tr key={r.id} className="border-b border-line/20">
+                      <td className="px-2 py-1 text-ink-1">{r.email}</td>
+                      <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-2">{r.activity}</td>
+                      <td className="px-2 py-1">
+                        {r.has_gift
+                          ? <span className="text-emerald-600 dark:text-emerald-400 uppercase font-semibold">{r.tier}</span>
+                          : <span className="text-amber-600 dark:text-amber-400" title="Sin comp activo — no recibió el regalo">{r.tier || 'free'} ⚠</span>}
+                      </td>
+                      <td className="px-2 py-1">
+                        {r.already_sent_at
+                          ? <span className="text-emerald-600 dark:text-emerald-400">enviado</span>
+                          : <span className="text-ink-3">pendiente</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-ink-3">No hay usuarios que cumplan el criterio.</p>
+          )}
+
+          <div className="flex items-center justify-between gap-3 pt-1 border-t border-line/30 flex-wrap">
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-ink-3 max-w-md">
+                Envía vía Resend. Los que fallan no se marcan como enviados → se reintentan solos la próxima vez.
+              </p>
+              <label className="flex items-center gap-1.5 text-[11px] text-ink-3 cursor-pointer select-none">
+                <input type="checkbox" checked={resend} onChange={e => setResend(e.target.checked)} className="accent-emerald-500" />
+                Reenviar a los que ya recibieron (para re-testear el email)
+              </label>
+            </div>
+            <button
+              onClick={send}
+              disabled={sending || toSend.length === 0}
+              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-emerald-500 text-white font-medium hover:bg-emerald-500/90 disabled:opacity-40 disabled:cursor-not-allowed press"
             >
               <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${toSend.length}`}
             </button>

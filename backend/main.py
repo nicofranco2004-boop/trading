@@ -425,6 +425,11 @@ def init_db():
         # lo usa como idempotencia: no re-mailea a quien ya recibió (salvo resend=True),
         # y los envíos que fallan no se stampean → se reintentan en la próxima corrida.
         conn.execute("ALTER TABLE users ADD COLUMN reengagement_email_sent_at TEXT")
+    if user_cols and 'gift_plan_email_sent_at' not in user_cols:
+        # Timestamp ISO del mail de la campaña "te regalamos un mes de Plus, cargá
+        # tu historial". NULL = nunca se le mandó. Lo usa /api/admin/email/gift-plus
+        # como idempotencia (no re-mailea salvo resend=True; fallidos se reintentan).
+        conn.execute("ALTER TABLE users ADD COLUMN gift_plan_email_sent_at TEXT")
     # Sincronizar is_admin + approved para usuarios con email admin
     rows = conn.execute("SELECT id, email FROM users").fetchall()
     for r in rows:
@@ -9179,6 +9184,11 @@ class ReengagementEmailIn(BaseModel):
     limit: int = 0               # cap de destinatarios (0 = sin límite; sirve para tandas)
 
 
+class GiftPlanEmailIn(ReengagementEmailIn):
+    only_gifted: bool = False    # True = solo a quienes ya tienen un comp Plus/Pro activo
+    plan_label: str = "Pro"      # etiqueta del plan regalado que aparece en el mail
+
+
 @app.post("/api/admin/email/re-engagement")
 def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_admin_user)):
     """Re-engagement a usuarios que se registraron pero casi no cargaron nada
@@ -9271,6 +9281,139 @@ def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_a
                 conn.commit()
             except Exception as ex:
                 log.error("re-engagement stamp failed for %s: %s", t["email"], ex)
+            sent.append({"id": t["id"], "email": t["email"]})
+        else:
+            failed.append({"id": t["id"], "email": t["email"]})
+    conn.close()
+    return {
+        "dry_run": False,
+        "threshold": threshold,
+        "sent_count": len(sent),
+        "failed_count": len(failed),
+        "skipped_count": len(skipped),
+        "sent": sent,
+        "failed": failed,
+        "skipped": skipped,
+    }
+
+
+@app.post("/api/admin/email/gift-plan")
+def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_user)):
+    """Campaña: mail a usuarios con ≤1 operación avisando que les regalamos un mes
+    de Plus (el grant en sí se hace por separado vía grant-comp) y empujándolos a
+    cargar su historial para aprovecharlo.
+
+    Mismo flujo seguro que /re-engagement:
+      • Solo admin.
+      • confirm=False (DEFAULT) → DRY RUN: lista de destinatarios SIN enviar.
+        Surface tier + credit_active_until + has_gift para que verifiques que el
+        regalo ya cayó antes de mandar.
+      • confirm=True → envía (emails.send_gift_plan_history), stampea
+        users.gift_plan_email_sent_at, NO re-mailea a quien ya recibió (salvo
+        resend=True). Los fallidos no se stampean → se reintentan solos.
+      • only_gifted=True → solo a quienes tienen un comp Plus/Pro activo (evita
+        prometer un regalo a alguien que no lo recibió).
+      • limit>0 → cap para mandar en tandas.
+
+    En local sin RESEND_API_KEY el envío loguea y devuelve False (no manda nada
+    de verdad); el envío real ocurre en prod."""
+    from billing import emails
+    from datetime import datetime as _dt
+
+    threshold = max(0, int(data.threshold))
+    now = _dt.utcnow()
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT u.id, u.email, u.name, u.created_at, u.email_verified, u.tier,
+               u.credit_active_until, u.credit_anchor_amount_usd,
+               u.gift_plan_email_sent_at,
+               (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
+               (SELECT COUNT(*) FROM positions p
+                  WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
+        FROM users u
+        WHERE COALESCE(u.is_admin,0) = 0
+        ORDER BY u.created_at ASC
+    """).fetchall()
+
+    def _has_gift(d):
+        if (d.get("tier") or "free") not in ("plus", "pro"):
+            return False
+        cau = d.get("credit_active_until")
+        if not cau:
+            return False
+        try:
+            if _dt.fromisoformat(str(cau).replace("Z", "")) <= now:
+                return False
+        except (ValueError, TypeError):
+            return False
+        # comp = sin costo (amount 0); evita marcar a quien paga su plan
+        return float(d.get("credit_anchor_amount_usd") or 0) == 0
+
+    targets = []
+    for r in rows:
+        d = dict(r)
+        if data.only_verified and not d.get("email_verified"):
+            continue
+        if not (d.get("email") or "").strip():
+            continue
+        activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
+        if activity > threshold:
+            continue
+        d["activity"] = activity
+        d["has_gift"] = _has_gift(d)
+        if data.only_gifted and not d["has_gift"]:
+            continue
+        targets.append(d)
+
+    targets.sort(key=lambda x: (x.get("gift_plan_email_sent_at") is not None,
+                                x.get("created_at") or ""))
+    if data.limit and data.limit > 0:
+        targets = targets[: data.limit]
+
+    if not data.confirm:
+        conn.close()
+        return {
+            "dry_run": True,
+            "threshold": threshold,
+            "only_verified": data.only_verified,
+            "only_gifted": data.only_gifted,
+            "plan_label": data.plan_label,
+            "total_candidates": len(targets),
+            "with_gift": sum(1 for t in targets if t.get("has_gift")),
+            "already_sent": sum(1 for t in targets if t.get("gift_plan_email_sent_at")),
+            "recipients": [
+                {"id": t["id"], "email": t["email"], "name": t.get("name"),
+                 "activity": t["activity"], "tier": t.get("tier"),
+                 "has_gift": t.get("has_gift"),
+                 "credit_active_until": t.get("credit_active_until"),
+                 "already_sent_at": t.get("gift_plan_email_sent_at")}
+                for t in targets
+            ],
+        }
+
+    sent, failed, skipped = [], [], []
+    for t in targets:
+        if t.get("gift_plan_email_sent_at") and not data.resend:
+            skipped.append({"id": t["id"], "email": t["email"]})
+            continue
+        ok = False
+        try:
+            ok = emails.send_gift_plan_history(
+                to=t["email"], user_name=(t.get("name") or ""),
+                plan_label=(data.plan_label or "Pro"),
+            )
+        except Exception as ex:
+            log.error("gift-plus send error for %s: %s", t["email"], ex)
+            ok = False
+        if ok:
+            try:
+                conn.execute(
+                    "UPDATE users SET gift_plan_email_sent_at=? WHERE id=?",
+                    (_dt.utcnow().isoformat(), t["id"]),
+                )
+                conn.commit()
+            except Exception as ex:
+                log.error("gift-plus stamp failed for %s: %s", t["email"], ex)
             sent.append({"id": t["id"], "email": t["email"]})
         else:
             failed.append({"id": t["id"], "email": t["email"]})

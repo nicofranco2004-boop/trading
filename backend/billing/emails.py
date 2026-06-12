@@ -612,6 +612,56 @@ def send_reengagement(*, to: str, user_name: str = "") -> bool:
     return _send(to, subject, body_html, text, from_addr=_from_support())
 
 
+def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "Pro") -> bool:
+    """Campaña: avisar a usuarios con ≤1 operación que les regalamos un mes de
+    Pro/Plus (ya otorgado por separado vía grant-comp) y empujarlos a cargar su
+    historial para que lo aprovechen — el valor de Rendi recién aparece con los
+    movimientos cargados.
+
+    Mismo formato PLANO que send_reengagement (sin _wrap_html, un solo link de
+    texto) para caer en la pestaña Principal de Gmail y no en Promociones: un
+    mail con pinta de escrito 1-a-1 entra a Principal; uno con banner + CTA de
+    color tabula a Promociones. Replies → soporte@."""
+    safe_name = html.escape((user_name or "").strip())
+    greeting_html = f"Hola {safe_name}," if safe_name else "Hola,"
+    greeting_text = f"Hola {(user_name or '').strip()}," if (user_name or "").strip() else "Hola,"
+    subject = f"Te regalamos un mes de Rendi {plan_label}"
+    body_html = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
+        'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
+        f'<p style="margin:0 0 14px;">{greeting_html} te activamos <b>un mes de Rendi '
+        f'{plan_label} sin costo</b> para que pruebes la app a fondo. Ya lo tenés en tu cuenta, '
+        'no tenés que hacer nada para activarlo.</p>'
+        '<p style="margin:0 0 14px;">Para aprovecharlo, lo mejor es cargar tu historial cuanto '
+        'antes: el valor de Rendi —tu P&amp;L real en dólares, tu rendimiento contra la inflación '
+        'y el S&amp;P 500, y las métricas sobre cómo operás— recién aparece cuando están tus '
+        'movimientos cargados.</p>'
+        '<p style="margin:0 0 14px;">La forma más rápida es subir el CSV de movimientos de tu '
+        'broker (Cocos, IOL, Binance, Schwab) y Rendi reconstruye la cartera entera en segundos. '
+        'También podés cargar a mano si preferís.</p>'
+        f'<p style="margin:0 0 14px;">Entrá a <a href="{APP_URL}" style="color:#5b4ddb;">'
+        'rendi.finance</a> e importá tu historial así no se te pasa el mes de '
+        f'{plan_label} sin sacarle el jugo.</p>'
+        '<p style="margin:0 0 14px;">Y si te trabás en algo, respondé este mail y te damos una mano.</p>'
+        '<p style="margin:18px 0 0;">— Rendi</p>'
+        '</div>'
+    )
+    text = (
+        f"{greeting_text} te activamos un mes de Rendi {plan_label} sin costo para que pruebes "
+        "la app a fondo. Ya lo tenés en tu cuenta, no tenés que hacer nada para activarlo.\n\n"
+        "Para aprovecharlo, lo mejor es cargar tu historial cuanto antes: el valor de Rendi "
+        "—tu P&L real en dólares, tu rendimiento contra la inflación y el S&P 500, y las "
+        "métricas sobre cómo operás— recién aparece cuando están tus movimientos cargados.\n\n"
+        "La forma más rápida es subir el CSV de movimientos de tu broker (Cocos, IOL, Binance, "
+        "Schwab) y Rendi reconstruye la cartera entera en segundos. También podés cargar a mano.\n\n"
+        f"Entrá a {APP_URL} e importá tu historial así no se te pasa el mes de {plan_label} "
+        "sin sacarle el jugo.\n\n"
+        "Y si te trabás en algo, respondé este mail y te damos una mano.\n\n"
+        "— Rendi"
+    )
+    return _send(to, subject, body_html, text, from_addr=_from_support())
+
+
 # ─── Email interno: alerta al equipo por cada signup real (primeros N) ───────
 
 def send_new_signup_admin(*, to: str, new_user_email: str,
