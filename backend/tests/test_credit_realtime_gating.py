@@ -109,5 +109,56 @@ class CreditRealtimeGatingTest(unittest.TestCase):
         self.assertEqual(quota.get_tier(self.conn, uid), "free")
 
 
+class RebillActivateFallbackCreditTest(unittest.TestCase):
+    """Si grant_payment_credit falla en _rebill_activate, el user NO debe quedar
+    Pro sin fecha de vencimiento (Pro permanente). Debe setearse un crédito
+    fallback para que el cron / la red de seguridad lo bajen al vencer."""
+
+    def setUp(self):
+        from unittest.mock import patch
+        self.patch = patch
+        self.conn = main.get_db()
+        for t in ("users", "subscriptions"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, tier, credit_active_until) VALUES (?,?,1,NULL,NULL)",
+            ("rebillfail@gmail.com", "x"))
+        self.uid = cur.lastrowid
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _cau(self):
+        return self.conn.execute(
+            "SELECT tier, credit_active_until FROM users WHERE id=?", (self.uid,)).fetchone()
+
+    def test_grant_failure_sets_fallback_credit(self):
+        with self.patch("billing.credits.grant_payment_credit", side_effect=Exception("boom")):
+            main._rebill_activate(
+                self.conn, self.uid,
+                {"rendi_plan": "pro", "rendi_period": "monthly"},
+                "sub_test", {})
+        row = self._cau()
+        self.assertEqual(row["tier"], "pro")                 # tier quedó pago
+        self.assertIsNotNone(row["credit_active_until"])     # pero CON fecha de fin
+        # y ~30 días en el futuro (no permanente)
+        exp = datetime.fromisoformat(row["credit_active_until"])
+        self.assertGreater(exp, datetime.utcnow() + timedelta(days=25))
+        self.assertLess(exp, datetime.utcnow() + timedelta(days=35))
+
+    def test_invalid_plan_normalizes_to_pro(self):
+        # metadata con plan inválido → no rompe; tier termina en 'pro'.
+        with self.patch("billing.credits.grant_payment_credit", side_effect=Exception("boom")):
+            main._rebill_activate(
+                self.conn, self.uid,
+                {"rendi_plan": "enterprise", "rendi_period": "weird"},
+                "sub_test2", {})
+        self.assertEqual(self._cau()["tier"], "pro")
+
+
 if __name__ == "__main__":
     unittest.main()
