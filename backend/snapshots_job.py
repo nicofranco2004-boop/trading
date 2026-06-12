@@ -164,7 +164,31 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
     if not symbols:
         return {}
 
-    sym_to_yf = {sym: (crypto_yf.get(sym) or sym) for sym in symbols}
+    # CEDEARs que las fuentes cotizan en USD (ej. BAC): fetcheamos el subyacente
+    # US y devolvemos el precio en pesos (× CCL ÷ ratio), igual que main.get_prices.
+    # Sin esto, el snapshot diario guardaría el valor en USD (~9) en vez de ~20.570
+    # ARS → historia de portfolio subvaluada. Lazy import para evitar el ciclo
+    # snapshots_job ↔ main.
+    try:
+        from main import (CEDEAR_USD_RATIOS as _CED_RATIOS,
+                          _current_ccl as _cur_ccl, _fetch_dolar as _fd)
+    except Exception:
+        _CED_RATIOS, _cur_ccl, _fd = {}, (lambda: None), (lambda casa: None)
+    cedear_usd = {s: s[:-3] for s in symbols
+                  if s.endswith('.BA') and s[:-3] in _CED_RATIOS}
+    _ccl = None
+    if cedear_usd:
+        _ccl = _cur_ccl()
+        if not _ccl:
+            _d = _fd("contadoconliqui")  # cron sin caché de dólar → fetch directo
+            _ccl = (_d or {}).get("venta")
+
+    sym_to_yf = {}
+    for sym in symbols:
+        if sym in cedear_usd:
+            sym_to_yf[sym] = cedear_usd[sym]  # ticker US (ej. BAC)
+        else:
+            sym_to_yf[sym] = crypto_yf.get(sym) or sym
     yf_tickers = list(set(sym_to_yf.values()))
     result = {sym: None for sym in symbols}
 
@@ -193,6 +217,15 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
                             pass
     except Exception as e:
         log.warning(f"yf.download failed for batch: {e}")
+
+    # CEDEARs USD-cotizados: el precio fetcheado es el del subyacente US (USD) →
+    # a pesos (× CCL ÷ ratio). Sin CCL los dejamos en None (no persistimos el
+    # valor en USD roto; el chequeo de cobertura del snapshot decide qué hacer).
+    if cedear_usd:
+        for _csym, _base in cedear_usd.items():
+            if result.get(_csym) is not None:
+                _r = _CED_RATIOS.get(_base) or 1
+                result[_csym] = round(result[_csym] * _ccl / _r, 4) if (_ccl and _ccl > 0) else None
 
     return result
 
