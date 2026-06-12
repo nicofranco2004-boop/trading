@@ -77,6 +77,30 @@ def run_lifecycle_job(conn) -> dict:
     return result
 
 
+def _notify_admin_downgrades(downgraded, source: str) -> None:
+    """Best-effort: avisa al admin de cada baja a Free (plus/pro → free).
+
+    Se llama DESPUÉS de commitear el `with conn:` para no bloquear la
+    transacción con la llamada de red (Resend). Nunca levanta. `downgraded` es
+    una lista de tuplas (email, tier_anterior)."""
+    if not downgraded:
+        return
+    try:
+        from billing import emails
+    except Exception:
+        return
+    for email, before_tier in downgraded:
+        try:
+            emails.send_plan_change_admin(
+                user_email=email,
+                old_plan=before_tier,
+                new_plan=None,  # → 'Free'
+                source=source,
+            )
+        except Exception as ex:
+            log.warning("plan-change admin notify (downgrade) falló para %s: %s", email, ex)
+
+
 def _downgrade_expired_credit(conn) -> int:
     """Baja a Free a users cuya credit_active_until ya pasó.
 
@@ -101,6 +125,7 @@ def _downgrade_expired_credit(conn) -> int:
     if not rows:
         return 0
     count = 0
+    downgraded = []  # (email, tier_anterior) para avisar al admin tras commitear
     with conn:
         for r in rows:
             conn.execute(
@@ -121,10 +146,12 @@ def _downgrade_expired_credit(conn) -> int:
                 ),
             )
             count += 1
+            downgraded.append((r["email"], r["tier"]))
             log.info(
                 "Credit expired for user %s (was %s, active_until=%s) — downgraded to free",
                 r["id"], r["tier"], r["credit_active_until"],
             )
+    _notify_admin_downgrades(downgraded, "credit_expired")
     return count
 
 
@@ -326,7 +353,7 @@ def _downgrade_expired_cancellations(conn) -> int:
     now = datetime.utcnow().isoformat()
     rows = conn.execute(
         """SELECT s.id, s.user_id, s.mp_subscription_id, s.current_period_end,
-                  u.tier, u.credit_active_until
+                  u.tier, u.email, u.credit_active_until
            FROM subscriptions s
            JOIN users u ON u.id = s.user_id
            WHERE s.status = 'cancelled'
@@ -344,6 +371,7 @@ def _downgrade_expired_cancellations(conn) -> int:
         return 0
 
     count = 0
+    downgraded = []  # (email, tier_anterior) para avisar al admin tras commitear
     with conn:
         for r in rows:
             # Limpiar el tier override → vuelve a la lógica is_admin
@@ -372,11 +400,13 @@ def _downgrade_expired_cancellations(conn) -> int:
                 ),
             )
             count += 1
+            downgraded.append((r["email"], r["tier"]))
             log.info(
                 "User %s downgraded (sub %s expired at %s, credit_until=%s)",
                 r["user_id"], r["mp_subscription_id"], r["current_period_end"],
                 r["credit_active_until"],
             )
+    _notify_admin_downgrades(downgraded, "cancellation_expired")
     return count
 
 

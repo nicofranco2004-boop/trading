@@ -651,6 +651,106 @@ def send_new_signup_admin(*, to: str, new_user_email: str,
                  from_addr=_from_noreply())
 
 
+# ─── Email interno: alerta al admin por cada CAMBIO DE PLAN ──────────────────
+
+def _tier_label(tier: Optional[str]) -> str:
+    """Normaliza el tier a una etiqueta legible. NULL / '' / 'free' / cualquier
+    valor desconocido → 'Free' (es el estado por defecto del usuario).
+
+    OJO: distinto de _plan_label (más arriba), que asume plus/pro y devuelve
+    'Pro' por defecto. Acá necesitamos manejar 'free'/None → 'Free'."""
+    t = (tier or "").strip().lower()
+    return {"plus": "Plus", "pro": "Pro"}.get(t, "Free")
+
+
+# Etiqueta legible del origen del cambio (lo que disparó la transición).
+_PLAN_CHANGE_SOURCES = {
+    "payment":              "Pago (Rebill)",
+    "plan_change":          "Cambio de plan",
+    "credit_expired":       "Vencimiento de crédito",
+    "cancellation_expired": "Cancelación · fin de período",
+    "admin_grant":          "Otorgado por admin",
+    "admin_restore":        "Restaurado por admin",
+}
+
+
+def send_plan_change_admin(*, user_email: str, old_plan: Optional[str],
+                           new_plan: Optional[str], source: str,
+                           user_name: Optional[str] = None,
+                           amount_usd: Optional[float] = None) -> bool:
+    """Aviso INTERNO al admin cuando un usuario CAMBIA de plan (free/plus/pro).
+
+    Cubre todas las transiciones: pago de Plus/Pro (free→pago), upgrade/downgrade
+    plus↔pro, baja a Free (vencimiento de crédito o fin de período por
+    cancelación) y cambios hechos por el admin (grant/restore).
+
+    Destinatario: ADMIN_NOTIFY_EMAIL (el mismo que el aviso de nuevo signup).
+
+    Idempotencia barata: si old==new (normalizados a etiqueta) NO manda. Esto
+    deduplica reintentos del webhook de Rebill — en el 2º intento el tier ya
+    quedó cambiado, así que old==new y no se reenvía.
+
+    SECURITY: email/name son user-controlled → html.escape antes del HTML, para
+    evitar inyección de markup en el inbox del admin. Best-effort: no afecta
+    ningún flujo de billing.
+    """
+    old_label = _tier_label(old_plan)
+    new_label = _tier_label(new_plan)
+    if old_label == new_label:
+        return False  # no hubo cambio real de tier (o reintento de webhook)
+    # No avisar por usuarios de dominio de prueba (reset-*/verify-*@rendi.test).
+    # Igual que send_new_signup_admin: el guard de _send no lo cubre porque el
+    # `to` (admin) no es de test.
+    if _is_test_address(user_email):
+        return False
+    to = (os.environ.get("ADMIN_NOTIFY_EMAIL") or "").strip()
+    if not to:
+        return False
+
+    safe_name = html.escape(user_name or user_email.split("@")[0])
+    safe_email = html.escape(user_email)
+    source_label = _PLAN_CHANGE_SOURCES.get(source, source)
+    safe_source = html.escape(source_label)
+
+    amount_row = ""
+    amount_text = ""
+    if amount_usd:
+        try:
+            safe_amount = html.escape(f"USD {float(amount_usd):,.2f}")
+            amount_row = (
+                f'<tr><td style="padding:6px 0;color:#6b7280;">Monto</td>'
+                f'<td style="padding:6px 0;font-weight:600;">{safe_amount}</td></tr>'
+            )
+            amount_text = f"Monto:  USD {float(amount_usd):,.2f}\n"
+        except (TypeError, ValueError):
+            pass
+
+    subject = f"Rendi · cambio de plan: {old_label} → {new_label} ({user_email})"
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Cambio de plan</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Un usuario cambió de plan en Rendi: <strong>{old_label} → {new_label}</strong>.
+      </p>
+      <table cellpadding="0" cellspacing="0" border="0" style="width:100%;font-size:14px;color:#374151;margin:0 0 20px;">
+        <tr><td style="padding:6px 0;color:#6b7280;width:90px;">Usuario</td><td style="padding:6px 0;font-weight:600;">{safe_name}</td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Email</td><td style="padding:6px 0;font-weight:600;">{safe_email}</td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Cambio</td><td style="padding:6px 0;font-weight:600;">{old_label} → {new_label}</td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Origen</td><td style="padding:6px 0;font-weight:600;">{safe_source}</td></tr>
+        {amount_row}
+      </table>
+    """
+    text = (
+        f"Cambio de plan en Rendi\n\n"
+        f"Usuario: {user_name or user_email.split('@')[0]}\n"
+        f"Email:   {user_email}\n"
+        f"Cambio:  {old_label} -> {new_label}\n"
+        f"Origen:  {source_label}\n"
+        f"{amount_text}"
+    )
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
+
+
 # ─── Email #7: reset de contraseña (magic link) ─────────────────────────────
 
 def send_password_reset(*, to: str, user_name: str, reset_url: str,
