@@ -214,7 +214,7 @@ export default function Admin() {
                     {!u.approved && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
                   </td>
                   <td className="px-3 py-2 text-ink-2">{u.name || '—'}</td>
-                  <td className="px-3 py-2"><PlanBadge plan={u.plan} affected={u.billing_affected} creditActive={u.credit_active} /></td>
+                  <td className="px-3 py-2"><PlanBadge plan={u.plan} affected={u.billing_affected} creditActive={u.credit_active} daysRemaining={u.days_remaining} /></td>
                   <td className="px-3 py-2 text-ink-3 text-xs">{u.created_at?.slice(0, 16) || '—'}</td>
                   <td className="px-3 py-2 text-ink-3 text-xs">{u.last_login_at?.slice(0, 16) || '—'}</td>
                   <td className="px-3 py-2 text-ink-2">{u.positions_count}</td>
@@ -429,7 +429,7 @@ function ReengagementPanel({ toast }) {
 
 // Badge de plan en la tabla de usuarios. `affected` = pagó pero quedó en free
 // (mostramos "afectado" en ámbar). Caso contrario, color por plan.
-function PlanBadge({ plan, affected, creditActive }) {
+function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
   if (affected) {
     return (
       <span
@@ -447,10 +447,19 @@ function PlanBadge({ plan, affected, creditActive }) {
     free: 'bg-bg-2 text-ink-3 dark:bg-bg-2/60',
   }
   const cls = styles[plan] || styles.free
+  const showDays = creditActive && plan !== 'free' && plan !== 'admin' && daysRemaining != null
+  const lowDays = showDays && daysRemaining <= 5
   return (
     <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ${cls}`}>
       {plan || 'free'}
-      {creditActive && plan !== 'free' && plan !== 'admin' && (
+      {showDays ? (
+        <span
+          className={`ml-1 normal-case font-medium ${lowDays ? 'text-amber-700 dark:text-amber-400' : 'opacity-70'}`}
+          title={`Le ${daysRemaining === 1 ? 'queda' : 'quedan'} ${daysRemaining} ${daysRemaining === 1 ? 'día' : 'días'} de crédito antes de volver a Free`}
+        >
+          · {daysRemaining}d
+        </span>
+      ) : creditActive && plan !== 'free' && plan !== 'admin' && (
         <span className="ml-1 normal-case font-normal opacity-70" title="Crédito vigente">· crédito</span>
       )}
     </span>

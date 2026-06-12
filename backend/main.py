@@ -9149,6 +9149,18 @@ def admin_users(uid: int = Depends(get_admin_user)):
         else:
             d["plan"] = "free"
         d["credit_active"] = credit_active
+        # Días que faltan para que venza el crédito (regalo o pago). None si no
+        # hay crédito vigente. Redondeo hacia arriba la fracción de día para que
+        # un regalo recién dado de 30 días muestre "30", no "29".
+        days_remaining = None
+        if credit_active and cau:
+            try:
+                _exp = _dt.fromisoformat(str(cau).replace("Z", ""))
+                _delta_days = (_exp - _dt.utcnow()).total_seconds() / 86400.0
+                days_remaining = max(0, int(_delta_days) + (1 if _delta_days > int(_delta_days) else 0))
+            except (ValueError, TypeError):
+                days_remaining = None
+        d["days_remaining"] = days_remaining
         d["authorized_subs"] = int(d.get("authorized_subs") or 0)
         # Afectado por el bug: crédito vigente + anchor de plan pago, pero el
         # tier quedó en free → restaurable sin recobrar.
