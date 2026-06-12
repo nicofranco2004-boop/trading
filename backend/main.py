@@ -2720,6 +2720,43 @@ def _display_blue(conn, uid: int) -> float:
     return _user_tc_blue(conn, uid)
 
 
+def _display_ccl(conn, uid: int) -> float:
+    """CCL (contado con liqui) 'de display' — leído del caché en memoria SIN
+    fetch bloqueante (mismo criterio que _display_blue). Cascada de fallback:
+    ccl → mep → cripto del caché (todos cercanos), y si el caché está frío, el
+    blue del config. Lo usa la valuación de los CEDEARs que las fuentes BYMA
+    cotizan en USD (ej. BAC): su precio en pesos = subyacente US × CCL ÷ ratio,
+    siendo el CCL el dólar implícito del cedear."""
+    try:
+        cached = _dolar_cache.get("data") if _dolar_cache else None
+        if cached:
+            for casa in ("ccl", "mep", "cripto"):
+                obj = cached.get(casa)
+                v = obj.get("venta") if isinstance(obj, dict) else obj
+                if v and float(v) > 0:
+                    return float(v)
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return _user_tc_blue(conn, uid)
+
+
+def _current_ccl():
+    """CCL del caché de dólar SIN conn — para callers fuera de un request (ej. el
+    cron de snapshots, que no tiene user_id). Cascada ccl→mep→cripto. Devuelve
+    None si el caché está frío (el caller decide el fallback)."""
+    try:
+        cached = _dolar_cache.get("data") if _dolar_cache else None
+        if cached:
+            for casa in ("ccl", "mep", "cripto"):
+                obj = cached.get(casa)
+                v = obj.get("venta") if isinstance(obj, dict) else obj
+                if v and float(v) > 0:
+                    return float(v)
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return None
+
+
 @app.get("/api/dolar")
 def get_dolar(uid: int = Depends(get_current_user)):
     return _get_dolar_data()
@@ -4521,6 +4558,18 @@ CRYPTO_SYMBOLS = {
 
 CRYPTO_YF = {sym: f"{sym}-USD" for sym in CRYPTO_SYMBOLS}
 
+# CEDEARs que las fuentes de mercado (yfinance .BA y data912) cotizan en USD con
+# data poco confiable, en vez del precio en PESOS del cedear. Caso reportado:
+# BAC (Bank of America) → yfinance devuelve ~9 USD (currency=USD) y data912 igual,
+# cuando el cedear vale ~20.570 ARS. Multiplicar ese ~9 por un dólar NO reconcilia
+# (no hay dólar de ~2275). El precio en pesos correcto se computa del subyacente
+# US: ARS = precio_US × CCL ÷ ratio_cedear (cantidad de cedears por acción US).
+# Verificado 11/06/2026: BAC 55.16 USD × CCL 1495 ÷ 4 ≈ 20.617 ARS ✓.
+# Mapa: ticker base (sin .BA) → ratio del cedear. Extensible si aparecen otros.
+CEDEAR_USD_RATIOS = {
+    "BAC": 4,
+}
+
 # Allowed symbol characters — only alphanumeric + dot (for .BA suffix)
 import re
 # Acepta:
@@ -4844,10 +4893,25 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
         finally:
             _cdb.close()
 
+    # CEDEARs que las fuentes cotizan en USD (ej. BAC): fetcheamos el subyacente
+    # US ('<BASE>.BA' → '<BASE>') y después computamos el precio en pesos =
+    # US × CCL ÷ ratio. NO usamos el valor '.BA' roto.
+    cedear_usd = {s: s[:-3] for s in yf_targets
+                  if s.endswith('.BA') and s[:-3] in CEDEAR_USD_RATIOS}
+    _ccl_ars = None
+    if cedear_usd:
+        _cdb2 = get_db()
+        try:
+            _ccl_ars = _display_ccl(_cdb2, uid)
+        finally:
+            _cdb2.close()
+
     sym_to_yf = {}
     for sym in yf_targets:
         if sym in crypto_ars:
             sym_to_yf[sym] = f"{crypto_ars[sym]}-USD"
+        elif sym in cedear_usd:
+            sym_to_yf[sym] = cedear_usd[sym]  # ticker US (ej. BAC)
         elif sym in CRYPTO_YF:
             sym_to_yf[sym] = CRYPTO_YF[sym]
         else:
@@ -4898,6 +4962,14 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
         for _csym in crypto_ars:
             if result.get(_csym) is not None:
                 result[_csym] = round(result[_csym] * _tc_blue_ars, 6)
+
+    # CEDEARs USD-cotizados: el precio fetcheado es el subyacente US (USD).
+    # Precio en pesos del cedear = US × CCL ÷ ratio. Antes de persistir/last-known.
+    if cedear_usd and _ccl_ars and _ccl_ars > 0:
+        for _csym, _base in cedear_usd.items():
+            if result.get(_csym) is not None:
+                _ratio = CEDEAR_USD_RATIOS.get(_base) or 1
+                result[_csym] = round(result[_csym] * _ccl_ars / _ratio, 4)
 
     # Último precio conocido: completa los que quedaron en None (yfinance/data912
     # fallaron) con su último precio real → el frontend no cae a cost basis.
@@ -4951,11 +5023,26 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
         finally:
             _cdb.close()
 
+    # CEDEARs USD-cotizados (ej. BAC): mismo criterio que /api/prices — el cierre
+    # previo se toma del subyacente US y se devuelve en pesos (× CCL ÷ ratio), así
+    # la variación diaria reconcilia con el precio actual (también en pesos).
+    cedear_usd = {s: s[:-3] for s in uncached_symbols
+                  if s.endswith('.BA') and s[:-3] in CEDEAR_USD_RATIOS}
+    _ccl_ars = None
+    if cedear_usd:
+        _cdb2 = get_db()
+        try:
+            _ccl_ars = _display_ccl(_cdb2, uid)
+        finally:
+            _cdb2.close()
+
     # Crypto mapea a su ticker yfinance (BTC → BTC-USD, etc), igual que /api/prices.
     sym_to_yf = {}
     for sym in uncached_symbols:
         if sym in crypto_ars:
             sym_to_yf[sym] = f"{crypto_ars[sym]}-USD"
+        elif sym in cedear_usd:
+            sym_to_yf[sym] = cedear_usd[sym]  # ticker US (ej. BAC)
         elif sym in CRYPTO_YF:
             sym_to_yf[sym] = CRYPTO_YF[sym]
         else:
@@ -5000,6 +5087,13 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
         for _csym in crypto_ars:
             if result.get(_csym) is not None:
                 result[_csym] = round(result[_csym] * _tc_blue_ars, 6)
+
+    # CEDEARs USD-cotizados: cierre previo del subyacente US → pesos (× CCL ÷ ratio).
+    if cedear_usd and _ccl_ars and _ccl_ars > 0:
+        for _csym, _base in cedear_usd.items():
+            if result.get(_csym) is not None:
+                _ratio = CEDEAR_USD_RATIOS.get(_base) or 1
+                result[_csym] = round(result[_csym] * _ccl_ars / _ratio, 4)
 
     _prevclose_cache_set({sym: result[sym] for sym in uncached_symbols})
     return result
@@ -5051,8 +5145,13 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_cu
     # Resolver el símbolo igual que /api/prices: bono AR via data912, sino yfinance
     yf_period, interval = _HISTORY_PERIODS[period]
     yf_sym = sym
+    # CEDEAR USD-cotizado (ej. BAC): la serie en pesos se computa del subyacente
+    # US (cada punto × CCL ÷ ratio). Fetcheamos el ticker US, no el '.BA' roto.
+    cedear_base = sym[:-3] if (sym.endswith(".BA") and sym[:-3] in CEDEAR_USD_RATIOS) else None
     if sym in CRYPTO_YF:
         yf_sym = CRYPTO_YF[sym]
+    elif cedear_base:
+        yf_sym = cedear_base  # subyacente US
     elif sym.endswith(".BA"):
         yf_sym = sym  # yfinance entiende el .BA directo
     elif not sym.endswith(".BA"):
@@ -5080,6 +5179,22 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_cu
     except Exception as ex:
         # No raise — devolvemos series vacía, el frontend muestra "sin chart"
         pass
+
+    # CEDEAR USD-cotizado: los puntos vinieron del subyacente US (USD) → a pesos
+    # (× CCL ÷ ratio), coherente con /api/prices. Sin CCL no devolvemos serie
+    # engañosa en dólares.
+    if cedear_base and points:
+        _cdb = get_db()
+        try:
+            _ccl = _display_ccl(_cdb, uid)
+        finally:
+            _cdb.close()
+        _ratio = CEDEAR_USD_RATIOS.get(cedear_base) or 1
+        if _ccl and _ccl > 0:
+            for pt in points:
+                pt["close"] = round(pt["close"] * _ccl / _ratio, 4)
+        else:
+            points = []
 
     result = {"symbol": sym, "period": period, "points": points}
     _history_cache[cache_key] = (now, result)
