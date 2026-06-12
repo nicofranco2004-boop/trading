@@ -751,6 +751,53 @@ def send_plan_change_admin(*, user_email: str, old_plan: Optional[str],
                  from_addr=_from_noreply())
 
 
+# ─── Email al usuario: le regalaron Plus/Pro (grant-comp del admin) ──────────
+
+def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
+                     days: int, active_until: Optional[str]) -> bool:
+    """Email al USUARIO cuando un admin le REGALA Plus/Pro (grant-comp).
+
+    No es un pago: es un acceso de cortesía por N días que vuelve a Free solo al
+    vencer (sin cobros). Best-effort. El guard de _send evita mandar bajo pytest
+    o a dominios de prueba (.test/.local/etc).
+    """
+    plan_label = _plan_label(plan)
+    name = user_name or ((to or "").split("@")[0])
+    safe_name = html.escape(name)
+    until_label = _fmt_date(active_until)
+    body_html = f"""
+      <h1 style="font-size:24px;font-weight:700;margin:0 0 16px;">Te activamos Rendi {plan_label}, {safe_name}</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Te dimos acceso a <b>Rendi {plan_label}</b> sin costo por <b>{days} días</b>. Ya lo tenés activo en tu cuenta.
+      </p>
+      <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
+        {_plan_features_html(plan)}
+      </ul>
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px;margin:20px 0;">
+        <p style="font-size:13px;color:#6b7280;margin:0 0 4px;">Tu acceso de cortesía</p>
+        <p style="font-size:14px;color:#1a1f2e;margin:0;">
+          Plan <b>{plan_label}</b> · activo hasta <b>{until_label}</b>
+        </p>
+      </div>
+      <p style="font-size:14px;color:#374151;line-height:1.6;">
+        Cuando llegue esa fecha, tu cuenta vuelve a Free automáticamente, sin ningún cobro.
+        Entrá a {APP_URL} y aprovechá el acceso.
+      </p>
+    """
+    text = (
+        f"Te activamos Rendi {plan_label}, {name}\n\n"
+        f"Te dimos acceso a Rendi {plan_label} sin costo por {days} días. "
+        f"Ya está activo en tu cuenta.\n\n"
+        f"Plan {plan_label} activo hasta {until_label}.\n"
+        f"Cuando llegue esa fecha, tu cuenta vuelve a Free automáticamente, sin ningún cobro.\n\n"
+        f"Entrá a {APP_URL} y aprovechá el acceso.\n\n"
+        f"Incluye: {_plan_features_text(plan)}.\n\n"
+        f"— Rendi"
+    )
+    return _send(to, f"Te activamos Rendi {plan_label} de regalo",
+                 _wrap_html(body_html), text, from_addr=_from_support())
+
+
 # ─── Email #7: reset de contraseña (magic link) ─────────────────────────────
 
 def send_password_reset(*, to: str, user_name: str, reset_url: str,

@@ -180,5 +180,50 @@ class NotifyPlanChangeHelperTest(unittest.TestCase):
                 self.fail("_notify_plan_change no debe propagar excepciones")
 
 
+class SendGiftedPlanTest(unittest.TestCase):
+    """emails.send_gifted_plan: mail al USUARIO cuando un admin le regala el plan."""
+
+    def _call(self, **kwargs):
+        send_mock = MagicMock(return_value=True)
+        with patch.object(emails, "_send", send_mock):
+            ret = emails.send_gifted_plan(**kwargs)
+        return ret, send_mock
+
+    def test_sends_to_user(self):
+        ret, send = self._call(to="winner@gmail.com", user_name="Juan", plan="pro",
+                               days=30, active_until="2026-07-15T00:00:00")
+        self.assertTrue(ret)
+        self.assertEqual(send.call_count, 1)
+        to, subject, html_body = send.call_args[0][0], send.call_args[0][1], send.call_args[0][2]
+        self.assertEqual(to, "winner@gmail.com")            # va al USUARIO, no al admin
+        self.assertIn("Pro", subject)
+        self.assertIn("Juan", html_body)
+        self.assertIn("30", html_body)                       # días de regalo
+        # from = soporte (el user puede responder)
+        self.assertIn("soporte@rendi.finance", send.call_args.kwargs.get("from_addr", ""))
+
+    def test_plus_label(self):
+        ret, send = self._call(to="w@gmail.com", user_name="Ana", plan="plus",
+                               days=15, active_until="2026-07-01T00:00:00")
+        self.assertIn("Plus", send.call_args[0][1])
+
+    def test_name_escaped(self):
+        ret, send = self._call(to="w@gmail.com", user_name="<b>x</b>", plan="pro",
+                               days=7, active_until=None)
+        self.assertNotIn("<b>x</b>", send.call_args[0][2])
+        self.assertIn("&lt;b&gt;", send.call_args[0][2])
+
+    def test_no_name_no_crash(self):
+        ret, send = self._call(to="anon@gmail.com", user_name=None, plan="pro",
+                               days=7, active_until=None)
+        self.assertTrue(ret)  # usa el local-part del email, no crashea
+
+    def test_test_domain_not_sent(self):
+        # Sin mock: el guard de _send (pytest + dominio de prueba) corta el envío.
+        ret = emails.send_gifted_plan(to="x@rendi.test", user_name="T", plan="pro",
+                                      days=30, active_until=None)
+        self.assertFalse(ret)
+
+
 if __name__ == "__main__":
     unittest.main()
