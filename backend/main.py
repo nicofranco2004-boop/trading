@@ -9499,6 +9499,7 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
             "Admin %s restored tier for user %s: %r -> %s (credit_until=%s)",
             uid, target_uid, before_tier, anchor_plan, cau,
         )
+        _notify_plan_change(conn, target_uid, before_tier, anchor_plan, "admin_restore")
         return {
             "ok": True,
             "changed": True,
@@ -9618,6 +9619,7 @@ def admin_billing_grant_comp(
             "Admin %s granted COMP to user %s (%s): %s for %s days (until %s)",
             uid, target_uid, urow["email"], plan, days, after_iso,
         )
+        _notify_plan_change(conn, target_uid, before_tier, plan, "admin_grant")
         return {
             "ok": True,
             "changed": True,
@@ -12691,6 +12693,10 @@ def billing_change_plan(
             data.plan, data.period, result["days_remaining"],
         )
 
+        # Aviso al admin. Si solo cambió el período (mismo tier, ej. pro mensual
+        # → pro anual), old==new y el mail no se manda (correcto).
+        _notify_plan_change(conn, uid, state["anchor_plan"], data.plan, "plan_change")
+
         return {
             "status":         "ok",
             "new_plan":       data.plan,
@@ -12855,6 +12861,34 @@ async def rebill_webhook(request: Request):
         conn.close()
 
 
+def _notify_plan_change(conn, uid: int, old_tier, new_tier, source: str, *,
+                        amount_usd=None) -> None:
+    """Best-effort: avisa al admin (ADMIN_NOTIFY_EMAIL) que un usuario cambió de
+    plan. NUNCA levanta excepción — no debe romper ningún flujo de billing.
+
+    La decisión de enviar (old != new, no dominio de test, ADMIN_NOTIFY_EMAIL
+    seteado) y la composición del mail viven en emails.send_plan_change_admin.
+    Acá solo resolvemos el email/nombre del user y delegamos.
+    """
+    try:
+        from billing import emails as _billing_emails
+        row = conn.execute(
+            "SELECT email, name FROM users WHERE id = ?", (uid,)
+        ).fetchone()
+        if not row or not row["email"]:
+            return
+        _billing_emails.send_plan_change_admin(
+            user_email=row["email"],
+            user_name=row["name"],
+            old_plan=old_tier,
+            new_plan=new_tier,
+            source=source,
+            amount_usd=amount_usd,
+        )
+    except Exception as ex:
+        log.warning("plan-change admin notify falló para uid %s: %s", uid, ex)
+
+
 def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict):
     """Marca al user como Plus/Pro, actualiza/crea la subscription row, y
     otorga crédito por el período cobrado.
@@ -12891,6 +12925,11 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
         if c:
             payment_id = str(c)
             break
+
+    # Tier anterior (para el aviso al admin) — leído antes del UPDATE. Si es un
+    # reintento del webhook, before==target y el mail no se reenvía (idempotente).
+    before_row = conn.execute("SELECT tier FROM users WHERE id = ?", (uid,)).fetchone()
+    before_tier = before_row["tier"] if before_row else None
 
     with conn:
         conn.execute("UPDATE users SET tier = ? WHERE id = ?", (target_tier, uid))
@@ -12943,6 +12982,10 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
 
     log.info("Rebill: user %s activated as %s (sub=%s, amount=%s)",
              uid, target_tier, sub_id, amount_usd)
+
+    # Aviso al admin del cambio de plan (free→plus/pro o upgrade por pago).
+    # Best-effort, fuera de la transacción para no bloquear con la llamada de red.
+    _notify_plan_change(conn, uid, before_tier, target_tier, "payment", amount_usd=amount_usd)
 
 
 def _rebill_subscription_status_change(conn, uid: int, metadata: dict, sub_id: str, payload: dict):
@@ -13397,6 +13440,10 @@ def _process_preapproval_event(conn, preapproval_id: str):
         if parsed_full:
             user_id, parsed_plan, parsed_period = parsed_full
             target_tier = parsed_plan if parsed_plan in ("plus", "pro") else "pro"
+            # Tier anterior para el aviso al admin (path legacy MercadoPago).
+            # Idempotente: un reintento del webhook ve before==target → no reenvía.
+            before_row = conn.execute("SELECT tier FROM users WHERE id = ?", (user_id,)).fetchone()
+            before_tier = before_row["tier"] if before_row else None
             with conn:
                 conn.execute("UPDATE users SET tier = ? WHERE id = ?", (target_tier, user_id))
                 conn.execute(
@@ -13404,6 +13451,7 @@ def _process_preapproval_event(conn, preapproval_id: str):
                     (user_id, preapproval_id),
                 )
             log.info("User %s upgraded to tier=%s via MP preapproval %s", user_id, target_tier, preapproval_id)
+            _notify_plan_change(conn, user_id, before_tier, target_tier, "payment")
             _maybe_send_welcome_email(conn, preapproval_id, user_id, parsed_period, pa)
     elif our_status in ("cancelled", "paused"):
         # NO revertimos tier — el user mantiene Pro hasta current_period_end.
