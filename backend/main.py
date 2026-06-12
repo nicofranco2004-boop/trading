@@ -12921,9 +12921,16 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
     del user al tier — el daily cron baja a Free cuando vence.
     """
     from billing import credits as billing_credits
-    plan = metadata.get("rendi_plan") or "pro"
-    period = metadata.get("rendi_period") or "monthly"
-    target_tier = plan if plan in ("plus", "pro") else "pro"
+    # Normalizamos plan/period a valores válidos ANTES de usarlos: así
+    # grant_payment_credit (que valida y levanta ValueError con input inválido)
+    # no puede fallar por metadata rara y dejar el tier pago sin crédito.
+    plan = (metadata.get("rendi_plan") or "pro").strip().lower()
+    if plan not in ("plus", "pro"):
+        plan = "pro"
+    period = (metadata.get("rendi_period") or "monthly").strip().lower()
+    if period not in ("monthly", "annual"):
+        period = "monthly"
+    target_tier = plan  # ya validado a plus/pro
 
     # Monto cobrado: si Rebill lo manda, usamos eso; si no, usamos el catálogo.
     amount_usd = None
@@ -13000,9 +13007,25 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
         )
     except Exception as ex:
         # No fallar el activate si el ledger falla — loggear y seguir.
-        # El user igual queda con tier asignado; el cron va a detectar
-        # ausencia de credit_active_until pero ya está autorizado en Rebill.
         log.error("credits.grant_payment_credit falló para user %s: %s", uid, ex)
+        # PERO el tier ya quedó en pago: si lo dejamos SIN credit_active_until, el
+        # cron (filtra credit_active_until IS NOT NULL) y la red de seguridad de
+        # get_tier (fail-open si no hay fecha) NO lo agarrarían → Pro permanente.
+        # Seteamos un crédito fallback del período cobrado si todavía no hay
+        # ninguno. Una renovación de Rebill posterior lo extiende; si nunca
+        # renueva, el cron/red de seguridad lo baja al vencer.
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            _fb_until = (_dt.utcnow() + _td(days=365 if period == "annual" else 30)).isoformat()
+            with conn:
+                conn.execute(
+                    "UPDATE users SET credit_active_until = ? "
+                    "WHERE id = ? AND credit_active_until IS NULL",
+                    (_fb_until, uid),
+                )
+            log.warning("Rebill: seteado credit_active_until fallback (%s) para user %s tras fallo del ledger", _fb_until, uid)
+        except Exception as ex2:
+            log.error("fallback credit_active_until falló para user %s: %s", uid, ex2)
 
     log.info("Rebill: user %s activated as %s (sub=%s, amount=%s)",
              uid, target_tier, sub_id, amount_usd)
