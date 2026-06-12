@@ -9552,7 +9552,7 @@ def admin_billing_grant_comp(
     try:
         from billing import credits as billing_credits
         urow = conn.execute(
-            "SELECT id, email, tier FROM users WHERE lower(email) = lower(?)",
+            "SELECT id, email, tier, name FROM users WHERE lower(email) = lower(?)",
             (email.strip(),),
         ).fetchone()
         if not urow:
@@ -9620,6 +9620,18 @@ def admin_billing_grant_comp(
             uid, target_uid, urow["email"], plan, days, after_iso,
         )
         _notify_plan_change(conn, target_uid, before_tier, plan, "admin_grant")
+        # Avisar al USUARIO que le regalaron el plan (best-effort, no rompe el grant).
+        try:
+            from billing import emails as _grant_emails
+            _grant_emails.send_gifted_plan(
+                to=urow["email"],
+                user_name=urow["name"],
+                plan=plan,
+                days=days,
+                active_until=after_iso,
+            )
+        except Exception as _gift_ex:
+            log.warning("gifted-plan email falló para %s: %s", urow["email"], _gift_ex)
         return {
             "ok": True,
             "changed": True,
