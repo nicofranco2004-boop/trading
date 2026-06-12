@@ -582,10 +582,13 @@ def send_reengagement(*, to: str, user_name: str = "") -> bool:
         'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
         f'<p style="margin:0 0 14px;">{greeting_html} vimos que todavía no importaste '
         'tu historial — sin apuro, sabemos que esas cosas quedan para después.</p>'
-        '<p style="margin:0 0 14px;">Por si no lo sabías: no hace falta cargar operación '
-        'por operación. Subís el CSV de movimientos de tu broker (Cocos, IOL, Binance, '
-        'Schwab) y Rendi te reconstruye la cartera entera en segundos. Recién ahí se ve '
-        'lo bueno — tu P&amp;L real en dólares y cómo viene todo, junto.</p>'
+        '<p style="margin:0 0 14px;">Por si no lo sabías: podés cargar operación por '
+        'operación o, más rápido, subir un CSV de movimientos de tu broker (Cocos, IOL, '
+        'Binance, Schwab) y Rendi te reconstruye la cartera entera en segundos.</p>'
+        '<p style="margin:0 0 14px;">Podés ver cómo hacerlo en Importar CSV → Nueva '
+        'importación → Export de mi broker → seleccionás el broker que usás. Después de '
+        'importar se ve el valor de Rendi: tu P&amp;L real en dólares, métricas sobre tu '
+        'forma de operar y más.</p>'
         f'<p style="margin:0 0 14px;">Cuando tengas un rato, entrás en '
         f'<a href="{APP_URL}" style="color:#5b4ddb;">rendi.finance</a> y lo importás.</p>'
         '<p style="margin:0 0 14px;">Y si te trabás en algo, respondé este mail y te '
@@ -596,10 +599,12 @@ def send_reengagement(*, to: str, user_name: str = "") -> bool:
     text = (
         f"{greeting_text} vimos que todavía no importaste tu historial — sin apuro, "
         "sabemos que esas cosas quedan para después.\n\n"
-        "Por si no lo sabías: no hace falta cargar operación por operación. Subís el "
-        "CSV de movimientos de tu broker (Cocos, IOL, Binance, Schwab) y Rendi te "
-        "reconstruye la cartera entera en segundos. Recién ahí se ve lo bueno — tu "
-        "P&L real en dólares y cómo viene todo, junto.\n\n"
+        "Por si no lo sabías: podés cargar operación por operación o, más rápido, "
+        "subir un CSV de movimientos de tu broker (Cocos, IOL, Binance, Schwab) y "
+        "Rendi te reconstruye la cartera entera en segundos.\n\n"
+        "Podés ver cómo hacerlo en Importar CSV → Nueva importación → Export de mi "
+        "broker → seleccionás el broker que usás. Después de importar se ve el valor "
+        "de Rendi: tu P&L real en dólares, métricas sobre tu forma de operar y más.\n\n"
         f"Cuando tengas un rato, entrás en {APP_URL} y lo importás.\n\n"
         "Y si te trabás en algo, respondé este mail y te damos una mano.\n\n"
         "— Rendi"
