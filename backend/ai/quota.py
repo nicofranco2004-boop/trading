@@ -47,7 +47,7 @@ Tracking:
 
 from __future__ import annotations
 from typing import Literal
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 Tier = Literal["free", "plus", "pro", "admin"]
 
@@ -99,13 +99,41 @@ LIMITS = {
 }
 
 
+def _paid_override_expired(conn, user_id: int, credit_active_until) -> bool:
+    """True si un override pago (tier 'pro'/'plus') debe considerarse VENCIDO
+    ahora mismo: credit_active_until está seteado y ya pasó, y el user NO tiene
+    una suscripción 'authorized' que lo renueve.
+
+    Red de seguridad en TIEMPO REAL (no depende del cron diario): mismo criterio
+    que _downgrade_expired_credit, pero por request. Para regalos (comp) esto
+    corta el acceso apenas vence — sin esperar a que corra el cron, y aunque el
+    cron falle. Fail-open si no hay fecha (no podemos saber si expiró → no
+    cortamos) o ante cualquier error (no bloqueamos acceso por un bug acá)."""
+    if not credit_active_until:
+        return False  # sin vencimiento conocido → no cortamos (fail-open)
+    try:
+        if str(credit_active_until) >= datetime.utcnow().isoformat():
+            return False  # crédito todavía vigente
+        # Crédito vencido: solo cortamos si NO hay sub paga que renueve (las
+        # pagas se refillan solas; no las cortamos por un lapso entre cobros).
+        sub = conn.execute(
+            "SELECT 1 FROM subscriptions WHERE user_id = ? AND status = 'authorized' LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        return sub is None
+    except Exception:
+        return False  # ante la duda, no cortar acceso
+
+
 def get_tier(conn, user_id: int) -> Tier:
     """Resuelve tier del user con override explícito.
 
     Precedencia:
-      1. users.tier (override) — si está seteado a 'pro' o 'free', devuelve eso.
-         Permite que un admin se ponga en 'pro' para ver la UX de paywall y
-         conserve sus is_admin powers (Admin page sigue accesible).
+      1. users.tier (override) — si está seteado a 'pro'/'plus'/'free', devuelve
+         eso. PERO si es 'pro'/'plus' y el crédito que lo habilita ya venció (y
+         no hay sub que renueve), se trata como expirado → free/admin. Esto es la
+         red de seguridad en tiempo real: cubre la ventana entre el vencimiento
+         y la corrida del cron diario, y el caso de que el cron falle.
       2. is_admin=1 → 'admin' (default histórico)
       3. fallback → 'free'
 
@@ -113,13 +141,23 @@ def get_tier(conn, user_id: int) -> Tier:
     y este helper sigue funcionando sin cambios."""
     try:
         row = conn.execute(
-            "SELECT is_admin, tier FROM users WHERE id = ?", (user_id,)
+            "SELECT * FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         if row:
-            override = (row["tier"] or "").strip().lower()
-            if override in ("pro", "plus", "free"):
+            keys = row.keys()
+            override = ((row["tier"] if "tier" in keys else None) or "").strip().lower()
+            is_admin = bool(row["is_admin"]) if "is_admin" in keys else False
+            if override in ("pro", "plus"):
+                # credit_active_until puede no existir en esquemas mínimos (tests
+                # viejos): en ese caso no aplicamos la red de seguridad y el tier
+                # se resuelve como antes.
+                cau = row["credit_active_until"] if "credit_active_until" in keys else None
+                if _paid_override_expired(conn, user_id, cau):
+                    return "admin" if is_admin else "free"
                 return override  # type: ignore[return-value]
-            if row["is_admin"]:
+            if override == "free":
+                return "free"
+            if is_admin:
                 return "admin"
     except Exception:
         pass
