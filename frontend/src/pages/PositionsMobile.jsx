@@ -16,7 +16,7 @@
 
 import { useEffect, useMemo, useState, lazy, Suspense, memo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown } from 'lucide-react'
+import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, Layers as LayersIcon } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
 import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
@@ -95,6 +95,19 @@ export default function PositionsMobile() {
   const [sortBy, setSortBy] = useState('value')
   const [query, setQuery] = useState('')
   const [brokerFilter, setBrokerFilter] = useState(ALL_FILTER)
+  // Vista agregada por ticker (paridad con desktop). Por defecto se ve UNA card
+  // por ticker (posición agregada de todos los lotes). Se puede expandir a los
+  // lotes individuales por ticker (tap en la card → expandedTickers) o global
+  // con el toggle "Ver lotes" (showAllLots).
+  const [expandedTickers, setExpandedTickers] = useState(() => new Set())
+  const [showAllLots, setShowAllLots] = useState(false)
+  function toggleTicker(key) {
+    setExpandedTickers(prev => {
+      const n = new Set(prev)
+      n.has(key) ? n.delete(key) : n.add(key)
+      return n
+    })
+  }
   // "Detalle" (paridad con desktop): en brokers ARS revela el equivalente en
   // USD de la variación diaria y del P&L, que por defecto van en pesos.
   const [showDetail, setShowDetail] = useState(false)
@@ -488,6 +501,76 @@ export default function PositionsMobile() {
     }
   }
 
+  // ─── Agregación por ticker (paridad con la vista desktop) ────────────────
+  // Junta los lotes (compras) del mismo (broker, asset) en UNA fila agregada:
+  // cantidad total, precio compra promedio ponderado, P&L total y valor total.
+  // Lote único: devolvemos la fila REAL tal cual (NO sintética) para que
+  // editar/eliminar sigan operando sobre la posición real. Cash: nunca se
+  // agrega (no tiene lotes ni P&L). El P&L no realizado de una posición abierta
+  // = valor − costo, independiente del orden de lotes, así que sumar los lotes
+  // abiertos da el costo correcto.
+  function aggregateMobile(rows) {
+    const cash = rows.filter(p => p.is_cash)
+    const noCash = rows.filter(p => !p.is_cash)
+    const byKey = new Map()
+    for (const p of noCash) {
+      const key = `${p.broker}:${p.asset}`
+      if (!byKey.has(key)) byKey.set(key, [])
+      byKey.get(key).push(p)
+    }
+    const out = []
+    for (const [, lots] of byKey) {
+      if (lots.length === 1) {
+        // Una sola compra → la fila real (editar/eliminar siguen andando).
+        out.push(lots[0])
+        continue
+      }
+      const isAR = lots[0].isAR
+      const totalQty = lots.reduce((s, x) => s + (x.quantity || 0), 0)
+      const totalInv = lots.reduce((s, x) => s + (x.invested || 0), 0)
+      const valueUsd = lots.reduce((s, x) => s + (x.valueUsd || 0), 0)
+      const investedUsd = lots.reduce((s, x) => s + (isAR ? (x.invested || 0) / tcBlue : (x.invested || 0)), 0)
+      const pnlUsd = valueUsd - investedUsd
+      const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
+      const pnlLocal = isAR ? pnlUsd * tcBlue : pnlUsd
+      // Var. día agregada: solo si algún lote la tiene (símbolo con cierre
+      // anterior). Sumamos los montos de los lotes que la tienen; el % se
+      // recalcula sobre el valor de mercado de ayer (valor hoy − var. día).
+      const hasDay = lots.some(x => x.dayVarLocal != null)
+      const dayVarLocal = hasDay ? lots.reduce((s, x) => s + (x.dayVarLocal || 0), 0) : null
+      const dayVarUsd = hasDay ? lots.reduce((s, x) => s + (x.dayVarUsd || 0), 0) : null
+      const curLocalValue = isAR ? valueUsd * tcBlue : valueUsd
+      const dayVarPct = (hasDay && curLocalValue - (dayVarLocal || 0) > 0)
+        ? dayVarLocal / (curLocalValue - dayVarLocal)
+        : null
+      out.push({
+        ...lots[0],
+        id: `agg:${lots[0].broker}:${lots[0].asset}`,
+        quantity: totalQty,
+        invested: totalInv,
+        buy_price: totalQty > 0 ? totalInv / totalQty : null,
+        price_override: null,
+        valueUsd, pnlUsd, pnlPct, pnlLocal,
+        dayVarLocal, dayVarUsd, dayVarPct,
+        _isAgg: true, _lotCount: lots.length, _lots: lots,
+      })
+    }
+    return [...out, ...cash]
+  }
+
+  // Aplana las filas agregadas a filas de lista: la fila del ticker + (si el
+  // agregado está expandido) cada lote individual marcado con _isLot. La
+  // expansión es por ticker (expandedTickers) o global (showAllLots).
+  function flattenMobile(aggRows) {
+    const out = []
+    for (const p of aggRows) {
+      const exp = showAllLots || expandedTickers.has(`t:${p.broker}:${p.asset}`)
+      out.push(p._isAgg ? { ...p, _expanded: exp } : p)
+      if (p._isAgg && exp) for (const lot of p._lots) out.push({ ...lot, _isLot: true })
+    }
+    return out
+  }
+
   // Agrupación por broker (solo cuando filterBroker = ALL).
   // Cada grupo: { broker: brokerObj, positions: [...], totalUsd }
   const grouped = useMemo(() => {
@@ -502,24 +585,33 @@ export default function PositionsMobile() {
       g.positions.push(p)
       g.totalUsd += (p.valueUsd || 0)
     }
-    // Ordenar positions internas (cash al final) + grupos por totalUsd desc
+    // Agregar por ticker (1 fila por activo), ordenar (cash al final) y aplanar
+    // a filas de lista (incluyendo lotes si el ticker está expandido). g.totalUsd
+    // se computó sobre los lotes crudos, así que el total del broker no cambia.
     const groups = Array.from(map.values())
-    for (const g of groups) g.positions.sort(comparePositions)
+    for (const g of groups) {
+      const agg = aggregateMobile(g.positions)
+      agg.sort(comparePositions)
+      g.positions = flattenMobile(agg)
+    }
     groups.sort((a, b) => b.totalUsd - a.totalUsd)
     return groups
-  }, [filteredByBroker, brokerFilter, brokers, sortBy])
+  }, [filteredByBroker, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcBlue])
 
   // Lista plana cuando hay filtro de broker activo
   const flatList = useMemo(() => {
     if (brokerFilter === ALL_FILTER) return null
-    return [...filteredByBroker].sort(comparePositions)
-  }, [filteredByBroker, brokerFilter, sortBy])
+    const agg = aggregateMobile([...filteredByBroker])
+    agg.sort(comparePositions)
+    return flattenMobile(agg)
+  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcBlue])
 
   const total = enriched.reduce((s, p) => s + (p.valueUsd || 0), 0)
   const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcBlue  // PF → USD para el total
-  const visibleCount = brokerFilter === ALL_FILTER
-    ? filteredByBroker.length
-    : (flatList?.length || 0)
+  // Contador de posiciones reales (lotes), independiente de la vista
+  // agregada/expandida — `flatList`/`grouped` ahora tienen filas sintéticas y
+  // de lote que harían fluctuar el número al expandir/colapsar.
+  const visibleCount = filteredByBroker.length
   // El toggle "Detalle" solo aporta en brokers ARS (revela el equivalente USD).
   // Si el user no tiene ningún broker en pesos, no mostramos el botón.
   const hasArs = brokers.some(b => b.currency === 'ARS')
@@ -658,19 +750,35 @@ export default function PositionsMobile() {
               ))}
             </div>
           </div>
-          {hasArs && (
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {/* Toggle global agregado ↔ lotes. Por defecto se ve 1 card por
+                ticker (agregado); este botón despliega TODOS los lotes de una. */}
             <button
               type="button"
-              onClick={() => setShowDetail(v => !v)}
-              aria-pressed={showDetail}
-              className={`px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-caps rounded-md transition-colors ${
-                showDetail ? 'bg-bg-3 text-ink-0' : 'bg-bg-2 text-ink-3 hover:text-ink-1'
+              onClick={() => setShowAllLots(v => !v)}
+              aria-pressed={showAllLots}
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-caps rounded-md transition-colors ${
+                showAllLots ? 'bg-bg-3 text-ink-0' : 'bg-bg-2 text-ink-3 hover:text-ink-1'
               }`}
-              title="Mostrar el equivalente en USD de la variación diaria y el P&L en brokers ARS"
+              title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
             >
-              Detalle USD
+              <LayersIcon size={11} strokeWidth={1.75} aria-hidden="true" />
+              {showAllLots ? 'Ver agregado' : 'Ver lotes'}
             </button>
-          )}
+            {hasArs && (
+              <button
+                type="button"
+                onClick={() => setShowDetail(v => !v)}
+                aria-pressed={showDetail}
+                className={`px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-caps rounded-md transition-colors ${
+                  showDetail ? 'bg-bg-3 text-ink-0' : 'bg-bg-2 text-ink-3 hover:text-ink-1'
+                }`}
+                title="Mostrar el equivalente en USD de la variación diaria y el P&L en brokers ARS"
+              >
+                Detalle USD
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -707,6 +815,7 @@ export default function PositionsMobile() {
                 onCashFlowPosition={openCashFlow}
                 onEditPosition={openEditPosition}
                 onDeletePosition={deletePosition}
+                onToggleTicker={toggleTicker}
               />
             ))}
           </div>
@@ -721,7 +830,9 @@ export default function PositionsMobile() {
           <ul className="divide-y divide-line/30">
             {flatList?.map(p => (
               <PositionRow
-                key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
+                key={p._isLot
+                  ? `${p.broker}:${p.asset}:${p.id}`
+                  : (p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || p.entry_date}`)}
                 p={p}
                 showDetail={showDetail}
                 displayCurrency={currency}
@@ -730,6 +841,7 @@ export default function PositionsMobile() {
                 onCashFlow={openCashFlow}
                 onEditPos={openEditPosition}
                 onDeletePos={deletePosition}
+                onToggleTicker={toggleTicker}
               />
             ))}
           </ul>
@@ -1107,7 +1219,7 @@ function ColumnHeader({ currency, totalCurrency = 'USD' }) {
 const BrokerSection = memo(function BrokerSection({
   broker, positions, totalUsd, showDetail, displayCurrency = 'USD', tcBlue = 1,
   onEdit, onDelete,
-  onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition,
+  onSellPosition, onCashFlowPosition, onEditPosition, onDeletePosition, onToggleTicker,
 }) {
   // Color asignado por nombre — estable entre re-renders. Antes el header
   // de cada broker era casi invisible (text-[11px] mono sobre bg-0). Ahora
@@ -1170,7 +1282,9 @@ const BrokerSection = memo(function BrokerSection({
       <ul className="divide-y divide-line/20">
         {positions.map(p => (
           <PositionRow
-            key={`${p.broker}:${p.asset}:${p.id || p.entry_date}`}
+            key={p._isLot
+              ? `${p.broker}:${p.asset}:${p.id}`
+              : (p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || p.entry_date}`)}
             p={p}
             showDetail={showDetail}
             displayCurrency={displayCurrency}
@@ -1179,6 +1293,7 @@ const BrokerSection = memo(function BrokerSection({
             onCashFlow={onCashFlowPosition}
             onEditPos={onEditPosition}
             onDeletePos={onDeletePosition}
+            onToggleTicker={onToggleTicker}
           />
         ))}
       </ul>
@@ -1204,11 +1319,37 @@ const BrokerSection = memo(function BrokerSection({
 // porque los callbacks se definen en el padre con closure sobre el state.
 // Esto corta los re-render de la fila cada vez que prices cambia.
 
-const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos }) {
+const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency = 'USD', tcBlue = 1, onSell, onCashFlow, onEditPos, onDeletePos, onToggleTicker }) {
   const cur = p.isAR ? 'ARS' : 'USD'
   const [aiOpen, setAiOpen] = useState(false)
 
-  const actions = p.is_cash
+  const actions = p._isAgg
+    ? [
+        // Fila agregada (resumen multi-lote, sintética): solo Analizar + Vender.
+        // Editar/Eliminar NO aplican — operan sobre una posición real (lote),
+        // que el user encuentra expandiendo el ticker.
+        {
+          id: 'ai',
+          label: 'Analizar',
+          icon: Sparkles,
+          tone: 'accent',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'analyze', asset: p.asset })
+            setAiOpen(true)
+          },
+        },
+        onSell && {
+          id: 'sell',
+          label: 'Vender',
+          icon: TrendingDown,
+          tone: 'neg',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'sell', asset: p.asset })
+            onSell(p)
+          },
+        },
+      ].filter(Boolean)
+    : p.is_cash
     ? [
         // Posición cash → depositar / retirar
         onCashFlow && {
@@ -1300,21 +1441,39 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
     <>
     <SwipeRow
       actions={actions}
-      onTap={() => navigate(p.id ? `/posiciones/${p.id}` : '/posiciones')}
-      rowId={`${p.broker}:${p.asset}:${p.id || ''}`}
+      onTap={p._isAgg
+        ? () => onToggleTicker?.(`t:${p.broker}:${p.asset}`)
+        : () => navigate(p.id ? `/posiciones/${p.id}` : '/posiciones')}
+      rowId={p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || ''}`}
     >
       <div
-        className="grid grid-cols-[minmax(0,1fr)_56px_64px_76px] gap-1.5 items-center px-3 py-3 hover:bg-bg-2/30 active:bg-bg-3 transition-colors cursor-pointer"
+        className={`grid grid-cols-[minmax(0,1fr)_56px_64px_76px] gap-1.5 items-center px-3 py-3 hover:bg-bg-2/30 active:bg-bg-3 transition-colors cursor-pointer${p._isLot ? ' pl-4 opacity-75' : ''}`}
       >
-      {/* Col 1 — Activo: logo + ticker + (cantidad · moneda) */}
+      {/* Col 1 — Activo: logo + ticker + (cantidad · moneda). Los lotes van
+          indentados y atenuados con un marquito "└" para distinguirlos del
+          agregado que los contiene. */}
       <div className="flex items-center gap-2 min-w-0">
-        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={28} />
+        {p._isLot && (
+          <span className="text-[11px] font-mono text-ink-3/60 leading-none -mr-1 flex-shrink-0" aria-hidden="true">└</span>
+        )}
+        <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={p._isLot ? 22 : 28} />
         <div className="min-w-0">
           <div className="text-[13px] font-semibold text-ink-0 leading-none truncate">
             {fciLabel(p.asset)}
           </div>
-          <div className="text-[10px] font-mono text-ink-3 leading-none mt-1 truncate">
-            {p.is_cash ? 'Cash' : `${formatQty(p.quantity)} · ${cur}`}
+          <div className="text-[10px] font-mono text-ink-3 leading-none mt-1 truncate flex items-center gap-1">
+            {p.is_cash
+              ? 'Cash'
+              : p._isAgg
+                ? (
+                  <>
+                    <span>{`${formatQty(p.quantity)} · ${cur} · ${p._lotCount} lotes`}</span>
+                    {p._expanded
+                      ? <ChevronUp size={11} strokeWidth={2} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
+                      : <ChevronDown size={11} strokeWidth={2} className="text-ink-3 flex-shrink-0" aria-hidden="true" />}
+                  </>
+                )
+                : `${formatQty(p.quantity)} · ${cur}`}
           </div>
         </div>
       </div>
