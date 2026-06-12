@@ -121,6 +121,18 @@ function PositionsDesktop() {
   const [filterAsset, setFilterAsset] = useState('')
   const [filterBroker, setFilterBroker] = useState('all')
   const [sortBy, setSortBy] = useState('value')
+  // Vista por lotes: por defecto AGREGADA (1 fila por ticker, sin ruido).
+  // expandedTickers = tickers con los lotes desplegados (key del grupo).
+  // showAllLots = toggle global "ver todos los lotes".
+  const [expandedTickers, setExpandedTickers] = useState(() => new Set())
+  const [showAllLots, setShowAllLots] = useState(false)
+  function toggleTicker(key) {
+    setExpandedTickers(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
   // Estado del modal de cobranza de bonos. null = cerrado; {flowType, broker, brokerCurrency, asset} = abierto.
   const [bondCashflow, setBondCashflow] = useState(null)
   // Posiciones de bono expandidas inline (mostrar meta + historial cobranzas).
@@ -634,62 +646,126 @@ function PositionsDesktop() {
 
   const sortCash = arr => [...arr.filter(p => !p.is_cash), ...arr.filter(p => p.is_cash)]
 
-  // Ordena las posiciones no-cash de un broker según `sortBy`; el cash siempre
-  // queda al final (no se rankea). Las posiciones sin precio/valor (null) van
-  // al fondo del grupo para no romper el orden. Por defecto: por valor (desc),
-  // consistente con la vista mobile. Para brokers ARS usamos el valor/P&L en
-  // USD como clave para que el orden sea comparable entre brokers de distinta
-  // moneda. Recibe `arr` ya filtrado (broker + activo) e `isARS` del broker.
+  // Clave de orden de una posición o agregado, igual a lo que muestra la fila.
+  // Para bonos con cobranzas el P&L se aumenta con la contribución de cupones
+  // (mismo criterio que la celda). Brokers ARS usan valor/P&L en USD como clave.
+  function _rowSortKeys(p, isARS) {
+    const c = isARS ? calcARS(p) : calcUSDT(p)
+    const symKey = priceSymbol(p.asset, isARS)
+    const curPrice = p.price_override ?? prices[symKey]
+    const dv = dayVarOf(p, symKey, curPrice)
+    const isBond = isBondTicker(p.asset) && !p.is_cash
+    const pnlContrib = isBond
+      ? (bondCashflowsByKey.get(`${p.broker}:${p.asset}`)?.pnlContribution || 0)
+      : 0
+    const basePnl = isARS ? c.pnlArs : c.pnl
+    const adjPnl = (basePnl != null && pnlContrib) ? basePnl + pnlContrib : basePnl
+    const adjPnlPct = (isBond && adjPnl != null && p.invested > 0) ? adjPnl / p.invested : c.pnlPct
+    return {
+      value:  isARS ? c.valueUsd : c.value,
+      pnl:    adjPnl,
+      pnlPct: adjPnlPct,
+      dayPct: dv ? dv.pct : null,
+      qty:    p.quantity ?? null,
+      name:   (p.asset || '').toUpperCase(),
+    }
+  }
+
+  // Comparador descendente que empuja los null al fondo (sin generar NaN).
+  const _descNum = (a, b) => {
+    if (a == null && b == null) return 0
+    if (a == null) return 1
+    if (b == null) return -1
+    return b - a
+  }
+
+  // Comparador de posiciones/grupos según `sortBy` (default: valor desc).
+  function _posComparator(isARS) {
+    return (pa, pb) => {
+      const a = _rowSortKeys(pa, isARS)
+      const b = _rowSortKeys(pb, isARS)
+      switch (sortBy) {
+        case 'pnl_usd': return _descNum(a.pnl, b.pnl)
+        case 'pnl_pct': return _descNum(a.pnlPct, b.pnlPct)
+        case 'day_pct': return _descNum(a.dayPct, b.dayPct)
+        case 'qty':     return _descNum(a.qty, b.qty)
+        case 'name':    return a.name.localeCompare(b.name)
+        default:        return _descNum(a.value, b.value)
+      }
+    }
+  }
+
   function sortPositions(arr, isARS) {
     const noCash = arr.filter(p => !p.is_cash)
     const cash = arr.filter(p => p.is_cash)
-    const keyed = noCash.map(p => {
-      const c = isARS ? calcARS(p) : calcUSDT(p)
-      const symKey = priceSymbol(p.asset, isARS)
-      const curPrice = p.price_override ?? prices[symKey]
-      const dv = dayVarOf(p, symKey, curPrice)
-      // P&L para ordenar = el MISMO P&L que muestra la fila. Para bonos con
-      // cobranzas registradas la celda muestra el P&L aumentado con cupones +
-      // ganancia realizada de amorts (adjPnl/adjPnlPct); si ordenáramos por el
-      // mark-to-market crudo, un bono quedaría "fuera de lugar" respecto de su
-      // propia columna. Replicamos la augmentación en moneda nativa del broker
-      // (dentro de un broker el orden por nativa == por USD). El cash no entra.
-      const isBond = isBondTicker(p.asset) && !p.is_cash
-      const pnlContrib = isBond
-        ? (bondCashflowsByKey.get(`${p.broker}:${p.asset}`)?.pnlContribution || 0)
-        : 0
-      const basePnl = isARS ? c.pnlArs : c.pnl
-      const adjPnl = (basePnl != null && pnlContrib) ? basePnl + pnlContrib : basePnl
-      const adjPnlPct = (isBond && adjPnl != null && p.invested > 0)
-        ? adjPnl / p.invested
-        : c.pnlPct
-      return {
-        p,
-        value:  isARS ? c.valueUsd : c.value,
-        pnl:    adjPnl,
-        pnlPct: adjPnlPct,
-        dayPct: dv ? dv.pct : null,
-        qty:    p.quantity ?? null,
-        name:   (p.asset || '').toUpperCase(),
-      }
-    })
-    // Comparador descendente que empuja los null al fondo (sin generar NaN).
-    const descNum = (a, b) => {
-      if (a == null && b == null) return 0
-      if (a == null) return 1
-      if (b == null) return -1
-      return b - a
+    noCash.sort(_posComparator(isARS))
+    return [...noCash, ...cash]
+  }
+
+  // Posición agregada sintética de varios lotes del mismo (broker, asset):
+  // cantidad/invertido/comisiones sumados + precio compra promedio ponderado.
+  // El P&L no realizado de la posición abierta = valor − costo (independiente
+  // del orden de lotes), así que sumar los lotes ABIERTOS da el costo FIFO
+  // correcto. id 'agg:...' la distingue de una posición real (no se edita/borra).
+  function _buildAgg(asset, lots) {
+    const totalQty = lots.reduce((s, x) => s + (x.quantity || 0), 0)
+    const totalInv = lots.reduce((s, x) => s + (x.invested || 0), 0)
+    const totalComm = lots.reduce((s, x) => s + (x.commissions || 0), 0)
+    const overrides = [...new Set(lots.map(x => x.price_override).filter(v => v != null))]
+    const dates = lots.map(x => x.entry_date).filter(Boolean).sort()
+    return {
+      id: `agg:${lots[0].broker}:${asset}`,
+      broker: lots[0].broker,
+      asset,
+      is_cash: false,
+      quantity: totalQty,
+      invested: totalInv,
+      commissions: totalComm,
+      buy_price: totalQty > 0 ? totalInv / totalQty : null,
+      price_override: overrides.length === 1 ? overrides[0] : null,
+      tc_compra: lots[0].tc_compra,
+      entry_date: dates[0] || null,
     }
-    const cmp = {
-      value:   (a, b) => descNum(a.value, b.value),
-      pnl_usd: (a, b) => descNum(a.pnl, b.pnl),
-      pnl_pct: (a, b) => descNum(a.pnlPct, b.pnlPct),
-      day_pct: (a, b) => descNum(a.dayPct, b.dayPct),
-      qty:     (a, b) => descNum(a.qty, b.qty),
-      name:    (a, b) => a.name.localeCompare(b.name),
-    }[sortBy] || ((a, b) => descNum(a.value, b.value))
-    keyed.sort(cmp)
-    return [...keyed.map(k => k.p), ...cash]
+  }
+
+  // Agrupa por ticker → 1 fila por activo (vista default, sin ruido). Lote
+  // único: la posición real tal cual (editar/eliminar siguen andando). Multi-
+  // lote: fila agregada + los lotes quedan para expandir. Cash: sin agregar.
+  // Devuelve grupos {key, p, lots, isAgg} ya ordenados (cash al final).
+  function aggregateAndSort(arr, isARS) {
+    const cash = arr.filter(p => p.is_cash)
+    const noCash = arr.filter(p => !p.is_cash)
+    const byAsset = new Map()
+    for (const p of noCash) {
+      if (!byAsset.has(p.asset)) byAsset.set(p.asset, [])
+      byAsset.get(p.asset).push(p)
+    }
+    const groups = []
+    for (const [asset, lots] of byAsset) {
+      groups.push(lots.length === 1
+        ? { key: `t:${asset}`, p: lots[0], lots, isAgg: false }
+        : { key: `t:${asset}`, p: _buildAgg(asset, lots), lots, isAgg: true })
+    }
+    const cmp = _posComparator(isARS)
+    groups.sort((ga, gb) => cmp(ga.p, gb.p))
+    const cashGroups = cash.map(c => ({ key: `cash:${c.id}`, p: c, lots: [c], isAgg: false }))
+    return [...groups, ...cashGroups]
+  }
+
+  // Aplana grupos a filas de tabla: fila del activo + (si el agregado está
+  // expandido) sus lotes. Flags por fila: isAgg (resumen multi-lote, con
+  // chevron), isLot (lote dentro de un agregado, atenuado), lotCount.
+  function flattenGroups(groups) {
+    const rows = []
+    for (const g of groups) {
+      rows.push({ key: g.key, p: g.p, isAgg: g.isAgg, isLot: false, lotCount: g.lots.length })
+      if (g.isAgg && (showAllLots || expandedTickers.has(g.key))) {
+        for (const lot of g.lots) {
+          rows.push({ key: `${g.key}:${lot.id}`, p: lot, isAgg: false, isLot: true, lotCount: 0 })
+        }
+      }
+    }
+    return rows
   }
 
   function calcUSDT(p) {
@@ -964,6 +1040,14 @@ function PositionsDesktop() {
           options={[{ id: 'all', label: 'Todos' }, ...brokers.map(b => ({ id: b.name, label: b.name }))]}
         />
         <FilterPill label="Ordenar" value={sortBy} onChange={setSortBy} options={SORT_OPTIONS} />
+        <button
+          type="button"
+          onClick={() => setShowAllLots(v => !v)}
+          className={`inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border transition ${showAllLots ? 'bg-bg-3 border-line-3 text-ink-1' : 'border-line text-ink-3 hover:text-ink-1 hover:bg-bg-2'}`}
+          title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
+        >
+          <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
+        </button>
         {isFiltering && (
           <button
             type="button"
@@ -994,7 +1078,10 @@ function PositionsDesktop() {
         // los totales reflejan lo que se ve. Sin filtros: idéntico a antes.
         const bposRaw = positions.filter(p => p.broker === broker.name && matchesAsset(p))
         if (assetFiltering && bposRaw.length === 0) return null
-        const bpos = sortPositions(bposRaw, isARS)
+        // Vista default: 1 fila por ticker (agregado). bposRows aplana los grupos
+        // a filas (activo + lotes si está expandido). bposRaw sigue teniendo TODOS
+        // los lotes (para el footer/total y la variación diaria del broker).
+        const bposRows = flattenGroups(aggregateAndSort(bposRaw, isARS))
         const isSubBroker = broker.parent_broker_id != null
         const showDetail = detailBrokers.has(broker.name)
         const r = computeBrokerValue(bposRaw, prices, broker, tcBlue)
@@ -1005,7 +1092,7 @@ function PositionsDesktop() {
         // prev-close) → en ese caso el TOTAL muestra '—'.
         let brokerDay = 0
         let brokerHasDay = false
-        for (const p of bpos) {
+        for (const p of bposRaw) {
           const symKey = priceSymbol(p.asset, isARS)
           const curPrice = p.price_override ?? prices[symKey]
           const dv = dayVarOf(p, symKey, curPrice)
@@ -1107,7 +1194,8 @@ function PositionsDesktop() {
                     </tr>
                   </thead>
                   <tbody>
-                    {bpos.map(p => {
+                    {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
+                      const tickerExpanded = showAllLots || expandedTickers.has(`t:${p.asset}`)
                       const c = calcARS(p)
                       // P&L "con cupones": sumamos cobranzas (en ARS, misma moneda
                       // que el broker) al P&L mark-to-market. Es el "total return"
@@ -1131,17 +1219,18 @@ function PositionsDesktop() {
                       const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       const dvArs = dayVarOf(p, priceSymbol(p.asset, true), c.priceArs)
-                      const expanded = isBond && expandedBonds.has(bondKey)
+                      const expanded = isBond && !isLot && expandedBonds.has(bondKey)
                       const arsColSpan = showDetail ? 14 : 11
                       const pnlTooltip = (isBond && pnlContrib !== 0)
                         ? `P&L = mark-to-market (${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlContrib))} de ganancia realizada (cupones + parte de ganancia de amorts). Cash total cobrado: ARS ${ars(cobranzasCash)}.`
                         : undefined
                       return (
-                        <Fragment key={p.id}>
-                        <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''}`}>
+                        <Fragment key={rowKey}>
+                        <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''} ${isLot ? 'bg-bg-2/15' : ''}`}>
                           <td className={`${tdClass}`}>
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
+                            <div className={`flex items-center gap-2.5 min-w-0 ${isLot ? 'pl-6 opacity-75' : ''}`}>
+                              {isLot && <span className="text-ink-3 font-mono text-sm select-none -ml-3" title="Lote">└</span>}
+                              <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? 22 : 32} />
                               <div className="min-w-0">
                                 <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
                                   {p.asset}
@@ -1165,8 +1254,18 @@ function PositionsDesktop() {
                                   )}
                                 </div>
                                 <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
-                                  <span>{p.entry_date || 'sin fecha'}</span>
-                                  {isBond && (
+                                  <span>{isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha')}</span>
+                                  {isAgg && lotCount > 1 && (
+                                    <button
+                                      onClick={() => toggleTicker(`t:${p.asset}`)}
+                                      className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
+                                      title={tickerExpanded ? 'Ocultar los lotes individuales' : 'Ver los lotes individuales (cada compra)'}
+                                    >
+                                      {tickerExpanded ? <ChevronUp size={10} strokeWidth={1.75} /> : <ChevronDown size={10} strokeWidth={1.75} />}
+                                      {tickerExpanded ? 'Ocultar lotes' : `${lotCount} lotes`}
+                                    </button>
+                                  )}
+                                  {isBond && !isLot && (
                                     <button
                                       onClick={() => toggleBondExpand(p)}
                                       className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
@@ -1223,7 +1322,7 @@ function PositionsDesktop() {
                                   subtitle={`${p.asset} · ${p.broker}`}
                                 />
                               )}
-                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker })} />
+                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(`t:${p.asset}`) })} />
                             </div>
                           </td>
                         </tr>
@@ -1294,7 +1393,8 @@ function PositionsDesktop() {
                   </tr>
                 </thead>
                 <tbody>
-                  {bpos.map(p => {
+                  {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
+                    const tickerExpanded = showAllLots || expandedTickers.has(`t:${p.asset}`)
                     const c = calcUSDT(p)
                     const isBond = isBondTicker(p.asset) && !p.is_cash
                     const bondKey = `${p.broker}:${p.asset}`
@@ -1313,16 +1413,17 @@ function PositionsDesktop() {
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
                     const dvUsd = dayVarOf(p, p.asset, c.price)
-                    const expanded = isBond && expandedBonds.has(bondKey)
+                    const expanded = isBond && !isLot && expandedBonds.has(bondKey)
                     const pnlTooltip = (isBond && pnlContrib !== 0)
                       ? `P&L = mark-to-market (${c.pnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnl || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}USD ${usd(Math.abs(pnlContrib))} de ganancia realizada (cupones + ganancia de amorts). Cash total cobrado: USD ${usd(cobranzasCash)}.`
                       : undefined
                     return (
-                      <Fragment key={p.id}>
-                      <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''}`}>
+                      <Fragment key={rowKey}>
+                      <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''} ${isLot ? 'bg-bg-2/15' : ''}`}>
                         <td className={`${tdClass}`}>
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <AssetLogo asset={p.asset} isCash={p.is_cash} size={32} />
+                          <div className={`flex items-center gap-2.5 min-w-0 ${isLot ? 'pl-6 opacity-75' : ''}`}>
+                            {isLot && <span className="text-ink-3 font-mono text-sm select-none -ml-3" title="Lote">└</span>}
+                            <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? 22 : 32} />
                             <div className="min-w-0">
                               <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
                                 {p.asset}
@@ -1338,8 +1439,18 @@ function PositionsDesktop() {
                                 {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
                               </div>
                               <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
-                                <span>{p.entry_date || 'sin fecha'}</span>
-                                {isBond && (
+                                <span>{isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha')}</span>
+                                {isAgg && lotCount > 1 && (
+                                  <button
+                                    onClick={() => toggleTicker(`t:${p.asset}`)}
+                                    className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
+                                    title={tickerExpanded ? 'Ocultar los lotes individuales' : 'Ver los lotes individuales (cada compra)'}
+                                  >
+                                    {tickerExpanded ? <ChevronUp size={10} strokeWidth={1.75} /> : <ChevronDown size={10} strokeWidth={1.75} />}
+                                    {tickerExpanded ? 'Ocultar lotes' : `${lotCount} lotes`}
+                                  </button>
+                                )}
+                                {isBond && !isLot && (
                                   <button
                                     onClick={() => toggleBondExpand(p)}
                                     className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
@@ -1393,7 +1504,7 @@ function PositionsDesktop() {
                                 subtitle={`${p.asset} · ${p.broker}`}
                               />
                             )}
-                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker })} />
+                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(`t:${p.asset}`) })} />
                           </div>
                         </td>
                       </tr>
@@ -2028,7 +2139,18 @@ function sortBrokersForDisplay(brokers) {
   return out
 }
 
-function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker }) {
+function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
+  // Fila AGREGADA (varios lotes del mismo ticker): NO editar/eliminar (eso es por
+  // lote, en las filas expandidas). Vender opera FIFO sobre toda la posición.
+  if (isAgg) {
+    return [
+      { label: expanded ? `Ocultar lotes (${lotCount})` : `Ver lotes (${lotCount})`,
+        icon: expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />, onClick: onToggleLots },
+      { divider: true },
+      { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd(p.broker) },
+      { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
+    ]
+  }
   if (p.is_cash) {
     const isArsCash = broker?.currency === 'ARS'
     const isUsdCashSubBroker = broker?.currency === 'USDT' && broker?.parent_broker_id != null
