@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Search, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -126,6 +126,18 @@ function PositionsDesktop() {
   // showAllLots = toggle global "ver todos los lotes".
   const [expandedTickers, setExpandedTickers] = useState(() => new Set())
   const [showAllLots, setShowAllLots] = useState(false)
+  // Densidad de la tabla (cómodo/compacto), persistida. Feedback de un usuario
+  // Pro: con muchas columnas la tabla scrollea de costado y se hace tediosa.
+  const [compact, setCompact] = useState(() => {
+    try { return localStorage.getItem('rendi_pos_density') === 'compact' } catch { return false }
+  })
+  function toggleCompact() {
+    setCompact(v => {
+      const next = !v
+      try { localStorage.setItem('rendi_pos_density', next ? 'compact' : 'comfortable') } catch { /* no-op */ }
+      return next
+    })
+  }
   function toggleTicker(key) {
     setExpandedTickers(prev => {
       const next = new Set(prev)
@@ -816,8 +828,16 @@ function PositionsDesktop() {
   // sticky top-0 + bg matched al thead row para que al scrollear la tabla
   // (especialmente en mobile o brokers con muchas posiciones) el header
   // quede pegado arriba — convención fintech standard (Robinhood, Stripe).
-  const thClass = 'px-3 py-2.5 text-left label-mono whitespace-nowrap sticky top-0 z-10 bg-bg-2/95 backdrop-blur-sm'
-  const tdClass = 'px-3 py-2.5 text-sm whitespace-nowrap'
+  // Densidad: compacto baja padding (y alto de fila) para que entren más columnas.
+  const thBase = `${compact ? 'px-2 py-1.5' : 'px-3 py-2.5'} text-left label-mono whitespace-nowrap sticky top-0 bg-bg-2/95 backdrop-blur-sm`
+  const thClass = `${thBase} z-10`
+  // Columna "Activo" FIJA al scrollear de costado (sticky left): no perdés la
+  // referencia de qué activo estás viendo. Fondo sólido (bg-bg-1) para que el
+  // contenido scrolleado no se transparente por debajo + divisor/sombra a la
+  // derecha que marca que está fija. El header va z-20 (sobre el resto z-10).
+  const thClassSticky = `${thBase} left-0 z-20 border-r border-line`
+  const tdClass = `${compact ? 'px-2 py-1.5 text-[13px]' : 'px-3 py-2.5 text-sm'} whitespace-nowrap`
+  const tdClassSticky = `${compact ? 'px-2 py-1.5' : 'px-3 py-2.5'} whitespace-nowrap sticky left-0 z-10 bg-bg-1 border-r border-line shadow-[6px_0_10px_-8px_rgba(0,0,0,0.45)]`
   const inputClass = 'w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0'
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
@@ -1048,6 +1068,14 @@ function PositionsDesktop() {
         >
           <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
         </button>
+        <button
+          type="button"
+          onClick={toggleCompact}
+          className={`inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border transition ${compact ? 'bg-bg-3 border-line-3 text-ink-1' : 'border-line text-ink-3 hover:text-ink-1 hover:bg-bg-2'}`}
+          title="Compacta las filas para ver más columnas sin scrollear de costado."
+        >
+          <RowsIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {compact ? 'Cómodo' : 'Compacto'}
+        </button>
         {isFiltering && (
           <button
             type="button"
@@ -1177,7 +1205,7 @@ function PositionsDesktop() {
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-line/50 bg-bg-2/40">
-                      <th className={thClass}>Activo</th>
+                      <th className={thClassSticky}>Activo</th>
                       <th className={thClass}>30D</th>
                       <th className={thClass}>Cantidad</th>
                       <th className={thClass}>Precio prom.</th>
@@ -1227,10 +1255,10 @@ function PositionsDesktop() {
                       return (
                         <Fragment key={rowKey}>
                         <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''} ${isLot ? 'bg-bg-2/15' : ''}`}>
-                          <td className={`${tdClass}`}>
+                          <td className={tdClassSticky}>
                             <div className={`flex items-center gap-2.5 min-w-0 ${isLot ? 'pl-6 opacity-75' : ''}`}>
                               {isLot && <span className="text-ink-3 font-mono text-sm select-none -ml-3" title="Lote">└</span>}
-                              <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? 22 : 32} />
+                              <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                               <div className="min-w-0">
                                 <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
                                   {p.asset}
@@ -1379,7 +1407,7 @@ function PositionsDesktop() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-line/30">
-                    <th className={thClass}>Activo</th>
+                    <th className={thClassSticky}>Activo</th>
                     <th className={thClass}>30D</th>
                     <th className={thClass}>Cantidad</th>
                     <th className={thClass}>Precio prom.</th>
@@ -1420,10 +1448,10 @@ function PositionsDesktop() {
                     return (
                       <Fragment key={rowKey}>
                       <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''} ${isLot ? 'bg-bg-2/15' : ''}`}>
-                        <td className={`${tdClass}`}>
+                        <td className={tdClassSticky}>
                           <div className={`flex items-center gap-2.5 min-w-0 ${isLot ? 'pl-6 opacity-75' : ''}`}>
                             {isLot && <span className="text-ink-3 font-mono text-sm select-none -ml-3" title="Lote">└</span>}
-                            <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? 22 : 32} />
+                            <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                             <div className="min-w-0">
                               <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
                                 {p.asset}
