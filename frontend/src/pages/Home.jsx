@@ -33,7 +33,7 @@ export default function Home() {
       {/* Header compacto — sin el PageHeader editorial gigante */}
       <header className="flex items-center justify-between mb-6 gap-4 flex-wrap">
         <div>
-          <Eyebrow>Inicio</Eyebrow>
+          <Eyebrow>Mercado</Eyebrow>
           <h1 className="display-heading mt-1">El mercado hoy</h1>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
