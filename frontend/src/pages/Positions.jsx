@@ -1063,7 +1063,7 @@ function PositionsDesktop() {
         <button
           type="button"
           onClick={() => setShowAllLots(v => !v)}
-          className={`inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border transition ${showAllLots ? 'bg-bg-3 border-line-3 text-ink-1' : 'border-line text-ink-3 hover:text-ink-1 hover:bg-bg-2'}`}
+          className={`inline-flex items-center gap-1 text-xs font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-md border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'}`}
           title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
         >
           <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
@@ -1071,7 +1071,7 @@ function PositionsDesktop() {
         <button
           type="button"
           onClick={toggleCompact}
-          className={`inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps px-2 py-1 rounded-sm border transition ${compact ? 'bg-bg-3 border-line-3 text-ink-1' : 'border-line text-ink-3 hover:text-ink-1 hover:bg-bg-2'}`}
+          className={`inline-flex items-center gap-1 text-xs font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-md border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'}`}
           title="Compacta las filas para ver más columnas sin scrollear de costado."
         >
           <RowsIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {compact ? 'Cómodo' : 'Compacto'}
