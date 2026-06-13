@@ -15,7 +15,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  Home as HomeIcon, Briefcase, List, Settings, LogOut,
+  Home as HomeIcon, LineChart, Briefcase, List, Settings, LogOut,
   Sun, Moon, Compass, Shield, Bell, Upload, Menu, Sparkles,
   MessageCircle, BookOpen,
 } from 'lucide-react'
@@ -55,14 +55,14 @@ const GROUPS = [
   {
     label: 'Tu cartera',
     items: [
-      { to: '/',            label: 'Inicio',        icon: HomeIcon },
+      { to: '/',            label: 'Mercado',       icon: LineChart },
       { to: '/posiciones',  label: 'Cartera',       icon: Briefcase },
       { to: '/operaciones', label: 'Movimientos',   icon: List },
       { to: '/imports',     label: 'Importar CSV',  icon: Upload },
     ],
   },
   {
-    label: 'Análisis',
+    label: 'Investigación',
     items: [
       { to: '/analisis',    label: 'Análisis',      icon: Compass },
       { to: '/novedades',   label: 'Novedades',     icon: Bell },
