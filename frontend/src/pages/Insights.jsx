@@ -1669,68 +1669,15 @@ function InsightsDesktop({ _embeddedTab }) {
       })()}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          HERO — Diagnóstico como tarjetas accionables priorizadas (audit pattern).
-          Cantidad visible por tier: Free 3, Plus 6, Pro todas.
-          Cada tarjeta: badge de severidad + título corto + contexto + CTA.
-          Severidad codificada solo en el BADGE, no en todo el bloque.
-          'Resultado del portfolio' eliminado (duplicaba Dashboard).
+          HERO — Diagnóstico con divulgación progresiva (2026-06-12).
+          1 hallazgo DESTACADO arriba ("Lo que más importa") + el resto en 2
+          secciones colapsables: "Requiere atención" y "Lo que va bien".
+          Cantidad visible por tier: Free N (gateado), Plus/Pro todas.
+          Ver <DiagnosisSection> para la lógica completa.
           ══════════════════════════════════════════════════════════════════════ */}
-      {diagnosis.length > 0 && (() => {
-        // Tomamos hasta 6 observaciones balanceadas para el hero: 6 es el techo
-        // del tier gateado más alto (Plus → insights_diagnostic_visible=6). Free
-        // recorta a 3 con slice(0, visibleLimit); Plus ve las 6; Pro las ve todas
-        // (estas + el resto en el <details>). Antes era 3 fijo, lo que capaba a
-        // Plus en 3 aunque su límite fuese 6.
-        const balanced = pickBalancedDiagnosis(diagnosis, 6)
-        const balancedIds = new Set(balanced.map(d => d.id))
-        // Truncamos al múltiplo de 3 inmediatamente inferior. Si quedan
-        // 1-2 observaciones huérfanas en la última fila quedaba un hueco
-        // visual feo — preferimos no mostrar esas en lugar de arruinar la
-        // grilla. Las que se truncan vuelven a aparecer otro día gracias
-        // a la rotación diaria del selector.
-        const allRest = diagnosis.filter(d => !balancedIds.has(d.id))
-        const restItems = allRest.slice(0, allRest.length - (allRest.length % 3))
-
-        // GATE Free: solo N observaciones visibles (default 3). El resto
-        // del diagnóstico queda blureado al final con CTA upgrade.
-        const visibleLimit = plan.limit('insights_diagnostic_visible')
-        const isLimited = !plan.hasFullAccess && typeof visibleLimit === 'number'
-        const visibleBalanced = isLimited ? balanced.slice(0, visibleLimit) : balanced
-        const hiddenBalanced = isLimited ? balanced.slice(visibleLimit) : []
-        const totalHidden = hiddenBalanced.length + (isLimited ? restItems.length : 0)
-
-        return (
-          <section id="diagnostico" className="scroll-mt-20">
-            <p className="eyebrow mb-3">
-              Diagnóstico · {visibleBalanced.length} {visibleBalanced.length === 1 ? 'observación' : 'observaciones'} priorizadas
-            </p>
-            <DiagnosisGrid items={visibleBalanced} />
-
-            {isLimited && totalHidden > 0 && (
-              <div className="mt-4">
-                <LockedSection.BlurredList
-                  feature="insights.diagnostic.full"
-                  hiddenCount={totalHidden}
-                  noun="observaciones"
-                  source="insights_diagnostic"
-                >
-                  <DiagnosisGrid items={[...hiddenBalanced, ...restItems].slice(0, 6)} />
-                </LockedSection.BlurredList>
-              </div>
-            )}
-
-            {!isLimited && restItems.length > 0 && (
-              <details className="mt-3 group">
-                <summary className="cursor-pointer text-xs text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 select-none mb-3">
-                  <ChevronDown size={12} strokeWidth={1.75} className="group-open:rotate-180 transition-transform" />
-                  Ver {restItems.length} {restItems.length === 1 ? 'observación' : 'observaciones'} más
-                </summary>
-                <DiagnosisGrid items={restItems} />
-              </details>
-            )}
-          </section>
-        )
-      })()}
+      {diagnosis.length > 0 && (
+        <DiagnosisSection diagnosis={diagnosis} plan={plan} />
+      )}
 
       {/* ── Strip de exposición — cash + clases de activo ─────────────────── */}
       {(assetTypeBreakdown.length > 0 || cashRatio > 0) && (
@@ -3119,6 +3066,189 @@ function DiagnosticText({ text }) {
   )
 }
 
+// Título corto de un item de diagnóstico para el preview colapsado del acordeón.
+// Mismo parseo que DiagnosisCard/FeaturedFinding: quita markdown bold y toma la
+// 1ª oración como título. Lo extraemos en un helper para reusarlo en el preview.
+function diagnosisShortTitle(d) {
+  const plain = (d.text || '').replace(/\*\*/g, '')
+  const parts = plain.split(/\.\s+/)
+  return parts[0] + (parts.length > 1 ? '.' : '')
+}
+
+// ─── DiagnosisSection — Diagnóstico con divulgación progresiva ───────────────
+// (2026-06-12) Reemplaza la grilla densa de hasta 6 cards + toggle "Ver N más"
+// por: 1 hallazgo DESTACADO arriba ("Lo que más importa") + el resto agrupado
+// en 2 secciones colapsables (acordeón), reusando <DiagnosisGrid>/<DiagnosisCard>
+// y el mismo <AccordionSection> del bloque Perfil.
+//
+// El array `diagnosis` ya viene priorizado desde selectDiagnostics():
+// SEVERITY_RANK = urgent(0) < warn(1) < positive(2) < info(3), con tie-break
+// estable por día. Es decir: diagnosis[0] es siempre el de mayor prioridad.
+//
+// Clasificación atención vs "va bien": el ÚNICO campo de tipo/severidad en la
+// data es `severity` ∈ {urgent, warn, positive, info}. Lo usamos así:
+//   • "Requiere atención" → severity ≠ 'positive' (urgent/warn/info). Abierta
+//     por defecto. Son desvíos/alertas/observaciones neutras a revisar.
+//   • "Lo que va bien"    → severity === 'positive'. Colapsada por defecto.
+//
+// Hallazgo destacado: el primer 'urgent' o 'warn' del orden ya priorizado (=
+// el primer item de atención real). Si no hay ninguno de atención, caemos al
+// primer item del array (diagnosis[0]). Se EXCLUYE de la grilla de abajo para
+// no duplicarlo.
+//
+// Gating: para tier Free (plan limitado) NO mostramos el acordeón completo —
+// conservamos el patrón previo (grilla recortada + BlurredList con CTA upgrade)
+// para no regalar el contenido pago. El acordeón con TODO el detalle es para
+// usuarios con acceso completo (Plus/Pro).
+function DiagnosisSection({ diagnosis, plan }) {
+  // Estado del acordeón — Set de keys de sección expandidas. "atencion" abierta
+  // por defecto; "positivo" colapsada. Declarado antes de cualquier early
+  // return para respetar las Rules of Hooks.
+  const [expandedSections, setExpandedSections] = useState(() => new Set(['atencion']))
+
+  if (!diagnosis || diagnosis.length === 0) return null
+
+  // ── GATE Free ──────────────────────────────────────────────────────────────
+  // Mismo comportamiento que antes: N observaciones visibles + resto blureado.
+  // Mantenemos el destacado arriba también para Free (es la #1 que ya verían).
+  const visibleLimit = plan.limit('insights_diagnostic_visible')
+  const isLimited = !plan.hasFullAccess && typeof visibleLimit === 'number'
+
+  // Hallazgo destacado: primer urgent/warn del orden priorizado; si no hay
+  // ninguno de atención, el primero del array.
+  const featured = diagnosis.find(d => d.severity === 'urgent' || d.severity === 'warn')
+    || diagnosis[0]
+  const rest = diagnosis.filter(d => d.id !== featured.id)
+
+  if (isLimited) {
+    // Free: destacado + grilla recortada + BlurredList (CTA upgrade). Sin
+    // acordeón (el detalle completo es pago).
+    const balanced = pickBalancedDiagnosis(rest, 6)
+    const balancedIds = new Set(balanced.map(d => d.id))
+    const allRest = rest.filter(d => !balancedIds.has(d.id))
+    const visible = balanced.slice(0, visibleLimit)
+    const hidden = [...balanced.slice(visibleLimit), ...allRest]
+    return (
+      <section id="diagnostico" className="scroll-mt-20 space-y-4">
+        <FeaturedFinding d={featured} />
+        {visible.length > 0 && (
+          <div>
+            <p className="eyebrow mb-3">Más observaciones</p>
+            <DiagnosisGrid items={visible} />
+          </div>
+        )}
+        {hidden.length > 0 && (
+          <LockedSection.BlurredList
+            feature="insights.diagnostic.full"
+            hiddenCount={hidden.length}
+            noun="observaciones"
+            source="insights_diagnostic"
+          >
+            <DiagnosisGrid items={hidden.slice(0, 6)} />
+          </LockedSection.BlurredList>
+        )}
+      </section>
+    )
+  }
+
+  // ── Acceso completo: destacado + acordeón con TODO el resto ─────────────────
+  const attention = rest.filter(d => d.severity !== 'positive')
+  const positive = rest.filter(d => d.severity === 'positive')
+
+  const toggleSection = (key) =>
+    setExpandedSections(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+
+  const groups = [
+    { key: 'atencion', title: 'Requiere atención', items: attention },
+    { key: 'positivo', title: 'Lo que va bien',    items: positive },
+  ]
+
+  return (
+    <section id="diagnostico" className="scroll-mt-20 space-y-4">
+      <FeaturedFinding d={featured} />
+
+      {groups.map(group => {
+        if (group.items.length === 0) return null
+        const open = expandedSections.has(group.key)
+        // Preview colapsado: títulos cortos de cada card (mismo parseo que
+        // DiagnosisCard: 1ª oración del texto, sin markdown). AccordionSection
+        // los une con " · " y trunca a una línea.
+        const previewItems = group.items.map(diagnosisShortTitle)
+        return (
+          <AccordionSection
+            key={group.key}
+            title={group.title}
+            count={group.items.length}
+            previewItems={previewItems}
+            open={open}
+            onToggle={() => toggleSection(group.key)}
+          >
+            <DiagnosisGrid items={group.items} />
+          </AccordionSection>
+        )
+      })}
+    </section>
+  )
+}
+
+// FeaturedFinding — el hallazgo #1 ("Lo que más importa"), destacado con borde
+// de realce + ícono de alerta. Reusa SEVERITY_BADGE/ctaForCategory/DiagnosticText
+// del mismo patrón que DiagnosisCard, sin reescribir la card.
+function FeaturedFinding({ d }) {
+  const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
+  const cta = ctaForCategory(d.category)
+  // Mismo parseo que DiagnosisCard: 1ª oración = título, resto = contexto.
+  const plainText = (d.text || '').replace(/\*\*/g, '')
+  const parts = plainText.split(/\.\s+/)
+  const title = parts[0] + (parts.length > 1 ? '.' : '')
+  const context = parts.slice(1).join('. ').trim()
+  // Tono del realce según severidad: rojo si es riesgo alto, ámbar para el
+  // resto (lo destacado casi siempre es atención). Verde solo si no hubiera
+  // ningún hallazgo de atención y caímos a un positivo.
+  const tone = d.severity === 'urgent'
+    ? 'border-rendi-neg/40 bg-rendi-neg/[0.05] dark:bg-rendi-neg/[0.07] text-rendi-neg'
+    : d.severity === 'positive'
+    ? 'border-rendi-pos/40 bg-rendi-pos/[0.05] dark:bg-rendi-pos/[0.07] text-rendi-pos'
+    : 'border-rendi-warn/40 bg-rendi-warn/[0.05] dark:bg-rendi-warn/[0.07] text-rendi-warn'
+  const HeroIcon = d.severity === 'positive' ? Sparkles : AlertTriangle
+  return (
+    <div>
+      <p className="eyebrow mb-3">Lo que más importa</p>
+      <div className={`rounded-lg border p-5 ${tone}`}>
+        <div className="flex items-center gap-2 mb-3">
+          <HeroIcon size={16} strokeWidth={2} className="flex-shrink-0" />
+          <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
+            {sev.label}
+          </span>
+        </div>
+        <p className="text-base font-semibold leading-snug text-ink-0">
+          <DiagnosticText text={title} />
+        </p>
+        {context && (
+          <p className="text-sm text-ink-2 mt-1.5 leading-relaxed max-w-2xl">
+            <DiagnosticText text={context} />
+          </p>
+        )}
+        {cta && (
+          cta.href.startsWith('#') ? (
+            <a href={cta.href} className="inline-flex items-center gap-1.5 mt-4 text-sm font-semibold text-rendi-accent hover:underline">
+              {cta.label} <ArrowRight size={14} strokeWidth={2} />
+            </a>
+          ) : (
+            <Link to={cta.href} className="inline-flex items-center gap-1.5 mt-4 text-sm font-semibold text-rendi-accent hover:underline">
+              {cta.label} <ArrowRight size={14} strokeWidth={2} />
+            </Link>
+          )
+        )}
+      </div>
+    </div>
+  )
+}
+
 // Grid de tarjetas accionables (audit pattern). Container con bg-line +
 // gap-px crea los divisores 1px sin pelear con first-child en wraps.
 // Funciona con cualquier número de items: 1, 3, 4, 6...
@@ -3256,6 +3386,12 @@ function ProfileInvestorBlock({
   allocationCard, objectiveCard, horizonCard, drawdownCard, concentrationCard,
   styleCard, liquidityCard,
 }) {
+  // Estado del acordeón (divulgación progresiva) — Set de keys de sección
+  // expandidas. DEBE declararse antes de cualquier early return para no violar
+  // las Rules of Hooks. Default: la primera sección ('coherencia') abierta,
+  // el resto colapsado para reducir ruido. El usuario expande lo que necesita.
+  const [expandedSections, setExpandedSections] = useState(() => new Set(['coherencia']))
+
   // Si las cards basadas en perfil NO tienen perfil utilizable, mostramos
   // un CTA único en vez de 5 empty states duplicados.
   // Chequeamos las cards que dependen de la categoría derivada (allocation +
@@ -3310,16 +3446,285 @@ function ProfileInvestorBlock({
   const hasRenderableContent = (card) =>
     card && card.status !== 'no_data' && card.status !== 'no_profile'
 
+  // ── Divulgación progresiva (2026-06-11) ───────────────────────────────────
+  // Antes: grilla densa de hasta 7 cards a la vez → el usuario tenía que
+  // escanear todo. Ahora: un hallazgo DESTACADO arriba ("Lo que más importa")
+  // + el resto agrupado en secciones colapsables (acordeón), con mini-resumen
+  // en cada header para no tener que abrirlas.
+  //
+  // Conservamos TODO el contenido y la funcionalidad de las cards existentes
+  // (botón ✦ de Análisis IA via `wrap`, tooltips, empty states no_portfolio,
+  // gating). Solo reorganizamos el LAYOUT.
+
+  // Definición declarativa de cada card → permite scorear severidad, renderizar
+  // y agrupar de forma uniforme. `node()` devuelve el JSX wrappeado con IA.
+  const CARD_DEFS = [
+    { code: 'allocation',    id: 'profile-card-allocation',    card: allocationCard,    subtitle: 'Match perfil vs cartera',       node: () => <ProfileAllocationCard data={allocationCard} /> },
+    { code: 'objective',     id: 'profile-card-objective',     card: objectiveCard,     subtitle: 'Coherencia con tu objetivo',    node: () => <ProfileObjectiveCard data={objectiveCard} /> },
+    { code: 'horizon',       id: 'profile-card-horizon',       card: horizonCard,       subtitle: 'Horizonte vs composición',      node: () => <ProfileHorizonCard data={horizonCard} /> },
+    { code: 'drawdown',      id: 'profile-card-drawdown',      card: drawdownCard,      subtitle: 'Drawdown tolerado vs real',     node: () => <ProfileDrawdownCard data={drawdownCard} /> },
+    { code: 'concentration', id: 'profile-card-concentration', card: concentrationCard, subtitle: 'Concentración vs perfil',        node: () => <ProfileConcentrationCard data={concentrationCard} /> },
+    { code: 'style',         id: 'profile-card-style',         card: styleCard,         subtitle: 'Estilo declarado vs actividad', node: () => <ProfileStyleCard data={styleCard} /> },
+    { code: 'liquidity',     id: 'profile-card-liquidity',     card: liquidityCard,     subtitle: 'Liquidez declarada vs cartera', node: () => <ProfileLiquidityCard data={liquidityCard} /> },
+  ]
+
+  const byCode = Object.fromEntries(CARD_DEFS.map(d => [d.code, d]))
+  const renderCard = (def) => def && hasRenderableContent(def.card)
+    ? wrap(def.code, def.subtitle, def.node())
+    : null
+
+  // Heurística de severidad / desalineación (0-100). NO hay un flag explícito
+  // en la data, así que lo derivamos de los valores que ya tenemos en cada
+  // card (`comparison` + magnitudes). Cuanto mayor el score, más accionable.
+  // Solo puntúan cards con status='ready' (cruce real perfil↔cartera); las
+  // 'no_portfolio' no tienen desalineación que mostrar como hallazgo.
+  // Prioridad de diseño: liquidez severa > concentración/DD por encima del
+  // rango > horizonte/objetivo desalineados > estilo. Empates → orden de la
+  // lista (ya prioriza riesgo de liquidez/concentración).
+  function severityScore(def) {
+    const c = def?.card
+    if (!c || c.status !== 'ready') return -1
+    switch (def.code) {
+      case 'liquidity':
+        if (c.comparison === 'mismatch_severe') return 100
+        if (c.comparison === 'mismatch_risky') return 78
+        return 0
+      case 'concentration':
+        // Concentración alta = riesgo. Gap por encima del rango típico escala.
+        if (c.comparison === 'above') return 70 + Math.min(20, (c.actual?.top3Pct || 0) / 5)
+        if (c.comparison === 'below') return 12
+        return 0
+      case 'drawdown':
+        if (c.comparison === 'above') return 65
+        if (c.comparison === 'below') return 15
+        return 0
+      case 'horizon':
+        // % de cartera que genera "riesgo de timing" para el horizonte declarado.
+        return Math.min(60, (c.actual?.riskPct || 0) * 0.6)
+      case 'objective':
+        return Math.min(55, (c.actual?.misalignedPct || 0) * 0.55)
+      case 'allocation':
+        return Math.min(50, (c.comparison?.driftPct || 0) * 0.5)
+      case 'style':
+        return c.comparison && c.comparison !== 'aligned' ? 40 : 0
+      default:
+        return 0
+    }
+  }
+
+  // 1 línea de contexto para el hallazgo destacado, por card.
+  function highlightLine(def) {
+    const c = def.card
+    switch (def.code) {
+      case 'liquidity':
+        return `Tenés ${c.actual.safePct}% en cash + renta fija y ${c.actual.volatilePct}% en activos volátiles, frente a una necesidad de liquidez declarada como "${c.declared.liquidityLabel}".`
+      case 'concentration':
+        return `Tus top ${Math.min(3, c.actual.holdingsCount)} activos concentran ${c.actual.top3Pct}% de la cartera — por encima del rango típico (${c.declared.typicalRange.min}-${c.declared.typicalRange.max}%) para un perfil ${c.declared.categoryLabel}.`
+      case 'drawdown':
+        return `El drawdown máximo real de tu cartera (${c.actual.drawdownPct}%) está por encima de la tolerancia que declaraste (${c.declared.impliedTolerance.min}-${c.declared.impliedTolerance.max}%).`
+      case 'horizon':
+        return `Marcaste horizonte ${c.declared.horizonLabel}, pero ${c.actual.riskPct}% de tu cartera está en ${c.declared.riskLabel}.`
+      case 'objective':
+        return `Solo ${c.actual.alignedPct}% de tu cartera está alineado con tu objetivo (${c.declared.goalLabel}); el resto está en ${c.declared.misalignedLabel}.`
+      case 'allocation':
+        return `${Math.round(c.comparison.driftPct)}% de tu cartera está en buckets distintos a la asignación de referencia para un perfil ${c.declared.categoryLabel}.`
+      case 'style':
+        return `Operás ${c.actual.tradesPerMonth} veces/mes, más cercano a un estilo ${c.actual.inferredStyleLabel.toLowerCase()} que al ${c.declared.styleLabel.toLowerCase()} que declaraste.`
+      default:
+        return 'Hay un desvío entre lo que declaraste en el test y tu cartera real.'
+    }
+  }
+
+  // Elegimos el hallazgo destacado: la card ready con mayor severidad.
+  const ranked = CARD_DEFS
+    .filter(d => hasRenderableContent(d.card))
+    .map(d => ({ def: d, score: severityScore(d) }))
+    .sort((a, b) => b.score - a.score)
+  const featured = ranked.length && ranked[0].score > 0 ? ranked[0].def : null
+
+  // Grupos del acordeón. Cada grupo lista los CODES que contiene; renderizamos
+  // solo las cards con contenido (excluyendo la destacada, que ya va arriba).
+  const GROUPS = [
+    {
+      key: 'coherencia',
+      title: 'Coherencia con tu perfil',
+      codes: ['allocation', 'objective', 'horizon'],
+    },
+    {
+      key: 'riesgo',
+      title: 'Riesgo y exposición',
+      codes: ['drawdown', 'concentration', 'liquidity'],
+    },
+    {
+      key: 'comportamiento',
+      title: 'Comportamiento',
+      codes: ['style'],
+    },
+  ]
+
+  // Mini-resumen por grupo (header del acordeón) — para no tener que abrirlo.
+  function groupSummary(group) {
+    const defs = group.codes.map(c => byCode[c]).filter(d => hasRenderableContent(d?.card))
+    if (defs.length === 0) return null
+    if (group.key === 'coherencia') {
+      // "N de M alineadas" — alineada = sin desvío material (score bajo).
+      const ready = defs.filter(d => d.card.status === 'ready')
+      if (ready.length === 0) return `${defs.length} ${defs.length === 1 ? 'card' : 'cards'}`
+      const aligned = ready.filter(d => severityScore(d) < 25).length
+      return `${aligned} de ${ready.length} alineadas`
+    }
+    if (group.key === 'riesgo') {
+      const parts = []
+      const conc = byCode.concentration
+      if (conc && conc.card.status === 'ready') parts.push(`Concentración ${conc.card.actual.top3Pct}%`)
+      const dd = byCode.drawdown
+      if (dd && dd.card.status === 'ready') parts.push(`DD ${dd.card.actual.drawdownPct}%`)
+      const liq = byCode.liquidity
+      if (liq && liq.card.status === 'ready') parts.push(`Liquidez ${liq.card.actual.safePct}% seguro`)
+      return parts.length ? parts.join(' · ') : `${defs.length} ${defs.length === 1 ? 'card' : 'cards'}`
+    }
+    if (group.key === 'comportamiento') {
+      const st = byCode.style
+      if (st && st.card.status === 'ready') return `${st.card.actual.tradesPerMonth} trades/mes · estilo ${st.card.actual.inferredStyleLabel.toLowerCase()}`
+      return `${defs.length} ${defs.length === 1 ? 'card' : 'cards'}`
+    }
+    return null
+  }
+
+  const toggleSection = (key) =>
+    setExpandedSections(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+
+  // "Ver detalle" del hallazgo destacado: expande la sección que lo contiene
+  // y scrollea a la card real (sin duplicar la lógica de la card).
+  const scrollToCard = (def) => {
+    if (!def) return
+    const group = GROUPS.find(g => g.codes.includes(def.code))
+    if (group) setExpandedSections(prev => new Set(prev).add(group.key))
+    // Esperamos a que la sección se expanda antes de scrollear.
+    setTimeout(() => {
+      document.getElementById(def.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 60)
+  }
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      {wrap('allocation',    'Match perfil vs cartera',         <ProfileAllocationCard data={allocationCard} />)}
-      {wrap('objective',     'Coherencia con tu objetivo',      <ProfileObjectiveCard data={objectiveCard} />)}
-      {wrap('horizon',       'Horizonte vs composición',        <ProfileHorizonCard data={horizonCard} />)}
-      {wrap('drawdown',      'Drawdown tolerado vs real',       <ProfileDrawdownCard data={drawdownCard} />)}
-      {wrap('concentration', 'Concentración vs perfil',         <ProfileConcentrationCard data={concentrationCard} />)}
-      {hasRenderableContent(styleCard)     && wrap('style',     'Estilo declarado vs actividad',   <ProfileStyleCard data={styleCard} />)}
-      {hasRenderableContent(liquidityCard) && wrap('liquidity', 'Liquidez declarada vs cartera', <ProfileLiquidityCard data={liquidityCard} />)}
+    <div className="space-y-5">
+      {/* ── "Lo que más importa": 1 solo hallazgo, el más accionable ───────── */}
+      {featured && (
+        <div className="rounded-lg border border-rendi-accent/40 dark:border-rendi-accent/30 bg-rendi-accent/[0.04] dark:bg-rendi-accent/[0.06] p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <Sparkles size={15} className="text-rendi-accent" strokeWidth={2} />
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-rendi-accent">Lo que más importa</span>
+          </div>
+          <p className="text-base font-semibold text-ink-0 leading-snug">{featured.subtitle}</p>
+          <p className="text-sm text-ink-2 mt-1.5 leading-snug max-w-2xl">{highlightLine(featured)}</p>
+          <button
+            type="button"
+            onClick={() => scrollToCard(featured)}
+            className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-rendi-accent hover:underline"
+          >
+            Ver detalle
+            <ArrowRight size={14} strokeWidth={2} />
+          </button>
+        </div>
+      )}
+
+      {/* ── Resto de las cards, en secciones colapsables (acordeón) ────────── */}
+      {GROUPS.map(group => {
+        const defs = group.codes
+          .map(c => byCode[c])
+          .filter(d => hasRenderableContent(d?.card) && d.code !== featured?.code)
+        if (defs.length === 0) return null
+        const open = expandedSections.has(group.key)
+        const summary = groupSummary(group)
+        return (
+          <AccordionSection
+            key={group.key}
+            title={group.title}
+            count={defs.length}
+            summary={summary}
+            open={open}
+            onToggle={() => toggleSection(group.key)}
+          >
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {defs.map(def => (
+                <div key={def.code} id={def.id} className="scroll-mt-24">
+                  {renderCard(def)}
+                </div>
+              ))}
+            </div>
+          </AccordionSection>
+        )
+      })}
     </div>
+  )
+}
+
+
+// AccordionSection — header clickeable (título + count + preview + acción + chevron)
+// con contenido colapsable. Reusable para las secciones de divulgación
+// progresiva del perfil del inversor Y del diagnóstico. El contenido se desmonta
+// al colapsar (mismo patrón que CollapsibleSection) — evita render de cards no
+// visibles.
+//
+// Affordance de "clickeable" (2026-06-13): colapsadas, estas secciones parecían
+// títulos estáticos. Para que el header "pida" el click y no sea un blind box:
+//   • cursor-pointer + hover state visible en TODO el header (bg + borde acento).
+//   • Una etiqueta de acción explícita "Ver" (colapsada) → "Ocultar" (abierta)
+//     junto al chevron, que se lee como acción y no como decoración.
+//   • Preview del contenido cuando está COLAPSADA, para sacar el "blind box":
+//     - `previewItems` (array de strings) → renderiza los títulos de las cards
+//       unidos con " · ", truncado a 1 línea (caso Diagnóstico).
+//     - `summary` (string) → mini-resumen pre-armado por el caller (caso Perfil,
+//       que ya trae "N de M alineadas"). Si vienen ambos, gana `summary` para no
+//       recargar el header del Perfil.
+//   El preview/summary se oculta al expandir (ya se ve el contenido real).
+function AccordionSection({ title, count, summary, previewItems, open, onToggle, children }) {
+  // Preview colapsado: preferimos el `summary` pre-armado (Perfil); si no hay,
+  // derivamos un preview de los títulos de los items (Diagnóstico). Cortamos a
+  // ~3 títulos + "…" para que entre en una sola línea.
+  const previewText = summary || (
+    Array.isArray(previewItems) && previewItems.length
+      ? previewItems.slice(0, 3).join(' · ') + (previewItems.length > 3 ? '…' : '')
+      : null
+  )
+  return (
+    <section className="border border-line/70 dark:border-line rounded-lg overflow-hidden bg-white/40 dark:bg-bg-1/40 transition-colors hover:border-rendi-accent/40">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-left group cursor-pointer hover:bg-bg-2/60 dark:hover:bg-bg-2/30 transition-colors"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
+            <h3 className="font-semibold text-ink-0 group-hover:text-rendi-accent transition-colors">{title}</h3>
+            {count != null && (
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-bg-2 dark:bg-bg-2/60 text-ink-2">
+                {count}
+              </span>
+            )}
+          </div>
+          {/* Preview SOLO colapsado: títulos de items (Diagnóstico) o mini-resumen (Perfil). */}
+          {previewText && !open && (
+            <p className="text-ink-3 text-xs truncate mt-1">{previewText}</p>
+          )}
+        </div>
+        {/* Acción explícita "Ver/Ocultar" + chevron — se lee como botón. */}
+        <span className="flex-shrink-0 flex items-center gap-1.5 text-ink-3 group-hover:text-rendi-accent transition-colors">
+          <span className="text-xs font-semibold">{open ? 'Ocultar' : 'Ver'}</span>
+          {open ? <ChevronUp size={18} strokeWidth={2.25} /> : <ChevronDown size={18} strokeWidth={2.25} />}
+        </span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 pt-1">
+          {children}
+        </div>
+      )}
+    </section>
   )
 }
 
