@@ -19,7 +19,9 @@
 // Mientras esté vacío, todo este módulo es no-op: la app funciona igual y no
 // carga nada de Meta.
 
-const META_PIXEL_ID = '1313319913641013' // ← Pixel "Rendi Web" (Meta Events Manager)
+const META_PIXEL_ID = '1281911210681122' // ← Pixel "Rendi" del ad account (Events Manager).
+// Antes apuntaba a 1313319913641013, que NO existía en esta cuenta publicitaria →
+// la web mandaba eventos al vacío y el pixel real (1281...) figuraba "sin actividad".
 
 const DEBUG = typeof window !== 'undefined' && window.location?.hostname === 'localhost'
 
