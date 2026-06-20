@@ -346,6 +346,18 @@ def run_preview(
         'okx', 'huobi', 'gemini', 'crypto.com', 'lemon', 'ripio', 'buenbit',
         'satoshitango', 'fiwind',
     })
+    # Plataformas con moneda base CONOCIDA por su parser. La moneda del broker
+    # sale de la plataforma, NO de la mayoría de filas: un export de Cocos puede
+    # traer más filas USD (compras dólar-MEP) que ARS, pero el broker es ARS y el
+    # cash en pesos no debe terminar en un bucket USD. Las filas USD se separan
+    # después a un sub-broker "· USD" vía route_by_currency. Solo aplica a parsers
+    # específicos; el genérico multi-broker (format_id='rendi_generic') no está en
+    # el mapa y sigue infiriendo por fila.
+    FORMAT_BASE_CURRENCY = {
+        'cocos': 'ARS', 'bullmarket': 'ARS', 'balanz': 'ARS', 'iol': 'ARS',
+        'binance': 'USDT', 'schwab': 'USD', 'ibkr': 'USD',
+    }
+    fmt_base = FORMAT_BASE_CURRENCY.get(parser.format_id)
     for key, info in pending.items():
         rows_for_broker = info["rows"]
         broker_name = info["first_name"]
@@ -359,11 +371,16 @@ def run_preview(
         # Prioridad de inferencia:
         #   1. Nombre conocido cripto → USDT (aunque tenga filas USD: en
         #      Binance "USD" suele venir como USDT igual)
-        #   2. Mayoría USDT → USDT (datos explícitos)
-        #   3. Mayoría ARS → ARS
-        #   4. Cualquier otro caso (mayoría USD o mix) → USD
+        #   2. Moneda base conocida del parser (Cocos→ARS, etc.) → gana sobre la
+        #      mayoría de filas. Evita que un broker AR caiga en USD por tener
+        #      muchas compras dólar-MEP.
+        #   3. Mayoría USDT → USDT (datos explícitos)
+        #   4. Mayoría ARS → ARS
+        #   5. Cualquier otro caso (mayoría USD o mix) → USD
         if broker_lower in CRYPTO_BROKERS:
             inferred = "USDT"
+        elif fmt_base:
+            inferred = fmt_base
         elif usdt_count > usd_count and usdt_count > ars_count:
             inferred = "USDT"
         elif ars_count > usd_count and ars_count > usdt_count:
@@ -390,6 +407,23 @@ def run_preview(
         # vino con otro casing del mismo nombre)
         for t in rows_for_broker:
             t.broker = broker_name
+
+    # Auto-ruteo por moneda (reemplaza el viejo toggle "¿este archivo tiene
+    # operaciones en USD?"): si algún broker ARS trae filas en USD/USDT o
+    # conversiones FX, esas filas se separan a un sub-broker "<Padre> · USD". La
+    # moneda de cada fila es inequívoca (la trae el parser), así que el ruteo se
+    # decide solo — vale tanto para single-broker (Cocos) como multi-broker. Se
+    # decide ANTES de validar para que validate omita los chequeos de
+    # broker-currency de las FX (el persister las rerutea al broker correcto).
+    if not route_by_currency:
+        for tx in normalized:
+            bc = (user_brokers.get(tx.broker) or {}).get("currency")
+            if bc != "ARS":
+                continue
+            if (tx.currency or "").upper() in ("USD", "USDT") or \
+                    tx.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS"):
+                route_by_currency = True
+                break
 
     # Validar (necesita estado del usuario, ya con los brokers nuevos)
     existing_pos = fetch_existing_positions(conn, uid)
@@ -420,28 +454,12 @@ def run_preview(
         else:
             main_broker = "?"
 
-    # En modo "varios brokers" (broker_hint=None y >1 broker distinto en las txs),
-    # encendemos route_by_currency automáticamente si hay algún broker ARS con
-    # filas USD. El usuario no necesita un toggle — la moneda por fila es
-    # inequívoca en este modo.
+    # Flag informativo para el frontend (modo "varios brokers"). El auto-ruteo
+    # por moneda ya se decidió arriba, antes de validar — vale para single y
+    # multi-broker por igual.
     is_multi_broker = (broker_hint is None) and (
         len({t.broker for t in valid_txs}) > 1
     )
-    if is_multi_broker and not route_by_currency:
-        # Buscar si algún broker ARS tiene filas USD
-        broker_currencies = dict(
-            (r["name"], r["currency"])
-            for r in conn.execute("SELECT name, currency FROM brokers WHERE user_id=?", (uid,))
-        )
-        for tx in valid_txs:
-            if (broker_currencies.get(tx.broker) == "ARS"
-                    and (tx.currency or "").upper() in ("USD", "USDT")):
-                route_by_currency = True
-                break
-            if tx.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS") \
-                    and broker_currencies.get(tx.broker) == "ARS":
-                route_by_currency = True
-                break
 
     conn.execute(
         """INSERT INTO import_batches

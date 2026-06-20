@@ -1404,6 +1404,49 @@ class CurrencyRoutingTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_cocos_fresh_import_infers_ars_not_usd_majority(self):
+        # Regresión: un export de Cocos con MAYORÍA de filas USD (compras dólar-MEP)
+        # NO debe inferir el broker como USD. La plataforma es ARS; el cash en
+        # pesos (depósitos) tiene que quedar en el bucket ARS, y las filas USD se
+        # rutean solas a un sub-broker "· USD" (sin que el usuario tilde nada).
+        # Antes del fix, la inferencia por mayoría dejaba "Cocos" en USD y metía
+        # los pesos del depósito como si fueran dólares.
+        conn = main.get_db()
+        try:
+            # 1 fila ARS (depósito 50.000) + 2 filas USD (compras MEP) → mayoría USD.
+            csv = (
+                "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+                "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;total\n"
+                "1;1;01-06-2026;01-06-2026;Recibo De Cobro;;ARS;;;;50.000;0;0;0;0;50.000\n"
+                "2;2;02-06-2026;02-06-2026;Compra Dolar Mep;CEDEAR MERCADOLIBRE INC. (MELI);"
+                "USD;BYMA;10;14,06;-140,6;0;0;0;0;-140,6\n"
+                "3;3;03-06-2026;03-06-2026;Compra Dolar Mep;CEDEAR NVIDIA CORPORATION (NVDA);"
+                "USD;BYMA;5;9,85;-49,25;0;0;0;0;-49,25\n"
+            ).encode("utf-8")
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="cocos.csv",
+                    broker_hint="Cocos", parser_format="cocos",
+                    route_by_currency=False,        # el usuario NO tilda nada
+                )
+            # Broker auto-creado como ARS (no USD por mayoría)
+            new = {b["name"]: b for b in payload["new_brokers_created"]}
+            self.assertIn("Cocos", new)
+            self.assertEqual(new["Cocos"]["currency"], "ARS",
+                             "Cocos debe inferirse ARS por plataforma, no USD por mayoría de filas")
+            # Ruteo por moneda auto-activado (hay filas USD en un broker ARS)
+            self.assertTrue(payload["route_by_currency"],
+                            "El ruteo por moneda debió activarse solo")
+            # El cash en pesos del depósito queda en el bucket ARS, NO en USD
+            cash = {(c["broker"], c["currency"]): c["balance"] for c in payload["projected_cash"]}
+            self.assertAlmostEqual(cash.get(("Cocos", "ARS"), 0), 50000, places=0)
+            self.assertNotIn(("Cocos", "USD"), cash,
+                             "No debe existir cash USD en el broker padre ARS")
+            # Sub-broker USD existe para las compras MEP
+            self.assertIn(("Cocos · USD", "USDT"), cash)
+        finally:
+            conn.close()
+
     def test_fx_usd_to_ars_routes_from_sibling(self):
         # FX_USD_TO_ARS debe partir del sibling USD aunque la fila diga currency=ARS.
         # Setup: pre-crear cash USD en el sibling para que la conversión tenga fondos.

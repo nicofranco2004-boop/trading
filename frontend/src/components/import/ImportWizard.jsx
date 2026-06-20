@@ -167,9 +167,6 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   // 'general' = el archivo mezcla varios brokers (mapeo desde columna).
   const [importMode, setImportMode] = useState('single')
   const [singleBroker, setSingleBroker] = useState('')
-  // Cuando el broker single es ARS, el usuario indica si el archivo además
-  // tiene operaciones en USD. Si sí, las ruteamos al sub-broker USD.
-  const [hasUsdOps, setHasUsdOps] = useState(false)
   const [preview, setPreview] = useState(initialPreview)
   const [confirmResult, setConfirmResult] = useState(null)
   // Set de row_index que el usuario marcó como "omitir en este confirm"
@@ -191,13 +188,13 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     api.get('/imports/mappings').then(setSavedTemplates).catch(() => setSavedTemplates([]))
   }, [])
 
-  // Nota: anteriormente forzábamos hasUsdOps=true para Cocos, pero rompe
-  // SELLs que mezclan lots ARS+USD del mismo CEDEAR (el CEDEAR es fungible
-  // pero el routing separa los lots en dos sub-brokers, y un Venta de 35
-  // TSLA en ARS no podía consumir los 21 lots USD del sibling). El P&L
-  // cross-currency ya se maneja correctamente en el persister via la
-  // columna positions.currency, así que no hace falta routing forzado.
-  // El user puede activarlo manualmente si prefiere ver el cash separado.
+  // Ruteo por moneda: lo decide el BACKEND solo. Si un broker ARS trae filas
+  // en USD (compras dólar-MEP, depósitos USD, etc.), el pipeline las separa a
+  // un sub-broker "<Padre> · USD". La moneda de cada fila es inequívoca (la
+  // trae el parser), así que ya no le preguntamos al usuario — antes el toggle
+  // manual hacía que el cash en pesos cayera en un bucket USD si elegía mal.
+  // Caveat aceptado: si comprás el MISMO CEDEAR en ARS y en USD y después lo
+  // vendés, la posición queda partida entre el padre y el sibling (raro).
 
   async function saveTemplate(name) {
     if (!name?.trim()) return
@@ -237,7 +234,6 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     setPlatform('generic')
     setFormat('rendi_generic')
     setImportMode('single')
-    setHasUsdOps(false)
     setFiles([])
     setInspect(null)
     setMapping({ columns: {}, defaults: {} })
@@ -275,7 +271,6 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     setPlatform(group.platform)
     const supported = (group.exports || []).find(e => e.supported) || group.exports?.[0]
     if (supported) setFormat(supported.id)
-    setHasUsdOps(false)
   }
 
   // Rama "archivo propio" (Paso 0): parser genérico + mapeo manual. Resetea
@@ -285,7 +280,6 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     setPlatform('generic')
     setFormat('rendi_generic')
     setImportMode('single')
-    setHasUsdOps(false)
   }
 
   function toggleSkipRow(rowIndex) {
@@ -341,9 +335,10 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     ? (PLATFORM_BASE_CURRENCY[platform] || null)
     : (personalCurrency || singleBrokerObj?.currency || null)
   const isArsContext = effectiveCurrency === 'ARS'
-  // El ruteo USD→sub-broker solo aplica cuando el broker base es ARS y el
-  // usuario marcó que el archivo además tiene operaciones en USD.
-  const useCurrencyRouting = isArsContext && hasUsdOps
+  // El ruteo USD→sub-broker lo decide el backend (auto-detección por moneda de
+  // cada fila). Acá solo reflejamos su decisión para los chips/resúmenes del
+  // wizard, una vez que el preview volvió.
+  const useCurrencyRouting = !!preview?.route_by_currency
 
   // Parsers específicos (Binance, Cocos, etc.) ya saben qué significa cada
   // columna del archivo del broker — no hace falta que el usuario mapee.
@@ -374,7 +369,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
         if (importMode === 'single' && singleBroker) {
           fd.append('broker', singleBroker)
         }
-        if (useCurrencyRouting) fd.append('route_by_currency', '1')
+        // route_by_currency lo decide el backend solo (auto-detección por moneda).
         const data = await api.upload('/imports/preview', fd)
         setPreview(data)
         setStep(STEP_PREVIEW)
@@ -418,7 +413,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
       files.forEach(f => fd.append('files', f))
       fd.append('format', 'rendi_generic')
       fd.append('mapping', JSON.stringify(mapping))
-      if (useCurrencyRouting) fd.append('route_by_currency', '1')
+      // route_by_currency lo decide el backend solo (auto-detección por moneda).
       const data = await api.upload('/imports/preview', fd)
       setPreview(data)
       setStep(STEP_PREVIEW)
@@ -560,7 +555,6 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               onCreateBroker={createBrokerInline}
               effectiveCurrency={effectiveCurrency}
               isArsContext={isArsContext}
-              hasUsdOps={hasUsdOps} setHasUsdOps={setHasUsdOps}
             />
           )}
 
@@ -577,7 +571,6 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               singleBroker={singleBroker}
               effectiveCurrency={effectiveCurrency}
               isArsContext={isArsContext}
-              hasUsdOps={hasUsdOps}
               useCurrencyRouting={useCurrencyRouting}
               onBack={() => setStep(STEP_INTRO)}
             />
@@ -821,47 +814,6 @@ function Stepper({ step, skipMap, hasSeed }) {
 }
 
 
-// Pregunta reutilizable: ¿el archivo además tiene operaciones en USD? Solo
-// aparece cuando el broker base es ARS — sí ⇒ se crea un sub-broker USD y se
-// rutea cada fila por moneda.
-function UsdOpsQuestion({ hasUsdOps, setHasUsdOps, brokerLabel }) {
-  return (
-    <div className="px-3 py-3 rounded-md border border-line bg-bg-2 dark:bg-bg-1/40">
-      <div className="text-xs text-ink-1 mb-2 font-medium">
-        ¿Este archivo además tiene operaciones en dólares?
-      </div>
-      <div className="flex gap-2 mb-2">
-        <button
-          type="button"
-          onClick={() => setHasUsdOps(true)}
-          className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
-            hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
-                      : 'border-line text-ink-2 hover:border-line'
-          }`}
-        >
-          Sí, hay operaciones en USD
-        </button>
-        <button
-          type="button"
-          onClick={() => setHasUsdOps(false)}
-          className={`flex-1 text-sm px-3 py-1.5 rounded-md border transition ${
-            !hasUsdOps ? 'border-rendi-accent bg-rendi-accent/10 text-ink-0 font-medium'
-                       : 'border-line text-ink-2 hover:border-line'
-          }`}
-        >
-          No, todo es en pesos
-        </button>
-      </div>
-      <p className="text-xs text-ink-3">
-        {hasUsdOps
-          ? `Vamos a crear un sub-broker USD${brokerLabel ? ` asociado a ${brokerLabel}` : ''} y rutear cada fila según su moneda: las ARS al broker en pesos, las USD al sub-broker.`
-          : 'Todas las filas se importan al broker en pesos.'}
-      </p>
-    </div>
-  )
-}
-
-
 // ─── Paso 0 — IntroStep ──────────────────────────────────────────────────────
 // Dos preguntas antes de subir nada:
 //   1. ¿El archivo es de un broker o es propio?
@@ -874,7 +826,7 @@ function UsdOpsQuestion({ hasUsdOps, setHasUsdOps, brokerLabel }) {
 function IntroStep({ parserGroups, sourceType, setSourceType, platform,
                      onChooseBroker, onChoosePersonal, personalCurrency, setPersonalCurrency,
                      importMode, setImportMode, brokers, singleBroker, setSingleBroker,
-                     onCreateBroker, isArsContext, hasUsdOps, setHasUsdOps }) {
+                     onCreateBroker, isArsContext }) {
   // Brokers soportados para la rama "de un broker": del registry, excluyendo el
   // genérico y las plataformas bloqueadas (Balanz/IOL → "no encuentro mi broker").
   const supportedBrokers = (parserGroups || []).filter(g =>
@@ -955,11 +907,6 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
           {/* Cómo descargar el CSV del broker elegido */}
           {platform && platform !== 'generic' && (
             <BrokerInstructions lockBrokerId={platform} />
-          )}
-
-          {/* Sub-broker USD para brokers en pesos */}
-          {isArsContext && (
-            <UsdOpsQuestion hasUsdOps={hasUsdOps} setHasUsdOps={setHasUsdOps} brokerLabel={brokerLabel} />
           )}
         </div>
       )}
@@ -1050,11 +997,6 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
             </div>
           )}
 
-          {/* Sub-broker USD para archivos propios en pesos */}
-          {personalCurrency && isArsContext && importMode !== 'general' && (
-            <UsdOpsQuestion hasUsdOps={hasUsdOps} setHasUsdOps={setHasUsdOps} brokerLabel={singleBroker} />
-          )}
-
           {/* Avanzado: mezcla de brokers */}
           {personalCurrency && (
             <button
@@ -1085,7 +1027,7 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
 // (rama propia), y el dropzone de archivos.
 function UploadStep({ sourceType, platform, format, parserGroups = [], files, setFiles,
                       downloadTemplate, inputRef, importMode, singleBroker,
-                      effectiveCurrency, isArsContext, hasUsdOps, useCurrencyRouting, onBack }) {
+                      effectiveCurrency, isArsContext, useCurrencyRouting, onBack }) {
   const [fileError, setFileError] = useState(null)
   const isSpecific = sourceType === 'broker' && format && format !== 'rendi_generic'
   const brokerLabel = (parserGroups || []).find(g => g.platform === platform)?.platform_label || platform
