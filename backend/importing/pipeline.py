@@ -245,6 +245,15 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
     return (combined_text.encode("utf-8"), combined_name, None)
 
 
+def _snap_cash(x, eps: float = 1.0) -> float:
+    """Redondea a 2 decimales y aplasta a 0 el ruido sub-unitario. Un export
+    puede netear el cash de un sub-broker a -0,11 (residuo de comisiones/
+    redondeo): no es plata real ni un overdraft, así que lo mostramos como 0.
+    Saldos reales (≥ 1 unidad, positivos o negativos) se mantienen."""
+    r = round(float(x), 2)
+    return 0.0 if abs(r) < eps else r
+
+
 def run_preview(
     conn,
     *,
@@ -595,7 +604,7 @@ def run_preview(
             {
                 "broker": broker,
                 "currency": currency,
-                "balance": round(balance, 2),
+                "balance": _snap_cash(balance),
             }
             for (broker, currency), balance in sorted(sim.final_balances.items())
         ]
@@ -645,7 +654,7 @@ def run_preview(
     # sim.final − starting_cash = Σ(deltas del CSV). Sin esto, en re-imports /
     # "Editar y rehacer" (broker con cash previo) el back-cálculo daba mal.
     standalone_final = (
-        {k: float(v) - float(starting_cash.get(k, 0.0)) for k, v in sim.final_balances.items()}
+        {k: _snap_cash(float(v) - float(starting_cash.get(k, 0.0))) for k, v in sim.final_balances.items()}
         if valid_txs else {}
     )
     seed_suggestions = _seed.build_suggestions(

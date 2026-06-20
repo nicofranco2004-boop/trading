@@ -1728,6 +1728,14 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
 }
 
 
+// En los sub-brokers AR "<Padre> · USD" el dólar es REAL, no la stablecoin USDT
+// (el modelo usa USDT como bucket interno, pero el usuario tiene dólares). Para
+// mostrar, lo etiquetamos "USD". Crypto-nativos (Binance, etc.) siguen "USDT".
+function displayCur(cur, brokerName) {
+  if (cur === 'USDT' && /\bUSD$/.test(brokerName || '')) return 'USD'
+  return cur
+}
+
 function SeedStep({ suggestions, seedState, setSeedState }) {
   const brokers = seedState?.brokers || []
 
@@ -1780,7 +1788,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                 <span className="font-semibold text-ink-0 text-sm">{b.broker}</span>
                 {b.broker_currency && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-2 dark:bg-bg-2 text-ink-1 uppercase">
-                    {b.broker_currency}
+                    {displayCur(b.broker_currency, b.broker)}
                   </span>
                 )}
               </div>
@@ -1793,6 +1801,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {Array.from(cashCurrencies).map(cur => {
+                    const curLabel = displayCur(cur, b.broker)  // "USDT"→"USD" en sub-brokers AR
                     const F = b.final_balance?.[cur]          // saldo que da el CSV (puede ser <0)
                     const hasF = F != null
                     const current = b.cash?.[cur] ?? ''       // saldo de HOY que pone el user
@@ -1801,12 +1810,12 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                     return (
                       <div key={cur} className="block">
                         <div className="mb-2 flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold text-ink-0 text-sm">{cur}</span>
+                          <span className="font-semibold text-ink-0 text-sm">{curLabel}</span>
                           {hasF && (
                             <span className="inline-flex items-baseline gap-1.5 px-2.5 py-1 rounded-md bg-rendi-accent/12 border border-rendi-accent/40">
                               <span className="text-[9px] uppercase tracking-wider text-rendi-accent/90 font-bold">según tu CSV</span>
                               <span className="text-base font-bold text-rendi-accent tabular leading-none">
-                                {F.toLocaleString('es-AR', { maximumFractionDigits: 2 })} {cur}
+                                {F.toLocaleString('es-AR', { maximumFractionDigits: 2 })} {curLabel}
                               </span>
                               {F < 0 && (
                                 <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium"> · negativo, falta plata previa</span>
@@ -1816,7 +1825,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                         </div>
                         {hasF && (
                           <div className="text-[11px] text-ink-3 mb-1.5 -mt-1">
-                            Revisá que coincida con el cash {cur} real de tu broker — si no, corregilo abajo.
+                            Revisá que coincida con el cash {curLabel} real de tu broker — si no, corregilo abajo.
                           </div>
                         )}
                         {hasF && F >= 0 && (
@@ -1839,7 +1848,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           min="0"
                           value={current}
                           onChange={e => setCash(bi, cur, e.target.value)}
-                          placeholder={`¿Cuánto ${cur} tenés hoy?`}
+                          placeholder={`¿Cuánto ${curLabel} tenés hoy?`}
                           className="w-full bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0"
                         />
                       </div>

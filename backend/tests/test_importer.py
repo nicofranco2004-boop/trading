@@ -1512,6 +1512,17 @@ class CurrencyRoutingTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_snap_cash_noise_to_zero(self):
+        # El cash de un sub-broker puede netear a un residuo sub-unitario por
+        # redondeo/comisiones (ej. -0,11 USD). No es plata real ni overdraft:
+        # debe mostrarse como 0. Los saldos reales (≥1) se mantienen.
+        from importing.pipeline import _snap_cash
+        self.assertEqual(_snap_cash(-0.11), 0.0)
+        self.assertEqual(_snap_cash(0.4), 0.0)
+        self.assertEqual(_snap_cash(-0.99), 0.0)
+        self.assertEqual(_snap_cash(31270.11), 31270.11)   # saldo real intacto
+        self.assertEqual(_snap_cash(-50.0), -50.0)         # overdraft real intacto
+
     def test_fx_usd_to_ars_routes_from_sibling(self):
         # FX_USD_TO_ARS debe partir del sibling USD aunque la fila diga currency=ARS.
         # Setup: pre-crear cash USD en el sibling para que la conversión tenga fondos.
