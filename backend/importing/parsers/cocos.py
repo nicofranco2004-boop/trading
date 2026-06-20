@@ -11,20 +11,25 @@ Estructura del CSV (semicolon-separated, decimal con coma, miles con punto):
     instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;
     otros;total
 
-Tipos de operación mapeados al modelo Rendi:
+Tipos de operación mapeados al modelo Rendi (ver _resolve_op: exacto + patrón):
 
     Cocos                              → Rendi    Notas
     ─────────────────────────────────────────────────────────────────────
     Compra / Compra Trading            → COMPRA    Equity buy
     Venta / Venta Trading              → VENTA     Equity sell
-    Compra Dolar Mep                   → COMPRA    Forzamos moneda=USD
-    Venta Dolar Mep                    → VENTA     Forzamos moneda=USD
-    Liquidacion Suscripcion Fci        → COMPRA    Ticker = COCORMA
-    Liquidacion Rescate Fci            → VENTA     Ticker = COCORMA
-    Recibo De Cobro                    → DEPOSITO  Cash in
+    Compra / Venta Dolar Mep           → COMPRA/VENTA   Forzamos moneda=USD
+    Compra / Venta Registracion        → COMPRA/VENTA   Bono dólar-MEP (compra
+                                         ARS + venta USD del mismo bono → neto 0,
+                                         es conversión de moneda). Moneda por fila.
+    (Liq/Liquidacion) Suscripcion Fci  → COMPRA    Ticker del instrumento (FCI)
+    (Liq/Liquidacion) Rescate Fci      → VENTA     Ticker del instrumento (FCI)
+    Recibo De Cobro [Dolares]          → DEPOSITO  Cash in (ARS o USD por columna)
     Orden De Pago                      → RETIRO    Cash out
     Dividendos                         → DIVIDENDO Sin asset (el CSV no lo dice)
     Nota De Credito Conversion         → DEPOSITO  Ajuste/conversión
+
+    El match es por patrón, así que las variantes de Cocos (sufijos "Dolares"/
+    "Usd", abreviatura "Liq", etc.) se reconocen sin tener que enumerarlas todas.
 
 Tipos que skipeamos silenciosamente (no aportan cash al portfolio):
     DIVIDENDOS EN ESPECIE — el USD real entra después como "Nota De Credito
@@ -71,6 +76,37 @@ _OP_MAP = {
 
 # Tipos reconocidos pero que skipeamos (evitar doble conteo / ruido).
 _OP_SKIP = {"dividendos en especie"}
+
+
+def _resolve_op(tipo: str) -> Optional[str]:
+    """tipoOperacion (lowercase, stripped) → tipo canónico de Rendi, o None si no
+    se reconoce.
+
+    Primero intenta el match EXACTO (_OP_MAP, explícito y rápido) y, si no, cae a
+    PATRONES. Cocos usa variantes del mismo tipo que rompían el match exacto:
+    sufijos de moneda ("Recibo De Cobro Dolares", "Liq Suscripcion Fci Usd"),
+    abreviaturas ("Liq" vs "Liquidacion") y la maniobra dólar-MEP con bonos
+    ("Compra/Venta Registracion"). El patrón cubre las que vengan en el futuro.
+    """
+    if tipo in _OP_MAP:
+        return _OP_MAP[tipo]
+    if tipo.startswith("recibo de cobro"):    # incluye "...dolares"
+        return "DEPOSITO"
+    if tipo.startswith("orden de pago"):
+        return "RETIRO"
+    if "suscripcion fci" in tipo:             # liq/liquidacion suscripcion fci [usd]
+        return "COMPRA"
+    if "rescate fci" in tipo:                 # liq/liquidacion rescate fci [usd]
+        return "VENTA"
+    if "registracion" in tipo:                # bono dólar-MEP (compra ARS / venta USD)
+        return "VENTA" if tipo.startswith("venta") else "COMPRA"
+    if tipo.startswith("compra"):             # compra dolar mep / trading / etc.
+        return "COMPRA"
+    if tipo.startswith("venta"):
+        return "VENTA"
+    if "dividendo" in tipo:
+        return "DIVIDENDO"
+    return None
 
 # Ticker entre paréntesis al final de instrumento: 'CEDEAR TESLA, INC. (TSLA)' → 'TSLA'
 _TICKER_RX = re.compile(r'\(([A-Z0-9.]+)\)\s*$')
@@ -244,15 +280,14 @@ class CocosParser(Parser):
             if tipo_raw in _OP_SKIP:
                 continue  # skip silencioso (ej: DIVIDENDOS EN ESPECIE)
 
-            if tipo_raw not in _OP_MAP:
+            tipo_rendi = _resolve_op(tipo_raw)
+            if tipo_rendi is None:
                 # Tipo desconocido — lo reportamos pero seguimos con las demás.
                 result.parse_errors.append(RowError(
                     idx, "tipoOperacion", "COCOS_OP_UNKNOWN",
                     f"Tipo de operación no soportado: '{G(row, 'tipooperacion')}'.",
                 ))
                 continue
-
-            tipo_rendi = _OP_MAP[tipo_raw]
             fecha = _parse_date_ddmmyyyy(G(row, "fechaejecucion"))
             instrumento = G(row, "instrumento")
             moneda_raw = G(row, "moneda").upper()
@@ -268,13 +303,9 @@ class CocosParser(Parser):
 
             # Asset (ticker)
             ticker = _extract_ticker(instrumento)
-            if tipo_raw in (
-                "dividendos",
-                "recibo de cobro",
-                "orden de pago",
-                "nota de credito conversion",
-            ):
-                # Cash flows / dividendos sin asset asociado
+            if tipo_rendi in ("DEPOSITO", "RETIRO", "DIVIDENDO"):
+                # Cash flows / dividendos sin asset asociado (incluye variantes
+                # como "Recibo De Cobro Dolares", que vienen sin instrumento).
                 ticker = None
 
             # Monto y campos numéricos
