@@ -319,6 +319,43 @@ def run_preview(
         if key in canonical_by_norm:
             tx.broker = canonical_by_norm[key]
 
+    # Moneda base CONOCIDA por parser: la plataforma define la moneda del broker.
+    # Cocos/IOL/Balanz/Bullmarket → ARS; Binance → USDT; Schwab/IBKR → USD. Gana
+    # sobre cualquier inferencia por mayoría de filas (un export de Cocos trae más
+    # filas USD por las compras dólar-MEP, pero el broker es ARS). Solo aplica a
+    # parsers específicos; el genérico ('rendi_generic') no está y sigue por fila.
+    FORMAT_BASE_CURRENCY = {
+        'cocos': 'ARS', 'bullmarket': 'ARS', 'balanz': 'ARS', 'iol': 'ARS',
+        'binance': 'USDT', 'schwab': 'USD', 'ibkr': 'USD',
+    }
+    fmt_base = FORMAT_BASE_CURRENCY.get(parser.format_id)
+
+    # Auto-heal: si el broker destino YA existe con una moneda distinta a la base
+    # de la plataforma (típico: lo creó un preview viejo con el bug de inferencia,
+    # ej. "Cocos" quedó en USD) y está VACÍO (sin posiciones), le corregimos la
+    # moneda. Así un re-import no queda pegado a un broker mal etiquetado. Si ya
+    # tuviera posiciones cargadas, NO lo tocamos — el usuario debe revertir ese
+    # import primero (cambiar la moneda reinterpretaría su data).
+    if fmt_base:
+        healed_targets = set()
+        for tx in normalized:
+            name = tx.broker
+            if not name or name in healed_targets:
+                continue
+            healed_targets.add(name)
+            info = user_brokers.get(name)
+            if not info or info.get("currency") == fmt_base:
+                continue
+            has_data = conn.execute(
+                "SELECT 1 FROM positions WHERE user_id=? AND broker=? LIMIT 1",
+                (uid, name),
+            ).fetchone()
+            if has_data:
+                continue
+            conn.execute("UPDATE brokers SET currency=? WHERE user_id=? AND name=?",
+                         (fmt_base, uid, name))
+            info["currency"] = fmt_base
+
     # Auto-crear brokers que aparecen en el CSV pero no existen para este
     # usuario. Inferimos la moneda por mayoría de filas: USD/USDT → USDT,
     # ARS (o empate) → ARS. Si dos filas tienen el mismo broker con casing
@@ -346,18 +383,6 @@ def run_preview(
         'okx', 'huobi', 'gemini', 'crypto.com', 'lemon', 'ripio', 'buenbit',
         'satoshitango', 'fiwind',
     })
-    # Plataformas con moneda base CONOCIDA por su parser. La moneda del broker
-    # sale de la plataforma, NO de la mayoría de filas: un export de Cocos puede
-    # traer más filas USD (compras dólar-MEP) que ARS, pero el broker es ARS y el
-    # cash en pesos no debe terminar en un bucket USD. Las filas USD se separan
-    # después a un sub-broker "· USD" vía route_by_currency. Solo aplica a parsers
-    # específicos; el genérico multi-broker (format_id='rendi_generic') no está en
-    # el mapa y sigue infiriendo por fila.
-    FORMAT_BASE_CURRENCY = {
-        'cocos': 'ARS', 'bullmarket': 'ARS', 'balanz': 'ARS', 'iol': 'ARS',
-        'binance': 'USDT', 'schwab': 'USD', 'ibkr': 'USD',
-    }
-    fmt_base = FORMAT_BASE_CURRENCY.get(parser.format_id)
     for key, info in pending.items():
         rows_for_broker = info["rows"]
         broker_name = info["first_name"]

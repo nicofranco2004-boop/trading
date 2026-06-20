@@ -1447,6 +1447,71 @@ class CurrencyRoutingTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_cocos_reimport_heals_existing_usd_broker(self):
+        # Regresión: si un broker "Cocos" ya quedó mal en USD (lo creó un preview
+        # viejo con el bug) y está VACÍO, un re-import de Cocos debe corregirlo a
+        # ARS (auto-heal). Sin esto, el re-import quedaba pegado al USD y el cash
+        # en pesos seguía mostrándose como dólares.
+        conn = main.get_db()
+        try:
+            _add_broker(conn, self.uid, "Cocos", "USD")  # broker vacío mal etiquetado
+            conn.commit()
+            csv = (
+                "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+                "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;total\n"
+                "1;1;01-06-2026;01-06-2026;Recibo De Cobro;;ARS;;;;50.000;0;0;0;0;50.000\n"
+                "2;2;02-06-2026;02-06-2026;Compra Dolar Mep;CEDEAR MERCADOLIBRE INC. (MELI);"
+                "USD;BYMA;10;14,06;-140,6;0;0;0;0;-140,6\n"
+                "3;3;03-06-2026;03-06-2026;Compra Dolar Mep;CEDEAR NVIDIA CORPORATION (NVDA);"
+                "USD;BYMA;5;9,85;-49,25;0;0;0;0;-49,25\n"
+            ).encode("utf-8")
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="cocos.csv",
+                    broker_hint="Cocos", parser_format="cocos", route_by_currency=False,
+                )
+            # El broker existente se corrigió a ARS
+            cocos = conn.execute(
+                "SELECT currency FROM brokers WHERE user_id=? AND name='Cocos'", (self.uid,),
+            ).fetchone()
+            self.assertEqual(cocos["currency"], "ARS", "El Cocos vacío en USD debió sanarse a ARS")
+            self.assertTrue(payload["route_by_currency"])
+            cash = {(c["broker"], c["currency"]): c["balance"] for c in payload["projected_cash"]}
+            self.assertAlmostEqual(cash.get(("Cocos", "ARS"), 0), 50000, places=0)
+            self.assertNotIn(("Cocos", "USD"), cash)
+        finally:
+            conn.close()
+
+    def test_cocos_reimport_does_not_touch_broker_with_positions(self):
+        # Si el broker "Cocos" USD ya tiene posiciones cargadas, NO lo tocamos:
+        # cambiar la moneda reinterpretaría su data. El usuario debe revertir
+        # ese import primero.
+        conn = main.get_db()
+        try:
+            _add_broker(conn, self.uid, "Cocos", "USD")
+            conn.execute(
+                """INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested)
+                   VALUES (?,?,?,0,?,?)""",
+                (self.uid, "Cocos", "AAPL", 10, 1000),
+            )
+            conn.commit()
+            csv = (
+                "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+                "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;total\n"
+                "1;1;01-06-2026;01-06-2026;Recibo De Cobro;;ARS;;;;50.000;0;0;0;0;50.000\n"
+            ).encode("utf-8")
+            with conn:
+                pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="cocos.csv",
+                    broker_hint="Cocos", parser_format="cocos", route_by_currency=False,
+                )
+            cocos = conn.execute(
+                "SELECT currency FROM brokers WHERE user_id=? AND name='Cocos'", (self.uid,),
+            ).fetchone()
+            self.assertEqual(cocos["currency"], "USD", "Un broker con posiciones no debe auto-sanarse")
+        finally:
+            conn.close()
+
     def test_fx_usd_to_ars_routes_from_sibling(self):
         # FX_USD_TO_ARS debe partir del sibling USD aunque la fila diga currency=ARS.
         # Setup: pre-crear cash USD en el sibling para que la conversión tenga fondos.
