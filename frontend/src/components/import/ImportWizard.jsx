@@ -1858,17 +1858,25 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                       Math.abs(Number(current) - F) < 0.01
                     return (
                       <div key={cur} className="block">
-                        <div className="text-xs mb-1 flex items-center gap-1.5 flex-wrap">
-                          <span className="font-medium text-ink-1">{cur}</span>
+                        <div className="mb-2 flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-ink-0 text-sm">{cur}</span>
                           {hasF && (
-                            <span className="text-[10px] text-ink-3">
-                              · según tu CSV: <span className="tabular">{F.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</span>
+                            <span className="inline-flex items-baseline gap-1.5 px-2.5 py-1 rounded-md bg-rendi-accent/12 border border-rendi-accent/40">
+                              <span className="text-[9px] uppercase tracking-wider text-rendi-accent/90 font-bold">según tu CSV</span>
+                              <span className="text-base font-bold text-rendi-accent tabular leading-none">
+                                {F.toLocaleString('es-AR', { maximumFractionDigits: 2 })} {cur}
+                              </span>
                               {F < 0 && (
-                                <span className="text-amber-600 dark:text-amber-400"> (negativo → falta plata previa)</span>
+                                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium"> · negativo, falta plata previa</span>
                               )}
                             </span>
                           )}
                         </div>
+                        {hasF && (
+                          <div className="text-[11px] text-ink-3 mb-1.5 -mt-1">
+                            Revisá que coincida con el cash {cur} real de tu broker — si no, corregilo abajo.
+                          </div>
+                        )}
                         {hasF && F >= 0 && (
                           <button
                             type="button"
