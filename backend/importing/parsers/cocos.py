@@ -307,6 +307,12 @@ class CocosParser(Parser):
                 # Cash flows / dividendos sin asset asociado (incluye variantes
                 # como "Recibo De Cobro Dolares", que vienen sin instrumento).
                 ticker = None
+            # asset_type hint: los CEDEARs de BYMA cotizan en pesos y se valúan por
+            # su precio LOCAL (.BA), NO por la acción US del mismo ticker (el CEDEAR
+            # de MELI ≈ US$14; la acción ≈ US$2.400). Cocos lo dice explícito en el
+            # instrumento ("CEDEAR …"). Sin este hint la posición quedaría OTHER y se
+            # valuaría como acción US → precio inflado.
+            asset_type = "CEDEAR" if instrumento.strip().upper().startswith("CEDEAR") else ""
 
             # Monto y campos numéricos
             if tipo_rendi in ("COMPRA", "VENTA"):
@@ -359,6 +365,7 @@ class CocosParser(Parser):
                 "tc":         "",
                 "comisiones": fees,
                 "moneda":     moneda,
+                "asset_type": asset_type,  # "CEDEAR" → se valúa por .BA, no como acción US
                 "notas":      notas,
             }
             result.raw_rows.append(RawRow(row_index=idx, data=data))

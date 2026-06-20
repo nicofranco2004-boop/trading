@@ -86,7 +86,7 @@ export default function HomeMobile() {
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
     const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
     const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-    const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
+    const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => priceSymbol(p.asset, false, p.asset_type)))]
     const all = [...arsSyms, ...usdtSyms].join(',')
     if (!all) return
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }

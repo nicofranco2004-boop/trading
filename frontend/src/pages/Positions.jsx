@@ -399,10 +399,14 @@ function PositionsDesktop() {
     const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
 
     const arsSyms = [...new Set(
-      pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true))
+      pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type))
     )]
+    // En brokers USD, los CEDEARs (comprados por dólar-MEP) se piden por su símbolo
+    // BYMA (.BA) — NO como la acción US del mismo ticker. priceSymbol fuerza el .BA
+    // para asset_type === 'CEDEAR'; el resto (acciones US reales) se pide pelado.
     const usdtSyms = [...new Set(
-      pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset)
+      pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT')
+         .map(p => priceSymbol(p.asset, false, p.asset_type))
     )]
     const all = [...arsSyms, ...usdtSyms].join(',')
     if (!all) return

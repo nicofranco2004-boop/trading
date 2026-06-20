@@ -230,7 +230,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
       const usdtBrokers = new Set(bkrs.filter(x => x.currency !== 'ARS').map(x => x.name))
       const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-      const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
+      const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => priceSymbol(p.asset, false, p.asset_type)))]
       const all = [...arsSyms, ...usdtSyms].join(',')
       if (all) {
         try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch {}

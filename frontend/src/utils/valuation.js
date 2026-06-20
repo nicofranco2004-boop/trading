@@ -61,8 +61,13 @@
  * @param {boolean} isARS Si el broker es ARS
  * @returns {string}
  */
-export function priceSymbol(asset, isARS) {
+export function priceSymbol(asset, isARS, assetType) {
   if ((asset || '').startsWith('FCI:')) return asset
+  // CEDEARs son instrumentos de BYMA: se valúan por su precio LOCAL (.BA), nunca
+  // por la acción US del mismo ticker — aunque vivan en un broker USD (compra
+  // dólar-MEP). Sin esto, 'MELI' se preciaría como la acción (~US$2.400) en vez
+  // del CEDEAR (~US$14). Ver computeBrokerValue (rama USD) para la conversión.
+  if (assetType === 'CEDEAR' && !(asset || '').endsWith('.BA')) return `${asset}.BA`
   return isARS ? `${asset}.BA` : asset
 }
 
@@ -138,12 +143,24 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue) {
       } else {
         invested += realCost
 
-        const price = p.price_override ?? prices[p.asset]
-        if (price != null) {
-          value += price * (p.quantity || 0)
+        if (p.asset_type === 'CEDEAR' && p.price_override == null) {
+          // CEDEAR en broker USD (típico: compra dólar-MEP). Se valúa por su precio
+          // LOCAL de BYMA (.BA, en ARS) → USD via blue, NO por la acción US del mismo
+          // ticker (que vale 15-30× más). priceSymbol fuerza el sufijo .BA.
+          const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
+          if (priceArs != null) {
+            value += (priceArs * (p.quantity || 0)) / tcBlue
+          } else {
+            value += realCost
+          }
         } else {
-          // No price — show cost as value; P&L stays 0 for this position.
-          value += realCost
+          const price = p.price_override ?? prices[p.asset]
+          if (price != null) {
+            value += price * (p.quantity || 0)
+          } else {
+            // No price — show cost as value; P&L stays 0 for this position.
+            value += realCost
+          }
         }
       }
     }

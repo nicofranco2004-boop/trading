@@ -800,7 +800,7 @@ function collectPriceSymbols(positions, brokers) {
     positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true))
   )]
   const usdtSyms = [...new Set(
-    positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset)
+    positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => priceSymbol(p.asset, false, p.asset_type))
   )]
   return [...arsSyms, ...usdtSyms]
 }

@@ -64,7 +64,7 @@ export default function FirstInsight() {
       setDolar(dol)
       // Fetch precios de los assets
       const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
-      const usdSyms = [...new Set((pos || []).filter(p => !arsBrokers.has(p.broker) && !p.is_cash).map(p => p.asset))]
+      const usdSyms = [...new Set((pos || []).filter(p => !arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, false, p.asset_type)))]
       const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
       const all = [...usdSyms, ...arsSyms].join(',')
       if (all) {
