@@ -34,7 +34,7 @@ import PfFormModal from '../components/PfFormModal'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
@@ -335,7 +335,7 @@ export default function PositionsMobile() {
     const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
     const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
     const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-    const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => priceSymbol(p.asset, false, p.asset_type)))]
+    const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
     const all = [...arsSyms, ...usdtSyms].join(',')
     if (!all) return
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
@@ -441,10 +441,11 @@ export default function PositionsMobile() {
         priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceLocal) valueUsd = (priceLocal * qty) / tcBlue
         else valueUsd = invested / tcBlue
-      } else if (p.asset_type === 'CEDEAR' && p.price_override == null) {
-        // CEDEAR en broker USD: precio LOCAL .BA (ARS) → USD via CCL (dólar
-        // financiero), no la acción US del ticker. priceLocal queda en USD.
-        const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+        // Instrumento BYMA en broker USD (CEDEAR o acción AR como PAMP/YPFD en un
+        // sub-broker "· USD"): precio LOCAL .BA (ARS) → USD via MEP, no el ticker
+        // US. priceLocal queda en USD.
+        const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         priceLocal = priceArs != null ? priceArs / tcCedear : null
         valueUsd = priceLocal != null ? priceLocal * qty : invested
       } else {
@@ -464,7 +465,7 @@ export default function PositionsMobile() {
       // cierre de mercado → comparación inválida). Cash ya retornó arriba.
       let dayVarLocal = null, dayVarUsd = null, dayVarPct = null
       if (!p.price_override && priceLocal != null) {
-        const cedearUsd = !isAR && p.asset_type === 'CEDEAR'
+        const cedearUsd = !isAR && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker))
         const prevRaw = prevClose[(isAR || cedearUsd) ? priceSymbol(p.asset, true, p.asset_type) : p.asset]
         // priceLocal del CEDEAR-USD ya está en USD (÷CCL); el cierre previo viene
         // en ARS (.BA) → lo pasamos a USD con el mismo CCL para comparar igual.

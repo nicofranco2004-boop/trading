@@ -24,7 +24,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
 import { useCurrency } from '../contexts/CurrencyContext'
 import PageHeader from '../components/PageHeader'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
@@ -415,12 +415,14 @@ function PositionsDesktop() {
     const arsSyms = [...new Set(
       pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type))
     )]
-    // En brokers USD, los CEDEARs (comprados por dólar-MEP) se piden por su símbolo
-    // BYMA (.BA) — NO como la acción US del mismo ticker. priceSymbol fuerza el .BA
-    // para asset_type === 'CEDEAR'; el resto (acciones US reales) se pide pelado.
+    // En un sub-broker AR "· USD" todo es de BYMA (CEDEARs + acciones AR como
+    // PAMP/YPFD): se pide el símbolo local .BA. En un broker USD real (Schwab)
+    // se pide el ticker US pelado. priceSymbol(asset, true, …) fuerza el .BA.
     const usdtSyms = [...new Set(
       pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT')
-         .map(p => priceSymbol(p.asset, false, p.asset_type))
+         .map(p => isArUsdBroker(p.broker)
+           ? priceSymbol(p.asset, true, p.asset_type)
+           : priceSymbol(p.asset, false, p.asset_type))
     )]
     const all = [...arsSyms, ...usdtSyms].join(',')
     if (!all) return
@@ -799,11 +801,12 @@ function PositionsDesktop() {
   function calcUSDT(p) {
     if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null }
     let price
-    if (p.asset_type === 'CEDEAR' && p.price_override == null) {
-      // CEDEAR en broker USD (compra dólar-MEP): se valúa por su precio LOCAL de
-      // BYMA (.BA, en ARS) → USD via blue, NO por la acción US del mismo ticker
-      // (que vale 15-100× más). Sin esto MELI se preciaría a ~US$1.600 en vez de ~14.
-      const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
+    if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+      // Instrumento de BYMA en broker USD: CEDEAR o acción AR (PAMP/YPFD) en un
+      // sub-broker "· USD". Se valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por
+      // el ticker US (MELI se preciaría a ~US$1.600 en vez de ~14; PAMP/YPFD ni
+      // existen como acción US → quedaban en "—").
+      const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
       price = priceArs != null ? priceArs / tcCedear : null
     } else {
       price = p.price_override ?? prices[p.asset]
@@ -855,11 +858,11 @@ function PositionsDesktop() {
   // previo — y el monto se pasa a USD via blue. El % es invariante a la moneda.
   // Para el resto, usa el símbolo nativo del contexto (ARS → .BA, USD → ticker US).
   function dvFor(p, isARS) {
-    const cedearUsd = !isARS && p.asset_type === 'CEDEAR'
-    const symKey = cedearUsd ? priceSymbol(p.asset, true, 'CEDEAR') : priceSymbol(p.asset, isARS)
+    const local = !isARS && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker))
+    const symKey = local ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, isARS)
     const curPrice = p.price_override ?? prices[symKey]
     const dv = dayVarOf(p, symKey, curPrice)
-    if (dv && cedearUsd) return { amount: dv.amount / tcCedear, pct: dv.pct }
+    if (dv && local) return { amount: dv.amount / tcCedear, pct: dv.pct }
     return dv
   }
 

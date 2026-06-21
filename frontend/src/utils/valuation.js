@@ -96,8 +96,20 @@ export function fciLabel(asset) {
   return cls ? `${titled} · ${cls}` : titled
 }
 
+/**
+ * isArUsdBroker — ¿es un sub-broker USD de un broker AR (ej. "Cocos · USD")?
+ * Todo lo que vive ahí es un instrumento de BYMA (CEDEAR o acción argentina)
+ * comprado por dólar-MEP, así que se valúa por su precio LOCAL .BA ÷ MEP, NO por
+ * el ticker US (PAMP/YPFD no tienen acción US; un CEDEAR vale 15-100× menos que
+ * la acción). Convención de nombre del sibling: "<Padre> · USD" (· = U+00B7).
+ */
+export function isArUsdBroker(brokerName) {
+  return /·\s*USD$/.test(brokerName || '')
+}
+
 export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue) {
   const bpos = allPositions.filter(p => p.broker === broker.name)
+  const arUsd = isArUsdBroker(broker.name)
   let value = 0, invested = 0
   let valueArs = 0, invArs = 0
 
@@ -143,15 +155,13 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
       } else {
         invested += realCost
 
-        if (p.asset_type === 'CEDEAR' && p.price_override == null) {
-          // CEDEAR en broker USD (típico: compra dólar-MEP). Se valúa por su precio
-          // LOCAL de BYMA (.BA, en ARS) → USD, NO por la acción US del mismo ticker
-          // (que vale 15-100× más). priceSymbol fuerza el sufijo .BA.
-          // Dividimos por cedearRate = dólar-MEP (plata local del broker), NO por el
-          // blue: el CEDEAR se compró/vende vía MEP, y es el valor que muestra el
-          // broker (Cocos). El MEP suele dar ~2% más USD que el CCL y bastante más
-          // que el blue. cedearRate default = blue (sin regresión si no se pasa).
-          const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
+        if ((p.asset_type === 'CEDEAR' || arUsd) && p.price_override == null) {
+          // Instrumento de BYMA en broker USD: CEDEAR, o cualquier cosa en un
+          // sub-broker AR "· USD" (acciones argentinas como PAMP/YPFD incluidas,
+          // que NO tienen acción US). Se valúa por su precio LOCAL .BA (ARS) ÷ MEP
+          // (cedearRate = dólar-MEP, la plata local), que es lo que muestra el
+          // broker. NO por el ticker US. cedearRate default = blue (sin regresión).
+          const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
           if (priceArs != null) {
             value += (priceArs * (p.quantity || 0)) / cedearRate
           } else {

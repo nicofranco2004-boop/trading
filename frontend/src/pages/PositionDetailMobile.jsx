@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
 export default function PositionDetailMobile() {
@@ -54,7 +54,11 @@ export default function PositionDetailMobile() {
       setOperations((ops || []).filter(o => o.asset === p.asset && o.broker === p.broker))
       // Fetchar precio
       const isAR = (bkrs || []).find(b => b.name === p.broker)?.currency === 'ARS'
-      const sym = !p.is_cash ? priceSymbol(p.asset, isAR) : p.asset
+      // Instrumento BYMA (broker ARS, o sub-broker AR "· USD") → símbolo local .BA.
+      const useBA = isAR || isArUsdBroker(p.broker)
+      const sym = !p.is_cash
+        ? (useBA ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type))
+        : p.asset
       if (!p.is_cash) {
         try { setPrices(await api.get(`/prices?symbols=${sym}`)) } catch { /* silent */ }
       }
@@ -98,10 +102,11 @@ export default function PositionDetailMobile() {
     const investedUsd = invested / tcBlue
     pnlUsd = valueUsd - investedUsd
     pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
-  } else if (p.asset_type === 'CEDEAR' && p.price_override == null) {
-    // CEDEAR en broker USD: precio LOCAL .BA (ARS) → USD via CCL (dólar
-    // financiero), no la acción US del ticker (que vale 15-100× más).
-    const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
+  } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+    // Instrumento BYMA en broker USD (CEDEAR o acción AR en un sub-broker "· USD"):
+    // precio LOCAL .BA (ARS) → USD via MEP, no el ticker US (que vale 15-100× más,
+    // y las acciones AR ni existen como acción US → quedaban en "—").
+    const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
     priceLocal = priceArs != null ? priceArs / tcCedear : null
     valueUsd = priceLocal != null ? priceLocal * qty : invested
     pnlUsd = valueUsd - invested
