@@ -180,6 +180,9 @@ function PositionsDesktop() {
   // zone si JS evalúa el array de deps antes de la declaración de `const`.
   const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
   const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
+  // Dólar financiero para valuar CEDEARs (arbitran vía CCL). Cascada CCL → MEP →
+  // blue, igual criterio que el backend (_display_ccl). Evita el error del blue.
+  const tcCcl = dolar?.ccl?.venta || tcMep || tcBlue
 
   // Fase B: publicamos tcBlue al CurrencyContext (mismo pattern que las
   // otras pages que ya fetchean /dolar — Reports / charts lo leen sin re-fetch).
@@ -800,7 +803,7 @@ function PositionsDesktop() {
       // BYMA (.BA, en ARS) → USD via blue, NO por la acción US del mismo ticker
       // (que vale 15-100× más). Sin esto MELI se preciaría a ~US$1.600 en vez de ~14.
       const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
-      price = priceArs != null ? priceArs / tcBlue : null
+      price = priceArs != null ? priceArs / tcCcl : null
     } else {
       price = p.price_override ?? prices[p.asset]
     }
@@ -855,7 +858,7 @@ function PositionsDesktop() {
     const symKey = cedearUsd ? priceSymbol(p.asset, true, 'CEDEAR') : priceSymbol(p.asset, isARS)
     const curPrice = p.price_override ?? prices[symKey]
     const dv = dayVarOf(p, symKey, curPrice)
-    if (dv && cedearUsd) return { amount: dv.amount / tcBlue, pct: dv.pct }
+    if (dv && cedearUsd) return { amount: dv.amount / tcCcl, pct: dv.pct }
     return dv
   }
 
@@ -882,7 +885,7 @@ function PositionsDesktop() {
   const totals = useMemo(() => {
     let value = 0, invested = 0
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue)
+      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCcl)
       value += r.value || 0
       invested += r.invested || 0
     }
@@ -1146,7 +1149,7 @@ function PositionsDesktop() {
         const bposRows = flattenGroups(aggregateAndSort(bposRaw, isARS))
         const isSubBroker = broker.parent_broker_id != null
         const showDetail = detailBrokers.has(broker.name)
-        const r = computeBrokerValue(bposRaw, prices, broker, tcBlue)
+        const r = computeBrokerValue(bposRaw, prices, broker, tcBlue, tcCcl)
 
         // Variación del día agregada del broker (suma de los Δ por posición con
         // cierre anterior disponible). En la moneda nativa del broker. `hasDay`

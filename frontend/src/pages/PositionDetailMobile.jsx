@@ -84,6 +84,7 @@ export default function PositionDetailMobile() {
   const p = position
   const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
   const tcBlue = dolar?.blue?.venta || 1415
+  const tcCcl = dolar?.ccl?.venta || dolar?.mep?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const qty = p.quantity || 0
   const invested = p.invested || 0
 
@@ -97,6 +98,14 @@ export default function PositionDetailMobile() {
     const investedUsd = invested / tcBlue
     pnlUsd = valueUsd - investedUsd
     pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
+  } else if (p.asset_type === 'CEDEAR' && p.price_override == null) {
+    // CEDEAR en broker USD: precio LOCAL .BA (ARS) → USD via CCL (dólar
+    // financiero), no la acción US del ticker (que vale 15-100× más).
+    const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
+    priceLocal = priceArs != null ? priceArs / tcCcl : null
+    valueUsd = priceLocal != null ? priceLocal * qty : invested
+    pnlUsd = valueUsd - invested
+    pnlPct = invested > 0 ? pnlUsd / invested : 0
   } else {
     priceLocal = p.price_override ?? prices[p.asset]
     valueUsd = priceLocal != null ? priceLocal * qty : invested
