@@ -93,7 +93,7 @@ export default function HomeMobile() {
   }
 
   const tcBlue = dolar?.blue?.venta || 1415
-  const tcCcl = dolar?.ccl?.venta || dolar?.mep?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const pf = pfUsd(usePfRollup(), tcBlue)  // plazos fijos → USD (suma al total mostrado)
 
   // Fase B: publicamos tcBlue al CurrencyContext (sin reemplazar el local;
@@ -103,7 +103,7 @@ export default function HomeMobile() {
   }, [tcBlue, publishTcBlue])
 
   const totals = useMemo(() => {
-    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCcl) }))
+    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear) }))
     const totalValue = bt.reduce((s, b) => s + b.value, 0)
     const totalCost = bt.reduce((s, b) => s + b.invested, 0)
     const totalPnl = totalValue - totalCost

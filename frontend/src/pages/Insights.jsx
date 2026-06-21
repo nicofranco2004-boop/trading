@@ -251,9 +251,9 @@ function InsightsDesktop({ _embeddedTab }) {
   //                Excluye cash. Esto es lo que un usuario espera ver al preguntarse
   //                "¿qué tan expuesto estoy a un único activo?".
   const tcBlue = dolar?.blue?.venta || 1415
-  const tcCcl = dolar?.ccl?.venta || dolar?.mep?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const pieData = brokers
-    .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcBlue, tcCcl).value.toFixed(2) }))
+    .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcBlue, tcCedear).value.toFixed(2) }))
     .filter(x => x.value > 0)
   const totalPortfolio = pieData.reduce((s, x) => s + x.value, 0)
 
@@ -329,7 +329,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
   const totalCostBasis = brokers.reduce((s, b) => {
-    return s + computeBrokerValue(positions, prices, b, tcBlue, tcCcl).invested
+    return s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear).invested
   }, 0)
   const unrealizedPnl = totalPortfolio - totalCostBasis
 
@@ -674,7 +674,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // Punto "Hoy" — valor live de posiciones ARS al blue actual
     const arsLiveUsd = brokers
       .filter(b => arsBrokerNames.has(b.name))
-      .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCcl).value, 0)
+      .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear).value, 0)
     if (arsLiveUsd > 0) {
       const valueNow = arsLiveUsd * tcBlue
       const investedNowPesos = baselinePesos + netFlowsPesos

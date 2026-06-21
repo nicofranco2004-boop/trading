@@ -410,7 +410,7 @@ export default function PositionsMobile() {
   }
 
   const tcBlue = dolar?.blue?.venta || 1415
-  const tcCcl = dolar?.ccl?.venta || dolar?.mep?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
 
   // Fase B: publish tcBlue al CurrencyContext (mismo pattern que Dashboard/HomeMobile)
   useEffect(() => {
@@ -445,7 +445,7 @@ export default function PositionsMobile() {
         // CEDEAR en broker USD: precio LOCAL .BA (ARS) → USD via CCL (dólar
         // financiero), no la acción US del ticker. priceLocal queda en USD.
         const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
-        priceLocal = priceArs != null ? priceArs / tcCcl : null
+        priceLocal = priceArs != null ? priceArs / tcCedear : null
         valueUsd = priceLocal != null ? priceLocal * qty : invested
       } else {
         priceLocal = p.price_override ?? prices[p.asset]
@@ -468,7 +468,7 @@ export default function PositionsMobile() {
         const prevRaw = prevClose[(isAR || cedearUsd) ? priceSymbol(p.asset, true, p.asset_type) : p.asset]
         // priceLocal del CEDEAR-USD ya está en USD (÷CCL); el cierre previo viene
         // en ARS (.BA) → lo pasamos a USD con el mismo CCL para comparar igual.
-        const prev = (cedearUsd && prevRaw != null) ? prevRaw / tcCcl : prevRaw
+        const prev = (cedearUsd && prevRaw != null) ? prevRaw / tcCedear : prevRaw
         if (prev != null && prev > 0) {
           const perUnit = priceLocal - prev
           dayVarLocal = perUnit * qty

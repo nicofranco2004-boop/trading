@@ -143,7 +143,7 @@ export default function Dashboard() {
   }
 
   const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
-  const tcCcl = dolar?.ccl?.venta || dolar?.mep?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
 
   // Fase B (2026-05-31): publicamos tcBlue al CurrencyContext para que
   // los components que solo necesitan formatear (Reports cards, charts)
@@ -160,7 +160,7 @@ export default function Dashboard() {
   const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcBlue)
   const pf = pfUsd(usePfRollup(), tcBlue)   // plazos fijos → USD (valor + capital)
 
-  const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCcl) }))
+  const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear) }))
   const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0) + pf.valueUsd
   const totalCostBasis = brokerTotals.reduce((s, b) => s + b.invested, 0) + pf.investedUsd
   const totalPnl = totalValue - totalCostBasis

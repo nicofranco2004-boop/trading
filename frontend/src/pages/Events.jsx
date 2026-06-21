@@ -140,11 +140,11 @@ export default function Events({ embedded = false }) {
 
   // Valor total del portfolio en USD (para impact %)
   const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
-  const tcCcl = dolar?.ccl?.venta || dolar?.mep?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const portfolioTotalUsd = useMemo(() => {
     return brokers.reduce((sum, broker) => {
       const bpos = positions.filter(p => p.broker === broker.name)
-      const v = computeBrokerValue(bpos, prices, broker, tcBlue, tcCcl)
+      const v = computeBrokerValue(bpos, prices, broker, tcBlue, tcCedear)
       return sum + (v.value || 0)
     }, 0)
   }, [positions, brokers, prices, tcBlue])
@@ -156,7 +156,7 @@ export default function Events({ embedded = false }) {
       const bpos = positions.filter(p => p.broker === broker.name)
       for (const p of bpos) {
         if (p.is_cash) continue
-        const r = computeBrokerValue([p], prices, broker, tcBlue, tcCcl)
+        const r = computeBrokerValue([p], prices, broker, tcBlue, tcCedear)
         const prev = map.get(p.asset) || 0
         map.set(p.asset, prev + (r.value || 0))
       }

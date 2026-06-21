@@ -96,7 +96,7 @@ export function fciLabel(asset) {
   return cls ? `${titled} · ${cls}` : titled
 }
 
-export function computeBrokerValue(allPositions, prices, broker, tcBlue, cclRate = tcBlue) {
+export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue) {
   const bpos = allPositions.filter(p => p.broker === broker.name)
   let value = 0, invested = 0
   let valueArs = 0, invArs = 0
@@ -147,13 +147,13 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cclRate
           // CEDEAR en broker USD (típico: compra dólar-MEP). Se valúa por su precio
           // LOCAL de BYMA (.BA, en ARS) → USD, NO por la acción US del mismo ticker
           // (que vale 15-100× más). priceSymbol fuerza el sufijo .BA.
-          // Dividimos por el CCL (dólar financiero), NO por el blue: el CEDEAR
-          // arbitra contra la acción US vía CCL, y el costo está en dólar-MEP/CCL.
-          // Usar blue metía 5-15% de error. Para los CEDEARs que el backend ya
-          // computa como US×CCL÷ratio (ej. BAC), el CCL se cancela → US÷ratio.
+          // Dividimos por cedearRate = dólar-MEP (plata local del broker), NO por el
+          // blue: el CEDEAR se compró/vende vía MEP, y es el valor que muestra el
+          // broker (Cocos). El MEP suele dar ~2% más USD que el CCL y bastante más
+          // que el blue. cedearRate default = blue (sin regresión si no se pasa).
           const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
           if (priceArs != null) {
-            value += (priceArs * (p.quantity || 0)) / cclRate
+            value += (priceArs * (p.quantity || 0)) / cedearRate
           } else {
             value += realCost
           }

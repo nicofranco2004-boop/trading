@@ -77,13 +77,13 @@ export default function FirstInsight() {
   }, [])
 
   const tcBlue = dolar?.blue?.venta || 1415
-  const tcCcl = dolar?.ccl?.venta || dolar?.mep?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
 
   const stats = useMemo(() => {
     if (!brokers.length || !positions.length) return null
     let value = 0, invested = 0
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCcl)
+      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear)
       value += r.value || 0
       invested += r.invested || 0
     }

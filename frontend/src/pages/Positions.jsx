@@ -180,9 +180,10 @@ function PositionsDesktop() {
   // zone si JS evalúa el array de deps antes de la declaración de `const`.
   const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
   const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
-  // Dólar financiero para valuar CEDEARs (arbitran vía CCL). Cascada CCL → MEP →
-  // blue, igual criterio que el backend (_display_ccl). Evita el error del blue.
-  const tcCcl = dolar?.ccl?.venta || tcMep || tcBlue
+  // Dólar para valuar CEDEARs. Se compran por dólar-MEP (plata local), así que
+  // valuamos al MEP — es lo que muestra el broker (Cocos). Cascada MEP → CCL →
+  // blue. Usar blue o CCL daba un valor más bajo que el real (Cocos al MEP).
+  const tcCedear = tcMep || dolar?.ccl?.venta || tcBlue
 
   // Fase B: publicamos tcBlue al CurrencyContext (mismo pattern que las
   // otras pages que ya fetchean /dolar — Reports / charts lo leen sin re-fetch).
@@ -803,7 +804,7 @@ function PositionsDesktop() {
       // BYMA (.BA, en ARS) → USD via blue, NO por la acción US del mismo ticker
       // (que vale 15-100× más). Sin esto MELI se preciaría a ~US$1.600 en vez de ~14.
       const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
-      price = priceArs != null ? priceArs / tcCcl : null
+      price = priceArs != null ? priceArs / tcCedear : null
     } else {
       price = p.price_override ?? prices[p.asset]
     }
@@ -858,7 +859,7 @@ function PositionsDesktop() {
     const symKey = cedearUsd ? priceSymbol(p.asset, true, 'CEDEAR') : priceSymbol(p.asset, isARS)
     const curPrice = p.price_override ?? prices[symKey]
     const dv = dayVarOf(p, symKey, curPrice)
-    if (dv && cedearUsd) return { amount: dv.amount / tcCcl, pct: dv.pct }
+    if (dv && cedearUsd) return { amount: dv.amount / tcCedear, pct: dv.pct }
     return dv
   }
 
@@ -885,7 +886,7 @@ function PositionsDesktop() {
   const totals = useMemo(() => {
     let value = 0, invested = 0
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCcl)
+      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear)
       value += r.value || 0
       invested += r.invested || 0
     }
@@ -1149,7 +1150,7 @@ function PositionsDesktop() {
         const bposRows = flattenGroups(aggregateAndSort(bposRaw, isARS))
         const isSubBroker = broker.parent_broker_id != null
         const showDetail = detailBrokers.has(broker.name)
-        const r = computeBrokerValue(bposRaw, prices, broker, tcBlue, tcCcl)
+        const r = computeBrokerValue(bposRaw, prices, broker, tcBlue, tcCedear)
 
         // Variación del día agregada del broker (suma de los Δ por posición con
         // cierre anterior disponible). En la moneda nativa del broker. `hasDay`
