@@ -1523,6 +1523,37 @@ class CurrencyRoutingTest(unittest.TestCase):
         self.assertEqual(_snap_cash(31270.11), 31270.11)   # saldo real intacto
         self.assertEqual(_snap_cash(-50.0), -50.0)         # overdraft real intacto
 
+    def test_imported_cedear_persists_asset_type(self):
+        # Regresión del bug de inflación: un CEDEAR comprado en USD (dólar-MEP) debe
+        # persistir asset_type='CEDEAR' en la tabla positions. Antes se tiraba al
+        # persistir → el frontend lo valuaba como la acción US (≈100× inflado).
+        conn = main.get_db()
+        try:
+            csv = (
+                "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+                "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;total\n"
+                "1;1;01-06-2026;01-06-2026;Recibo De Cobro Dolares;;USD;;;;1.000;0;0;0;0;1.000\n"
+                "2;2;02-06-2026;02-06-2026;Compra Dolar Mep;CEDEAR MERCADOLIBRE INC. (MELI);"
+                "USD;BYMA;42;14,06;-590,52;0;0;0;0;-590,52\n"
+            ).encode("utf-8")
+            with conn:
+                payload = pl.run_preview(conn, uid=self.uid, file_bytes=csv, file_name="c.csv",
+                                         broker_hint="Cocos", parser_format="cocos", route_by_currency=False)
+            sid = payload["session_id"]
+            with conn:
+                txs, raw = pl.load_session_for_confirm(conn, uid=self.uid, session_id=sid)
+                ps.persist_batch(conn, uid=self.uid, batch_id=sid, txs=txs,
+                                 raw_row_ids_by_index=raw, helpers=_helpers())
+            row = conn.execute(
+                "SELECT broker, asset_type FROM positions WHERE user_id=? AND asset='MELI' AND is_cash=0",
+                (self.uid,),
+            ).fetchone()
+            self.assertIsNotNone(row, "La posición MELI debió crearse")
+            self.assertEqual(row["asset_type"], "CEDEAR")
+            self.assertEqual(row["broker"], "Cocos · USD")
+        finally:
+            conn.close()
+
     def test_fx_usd_to_ars_routes_from_sibling(self):
         # FX_USD_TO_ARS debe partir del sibling USD aunque la fila diga currency=ARS.
         # Setup: pre-crear cash USD en el sibling para que la conversión tenga fondos.

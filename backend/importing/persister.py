@@ -365,10 +365,11 @@ def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
 
     cur = conn.execute(
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
-           invested, tc_compra, price_override, notes, entry_date, commissions, currency)
-           VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?)""",
+           invested, tc_compra, price_override, notes, entry_date, commissions, currency, asset_type)
+           VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)""",
         (uid, tx.broker, tx.asset_symbol, unit if unit > 0 else None, qty,
-         invested, None, None, tx.notes, tx.date, fees, lot_currency),
+         invested, None, None, tx.notes, tx.date, fees, lot_currency,
+         (tx.asset_type or None)),
     )
     position_id = cur.lastrowid
     cost_total = invested + fees
@@ -424,15 +425,15 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         seed_invested = missing_qty * seed_price
         # entry_date: la misma fecha de la venta (FIFO lo ordena por entry_date,
         # luego por id — queda al final entre lotes con la misma fecha).
-        # NOTA: la tabla `positions` no tiene asset_type; lo omitimos.
         conn.execute(
             """INSERT INTO positions
                   (user_id, broker, asset, quantity, invested,
-                   buy_price, commissions, entry_date, is_cash, currency)
-               VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, ?)""",
+                   buy_price, commissions, entry_date, is_cash, currency, asset_type)
+               VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)""",
             (uid, tx.broker, tx.asset_symbol,
              missing_qty, round(seed_invested, 6),
-             seed_price, tx.date, (tx.currency or "USD").upper()),
+             seed_price, tx.date, (tx.currency or "USD").upper(),
+             (tx.asset_type or None)),
         )
         # Re-leer positions para que el FIFO encuentre el seed lot
         positions = conn.execute(

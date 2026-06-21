@@ -43,7 +43,17 @@ export const today = () => new Date().toISOString().slice(0, 10)
 export const EMPTY_POS = {
   broker: '', asset: '', is_cash: false,
   buy_price: '', quantity: '', invested: '', tc_compra: '', commissions: '', notes: '',
-  entry_date: '',
+  entry_date: '', asset_type: '',
+}
+
+// Categoría del flujo "Agregar" → asset_type guardado. Lo importante es CEDEAR:
+// en un broker USD define que se valúe por el precio LOCAL (.BA), no por la
+// acción US del ticker. Las acciones AR (panel líder/general) también son STOCK
+// de BYMA. El resto se deja sin tipo (se valúa por el ticker, que es lo correcto
+// para acciones US, ETFs y cripto reales).
+const CATEGORY_ASSET_TYPE = {
+  cedears: 'CEDEAR', stocks: 'STOCK', etfs: 'ETF', crypto: 'CRYPTO',
+  bonds: 'BOND', ar_lider: 'STOCK', ar_gen: 'STOCK',
 }
 
 const BROKER_COLORS = [
@@ -434,8 +444,8 @@ function PositionsDesktop() {
 
   // Callback del AddPositionFlow cuando el user selecciona un ticker. Trae el
   // broker elegido en el paso 1 (o el preseleccionado). Abre el form.
-  function onAssetSelectedFromFlow({ asset, broker }) {
-    setForm(f => ({ ...f, asset, broker: broker || f.broker }))
+  function onAssetSelectedFromFlow({ asset, broker, category }) {
+    setForm(f => ({ ...f, asset, broker: broker || f.broker, asset_type: CATEGORY_ASSET_TYPE[category] || '' }))
     setModal('add')
   }
   function openEdit(p) {
@@ -667,9 +677,7 @@ function PositionsDesktop() {
   // (mismo criterio que la celda). Brokers ARS usan valor/P&L en USD como clave.
   function _rowSortKeys(p, isARS) {
     const c = isARS ? calcARS(p) : calcUSDT(p)
-    const symKey = priceSymbol(p.asset, isARS)
-    const curPrice = p.price_override ?? prices[symKey]
-    const dv = dayVarOf(p, symKey, curPrice)
+    const dv = dvFor(p, isARS)
     const isBond = isBondTicker(p.asset) && !p.is_cash
     const pnlContrib = isBond
       ? (bondCashflowsByKey.get(`${p.broker}:${p.asset}`)?.pnlContribution || 0)
@@ -786,7 +794,16 @@ function PositionsDesktop() {
 
   function calcUSDT(p) {
     if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null }
-    const price = p.price_override ?? prices[p.asset]
+    let price
+    if (p.asset_type === 'CEDEAR' && p.price_override == null) {
+      // CEDEAR en broker USD (compra dólar-MEP): se valúa por su precio LOCAL de
+      // BYMA (.BA, en ARS) → USD via blue, NO por la acción US del mismo ticker
+      // (que vale 15-100× más). Sin esto MELI se preciaría a ~US$1.600 en vez de ~14.
+      const priceArs = prices[priceSymbol(p.asset, true, 'CEDEAR')]
+      price = priceArs != null ? priceArs / tcBlue : null
+    } else {
+      price = p.price_override ?? prices[p.asset]
+    }
     if (price == null) return { value: null, pnl: null, pnlPct: null, price: null }
     // Cost basis = invested + commissions (las comisiones de compra son costo real).
     const realCost = (p.invested || 0) + (p.commissions || 0)
@@ -827,6 +844,19 @@ function PositionsDesktop() {
     if (prev == null || !(prev > 0) || currentPrice == null) return null
     const perUnit = currentPrice - prev
     return { amount: perUnit * (p.quantity || 0), pct: perUnit / prev }
+  }
+
+  // Var-día CEDEAR-aware. Para un CEDEAR en broker USD, la variación se computa
+  // sobre el precio LOCAL (.BA, ARS) — mismo símbolo para precio actual y cierre
+  // previo — y el monto se pasa a USD via blue. El % es invariante a la moneda.
+  // Para el resto, usa el símbolo nativo del contexto (ARS → .BA, USD → ticker US).
+  function dvFor(p, isARS) {
+    const cedearUsd = !isARS && p.asset_type === 'CEDEAR'
+    const symKey = cedearUsd ? priceSymbol(p.asset, true, 'CEDEAR') : priceSymbol(p.asset, isARS)
+    const curPrice = p.price_override ?? prices[symKey]
+    const dv = dayVarOf(p, symKey, curPrice)
+    if (dv && cedearUsd) return { amount: dv.amount / tcBlue, pct: dv.pct }
+    return dv
   }
 
   // sticky top-0 + bg matched al thead row para que al scrollear la tabla
@@ -1125,9 +1155,7 @@ function PositionsDesktop() {
         let brokerDay = 0
         let brokerHasDay = false
         for (const p of bposRaw) {
-          const symKey = priceSymbol(p.asset, isARS)
-          const curPrice = p.price_override ?? prices[symKey]
-          const dv = dayVarOf(p, symKey, curPrice)
+          const dv = dvFor(p, isARS)
           if (dv) { brokerDay += dv.amount; brokerHasDay = true }
         }
 
@@ -1250,7 +1278,7 @@ function PositionsDesktop() {
                         : c.pnlPct
                       const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
-                      const dvArs = dayVarOf(p, priceSymbol(p.asset, true), c.priceArs)
+                      const dvArs = dvFor(p, true)
                       const expanded = isBond && !isLot && expandedBonds.has(bondKey)
                       const arsColSpan = showDetail ? 14 : 11
                       const pnlTooltip = (isBond && pnlContrib !== 0)
@@ -1444,7 +1472,7 @@ function PositionsDesktop() {
                     const avgPrice = (!p.is_cash && p.quantity > 0)
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
-                    const dvUsd = dayVarOf(p, p.asset, c.price)
+                    const dvUsd = dvFor(p, false)
                     const expanded = isBond && !isLot && expandedBonds.has(bondKey)
                     const pnlTooltip = (isBond && pnlContrib !== 0)
                       ? `P&L = mark-to-market (${c.pnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnl || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}USD ${usd(Math.abs(pnlContrib))} de ganancia realizada (cupones + ganancia de amorts). Cash total cobrado: USD ${usd(cobranzasCash)}.`

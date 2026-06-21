@@ -492,6 +492,42 @@ def init_db():
     cols = _table_cols(conn, 'positions')
     if cols and 'currency' not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN currency TEXT")
+    # Migración: columna asset_type — clasificación del activo (CEDEAR/STOCK/ETF/…).
+    # Crítica para valuar bien un CEDEAR comprado en USD (dólar-MEP): sin asset_type
+    # el frontend lo precia como la acción US (≈100× inflado) en vez del CEDEAR (.BA).
+    # El import lo detectaba pero lo tiraba al persistir; ahora se guarda. Backfill
+    # desde la auditoría (import_normalized_tx sí lo guardó) para arreglar posiciones
+    # YA cargadas sin tener que reimportar.
+    cols = _table_cols(conn, 'positions')
+    if cols and 'asset_type' not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN asset_type TEXT")
+        try:
+            conn.execute("""
+                UPDATE positions
+                   SET asset_type = (
+                       SELECT n.asset_type
+                         FROM import_normalized_tx n
+                         JOIN import_batches b ON b.id = n.batch_id
+                        WHERE b.user_id = positions.user_id
+                          AND n.broker = positions.broker
+                          AND n.asset_symbol = positions.asset
+                          AND n.asset_type IS NOT NULL AND n.asset_type != ''
+                        ORDER BY (n.asset_type = 'CEDEAR') DESC
+                        LIMIT 1
+                   )
+                 WHERE is_cash = 0 AND asset_type IS NULL
+                   AND EXISTS (
+                       SELECT 1
+                         FROM import_normalized_tx n2
+                         JOIN import_batches b2 ON b2.id = n2.batch_id
+                        WHERE b2.user_id = positions.user_id
+                          AND n2.broker = positions.broker
+                          AND n2.asset_symbol = positions.asset
+                          AND n2.asset_type IS NOT NULL AND n2.asset_type != ''
+                   )
+            """)
+        except Exception:
+            pass  # la auditoría puede no existir aún en DBs nuevas; no bloquea el boot
     conn.commit()
 
     # monthly_entries
@@ -5215,6 +5251,9 @@ class PositionIn(BaseModel):
     commissions: Optional[float] = Field(0, ge=0)
     notes: Optional[str] = Field(None, max_length=MAX_NOTES)
     entry_date: Optional[str] = Field(None, max_length=10)
+    # Clasificación del activo (CEDEAR/STOCK/ETF/…). Para un CEDEAR comprado en USD
+    # define que se valúe por su precio LOCAL (.BA), no por la acción US del ticker.
+    asset_type: Optional[str] = Field(None, max_length=16)
 
     @field_validator('entry_date')
     @classmethod
@@ -5258,10 +5297,11 @@ def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
             entry_date = p.entry_date or datetime.utcnow().strftime("%Y-%m-%d")
             cur = conn.execute(
                 """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
-                   invested, tc_compra, price_override, notes, entry_date, commissions)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   invested, tc_compra, price_override, notes, entry_date, commissions, asset_type)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
-                 p.invested, p.tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0),
+                 p.invested, p.tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
+                 (p.asset_type or None)),
             )
             new_id = cur.lastrowid
 
@@ -5299,11 +5339,12 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user
     conn.execute(
         """UPDATE positions SET broker=?, asset=?, is_cash=?, buy_price=?, quantity=?,
            invested=?, tc_compra=?, price_override=?, notes=?, commissions=?,
-           entry_date=COALESCE(?, entry_date)
+           entry_date=COALESCE(?, entry_date),
+           asset_type=COALESCE(?, asset_type)
            WHERE id=? AND user_id=?""",
         (p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
          p.invested, p.tc_compra, p.price_override, p.notes, p.commissions or 0,
-         p.entry_date, pid, uid),
+         p.entry_date, (p.asset_type or None), pid, uid),
     )
     conn.commit()
     # FIXED: include user_id in SELECT to prevent IDOR data leak
