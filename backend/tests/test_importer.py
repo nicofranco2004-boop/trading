@@ -487,6 +487,25 @@ class CocosParserTest(unittest.TestCase):
                   if r.data["tipo"] == "RETIRO" and r.data["monto"] == "45000")
         self.assertEqual(wd.data["moneda"], "ARS")
 
+    def test_registracion_maps_to_cash_flow_no_phantom(self):
+        # Una "registración" (dólar-MEP vía bono dual: compra ARS + venta USD del
+        # mismo bono, neto CERO) NO debe quedar como tenencia. Se trata como flujo
+        # de caja: compra → RETIRO, venta → DEPOSITO, sin activo. Antes el ruteo por
+        # moneda partía las dos patas y dejaba una tenencia fantasma del bono.
+        csv = (
+            "nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+            "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;total\n"
+            "1;1;08-06-2026;08-06-2026;Venta Registracion USD;ON TARJETA NARANJA (T661O);"
+            "USD;MAE;-142.971;0,07;100,0797;0;0;0;0;100,08\n"
+            "2;2;08-06-2026;08-06-2026;Compra Registracion ARS;ON TARJETA NARANJA (T661O);"
+            "ARS;MAE;142.971;102,8;-146.974,188;0;0;0;0;-146.974,19\n"
+        )
+        result = self.parser.parse(csv)
+        tipos = sorted(r.data["tipo"] for r in result.raw_rows)
+        self.assertEqual(tipos, ["DEPOSITO", "RETIRO"])
+        for r in result.raw_rows:
+            self.assertEqual(r.data["activo"], "", "una registración no debe tener activo")
+
     def test_dividendos_peso_no_asset_uses_total(self):
         """Dividendos en pesos: el CSV no dice qué stock pagó → asset vacío.
         Usa `total` (neto) en vez de `montoBruto` (bruto)."""

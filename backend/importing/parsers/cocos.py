@@ -98,8 +98,14 @@ def _resolve_op(tipo: str) -> Optional[str]:
         return "COMPRA"
     if "rescate fci" in tipo:                 # liq/liquidacion rescate fci [usd]
         return "VENTA"
-    if "registracion" in tipo:                # bono dólar-MEP (compra ARS / venta USD)
-        return "VENTA" if tipo.startswith("venta") else "COMPRA"
+    if "registracion" in tipo:
+        # Maniobra dólar-MEP/CCL con un bono dual: se "compra" el bono en pesos y
+        # se "vende" en dólares el mismo día (neto CERO como tenencia) — es una
+        # CONVERSIÓN de moneda, no un trade de activo. La tratamos como flujo de
+        # caja: la compra es plata que sale (RETIRO en ARS), la venta plata que
+        # entra (DEPOSITO en USD). Sin esto, el ruteo por moneda partía las dos
+        # patas en brokers distintos y quedaba una tenencia FANTASMA del bono.
+        return "DEPOSITO" if tipo.startswith("venta") else "RETIRO"
     if tipo.startswith("compra"):             # compra dolar mep / trading / etc.
         return "COMPRA"
     if tipo.startswith("venta"):
