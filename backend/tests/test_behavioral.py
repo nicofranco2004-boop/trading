@@ -477,6 +477,59 @@ class CounterfactualTest(unittest.TestCase):
         self.assertEqual(result["severity"], "positive")
         self.assertLess(result["evidence"]["delta_total_usd"], -300)
 
+    def test_ars_cedear_op_is_skipped(self):
+        # REGRESIÓN (bug de moneda): 3 ventas USD + 1 CEDEAR cargado en pesos.
+        # La de ARS (exit 32.640 pesos, pnl_usd 561) NO debe restarse contra el
+        # precio actual de INTC en USD (~134) — antes daba un delta de −1,3M.
+        ops = [
+            _op("NVDA", "2024-01-01", "2024-02-01", 100, 120, 10),  # USD
+            _op("AAPL", "2024-01-01", "2024-02-01", 100, 110, 10),  # USD
+            _op("MSFT", "2024-01-01", "2024-02-01", 100, 115, 10),  # USD
+            {  # CEDEAR de INTC en pesos — currency vacío, como en prod
+                "asset": "INTC", "op_type": "Venta", "broker": "Cocos",
+                "date": "2024-03-01", "entry_price": 13000, "exit_price": 32640,
+                "quantity": 41, "pnl_usd": 561.07, "pnl_pct": 4.3, "commissions": 0,
+            },
+        ]
+        prices = {"NVDA": 180, "AAPL": 130, "MSFT": 140, "INTC": 134}
+        result = detect_counterfactual(ops, prices)
+        self.assertEqual(result["evidence"]["trades_analyzed"], 3)
+        self.assertEqual(result["evidence"]["trades_skipped_fx"], 1)
+        # Delta sano (no millones) y la op en pesos no aparece en top_misses.
+        self.assertLess(abs(result["evidence"]["delta_total_usd"]), 100_000)
+        self.assertNotIn("INTC", [m["asset"] for m in result["evidence"]["top_misses"]])
+
+    def test_declared_currency_respected(self):
+        # currency='ARS' explícito ⇒ se omite aunque la escala coincida.
+        ars = _op("AAPL", "2024-01-01", "2024-02-01", 100, 110, 10)
+        ars["currency"] = "ARS"
+        usd = [
+            _op("NVDA", "2024-01-01", "2024-02-01", 100, 120, 10),
+            _op("MSFT", "2024-01-01", "2024-02-01", 100, 115, 10),
+            _op("GOOGL", "2024-01-01", "2024-02-01", 100, 130, 10),
+        ]
+        prices = {"NVDA": 180, "MSFT": 140, "GOOGL": 150, "AAPL": 130}
+        result = detect_counterfactual([ars] + usd, prices)
+        self.assertEqual(result["evidence"]["trades_analyzed"], 3)
+        self.assertEqual(result["evidence"]["trades_skipped_fx"], 1)
+
+    def test_only_ars_trades_insufficient(self):
+        # Todas las ventas en pesos ⇒ no hay 3 en USD ⇒ insuficiente.
+        ops = [
+            {"asset": "INTC", "op_type": "Venta", "broker": "Cocos",
+             "date": "2024-03-01", "entry_price": 13000, "exit_price": 32640,
+             "quantity": 41, "pnl_usd": 561.07, "pnl_pct": 4.3, "commissions": 0},
+            {"asset": "COIN", "op_type": "Venta", "broker": "Cocos",
+             "date": "2024-03-01", "entry_price": 9145, "exit_price": 10700,
+             "quantity": 46, "pnl_usd": 46.65, "pnl_pct": 1.0, "commissions": 0},
+            {"asset": "MELI", "op_type": "Venta", "broker": "Cocos",
+             "date": "2024-03-01", "entry_price": 22000, "exit_price": 24225,
+             "quantity": 9, "pnl_usd": 14.0, "pnl_pct": 1.0, "commissions": 0},
+        ]
+        prices = {"INTC": 134, "COIN": 163, "MELI": 1635}
+        result = detect_counterfactual(ops, prices)
+        self.assertTrue(result.get("insufficient_data"))
+
     def test_no_prices_insufficient(self):
         ops = [_op("AAPL", "2024-01-01", "2024-02-01", 100, 110, 10)] * 5
         result = detect_counterfactual(ops, None)
@@ -629,6 +682,87 @@ class BuildBehavioralInsightsTest(unittest.TestCase):
         # Las 4 cards deberían tener insufficient_data
         for c in result["cards"]:
             self.assertTrue(c.get("insufficient_data") or not c.get("detected"))
+
+
+# ─── Audit de moneda (regresión) ─────────────────────────────────────────────
+
+
+class CurrencyAuditTest(unittest.TestCase):
+    """Regresión del deep-audit: la moneda se resuelve por la moneda REAL
+    (currency/asset/sub-broker '· USD'), NO por el nombre del broker."""
+
+    def test_native_ccy_usd_subbroker(self):
+        from behavioral import _native_ccy
+        # Sub-broker '· USD' aunque contenga 'cocos' → USD
+        self.assertEqual(_native_ccy({"broker": "Cocos Capital · USD", "asset": "PMCAO"}), "USD")
+        # Cash USDT en sub-broker AR → USD
+        self.assertEqual(_native_ccy({"broker": "Cocos Capital · USD", "asset": "USDT", "is_cash": 1}), "USD")
+        # CEDEAR en Cocos regular → ARS
+        self.assertEqual(_native_ccy({"broker": "Cocos Capital", "asset": "GGAL"}), "ARS")
+        # currency explícita gana
+        self.assertEqual(_native_ccy({"broker": "Cocos Capital", "asset": "X", "currency": "USD"}), "USD")
+        # Schwab → USD
+        self.assertEqual(_native_ccy({"broker": "Schwab", "asset": "AAPL"}), "USD")
+
+    def test_usd_subbroker_position_not_divided(self):
+        # CRÍTICO: posición USD en 'Cocos Capital · USD' NO se divide por tc_blue.
+        from behavioral import _position_value_usd
+        p = {"broker": "Cocos Capital · USD", "asset": "PMCAO", "is_cash": 0,
+             "buy_price": 30, "quantity": 1000, "invested": 30000, "currency": "USD"}
+        v = _position_value_usd(p, prices=None, tc_blue=1415.0)
+        self.assertAlmostEqual(v, 30000.0, places=2)  # antes daba 30000/1415 ≈ 21
+
+    def test_usd_cash_in_ar_broker_not_divided(self):
+        from behavioral import _position_value_usd
+        p = {"broker": "Cocos Capital · USD", "asset": "USDT", "is_cash": 1, "invested": 5000}
+        self.assertAlmostEqual(_position_value_usd(p, None, 1415.0), 5000.0, places=2)
+        # Cash ARS sí se convierte
+        p_ars = {"broker": "Cocos Capital", "asset": "ARS", "is_cash": 1, "invested": 1_415_000}
+        self.assertAlmostEqual(_position_value_usd(p_ars, None, 1415.0), 1000.0, places=2)
+
+    def test_position_size_usd_converts_ars(self):
+        from behavioral import _position_size_usd
+        # Op en broker AR (ARS) → notional convertido a USD
+        ars_op = {"broker": "Cocos Capital", "asset": "GGAL", "entry_price": 14150, "quantity": 10}
+        self.assertAlmostEqual(_position_size_usd(ars_op, 1415.0), 100.0, places=2)
+        # Op USD → sin tocar
+        usd_op = {"broker": "Schwab", "asset": "AAPL", "entry_price": 100, "quantity": 10}
+        self.assertAlmostEqual(_position_size_usd(usd_op, 1415.0), 1000.0, places=2)
+
+    def test_concentration_usd_subbroker_not_shrunk(self):
+        # La posición USD grande domina la concentración (no se encoge 1415x).
+        positions = [
+            {"broker": "Cocos Capital · USD", "asset": "PMCAO", "is_cash": 0,
+             "buy_price": 30, "quantity": 1000, "invested": 30000, "currency": "USD"},
+            {"broker": "Binance", "asset": "ETH", "is_cash": 0, "buy_price": 2400,
+             "quantity": 1.2, "invested": 2880, "currency": "USD"},
+            {"broker": "Binance", "asset": "BTC", "is_cash": 0, "buy_price": 58000,
+             "quantity": 0.046, "invested": 2672, "currency": "USD"},
+        ]
+        r = detect_concentration(positions, prices=None, tc_blue=1415.0)
+        self.assertEqual(r["evidence"]["top_asset"], "PMCAO")
+        self.assertGreater(r["evidence"]["top1_pct"], 60)
+        self.assertEqual(r["severity"], "high")
+
+    def test_cash_drag_negative_cash_guard(self):
+        # Cash neto negativo (margen/registración) → card neutral, no −201%.
+        positions = [
+            {"broker": "Cocos Capital · USD", "asset": "USDT", "is_cash": 1, "invested": -30857},
+            {"broker": "Cocos Capital · USD", "asset": "PMCAO", "is_cash": 0,
+             "buy_price": 30, "quantity": 1000, "invested": 30000, "currency": "USD"},
+            {"broker": "Binance", "asset": "BTC", "is_cash": 0, "invested": 5000, "currency": "USD"},
+        ]
+        r = detect_cash_drag(positions, tc_blue=1415.0)
+        self.assertEqual(r["title"], "Cash neto negativo")
+        self.assertGreaterEqual(r["evidence"]["cash_pct"], 0)  # nunca negativo
+
+    def test_inflation_loss_ignores_usd_cash_in_ar_subbroker(self):
+        # El cash USDT del sub-broker '· USD' NO se cuenta como pesos.
+        positions = [
+            {"broker": "Cocos Capital · USD", "asset": "USDT", "is_cash": 1, "invested": 30000},
+        ]
+        r = detect_inflation_loss(positions, {"2026-01": 5.0, "2026-02": 5.0}, 1415.0)
+        self.assertEqual(r["evidence"]["cash_ars_pesos"], 0)
 
 
 if __name__ == "__main__":

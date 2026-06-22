@@ -8527,9 +8527,37 @@ def behavioral_insights(uid: int = Depends(get_current_user)):
         positions = [dict(r) for r in conn.execute(
             "SELECT * FROM positions WHERE user_id=?", (uid,)
         ).fetchall()]
-        # Precios actuales: del cache de quotes del Home (mismo dataset que
-        # usa el Dashboard). Sin fallar si no hay batch fetch a mano.
-        symbols = list(set([p["asset"] for p in positions if p.get("asset") and not p.get("is_cash")]))
+        # Moneda AUTORITATIVA por broker (brokers.currency). Sin esto, los
+        # detectores infieren la moneda por el NOMBRE del broker, y el sub-broker
+        # 'Cocos Capital · USD' (en dólares) matchea 'cocos' → sus USD se dividían
+        # por el dólar (~1415×), invirtiendo concentración y subestimando el
+        # patrimonio. Estampamos currency en las posiciones que la tienen vacía.
+        broker_ccy = {
+            r["name"]: (r["currency"] or "").upper()
+            for r in conn.execute(
+                "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)
+            ).fetchall()
+        }
+        for p in positions:
+            if not (p.get("currency") or "").strip():
+                bc = broker_ccy.get(p.get("broker") or "")
+                if bc:
+                    p["currency"] = "ARS" if bc == "ARS" else "USD"
+        # Precios actuales. Para holdings de brokers AR pedimos también la
+        # variante '.BA' (precio en ARS del CEDEAR/acción AR) — es lo que
+        # _resolve_price busca para esos brokers. Sin esto, recency_bias
+        # descartaba TODA posición AR y concentración valuaba a costo de compra.
+        from behavioral import _is_ars_broker as _is_ars_brk
+        symbols = set()
+        for p in positions:
+            if not p.get("asset") or p.get("is_cash"):
+                continue
+            a = p["asset"]
+            if _is_ars_brk(p.get("broker")) and not a.upper().endswith(".BA"):
+                symbols.add(a + ".BA")
+            else:
+                symbols.add(a)
+        symbols = list(symbols)
         prices = {}
         if symbols:
             try:
