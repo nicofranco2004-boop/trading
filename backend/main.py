@@ -8573,9 +8573,22 @@ def behavioral_insights(uid: int = Depends(get_current_user)):
         except Exception:
             inflation_monthly = {}
         tc_blue = _user_tc_blue(conn, uid)
+        # Dólar-MEP para valuar holdings .BA (CEDEARs / acciones AR en ARS) — el
+        # mismo dólar implícito que usa el broker y el frontend (cedearRate).
+        # Sin esto, los holdings .BA se valuaban al blue y mostraban un USD ~2-3%
+        # distinto al del resto de la app. Fallback a tc_blue si no hay tc_mep.
+        mep_row = conn.execute(
+            "SELECT value FROM config WHERE user_id=? AND key='tc_mep'", (uid,),
+        ).fetchone()
+        try:
+            tc_cedear = float(mep_row["value"]) if mep_row else 0.0
+        except (TypeError, ValueError):
+            tc_cedear = 0.0
+        if tc_cedear <= 0:
+            tc_cedear = tc_blue
     finally:
         conn.close()
-    return build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue)
+    return build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue, tc_cedear)
 
 
 def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional[str]) -> str:

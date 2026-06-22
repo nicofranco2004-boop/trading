@@ -96,7 +96,6 @@ from datetime import date, datetime
 from behavioral import _native_ccy
 
 
-_AR_BROKERS = {"cocos", "iol", "bull", "balanz", "naranja", "pppi", "invertironline", "lemon"}
 _CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOGE", "ADA", "XRP", "LINK", "BNB"}
 
 # Panel local AR — acciones argentinas (Merval). Lo que esté en un broker AR
@@ -331,6 +330,20 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     if tc_blue <= 0:
         tc_blue = 1415.0
 
+    # tc_mep (dólar-MEP) para valuar HOLDINGS AR (CEDEARs/acciones .BA) y su
+    # cost_usd igual que la sección Análisis del frontend. El CASH en pesos
+    # sigue por tc_blue. Fallback a tc_blue si no existe la config.
+    mep_row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_mep'", (user_id,)
+    ).fetchone()
+    try:
+        tc_mep = float(mep_row["value"]) if mep_row and mep_row["value"] else tc_blue
+    except (TypeError, ValueError):
+        tc_mep = tc_blue
+    if tc_mep <= 0:
+        tc_mep = tc_blue
+    tc_cedear = tc_mep if tc_mep > 0 else tc_blue
+
     prices: Dict[str, float] = {}
     try:
         from home.market import _fetch_batch_quotes
@@ -374,15 +387,22 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         cost_is_ars = _native_ccy(p) == "ARS"
         price_is_ars = _is_ars_broker(broker_name)
         invested = float(p.get("invested") or 0)
-        cost_usd = invested / tc_blue if cost_is_ars else invested
+        # CASH ARS por tc_blue; HOLDINGS AR (cost basis) por tc_mep (dólar-MEP),
+        # como la sección Análisis del frontend.
+        if cost_is_ars:
+            cost_usd = invested / tc_blue if p.get("is_cash") else invested / tc_cedear
+        else:
+            cost_usd = invested
         if p.get("is_cash"):
             geo_value["cash"] += cost_usd
             continue
         asset = (p.get("asset") or "").upper()
         qty = float(p.get("quantity") or 0)
         if price_is_ars:
+            # El precio live .BA está en ARS → a USD por el MEP (no blue) para
+            # matchear cómo lo valúa Análisis.
             price = prices.get(f"{asset}.BA")
-            mv = (price * qty) / tc_blue if price else cost_usd
+            mv = (price * qty) / tc_cedear if price else cost_usd
         else:
             price = prices.get(asset)
             mv = price * qty if price else cost_usd

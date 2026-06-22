@@ -269,18 +269,21 @@ function InsightsDesktop({ _embeddedTab }) {
     for (const p of positions) {
       if (p.is_cash) continue
       const broker = brokers.find(b => b.name === p.broker)
+      // Fallback sin precio = cost basis económico (invested + commissions),
+      // mismo criterio que computeBrokerValue y aiPositions.
+      const realCost = (p.invested || 0) + (p.commissions || 0)
       let val = 0
       if (broker?.currency === 'ARS') {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
-        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
+        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
       } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
         // CEDEAR / instrumento de BYMA en broker USD: valuar por su precio LOCAL
         // .BA (ARS) ÷ dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : (p.invested || 0)
+        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : realCost
       } else {
         const price = p.price_override ?? prices[p.asset]
-        val = price != null ? price * (p.quantity || 0) : (p.invested || 0)
+        val = price != null ? price * (p.quantity || 0) : realCost
       }
       const k = (p.asset || '').toUpperCase()
       valuesByAsset[k] = (valuesByAsset[k] || 0) + val
@@ -312,18 +315,21 @@ function InsightsDesktop({ _embeddedTab }) {
         return { ...p, value_usd: val }
       }
       const broker = brokers.find(b => b.name === p.broker)
+      // Fallback sin precio = cost basis económico (invested + commissions),
+      // mismo criterio que computeBrokerValue y aiPositions.
+      const realCost = (p.invested || 0) + (p.commissions || 0)
       let val = 0
       if (broker?.currency === 'ARS') {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
-        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
+        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
       } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
         // CEDEAR / instrumento de BYMA en broker USD: precio LOCAL .BA (ARS) ÷
         // dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : (p.invested || 0)
+        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : realCost
       } else {
         const price = p.price_override ?? prices[p.asset]
-        val = price != null ? price * (p.quantity || 0) : (p.invested || 0)
+        val = price != null ? price * (p.quantity || 0) : realCost
       }
       return { ...p, value_usd: val }
     })
@@ -866,27 +872,42 @@ function InsightsDesktop({ _embeddedTab }) {
     }
 
     function buildInflationCumPct() {
-      // Inflación: % macro acumulativo, NO portfolio. cum = Π(1 + ipc_m)
+      // Inflación: % macro acumulativo, NO portfolio. cum = Π(1 + ipc_m).
+      //
+      // Componemos TODOS los meses del INDEC entre el primer y último mes del
+      // usuario, NO solo los meses que el usuario tiene cargados. Si el user
+      // tiene gaps (ej. cargó Ene y Jun pero no Feb-May), saltear esos meses
+      // subestima la inflación acumulada del benchmark (la inflación corrió
+      // igual aunque el user no haya registrado el mes). Reconstruimos la
+      // serie mes a mes sobre el rango completo usando las claves 'YYYY-MM'
+      // de bench.inflation_ar.
       const result = new Map()
-      if (!bench?.inflation_ar) return result
+      if (!bench?.inflation_ar || globalMonthly.length === 0) return result
+
+      const firstMk = monthKey(globalMonthly[0].year, globalMonthly[0].month)
+      const lastM = globalMonthly[globalMonthly.length - 1]
+      const lastMk = monthKey(lastM.year, lastM.month)
+
+      // Itera mes a mes entre firstMk y lastMk (inclusive), avanzando el
+      // calendario con aritmética de meses (no depende de qué meses cargó el user).
       let cum = 1
-      let firstSeen = false
-      for (const m of globalMonthly) {
-        const mk = monthKey(m.year, m.month)
-        if (!firstSeen) {
+      let [yr, mo] = firstMk.split('-').map(Number)
+      while (true) {
+        const mk = `${yr}-${String(mo).padStart(2, '0')}`
+        if (mk === firstMk) {
           result.set(mk, 0)  // primer mes = base 0%
-          firstSeen = true
-          continue
+        } else {
+          const ipc = bench.inflation_ar[mk]
+          if (ipc != null) cum *= 1 + ipc / 100
+          result.set(mk, +((cum - 1) * 100).toFixed(2))
         }
-        const ipc = bench.inflation_ar[mk]
-        if (ipc != null) cum *= 1 + ipc / 100
-        result.set(mk, +((cum - 1) * 100).toFixed(2))
+        if (mk === lastMk) break
+        mo += 1
+        if (mo > 12) { mo = 1; yr += 1 }
       }
+
       // Today: mismo valor que el último mes (inflación es histórica, no live)
-      const allKeys = [...result.keys()]
-      if (allKeys.length > 0) {
-        result.set('today', result.get(allKeys[allKeys.length - 1]))
-      }
+      result.set('today', result.get(lastMk) ?? +((cum - 1) * 100).toFixed(2))
       return result
     }
 
@@ -1043,25 +1064,27 @@ function InsightsDesktop({ _embeddedTab }) {
   // Conservamos esta variable porque la consumen alertas y AICoach. La card
   // visible de "Activo estrella" la reemplazamos abajo por dos cards más
   // completas (total y mejor operación cerrada).
+  // Solo consumimos topAsset.asset y topAsset.pnl (snapshot del Coach IA, abajo).
+  // NO calculamos pct/invested: sumar entry_price*quantity de operaciones en
+  // monedas mezcladas (ARS de CEDEARs + USD) daría un denominador corrupto y un
+  // pct sin sentido. Como ese pct no se usa en ningún lado, lo eliminamos en vez
+  // de arrastrar un número equivocado.
   let topAsset = null
   if (operations.length > 0) {
     const byAsset = {}
     for (const op of operations) {
       const k = (op.asset || '').toUpperCase()
       if (!k) continue
-      if (!byAsset[k]) byAsset[k] = { asset: k, pnl: 0, trades: 0, invested: 0 }
+      if (!byAsset[k]) byAsset[k] = { asset: k, pnl: 0, trades: 0 }
       byAsset[k].pnl += op.pnl_usd || 0
       byAsset[k].trades += 1
-      if (op.entry_price && op.quantity) byAsset[k].invested += op.entry_price * op.quantity
     }
     const arr = Object.values(byAsset).sort((a, b) => b.pnl - a.pnl)
     const best = arr[0]
     if (best && best.pnl > 0) {
-      const pct = best.invested > 0 ? (best.pnl / best.invested) * 100 : null
-      topAsset = { ...best, pct, runnerUp: arr[1] || null }
+      topAsset = { ...best, runnerUp: arr[1] || null }
     } else if (best) {
-      const pct = best.invested > 0 ? (best.pnl / best.invested) * 100 : null
-      topAsset = { ...best, pct, runnerUp: arr[1] || null, allNegative: true }
+      topAsset = { ...best, runnerUp: arr[1] || null, allNegative: true }
     }
   }
 

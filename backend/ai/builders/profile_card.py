@@ -41,17 +41,26 @@ import json
 from behavioral import _native_ccy
 
 
-def _invested_usd(p: Dict[str, Any], tc_blue: float) -> float:
+def _invested_usd(p: Dict[str, Any], tc_blue: float, tc_cedear: float | None = None) -> float:
     """`invested` de una position (o monto de cash) convertido a USD.
 
     invested está en la moneda nativa de la fila (ARS para brokers AR/CEDEAR,
     USD para brokers US / sub-broker '· USD' / cripto-USD). Sumar sin convertir
     mezcla pesos con dólares e infla el total ~tc_blue×. Resolvemos la moneda
     real con _native_ccy (respeta currency explícita > asset USDT/ARS >
-    sub-broker '· USD' > broker AR) y dividimos por tc_blue cuando es ARS."""
+    sub-broker '· USD' > broker AR).
+
+    Tipo de cambio: el CASH en pesos se convierte por el dólar-blue (tc_blue),
+    pero los HOLDINGS AR (CEDEARs/acciones .BA) se valúan por el dólar-MEP
+    (tc_cedear) para matchear cómo los muestra la sección Análisis del frontend.
+    Sin esto, el mismo holding tenía dos valores USD distintos (blue acá vs MEP
+    en pantalla). Fallback a tc_blue si no hay MEP disponible."""
     val = p.get("invested") or 0
-    if _native_ccy(p) == "ARS" and tc_blue > 0:
-        return val / tc_blue
+    if _native_ccy(p) == "ARS":
+        if p.get("is_cash"):
+            return val / tc_blue if tc_blue > 0 else val
+        rate = tc_cedear if (tc_cedear and tc_cedear > 0) else tc_blue
+        return val / rate if rate > 0 else val
     return val
 
 
@@ -141,16 +150,29 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     if tc_blue <= 0:
         tc_blue = 1415.0
 
+    # tc_mep (dólar-MEP) para valuar HOLDINGS AR (CEDEARs/acciones .BA) igual que
+    # el frontend de Análisis. El cash en pesos sigue por tc_blue. Fallback a
+    # tc_blue si no existe la config.
+    mep_row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_mep'", (user_id,)
+    ).fetchone()
+    try:
+        tc_mep = float(mep_row["value"]) if mep_row and mep_row["value"] else tc_blue
+    except (TypeError, ValueError):
+        tc_mep = tc_blue
+    if tc_mep <= 0:
+        tc_mep = tc_blue
+
     # Datos derivados que el LLM necesita
     total_positions = len([p for p in positions if not p.get("is_cash")])
     total_value = sum(
-        _invested_usd(p, tc_blue) for p in positions if not p.get("is_cash")
+        _invested_usd(p, tc_blue, tc_mep) for p in positions if not p.get("is_cash")
     )
 
     # ── 3) Computar card específica (lógica mínima por code) ──────────────
     # Para cada code, calculamos los datos crudos. El LLM se encarga del
     # razonamiento, no precisamos formatear como hace profileMatch.js.
-    card_data = _build_card_data(code, profile_declared, positions, brokers, operations, conn, user_id, tc_blue)
+    card_data = _build_card_data(code, profile_declared, positions, brokers, operations, conn, user_id, tc_blue, tc_mep)
 
     return {
         "screen": "profile.card",
@@ -177,6 +199,7 @@ def _build_card_data(
     conn,
     user_id: int,
     tc_blue: float,
+    tc_mep: float | None = None,
 ) -> dict:
     """Devuelve { status, declared, actual, comparison } según el code.
 
@@ -229,8 +252,8 @@ def _build_card_data(
     for p in positions:
         if p.get("is_cash"):
             # cash en ARS (asset='ARS') se convertía a USD por error → ahora
-            # _invested_usd lo divide por tc_blue si _native_ccy es ARS.
-            bucket_totals["cash"] += _invested_usd(p, tc_blue)
+            # _invested_usd lo divide por tc_blue (cash siempre por blue).
+            bucket_totals["cash"] += _invested_usd(p, tc_blue, tc_mep)
             continue
         ticker = (p.get("asset") or "").upper().split("/")[0].split("-")[0]
         # Strip pair suffix (USDT, USD, etc.)
@@ -239,7 +262,7 @@ def _build_card_data(
                 ticker = ticker[:-len(q)]
                 break
 
-        val = _invested_usd(p, tc_blue)
+        val = _invested_usd(p, tc_blue, tc_mep)
         if ticker in crypto_set:
             bucket_totals["alternative"] += val
         elif _is_ar_bond(ticker):
@@ -297,7 +320,7 @@ def _build_card_data(
             if p.get("is_cash"):
                 continue
             asset = (p.get("asset") or "").upper()
-            by_asset[asset] = by_asset.get(asset, 0) + _invested_usd(p, tc_blue)
+            by_asset[asset] = by_asset.get(asset, 0) + _invested_usd(p, tc_blue, tc_mep)
         sorted_assets = sorted(by_asset.items(), key=lambda kv: kv[1], reverse=True)
         top3 = sorted_assets[:3]
         top3_value = sum(v for _, v in top3)
