@@ -177,6 +177,39 @@ def build_goal_diagnostic(
             'suggestion': None,
         }
 
+    # Datos insuficientes de verdad: sin valor actual o sin target.
+    # (Se chequea ANTES del caso "fecha vencida" para no marcar 'behind' sin datos.)
+    if current_value <= 0 or target <= 0:
+        return {
+            'status': 'unreachable',
+            'projected_value_at_target_date': current_value,
+            'eta_months_at_current_rate': None,
+            'delta_pct_required': None,
+            'months_left': months_left,
+            'diagnostic': 'Datos insuficientes para proyectar. Cargá tu valor actual y reintenta.',
+            'suggestion': None,
+        }
+
+    # Fecha objetivo ya llegó/pasó y todavía estás por debajo del target.
+    # No faltan datos: simplemente venció la fecha → status 'behind' con mensaje claro.
+    if months_left <= 0:
+        falta = target - current_value
+        diag = f'La fecha objetivo ya llegó y todavía estás a US$ {falta:,.0f} de la meta de US$ {target:,.0f}.'
+        bias = _pick_dominant_bias(behavioral_cards)
+        suggestion = None
+        if bias and bias.get('code') in SUGGESTION_MAP:
+            suggestion = dict(SUGGESTION_MAP[bias['code']])
+            suggestion['evidence'] = bias.get('one_liner') or bias.get('title') or ''
+        return {
+            'status': 'behind',
+            'projected_value_at_target_date': current_value,
+            'eta_months_at_current_rate': None,
+            'delta_pct_required': None,
+            'months_left': months_left,
+            'diagnostic': diag,
+            'suggestion': suggestion,
+        }
+
     # Tasa requerida vs real
     required_monthly = _required_monthly_rate(current_value, target, months_left)
     user_cagr_frac = (user_cagr_pct or 0) / 100
@@ -198,7 +231,7 @@ def build_goal_diagnostic(
 
     # Diagnóstico textual
     if status == 'on_track':
-        diag = f'A este ritmo llegás a tu meta de US$ {target:,.0f} en {months_left} meses.'
+        diag = f'Vas muy cerca del ritmo necesario: proyección US$ {projected:,.0f} vs meta US$ {target:,.0f} en {months_left} meses.'
     elif status == 'ahead':
         eta_str = f'{eta}' if eta is not None else '?'
         diag = f'Vas por encima del ritmo necesario. Proyección: US$ {projected:,.0f} en {months_left} meses (vs meta US$ {target:,.0f}).'

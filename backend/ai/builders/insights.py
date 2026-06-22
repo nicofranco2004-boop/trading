@@ -93,8 +93,9 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 from datetime import date, datetime
 
+from behavioral import _native_ccy
 
-_AR_BROKERS = {"cocos", "iol", "bull", "balanz", "naranja", "pppi", "invertironline", "lemon"}
+
 _CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOGE", "ADA", "XRP", "LINK", "BNB"}
 
 # Panel local AR — acciones argentinas (Merval). Lo que esté en un broker AR
@@ -304,14 +305,19 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # real de cada uno (algunos tienen nombres con espacios — usar string match
     # del broker name no es suficiente).
     positions = [dict(r) for r in conn.execute(
-        "SELECT asset, broker, quantity, invested, is_cash FROM positions "
+        "SELECT asset, broker, quantity, invested, is_cash, currency FROM positions "
         "WHERE user_id=? AND (quantity > 0 OR is_cash = 1)",
         (user_id,),
     ).fetchall()]
-    brokers_rows = conn.execute(
-        "SELECT name, currency FROM brokers WHERE user_id=?", (user_id,)
-    ).fetchall()
-    broker_currency = {b["name"]: (b["currency"] or "USD").upper() for b in brokers_rows}
+    # Estampar moneda autoritativa del broker (brokers.currency) en posiciones
+    # con currency NULL — _native_ccy infiere por nombre y no cubre brokers AR
+    # fuera de la lista de hints (Santander/Galicia/PPI…) → ARS contado USD 1415×.
+    from behavioral import stamp_positions_currency, _is_ars_broker
+    _bccy = {
+        r["name"]: (r["currency"] or "")
+        for r in conn.execute("SELECT name, currency FROM brokers WHERE user_id=?", (user_id,)).fetchall()
+    }
+    stamp_positions_currency(positions, _bccy)
 
     # Precios + tc_blue para market value real
     tc_row = conn.execute(
@@ -324,6 +330,20 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     if tc_blue <= 0:
         tc_blue = 1415.0
 
+    # tc_mep (dólar-MEP) para valuar HOLDINGS AR (CEDEARs/acciones .BA) y su
+    # cost_usd igual que la sección Análisis del frontend. El CASH en pesos
+    # sigue por tc_blue. Fallback a tc_blue si no existe la config.
+    mep_row = conn.execute(
+        "SELECT value FROM config WHERE user_id=? AND key='tc_mep'", (user_id,)
+    ).fetchone()
+    try:
+        tc_mep = float(mep_row["value"]) if mep_row and mep_row["value"] else tc_blue
+    except (TypeError, ValueError):
+        tc_mep = tc_blue
+    if tc_mep <= 0:
+        tc_mep = tc_blue
+    tc_cedear = tc_mep if tc_mep > 0 else tc_blue
+
     prices: Dict[str, float] = {}
     try:
         from home.market import _fetch_batch_quotes
@@ -334,8 +354,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             asset = p.get("asset")
             if not asset:
                 continue
-            broker_n = (p.get("broker") or "").lower()
-            if broker_n in _AR_BROKERS:
+            # EJE DEL PRECIO: el precio live de un broker AR-residente cotiza en
+            # ARS (.BA) — incluido el sub-broker '· USD', cuyo CEDEAR igual
+            # cotiza en pesos en BYMA. Por eso el .BA se decide por _is_ars_broker
+            # (residencia), NO por _native_ccy (que es el eje del COST BASIS).
+            # Sin esto, un CEDEAR en 'Cocos · USD' se valuaba con el precio de la
+            # acción US completa × cantidad de CEDEARs (error por el ratio).
+            if _is_ars_broker(p.get("broker")):
                 symbols.add(f"{asset}.BA")
             else:
                 symbols.add(asset)
@@ -354,23 +379,33 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     for p in positions:
         broker_name = p.get("broker") or ""
         broker_n = broker_name.lower()
-        currency = broker_currency.get(broker_name, "USD").upper()
-        is_ars = currency == "ARS"
+        # DOS ejes de moneda (como behavioral._position_value_usd):
+        #  - cost_is_ars (_native_ccy): moneda del cost basis (invested/cash).
+        #    Un sub-broker '· USD' tiene cost en USD aunque cotice en BYMA.
+        #  - price_is_ars (_is_ars_broker): el precio live viene en ARS (.BA)
+        #    para todo broker AR-residente. Decide el lookup y la conversión.
+        cost_is_ars = _native_ccy(p) == "ARS"
+        price_is_ars = _is_ars_broker(broker_name)
         invested = float(p.get("invested") or 0)
+        # CASH ARS por tc_blue; HOLDINGS AR (cost basis) por tc_mep (dólar-MEP),
+        # como la sección Análisis del frontend.
+        if cost_is_ars:
+            cost_usd = invested / tc_blue if p.get("is_cash") else invested / tc_cedear
+        else:
+            cost_usd = invested
         if p.get("is_cash"):
-            cash_v = invested / tc_blue if is_ars else invested
-            geo_value["cash"] += cash_v
+            geo_value["cash"] += cost_usd
             continue
         asset = (p.get("asset") or "").upper()
         qty = float(p.get("quantity") or 0)
-        if is_ars:
+        if price_is_ars:
+            # El precio live .BA está en ARS → a USD por el MEP (no blue) para
+            # matchear cómo lo valúa Análisis.
             price = prices.get(f"{asset}.BA")
-            mv = (price * qty) / tc_blue if price else invested / tc_blue
-            cost_usd = invested / tc_blue
+            mv = (price * qty) / tc_cedear if price else cost_usd
         else:
             price = prices.get(asset)
-            mv = price * qty if price else invested
-            cost_usd = invested
+            mv = price * qty if price else cost_usd
         geo_value[_classify_geography(asset, broker_n)] += mv
         if asset not in holdings_agg:
             holdings_agg[asset] = {

@@ -64,13 +64,21 @@ def _holding_days(op: Dict[str, Any]) -> Optional[int]:
     return diff if diff >= 0 else None
 
 
-def _position_size_usd(op: Dict[str, Any]) -> float:
-    """Notional al momento de entrar (entry_price × quantity)."""
+def _position_size_usd(op: Dict[str, Any], tc_blue: float = 1415.0) -> float:
+    """Notional al entrar (entry_price × quantity), SIEMPRE en USD.
+
+    entry_price está en la moneda nativa de la op (ARS para brokers AR/CEDEAR,
+    USD para brokers US). Sin convertir, sumar notionals de distintas monedas
+    mezcla pesos con dólares (turnover y loss-aversion daban veredictos
+    invertidos). Convertimos ARS→USD con tc_blue."""
     ep = op.get("entry_price")
     qty = op.get("quantity")
     if ep is None or qty is None:
         return 0.0
-    return float(ep) * float(qty)
+    notional = float(ep) * float(qty)
+    if _native_ccy(op) == "ARS" and tc_blue > 0:
+        return notional / tc_blue
+    return notional
 
 
 # ─── Helpers de valuación + clasificación geográfica ─────────────────────────
@@ -89,12 +97,89 @@ _AR_LOCAL_STOCKS = frozenset({
     "VALO", "TXAR", "LOMA", "AGRO", "HARG", "CVH",
 })
 
+# ADRs de empresas argentinas que cotizan en NYSE con ticker propio (NO .BA).
+# Son exposición económica AR (riesgo-país argentino) aunque coticen en USD y
+# en broker US. NO incluye MELI ni GLOB: son negocios globales, no riesgo-país
+# AR puro. GGAL acá es el ADR (mismo riesgo que la acción local).
+_AR_ADRS = frozenset({
+    "YPF", "PAM", "BBAR", "CRESY", "SUPV", "EDN", "CEPU", "LOMA", "IRS",
+    "TEO", "TGS", "BMA", "GGAL", "DESP",
+})
+
 
 def _is_ars_broker(broker: Optional[str]) -> bool:
     if not broker:
         return False
     b = broker.lower()
     return any(h in b for h in _AR_BROKER_HINTS)
+
+
+# Tokens de cash en dólares (stablecoins + dólar). Si el asset es uno de estos,
+# la posición está en USD aunque el broker tenga nombre AR.
+_USD_CASH_TOKENS = frozenset({"USD", "USDT", "USDC", "USDD", "DAI"})
+
+
+def _is_usd_subbroker(broker: Optional[str]) -> bool:
+    """Sub-broker en dólares: convención '<Padre> · USD' (main.py _ensure_usd_sibling).
+    El padre puede ser AR (ej. 'Cocos Capital · USD') pero el sub-broker está
+    denominado en USD. _is_ars_broker matchea el nombre del padre y lo trataría
+    como ARS — por eso necesitamos detectar el sufijo explícitamente."""
+    if not broker:
+        return False
+    b = broker.lower().strip()
+    return b.endswith("· usd") or b.endswith("·usd") or b.endswith("- usd") or b.endswith(" usd")
+
+
+def _native_ccy(p: Dict[str, Any]) -> str:
+    """Moneda nativa REAL de una position/op: 'ARS' o 'USD'.
+
+    CRÍTICO: NO inferir la moneda solo por el nombre del broker. El sub-broker
+    'Cocos Capital · USD' contiene 'cocos' (matchea _is_ars_broker) pero está en
+    dólares. Prioridad de resolución:
+      1. currency explícita de la fila (positions.currency: 'ARS'/'USD'/'USDT'…).
+      2. asset = token de cash USD (USDT/USDC/…) → USD; asset == 'ARS' → ARS.
+      3. sub-broker '· USD' → USD.
+      4. broker AR → ARS.
+      5. default → USD.
+    """
+    c = (p.get("currency") or "").strip().upper()
+    if c == "ARS":
+        return "ARS"
+    if c == "USD" or c in _USD_CASH_TOKENS:
+        return "USD"
+    asset = (p.get("asset") or "").strip().upper()
+    if asset in _USD_CASH_TOKENS:
+        return "USD"
+    if asset == "ARS":
+        return "ARS"
+    broker = p.get("broker") or ""
+    if _is_usd_subbroker(broker):
+        return "USD"
+    if _is_ars_broker(broker):
+        return "ARS"
+    return "USD"
+
+
+def stamp_positions_currency(positions: List[Dict[str, Any]],
+                             broker_ccy: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Estampa positions[].currency desde la moneda AUTORITATIVA del broker
+    (broker_ccy = {name: 'ARS'|'USD'|'USDT'|…}) cuando la fila no la trae.
+
+    CRÍTICO: _native_ccy cae a una heurística por NOMBRE de broker para las
+    posiciones con currency NULL, y esa lista (_AR_BROKER_HINTS) NO cubre todos
+    los brokers AR (ej. 'Santander', 'Galicia', 'PPI', 'Mercado Pago'). Sin este
+    estampado, un holding en pesos en uno de esos brokers se contaría como USD
+    (~tc_blue× inflado). Todo path que cargue positions para análisis debe
+    llamar a esta función con brokers.currency antes de valuar."""
+    if not broker_ccy:
+        return positions
+    for p in positions:
+        if (p.get("currency") or "").strip():
+            continue
+        bc = (broker_ccy.get(p.get("broker") or "") or "").strip().upper()
+        if bc:
+            p["currency"] = "ARS" if bc == "ARS" else "USD"
+    return positions
 
 
 def _is_ar_bond(asset: str) -> bool:
@@ -140,6 +225,7 @@ def _is_ar_economic_exposure(asset: str, broker: Optional[str] = None) -> bool:
     Lo único que cuenta como AR:
     - Bonos soberanos AR (AL30, GD30, etc.)
     - Acciones del Merval locales (GGAL, YPFD, etc.)
+    - ADRs de empresas AR en NYSE (YPF, PAM, GGAL, etc.) — riesgo-país AR
     - Cash ARS en cualquier broker (es exposición a peso)
     """
     if not asset:
@@ -151,6 +237,10 @@ def _is_ar_economic_exposure(asset: str, broker: Optional[str] = None) -> bool:
     if _is_ar_bond(a):
         return True
     if a in _AR_LOCAL_STOCKS:
+        return True
+    # ADR de empresa AR (ticker propio en NYSE, sin .BA) → exposición económica AR.
+    base = a[:-3] if a.endswith(".BA") else a
+    if base in _AR_ADRS:
         return True
     if _is_cedear(a):
         # CEDEAR es internacional aunque esté en Cocos
@@ -193,40 +283,55 @@ def _resolve_price(asset: str, broker: Optional[str], prices: Optional[Dict[str,
 
 
 def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = None,
-                         tc_blue: float = 1415.0) -> float:
+                         tc_blue: float = 1415.0, tc_cedear: Optional[float] = None) -> float:
     """Valor USD-equivalente de una position. Maneja:
     - Cash (usa invested directo)
     - Posiciones con precio actual disponible (price × quantity)
     - Fallback a invested si no hay precio
     - Conversión ARS → USD para brokers AR
+
+    Dos tipos de cambio:
+    - tc_blue: para CASH en pesos (el dólar al que liquidarías efectivo).
+    - tc_cedear (dólar-MEP): para holdings .BA (CEDEARs / acciones AR valuadas
+      en ARS). Es el dólar implícito que usa el broker y el resto de la app
+      (frontend cedearRate). Si no se pasa, cae a tc_blue (comportamiento previo).
     """
     if not p:
         return 0.0
+    rate_holdings = tc_cedear if (tc_cedear and tc_cedear > 0) else tc_blue
     asset = (p.get("asset") or "").upper()
     broker = p.get("broker") or ""
-    is_ars = _is_ars_broker(broker)
+    # DOS ejes de moneda, distintos:
+    #  - cost_ccy: moneda del cost basis (invested). Resuelta por _native_ccy
+    #    (respeta sub-broker '· USD'). Decide si convertir `invested`.
+    #  - price_is_ars: _resolve_price devuelve el precio .BA (ARS) para brokers
+    #    AR-resident (incluido el sub-broker '· USD', cuyo CEDEAR cotiza en ARS).
+    #    Decide si convertir el valor de mercado live.
+    cost_ccy = _native_ccy(p)
+    price_is_ars = _is_ars_broker(broker)
     qty = p.get("quantity") or 0
-    invested_native = p.get("invested") or 0
+    invested_native = float(p.get("invested") or 0)
 
-    # Cash ARS — convertir directo
+    # Cash — convertir solo si el cash es en pesos
     if p.get("is_cash"):
-        if is_ars or asset == "ARS":
-            return float(invested_native) / tc_blue if tc_blue > 0 else 0.0
-        return float(invested_native)
+        if cost_ccy == "ARS":
+            return invested_native / tc_blue if tc_blue > 0 else 0.0
+        return invested_native
 
-    # Para no-cash: preferimos precio actual × quantity (en la moneda nativa)
-    value_native = 0.0
+    # No-cash: preferimos precio actual × quantity.
     if qty:
         price = _resolve_price(asset, broker, prices)
         if price and price > 0:
             value_native = float(price) * float(qty)
-    if value_native <= 0:
-        value_native = float(invested_native)
+            # El precio live de un broker AR está en ARS (.BA) → a USD vía MEP.
+            if price_is_ars and rate_holdings > 0:
+                return value_native / rate_holdings
+            return value_native
 
-    # Conversión ARS → USD para brokers AR
-    if is_ars and tc_blue > 0:
-        return value_native / tc_blue
-    return value_native
+    # Fallback al cost basis (invested), en su moneda nativa (ARS .BA → MEP).
+    if cost_ccy == "ARS" and rate_holdings > 0:
+        return invested_native / rate_holdings
+    return invested_native
 
 
 # ─── Detector 1: Disposition Effect ──────────────────────────────────────────
@@ -328,7 +433,8 @@ def detect_disposition_effect(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
 # ─── Detector 2: Overtrade Ratio ─────────────────────────────────────────────
 
 
-def detect_overtrade(ops: List[Dict[str, Any]], positions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+def detect_overtrade(ops: List[Dict[str, Any]], positions: Optional[List[Dict[str, Any]]] = None,
+                     tc_blue: float = 1415.0, prices: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     """Frecuencia de trades vs capital. Excede ~2x/año implica que el portfolio
     está siendo rotado más de dos veces — generalmente destruye returns netos
     una vez que descontás comisiones, spreads y mistiming.
@@ -344,12 +450,14 @@ def detect_overtrade(ops: List[Dict[str, Any]], positions: Optional[List[Dict[st
     # preciso pero requiere otro fetch. Esta aproximación está OK para MVP.
     capital_avg = 0
     if positions:
-        capital_avg = sum((p.get("invested") or 0) for p in positions if not p.get("is_cash"))
+        # USD-consistente: _position_value_usd convierte ARS→USD por posición.
+        # Sumar invested crudo mezclaba pesos con dólares (turnover distorsionado).
+        capital_avg = sum(_position_value_usd(p, prices, tc_blue) for p in positions if not p.get("is_cash"))
     if capital_avg <= 0:
         capital_avg = sum(abs(o.get("pnl_usd") or 0) for o in trades) * 5  # fallback
 
-    # Notional total tradeado en el período
-    total_notional = sum(_position_size_usd(o) for o in trades)
+    # Notional total tradeado en el período (cada op convertida a USD)
+    total_notional = sum(_position_size_usd(o, tc_blue) for o in trades)
 
     # Período: días entre primera y última op (mínimo 30 días para no inflar)
     dates = [_parse_date(o.get("date")) for o in trades]
@@ -412,7 +520,7 @@ def detect_overtrade(ops: List[Dict[str, Any]], positions: Optional[List[Dict[st
 # ─── Detector 3: Loss Aversion (size winners vs losers) ──────────────────────
 
 
-def detect_loss_aversion(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
+def detect_loss_aversion(ops: List[Dict[str, Any]], tc_blue: float = 1415.0) -> Dict[str, Any]:
     """Compara el tamaño promedio (en USD notional) de winners vs losers.
 
     Si el size promedio de tus losers es 1.5×+ más grande que tus winners,
@@ -427,8 +535,8 @@ def detect_loss_aversion(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
     if len(winners) < 3 or len(losers) < 3:
         return _not_enough_data("loss_aversion", "Necesitás al menos 3 ganadoras y 3 perdedoras para comparar tamaños.")
 
-    win_sizes = [_position_size_usd(o) for o in winners]
-    loss_sizes = [_position_size_usd(o) for o in losers]
+    win_sizes = [_position_size_usd(o, tc_blue) for o in winners]
+    loss_sizes = [_position_size_usd(o, tc_blue) for o in losers]
     win_avg = sum(win_sizes) / len(win_sizes)
     loss_avg = sum(loss_sizes) / len(loss_sizes)
 
@@ -712,7 +820,7 @@ def detect_winrate_payoff(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def detect_concentration(positions: List[Dict[str, Any]], prices: Optional[Dict[str, float]] = None,
-                          tc_blue: float = 1415.0) -> Dict[str, Any]:
+                          tc_blue: float = 1415.0, tc_cedear: Optional[float] = None) -> Dict[str, Any]:
     """Concentración del portfolio: top 1 / top 3 holdings como % del total.
     Top 1 > 40% → high. Top 1 > 25% o Top 3 > 70% → medium.
 
@@ -729,7 +837,7 @@ def detect_concentration(positions: List[Dict[str, Any]], prices: Optional[Dict[
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        value_usd = _position_value_usd(p, prices, tc_blue)
+        value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if value_usd <= 0:
             continue
         by_asset[asset] = by_asset.get(asset, 0) + value_usd
@@ -803,7 +911,7 @@ def detect_concentration(positions: List[Dict[str, Any]], prices: Optional[Dict[
 
 
 def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str, float]] = None,
-                      tc_blue: float = 1415.0) -> Dict[str, Any]:
+                      tc_blue: float = 1415.0, tc_cedear: Optional[float] = None) -> Dict[str, Any]:
     """Home bias: exposición económica a Argentina vs internacional.
 
     CRÍTICO: usamos exposición ECONÓMICA, no nominal por broker. Un CEDEAR
@@ -826,11 +934,10 @@ def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str,
     intl_value = 0
     for p in positions:
         if p.get("is_cash"):
-            # Cash ARS = AR; cash USD/USDT = internacional
-            value_usd = _position_value_usd(p, prices, tc_blue)
-            asset = (p.get("asset") or "").upper()
-            broker = p.get("broker") or ""
-            if asset == "ARS" or (_is_ars_broker(broker) and asset != "USD"):
+            # Cash ARS (peso) = exposición AR; cash USD/USDT = internacional.
+            # _native_ccy respeta el asset (USDT→USD) y el sub-broker '· USD'.
+            value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
+            if _native_ccy(p) == "ARS":
                 ar_value += value_usd
             else:
                 intl_value += value_usd
@@ -838,7 +945,7 @@ def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str,
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        value_usd = _position_value_usd(p, prices, tc_blue)
+        value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if value_usd <= 0:
             continue
         if _is_ar_economic_exposure(asset, p.get("broker")):
@@ -907,7 +1014,8 @@ def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str,
 
 
 def detect_cash_drag(positions: List[Dict[str, Any]], tc_blue: float = 1415.0,
-                      prices: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+                      prices: Optional[Dict[str, float]] = None,
+                      tc_cedear: Optional[float] = None) -> Dict[str, Any]:
     """% del portfolio en cash. Cash en USD es razonable defensivo, pero
     cash ARS es destructivo dada la inflación. Tratamos los dos.
     """
@@ -918,11 +1026,11 @@ def detect_cash_drag(positions: List[Dict[str, Any]], tc_blue: float = 1415.0,
     cash_ars_usd_equiv = 0
     invested_usd = 0
     for p in positions:
-        value_usd = _position_value_usd(p, prices, tc_blue)
+        value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if p.get("is_cash"):
-            asset = (p.get("asset") or "").upper()
-            broker = p.get("broker") or ""
-            if asset == "ARS" or (_is_ars_broker(broker) and asset != "USD"):
+            # Cash en pesos vs dólares por moneda REAL (no por nombre de broker):
+            # un USDT en 'Cocos · USD' es dólar, no peso.
+            if _native_ccy(p) == "ARS":
                 cash_ars_usd_equiv += value_usd
             else:
                 cash_usd += value_usd
@@ -934,6 +1042,30 @@ def detect_cash_drag(positions: List[Dict[str, Any]], tc_blue: float = 1415.0,
         return _not_enough_data("cash_drag", "Portfolio sin valor.")
 
     cash_total = cash_usd + cash_ars_usd_equiv
+    # Cash neto negativo: margen/deuda en USD o débito de registración (dólar-MEP)
+    # pendiente. No es "cash drag" (cash ocioso) — evitamos un % sin sentido (−201%).
+    if cash_total < 0:
+        return {
+            "code": "cash_drag",
+            "title": "Cash neto negativo",
+            "severity": "low",
+            "detected": False,
+            "score": 0,
+            "value_label": "—",
+            "one_liner": (
+                "Tu balance de cash es negativo (margen/deuda en USD o un débito de "
+                "registración pendiente). No aplica el análisis de cash ocioso."
+            ),
+            "evidence": {
+                "cash_pct": 0,
+                "cash_ars_pct": 0,
+                "cash_usd_amount": round(cash_usd, 2),
+                "cash_ars_usd_equiv": round(cash_ars_usd_equiv, 2),
+                "invested_usd": round(invested_usd, 2),
+                "total_usd": round(total, 2),
+            },
+            "references": ["Cash drag literature — Vanguard research on optimal cash allocation."],
+        }
     cash_pct = (cash_total / total) * 100
     cash_ars_pct = (cash_ars_usd_equiv / total) * 100
 
@@ -1005,14 +1137,14 @@ def detect_inflation_loss(positions: List[Dict[str, Any]], inflation_monthly: Op
     if not positions:
         return _not_enough_data("inflation_loss", "No tenés posiciones.")
 
-    # Cash ARS total (en ARS)
+    # Cash ARS total (en ARS) — solo el cash REALMENTE en pesos.
+    # _native_ccy excluye USDT/USD y el sub-broker '· USD' (que antes se sumaban
+    # como pesos por el substring del nombre y se les aplicaba inflación AR).
     cash_ars_pesos = 0
     for p in positions:
         if not p.get("is_cash"):
             continue
-        broker = (p.get("broker") or "").lower()
-        is_ars = any(s in broker for s in ("cocos", "iol", "bull", "balanz"))
-        if is_ars:
+        if _native_ccy(p) == "ARS":
             cash_ars_pesos += p.get("invested") or 0
 
     if cash_ars_pesos <= 0:
@@ -1091,11 +1223,20 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
     """Pregunta: ¿qué hubiera pasado si NO hubieras cerrado tus posiciones?
 
     Para cada venta cerrada (op_type ≠ Compra/Dividendo), comparamos:
-    - PnL realizado en USD (el que registraste al vender)
+    - PnL realizado en USD (`pnl_usd`, ya convertido al cerrar la op)
     - PnL hipotético: precio actual del asset × quantity vendido − costo
 
     Si los precios subieron desde tu venta, hubieras ganado más. Si bajaron,
     bien hiciste. Suma de diferencias = "lo que perdiste por tradear".
+
+    ── Guard de moneda (crítico) ────────────────────────────────────────────
+    `prices` viene de yfinance: precios en USD del ticker US (INTC, TSLA…).
+    Solo es comparable contra operaciones denominadas en USD. Las ops en ARS
+    (CEDEAR) tienen entry/exit en pesos; restarlas contra un precio en USD da
+    basura (ej. INTC vendido a 32.640 ARS vs 134 USD ⇒ −1,3M ficticio, y el
+    detector concluía SIEMPRE "vender fue acertado"). Como la columna
+    `currency` de operations casi nunca está poblada, inferimos la moneda por
+    el FX implícito del `pnl_usd` y omitimos las ventas que no están en USD.
 
     Requiere precios actuales (prices dict).
     """
@@ -1103,9 +1244,10 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
     if len(trades) < 3 or not prices:
         return _not_enough_data("counterfactual", "Necesitás al menos 3 trades cerrados + precios actuales.")
 
-    realized_total = 0
-    hypothetical_total = 0
+    realized_total = 0.0
+    hypothetical_total = 0.0
     breakdown = []
+    skipped_fx = 0  # ventas omitidas por no estar en USD (no comparables)
     for o in trades:
         asset = (o.get("asset") or "").upper()
         if not asset:
@@ -1113,11 +1255,44 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
         qty = o.get("quantity") or 0
         exit_price = o.get("exit_price") or 0
         entry_price = o.get("entry_price") or 0
-        cur_price = prices.get(asset) or prices.get(asset + ".BA")
-        if cur_price is None or qty == 0:
+        pnl_usd = o.get("pnl_usd")
+        cur_price = prices.get(asset)  # solo el precio USD del ticker US; SIN fallback .BA (ARS)
+        if cur_price is None or qty == 0 or pnl_usd is None:
             continue
-        realized = (exit_price - entry_price) * qty
-        hypothetical = (cur_price - entry_price) * qty
+        # Excluir ventas de brokers AR (incluido el sub-broker '· USD'): son
+        # CEDEARs/acciones AR cuyo entry está por-UNIDAD-de-CEDEAR, mientras
+        # cur_price (yfinance) es la acción US COMPLETA → difieren por el ratio
+        # del CEDEAR (INTC 6:1, MELI 30:1…) y la comparación es basura.
+        if _is_ars_broker(o.get("broker")):
+            skipped_fx += 1
+            continue
+
+        # ── ¿Esta venta está en USD (comparable con cur_price)? ──────────────
+        # Solo incluimos lo que podemos CONFIRMAR como USD; ante la duda,
+        # omitimos (mejor analizar menos trades que mezclar monedas).
+        # 1) Si la op declara currency, la respetamos.
+        # 2) Si no, inferimos por el FX implícito: pnl_usd / pnl_nativo.
+        #    USD ⇒ ≈ 1.0 ; ARS ⇒ ≈ 1/1435 ≈ 0.0007 (separación limpia).
+        # 3) Si el PnL nativo es ~0 no hay señal de FX (no podemos descartar un
+        #    activo AR cotizado en pesos) ⇒ omitimos por seguridad.
+        currency = (o.get("currency") or "").strip().upper()
+        raw_native = (exit_price - entry_price) * qty
+        implied_fx = (pnl_usd / raw_native) if abs(raw_native) > 0.5 else None
+        if currency:
+            is_usd = currency == "USD"
+        elif implied_fx is not None:
+            is_usd = 0.5 <= implied_fx <= 2.0
+        else:
+            is_usd = False
+        if not is_usd:
+            skipped_fx += 1
+            continue
+
+        realized = pnl_usd  # autoritativo, ya en USD (neto de comisiones)
+        # delta = upside de precio puro (cur − exit) × qty. Computar hypothetical
+        # DESDE realized cancela el cost-basis y las comisiones, evitando que el
+        # delta arrastre la diferencia entre pnl_usd (neto) y entry_price (bruto).
+        hypothetical = realized + (cur_price - exit_price) * qty
         delta = hypothetical - realized
         realized_total += realized
         hypothetical_total += hypothetical
@@ -1129,8 +1304,12 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
             "exit_date": o.get("date"),
         })
 
-    if not breakdown:
-        return _not_enough_data("counterfactual", "No pudimos cruzar tus ventas con precios actuales.")
+    if len(breakdown) < 3:
+        return _not_enough_data(
+            "counterfactual",
+            "Necesitás al menos 3 ventas en USD con precio actual para comparar. "
+            "Las ventas en pesos (CEDEAR) no se pueden cruzar contra el precio en USD.",
+        )
 
     delta_total = hypothetical_total - realized_total
 
@@ -1175,6 +1354,7 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
             "hypothetical_total_usd": round(hypothetical_total, 2),
             "delta_total_usd": round(delta_total, 2),
             "trades_analyzed": len(breakdown),
+            "trades_skipped_fx": skipped_fx,
             "top_misses": breakdown[:5],  # cap
         },
         "references": [
@@ -1188,7 +1368,8 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
 
 def detect_recency_bias(positions: List[Dict[str, Any]],
                          prices: Optional[Dict[str, float]] = None,
-                         tc_blue: float = 1415.0) -> Dict[str, Any]:
+                         tc_blue: float = 1415.0,
+                         tc_cedear: Optional[float] = None) -> Dict[str, Any]:
     """Variante pragmática del recency bias: detecta "chase the pump" usando
     la relación entre buy_price y precio actual.
 
@@ -1219,10 +1400,16 @@ def detect_recency_bias(positions: List[Dict[str, Any]],
         # CRÍTICO: el precio actual tiene que ser en la MISMA moneda que
         # buy_price. _resolve_price() garantiza eso (busca .BA si el broker
         # es AR, evita mezclar US$ con AR$ que daba "drawdown -98%" absurdos).
-        current_price = _resolve_price(asset, p.get("broker"), prices)
+        broker = p.get("broker")
+        current_price = _resolve_price(asset, broker, prices)
         if current_price is None or current_price <= 0:
             continue
-        invested_usd = _position_value_usd(p, prices, tc_blue)
+        # buy_price y current_price deben estar en la MISMA moneda para que el
+        # ratio tenga sentido. _resolve_price devuelve ARS (.BA) para brokers AR;
+        # el buy_price de un sub-broker '· USD' está en USD → mismatch → omitir.
+        if _is_ars_broker(broker) != (_native_ccy(p) == "ARS"):
+            continue
+        invested_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if invested_usd <= 0:
             continue
         total_invested += invested_usd
@@ -1361,7 +1548,8 @@ def _sector_for(asset: str) -> str:
 
 def detect_sector_concentration(positions: List[Dict[str, Any]],
                                  prices: Optional[Dict[str, float]] = None,
-                                 tc_blue: float = 1415.0) -> Dict[str, Any]:
+                                 tc_blue: float = 1415.0,
+                                 tc_cedear: Optional[float] = None) -> Dict[str, Any]:
     """Concentración por sector. Si un sector pesa >50% → high. >35% → medium.
     <30% top sector → positive.
     """
@@ -1377,7 +1565,7 @@ def detect_sector_concentration(positions: List[Dict[str, Any]],
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        value_usd = _position_value_usd(p, prices, tc_blue)
+        value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if value_usd <= 0:
             continue
         sector = _sector_for(asset)
@@ -1473,6 +1661,7 @@ def build_behavioral_insights(
     prices: Optional[Dict[str, float]] = None,
     inflation_monthly: Optional[Dict[str, float]] = None,
     tc_blue: float = 1415.0,
+    tc_cedear: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Orchestrator — corre los 10 detectores y devuelve un payload uniforme.
 
@@ -1481,7 +1670,9 @@ def build_behavioral_insights(
         positions: lista de positions activas.
         prices: dict { 'TICKER': precio_actual } para concentration / counterfactual.
         inflation_monthly: dict { 'YYYY-MM': pct } de inflación AR mensual.
-        tc_blue: cotización del dólar para convertir valores ARS.
+        tc_blue: cotización del dólar para cash en pesos.
+        tc_cedear: dólar-MEP para valuar holdings .BA (CEDEARs / acciones AR).
+            Si es None, los holdings .BA caen a tc_blue (comportamiento previo).
 
     Returns:
         {
@@ -1495,20 +1686,20 @@ def build_behavioral_insights(
     cards = [
         # Sprint 3 — los 4 originales
         detect_disposition_effect(ops),
-        detect_overtrade(ops, pos),
-        detect_loss_aversion(ops),
+        detect_overtrade(ops, pos, tc_blue, prices),
+        detect_loss_aversion(ops, tc_blue),
         detect_averaging_down(ops),
         # Sprint 3.1
-        detect_concentration(pos, prices, tc_blue),
+        detect_concentration(pos, prices, tc_blue, tc_cedear),
         detect_inflation_loss(pos, inflation_monthly, tc_blue),
         detect_counterfactual(ops, prices),
         # Sprint 3.2
         detect_winrate_payoff(ops),
-        detect_home_bias(pos, prices, tc_blue),
-        detect_cash_drag(pos, tc_blue),
+        detect_home_bias(pos, prices, tc_blue, tc_cedear),
+        detect_cash_drag(pos, tc_blue, prices, tc_cedear),
         # Sprint 3.3
-        detect_recency_bias(pos, prices, tc_blue),
-        detect_sector_concentration(pos, prices, tc_blue),
+        detect_recency_bias(pos, prices, tc_blue, tc_cedear),
+        detect_sector_concentration(pos, prices, tc_blue, tc_cedear),
     ]
 
     high = sum(1 for c in cards if c["severity"] == "high")

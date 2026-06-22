@@ -500,6 +500,11 @@ function ModalEvidence({ card }) {
           <EvidenceRow label="P&L si no hubieras vendido" value={`US$ ${ev.hypothetical_total_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           <EvidenceRow label="Diferencia" value={`${ev.delta_total_usd >= 0 ? '+' : '−'}US$ ${Math.abs(ev.delta_total_usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`} mono />
           <EvidenceRow label="Trades analizados" value={ev.trades_analyzed} mono />
+          {ev.trades_skipped_fx > 0 && (
+            <div className="text-[11px] text-ink-3 leading-snug">
+              Analizado solo sobre tus ventas en USD. {ev.trades_skipped_fx} venta{ev.trades_skipped_fx === 1 ? '' : 's'} en pesos (CEDEAR) quedan afuera: su precio no es comparable contra el precio actual en USD.
+            </div>
+          )}
           {ev.top_misses?.length > 0 && (
             <div className="border-t border-line/40 pt-2 space-y-1">
               <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">Top diferencias</div>

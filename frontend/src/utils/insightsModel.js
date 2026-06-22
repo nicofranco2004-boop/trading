@@ -11,6 +11,8 @@
 //  • Los amounts vienen y salen en la moneda de origen (USD si la pasa el
 //    caller; ARS si la pasa así). Sin conversiones implícitas.
 
+import { isArUsdBroker } from './valuation'
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function sortGlobalMonthly(globalMonthly) {
@@ -436,7 +438,7 @@ const CRYPTO_TICKERS = new Set([
  *   • CEDEAR/AR — broker ARS (acción argentina o CEDEAR)
  *   • Acción/ETF — broker USD, ticker no cripto (fallback razonable)
  *
- * @param {Object} position  { asset, broker, is_cash }
+ * @param {Object} position  { asset, asset_type, broker, is_cash }
  * @param {Array}  brokers   [{ name, currency }]
  * @returns {string} categoría
  */
@@ -445,6 +447,9 @@ export function classifyAssetType(position, brokers = []) {
   if (position.is_cash) return 'Cash'
   const ticker = String(position.asset || '').toUpperCase()
   if (CRYPTO_TICKERS.has(ticker)) return 'Cripto'
+  // CEDEAR (incluso en broker USD vía dólar-MEP) o instrumento de un sub-broker
+  // AR "· USD" → es BYMA, va a CEDEAR/AR aunque la moneda del broker sea USD.
+  if (position.asset_type === 'CEDEAR' || isArUsdBroker(position.broker)) return 'CEDEAR/AR'
   const broker = brokers.find(b => b.name === position.broker)
   if (broker?.currency === 'ARS') return 'CEDEAR/AR'
   return 'Acción/ETF'
