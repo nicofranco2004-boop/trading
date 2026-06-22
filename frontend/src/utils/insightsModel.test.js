@@ -462,6 +462,16 @@ describe('classifyAssetType', () => {
   it('USD broker no-crypto → Acción/ETF', () => {
     expect(classifyAssetType({ asset: 'AAPL', broker: 'Binance' }, brokers)).toBe('Acción/ETF')
   })
+
+  it('CEDEAR en broker USD → CEDEAR/AR (por asset_type)', () => {
+    const bk = [{ name: 'Cocos · USD', currency: 'USDT' }]
+    expect(classifyAssetType({ asset: 'MELI', asset_type: 'CEDEAR', broker: 'Cocos · USD' }, bk)).toBe('CEDEAR/AR')
+  })
+
+  it('instrumento en sub-broker AR "· USD" → CEDEAR/AR (por nombre)', () => {
+    const bk = [{ name: 'Cocos · USD', currency: 'USDT' }]
+    expect(classifyAssetType({ asset: 'PAMP', broker: 'Cocos · USD' }, bk)).toBe('CEDEAR/AR')
+  })
 })
 
 // ── computeAssetTypeBreakdown ─────────────────────────────────────────────────

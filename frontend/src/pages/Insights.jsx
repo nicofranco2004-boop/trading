@@ -21,7 +21,7 @@ import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/for
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import {
@@ -229,8 +229,14 @@ function InsightsDesktop({ _embeddedTab }) {
       const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
       // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
       const usdtBrokers = new Set(bkrs.filter(x => x.currency !== 'ARS').map(x => x.name))
-      const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-      const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => priceSymbol(p.asset, false, p.asset_type)))]
+      const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type)))]
+      // En un sub-broker AR "· USD" todo es de BYMA (CEDEARs + acciones AR como
+      // PAMP/YPFD): se pide el símbolo local .BA. En un broker USD real (Schwab)
+      // se pide el ticker US pelado. priceSymbol(asset, true, …) fuerza el .BA.
+      const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT')
+        .map(p => isArUsdBroker(p.broker)
+          ? priceSymbol(p.asset, true, p.asset_type)
+          : priceSymbol(p.asset, false, p.asset_type)))]
       const all = [...arsSyms, ...usdtSyms].join(',')
       if (all) {
         try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch {}
@@ -267,6 +273,11 @@ function InsightsDesktop({ _embeddedTab }) {
       if (broker?.currency === 'ARS') {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+        // CEDEAR / instrumento de BYMA en broker USD: valuar por su precio LOCAL
+        // .BA (ARS) ÷ dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
+        const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : (p.invested || 0)
       } else {
         const price = p.price_override ?? prices[p.asset]
         val = price != null ? price * (p.quantity || 0) : (p.invested || 0)
@@ -305,6 +316,11 @@ function InsightsDesktop({ _embeddedTab }) {
       if (broker?.currency === 'ARS') {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+        // CEDEAR / instrumento de BYMA en broker USD: precio LOCAL .BA (ARS) ÷
+        // dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
+        const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+        val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : (p.invested || 0)
       } else {
         const price = p.price_override ?? prices[p.asset]
         val = price != null ? price * (p.quantity || 0) : (p.invested || 0)
@@ -1183,6 +1199,12 @@ function InsightsDesktop({ _embeddedTab }) {
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
       valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
       investedUsd = realCost / tcBlue
+    } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+      // CEDEAR / instrumento de BYMA en broker USD: precio LOCAL .BA (ARS) ÷
+      // dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
+      const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+      valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : realCost
+      investedUsd = realCost
     } else {
       const price = p.price_override ?? prices[p.asset]
       valueUsd = price != null ? price * (p.quantity || 0) : realCost
@@ -1192,6 +1214,7 @@ function InsightsDesktop({ _embeddedTab }) {
     return {
       broker: p.broker,
       asset: p.asset,
+      asset_type: p.asset_type,
       qty: p.quantity,
       entry_date: p.entry_date,
       invested_usd: +investedUsd.toFixed(2),
@@ -1246,7 +1269,7 @@ function InsightsDesktop({ _embeddedTab }) {
   const brokerConcentration = computeBrokerConcentration(pieData)
   // Distribución por tipo de activo: combinamos posiciones abiertas + cash.
   const positionsForType = [
-    ...aiPositions.map(p => ({ asset: p.asset, broker: p.broker, is_cash: false, value_usd: p.value_usd })),
+    ...aiPositions.map(p => ({ asset: p.asset, asset_type: p.asset_type, broker: p.broker, is_cash: false, value_usd: p.value_usd })),
     ...aiCash.map(c => ({ asset: c.asset, broker: c.broker, is_cash: true, value_usd: c.value_usd })),
   ]
   const assetTypeBreakdown = computeAssetTypeBreakdown(positionsForType, brokers)
@@ -1357,6 +1380,11 @@ function InsightsDesktop({ _embeddedTab }) {
     vsSp500,
     vsArs,
     inflationCum,
+    // Retorno acumulado de la cartera EN PESOS (MWR), tomado del último punto de
+    // benchSeriesArs (capital de cada mes valuado al blue de ese mes). Se usa para
+    // comparar contra la inflación INDEC (pesos): NUNCA mezclar retorno-USD con
+    // inflación-pesos. null si no hay serie ARS computable.
+    portfolioReturnArsPct: benchSeriesArs.length ? benchSeriesArs[benchSeriesArs.length - 1].total : null,
     currency,
     drawdown,
     winRate,

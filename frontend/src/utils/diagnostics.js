@@ -189,21 +189,31 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'beat_inflation_ars',
     category: 'Performance',
     severity: 'positive',
-    generate: ({ vsArs, inflationCum, currency }) => {
-      if (currency !== 'ARS' || !inflationCum) return null
-      if (!vsArs || vsArs.pct == null) return null
-      if (vsArs.pct < 0) return null
-      return `Tu cartera en pesos supera a la inflación INDEC con un retorno real de **+${vsArs.pct.toFixed(1)}%**.`
+    // Retorno real = retorno de la cartera EN PESOS deflactado por la inflación
+    // INDEC acumulada. CRÍTICO: comparar contra inflación-pesos exige el retorno
+    // de la cartera en pesos (portfolioReturnArsPct, del último punto de
+    // benchSeriesArs), NO el retorno en USD — mezclar monedas invierte el veredicto.
+    // real = (1+rPortArs)/(1+infl) − 1.
+    generate: ({ portfolioReturnArsPct, inflationCum, currency }) => {
+      if (currency !== 'ARS' || !inflationCum || inflationCum.cumPct == null) return null
+      if (portfolioReturnArsPct == null || !isFinite(portfolioReturnArsPct)) return null
+      const realPct = ((1 + portfolioReturnArsPct / 100) / (1 + inflationCum.cumPct / 100) - 1) * 100
+      if (realPct < 0) return null
+      return `Tu cartera en pesos supera a la inflación INDEC con un retorno real de **+${realPct.toFixed(1)}%**.`
     },
   },
   {
     id: 'lose_to_inflation_ars',
     category: 'Performance',
     severity: 'warn',
-    generate: ({ vsArs, inflationCum, currency }) => {
-      if (currency !== 'ARS' || !inflationCum) return null
-      if (!vsArs || vsArs.pct == null || vsArs.pct >= 0) return null
-      return `Tu cartera en pesos rinde **${Math.abs(vsArs.pct).toFixed(1)}%** por debajo de la inflación INDEC. Hay pérdida de poder adquisitivo en términos reales.`
+    // Mismo principio que beat_inflation_ars: retorno EN PESOS de la cartera
+    // (portfolioReturnArsPct) deflactado por inflación-pesos. Nunca retorno-USD.
+    generate: ({ portfolioReturnArsPct, inflationCum, currency }) => {
+      if (currency !== 'ARS' || !inflationCum || inflationCum.cumPct == null) return null
+      if (portfolioReturnArsPct == null || !isFinite(portfolioReturnArsPct)) return null
+      const realPct = ((1 + portfolioReturnArsPct / 100) / (1 + inflationCum.cumPct / 100) - 1) * 100
+      if (realPct >= 0) return null
+      return `Tu cartera en pesos rinde **${Math.abs(realPct).toFixed(1)}%** por debajo de la inflación INDEC. Hay pérdida de poder adquisitivo en términos reales.`
     },
   },
 
@@ -369,16 +379,14 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'cash_heavy',
     category: 'Asignación',
     severity: 'warn',
-    generate: ({ positions, totalPortfolio, brokers }) => {
-      if (!positions || !totalPortfolio || !brokers) return null
-      const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
-      const tcBlue = 1 // valor irrelevante — solo necesitamos la proporción y los cash están en su moneda
+    generate: ({ positions, totalPortfolio, brokers, tcBlue }) => {
+      if (!positions || !totalPortfolio || !brokers || !tcBlue) return null
+      const arsBrokerSet = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
+      // Convertimos cada cash a USD según la moneda de su broker (mismo patrón
+      // que fx_cash_ars_exposure): ARS → /tcBlue, el resto ya está en USD.
       const cashUsd = positions
         .filter(p => p.is_cash)
-        .reduce((s, p) => {
-          if (arsBrokers.has(p.broker)) return s // ARS cash se ignora aquí (estimación gruesa)
-          return s + (p.invested || 0)
-        }, 0)
+        .reduce((s, p) => s + (arsBrokerSet.has(p.broker) ? (p.invested || 0) / tcBlue : (p.invested || 0)), 0)
       const sharePct = (cashUsd / totalPortfolio) * 100
       if (sharePct < 30) return null
       return `**${sharePct.toFixed(0)}%** del portfolio está en cash. Aporta liquidez para aprovechar correcciones del mercado, pero también limita el rendimiento si el mercado tiene una tendencia alcista sostenida.`
@@ -388,12 +396,15 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'cash_low',
     category: 'Asignación',
     severity: 'info',
-    generate: ({ positions, totalPortfolio }) => {
-      if (!positions || !totalPortfolio) return null
-      const cash = positions
+    generate: ({ positions, totalPortfolio, brokers, tcBlue }) => {
+      if (!positions || !totalPortfolio || !brokers || !tcBlue) return null
+      const arsBrokerSet = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
+      // Convertimos cada cash a USD según la moneda de su broker; sin esto el
+      // cash ARS (pesos) se sumaba crudo como si fuera USD e inflaba el % ~1400×.
+      const cashUsd = positions
         .filter(p => p.is_cash)
-        .reduce((s, p) => s + (p.invested || 0), 0)
-      const sharePct = (cash / totalPortfolio) * 100
+        .reduce((s, p) => s + (arsBrokerSet.has(p.broker) ? (p.invested || 0) / tcBlue : (p.invested || 0)), 0)
+      const sharePct = (cashUsd / totalPortfolio) * 100
       if (sharePct >= 5 || sharePct < 0.5) return null
       return `Solo **${sharePct.toFixed(1)}%** del portfolio en cash. Una reserva mayor te permitiría aprovechar correcciones del mercado.`
     },

@@ -8538,11 +8538,8 @@ def behavioral_insights(uid: int = Depends(get_current_user)):
                 "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)
             ).fetchall()
         }
-        for p in positions:
-            if not (p.get("currency") or "").strip():
-                bc = broker_ccy.get(p.get("broker") or "")
-                if bc:
-                    p["currency"] = "ARS" if bc == "ARS" else "USD"
+        from behavioral import stamp_positions_currency
+        stamp_positions_currency(positions, broker_ccy)
         # Precios actuales. Para holdings de brokers AR pedimos también la
         # variante '.BA' (precio en ARS del CEDEAR/acción AR) — es lo que
         # _resolve_price busca para esos brokers. Sin esto, recency_bias

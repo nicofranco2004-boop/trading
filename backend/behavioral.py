@@ -151,6 +151,28 @@ def _native_ccy(p: Dict[str, Any]) -> str:
     return "USD"
 
 
+def stamp_positions_currency(positions: List[Dict[str, Any]],
+                             broker_ccy: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Estampa positions[].currency desde la moneda AUTORITATIVA del broker
+    (broker_ccy = {name: 'ARS'|'USD'|'USDT'|…}) cuando la fila no la trae.
+
+    CRÍTICO: _native_ccy cae a una heurística por NOMBRE de broker para las
+    posiciones con currency NULL, y esa lista (_AR_BROKER_HINTS) NO cubre todos
+    los brokers AR (ej. 'Santander', 'Galicia', 'PPI', 'Mercado Pago'). Sin este
+    estampado, un holding en pesos en uno de esos brokers se contaría como USD
+    (~tc_blue× inflado). Todo path que cargue positions para análisis debe
+    llamar a esta función con brokers.currency antes de valuar."""
+    if not broker_ccy:
+        return positions
+    for p in positions:
+        if (p.get("currency") or "").strip():
+            continue
+        bc = (broker_ccy.get(p.get("broker") or "") or "").strip().upper()
+        if bc:
+            p["currency"] = "ARS" if bc == "ARS" else "USD"
+    return positions
+
+
 def _is_ar_bond(asset: str) -> bool:
     """True si el ticker matchea un bono soberano AR conocido."""
     if not asset:
