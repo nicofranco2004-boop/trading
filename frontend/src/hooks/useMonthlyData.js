@@ -35,7 +35,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
 import { computeBestWorstClosedOp } from '../utils/insightsModel'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -149,6 +149,8 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
   const [prices, setPrices] = useState({})
   const [brokers, setBrokers] = useState([])
   const [tcBlue, setTcBlue] = useState(1415)
+  // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR "· USD" en USD.
+  const [tcCedear, setTcCedear] = useState(1415)
   // Benchmarks históricos (S&P 500 + inflación AR) para drivers por mes
   const [bench, setBench] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -179,11 +181,13 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         setBench(bnch)
         const tc = dol?.blue?.venta || cfg?.tc_blue || 1415
         setTcBlue(tc)
+        setTcCedear(dol?.mep?.venta || dol?.ccl?.venta || tc)
         // Cargar precios para que el live value por broker sea exacto
         const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
         const usdtBrokers = new Set((bkrs || []).filter(b => b.currency !== 'ARS').map(b => b.name))
-        const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-        const usdtSyms = [...new Set((pos || []).filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
+        const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type)))]
+        // Sub-brokers "· USD" piden el .BA (BYMA); brokers USD reales el ticker US pelado.
+        const usdtSyms = [...new Set((pos || []).filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
         const all = [...arsSyms, ...usdtSyms].join(',')
         if (all) {
           try {
@@ -213,9 +217,9 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
 
   const data = useMemo(
     () => buildMonthlyReports(monthly, operations, snapshots, broker, {
-      positions, prices, brokers, tcBlue, bench,
+      positions, prices, brokers, tcBlue, tcCedear, bench,
     }),
-    [monthly, operations, snapshots, broker, positions, prices, brokers, tcBlue, bench]
+    [monthly, operations, snapshots, broker, positions, prices, brokers, tcBlue, tcCedear, bench]
   )
 
   return { loading, error, ...data, availableBrokers }
@@ -427,7 +431,7 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
     const brokerObj = context.brokers.find(b => b.name === selectedBroker)
     if (brokerObj) {
       try {
-        const r = computeBrokerValue(context.positions, context.prices || {}, brokerObj, context.tcBlue)
+        const r = computeBrokerValue(context.positions, context.prices || {}, brokerObj, context.tcBlue, context.tcCedear || context.tcBlue)
         liveValue = r.value
         // No tenemos liveDate por broker (sería del momento del fetch),
         // así que lo dejamos null y la UI no muestra fecha en ese caso.

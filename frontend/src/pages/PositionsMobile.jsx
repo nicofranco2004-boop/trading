@@ -167,7 +167,18 @@ export default function PositionsMobile() {
     if (p.is_cash) return
     const broker = brokers.find(b => b.name === p.broker)
     const isARS = broker?.currency === 'ARS'
-    const price = prices[priceSymbol(p.asset, isARS)]
+    // CEDEAR / sub-broker "· USD": el instrumento es de BYMA y se cotiza por su .BA
+    // (ARS). El exit_price va en la moneda del broker, así que para un broker USD
+    // se preseteа el .BA ÷ dólar-MEP (USD), consistente con cómo se valúa. Para ARS
+    // se usa el .BA tal cual (ya está en pesos).
+    const local = p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)
+    let price
+    if (local && !isARS) {
+      const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+      price = priceArs != null ? priceArs / tcCedear : undefined
+    } else {
+      price = prices[priceSymbol(p.asset, isARS, p.asset_type)]
+    }
     const suggested = price ?? p.buy_price ?? ''
     setSellForm({
       broker: p.broker,

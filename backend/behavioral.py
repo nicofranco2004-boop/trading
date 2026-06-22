@@ -210,7 +210,7 @@ def _is_cedear(asset: str) -> bool:
     base = a[:-3]
     if _is_ar_bond(base):
         return False
-    if base in _AR_LOCAL_STOCKS:
+    if base in _AR_LOCAL_STOCKS or base in _AR_ADRS:
         return False
     return True
 

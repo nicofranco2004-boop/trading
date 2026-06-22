@@ -45,20 +45,27 @@ def _safe_round(v, decimals: int = 4):
         return None
 
 
-def _compute_pnl_pct_for_position(p: dict, prices: dict, is_ar: bool, tc_blue: float) -> Optional[float]:
-    """% de P/L de una posición individual. Returns decimal (0.32 = 32%)."""
+def _compute_pnl_pct_for_position(p: dict, prices: dict, is_ar: bool,
+                                  tc_blue: float, tc_cedear: Optional[float] = None) -> Optional[float]:
+    """% de P/L de una posición individual. Returns decimal (0.32 = 32%).
+
+    Holdings AR (.BA) se valúan al dólar-MEP (tc_cedear); cae a tc_blue si no
+    hay MEP. Como value e invested se convierten al MISMO tipo de cambio, el
+    porcentaje es invariante al dólar elegido — pero usamos MEP para mantener
+    coherencia con la valuación del patrimonio."""
     if p.get("is_cash"):
         return None
     qty = p.get("quantity") or 0
     invested = p.get("invested") or 0
     if invested <= 0 or qty <= 0:
         return None
+    rate_ar = tc_cedear if (tc_cedear and tc_cedear > 0) else tc_blue
     if is_ar:
         price = p.get("price_override") or prices.get(f"{p.get('asset')}.BA")
         if not price:
             return None
-        value_usd = (price * qty) / tc_blue
-        invested_usd = invested / tc_blue
+        value_usd = (price * qty) / rate_ar
+        invested_usd = invested / rate_ar
     else:
         price = p.get("price_override") or prices.get(p.get("asset"))
         if not price:
@@ -99,62 +106,35 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
         (user_id,)
     ).fetchall()]
 
-    # tc_blue (precio del dolar) — fallback 1
-    # config es tabla key-value (key, value, user_id), no columnas
-    tc_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
-    ).fetchone()
-    try:
-        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1
-    except (TypeError, ValueError):
-        tc_blue = 1
+    # ─── Prep money-critical: moneda por broker + precios .BA-aware + FX ──
+    # Estampa positions con brokers.currency, arma prices .BA-aware y resuelve
+    # tc_blue (cash en pesos) y tc_cedear (dólar-MEP, holdings AR/.BA). Reusamos
+    # esto tanto para la valuación propia del patrimonio como para behavioral.
+    from analysis_prep import currency_context
+    from behavioral import _position_value_usd, _is_ars_broker
+    prices, tc_blue, tc_cedear = currency_context(conn, user_id, positions)
     if tc_blue <= 0:
         tc_blue = 1
 
-    # ─── Prices: fetch desde cache para non-cash positions ────────────────
-    prices: Dict[str, float] = {}
-    try:
-        from home.market import _fetch_batch_quotes
-        ars_brokers = {b["name"] for b in brokers if b.get("currency") == "ARS"}
-        symbols = set()
-        for p in positions:
-            if p.get("is_cash") or not p.get("asset"):
-                continue
-            if p.get("broker") in ars_brokers:
-                symbols.add(f"{p['asset']}.BA")
-            else:
-                symbols.add(p["asset"])
-        if symbols:
-            quotes = _fetch_batch_quotes(list(symbols))
-            prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price")}
-    except Exception:
-        prices = {}
-
     # ─── Compute portfolio value + per-position P/L ───────────────────────
-    ars_broker_names = {b["name"] for b in brokers if b.get("currency") == "ARS"}
+    # Valuación con el MISMO criterio que el resto de Análisis: holdings AR/.BA
+    # se valúan al dólar-MEP (tc_cedear), cash en pesos al blue. Delegamos en
+    # behavioral._position_value_usd para no duplicar la lógica de moneda.
     total_value_usd = 0.0
     cash_usd = 0.0
     position_pnls: List[Dict[str, Any]] = []
 
     for p in positions:
-        is_ar = p.get("broker") in ars_broker_names
+        is_ar = _is_ars_broker(p.get("broker"))
         if p.get("is_cash"):
-            invested = p.get("invested") or 0
-            value_usd = invested / tc_blue if is_ar else invested
+            value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
             cash_usd += value_usd
             total_value_usd += value_usd
             continue
-        qty = p.get("quantity") or 0
-        invested = p.get("invested") or 0
-        if is_ar:
-            price = p.get("price_override") or prices.get(f"{p['asset']}.BA")
-            value_usd = (price * qty) / tc_blue if price else invested / tc_blue
-        else:
-            price = p.get("price_override") or prices.get(p.get("asset"))
-            value_usd = price * qty if price else invested
+        value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         total_value_usd += value_usd
 
-        pnl_pct = _compute_pnl_pct_for_position(p, prices, is_ar, tc_blue)
+        pnl_pct = _compute_pnl_pct_for_position(p, prices, is_ar, tc_blue, tc_cedear)
         if pnl_pct is not None:
             position_pnls.append({"asset": p["asset"], "pnl_pct": pnl_pct, "weight": value_usd})
 
@@ -227,10 +207,14 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
     severity = None
     bias_one_liner = None
     try:
-        from behavioral import build_behavioral_insights
+        from behavioral import build_behavioral_insights, stamp_positions_currency
         ops = [dict(r) for r in conn.execute(
             "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (user_id,)
         ).fetchall()]
+        # positions ya vienen estampadas por currency_context; estampamos ops
+        # con la misma moneda autoritativa por broker (op-detectors la necesitan).
+        broker_ccy = {b["name"]: (b.get("currency") or "") for b in brokers}
+        stamp_positions_currency(ops, broker_ccy)
         inflation_monthly = {}
         try:
             from main import _bench_cache
@@ -238,7 +222,7 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
         except Exception:
             pass
         cards = build_behavioral_insights(
-            ops, positions, prices, inflation_monthly, tc_blue
+            ops, positions, prices, inflation_monthly, tc_blue, tc_cedear
         ).get("cards") or []
         # Ranking de severidad
         rank = {"high": 4, "medium": 3, "low": 2, "positive": 1, "neutral": 0}

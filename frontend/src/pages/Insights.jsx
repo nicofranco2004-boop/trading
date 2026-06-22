@@ -648,6 +648,15 @@ function InsightsDesktop({ _embeddedTab }) {
   })()
 
   // benchSeriesArs — solo brokers ARS, capital en pesos (USD × blue del mes) en % acumulado MWR.
+  // Además expone, vía closures de scope externo:
+  //   • portfolioReturnArsPctRaw — el retorno acumulado en pesos del último punto
+  //     SIN el clamp [-99, +200] que aplica el chart. El diagnóstico beat/lose_inflation
+  //     compara contra inflación SIN clampear, así que debe usar este crudo.
+  //   • arsWindowFirstKey / arsWindowLastKey — rango [firstKey..lastKey] real de la
+  //     serie ARS, para deflactar por la inflación de EXACTAMENTE ese rango.
+  let portfolioReturnArsPctRaw = null
+  let arsWindowFirstKey = null
+  let arsWindowLastKey = null
   const benchSeriesArs = (() => {
     if (arsBrokerNames.size === 0 || !bench?.dolar_blue) return []
     // Agrupar monthly entries de brokers ARS por mes (suma si hay varios brokers)
@@ -668,6 +677,9 @@ function InsightsDesktop({ _embeddedTab }) {
     const firstKey = arsMonths[0][0]
     const blueBase = lookupBlue(firstKey)
     if (!blueBase) return []
+    // Rango real de la serie ARS — se usa para recortar la inflación al mismo período.
+    arsWindowFirstKey = firstKey
+    arsWindowLastKey = arsMonths[arsMonths.length - 1][0]
 
     const out = []
     const baselinePesos = arsMonths[0][1].capital_inicio * blueBase
@@ -691,6 +703,7 @@ function InsightsDesktop({ _embeddedTab }) {
       const rawTotal   = denomP > 0 ? (gainPesos / denomP) * 100 : 0
       const total      = Math.min(Math.max(rawTotal, -99), 200)
       const real       = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
+      portfolioReturnArsPctRaw = +rawTotal.toFixed(2)  // crudo (sin clamp) — para el diagnóstico
       out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
     // Punto "Hoy" — valor live de posiciones ARS al blue actual
@@ -706,6 +719,9 @@ function InsightsDesktop({ _embeddedTab }) {
       const rawTotal = denomP > 0 ? (gainPesos / denomP) * 100 : 0
       const total = Math.min(Math.max(rawTotal, -99), 200)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
+      // El punto "Hoy" es el último de la serie → su crudo es el retorno final.
+      portfolioReturnArsPctRaw = +rawTotal.toFixed(2)
+      arsWindowLastKey = 'today'
       out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
     }
     // Deduplicar
@@ -1382,6 +1398,31 @@ function InsightsDesktop({ _embeddedTab }) {
   })()
   const inflLastMonth = inflKeys.length > 0 ? bench.inflation_ar[inflKeys[inflKeys.length - 1]] : null
 
+  // ── Inflación acumulada recortada a la ventana de benchSeriesArs ──────────
+  // El diagnóstico beat/lose_inflation_ars compara portfolioReturnArsPct (retorno
+  // de la cartera EN PESOS, calculado sobre el rango de meses de brokers ARS)
+  // contra la inflación. inflationCum global se computa sobre globalMonthly (TODOS
+  // los brokers), un rango potencialmente distinto → comparar dos rangos invalida
+  // el veredicto. Acá recortamos la inflación a EXACTAMENTE [firstKey..lastKey] de
+  // benchSeriesArs. Si lastKey es 'today', el tope efectivo es el último IPC
+  // disponible (la fecha live ≈ presente).
+  const inflationCumArsWindow = (() => {
+    if (!bench?.inflation_ar || !arsWindowFirstKey || !arsWindowLastKey) return null
+    const lastKeyEff = arsWindowLastKey === 'today'
+      ? (inflKeys.length ? inflKeys[inflKeys.length - 1] : null)
+      : arsWindowLastKey
+    if (!lastKeyEff) return null
+    let cum = 1, count = 0
+    for (const k of inflKeys) {
+      if (k <= arsWindowFirstKey) continue
+      if (k > lastKeyEff) break
+      const ipc = bench.inflation_ar[k]
+      if (ipc != null) { cum *= 1 + ipc / 100; count += 1 }
+    }
+    if (count === 0) return null
+    return { cumPct: (cum - 1) * 100, monthsCounted: count, fromKey: arsWindowFirstKey, toKey: lastKeyEff }
+  })()
+
   // ── Diagnóstico general — motor data-driven (utils/diagnostics.js) ────────
   // Existen muchos generadores; cada uno mira un aspecto distinto del
   // portfolio y emite un bullet solo si su condición aplica. Cada día se
@@ -1402,12 +1443,17 @@ function InsightsDesktop({ _embeddedTab }) {
     totalResult,
     vsSp500,
     vsArs,
-    inflationCum,
-    // Retorno acumulado de la cartera EN PESOS (MWR), tomado del último punto de
-    // benchSeriesArs (capital de cada mes valuado al blue de ese mes). Se usa para
-    // comparar contra la inflación INDEC (pesos): NUNCA mezclar retorno-USD con
-    // inflación-pesos. null si no hay serie ARS computable.
-    portfolioReturnArsPct: benchSeriesArs.length ? benchSeriesArs[benchSeriesArs.length - 1].total : null,
+    // inflationCum global (sobre globalMonthly) se usa en otros lugares de la UI,
+    // pero para el diagnóstico beat/lose_inflation_ars pasamos la inflación
+    // RECORTADA a la ventana de benchSeriesArs (mismo rango que el retorno en pesos).
+    // Esos dos son los únicos generadores que consumen `inflationCum`.
+    inflationCum: inflationCumArsWindow,
+    // Retorno acumulado de la cartera EN PESOS (MWR) del último punto de benchSeriesArs,
+    // SIN el clamp [-99, +200] que aplica el chart (ese clamp distorsiona la comparación
+    // contra inflación no-clampeada y podía invertir el veredicto). Se compara contra la
+    // inflación INDEC (pesos): NUNCA mezclar retorno-USD con inflación-pesos.
+    // null si no hay serie ARS computable → los guards del diagnóstico lo ocultan.
+    portfolioReturnArsPct: portfolioReturnArsPctRaw,
     currency,
     drawdown,
     winRate,
