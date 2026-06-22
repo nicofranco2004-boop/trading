@@ -7,7 +7,7 @@ import EmptyState from './EmptyState'
 import ShareCardModal from './ShareCardModal'
 import { usd, ars, pct, pctSigned, colorClass, MONTHS } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
@@ -87,6 +87,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     ])
     setBrokers(bkrs)
     const tc = dol?.blue?.venta || cfg?.tc_blue || 1415
+    // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
+    const tcCedear = dol?.mep?.venta || dol?.ccl?.venta || tc
     setTcBlue(tc)
     setEntries(ents)
     setBench(bnch)
@@ -100,8 +102,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // un repair duplicado en el frontend; lo sacamos para evitar races y
     // doble I/O.
 
-    // Pasamos brokers + tcBlue ya fetcheados — evita re-fetch redundante.
-    await syncUnrealizedForAll({ brokers: bkrs, tcBlue: tc })
+    // Pasamos brokers + tcBlue + tcCedear ya fetcheados — evita re-fetch redundante.
+    await syncUnrealizedForAll({ brokers: bkrs, tcBlue: tc, tcCedear })
 
     setEntries(await api.get('/monthly'))
   }
@@ -235,10 +237,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // Ahorro: ~400ms al montar /mensual.
     // Save flow (línea ~300) llama sin prefetched → re-fetcha como antes.
     try {
-      let pos, bkrs, tc
+      let pos, bkrs, tc, tcCedear
       if (prefetched && prefetched.brokers && prefetched.tcBlue) {
         bkrs = prefetched.brokers
         tc = prefetched.tcBlue
+        tcCedear = prefetched.tcCedear || tc
         pos = await api.get('/positions')
       } else {
         const r = await Promise.all([api.get('/positions'), api.get('/brokers')])
@@ -247,11 +250,15 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         const dol = await api.get('/dolar').catch(() => null)
         const cfg = await api.get('/config').catch(() => null)
         tc = dol?.blue?.venta || cfg?.tc_blue || tcBlue
+        // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
+        tcCedear = dol?.mep?.venta || dol?.ccl?.venta || tc
       }
 
       const arsBrokerSet = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
-      const arsSyms = [...new Set(pos.filter(p => arsBrokerSet.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-      const usdSyms = [...new Set(pos.filter(p => !arsBrokerSet.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset))]
+      const arsSyms = [...new Set(pos.filter(p => arsBrokerSet.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type)))]
+      // En sub-brokers "· USD" todo es de BYMA → se pide el .BA (igual que Positions.jsx),
+      // sino computeBrokerValue no encuentra precio local y cae a costo.
+      const usdSyms = [...new Set(pos.filter(p => !arsBrokerSet.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
       const allSyms = [...arsSyms, ...usdSyms].join(',')
       const pricesData = allSyms ? await api.get(`/prices?symbols=${allSyms}`).catch(() => ({})) : {}
 
@@ -259,7 +266,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       let liveTotal = 0
       const syncs = []
       for (const b of bkrs) {
-        const result = computeBrokerValue(pos, pricesData, b, tc)
+        const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear)
         // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcBlue for ARS display);
         //               USD stores pnlUsd directly.
         const pnlForBroker = b.currency === 'ARS' ? result.pnlArs / tc : result.pnlUsd

@@ -8426,6 +8426,7 @@ def wrapped_year(year: int, uid: int = Depends(get_current_user)):
         raise HTTPException(400, "Año fuera de rango")
     from wrapped import build_wrapped
     from behavioral import build_behavioral_insights
+    from analysis_prep import currency_context
     conn = get_db()
     try:
         monthly = [dict(r) for r in conn.execute(
@@ -8439,16 +8440,8 @@ def wrapped_year(year: int, uid: int = Depends(get_current_user)):
         positions = [dict(r) for r in conn.execute(
             "SELECT * FROM positions WHERE user_id=?", (uid,)
         ).fetchall()]
-        try:
-            symbols = list(set(
-                p["asset"] for p in positions if p.get("asset") and not p.get("is_cash")
-            ))
-            prices = {}
-            if symbols:
-                quotes = _fetch_batch_quotes(symbols)
-                prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price") is not None}
-        except Exception:
-            prices = {}
+        # Prep money-critical: moneda por broker, precios .BA-aware, tc_blue + MEP.
+        prices, tc_blue, tc_cedear = currency_context(conn, uid, positions, ops)
         try:
             global _bench_cache
             inflation_monthly = (_bench_cache.get("data") or {}).get("inflation_ar") or {}
@@ -8456,9 +8449,8 @@ def wrapped_year(year: int, uid: int = Depends(get_current_user)):
                 inflation_monthly = _fetch_inflation_ar()
         except Exception:
             inflation_monthly = {}
-        tc_blue = _user_tc_blue(conn, uid)
         try:
-            behavioral = build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue)
+            behavioral = build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue, tc_cedear)
             behavioral_cards = behavioral.get("cards") or []
         except Exception:
             behavioral_cards = []
@@ -8519,6 +8511,7 @@ def behavioral_insights(uid: int = Depends(get_current_user)):
         - cash_drag: % portfolio en cash (con énfasis ARS)
     """
     from behavioral import build_behavioral_insights
+    from analysis_prep import currency_context
     conn = get_db()
     try:
         ops = [dict(r) for r in conn.execute(
@@ -8527,41 +8520,10 @@ def behavioral_insights(uid: int = Depends(get_current_user)):
         positions = [dict(r) for r in conn.execute(
             "SELECT * FROM positions WHERE user_id=?", (uid,)
         ).fetchall()]
-        # Moneda AUTORITATIVA por broker (brokers.currency). Sin esto, los
-        # detectores infieren la moneda por el NOMBRE del broker, y el sub-broker
-        # 'Cocos Capital · USD' (en dólares) matchea 'cocos' → sus USD se dividían
-        # por el dólar (~1415×), invirtiendo concentración y subestimando el
-        # patrimonio. Estampamos currency en las posiciones que la tienen vacía.
-        broker_ccy = {
-            r["name"]: (r["currency"] or "").upper()
-            for r in conn.execute(
-                "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)
-            ).fetchall()
-        }
-        from behavioral import stamp_positions_currency
-        stamp_positions_currency(positions, broker_ccy)
-        # Precios actuales. Para holdings de brokers AR pedimos también la
-        # variante '.BA' (precio en ARS del CEDEAR/acción AR) — es lo que
-        # _resolve_price busca para esos brokers. Sin esto, recency_bias
-        # descartaba TODA posición AR y concentración valuaba a costo de compra.
-        from behavioral import _is_ars_broker as _is_ars_brk
-        symbols = set()
-        for p in positions:
-            if not p.get("asset") or p.get("is_cash"):
-                continue
-            a = p["asset"]
-            if _is_ars_brk(p.get("broker")) and not a.upper().endswith(".BA"):
-                symbols.add(a + ".BA")
-            else:
-                symbols.add(a)
-        symbols = list(symbols)
-        prices = {}
-        if symbols:
-            try:
-                quotes = _fetch_batch_quotes(symbols)
-                prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price") is not None}
-            except Exception:
-                prices = {}
+        # Prep money-critical: estampa moneda por broker, arma precios .BA-aware
+        # y resuelve tc_blue (cash) + tc_cedear (MEP, holdings AR). Centralizado
+        # en analysis_prep para que ningún caller olvide el fix de moneda.
+        prices, tc_blue, tc_cedear = currency_context(conn, uid, positions, ops)
         # Inflación AR del bench cache (12 últimos meses)
         inflation_monthly = {}
         try:
@@ -8572,20 +8534,6 @@ def behavioral_insights(uid: int = Depends(get_current_user)):
                 inflation_monthly = _fetch_inflation_ar()
         except Exception:
             inflation_monthly = {}
-        tc_blue = _user_tc_blue(conn, uid)
-        # Dólar-MEP para valuar holdings .BA (CEDEARs / acciones AR en ARS) — el
-        # mismo dólar implícito que usa el broker y el frontend (cedearRate).
-        # Sin esto, los holdings .BA se valuaban al blue y mostraban un USD ~2-3%
-        # distinto al del resto de la app. Fallback a tc_blue si no hay tc_mep.
-        mep_row = conn.execute(
-            "SELECT value FROM config WHERE user_id=? AND key='tc_mep'", (uid,),
-        ).fetchone()
-        try:
-            tc_cedear = float(mep_row["value"]) if mep_row else 0.0
-        except (TypeError, ValueError):
-            tc_cedear = 0.0
-        if tc_cedear <= 0:
-            tc_cedear = tc_blue
     finally:
         conn.close()
     return build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue, tc_cedear)
@@ -8759,6 +8707,7 @@ def goal_diagnostic(gid: int, uid: int = Depends(get_current_user)):
     """
     from goals_diagnostic import build_goal_diagnostic
     from behavioral import build_behavioral_insights
+    from analysis_prep import currency_context
     conn = get_db()
     try:
         goal = conn.execute(
@@ -8776,26 +8725,17 @@ def goal_diagnostic(gid: int, uid: int = Depends(get_current_user)):
             "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
         ).fetchall()]
 
-        # Reusar la pipeline ya armada de behavioral para precios e insights
-        try:
-            symbols = list(set(
-                p["asset"] for p in positions if p.get("asset") and not p.get("is_cash")
-            ))
-            prices = {}
-            if symbols:
-                quotes = _fetch_batch_quotes(symbols)
-                prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price") is not None}
-        except Exception:
-            prices = {}
-        tc_blue = _user_tc_blue(conn, uid)
+        # Prep money-critical: estampa moneda, precios .BA-aware, tc_blue + MEP.
+        prices, tc_blue, tc_cedear = currency_context(conn, uid, positions, ops)
 
         # Valor actual del portfolio en USD — sumamos valor de cada posición
         # con la misma fórmula que usamos en behavioral._position_value_usd
+        # (holdings AR/.BA → MEP, cash pesos → blue).
         from behavioral import _position_value_usd
         current_value = 0.0
         for p in positions:
             try:
-                v = _position_value_usd(p, prices, tc_blue)
+                v = _position_value_usd(p, prices, tc_blue, tc_cedear)
                 if v is not None:
                     current_value += v
             except Exception:
@@ -8832,7 +8772,7 @@ def goal_diagnostic(gid: int, uid: int = Depends(get_current_user)):
             global _bench_cache
             inflation_monthly = (_bench_cache.get("data") or {}).get("inflation_ar") or {}
             behavioral_cards = build_behavioral_insights(
-                ops, positions, prices, inflation_monthly, tc_blue
+                ops, positions, prices, inflation_monthly, tc_blue, tc_cedear
             ).get("cards") or []
         except Exception:
             behavioral_cards = []

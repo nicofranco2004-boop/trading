@@ -41,6 +41,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         raise ValueError("Falta param 'code' (ej. disposition_effect, overtrade, etc.)")
 
     from behavioral import build_behavioral_insights
+    from analysis_prep import currency_context
 
     # Datos crudos — mismo dataset que /api/behavioral/insights
     ops = [dict(r) for r in conn.execute(
@@ -50,27 +51,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "SELECT * FROM positions WHERE user_id=?", (user_id,)
     ).fetchall()]
 
-    prices: Dict[str, float] = {}
-    try:
-        from home.market import _fetch_batch_quotes
-        symbols = list({p["asset"] for p in positions
-                        if p.get("asset") and not p.get("is_cash")})
-        if symbols:
-            quotes = _fetch_batch_quotes(symbols)
-            prices = {s: q["price"] for s, q in quotes.items()
-                      if q and q.get("price") is not None}
-    except Exception:
-        prices = {}
-
-    tc_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
-    ).fetchone()
-    try:
-        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1415.0
-    except (TypeError, ValueError):
-        tc_blue = 1415.0
-    if tc_blue <= 0:
-        tc_blue = 1415.0
+    # Prep money-critical: estampa moneda por broker, arma precios .BA-aware y
+    # resuelve tc_blue (cash) + tc_cedear (MEP, holdings AR).
+    prices, tc_blue, tc_cedear = currency_context(conn, user_id, positions, ops)
 
     inflation_monthly: Dict[str, float] = {}
     try:
@@ -87,6 +70,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         prices=prices,
         inflation_monthly=inflation_monthly,
         tc_blue=tc_blue,
+        tc_cedear=tc_cedear,
     )
 
     cards = full.get("cards", []) or []

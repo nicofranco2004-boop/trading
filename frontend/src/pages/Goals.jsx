@@ -10,7 +10,7 @@ import { PageSkeleton } from '../components/Skeleton'
 import InfoTooltip from '../components/InfoTooltip'
 import { useToast } from '../components/Toast'
 import { usd, fmtUsd } from '../utils/format'
-import { priceSymbol } from '../utils/valuation'
+import { priceSymbol, computeBrokerValue, isArUsdBroker } from '../utils/valuation'
 import { api } from '../utils/api'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
@@ -52,32 +52,28 @@ export default function Goals() {
       setGoals(gs)
       setCagr(c)
 
-      // Calcular valor actual del portfolio (USD)
+      // Calcular valor actual del portfolio (USD) — usar computeBrokerValue (única
+      // fuente de verdad), igual que Positions.jsx / Insights.jsx. Así CEDEARs y
+      // sub-brokers "· USD" se valúan por su precio LOCAL .BA ÷ dólar-MEP, no por el
+      // ticker US (que estaría órdenes de magnitud mal).
       const tcBlue = dolar?.blue?.venta || 1415
+      // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
+      const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue
       const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       const usdtBrokers = new Set(brokers.filter(b => b.currency !== 'ARS').map(b => b.name))
-      const arsSyms = [...new Set(positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-      const usdtSyms = [...new Set(positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => priceSymbol(p.asset, false, p.asset_type)))]
+      // Símbolos a pedir: ARS y sub-brokers "· USD" piden el .BA (BYMA); brokers USD
+      // reales piden el ticker US pelado. Espejo de fetchPrices() en Positions.jsx.
+      const arsSyms = [...new Set(positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type)))]
+      const usdtSyms = [...new Set(positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
       const all = [...arsSyms, ...usdtSyms].join(',')
       let pr = {}
       if (all) {
         try { pr = await api.get(`/prices?symbols=${all}`) } catch {}
       }
-      let val = 0
-      for (const p of positions) {
-        const isAR = arsBrokers.has(p.broker)
-        if (p.is_cash) {
-          val += isAR ? (p.invested || 0) / tcBlue : (p.invested || 0)
-          continue
-        }
-        if (isAR) {
-          const px = p.price_override ?? pr[priceSymbol(p.asset, true)]
-          val += px != null ? (px * (p.quantity || 0)) / tcBlue : (p.invested || 0) / tcBlue
-        } else {
-          const px = p.price_override ?? pr[p.asset]
-          val += px != null ? px * (p.quantity || 0) : (p.invested || 0)
-        }
-      }
+      const val = brokers.reduce(
+        (s, b) => s + computeBrokerValue(positions, pr, b, tcBlue, tcCedear).value,
+        0
+      )
       setCurrentValue(val)
     } finally {
       setLoading(false)
