@@ -160,6 +160,54 @@ export default function Admin() {
               </Row>
             </div>
           </div>
+
+          {/* ── Embudo de activación ─────────────────────────────────────── */}
+          {stats.activation && (
+            <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
+              <div className="flex items-center gap-2 mb-1">
+                <Activity size={16} className="text-ink-3" />
+                <h2 className="font-semibold text-ink-0">Embudo de activación</h2>
+              </div>
+              <p className="text-xs text-ink-3 mb-4">
+                Usuarios reales (verificados, sin admins ni cuentas de test). Muestra en qué escalón se cae la gente camino al “aha”.
+              </p>
+              {(() => {
+                const a = stats.activation
+                const base = a.verified_real || 0
+                const steps = [
+                  { label: 'Verificó email', n: a.verified_real },
+                  { label: 'Creó un broker', n: a.with_broker },
+                  { label: 'Cargó una posición', n: a.with_position },
+                  { label: 'Cargó ≥1 operación', n: a.with_operation },
+                  { label: 'Cargó ≥2 operaciones', n: a.with_2plus_operations },
+                ]
+                return (
+                  <div className="space-y-2">
+                    {steps.map((s, i) => {
+                      const pct = base > 0 ? Math.round((s.n / base) * 100) : 0
+                      const prev = i > 0 ? steps[i - 1].n : s.n
+                      const drop = prev > 0 ? Math.round(((prev - s.n) / prev) * 100) : 0
+                      return (
+                        <div key={s.label} className="flex items-center gap-3">
+                          <div className="w-36 sm:w-44 text-sm text-ink-1 flex-shrink-0">{s.label}</div>
+                          <div className="flex-1 h-6 bg-bg-1 dark:bg-bg-1/60 rounded overflow-hidden min-w-0">
+                            <div className="h-full bg-data-violet/70 rounded" style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="w-24 text-right text-sm tabular flex-shrink-0">
+                            <span className="text-ink-0 font-medium">{s.n}</span>
+                            <span className="text-ink-3"> · {pct}%</span>
+                          </div>
+                          <div className="w-14 text-right text-xs tabular text-rendi-neg flex-shrink-0">
+                            {i > 0 && drop > 0 ? `−${drop}%` : ''}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })()}
+            </div>
+          )}
         </>
       )}
 

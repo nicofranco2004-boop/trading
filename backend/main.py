@@ -9115,6 +9115,31 @@ def admin_stats(uid: int = Depends(get_admin_user)):
     snapshots_total = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
     brokers_total = conn.execute("SELECT COUNT(*) FROM brokers").fetchone()[0]
     users_pending = conn.execute("SELECT COUNT(*) FROM users WHERE approved=0").fetchone()[0]
+
+    # ── Embudo de activación ──────────────────────────────────────────────────
+    # Cohorte = usuarios REALES (verificados, no-admin, sin cuentas de test/internas
+    # — mismo filtro que /api/stats/public para que los números cierren). Mide
+    # cuántos avanzan: verificó → creó broker → cargó posición → ≥1 operación →
+    # ≥2 operaciones. Sirve para ver EN QUÉ ESCALÓN se cae la gente.
+    REAL = ("email_verified=1 AND is_admin=0 "
+            "AND email NOT LIKE '%@rendi.test' "
+            "AND email NOT LIKE '%@rendi.finance' "
+            "AND email NOT LIKE 'test@%' "
+            "AND email NOT LIKE '%+test%'")
+    act_verified = conn.execute(f"SELECT COUNT(*) FROM users WHERE {REAL}").fetchone()[0]
+    act_broker = conn.execute(
+        f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM brokers b WHERE b.user_id=u.id)"
+    ).fetchone()[0]
+    act_position = conn.execute(
+        f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM positions p WHERE p.user_id=u.id)"
+    ).fetchone()[0]
+    act_op1 = conn.execute(
+        f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM operations o WHERE o.user_id=u.id)"
+    ).fetchone()[0]
+    act_op2 = conn.execute(
+        f"SELECT COUNT(*) FROM users u WHERE {REAL} AND (SELECT COUNT(*) FROM operations o WHERE o.user_id=u.id) >= 2"
+    ).fetchone()[0]
+
     conn.close()
     return {
         "users_total": users_total,
@@ -9128,6 +9153,13 @@ def admin_stats(uid: int = Depends(get_admin_user)):
         "snapshots_total": snapshots_total,
         "brokers_total": brokers_total,
         "registration_open": ALLOW_REGISTRATION,
+        "activation": {
+            "verified_real": act_verified,
+            "with_broker": act_broker,
+            "with_position": act_position,
+            "with_operation": act_op1,
+            "with_2plus_operations": act_op2,
+        },
     }
 
 
