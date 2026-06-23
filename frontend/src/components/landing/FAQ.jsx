@@ -17,10 +17,26 @@ import { useState } from 'react'
 import { Helmet } from 'react-helmet-async'
 import { ChevronDown } from 'lucide-react'
 
+// Orden = secuencia de objeciones que frenan el signup (no orden SEO). La #1 de
+// un retail frío que va a cargar su cartera es la confianza/seguridad, así que
+// va primera y abierta por default. Luego privacidad de datos, después
+// validación (brokers) y costo (¿gratis?), y al final el detalle operativo.
 const FAQS = [
+  {
+    q: '¿Es seguro? ¿Rendi tiene acceso a mi plata o a mis brokers?',
+    a: 'No. Rendi es una herramienta solo de seguimiento e informativa. No hay integración bancaria, ni custodia de fondos, ni operatoria. No ejecutamos órdenes ni vemos tus credenciales de broker — vos cargás los datos manualmente o por CSV. Tu plata vive en tu broker; Rendi solo te ayuda a ver todo consolidado.',
+  },
+  {
+    q: '¿Qué hacen con mis datos? ¿Puedo borrar mi cuenta?',
+    a: 'Tus datos son tuyos y los usamos solo para mostrarte tu cartera consolidada — no los vendemos ni los compartimos con terceros. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance. Más detalle en nuestra Política de Privacidad.',
+  },
   {
     q: '¿Rendi funciona con Cocos Capital, IOL, Balanz, Schwab y Binance?',
     a: 'Sí. Rendi es multi-broker: podés cargar tu cartera de Cocos Capital, IOL Invertí Online, Balanz, Bull Market Brokers, Schwab, Interactive Brokers, Binance y otros brokers o exchanges. Importás el CSV o cargás manualmente las posiciones. Cada broker queda con su moneda original, valor live en USD y P&L. El plan Plus permite hasta 3 brokers; Pro es ilimitado.',
+  },
+  {
+    q: '¿Es gratis de verdad? ¿Qué incluye el plan Free?',
+    a: 'Sí. El plan Free es gratis para siempre y no te pedimos tarjeta para empezar. Incluye el seguimiento de tu cartera con P&L real en dólares, FIFO automático para AFIP y 12 preguntas guiadas al Coach IA. Si en algún momento querés más —más brokers, chat libre con el Coach IA o métricas avanzadas— pasás a Plus o Pro. El Free no caduca.',
   },
   {
     q: '¿Cómo se calcula el P&L en dólares cuando opero en pesos?',
@@ -29,10 +45,6 @@ const FAQS = [
   {
     q: '¿Cómo funciona el FIFO automático para AFIP / ARCA?',
     a: 'Cuando vendés un activo, Rendi descuenta automáticamente del lote más viejo primero (First In, First Out — el criterio fiscal que usa AFIP / ARCA en Argentina). El resultado: cada venta tiene su costo de adquisición correcto y el P&L declarable queda calculado sin que tengas que hacer planillas. Exportás el CSV consolidado para pasárselo a tu contador.',
-  },
-  {
-    q: '¿Es seguro? ¿Rendi tiene acceso a mi plata o a mis brokers?',
-    a: 'No. Rendi es una herramienta solo de seguimiento e informativa. No hay integración bancaria, ni custodia de fondos, ni operatoria. No ejecutamos órdenes ni vemos tus credenciales de broker — vos cargás los datos manualmente o por CSV. Tu plata vive en tu broker; Rendi solo te ayuda a ver todo consolidado.',
   },
   {
     q: '¿Funciona con CEDEARs, bonos argentinos y criptomonedas?',
