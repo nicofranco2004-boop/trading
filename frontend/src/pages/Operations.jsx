@@ -8,6 +8,7 @@ import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import { usd, fmtUsd as fmtUsdRaw, pctSigned, colorClass } from '../utils/format'
+import { track } from '../utils/track'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import PageHeader from '../components/PageHeader'
@@ -126,7 +127,14 @@ function OperationsDesktop() {
       commissions: form.commissions !== '' ? +form.commissions : 0,
     }
     if (modal === 'edit') await api.put(`/operations/${form.id}`, body)
-    else await api.post('/operations', body)
+    else {
+      await api.post('/operations', body)
+      track('operation_added', {
+        mode: body.op_type,
+        only_pnl: body.entry_price == null && body.pnl_usd != null,
+        broker: body.broker,
+      })
+    }
     setModal(null)
     load()
   }

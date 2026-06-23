@@ -45,7 +45,7 @@ export default function CompleteStep({ skipped, position }) {
           Icon={BarChart3}
           title="Ver tu Insight"
           desc="Análisis automático de tu cartera: P&L, concentración, drawdown."
-          onClick={() => navigate('/insights')}
+          onClick={() => navigate('/analisis?tab=diagnostico')}
           highlight={!skipped}
         />
         <ActionCard
@@ -58,14 +58,14 @@ export default function CompleteStep({ skipped, position }) {
           Icon={Brain}
           title="Quiz de perfil"
           desc="7 preguntas. Mejora la precisión de los análisis IA."
-          onClick={() => navigate('/perfil-inversor')}
+          onClick={() => navigate('/analisis?tab=perfil')}
         />
       </div>
 
       {/* CTA principal */}
       <button
         type="button"
-        onClick={() => navigate('/dashboard')}
+        onClick={() => navigate('/posiciones?tab=evolucion')}
         className="group inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-6 py-3 transition-colors text-sm sm:text-base min-w-[200px] justify-center"
       >
         <Sparkles size={16} strokeWidth={2} />

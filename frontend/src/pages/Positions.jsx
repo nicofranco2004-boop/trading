@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
@@ -16,6 +17,7 @@ import { isBondTicker } from '../utils/tickers'
 import { detectPendingCashflows } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
+import { track } from '../utils/track'
 import {
   generateSchedule,
   getRemainingPayments,
@@ -96,6 +98,7 @@ function PositionsDesktop() {
   const [brokers, setBrokers] = useState([])
   const [snapshots, setSnapshots] = useState([])
   const toast = useToast()
+  const navigate = useNavigate()
   const [modal, setModal] = useState(null)
   // Plazos fijos: el form se abre desde el flujo de alta o el header del grupo.
   const [pfFormOpen, setPfFormOpen] = useState(false)
@@ -479,10 +482,25 @@ function PositionsDesktop() {
       commissions: form.commissions !== '' ? +form.commissions : 0,
       entry_date: form.entry_date || null,
     }
+    // MAN-03: no guardar posiciones rotas. Sin activo/cantidad/precio quedan
+    // valuadas en $0 y el usuario concluye que "la app no funciona".
+    if (!form.is_cash) {
+      if (!body.asset || !String(body.asset).trim()) {
+        return toast.push('Ingresá el activo (ticker).', { type: 'warn' })
+      }
+      if (!body.quantity || body.quantity <= 0) {
+        return toast.push('Ingresá una cantidad válida (mayor a 0).', { type: 'warn' })
+      }
+      if (body.buy_price == null && body.invested == null) {
+        return toast.push('Ingresá el precio de compra o el monto invertido.', { type: 'warn' })
+      }
+    }
     if (modal === 'edit') {
       await api.put(`/positions/${form.id}`, body)
     } else {
       await api.post('/positions', body)
+      // Activación: milestone "cargó su primera posición" (GA4 lo dedup por user).
+      track('position_add_completed', { source: 'desktop', asset: body.asset, broker: body.broker })
     }
     setModal(null)
     loadAll()
@@ -527,6 +545,7 @@ function PositionsDesktop() {
     if (body.exit_price == null || body.exit_price < 0) return toast.push('El precio ingresado no es válido.', { type: 'warn' })
     try {
       const res = await api.post('/positions/sell', body)
+      track('position_sold', { source: 'desktop', asset: body.asset, broker: body.broker })
       setModal(null)
       loadAll()
       // Mensaje breve
@@ -963,6 +982,12 @@ function PositionsDesktop() {
     )
   }
 
+  // FR-02: tiene broker(s) pero NINGUNA posición todavía (caso típico post-skip
+  // o post-import sin filas). Se usa abajo para reemplazar la grilla vacía por
+  // un empty-state con CTA al aha (cargar / importar), reusando los modales que
+  // ya viven en el render principal (no early-return, para no duplicar el flow).
+  const hasAnyPosition = positions.some(p => !p.is_cash)
+
   const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
 
   // ─── Estado derivado de los filtros ──────────────────────────────────────
@@ -1133,7 +1158,37 @@ function PositionsDesktop() {
         )}
       </div>
 
-      {displayBrokers.map(({ broker, indent, parentName }, bi) => {
+      {/* FR-02: hay broker(s) pero ninguna posición → empty-state con CTA al aha
+          (reusa los modales del render principal: setModal('add-flow')). */}
+      {!hasAnyPosition && (
+        <div className="bg-bg-1 border border-line rounded">
+          <EmptyState
+            title="Todavía no cargaste posiciones"
+            description="Cargá una manualmente o importá el export de tu broker. En segundos ves tu cartera valuada en USD."
+            action={
+              <div className="flex items-center justify-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setModal('add-flow')}
+                  className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white text-sm font-medium rounded-sm px-4 py-2 transition-colors"
+                >
+                  <Plus size={15} strokeWidth={2} />
+                  Cargar posición
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/imports')}
+                  className="inline-flex items-center gap-2 border border-line-3 hover:border-ink-2 text-ink-0 text-sm font-medium rounded-sm px-4 py-2 transition-colors"
+                >
+                  Importar CSV
+                </button>
+              </div>
+            }
+          />
+        </div>
+      )}
+
+      {hasAnyPosition && displayBrokers.map(({ broker, indent, parentName }, bi) => {
         // Filtro por broker (single-select): si hay uno elegido y no es éste,
         // salteamos la sección. El color se mantiene estable porque `bi` sigue
         // el índice del array completo (no del filtrado).

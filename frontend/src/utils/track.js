@@ -19,8 +19,16 @@
 //     first_insight_viewed
 //   NAV:
 //     route_change             (props: { from, to })
+//   ACTIVACIÓN (vocabulario REAL que emiten los callsites — mantener sincronizado):
+//     import_started           (props: { source })
+//     import_completed         (props: { broker, rows })
+//     import_failed            (props: { stage, error })
+//     position_add_completed   (props: { source, asset, broker })  ← desktop + mobile
+//     position_sold            (props: { source, asset, broker })
+//     operation_added          (props: { mode, only_pnl, broker })
+//     onboarding_started / onboarding_completed
+//     first_insight_viewed
 //   ACTIONS:
-//     position_added
 //     position_edited
 //     position_deleted
 //     watchlist_added          (props: { symbol })
@@ -86,7 +94,12 @@ export function track(event, props = {}) {
         'plan_hero_upgrade_clicked',
         'upgrade_promo_clicked',
         'upgrade_subscribe_clicked',
-        'position_added', 'import_completed',
+        // Embudo de activación — nombres REALES que emiten los callsites.
+        'demo_mode_started',
+        'onboarding_started', 'onboarding_completed',
+        'import_started', 'import_completed', 'import_failed',
+        'position_add_completed', 'position_sold',
+        'operation_added',
         'first_insight_viewed',
         'report_generated', 'report_shared',
       ])
@@ -96,7 +109,9 @@ export function track(event, props = {}) {
           'auth_signup': 'sign_up',
           'auth_login': 'login',
           'auth_logout': 'logout',
-          'position_added': 'first_position_added',  // primera vez es más útil
+          // GA4 marca automáticamente la 1ª ocurrencia por usuario; este nombre
+          // deja claro que el milestone de activación es cargar la 1ª posición.
+          'position_add_completed': 'first_position_added',
         }
         window.gtag('event', GA4_NAME_MAP[event] || event, props)
       }

@@ -5,6 +5,7 @@ import BrokerInstructions from './BrokerInstructions'
 import { api } from '../../utils/api'
 import { whatsappUrl } from '../../utils/support'
 import { WhatsAppIcon } from '../SupportWhatsAppFab'
+import { track } from '../../utils/track'
 
 // Explicaciones por campo Rendi — se muestran en un (?) al lado del label.
 const FIELD_HELP = {
@@ -141,6 +142,11 @@ const OP_LABELS = {
 
 export default function ImportWizard({ onClose, onConfirmed, initialPreview = null, redoBanner = null }) {
   const [step, setStep] = useState(initialPreview ? STEP_PREVIEW : STEP_INTRO)
+
+  // Activación: marca la entrada al flujo de import (antes el wizard no emitía
+  // ningún evento → no se podía medir cuántos abren vs completan).
+  useEffect(() => { track('import_started', { has_initial: !!initialPreview }) }, [])
+
   // Paso 0: de dónde viene el archivo. null = todavía no eligió.
   //   'broker'   → export de un broker soportado (parser específico)
   //   'personal' → CSV/Excel propio del usuario (parser genérico)
@@ -498,8 +504,12 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
       })
       setConfirmResult(data)
       setStep(STEP_DONE)
+      // Activación: el import completado es el camino principal a "cargué mi
+      // cartera". Antes el wizard no emitía NINGÚN evento → embudo invisible.
+      track('import_completed', { broker: format, rows: data?.imported ?? data?.rows ?? null })
       onConfirmed?.(data)
     } catch (ex) {
+      track('import_failed', { stage: 'confirm', error: ex?.message || 'unknown' })
       setError(ex.message || 'Error al confirmar el import.')
     } finally {
       setBusy(false)

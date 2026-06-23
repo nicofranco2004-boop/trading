@@ -117,18 +117,14 @@ function TabItem({ to, label, icon: Icon }) {
 // formal con drag handle + sticky footer.
 
 const QUICK_ACTIONS = [
-  {
-    code: 'new_op',
-    label: 'Nueva operación',
-    sub: 'Registrar compra o venta',
-    icon: Repeat,
-    tone: 'pos',
-    to: '/operaciones?action=new',
-  },
+  // OPS-1: se quitó 'new_op' → /operaciones?action=new, que en mobile caía en
+  // una pantalla read-only (dead-end). En el modelo portfolio-first, cargar una
+  // posición ES el alta de la compra; las ventas se hacen desde el menú de cada
+  // posición. La operación manual queda solo en desktop.
   {
     code: 'new_position',
     label: 'Nueva posición',
-    sub: 'Agregar tenencia actual',
+    sub: 'Agregar tu tenencia o compra',
     icon: PlusCircle,
     tone: 'accent',
     to: '/posiciones?action=new',

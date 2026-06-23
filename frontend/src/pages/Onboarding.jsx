@@ -90,7 +90,9 @@ export default function Onboarding() {
     try {
       localStorage.setItem(ONBOARDING_SKIPPED_KEY, '1')
     } catch {}
-    navigate('/', { replace: true })
+    // FR-01: mandar a la CARTERA (su empty-state con CTA de carga), no a la Home
+    // de mercado genérica — que no contiene nada del usuario y posterga el aha.
+    navigate('/posiciones', { replace: true })
   }
 
   function finishOnboarding() {
