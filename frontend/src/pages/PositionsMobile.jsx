@@ -994,6 +994,9 @@ export default function PositionsMobile() {
             brokers={brokers}
             initialBroker={addForm.broker || null}
             onPlazoFijo={() => { setAddModal(null); setPfFormOpen(true) }}
+            // MAN-01: sin brokers, en vez de un dead-end ("creá desde Config")
+            // ofrecemos crear el primero acá mismo (cierra el flow + abre el alta).
+            onCreateBroker={() => { setAddModal(null); setShowAddBroker(true) }}
             onAssetSelected={({ asset, broker }) => {
               setAddForm(f => ({ ...f, asset, broker: broker || f.broker }))
               setAddModal('add')

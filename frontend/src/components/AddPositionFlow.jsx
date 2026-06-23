@@ -47,7 +47,7 @@ const CATEGORIES = [
   { id: 'indices', label: 'Índices',       icon: Activity,   list: INDICES,       hint: 'S&P 500, Merval, IBOV…' },
 ]
 
-export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null, onPlazoFijo }) {
+export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null, onPlazoFijo, onCreateBroker }) {
   // Secuencia de pasos. Si ya viene un broker preseleccionado (alta desde el
   // menú de un broker puntual, o "Cambiar" activo), salteamos el paso de broker.
   const needsBrokerStep = !initialBroker
@@ -145,7 +145,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
           onBack={stepIdx > 0 ? back : null}
           onClose={onClose}
         />
-        {current === 'broker' && <StepBrokerPicker brokers={brokers} onPick={selectBroker} onPlazoFijo={onPlazoFijo} />}
+        {current === 'broker' && <StepBrokerPicker brokers={brokers} onPick={selectBroker} onPlazoFijo={onPlazoFijo} onCreateBroker={onCreateBroker} />}
         {current === 'type' && <Step1AssetType categories={categories} onPick={selectCategory} />}
         {current === 'ticker' && (
           category?.id === 'fci'
@@ -204,7 +204,7 @@ function FlowHeader({ current, stepNum, total, category, chosenBroker, onBack, o
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 0 — Broker Picker (en qué cartera entra la posición)
 // ════════════════════════════════════════════════════════════════════════════
-function StepBrokerPicker({ brokers, onPick, onPlazoFijo }) {
+function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
   const hasBrokers = brokers && brokers.length > 0
   return (
     <div className="overflow-y-auto flex-1 p-5">
@@ -231,8 +231,19 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo }) {
       )}
 
       {!hasBrokers && !onPlazoFijo && (
-        <div className="p-8 text-center text-sm text-ink-2">
-          No tenés brokers todavía. Creá uno desde Configuración para poder agregar posiciones.
+        <div className="p-8 text-center">
+          <p className="text-sm text-ink-2 mb-4">
+            Todavía no tenés brokers. Creá el primero para empezar a cargar posiciones.
+          </p>
+          {onCreateBroker && (
+            <button
+              type="button"
+              onClick={onCreateBroker}
+              className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white text-sm font-medium rounded-sm px-4 py-2 transition-colors"
+            >
+              Crear mi primer broker
+            </button>
+          )}
         </div>
       )}
 
