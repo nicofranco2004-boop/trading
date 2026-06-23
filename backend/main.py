@@ -16425,8 +16425,16 @@ def public_stats():
         return cached
     conn = get_db()
     try:
+        # Excluimos cuentas sintéticas/internas para no inflar la prueba social
+        # (los tests crean usuarios @rendi.test; el staff usa @rendi.finance).
+        # Mejor sub-contar que afirmar un número falso en una landing financiera.
         n = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE email_verified=1 AND is_admin=0"
+            """SELECT COUNT(*) FROM users
+                WHERE email_verified=1 AND is_admin=0
+                  AND email NOT LIKE '%@rendi.test'
+                  AND email NOT LIKE '%@rendi.finance'
+                  AND email NOT LIKE 'test@%'
+                  AND email NOT LIKE '%+test%'"""
         ).fetchone()[0]
     finally:
         conn.close()

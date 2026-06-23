@@ -1262,8 +1262,12 @@ function FounderBlock() {
     return () => { alive = false }
   }, [])
 
-  // Fallback conservador (≥40) si el fetch falla — nunca queda vacío ni infla.
-  const count = users != null ? users : 40
+  // Solo mostramos el contador cuando hay una base REAL presentable. El endpoint
+  // ya excluye cuentas de test/internas, así que al inicio el número real es chico:
+  // mostrar "3 inversores" es peor que no mostrar nada. Por debajo del umbral va un
+  // framing build-in-public sin número; cuando la base crezca, el contador aparece solo.
+  const SHOW_COUNT_MIN = 25
+  const showCount = users != null && users >= SHOW_COUNT_MIN
 
   return (
     <section ref={ref} className="reveal-up max-w-3xl mx-auto px-4 sm:px-6 py-16 md:py-20">
@@ -1295,16 +1299,23 @@ function FounderBlock() {
                 Fundador de Rendi
               </p>
             </div>
-            <div className="inline-flex items-center gap-2 text-xs text-ink-2 sm:ml-auto">
-              <span className="relative flex h-2 w-2 flex-shrink-0" aria-hidden="true">
-                <span className="absolute inline-flex h-full w-full rounded-full bg-rendi-pos/60 animate-ping" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-rendi-pos" />
-              </span>
-              <span>
-                <span className="text-ink-0 font-semibold tabular">{count}</span>{' '}
-                inversores ya consolidan su cartera en Rendi
-              </span>
-            </div>
+            {showCount ? (
+              <div className="inline-flex items-center gap-2 text-xs text-ink-2 sm:ml-auto">
+                <span className="relative flex h-2 w-2 flex-shrink-0" aria-hidden="true">
+                  <span className="absolute inline-flex h-full w-full rounded-full bg-rendi-pos/60 animate-ping" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-rendi-pos" />
+                </span>
+                <span>
+                  <span className="text-ink-0 font-semibold tabular">{users}</span>{' '}
+                  inversores ya consolidan su cartera en Rendi
+                </span>
+              </div>
+            ) : (
+              <div className="inline-flex items-center gap-2 text-xs text-ink-2 sm:ml-auto">
+                <Sparkles size={13} strokeWidth={2} className="text-data-violet flex-shrink-0" aria-hidden="true" />
+                <span>En etapa temprana — sumate a los primeros.</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
