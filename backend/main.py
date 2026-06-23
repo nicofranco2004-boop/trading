@@ -9101,20 +9101,27 @@ def admin_backup_trigger(uid: int = Depends(get_admin_user)):
 @app.get("/api/admin/stats")
 def admin_stats(uid: int = Depends(get_admin_user)):
     conn = get_db()
-    users_total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    users_admin = conn.execute("SELECT COUNT(*) FROM users WHERE is_admin=1").fetchone()[0]
+    # Excluir cuentas de test/sintéticas de los top-line (los tests creaban
+    # usuarios @rendi.test que inflaban estos counts). NOTEST conserva a los
+    # admins reales (a diferencia de REAL más abajo, que también los excluye).
+    NOTEST = ("email NOT LIKE '%@rendi.test' "
+              "AND email NOT LIKE 'test@%' "
+              "AND email NOT LIKE '%+test%'")
+    NOTEST_IDS = f"SELECT id FROM users WHERE {NOTEST}"
+    users_total = conn.execute(f"SELECT COUNT(*) FROM users WHERE {NOTEST}").fetchone()[0]
+    users_admin = conn.execute(f"SELECT COUNT(*) FROM users WHERE is_admin=1 AND {NOTEST}").fetchone()[0]
     users_last_7d = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE created_at >= datetime('now','-7 days')"
+        f"SELECT COUNT(*) FROM users WHERE created_at >= datetime('now','-7 days') AND {NOTEST}"
     ).fetchone()[0]
     active_last_7d = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE last_login_at >= datetime('now','-7 days')"
+        f"SELECT COUNT(*) FROM users WHERE last_login_at >= datetime('now','-7 days') AND {NOTEST}"
     ).fetchone()[0]
-    positions_total = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
-    operations_total = conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
-    monthly_total = conn.execute("SELECT COUNT(*) FROM monthly_entries").fetchone()[0]
+    positions_total = conn.execute(f"SELECT COUNT(*) FROM positions WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
+    operations_total = conn.execute(f"SELECT COUNT(*) FROM operations WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
+    monthly_total = conn.execute(f"SELECT COUNT(*) FROM monthly_entries WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
     snapshots_total = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
-    brokers_total = conn.execute("SELECT COUNT(*) FROM brokers").fetchone()[0]
-    users_pending = conn.execute("SELECT COUNT(*) FROM users WHERE approved=0").fetchone()[0]
+    brokers_total = conn.execute(f"SELECT COUNT(*) FROM brokers WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
+    users_pending = conn.execute(f"SELECT COUNT(*) FROM users WHERE approved=0 AND {NOTEST}").fetchone()[0]
 
     # ── Embudo de activación ──────────────────────────────────────────────────
     # Cohorte = usuarios REALES (verificados, no-admin, sin cuentas de test/internas
