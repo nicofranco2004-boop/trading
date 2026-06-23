@@ -158,7 +158,7 @@ export const CEDEARS_LIST = [
   { s: 'AAPL', n: 'Apple' }, { s: 'MSFT', n: 'Microsoft' }, { s: 'GOOGL', n: 'Alphabet' },
   { s: 'AMZN', n: 'Amazon' }, { s: 'META', n: 'Meta Platforms' }, { s: 'NVDA', n: 'NVIDIA' },
   { s: 'TSLA', n: 'Tesla' }, { s: 'NFLX', n: 'Netflix' }, { s: 'ADBE', n: 'Adobe' },
-  { s: 'AMD', n: 'AMD' }, { s: 'INTC', n: 'Intel' }, { s: 'QCOM', n: 'Qualcomm' },
+  { s: 'AMD', n: 'AMD' }, { s: 'INTC', n: 'Intel' }, { s: 'QCOM', n: 'Qualcomm' }, { s: 'MU', n: 'Micron Technology' },
   { s: 'AVGO', n: 'Broadcom' }, { s: 'ORCL', n: 'Oracle' }, { s: 'IBM', n: 'IBM' },
   { s: 'CSCO', n: 'Cisco' }, { s: 'CRM', n: 'Salesforce' }, { s: 'PYPL', n: 'PayPal' },
   { s: 'V', n: 'Visa' }, { s: 'MA', n: 'Mastercard' }, { s: 'JPM', n: 'JPMorgan' },
