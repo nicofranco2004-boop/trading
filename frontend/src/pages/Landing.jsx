@@ -1233,6 +1233,83 @@ function PlanCard({ name, tagline, price, priceSub, priceFootnote, features, cta
   )
 }
 
+// Prueba social + build-in-public. Neutraliza dos objeciones del tráfico frío
+// justo antes del cierre: "¿quién está atrás?" (fundador con cara y nombre) y
+// "¿lo usa alguien?" (count real de inversores verificados, vía /api/stats/public).
+// La foto vive en /founder.jpg (public/); si no está, cae a las iniciales "NP".
+function FounderBlock() {
+  const ref = useReveal()
+  const [users, setUsers] = useState(null)
+  // Pre-cargamos la foto con new Image() y solo la mostramos si decodifica como
+  // imagen real (naturalWidth > 0). Si /founder.jpg no existe, el SPA fallback
+  // devuelve index.html (HTML con 200) que NO decodifica → quedan las iniciales,
+  // nunca una imagen rota. (El onError de <img> con un 200-text/html es poco
+  // confiable, por eso probamos antes de renderizar.)
+  const [photoOk, setPhotoOk] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    fetch('/api/stats/public')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (alive && d && typeof d.users === 'number') setUsers(d.users) })
+      .catch(() => {})
+
+    const probe = new Image()
+    probe.onload = () => { if (alive && probe.naturalWidth > 0) setPhotoOk(true) }
+    probe.onerror = () => {}
+    probe.src = '/founder.jpg'
+
+    return () => { alive = false }
+  }, [])
+
+  // Fallback conservador (≥40) si el fetch falla — nunca queda vacío ni infla.
+  const count = users != null ? users : 40
+
+  return (
+    <section ref={ref} className="reveal-up max-w-3xl mx-auto px-4 sm:px-6 py-16 md:py-20">
+      <div className="flex flex-col sm:flex-row items-center gap-6 text-center sm:text-left border border-line rounded-lg bg-bg-1/60 backdrop-blur-sm p-6 sm:p-8">
+        {photoOk ? (
+          <img
+            src="/founder.jpg"
+            alt="Nicolás Pussetto, fundador de Rendi"
+            loading="lazy"
+            className="w-20 h-20 rounded-full object-cover border border-line-2 flex-shrink-0"
+          />
+        ) : (
+          <div className="w-20 h-20 rounded-full bg-data-violet/15 border border-data-violet/30 text-data-violet font-semibold text-xl flex items-center justify-center flex-shrink-0">
+            NP
+          </div>
+        )}
+        <div className="min-w-0">
+          <p className="text-sm sm:text-base text-ink-1 leading-relaxed mb-4">
+            “Soy inversor argentino, como vos. Hice Rendi porque estaba cansado de no
+            saber, en dólares de verdad, cuánto ganaba con la plata repartida entre
+            Cocos, IOL y Binance. Lo construyo a la vista de todos —sumate.”
+          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+            <div>
+              <p className="text-sm font-medium text-ink-0">Nicolás Pussetto</p>
+              <p className="text-[11px] font-mono uppercase tracking-label text-ink-2">
+                Fundador de Rendi
+              </p>
+            </div>
+            <div className="inline-flex items-center gap-2 text-xs text-ink-2 sm:ml-auto">
+              <span className="relative flex h-2 w-2 flex-shrink-0" aria-hidden="true">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-rendi-pos/60 animate-ping" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-rendi-pos" />
+              </span>
+              <span>
+                <span className="text-ink-0 font-semibold tabular">{count}</span>{' '}
+                inversores ya consolidan su cartera en Rendi
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function CtaFinal() {
   const ref = useReveal()
   return (
@@ -1462,6 +1539,7 @@ export default function Landing() {
       <BrokerSolutions />
       <Pricing />
       <FAQ />
+      <FounderBlock />
       <CtaFinal />
       <Footer />
       <SupportWhatsAppFab />

@@ -16406,3 +16406,31 @@ def health_check():
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "service": "rendi-api",
     }
+
+
+# Cache del count público — crece lento, no hace falta pegarle a la DB en cada
+# visita a la landing (que es pública y puede recibir mucho tráfico de ads).
+_public_stats_cache = {"data": None, "ts": 0.0}
+PUBLIC_STATS_TTL = 1800  # 30 min
+
+
+@app.get("/api/stats/public")
+def public_stats():
+    """Stats públicas (SIN auth) para prueba social en la landing. Hoy solo el
+    count de inversores verificados reales (email confirmado, sin contar admins
+    ni cuentas de prueba). Cacheado para no golpear la DB en cada visita."""
+    now = time.time()
+    cached = _public_stats_cache["data"]
+    if cached is not None and (now - _public_stats_cache["ts"]) < PUBLIC_STATS_TTL:
+        return cached
+    conn = get_db()
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE email_verified=1 AND is_admin=0"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    data = {"users": int(n)}
+    _public_stats_cache["data"] = data
+    _public_stats_cache["ts"] = now
+    return data
