@@ -41,8 +41,23 @@ export function initMetaPixel() {
     return
   }
 
-  // Snippet oficial del Meta Pixel (carga fbevents.js async). Define window.fbq
-  // y encola las llamadas hasta que el script termina de cargar.
+  // El snippet ESTÁTICO de index.html ya crea window.fbq y dispara el init +
+  // PageView inicial al parsear el HTML (antes que React, así sobrevive incluso
+  // si el bundle falla). Si ya existe, NO re-inicializamos: un segundo
+  // fbq('init')+fbq('track','PageView') duplicaría el PageView en Events
+  // Manager y ensuciaría la atribución. Solo marcamos initialized para que
+  // trackMetaEvent (CompleteRegistration, Lead) siga operando sobre esa cola.
+  if (window.fbq) {
+    initialized = true
+    if (DEBUG) {
+      // eslint-disable-next-line no-console
+      console.log('[meta-pixel] ya inicializado por index.html — sin re-init')
+    }
+    return
+  }
+
+  // Fallback: si por algún motivo no está el snippet estático (index.html sin
+  // el bloque), inicializamos acá para no perder el pixel.
   /* eslint-disable */
   !function (f, b, e, v, n, t, s) {
     if (f.fbq) return; n = f.fbq = function () {

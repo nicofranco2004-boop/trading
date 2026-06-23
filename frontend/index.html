@@ -203,12 +203,14 @@
     fbq('init', '1281911210681122');
     fbq('track', 'PageView');
     </script>
-    <noscript><img height="1" width="1" style="display:none"
-    src="https://www.facebook.com/tr?id=1281911210681122&ev=PageView&noscript=1"
-    /></noscript>
     <!-- End Meta Pixel -->
   </head>
   <body>
+    <!-- Meta Pixel <noscript> fallback — va en el <body> (un <img> dentro de
+         <noscript> NO es válido en el <head> y rompe el parser de Vite). -->
+    <noscript><img height="1" width="1" style="display:none"
+    src="https://www.facebook.com/tr?id=1281911210681122&ev=PageView&noscript=1"
+    /></noscript>
     <div id="root"></div>
     <!-- Contenido server-rendered para crawlers que NO ejecutan JS (WhatsApp,
          Facebook scraper, Twitter card validator, Linkedin) y como fallback

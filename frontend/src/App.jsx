@@ -263,7 +263,6 @@ function Layout() {
   if (isMobile) {
     return (
       <>
-        <RouteTracker />
         <MobileTopBar />
         <main className="min-h-screen">
           <DemoBanner />
@@ -280,7 +279,6 @@ function Layout() {
   // ─── Desktop shell ─────────────────────────────────────────────────────
   return (
     <>
-      <RouteTracker />
       <Sidebar />
       {/* main content shifteado dinámicamente por --sidebar-w
           (la sidebar setea esta CSS var según expandida/colapsada) */}
@@ -305,6 +303,12 @@ export default function App() {
         <CurrencyProvider>
           <CoachDrawerProvider>
             <div className="min-h-screen bg-bg-0 text-ink-0">
+              {/* RouteTracker vive ACÁ (no dentro de los shells autenticados)
+                  para que GA4 + Meta también midan al visitante SIN login:
+                  Landing, /login, /verify-email. Antes solo se montaba tras el
+                  gate `if (!user)`, así que el embudo de adquisición (el que
+                  importa para los ads) era invisible en analytics. */}
+              <RouteTracker />
               <Layout />
               {/* Drawer global del Coach IA — mounted una vez al nivel de App,
                   cualquier componente lo abre via useCoachDrawer().open() */}

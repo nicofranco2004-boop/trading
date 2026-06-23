@@ -1,14 +1,20 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Sparkles, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { enableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
+import { trackEvent } from '../utils/analytics'
+import { trackMetaEvent } from '../utils/metaPixel'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
 
 export default function Login() {
-  const [mode, setMode] = useState('login')
+  const [searchParams] = useSearchParams()
+  // Los CTAs de la landing apuntan a /login?mode=register. Sin leer el param,
+  // el visitante con intención de crear cuenta caía en la pestaña de LOGIN
+  // (form inutilizable, sin cuenta) — fricción directa en el punto de conversión.
+  const [mode, setMode] = useState(() => (searchParams.get('mode') === 'register' ? 'register' : 'login'))
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   // Toggle "ver contraseña" — feature crítica en mobile porque el user no
@@ -30,6 +36,13 @@ export default function Login() {
   const [forgotSent, setForgotSent] = useState(false)
   const { login } = useAuth()
   const navigate = useNavigate()
+
+  // Warmup: el backend de Railway puede estar en cold start. Apenas el visitante
+  // abre login/registro, despertamos el container (fire-and-forget) para que el
+  // submit no espere el wake — el momento más frágil del funnel.
+  useEffect(() => {
+    fetch('/api/health').catch(() => {})
+  }, [])
 
   async function handleForgotPassword(e) {
     e.preventDefault()
@@ -96,17 +109,28 @@ export default function Login() {
       const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register'
       const body = mode === 'login' ? { email: cleanEmail, password } : { email: cleanEmail, password, name: name.trim() }
       let res
+      // Timeout de 20s: si Railway está en cold start y tarda demasiado, en vez
+      // de dejar el botón en "Cargando…" indefinidamente damos un mensaje claro
+      // para que el visitante reintente en lugar de abandonar.
+      const ctrl = new AbortController()
+      const timeoutId = setTimeout(() => ctrl.abort(), 20000)
       try {
         res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          signal: ctrl.signal,
         })
       } catch (netErr) {
         // Falla de red — no llegó al server. Distinguir esto del "credenciales
         // inválidas" es crítico: el user piensa que el password está mal
         // cuando en realidad no hay internet o el server está caído.
+        if (netErr.name === 'AbortError') {
+          throw new Error('El servidor está tardando más de lo normal. Esperá unos segundos y probá de nuevo.')
+        }
         throw new Error('No hay conexión con el servidor. Revisá tu internet y probá de nuevo.')
+      } finally {
+        clearTimeout(timeoutId)
       }
 
       let data = {}
@@ -168,6 +192,13 @@ export default function Login() {
       }
       // Registro con verificación pendiente → llevar a /verify-email
       if (data.needs_verification) {
+        // Señal de mid-funnel para Meta/GA4: el signup se completó (falta el
+        // OTP). Meta optimiza mucho mejor con un evento temprano y frecuente
+        // como 'Lead' que con solo CompleteRegistration (post-OTP, mucho más
+        // raro). CompleteRegistration se dispara después en AuthContext cuando
+        // el user verifica el email.
+        trackMetaEvent('Lead', { content_name: 'signup_submitted' })
+        trackEvent('sign_up_submitted', { method: 'email' })
         navigate(`/verify-email?email=${encodeURIComponent(data.email || cleanEmail)}`)
         return
       }

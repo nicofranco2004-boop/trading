@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -1750,8 +1750,27 @@ def _send_verification_email(conn, user_id: int, email: str, name: Optional[str]
         log.error("Verification email failed for uid=%s: %s", user_id, ex)
 
 
+def _send_verification_email_async(email: str, name: Optional[str], code: str) -> None:
+    """Manda SOLO el email (httpx a Resend) — sin tocar la DB. Pensado para
+    correr en un BackgroundTask: el código ya fue generado y persistido en el
+    request, así que acá no se necesita conn (que ya está cerrada). Best-effort:
+    si Resend falla, el user igual puede pedir 'Reenviar' desde /verify-email."""
+    from billing import emails
+    display_name = name or (email.split("@")[0] if email else "Inversor")
+    try:
+        emails.send_verification_code(
+            to=email,
+            user_name=display_name,
+            code=code,
+            expires_minutes=EMAIL_CODE_TTL_MINUTES,
+        )
+    except Exception as ex:
+        log.error("Verification email (async) failed for %s: %s", email, ex)
+
+
 @app.post("/api/auth/register")
-def register(data: RegisterIn, request: Request, response: Response):
+def register(data: RegisterIn, request: Request, response: Response,
+             background_tasks: BackgroundTasks):
     is_admin_signup = _is_admin_email(data.email)
     # Si registro está cerrado, solo se permite el registro del admin (idempotente).
     if not ALLOW_REGISTRATION and not is_admin_signup:
@@ -1806,9 +1825,17 @@ def register(data: RegisterIn, request: Request, response: Response):
 
         # User NO admin → mandamos código de verificación al email registrado.
         # NO devolvemos token todavía — el frontend redirige a /verify-email.
+        # El código se genera y persiste SÍNCRONO (write local rápido, commitea
+        # solo), pero el envío del email (httpx a Resend, hasta 10s) va a un
+        # BackgroundTask para que register() responda al instante. En el momento
+        # más frágil del funnel (signup desde un ad mobile) cada segundo de
+        # "Cargando…" extra es abandono — y Railway puede estar en cold start.
         if not is_admin_signup:
-            _send_verification_email(conn, uid, data.email, data.name)
+            code = _create_verification_code(conn, uid)
             conn.close()
+            background_tasks.add_task(
+                _send_verification_email_async, data.email, data.name, code
+            )
             return {
                 "needs_verification": True,
                 "email": data.email,

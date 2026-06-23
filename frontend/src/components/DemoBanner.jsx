@@ -4,12 +4,22 @@
 // + CTA para crear cuenta real. Sticky abajo del Sidebar para no tapar el
 // contenido pero estar siempre visible.
 
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { Sparkles, ArrowRight } from 'lucide-react'
 
 export default function DemoBanner() {
   const { isDemo, exitDemo } = useAuth()
+  const navigate = useNavigate()
   if (!isDemo) return null
+
+  // El CTA del demo es el momento de MÁXIMA intención de conversión. Antes
+  // exitDemo() solo limpiaba el modo demo y dejaba al user en la Landing — un
+  // callejón. Ahora lo llevamos directo al form de registro.
+  function handleCreateAccount() {
+    exitDemo()
+    navigate('/login?mode=register')
+  }
 
   return (
     <div
@@ -25,7 +35,7 @@ export default function DemoBanner() {
           </p>
         </div>
         <button
-          onClick={exitDemo}
+          onClick={handleCreateAccount}
           className="flex-shrink-0 inline-flex items-center gap-1 text-xs bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors"
         >
           Crear cuenta
