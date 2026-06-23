@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight, Sparkles, RefreshCw, LineChart, Layers, Coins,
-  Zap, Terminal, ChevronDown, Check,
+  Zap, Terminal, ChevronDown, Check, Lock,
   Upload, ListChecks, BarChart3, Bot, MessageSquare,
   Plus, Mail, Instagram, Linkedin,
   Building2, Bitcoin, TrendingUp, Landmark, Receipt,
@@ -108,48 +108,54 @@ function Hero() {
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-bg-0 pointer-events-none" aria-hidden="true" />
 
       <div className="relative max-w-7xl mx-auto px-4 sm:px-6 pt-20 sm:pt-28 pb-16 sm:pb-24 text-center">
-        {/* Eyebrow — terminal prompt */}
+        {/* Eyebrow — para quién es (sin jerga de dev/terminal) */}
         <div className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-label text-data-violet border border-data-violet/30 bg-data-violet/5 px-3 py-1 rounded-sm mb-8">
-          <Terminal size={11} strokeWidth={2} />
-          <span>rendi://portfolio_tracker</span>
-          <span className="terminal-cursor text-data-violet">▍</span>
+          <span>Para inversores argentinos</span>
         </div>
 
-        {/* Headline — H1 único de la landing, con keyword "multi-broker"
-            visible para SEO sin romper el feel editorial. */}
+        {/* Headline — H1 único de la landing. Lidera con el beneficio emocional
+            (cuánto ganaste de verdad) y nombra al "enemigo": pesos vs dólares.
+            La keyword "multi-broker" pasa al subtítulo para SEO. */}
         <h1 className="font-sans font-semibold tracking-tight leading-[0.95] mb-6"
             style={{ fontSize: 'clamp(36px, 7vw, 80px)', letterSpacing: '-0.035em' }}>
-          <span className="block text-ink-0">Tu portfolio multi-broker,</span>
-          <span className="block headline-sweep">con coach IA.</span>
+          <span className="block text-ink-0">Sabé cuánto ganaste de verdad.</span>
+          <span className="block headline-sweep">En dólares, no en pesos.</span>
         </h1>
 
-        {/* Sub — copy keyword-rich AR (Cocos, IOL, Schwab, Binance, USD blue).
-            Mantiene el "preguntale" del original que define la propuesta. */}
+        {/* Sub — keyword-rich AR (Cocos, IOL, Schwab, Binance, multi-broker, Coach IA)
+            pero liderando con el dolor concreto, sin jerga ("P&L"/"USD blue"). */}
         <p className="max-w-2xl mx-auto text-base sm:text-lg text-ink-2 leading-relaxed mb-10">
-          El tracker para inversores argentinos. Cargá tu cartera de Cocos, IOL, Balanz,
-          Schwab y Binance y ves tu P&amp;L real en USD blue. Preguntale al Coach IA
-          por qué bajó tu cartera, dónde está concentrado el riesgo y qué activo te
-          está costando plata.
+          Juntá Cocos, IOL, Balanz, Schwab y Binance en una sola pantalla y mirá tu
+          ganancia real en dólares —no el número inflado en pesos que te muestra el
+          broker. Con un Coach IA que conoce tu cartera y te dice por qué subió o bajó.
         </p>
 
-        {/* CTAs */}
-        <div className="flex items-center justify-center gap-3 flex-wrap mb-14">
+        {/* CTAs — primario sólido = crear cuenta (objetivo); demo = secundario ghost.
+            Mismo patrón que el CtaFinal del fondo de la página. */}
+        <div className="flex items-center justify-center gap-3 flex-wrap mb-4">
+          <Link
+            to="/login?mode=register"
+            className="group inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgba(139,125,255,0.6)]"
+          >
+            Crear mi cuenta gratis
+            <ArrowRight size={14} strokeWidth={2} className="group-hover:translate-x-0.5 transition-transform" />
+          </Link>
           <button
             type="button"
             onClick={() => { window.location.href = '/?demo=1' }}
-            className="group inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgba(139,125,255,0.6)]"
-          >
-            <Sparkles size={14} strokeWidth={2} />
-            Probá la demo
-            <ArrowRight size={14} strokeWidth={2} className="group-hover:translate-x-0.5 transition-transform" />
-          </button>
-          <Link
-            to="/login?mode=register"
             className="inline-flex items-center gap-2 border border-line-3 hover:border-ink-2 hover:bg-bg-2/50 text-ink-0 font-medium rounded-sm px-5 py-2.5 transition-colors"
           >
-            Empezar gratis
-          </Link>
+            <Sparkles size={14} strokeWidth={2} />
+            Ver demo sin registrarme
+          </button>
         </div>
+
+        {/* Microcopy de confianza — neutraliza la objeción #1 (seguridad) arriba
+            del fold, sin agregar una sección. */}
+        <p className="flex items-center justify-center gap-1.5 text-[12px] text-ink-3 mb-14">
+          <Lock size={12} strokeWidth={2} className="text-data-violet/70" />
+          Gratis para siempre · Solo lectura: no pedimos las claves de tu broker
+        </p>
 
         {/* Stats strip */}
         <StatsStrip />
@@ -178,15 +184,16 @@ function StatsStrip() {
   }, [])
 
   const brokers = useCountUp(8, 900, started)
-  const monedas = useCountUp(2, 700, started)
-  const kpis    = useCountUp(40, 1200, started)
-  const dias    = useCountUp(365, 1400, started)
 
+  // Barra de confianza + deseo + fricción-cero — no specs internas. El '8+'
+  // mantiene el count-up (es el ancla multi-broker); el resto comunica
+  // seguridad ('0 claves'), el diferencial AR ('USD real') y cero fricción
+  // ('Gratis · sin tarjeta').
   const items = [
-    { v: brokers, label: 'brokers soportados', suffix: '+' },
-    { v: monedas, label: 'monedas (USD · ARS)' },
-    { v: kpis,    label: 'KPIs por mes',        suffix: '+' },
-    { v: dias,    label: 'días tracked',        suffix: '/año' },
+    { v: brokers, label: 'brokers en una pantalla', suffix: '+' },
+    { text: '0',      label: 'claves de tu broker que pedimos' },
+    { text: 'USD',    label: 'tu ganancia al dólar real' },
+    { text: 'Gratis', label: 'para empezar · sin tarjeta' },
   ]
 
   return (
@@ -195,7 +202,7 @@ function StatsStrip() {
         <div key={i} className="px-4 py-4">
           <div className="font-sans font-medium tabular text-ink-0 mb-1"
                style={{ fontSize: 'clamp(20px, 2.4vw, 28px)', letterSpacing: '-0.02em' }}>
-            {Math.round(it.v).toLocaleString('es-AR')}{it.suffix || ''}
+            {it.text != null ? it.text : `${Math.round(it.v).toLocaleString('es-AR')}${it.suffix || ''}`}
           </div>
           <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-tight">
             {it.label}
@@ -1226,6 +1233,85 @@ function PlanCard({ name, tagline, price, priceSub, priceFootnote, features, cta
   )
 }
 
+// Prueba social + build-in-public. Neutraliza dos objeciones del tráfico frío
+// justo antes del cierre: "¿quién está atrás?" (fundador con cara y nombre) y
+// "¿lo usa alguien?" (count real de inversores verificados, vía /api/stats/public).
+// La foto vive en /founder.jpg (public/); si no está, cae a las iniciales "NP".
+function FounderBlock() {
+  const ref = useReveal()
+  const [users, setUsers] = useState(null)
+  // Pre-cargamos la foto con new Image() y solo la mostramos si decodifica como
+  // imagen real (naturalWidth > 0). Si /founder.jpg no existe, el SPA fallback
+  // devuelve index.html (HTML con 200) que NO decodifica → quedan las iniciales,
+  // nunca una imagen rota. (El onError de <img> con un 200-text/html es poco
+  // confiable, por eso probamos antes de renderizar.)
+  const [photoOk, setPhotoOk] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    fetch('/api/stats/public')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (alive && d && typeof d.users === 'number') setUsers(d.users) })
+      .catch(() => {})
+
+    const probe = new Image()
+    probe.onload = () => { if (alive && probe.naturalWidth > 0) setPhotoOk(true) }
+    probe.onerror = () => {}
+    probe.src = '/founder.jpg'
+
+    return () => { alive = false }
+  }, [])
+
+  // Fallback conservador (≥40) si el fetch falla — nunca queda vacío ni infla.
+  const count = users != null ? users : 40
+
+  return (
+    <section ref={ref} className="reveal-up max-w-3xl mx-auto px-4 sm:px-6 py-16 md:py-20">
+      <div className="flex flex-col sm:flex-row items-center gap-6 text-center sm:text-left border border-line rounded-lg bg-bg-1/60 backdrop-blur-sm p-6 sm:p-8">
+        {photoOk ? (
+          <img
+            src="/founder.jpg"
+            alt="Nicolás Pussetto, fundador de Rendi"
+            loading="lazy"
+            className="w-20 h-20 rounded-full object-cover border border-line-2 flex-shrink-0"
+          />
+        ) : (
+          <div className="w-20 h-20 rounded-full bg-data-violet/15 border border-data-violet/30 text-data-violet font-semibold text-xl flex items-center justify-center flex-shrink-0">
+            NP
+          </div>
+        )}
+        <div className="min-w-0">
+          <p className="text-sm sm:text-base text-ink-1 leading-relaxed mb-4">
+            “Empecé a invertir hace 5 años y siempre me costó llevar el registro:
+            tenía todo en un Excel que se rompía cada dos por tres, era un caos cruzar
+            mis rendimientos en pesos y en dólares, y encima no sabía qué estaba
+            haciendo mal. Hice Rendi para que invertir no sea tirar una moneda al aire,
+            sino tener la información que necesitás para decidir.”
+          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+            <div>
+              <p className="text-sm font-medium text-ink-0">Nicolás Pussetto</p>
+              <p className="text-[11px] font-mono uppercase tracking-label text-ink-2">
+                Fundador de Rendi
+              </p>
+            </div>
+            <div className="inline-flex items-center gap-2 text-xs text-ink-2 sm:ml-auto">
+              <span className="relative flex h-2 w-2 flex-shrink-0" aria-hidden="true">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-rendi-pos/60 animate-ping" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-rendi-pos" />
+              </span>
+              <span>
+                <span className="text-ink-0 font-semibold tabular">{count}</span>{' '}
+                inversores ya consolidan su cartera en Rendi
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function CtaFinal() {
   const ref = useReveal()
   return (
@@ -1281,9 +1367,9 @@ const SUPPORT_EMAIL = 'hola@rendi.finance'
 const SOCIAL_LINKS = {
   instagram: 'https://www.instagram.com/rendifinance/',
   // LinkedIn: perfil del fundador (build-in-public). Instagram ya es real.
-  // TODO: X sigue placeholder hasta crear la cuenta oficial.
+  // X se quitó: la cuenta oficial todavía no existe y un ícono que lleva a una
+  // cuenta inexistente destruye confianza. Re-agregar cuando esté creada.
   linkedin:  'https://www.linkedin.com/in/nicolas-pussetto-6a656a1a8/',
-  x:         'https://x.com/rendifinance',
 }
 
 function Footer() {
@@ -1307,6 +1393,17 @@ function Footer() {
             </p>
             <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mt-4">
               Hecho en Argentina
+            </p>
+            <p className="text-xs text-ink-2 leading-relaxed mt-2">
+              Construido por{' '}
+              <a
+                href={SOCIAL_LINKS.linkedin}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-ink-1 hover:text-data-violet underline underline-offset-2 transition-colors"
+              >
+                Nicolás Pussetto
+              </a>, inversor argentino.
             </p>
           </div>
 
@@ -1408,20 +1505,6 @@ function Footer() {
               >
                 <Linkedin size={16} strokeWidth={1.75} />
               </a>
-              <a
-                href={SOCIAL_LINKS.x}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="text-ink-3 hover:text-ink-0 transition-colors"
-                title="Rendi en X (Twitter)"
-                aria-label="X (antes Twitter)"
-              >
-                {/* X (Twitter) — usamos un SVG inline porque lucide-react
-                    sigue mostrándolo como Twitter bird en versiones viejas. */}
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-                </svg>
-              </a>
             </div>
           </div>
 
@@ -1458,6 +1541,7 @@ export default function Landing() {
       <BrokerSolutions />
       <Pricing />
       <FAQ />
+      <FounderBlock />
       <CtaFinal />
       <Footer />
       <SupportWhatsAppFab />
