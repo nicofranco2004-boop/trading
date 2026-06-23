@@ -1282,9 +1282,11 @@ function FounderBlock() {
         )}
         <div className="min-w-0">
           <p className="text-sm sm:text-base text-ink-1 leading-relaxed mb-4">
-            “Soy inversor argentino, como vos. Hice Rendi porque estaba cansado de no
-            saber, en dólares de verdad, cuánto ganaba con la plata repartida entre
-            Cocos, IOL y Binance. Lo construyo a la vista de todos —sumate.”
+            “Empecé a invertir hace 5 años y siempre me costó llevar el registro:
+            tenía todo en un Excel que se rompía cada dos por tres, era un caos cruzar
+            mis rendimientos en pesos y en dólares, y encima no sabía qué estaba
+            haciendo mal. Hice Rendi para que invertir no sea tirar una moneda al aire,
+            sino tener la información que necesitás para decidir.”
           </p>
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
             <div>
