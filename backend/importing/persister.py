@@ -38,6 +38,29 @@ from .schema import (
 from . import seed as _seed
 
 
+def blue_for_date(conn, date_str, fallback):
+    """Blue (venta) del día `date_str` (YYYY-MM-DD) desde fx_rates_daily — el más
+    reciente en o antes de esa fecha. Fallback al valor dado si no hay data.
+
+    Se usa para valuar el cost basis de un lote ARS vendido en USD (dólar-MEP):
+    los pesos que pusiste valían `cost_ars / blue_de_la_compra` dólares, NO
+    `/ blue_de_hoy`. Como el peso se devalúa, usar el blue actual achica el costo
+    en USD y por ende INFLA la ganancia realizada. Esto lo evita.
+    """
+    if not date_str:
+        return fallback
+    try:
+        row = conn.execute(
+            "SELECT blue_venta FROM fx_rates_daily WHERE date <= ? ORDER BY date DESC LIMIT 1",
+            (str(date_str)[:10],),
+        ).fetchone()
+        if row and row[0] and float(row[0]) > 0:
+            return float(row[0])
+    except Exception:
+        pass
+    return fallback
+
+
 class PersistError(Exception):
     """Error fatal durante la persistencia. Aborta toda la transacción."""
     def __init__(self, row_index: int, message: str):
@@ -473,15 +496,24 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         # asumimos la moneda del broker para back-compat.
         lot_currency = (p["currency"] if "currency" in p.keys() else None) or currency
 
-        # CROSS-CURRENCY: si el SELL es en otra moneda que el BUY, convertimos
-        # el invested del lote a la moneda del SELL al tc_blue actual. Sin esto,
-        # un lote comprado por USD 573 (Compra Dolar Mep) vs SELL en ARS daba
-        # P&L de +160000% por comparar USD invested contra ARS exit price.
+        # CROSS-CURRENCY: el SELL es en otra moneda que el BUY → convertimos el
+        # cost basis del lote a la moneda del SELL. Sin esto, un lote comprado por
+        # USD 573 vs SELL en ARS daba P&L de +160000%.
         if lot_currency != currency and tc_blue:
             if lot_currency == "USD" and currency == "ARS":
-                base_invested = base_invested * tc_blue
+                # Lote USD vendido en ARS: el costo USD es real. Se lleva a ARS al
+                # MISMO TC que la venta (tc_venta) — así pnl_ars/tc_venta preserva
+                # el costo USD (se cancela). tc_venta == tc_blue para SELLs ARS.
+                base_invested = base_invested * (tc_venta or tc_blue)
             elif lot_currency == "ARS" and currency == "USD":
-                base_invested = base_invested / tc_blue
+                # Lote ARS vendido en USD (dólar-MEP): convertiste pesos→dólares al
+                # vender, así que el FX SÍ se realiza. El costo en USD es lo que esos
+                # pesos valían CUANDO COMPRASTE (blue de la fecha de entrada del
+                # lote), NO el blue de hoy: usarlo achica el costo e infla la
+                # ganancia con la devaluación del peso.
+                entry_dt = p["entry_date"] if "entry_date" in p.keys() else None
+                purchase_blue = blue_for_date(conn, entry_dt, tc_blue)
+                base_invested = base_invested / (purchase_blue or tc_blue)
 
         entry_invested = base_invested * ratio if base_invested else None
 

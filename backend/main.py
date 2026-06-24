@@ -7215,6 +7215,10 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
                 "SELECT currency FROM brokers WHERE name=? AND user_id=?", (data.broker, uid)
             ).fetchone()
             currency = br["currency"] if br else "USDT"
+            # Moneda de venta normalizada (USDT→USD) + blue actual como fallback
+            # para la conversión de cost basis cross-currency.
+            sell_ccy = "ARS" if currency == "ARS" else "USD"
+            cur_blue = _user_tc_blue(conn, uid)
 
             # Posiciones del par, FIFO por entry_date (NULLs al final como fallback), tie-break por id
             positions = conn.execute(
@@ -7256,6 +7260,22 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
                 pos_buy_commissions = pos_buy_commissions or 0
                 # `entry_invested` ahora incluye buy commissions prorrateadas.
                 base_invested = ((p["invested"] or 0) + pos_buy_commissions)
+
+                # CROSS-CURRENCY: si el lote se compró en otra moneda que la de la
+                # venta, convertimos el cost basis a la moneda de la venta (igual
+                # que el importer). Lote ARS vendido en USD usa el blue de la FECHA
+                # DE COMPRA (el FX se realizó al convertir pesos→dólares); lote USD
+                # vendido en ARS usa el TC de venta (se cancela, preserva el costo
+                # USD). Sin esto, un lote en otra moneda daba P&L absurdo.
+                lot_currency = (p["currency"] if "currency" in p.keys() else None) or sell_ccy
+                if lot_currency != sell_ccy:
+                    if lot_currency == "USD" and sell_ccy == "ARS":
+                        base_invested = base_invested * (data.tc_venta or cur_blue)
+                    elif lot_currency == "ARS" and sell_ccy == "USD":
+                        entry_dt = p["entry_date"] if "entry_date" in p.keys() else None
+                        purchase_blue = _import_persister.blue_for_date(conn, entry_dt, cur_blue)
+                        base_invested = base_invested / (purchase_blue or cur_blue)
+
                 entry_invested = base_invested * ratio if base_invested else None
 
                 # Comisión de VENTA prorrateada para este chunk (sobre el total vendido)

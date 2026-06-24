@@ -5483,5 +5483,104 @@ class CocosVisibleInDropdownTest(unittest.TestCase):
         self.assertTrue(cocos["supported"])
 
 
+class CrossCurrencyRealizedPnlTest(unittest.TestCase):
+    """Realized P&L de ventas cross-currency. Un lote comprado en una moneda y
+    vendido en otra debe valuar el cost basis al TC correcto:
+      • lote ARS vendido en USD (dólar-MEP) → costo en USD = pesos / blue de la
+        FECHA DE COMPRA (el FX se realizó). Usar el blue de hoy infla la ganancia
+        con la devaluación del peso.
+      • lote USD vendido en ARS → el costo USD se preserva (se lleva a ARS al TC
+        de venta y se cancela).
+    """
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("operations", "positions", "monthly_entries", "brokers",
+                  "fx_rates_daily", "users"):
+            conn.execute(f"DELETE FROM {t}")
+        conn.commit()
+        self.uid = _new_user(conn, email="xc_pnl@rendi.test")
+        # blue histórico: 1000 en 2024-11-01 (fecha de compra de los lotes de test)
+        conn.execute(
+            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, source) VALUES ('2024-11-01', 1000, 'test')")
+        conn.commit()
+        conn.close()
+
+    def _sell_pnl(self, broker_ccy, lot_ccy, sell_ccy, qty, lot_invested,
+                  exit_price, tc_blue=1500.0, entry_date='2024-11-01'):
+        from importing.schema import NormalizedTx
+        import uuid, json
+        conn = main.get_db()
+        _add_broker(conn, self.uid, "BK", broker_ccy)
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, quantity,
+               invested, commissions, currency, entry_date)
+               VALUES (?, 'BK', 'XYZ', 0, ?, ?, 0, ?, ?)""",
+            (self.uid, qty, lot_invested, lot_ccy, entry_date))
+        batch_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO import_batches (id, user_id, parser_format, file_name, file_hash, broker, status)
+               VALUES (?, ?, 'cocos', 't.csv', ?, 'BK', 'preview')""",
+            (batch_id, self.uid, batch_id))
+        rr = conn.execute(
+            "INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json) VALUES (?,1,'{}','valid',NULL)",
+            (batch_id,))
+        raw_id = rr.lastrowid
+        conn.commit()
+        tx = NormalizedTx(row_index=1, date='2025-10-01', broker='BK',
+                          operation_type='SELL', asset_symbol='XYZ', quantity=qty,
+                          unit_price=exit_price, gross_amount=exit_price * qty,
+                          fees=0.0, currency=sell_ccy)
+        with conn:
+            ps._persist_sell_fifo(conn, self.uid, batch_id, raw_id, tx, _helpers(), tc_blue=tc_blue)
+        op = conn.execute(
+            "SELECT pnl_usd FROM operations WHERE user_id=? AND asset='XYZ'", (self.uid,)).fetchone()
+        pnl = op["pnl_usd"]
+        conn.close()
+        return pnl
+
+    def test_ars_lot_sold_usd_uses_purchase_blue(self):
+        # Lote ARS: 10.000 ARS, comprado 2024-11-01 (blue=1000). Vendido 10u a US$2.
+        # Costo USD = 10.000/1000 = 10; proceeds = 20 → P&L = +10.
+        # Con el bug (blue actual 1500): costo = 10.000/1500 = 6,67 → P&L = +13,33.
+        pnl = self._sell_pnl("USDT", "ARS", "USD", qty=10, lot_invested=10000, exit_price=2.0)
+        self.assertAlmostEqual(pnl, 10.0, places=1,
+                               msg="Debe usar el blue de la fecha de compra, no el actual")
+
+    def test_ars_lot_sold_usd_no_history_falls_back(self):
+        # Sin blue histórico para la fecha → fallback al blue actual (back-compat).
+        pnl = self._sell_pnl("USDT", "ARS", "USD", qty=10, lot_invested=10000,
+                             exit_price=2.0, entry_date='2020-01-01')  # antes de fx_rates_daily
+        # costo = 10.000/1500 = 6,67 → P&L = 13,33 (comportamiento previo, sin data histórica)
+        self.assertAlmostEqual(pnl, 13.33, places=1)
+
+    def test_usd_lot_sold_ars_preserves_usd_cost(self):
+        # Lote USD (costo US$10) vendido 10u a 1600 ARS. cost_ars=10*1500=15000;
+        # proceeds_ars=16000; pnl_ars=1000; /1500 = +0,67. El costo USD se preserva.
+        pnl = self._sell_pnl("ARS", "USD", "ARS", qty=10, lot_invested=10, exit_price=1600.0)
+        self.assertAlmostEqual(pnl, 0.67, places=1)
+
+    def test_same_currency_usd_unchanged(self):
+        # Lote USD vendido en USD: sin conversión. cost 10, proceeds 20 → +10.
+        pnl = self._sell_pnl("USDT", "USD", "USD", qty=10, lot_invested=10, exit_price=2.0)
+        self.assertAlmostEqual(pnl, 10.0, places=1)
+
+    def test_same_currency_ars_unchanged(self):
+        # Lote ARS vendido en ARS: FX-phantom (cost y venta al mismo TC). cost 15000
+        # ARS, proceeds 16000 → pnl_ars 1000 /1500 = +0,67.
+        pnl = self._sell_pnl("ARS", "ARS", "ARS", qty=10, lot_invested=15000, exit_price=1600.0)
+        self.assertAlmostEqual(pnl, 0.67, places=1)
+
+    def test_blue_for_date_helper(self):
+        conn = main.get_db()
+        # más reciente ≤ fecha
+        self.assertEqual(ps.blue_for_date(conn, '2024-11-15', 9999), 1000.0)
+        self.assertEqual(ps.blue_for_date(conn, '2024-11-01', 9999), 1000.0)
+        # antes de cualquier dato → fallback
+        self.assertEqual(ps.blue_for_date(conn, '2024-10-01', 9999), 9999)
+        self.assertEqual(ps.blue_for_date(conn, None, 9999), 9999)
+        conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
