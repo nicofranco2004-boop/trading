@@ -56,8 +56,12 @@ export default function Onboarding() {
   const [data, setData] = useState({}) // acumulador: { broker, position, skipped }
 
   useEffect(() => {
-    trackEvent('onboarding_started', { at_step: STEP_NAMES[initialStep] })
-    track('onboarding_started', { at_step: STEP_NAMES[initialStep] })
+    // Si el user entra directamente al step=complete (vuelta del CSV import),
+    // no contar como un nuevo inicio del onboarding — ya empezó antes.
+    if (initialStep === 0) {
+      trackEvent('onboarding_started', { at_step: STEP_NAMES[0] })
+      track('onboarding_started', { at_step: STEP_NAMES[0] })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

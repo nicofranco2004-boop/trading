@@ -247,7 +247,7 @@ export default function Login() {
             <button
               onClick={() => { setMode('login'); setEmailExists(false); setError(''); }}
               className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                mode === 'login' ? 'bg-blue-600 text-white' : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
+                mode === 'login' ? 'bg-data-violet text-white' : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
             >
               Iniciar sesión
@@ -255,7 +255,7 @@ export default function Login() {
             <button
               onClick={() => { setMode('register'); setEmailExists(false); setError(''); }}
               className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                mode === 'register' ? 'bg-blue-600 text-white' : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
+                mode === 'register' ? 'bg-data-violet text-white' : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
             >
               Registrarse
@@ -421,7 +421,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading || emailExists || forgotMode}
-              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+              className="w-full bg-data-violet hover:bg-data-violet/90 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
             >
               {loading ? 'Cargando…' : mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
             </button>

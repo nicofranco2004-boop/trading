@@ -60,10 +60,10 @@ function ModeSelector({ setMode, onBack, navigate, onSkip }) {
     <div>
       <div className="text-center mb-8">
         <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-ink-0 mb-3">
-          Tu primera operación
+          Tu primera posición
         </h1>
         <p className="text-sm md:text-base text-ink-2 max-w-md mx-auto leading-relaxed">
-          Cargá tu primera posición o sumá tu CSV. Podés sumar más después.
+          Cargá tu primera posición o subí el CSV de tu broker. Podés agregar más después.
         </p>
       </div>
 
@@ -84,7 +84,7 @@ function ModeSelector({ setMode, onBack, navigate, onSkip }) {
                 <span className="text-[9px] font-mono uppercase tracking-caps text-data-violet bg-data-violet/15 px-1.5 py-0.5 rounded">recomendado</span>
               </h3>
               <p className="text-sm text-ink-2 leading-relaxed">
-                Subís el archivo que te da tu broker. Detectamos formato automático (Cocos, IOL, Schwab, Binance, Balanz) y mapeamos todas tus operaciones de una.
+                Subís el archivo que te da tu broker. Detectamos formato automático (Cocos, Schwab, Binance, Bull Market) y mapeamos todas tus posiciones de una.
               </p>
             </div>
             <ArrowRight size={16} strokeWidth={1.75} className="text-ink-3 group-hover:text-data-violet group-hover:translate-x-0.5 transition-all flex-shrink-0 mt-1" />
@@ -293,7 +293,6 @@ function ManualForm({ onNext, onBack }) {
             onChange={(e) => setAsset(e.target.value.toUpperCase())}
             placeholder="NVDA, AAPL, AL30, BTC…"
             maxLength={20}
-            autoFocus
             autoCapitalize="characters"
             autoCorrect="off"
             spellCheck="false"

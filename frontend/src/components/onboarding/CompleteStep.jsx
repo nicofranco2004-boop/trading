@@ -16,7 +16,7 @@ export default function CompleteStep({ skipped, position }) {
   const coachDrawer = useCoachDrawer()
 
   function openCoach() {
-    navigate('/dashboard')
+    navigate('/')
     setTimeout(() => coachDrawer?.open?.(), 300)
   }
 
@@ -65,7 +65,7 @@ export default function CompleteStep({ skipped, position }) {
       {/* CTA principal */}
       <button
         type="button"
-        onClick={() => navigate('/posiciones?tab=evolucion')}
+        onClick={() => navigate('/posiciones')}
         className="group inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-6 py-3 transition-colors text-sm sm:text-base min-w-[200px] justify-center"
       >
         <Sparkles size={16} strokeWidth={2} />
