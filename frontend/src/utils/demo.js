@@ -1839,7 +1839,7 @@ const EVENTS_POPULAR = [
   { ticker: 'GGAL', event_type: 'earnings',    event_date: _todayPlus(14), confirmed: 0, details: { title: 'GGAL · Resultados Q1 (estimado)' } },
 ]
 
-// ─── Fundamentals (feature Vesty-score) ──────────────────────────────────────
+// ─── Fundamentals (Rendi Score) ──────────────────────────────────────────────
 // Fixtures que matchean EXACTAMENTE el shape del contrato
 // (GET /fundamentals/{ticker} + POST /fundamentals/ai-summary). Permiten que la
 // página /fundamentals funcione end-to-end en demo, sin backend.

@@ -10841,6 +10841,8 @@ YF_CACHE_TTL_BY_KIND = {
     "scorecard":    12 * 60 * 60,   # 12h — derivado de fundamentals
     # Datos más volátiles:
     "earnings":     6 * 60 * 60,    # 6h — próxima fecha + surprises pueden actualizarse
+    # Estados financieros anuales (wave 3): cambian solo con balances → 24h.
+    "financials":  24 * 60 * 60,    # 24h — income statement anual (CAGR ingresos/EPS)
 }
 # Mantener el alias viejo para back-compat con tests existentes
 YF_CACHE_TTL_SECONDS = YF_CACHE_TTL_DEFAULT_SECONDS
@@ -11181,7 +11183,145 @@ def _yf_fundamentals_fetcher(yf_ticker: str) -> dict:
         "week_52_low_usd": info.get("fiftyTwoWeekLow"),
         "beta": info.get("beta"),
         "currency": info.get("currency", "USD"),
+        # Campos extra de .info para metrics_detail (wave 2). Se cachean junto
+        # al resto — NO agregan llamadas de red (todo sale del mismo t.info).
+        # Cualquiera puede faltar → None (el builder los muestra como "—").
+        "price_to_book": info.get("priceToBook"),
+        "enterprise_to_ebitda": info.get("enterpriseToEbitda"),
+        "return_on_assets": info.get("returnOnAssets"),        # decimal
+        "operating_margins": info.get("operatingMargins"),      # decimal
+        "gross_margins": info.get("grossMargins"),              # decimal
+        "current_ratio": info.get("currentRatio"),
+        "quick_ratio": info.get("quickRatio"),
+        "earnings_growth": info.get("earningsGrowth"),          # decimal YoY
+        "free_cashflow_usd": info.get("freeCashflow"),
+        "total_revenue_usd": info.get("totalRevenue"),
+        # Campos extra para categories_detail (wave 3). Mismo t.info → 0 red extra.
+        "total_cash_usd": info.get("totalCash"),
+        "total_debt_usd": info.get("totalDebt"),
+        # Cobertura de intereses = EBIT / interest expense. yfinance no la expone
+        # directo; la derivamos de ebitda/ebit + interestExpense si están.
+        "ebit_usd": info.get("ebit"),
+        "ebitda_usd": info.get("ebitda"),
+        "interest_expense_usd": info.get("interestExpense"),
+        # 5y avg dividend yield viene YA en porcentaje (igual que dividendYield).
+        "five_year_avg_dividend_yield_pct": info.get("fiveYearAvgDividendYield"),
     }
+
+
+def _cagr_from_series(values: list) -> Optional[float]:
+    """CAGR % a partir de una serie ordenada cronológicamente (viejo→nuevo).
+
+    PURA. values = lista de floats (ya coaccionados) ordenados del año más
+    viejo al más reciente. Devuelve (last/first)^(1/years)-1 × 100 o None si:
+      - hay < 2 puntos,
+      - CUALQUIER valor de la serie es <= 0. El CAGR solo tiene sentido sobre una
+        serie estrictamente positiva: base <= 0 da raíces de negativos/divisiones
+        absurdas, un valor final 0 daría un falso -100%, y un año de pérdida en el
+        medio (sign flip) produciría un CAGR engañoso que esconde esa pérdida.
+    """
+    vals = [v for v in values if v is not None]
+    years = len(vals) - 1
+    if len(vals) < 2 or years < 1:
+        return None
+    if any(v <= 0 for v in vals):
+        return None
+    first, last = vals[0], vals[-1]
+    try:
+        cagr = (last / first) ** (1.0 / years) - 1.0
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
+    if cagr != cagr or cagr in (float("inf"), float("-inf")):
+        return None
+    return round(cagr * 100, 2)
+
+
+def _yf_financials_fetcher(yf_ticker: str) -> dict:
+    """Lee el income statement anual UNA vez y computa CAGR ingresos 3A/5A + EPS 3A.
+
+    Cacheado vía _yf_fetch_cached(kind='financials', TTL 24h). Es el ÚNICO read
+    de red nuevo permitido por el contrato wave-3. Lee t.income_stmt (fallback
+    t.financials), busca las filas 'Total Revenue' y 'Diluted EPS' (fallback
+    'Basic EPS'), y calcula CAGR = (último/primero)^(1/años)-1.
+
+    Las columnas de yfinance vienen del año más reciente al más viejo → las
+    ordenamos viejo→nuevo. Para "3A" usamos los últimos 4 puntos (3 años de
+    crecimiento), para "5A" los últimos 6. Si hay < 2 años → None/"—".
+
+    Nunca tira: ante cualquier problema devuelve available=False y el caller
+    deja los CAGR en None.
+    """
+    import yfinance as yf
+
+    def _row_series(df, names):
+        """Extrae una fila del income_stmt por nombre (case-insensitive),
+        devuelve la serie ordenada viejo→nuevo como lista de floats."""
+        if df is None:
+            return []
+        try:
+            if getattr(df, "empty", True):
+                return []
+        except Exception:
+            return []
+        idx = list(df.index)
+        target = None
+        for want in names:
+            for label in idx:
+                if str(label).strip().lower() == want.lower():
+                    target = label
+                    break
+            if target is not None:
+                break
+        if target is None:
+            return []
+        try:
+            row = df.loc[target]
+        except Exception:
+            return []
+        # Columnas: yfinance las da más-reciente→más-viejo. Las invertimos.
+        out = []
+        for col in reversed(list(row.index)):
+            v = row[col]
+            n = _md_num(v)
+            out.append(n)
+        # Recortamos None de los extremos pero mantenemos huecos internos fuera.
+        return [v for v in out if v is not None]
+
+    try:
+        t = yf.Ticker(yf_ticker)
+        df = None
+        try:
+            df = t.income_stmt
+        except Exception:
+            df = None
+        if df is None or getattr(df, "empty", True):
+            try:
+                df = t.financials
+            except Exception:
+                df = None
+        if df is None or getattr(df, "empty", True):
+            return {"available": False, "reason": f"sin income statement para {yf_ticker}"}
+
+        rev = _row_series(df, ["Total Revenue", "TotalRevenue", "Operating Revenue"])
+        eps = _row_series(df, ["Diluted EPS", "DilutedEPS", "Basic EPS", "BasicEPS"])
+
+        # 3A = últimos 4 puntos (3 años de crecimiento); 5A = últimos 6.
+        rev_3y = _cagr_from_series(rev[-4:]) if len(rev) >= 2 else None
+        rev_5y = _cagr_from_series(rev[-6:]) if len(rev) >= 2 else None
+        eps_3y = _cagr_from_series(eps[-4:]) if len(eps) >= 2 else None
+
+        return {
+            "available": True,
+            "ticker": yf_ticker,
+            "rev_growth_3y_pct": rev_3y,
+            "rev_growth_5y_pct": rev_5y,
+            "eps_growth_3y_pct": eps_3y,
+            "_n_rev_years": len(rev),
+            "_n_eps_years": len(eps),
+        }
+    except Exception as ex:
+        log.warning("financials fetcher failed for %s: %s", yf_ticker, ex)
+        return {"available": False, "reason": f"financials_failed: {type(ex).__name__}"}
 
 
 def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
@@ -11572,6 +11712,7 @@ def _yf_analysts_fetcher(yf_ticker: str) -> dict:
         "target_high_usd": target_high,
         "target_low_usd": target_low,
         "upside_pct": upside_pct,
+        "recommendation_key": rec_key,
         "recommendation_label": rec_label,
         "recommendation_mean_score": round(rec_mean, 2) if rec_mean is not None else None,
         "n_analysts": n_analysts,
@@ -11611,6 +11752,712 @@ def _yf_profile_fetcher(yf_ticker: str) -> dict:
             "necesita contexto del negocio. NO repitas el sector/industria si "
             "ya lo dijiste con otra tool."
         ),
+    }
+
+
+# ─── Fundamentals feature: scoring + ensamblado del contrato ───────────────
+#
+# El endpoint GET /api/fundamentals/{ticker} orquesta los fetchers de yfinance
+# (scorecard + analysts + fundamentals/profile) y arma el JSON del contrato.
+# El scoring vive en _score_categories() — función PURA y unit-testable: toma
+# el array `categories_detail` (wave 3, única fuente de verdad) y devuelve
+# {overall, label, categories[]}. Las cards headline y el detalle derivan del
+# MISMO array → no pueden contradecirse.
+
+# status → puntos. outlier y na se EXCLUYEN del promedio (no aportan).
+# green=90 (no 100): "green" significa que la métrica PASA el umbral de calidad,
+# no que sea perfecta. Un techo en 90 evita el "100/100" redondo que se ve falso
+# (toda megacap sólida pasa todos los gates) y deja headroom — nada es perfecto
+# en fundamentales reales. El máximo posible del overall queda en 90.
+_FUND_STATUS_POINTS = {"green": 90, "amber": 55, "red": 18}
+
+# Pesos por categoría (se renormalizan sobre las categorías disponibles).
+_FUND_CATEGORY_WEIGHTS = {
+    "valuation": 0.30,
+    "profitability": 0.25,
+    "health": 0.25,
+    "growth": 0.20,
+}
+
+_FUND_CATEGORY_META = {
+    "valuation": ("Valuación", "¿Está a buen precio hoy?"),
+    "growth": ("Crecimiento", "¿Está creciendo?"),
+    "profitability": ("Rentabilidad", "¿Genera ganancias de forma eficiente?"),
+    "health": ("Salud Financiera", "¿Es financieramente sólida?"),
+}
+
+# Orden de categorías en el output (matchea el contrato/diseño).
+_FUND_CATEGORY_ORDER = ["valuation", "growth", "profitability", "health"]
+
+
+def _score_categories(categories_detail: list) -> dict:
+    """PURA: deriva los 4 scores headline + overall desde categories_detail.
+
+    ÚNICA fuente de verdad (wave 3): tanto las category cards como el detalle
+    salen del MISMO array `categories_detail` (5 categorías) → los números no
+    pueden contradecirse.
+
+    Reglas (ver contrato SCORING):
+      - status → puntos: green=90, amber=55, red=18. na/info EXCLUIDOS.
+      - category.score = round(mean(puntos de sus métricas incluidas)); None si
+        todas excluidas. Se reusa el `score` ya computado en categories_detail.
+      - overall = media ponderada renormalizada de las 4 CORE categorías
+        (valuation .30, profitability .25, health .25, growth .20). Dividendos
+        NO entra al overall.
+      - label: >=80 Excelente, >=65 Bueno, >=45 Mixto, else Débil; None→"Sin datos".
+
+    Devuelve {"overall": int|None, "label": str, "categories": [ {key, label,
+    question, score, metrics[]}, ... 4 core en orden del contrato ] }.
+    """
+    detail = categories_detail if isinstance(categories_detail, list) else []
+    by_key = {c.get("key"): c for c in detail if isinstance(c, dict)}
+
+    categories = []
+    cat_scores: dict = {}
+    for key in _FUND_CATEGORY_ORDER:
+        label, question = _FUND_CATEGORY_META[key]
+        cat = by_key.get(key) or {}
+        metrics = cat.get("metrics") or []
+        score = cat.get("score")
+        if score is not None:
+            cat_scores[key] = score
+        categories.append({
+            "key": key,
+            "label": label,
+            "question": question,
+            "score": score,
+            # Breakdown per-métrica (mismo shape que categories_detail) para que
+            # el packet del LLM y back-compat tengan el detalle disponible.
+            "metrics": [
+                {
+                    "name": m.get("label"),
+                    "value_label": m.get("value_label"),
+                    "status": m.get("status"),
+                    "reference": m.get("info"),
+                }
+                for m in metrics
+                if isinstance(m, dict)
+            ],
+        })
+
+    derived = _derive_overall(cat_scores)
+    return {"overall": derived["overall"], "label": derived["label"], "categories": categories}
+
+
+def _build_fundamentals_response(ticker: str) -> dict:
+    """Orquesta los fetchers cacheados y arma el JSON del contrato para
+    GET /api/fundamentals/{ticker}. Nunca tira: ante falta de fundamentales
+    devuelve {available: False, ...}. Cualquier métrica faltante → null.
+    """
+    norm = (ticker or "").strip().upper()
+
+    scorecard = _yf_fetch_cached(norm, "scorecard", _yf_scorecard_fetcher)
+    # Si el scorecard no aplica (cripto/ETF/bono/CEDEAR ARS/inválido), es la
+    # señal autoritativa de "no es una equity con fundamentales".
+    if not scorecard.get("available"):
+        return {
+            "available": False,
+            "ticker": norm,
+            "reason": scorecard.get(
+                "reason",
+                f"yfinance no tiene fundamentales para {norm} (cripto, bono o ticker inválido)",
+            ),
+        }
+
+    fundamentals = _yf_fetch_cached(norm, "fundamentals", _yf_fundamentals_fetcher)
+    analysts = _yf_fetch_cached(norm, "analysts", _yf_analysts_fetcher)
+    profile = _yf_fetch_cached(norm, "profile", _yf_profile_fetcher)
+    # wave 3: income statement anual para CAGR ingresos/EPS (cacheado 24h, único
+    # read de red nuevo). Si falla → CAGR en None/"—" (no rompe el response).
+    financials = _yf_fetch_cached(norm, "financials", _yf_financials_fetcher)
+
+    fund_ok = isinstance(fundamentals, dict) and fundamentals.get("available")
+    prof_ok = isinstance(profile, dict) and profile.get("available")
+    analysts_ok = isinstance(analysts, dict) and analysts.get("available")
+    fin_ok = isinstance(financials, dict) and financials.get("available")
+
+    # stale: cualquiera de las fuentes servida desde cache stale (>TTL).
+    stale = bool(
+        scorecard.get("_stale")
+        or (isinstance(fundamentals, dict) and fundamentals.get("_stale"))
+        or (isinstance(analysts, dict) and analysts.get("_stale"))
+        or (isinstance(profile, dict) and profile.get("_stale"))
+    )
+
+    # company_name / sector: preferimos scorecard, luego fundamentals, luego profile.
+    company_name = (
+        scorecard.get("company_name")
+        or (fundamentals.get("company_name") if fund_ok else None)
+        or (profile.get("company_name") if prof_ok else None)
+    )
+    sector = (
+        scorecard.get("sector")
+        or (fundamentals.get("sector") if fund_ok else None)
+        or (profile.get("sector") if prof_ok else None)
+    )
+    currency = (fundamentals.get("currency") if fund_ok else None) or "USD"
+
+    price = scorecard.get("price") or {}
+    current_price = price.get("current_usd")
+    fair_value = price.get("fair_value_usd")
+    margin_pct = price.get("margin_of_safety_pct")
+
+    # ── Analysts block ──
+    analysts_block = None
+    if analysts_ok:
+        rec_label = analysts.get("recommendation_label")
+        # El fetcher ya expone recommendationKey crudo — lo leemos directo
+        # (antes lo derivábamos invirtiendo el label, frágil ante divergencias).
+        rec_key = analysts.get("recommendation_key")
+        n_analysts = analysts.get("n_analysts")
+        if n_analysts:  # solo exponemos el bloque si hay cobertura real
+            analysts_block = {
+                "available": True,
+                "recommendation_key": rec_key,
+                "recommendation_label": rec_label,
+                "n_analysts": n_analysts,
+                "target_mean_usd": analysts.get("target_mean_usd"),
+                "current_price_usd": analysts.get("current_price_usd"),
+                "upside_pct": analysts.get("upside_pct"),
+            }
+
+    # ── Opportunity block ──
+    # Preferencia: margin_of_safety (fair_value) si el scorecard lo tiene; sino
+    # upside de analistas; sino available:false.
+    # position_pct: 0 = máxima oportunidad (izquierda/infravalorada),
+    #               100 = flojo (derecha/sobrevalorada). Marker clamped 0..100.
+    def _label_for_value(v: float) -> str:
+        if v >= 10:
+            return "Oportunidad"
+        if v <= -10:
+            return "Flojo"
+        return "En precio"
+
+    opportunity = {"available": False}
+    if margin_pct is not None and fair_value:
+        # value_pct = margen de seguridad (% por debajo del valor justo).
+        v = round(margin_pct, 1)
+        # position_pct: margen +50% → 0 (máxima oportunidad), -50% → 100.
+        position = round(max(0.0, min(100.0, 50.0 - v)), 1)
+        caption = (
+            f"{abs(v):.0f}% por debajo del valor justo estimado"
+            if v > 0
+            else f"{abs(v):.0f}% por encima del valor justo estimado"
+            if v < 0
+            else "En línea con el valor justo estimado"
+        )
+        opportunity = {
+            "available": True,
+            "kind": "fair_value",
+            "value_pct": v,
+            "label": _label_for_value(v),
+            "position_pct": position,
+            "caption": caption,
+        }
+    elif analysts_block and analysts_block.get("upside_pct") is not None:
+        v = round(analysts_block["upside_pct"], 1)
+        position = round(max(0.0, min(100.0, 50.0 - v)), 1)
+        caption = (
+            f"Los analistas ven {abs(v):.0f}% de upside sobre el precio actual"
+            if v > 0
+            else f"Los analistas ven {abs(v):.0f}% de downside sobre el precio actual"
+            if v < 0
+            else "Los analistas ven el precio en línea con su target"
+        )
+        opportunity = {
+            "available": True,
+            "kind": "analyst",
+            "value_pct": v,
+            "label": _label_for_value(v),
+            "position_pct": position,
+            "caption": caption,
+        }
+
+    # ── Raw metrics block (cualquiera puede ser null) ──
+    f = fundamentals if fund_ok else {}
+    # Algunos números crudos viven en el scorecard (ya normalizados a %).
+    sc_metrics = {m.get("name"): m for m in (scorecard.get("metrics") or []) if isinstance(m, dict)}
+
+    def _sc_value(name: str):
+        m = sc_metrics.get(name)
+        return m.get("value") if m else None
+
+    metrics_block = {
+        "trailing_pe": f.get("trailing_pe"),
+        "forward_pe": f.get("forward_pe"),
+        "peg_ratio": _sc_value("PEG Ratio"),
+        "dividend_yield_pct": f.get("dividend_yield_pct"),
+        "payout_ratio_pct": _sc_value("Payout Ratio"),
+        "roe_pct": _sc_value("ROE (Return on Equity)"),
+        "profit_margin_pct": _sc_value("Profit Margin"),
+        "revenue_growth_pct": _sc_value("Revenue Growth YoY"),
+        "debt_to_equity": _sc_value("Debt/Equity"),
+        "market_cap_usd": f.get("market_cap_usd"),
+        "beta": f.get("beta"),
+        "week_52_high_usd": f.get("week_52_high_usd"),
+        "week_52_low_usd": f.get("week_52_low_usd"),
+    }
+
+    # wave 3: CAGR del income statement (None-safe si financials no disponible).
+    cagr = financials if fin_ok else None
+
+    # categories_detail (5 categorías) es la ÚNICA fuente de verdad: de acá se
+    # derivan tanto las category cards (score.categories) como el overall.
+    categories_detail = _build_categories_detail(f, metrics_block, cagr, sector=sector)
+    score = _score_categories(categories_detail)
+
+    return {
+        "available": True,
+        "ticker": norm,
+        "company_name": company_name,
+        "sector": sector,
+        "currency": currency,
+        "as_of": None,  # yfinance no expone una fecha de balance confiable acá
+        "stale": stale,
+        "score": score,
+        "opportunity": opportunity,
+        "analysts": analysts_block,
+        "metrics": metrics_block,
+        # wave 2: array aditivo de ~20 métricas (4 categorías) para "Comparar".
+        "metrics_detail": _build_metrics_detail(f, metrics_block, cagr),
+        # wave 3: detalle per-métrica con badge/status para "Detalle por categoría".
+        "categories_detail": categories_detail,
+        # extras útiles para el frontend (no en el contrato estricto pero
+        # tolerados): precio actual y valor justo para la sección de precio.
+        "price": {
+            "current_usd": current_price,
+            "fair_value_usd": fair_value,
+            "margin_of_safety_pct": margin_pct,
+        },
+    }
+
+
+# ── metrics_detail (wave 2) ────────────────────────────────────────────────
+# Array aditivo de ~20 métricas en 4 categorías para la vista "Comparar".
+# Cada item: {key, label, category, value (num|None), value_label (str), direction}.
+# direction: "lower" = menor es mejor (P/E, deuda), "higher" = mayor es mejor.
+# Es una función PURA: toma los bloques YA normalizados (fundamentals + el
+# metrics_block crudo del contrato wave-1) y arma el array. No toca la red.
+#
+# Orden y keys SON ESTABLES: siempre emitimos las 20 keys (null/"—" si faltan)
+# para que la tabla del frontend tenga filas fijas.
+
+# (key, label, category, direction, unit) — unit ∈ {"x","pct"} controla el formato.
+_METRICS_DETAIL_SPEC = [
+    ("pe",             "P/E",                "valuation",     "lower",  "x"),
+    ("pe_fwd",         "P/E fwd",            "valuation",     "lower",  "x"),
+    ("pb",             "P/B",                "valuation",     "lower",  "x"),
+    ("ev_ebitda",      "EV/EBITDA",          "valuation",     "lower",  "x"),
+    ("peg",            "PEG",                "valuation",     "lower",  "x"),
+    ("rev_growth_3y",  "Ingresos 3Y",       "growth",        "higher", "pct"),
+    ("rev_growth_5y",  "Ingresos 5Y",       "growth",        "higher", "pct"),
+    ("eps_growth_3y",  "EPS 3Y",            "growth",        "higher", "pct"),
+    ("rev_growth_yoy", "Ingresos YoY",      "growth",        "higher", "pct"),
+    ("earnings_yoy",   "Ganancias YoY",     "growth",        "higher", "pct"),
+    ("roe",            "ROE",                "profitability", "higher", "pct"),
+    ("roa",            "ROA",                "profitability", "higher", "pct"),
+    ("net_margin",     "Margen neto",       "profitability", "higher", "pct"),
+    ("oper_margin",    "Margen operativo",  "profitability", "higher", "pct"),
+    ("gross_margin",   "Margen bruto",      "profitability", "higher", "pct"),
+    ("debt_equity",    "Deuda/Capital",     "health",        "lower",  "x"),
+    ("current_ratio",  "Liquidez corriente","health",        "higher", "x"),
+    ("quick_ratio",    "Liquidez ácida",    "health",        "higher", "x"),
+    ("payout",         "Payout",            "health",        "lower",  "pct"),
+    ("fcf_margin",     "Margen FCF",        "health",        "higher", "pct"),
+]
+
+
+def _md_num(v):
+    """Coacciona a float si es numérico finito; sino None."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    return f
+
+
+def _md_label(v, unit):
+    """value_label: '32.88x' / '48.49%' / '—' (None)."""
+    if v is None:
+        return "—"
+    if unit == "pct":
+        return f"{v:.2f}%"
+    return f"{v:.2f}x"
+
+
+def _fund_raw_values(fund: dict, metrics_block: dict, cagr: dict = None) -> dict:
+    """Mapa key → valor crudo (magnitud comparable) compartido por
+    metrics_detail (wave 2) y categories_detail (wave 3). Función PURA.
+
+    cagr: dict opcional del fetcher 'financials' con rev_growth_3y_pct /
+    rev_growth_5y_pct / eps_growth_3y_pct (None si no disponible).
+    """
+    f = fund if isinstance(fund, dict) else {}
+    mb = metrics_block if isinstance(metrics_block, dict) else {}
+    cg = cagr if isinstance(cagr, dict) else {}
+
+    # decimal (0.48) → porcentaje (48.49). None-safe.
+    def _pct(v):
+        n = _md_num(v)
+        return round(n * 100, 2) if n is not None else None
+
+    # Margen FCF = free cashflow / revenue × 100. Exigimos revenue > 0
+    # explícitamente: revenue negativo (data corrupta de yfinance) daría un
+    # margen sin sentido, y revenue 0 dividiría por cero.
+    fcf = _md_num(f.get("free_cashflow_usd"))
+    rev = _md_num(f.get("total_revenue_usd"))
+    fcf_margin = round(fcf / rev * 100, 2) if (fcf is not None and rev is not None and rev > 0) else None
+
+    # Cobertura de intereses = EBIT / |interest expense|. Guardamos contra
+    # interest expense 0 (no deuda con costo → ratio infinito sin sentido).
+    ebit = _md_num(f.get("ebit_usd"))
+    if ebit is None:
+        ebit = _md_num(f.get("ebitda_usd"))  # fallback aproximado
+    intex = _md_num(f.get("interest_expense_usd"))
+    interest_coverage = (
+        round(ebit / abs(intex), 2)
+        if (ebit is not None and intex is not None and abs(intex) > 0)
+        else None
+    )
+
+    return {
+        "pe":             _md_num(f.get("trailing_pe")),
+        "pe_fwd":         _md_num(f.get("forward_pe")),
+        "pb":             _md_num(f.get("price_to_book")),
+        "ev_ebitda":      _md_num(f.get("enterprise_to_ebitda")),
+        "peg":            _md_num(mb.get("peg_ratio")),
+        "rev_growth_3y":  _md_num(cg.get("rev_growth_3y_pct")),
+        "rev_growth_5y":  _md_num(cg.get("rev_growth_5y_pct")),
+        "eps_growth_3y":  _md_num(cg.get("eps_growth_3y_pct")),
+        "rev_growth_yoy": _md_num(mb.get("revenue_growth_pct")),
+        "earnings_yoy":   _pct(f.get("earnings_growth")),
+        "roe":            _md_num(mb.get("roe_pct")),
+        "roa":            _pct(f.get("return_on_assets")),
+        "net_margin":     _md_num(mb.get("profit_margin_pct")),
+        "oper_margin":    _pct(f.get("operating_margins")),
+        "gross_margin":   _pct(f.get("gross_margins")),
+        "debt_equity":    _md_num(mb.get("debt_to_equity")),
+        "current_ratio":  _md_num(f.get("current_ratio")),
+        "quick_ratio":    _md_num(f.get("quick_ratio")),
+        "interest_coverage": interest_coverage,
+        "payout":         _md_num(mb.get("payout_ratio_pct")),
+        "fcf_margin":     fcf_margin,
+        "total_cash":     _md_num(f.get("total_cash_usd")),
+        "total_debt":     _md_num(f.get("total_debt_usd")),
+        "dividend_yield": _md_num(mb.get("dividend_yield_pct")),
+        "avg_yield_5y":   _md_num(f.get("five_year_avg_dividend_yield_pct")),
+    }
+
+
+def _build_metrics_detail(fund: dict, metrics_block: dict, cagr: dict = None) -> list:
+    """Construye el array metrics_detail (20 keys, orden estable).
+
+    Args:
+      fund: payload de _yf_fundamentals_fetcher (puede traer las claves extra
+            wave-2: price_to_book, enterprise_to_ebitda, return_on_assets,
+            operating_margins, gross_margins, current_ratio, quick_ratio,
+            earnings_growth, free_cashflow_usd, total_revenue_usd) o {} si N/A.
+      metrics_block: el bloque "metrics" crudo del contrato wave-1, con los
+            valores ya normalizados desde el scorecard (peg_ratio, roe_pct,
+            profit_margin_pct, revenue_growth_pct, payout_ratio_pct,
+            debt_to_equity).
+      cagr: dict opcional del fetcher 'financials' (rev_growth_3y/5y, eps 3y).
+            Si None → esos 3 quedan en None/"—" (back-compat wave 2).
+
+    Función pura — no toca la red ni la DB.
+    """
+    raw_values = _fund_raw_values(fund, metrics_block, cagr)
+
+    out = []
+    for key, label, category, direction, unit in _METRICS_DETAIL_SPEC:
+        v = raw_values.get(key)
+        out.append({
+            "key": key,
+            "label": label,
+            "category": category,
+            "value": v,
+            "value_label": _md_label(v, unit),
+            "direction": direction,
+        })
+    return out
+
+
+# ── categories_detail (wave 3) ─────────────────────────────────────────────
+# Array de 5 categorías (valuation/growth/profitability/health/dividends), cada
+# una expandible en sus métricas individuales con BADGE per-métrica
+# (Excelente/Aceptable/Muy caro/Bajo), value/value_label, direction e info.
+#
+# La derivación de los 4 scores headline (score.categories) y el overall sale
+# de ESTE array → ÚNICA fuente de verdad: headline cards == detalle.
+
+# status → label español según direction (lower = valuación, higher = resto).
+_FUND_STATUS_LABEL = {
+    ("green", "lower"):  "Excelente",
+    ("amber", "lower"):  "Aceptable",
+    ("red", "lower"):    "Muy caro",
+    ("green", "higher"): "Excelente",
+    ("amber", "higher"): "Aceptable",
+    ("red", "higher"):   "Bajo",
+}
+
+
+def _fund_status_label(status: str, direction: str) -> str:
+    """Label español del badge. info/na → "" (sin badge)."""
+    if status in ("na", "info") or status is None:
+        return ""
+    return _FUND_STATUS_LABEL.get((status, direction), "")
+
+
+def _status_band(value, *, green, amber, lower_is_better, red_if_negative=False):
+    """Status genérico por bandas. PURA.
+
+    lower_is_better=True (valuación, deuda): <=green → green, <=amber → amber, else red.
+    lower_is_better=False (crecimiento, rentabilidad): >=green → green, >=amber → amber, else red.
+    red_if_negative: para valuación, un valor <= 0 (P/E o P/B negativos = sin
+      ganancias / patrimonio negativo) es directamente red.
+    value None → 'na'.
+    """
+    if value is None:
+        return "na"
+    if red_if_negative and value <= 0:
+        return "red"
+    if lower_is_better:
+        if value <= green:
+            return "green"
+        if value <= amber:
+            return "amber"
+        return "red"
+    else:
+        if value >= green:
+            return "green"
+        if value >= amber:
+            return "amber"
+        return "red"
+
+
+# Spec de categories_detail. Cada métrica:
+#   (key, label, direction, unit, info, status_fn)
+# status_fn(value, raw) -> str  (raw = el dict completo de raw_values, por si
+#   una métrica necesita contexto — ej. dividend yield 0).
+# direction: "lower" | "higher" | "info". unit: "x" | "pct" | "usd".
+# info-only (direction="info") → status "na", sin badge ni barra.
+
+_DIR_LOWER = "lower"
+_DIR_HIGHER = "higher"
+_DIR_INFO = "info"
+
+
+def _build_categories_detail(fund: dict, metrics_block: dict, cagr: dict = None,
+                             sector: str = None) -> list:
+    """Construye categories_detail (5 categorías). Función PURA (no toca red/DB).
+
+    Reutiliza _fund_raw_values para los valores crudos. Aplica thresholds
+    per-métrica del contrato wave-3. Para las métricas que el scorecard ya
+    cubre (PEG, ROE, Payout, D/E, profit margin, revenue growth) reusa el
+    MISMO status del scorecard vía _status_of_metric para no contradecirlo.
+
+    sector: para excluir D/E en Financial Services (igual que el scorecard).
+    """
+    rv = _fund_raw_values(fund, metrics_block, cagr)
+
+    def _label_usd(v):
+        """Compacto: $1.20B / $980.0M / $-1.2B / "—"."""
+        if v is None:
+            return "—"
+        a = abs(v)
+        sign = "-" if v < 0 else ""
+        if a >= 1e12:
+            return f"{sign}${a/1e12:.2f}T"
+        if a >= 1e9:
+            return f"{sign}${a/1e9:.2f}B"
+        if a >= 1e6:
+            return f"{sign}${a/1e6:.1f}M"
+        if a >= 1e3:
+            return f"{sign}${a/1e3:.1f}K"
+        return f"{sign}${a:.0f}"
+
+    def _label(v, unit):
+        if unit == "usd":
+            return _label_usd(v)
+        return _md_label(v, unit)
+
+    # ── Status per-métrica ────────────────────────────────────────────────
+    # Reusamos el scorecard donde se solapa (mismo threshold → mismo color).
+    def st_pe(v):       return _status_band(v, green=15, amber=30, lower_is_better=True, red_if_negative=True)
+    def st_pe_fwd(v):   return _status_band(v, green=15, amber=25, lower_is_better=True, red_if_negative=True)
+    def st_pb(v):       return _status_band(v, green=3, amber=8, lower_is_better=True, red_if_negative=True)
+    def st_ev(v):       return _status_band(v, green=10, amber=18, lower_is_better=True, red_if_negative=True)
+    def st_peg(v):
+        # Scorecard: peg_ratio (green<=1, amber<=1.5, outlier>=5). El contrato
+        # wave-3 pide green<=1, amber<=2. Mapeamos outlier→na (no contradice).
+        s = _status_of_metric("peg_ratio", v) if v is not None else "na"
+        if s == "outlier":
+            return "na"
+        if s in ("green", "amber", "red", "na"):
+            # refinamos amber a <=2 (contrato): si scorecard dio red pero v<=2 → amber
+            if s == "red" and v is not None and v <= 2:
+                return "amber"
+            return s
+        return "na"
+
+    def st_growth(v):   return _status_band(v, green=15, amber=5, lower_is_better=False)  # negativo → red
+    def st_roe(v):
+        return _status_of_metric("roe_pct", v) if v is not None else "na"
+    def st_roa(v):      return _status_band(v, green=8, amber=3, lower_is_better=False)
+    def st_net(v):
+        return _status_of_metric("profit_margin_pct", v) if v is not None else "na"
+    def st_oper(v):     return _status_band(v, green=15, amber=5, lower_is_better=False)
+    def st_gross(v):    return _status_band(v, green=40, amber=20, lower_is_better=False)
+    def st_de(v):
+        return _status_of_metric("debt_to_equity", v, sector=sector) if v is not None else "na"
+    def st_current(v):  return _status_band(v, green=2, amber=1, lower_is_better=False)
+    def st_quick(v):    return _status_band(v, green=1, amber=0.7, lower_is_better=False)
+    def st_intcov(v):   return _status_band(v, green=5, amber=2, lower_is_better=False)
+    def st_divyield(v):
+        if v is None or v <= 0:
+            return "na"
+        return _status_band(v, green=3, amber=1, lower_is_better=False)
+    def st_payout(v):
+        # No paga dividendo (0 o None) → na. Sino lower-is-safer: <=60 green, <=90 amber.
+        if v is None or v <= 0:
+            return "na"
+        return _status_band(v, green=60, amber=90, lower_is_better=True)
+    def st_none(v):     return "na"  # info-only
+
+    # (cat_key, cat_label, question, [ (mkey, label, direction, unit, info, status_fn) ... ])
+    spec = [
+        ("valuation", "Valuación", "¿Qué tan cara está respecto a sus fundamentos?", [
+            ("pe", "P/E", _DIR_LOWER, "x", "Precio / ganancias por acción. Menor = más barato.", st_pe),
+            ("pe_fwd", "P/E Forward", _DIR_LOWER, "x", "Precio / ganancias esperadas. Menor = más barato.", st_pe_fwd),
+            ("pb", "P/B", _DIR_LOWER, "x", "Precio / valor libro. Menor = más barato.", st_pb),
+            ("ev_ebitda", "EV/EBITDA", _DIR_LOWER, "x", "Valor empresa / EBITDA. Menor = más barato.", st_ev),
+            ("peg", "PEG", _DIR_LOWER, "x", "P/E ajustado por crecimiento. <1 = barato vs su crecimiento.", st_peg),
+        ]),
+        ("growth", "Crecimiento", "¿Está creciendo?", [
+            ("rev_growth_3y", "CAGR Ingresos 3A", _DIR_HIGHER, "pct", "Crecimiento anual de ingresos en 3 años.", st_growth),
+            ("rev_growth_5y", "CAGR Ingresos 5A", _DIR_HIGHER, "pct", "Crecimiento anual de ingresos en 5 años.", st_growth),
+            ("eps_growth_3y", "Crecimiento EPS 3A", _DIR_HIGHER, "pct", "Crecimiento anual de ganancias por acción en 3 años.", st_growth),
+            ("rev_growth_yoy", "Ingresos vs año anterior", _DIR_HIGHER, "pct", "Crecimiento de ingresos últimos 12 meses.", st_growth),
+            ("earnings_yoy", "Ganancias vs año anterior", _DIR_HIGHER, "pct", "Crecimiento de ganancias últimos 12 meses.", st_growth),
+        ]),
+        ("profitability", "Rentabilidad", "¿Genera ganancias de forma eficiente?", [
+            ("roe", "ROE", _DIR_HIGHER, "pct", "Ganancia sobre patrimonio. Mayor = más rentable.", st_roe),
+            ("roa", "ROA", _DIR_HIGHER, "pct", "Ganancia sobre activos. Mayor = más eficiente.", st_roa),
+            ("net_margin", "Margen Neto", _DIR_HIGHER, "pct", "Ganancia neta / ingresos.", st_net),
+            ("oper_margin", "Margen Operativo", _DIR_HIGHER, "pct", "Resultado operativo / ingresos.", st_oper),
+            ("gross_margin", "Margen Bruto", _DIR_HIGHER, "pct", "Ganancia bruta / ingresos.", st_gross),
+        ]),
+        ("health", "Salud Financiera", "¿Es financieramente sólida?", [
+            ("debt_equity", "Deuda/Patrimonio", _DIR_LOWER, "x", "Deuda / patrimonio. Menor = balance más sólido.", st_de),
+            ("current_ratio", "Liquidez Corriente", _DIR_HIGHER, "x", "Activo corriente / pasivo corriente. Mayor = más liquidez.", st_current),
+            ("quick_ratio", "Prueba Ácida", _DIR_HIGHER, "x", "Liquidez sin inventarios. Mayor = mejor.", st_quick),
+            ("interest_coverage", "Cobertura de Intereses", _DIR_HIGHER, "x", "Cuántas veces el resultado operativo cubre los intereses.", st_intcov),
+            ("total_cash", "Caja Total", _DIR_INFO, "usd", "Efectivo y equivalentes.", st_none),
+            ("total_debt", "Deuda Total", _DIR_INFO, "usd", "Deuda total (corto + largo plazo).", st_none),
+        ]),
+        ("dividends", "Dividendos", "¿Reparte dividendos sostenibles?", [
+            ("dividend_yield", "Dividend Yield", _DIR_HIGHER, "pct", "Dividendo anual / precio. Mayor = más renta.", st_divyield),
+            ("payout", "Payout Ratio", _DIR_LOWER, "pct", "% de ganancias repartido como dividendo. Menor = más sostenible.", st_payout),
+            ("avg_yield_5y", "Yield Promedio 5A", _DIR_INFO, "pct", "Dividend yield promedio de los últimos 5 años.", st_none),
+        ]),
+    ]
+
+    out = []
+    for cat_key, cat_label, question, metrics_spec in spec:
+        metrics_out = []
+        for mkey, mlabel, direction, unit, info, status_fn in metrics_spec:
+            v = rv.get(mkey)
+            if direction == _DIR_INFO:
+                status = "na"
+            else:
+                status = status_fn(v)
+            metrics_out.append({
+                "key": mkey,
+                "label": mlabel,
+                "value": v,
+                "value_label": _label(v, unit),
+                "direction": direction,
+                "status": status,
+                "status_label": "" if direction == _DIR_INFO else _fund_status_label(status, direction),
+                "info": info,
+            })
+        out.append({
+            "key": cat_key,
+            "label": cat_label,
+            "question": question,
+            "score": _category_score_from_metrics(metrics_out),
+            "metrics": metrics_out,
+        })
+    return out
+
+
+def _category_score_from_metrics(metrics: list) -> Optional[int]:
+    """score 0-100 derivado de los status per-métrica.
+    green=90, amber=55, red=18; na/info EXCLUIDOS. round(mean) o None si ninguno.
+    """
+    pts = [
+        _FUND_STATUS_POINTS[m.get("status")]
+        for m in metrics
+        if m.get("status") in _FUND_STATUS_POINTS
+    ]
+    return round(sum(pts) / len(pts)) if pts else None
+
+
+def _derive_overall(cat_scores: dict) -> dict:
+    """overall = media ponderada renormalizada de las 4 categorías core
+    (valuation .30 / profitability .25 / health .25 / growth .20). Dividends NO.
+    Devuelve {overall:int|None, label:str}.
+    """
+    core = {k: v for k, v in cat_scores.items() if k in _FUND_CATEGORY_WEIGHTS and v is not None}
+    if core:
+        total_w = sum(_FUND_CATEGORY_WEIGHTS[k] for k in core)
+        weighted = sum(core[k] * _FUND_CATEGORY_WEIGHTS[k] for k in core)
+        overall = round(weighted / total_w) if total_w > 0 else None
+    else:
+        overall = None
+
+    if overall is None:
+        label = "Sin datos"
+    elif overall >= 80:
+        label = "Excelente"
+    elif overall >= 65:
+        label = "Bueno"
+    elif overall >= 45:
+        label = "Mixto"
+    else:
+        label = "Débil"
+    return {"overall": overall, "label": label}
+
+
+def _build_fundamentals_ai_packet(fund: dict) -> dict:
+    """Arma el packet (solo números) que se le pasa al LLM para el resumen.
+    Toma el response del contrato (de _build_fundamentals_response) ya validado
+    como available:True. Determinístico → cacheable."""
+    score = fund.get("score") or {}
+    return {
+        "ticker": fund.get("ticker"),
+        "company_name": fund.get("company_name"),
+        "sector": fund.get("sector"),
+        "currency": fund.get("currency"),
+        "overall_score": score.get("overall"),
+        "overall_label": score.get("label"),
+        "categories": [
+            {
+                "key": c.get("key"),
+                "label": c.get("label"),
+                "score": c.get("score"),
+                "metrics": c.get("metrics"),
+            }
+            for c in (score.get("categories") or [])
+        ],
+        "metrics": fund.get("metrics"),
+        "opportunity": fund.get("opportunity"),
+        "analysts": fund.get("analysts"),
+        "price": fund.get("price"),
     }
 
 
@@ -12530,6 +13377,18 @@ class AIAnalyzeIn(BaseModel):
     followup_question: Optional[str] = Field(default=None, max_length=300)
 
 
+class FundamentalsAISummaryIn(BaseModel):
+    ticker: str = Field(..., max_length=24)
+
+
+class FundamentalsAISummary(BaseModel):
+    """Output forzado del LLM para POST /api/fundamentals/ai-summary.
+    intro: 1-2 frases (qué hace + titular). pros: 2-4. cons: 1-3."""
+    intro: str = Field(..., description="1-2 frases: qué hace la empresa y el titular fundamental.")
+    pros: List[str] = Field(..., description="2 a 4 fortalezas concretas en lenguaje tangible.")
+    cons: List[str] = Field(..., description="1 a 3 riesgos o debilidades concretas.")
+
+
 def _ai_cache_invalidate(uid: int) -> None:
     """Invalida TODO el cache de IA del user. Llamado desde endpoints de
     mutación (positions, operations, monthly, goals, brokers, etc.).
@@ -12734,6 +13593,154 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
             "cached": False,
             "tier": tier,
             "followup": followup_question is not None,
+            "usage": quota.get_current_usage(conn, uid),
+        }
+    finally:
+        conn.close()
+
+
+# ─── Fundamentals endpoints ────────────────────────────────────────────────
+
+@app.get("/api/fundamentals/{ticker}")
+def get_fundamentals(ticker: str, uid: int = Depends(get_current_user)):
+    """Scorecard de fundamentales de una acción (Vesty-style).
+
+    Auth requerida, TODOS los tiers, SIN cupo (data de yfinance cacheada).
+    Orquesta los fetchers existentes (scorecard + analysts + fundamentals/
+    profile) y arma el contrato. Para cripto/ETF/bono/CEDEAR-ARS/inválido
+    devuelve {available:false, reason} con HTTP 200 (no es un error).
+    """
+    try:
+        return _build_fundamentals_response(ticker)
+    except Exception as ex:
+        # Defensivo: nunca 500. Si algo se rompe, devolvemos available:false.
+        log.warning("fundamentals build failed for %s: %s", ticker, ex)
+        return {
+            "available": False,
+            "ticker": (ticker or "").strip().upper(),
+            "reason": f"No se pudieron obtener fundamentales para {(ticker or '').strip().upper()}",
+        }
+
+
+@app.post("/api/fundamentals/ai-summary")
+def fundamentals_ai_summary(data: FundamentalsAISummaryIn, uid: int = Depends(get_current_user)):
+    """Resumen IA ("Lo mejor" / "Ojo con esto") de los fundamentales de una acción.
+
+    Reusa EXACTAMENTE la infra de /api/ai/analyze: tier (quota.get_tier),
+    cache (ai.cache), cupo semanal de analyses (ai.quota) y llm.analyze con
+    output_model=FundamentalsAISummary. 429 con el MISMO shape que analyze al
+    agotar cupo; 503 si AI no configurada; 200/available:false si el ticker no
+    tiene fundamentales.
+    """
+    from ai import llm, cache, quota
+    from ai.prompts import render_fundamentals_prompt
+
+    if not llm.is_configured():
+        raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
+
+    ticker = (data.ticker or "").strip().upper()
+    if not ticker:
+        raise HTTPException(422, "Ticker requerido")
+
+    # Construir el contrato de fundamentales primero (barato + cacheado).
+    fund = _build_fundamentals_response(ticker)
+    if not fund.get("available"):
+        # Sin fundamentales que resumir — pass-through, no error.
+        return {
+            "available": False,
+            "ticker": ticker,
+            "reason": fund.get("reason", f"{ticker} no tiene fundamentales para resumir"),
+        }
+
+    packet = _build_fundamentals_ai_packet(fund)
+    # screen estable por ticker → cache key aislada por ticker (y por user+tier
+    # dentro de ai.cache). El packet determinístico hace miss automático si los
+    # números cambian.
+    screen = f"fundamentals.summary.{ticker}"
+
+    conn = get_db()
+    try:
+        tier = quota.get_tier(conn, uid)
+
+        # Cache HIT → gratis, no descuenta cupo (igual que analyze).
+        cached = cache.get_cached(conn, uid, screen, packet, tier=tier)
+        if cached:
+            return {
+                "summary": cached,
+                "cached": True,
+                "tier": tier,
+                "usage": quota.get_current_usage(conn, uid),
+            }
+
+        # Cache MISS → chequeamos cupo semanal de analyses. 429 con el MISMO
+        # shape que /api/ai/analyze (para que el handler 429/upgrade del front
+        # ande igual).
+        allowed, usage_now = quota.can_analyze(conn, uid)
+        if not allowed:
+            tier_label = {"free": "Free", "plus": "Plus", "pro": "Pro", "admin": "Admin"}.get(tier, "Free")
+            limit_n = usage_now.get("analyses_limit", 6)
+            upgrade_available = tier in ("free", "plus")
+            error_msg = (
+                f"Llegaste al límite del plan {tier_label} ({limit_n} análisis en los "
+                "últimos 7 días). Tu próximo análisis se libera al "
+                "expirar el más antiguo."
+            )
+            if upgrade_available:
+                error_msg += " Para 10× más análisis con respuestas profundas, pasate a Rendi Pro."
+            raise HTTPException(429, {
+                "error": error_msg,
+                "usage": usage_now,
+                "upgrade": {
+                    "available": upgrade_available,
+                    "current_tier": tier,
+                    "target_tier": "pro",
+                    "resets_on": usage_now.get("resets_on"),
+                    "benefits": [
+                        "10× más análisis IA (60/sem vs 6/sem)",
+                        "Respuestas con causalidad y comparaciones",
+                        "Chat libre con el Coach IA (40 consultas/sem)",
+                        "Follow-ups: profundizá con preguntas libres",
+                    ],
+                },
+            })
+
+        system_prompt = render_fundamentals_prompt(tier=tier)
+        try:
+            llm_result = llm.analyze(
+                system_prompt=system_prompt,
+                packet=packet,
+                output_model=FundamentalsAISummary,
+                model=llm.MODEL_HAIKU,
+            )
+        except Exception as ex:
+            log.warning("fundamentals ai-summary fallo (uid=%s, ticker=%s): %s", uid, ticker, ex)
+            raise HTTPException(502, f"AI procesamiento fallo: {type(ex).__name__}")
+
+        if llm_result is None:
+            raise HTTPException(503, "AI no disponible momentáneamente")
+
+        summary_dict = llm_result.output.model_dump()
+
+        cache.set_cached(
+            conn,
+            user_id=uid,
+            screen=screen,
+            packet=packet,
+            result=summary_dict,
+            model=llm_result.model,
+            input_tokens=llm_result.input_tokens,
+            output_tokens=llm_result.output_tokens,
+            cache_read_tokens=llm_result.cache_read_input_tokens,
+            cache_create_tokens=llm_result.cache_creation_input_tokens,
+            cost_usd_cents=llm_result.cost_usd_cents,
+            tier=tier,
+        )
+        quota.record_analysis(conn, uid, cost_usd_cents=llm_result.cost_usd_cents)
+
+        return {
+            "summary": summary_dict,
+            "cached": False,
+            "tier": tier,
             "usage": quota.get_current_usage(conn, uid),
         }
     finally:

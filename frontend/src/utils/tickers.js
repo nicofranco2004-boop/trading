@@ -329,3 +329,139 @@ export function tickerName(s) {
 export function isBondTicker(s) {
   return BOND_TICKERS.has((s || '').toUpperCase())
 }
+
+// ─── Universo curado para autocomplete (tipo TradingView) ────────────────────
+// `type` ∈ stock_us | stock_ar | cedear | bond | crypto | etf.
+// Antes vivía en components/home/SearchBar.jsx; centralizado acá para que
+// otras features (Fundamentals, etc.) lo reusen sin importar el modal SearchBar.
+// SearchBar.jsx re-exporta POPULAR_TICKERS / inferType desde acá para no romper
+// imports existentes.
+export const POPULAR_TICKERS = [
+  // Acciones US (blue chips + tech)
+  { symbol: 'AAPL',  name: 'Apple',                   exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'MSFT',  name: 'Microsoft',               exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'NVDA',  name: 'NVIDIA',                  exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'GOOGL', name: 'Alphabet',                exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'AMZN',  name: 'Amazon',                  exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'META',  name: 'Meta',                    exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'TSLA',  name: 'Tesla',                   exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'AMD',   name: 'Advanced Micro Devices',  exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'AVGO',  name: 'Broadcom',                exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'TSM',   name: 'Taiwan Semiconductor',    exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'NFLX',  name: 'Netflix',                 exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'JPM',   name: 'JPMorgan',                exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'V',     name: 'Visa',                    exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'MA',    name: 'Mastercard',              exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'WMT',   name: 'Walmart',                 exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'KO',    name: 'Coca-Cola',               exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'PEP',   name: 'PepsiCo',                 exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'XOM',   name: 'ExxonMobil',              exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'BRK.B', name: 'Berkshire Hathaway',      exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'MELI',  name: 'MercadoLibre',            exchange: 'NASDAQ', type: 'stock_us' },
+  { symbol: 'GLOB',  name: 'Globant',                 exchange: 'NYSE',   type: 'stock_us' },
+
+  // Acciones argentinas (Merval / panel líder)
+  { symbol: 'GGAL',  name: 'Grupo Financiero Galicia', exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'YPFD',  name: 'YPF',                       exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'BMA',   name: 'Banco Macro',               exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'PAMP',  name: 'Pampa Energía',             exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'TEN',   name: 'Ternium Argentina',         exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'CRES',  name: 'Cresud',                    exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'COME',  name: 'Sociedad Comercial del Plata', exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'ALUA',  name: 'Aluar',                     exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'ERAR',  name: 'Ternium (Siderar)',         exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'MIRG',  name: 'Mirgor',                    exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'CEPU',  name: 'Central Puerto',            exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'EDN',   name: 'Edenor',                    exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'TGSU2', name: 'Transportadora Gas del Sur', exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'BBAR',  name: 'BBVA Argentina',            exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'TRAN',  name: 'Transener',                 exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'SUPV',  name: 'Banco Supervielle',         exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'BYMA',  name: 'Bolsas y Mercados Argentinos', exchange: 'BCBA', type: 'stock_ar' },
+  { symbol: 'VALO',  name: 'Grupo Financiero Valores',  exchange: 'BCBA', type: 'stock_ar' },
+
+  // CEDEARs (acciones US listadas en BCBA, sufijo .BA)
+  { symbol: 'AAPL.BA',  name: 'Apple (CEDEAR)',        exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'MSFT.BA',  name: 'Microsoft (CEDEAR)',    exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'NVDA.BA',  name: 'NVIDIA (CEDEAR)',       exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'AMZN.BA',  name: 'Amazon (CEDEAR)',       exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'GOOGL.BA', name: 'Alphabet (CEDEAR)',     exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'META.BA',  name: 'Meta (CEDEAR)',         exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'TSLA.BA',  name: 'Tesla (CEDEAR)',        exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'AMD.BA',   name: 'AMD (CEDEAR)',          exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'KO.BA',    name: 'Coca-Cola (CEDEAR)',    exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'JPM.BA',   name: 'JPMorgan (CEDEAR)',     exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'V.BA',     name: 'Visa (CEDEAR)',         exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'MELI.BA',  name: 'MercadoLibre (CEDEAR)', exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'BABA.BA',  name: 'Alibaba (CEDEAR)',      exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'DISN.BA',  name: 'Disney (CEDEAR)',       exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'BA.BA',    name: 'Boeing (CEDEAR)',       exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'PFE.BA',   name: 'Pfizer (CEDEAR)',       exchange: 'BCBA', type: 'cedear' },
+
+  // Bonos soberanos AR (USD ley NY + ARS CER)
+  { symbol: 'AL29',  name: 'Bonar 2029 (USD ley AR)',   exchange: 'BCBA', type: 'bond' },
+  { symbol: 'AL30',  name: 'Bonar 2030 (USD ley AR)',   exchange: 'BCBA', type: 'bond' },
+  { symbol: 'AL35',  name: 'Bonar 2035 (USD ley AR)',   exchange: 'BCBA', type: 'bond' },
+  { symbol: 'AE38',  name: 'Bonar 2038 (USD ley AR)',   exchange: 'BCBA', type: 'bond' },
+  { symbol: 'AL41',  name: 'Bonar 2041 (USD ley AR)',   exchange: 'BCBA', type: 'bond' },
+  { symbol: 'GD29',  name: 'Global 2029 (USD ley NY)',  exchange: 'BCBA', type: 'bond' },
+  { symbol: 'GD30',  name: 'Global 2030 (USD ley NY)',  exchange: 'BCBA', type: 'bond' },
+  { symbol: 'GD35',  name: 'Global 2035 (USD ley NY)',  exchange: 'BCBA', type: 'bond' },
+  { symbol: 'GD38',  name: 'Global 2038 (USD ley NY)',  exchange: 'BCBA', type: 'bond' },
+  { symbol: 'GD41',  name: 'Global 2041 (USD ley NY)',  exchange: 'BCBA', type: 'bond' },
+  { symbol: 'GD46',  name: 'Global 2046 (USD ley NY)',  exchange: 'BCBA', type: 'bond' },
+  { symbol: 'TX26',  name: 'Boncer 2026 (CER)',         exchange: 'BCBA', type: 'bond' },
+  { symbol: 'TX28',  name: 'Boncer 2028 (CER)',         exchange: 'BCBA', type: 'bond' },
+  { symbol: 'TX31',  name: 'Boncer 2031 (CER)',         exchange: 'BCBA', type: 'bond' },
+  { symbol: 'TZX26', name: 'Boncer Cero 2026 (CER)',    exchange: 'BCBA', type: 'bond' },
+  { symbol: 'TZX28', name: 'Boncer Cero 2028 (CER)',    exchange: 'BCBA', type: 'bond' },
+  { symbol: 'DICY',  name: 'Discount USD (ley AR)',     exchange: 'BCBA', type: 'bond' },
+  { symbol: 'PARY',  name: 'Par USD (ley AR)',          exchange: 'BCBA', type: 'bond' },
+
+  // ETFs (core US)
+  { symbol: 'SPY',   name: 'SPDR S&P 500',              exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'VOO',   name: 'Vanguard S&P 500',          exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'IVV',   name: 'iShares Core S&P 500',      exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'QQQ',   name: 'Invesco Nasdaq 100',        exchange: 'NASDAQ', type: 'etf' },
+  { symbol: 'VTI',   name: 'Vanguard Total Stock Market', exchange: 'NYSE', type: 'etf' },
+  { symbol: 'DIA',   name: 'SPDR Dow Jones',            exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'IWM',   name: 'iShares Russell 2000',      exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'VEA',   name: 'Vanguard FTSE Developed',   exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'VWO',   name: 'Vanguard Emerging Markets', exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'IEMG',  name: 'iShares Core MSCI EM',      exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'AGG',   name: 'iShares Core US Bond',      exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'BND',   name: 'Vanguard Total Bond',       exchange: 'NASDAQ', type: 'etf' },
+  { symbol: 'GLD',   name: 'SPDR Gold Trust',           exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'SLV',   name: 'iShares Silver Trust',      exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'XLK',   name: 'Technology Sector SPDR',    exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'XLF',   name: 'Financial Sector SPDR',     exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'XLE',   name: 'Energy Sector SPDR',        exchange: 'NYSE',   type: 'etf' },
+  { symbol: 'ARKK',  name: 'ARK Innovation',            exchange: 'NYSE',   type: 'etf' },
+
+  // Cripto (top market cap + L1)
+  { symbol: 'BTC',   name: 'Bitcoin',                   exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'ETH',   name: 'Ethereum',                  exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'SOL',   name: 'Solana',                    exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'BNB',   name: 'BNB',                       exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'XRP',   name: 'XRP',                       exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'ADA',   name: 'Cardano',                   exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'DOGE',  name: 'Dogecoin',                  exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'AVAX',  name: 'Avalanche',                 exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'DOT',   name: 'Polkadot',                  exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'MATIC', name: 'Polygon',                   exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'LINK',  name: 'Chainlink',                 exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'USDT',  name: 'Tether',                    exchange: 'CRYPTO', type: 'crypto' },
+  { symbol: 'USDC',  name: 'USD Coin',                  exchange: 'CRYPTO', type: 'crypto' },
+]
+
+// Heurística para inferir tipo a partir del campo `asset` de una posición.
+export function inferType(asset) {
+  if (!asset) return 'stock_us'
+  const a = asset.toUpperCase()
+  if (['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT', 'MATIC', 'LINK'].includes(a)) return 'crypto'
+  if (a.endsWith('.BA')) return 'cedear'
+  if (/^(AL\d|GD\d|AE\d|TX\d|TZ|T2X|S\d|T\d{2}|PARY|DICY|PAR|DIC)/.test(a)) return 'bond'
+  const hit = POPULAR_TICKERS.find(t => t.symbol === a)
+  if (hit) return hit.type
+  return 'stock_us'
+}

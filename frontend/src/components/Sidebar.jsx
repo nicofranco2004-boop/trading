@@ -17,7 +17,7 @@ import { NavLink } from 'react-router-dom'
 import {
   Home as HomeIcon, LineChart, Briefcase, List, Settings, LogOut,
   Sun, Moon, Compass, Shield, Bell, Upload, Menu, Sparkles,
-  MessageCircle, BookOpen,
+  MessageCircle, BookOpen, Gauge,
 } from 'lucide-react'
 // NOTA: Sparkles se mantiene importado porque lo usa el botón del Coach IA.
 // Restructure 2026-05-27: sidebar de 11 → 6 items para reducir ruido visual.
@@ -65,6 +65,7 @@ const GROUPS = [
     label: 'Investigación',
     items: [
       { to: '/analisis',    label: 'Análisis',      icon: Compass },
+      { to: '/fundamentals', label: 'Fundamentals', icon: Gauge },
       { to: '/novedades',   label: 'Novedades',     icon: Bell },
     ],
   },
