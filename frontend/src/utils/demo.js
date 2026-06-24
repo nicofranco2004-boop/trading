@@ -1,5 +1,7 @@
 // demo — modo "probá Rendi sin login" con portfolio simulado.
 // ═══════════════════════════════════════════════════════════════════════════
+import { isBondTicker } from './tickers'
+
 // Cuando la URL tiene `?demo=1`, AuthContext setea un user demo y este módulo
 // intercepta las llamadas al backend devolviendo fixtures hardcodeadas.
 //
@@ -1622,28 +1624,46 @@ const WATCHLIST_BASE = [
 // PRICES + PREV_CLOSE: ver arriba (movidos antes de MONTHLY para que el
 // scaling de MONTHLY pueda computar el target POSITIONS × PRICES).
 
-// Benchmarks mensuales para Insights chart (S&P / Inflación AR / Dólar Blue)
+// Benchmarks mensuales para Insights chart. Mismas keys que sirve el backend:
+// USD → sp500, shv (T-Bills), gld (Oro). ARS → inflation_ar, merval, uva,
+// dolar_blue. Sin todas, el selector deja botones disabled y el chart no dibuja
+// esa línea (ej. Merval/Oro/T-Bills quedaban sin comparación).
 const BENCHMARKS = (() => {
-  const out = { sp500: {}, inflation_ar: {}, dolar_blue: {} }
+  const out = { sp500: {}, inflation_ar: {}, dolar_blue: {}, shv: {}, gld: {}, merval: {}, uva: {} }
   const start = new Date('2023-01-01')
   const today = new Date()
-  // S&P: arranca en 4700, crece ~10% anual con noise
-  let sp = 4700
-  // Blue: arranca en 850, sube a 1415 hoy (drift fuerte)
-  let blue = 850
+  let sp = 4700        // S&P arranca en 4700
+  let blue = 850       // Blue 850 → ~1415 hoy
+  let shv = 110        // T-Bills ETF (SHV): casi sin volatilidad
+  let gld = 185        // Oro (GLD): tendencia alcista
+  let merv = 400000    // Merval (^MERV, ARS): sube fuerte → ~2,1M hoy
+  let uva = 400        // UVA: unidad que sigue la inflación
   while (start <= today) {
     const key = start.toISOString().slice(0, 7)
+    const monthsSince = (start.getFullYear() - 2023) * 12 + start.getMonth()
     // S&P month-end close: +1% mean, ±2.5% noise
     sp = sp * (1 + 0.009 + (Math.random() - 0.5) * 0.05)
     out.sp500[key] = Math.round(sp * 100) / 100
     // Inflación AR mensual % (alta al inicio, desacelerando — realista AR)
-    const monthsSince = (start.getFullYear() - 2023) * 12 + start.getMonth()
     const baseInflation = Math.max(2.5, 12 - monthsSince * 0.25)
-    out.inflation_ar[key] = Math.round((baseInflation + (Math.random() - 0.5) * 1.5) * 100) / 100
+    const infl = Math.round((baseInflation + (Math.random() - 0.5) * 1.5) * 100) / 100
+    out.inflation_ar[key] = infl
     // Dólar blue tendencial
     const driftBlue = 0.025 - monthsSince * 0.0008  // se desacelera
     blue = blue * (1 + driftBlue + (Math.random() - 0.5) * 0.04)
     out.dolar_blue[key] = Math.round(blue)
+    // T-Bills (SHV): carry chico, casi plano
+    shv = shv * (1 + 0.0035 + (Math.random() - 0.5) * 0.004)
+    out.shv[key] = Math.round(shv * 100) / 100
+    // Oro (GLD): alcista con noise
+    gld = gld * (1 + 0.012 + (Math.random() - 0.5) * 0.045)
+    out.gld[key] = Math.round(gld * 100) / 100
+    // Merval (ARS): arrastrado por inflación/blue
+    merv = merv * (1 + 0.04 + (Math.random() - 0.5) * 0.07)
+    out.merval[key] = Math.round(merv)
+    // UVA: valor en pesos que sigue la inflación del mes
+    uva = uva * (1 + infl / 100)
+    out.uva[key] = Math.round(uva * 100) / 100
     start.setMonth(start.getMonth() + 1)
   }
   return { ...out, fetched_at: new Date().toISOString() }
@@ -1818,6 +1838,754 @@ const EVENTS_POPULAR = [
   { ticker: 'AAPL', event_type: 'ex_dividend', event_date: _todayPlus(2),  confirmed: 1, details: { amount: 0.25 } },
   { ticker: 'GGAL', event_type: 'earnings',    event_date: _todayPlus(14), confirmed: 0, details: { title: 'GGAL · Resultados Q1 (estimado)' } },
 ]
+
+// ─── Fundamentals (feature Vesty-score) ──────────────────────────────────────
+// Fixtures que matchean EXACTAMENTE el shape del contrato
+// (GET /fundamentals/{ticker} + POST /fundamentals/ai-summary). Permiten que la
+// página /fundamentals funcione end-to-end en demo, sin backend.
+//
+// overall.label: >=80 Excelente, >=65 Bueno, >=45 Mixto, else Débil.
+// category color (front): >=70 verde, >=40 ámbar, <40 rojo.
+
+// Tickers que NO tienen fundamentales (cripto + bonos). Se responden con
+// available:false replicando la lógica del backend.
+const _FUND_CRYPTO = new Set([
+  'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT', 'MATIC',
+  'LINK', 'USDT', 'USDC', 'BTC-USD', 'ETH-USD',
+])
+
+function _fundLabel(overall) {
+  if (overall == null) return 'Sin datos'
+  if (overall >= 80) return 'Excelente'
+  if (overall >= 65) return 'Bueno'
+  if (overall >= 45) return 'Mixto'
+  return 'Débil'
+}
+
+function _fundCategories({ valuation, growth, profitability, health, valMetrics }) {
+  return [
+    {
+      key: 'valuation', label: 'Valuación', question: '¿Está a buen precio hoy?',
+      score: valuation,
+      metrics: valMetrics || [],
+    },
+    {
+      key: 'growth', label: 'Crecimiento', question: '¿Está creciendo?',
+      score: growth, metrics: [],
+    },
+    {
+      key: 'profitability', label: 'Rentabilidad', question: '¿Genera ganancias de forma eficiente?',
+      score: profitability, metrics: [],
+    },
+    {
+      key: 'health', label: 'Salud Financiera', question: '¿Es financieramente sólida?',
+      score: health, metrics: [],
+    },
+  ]
+}
+
+// ── metrics_detail (wave 2) ──────────────────────────────────────────────
+// Las 20 keys del contrato, con value (magnitud comparable) + value_label
+// (display) + direction. _md() arma una fila; _metricsDetail() arma el array
+// completo a partir de un objeto parcial {key: value} (los faltantes → null/"—").
+const _MD_SPEC = [
+  ['pe',             'P/E',                'valuation',     'lower',  'x'],
+  ['pe_fwd',         'P/E fwd',            'valuation',     'lower',  'x'],
+  ['pb',             'P/B',                'valuation',     'lower',  'x'],
+  ['ev_ebitda',      'EV/EBITDA',          'valuation',     'lower',  'x'],
+  ['peg',            'PEG',                'valuation',     'lower',  'x'],
+  ['rev_growth_3y',  'Ingresos 3Y',        'growth',        'higher', '%'],
+  ['rev_growth_5y',  'Ingresos 5Y',        'growth',        'higher', '%'],
+  ['eps_growth_3y',  'EPS 3Y',             'growth',        'higher', '%'],
+  ['rev_growth_yoy', 'Ingresos YoY',       'growth',        'higher', '%'],
+  ['earnings_yoy',   'Ganancias YoY',      'growth',        'higher', '%'],
+  ['roe',            'ROE',                'profitability', 'higher', '%'],
+  ['roa',            'ROA',                'profitability', 'higher', '%'],
+  ['net_margin',     'Margen neto',        'profitability', 'higher', '%'],
+  ['oper_margin',    'Margen operativo',   'profitability', 'higher', '%'],
+  ['gross_margin',   'Margen bruto',       'profitability', 'higher', '%'],
+  ['debt_equity',    'Deuda/Capital',      'health',        'lower',  'x'],
+  ['current_ratio',  'Liquidez corriente', 'health',        'higher', 'x'],
+  ['quick_ratio',    'Liquidez ácida',     'health',        'higher', 'x'],
+  ['payout',         'Payout',             'health',        'lower',  '%'],
+  ['fcf_margin',     'Margen FCF',         'health',        'higher', '%'],
+]
+
+function _mdLabel(value, unit) {
+  if (value == null || Number.isNaN(value)) return '—'
+  return unit === '%' ? `${value.toFixed(2)}%` : `${value.toFixed(2)}x`
+}
+
+// vals: { key: number } — claves ausentes salen null/"—".
+function _metricsDetail(vals = {}) {
+  return _MD_SPEC.map(([key, label, category, direction, unit]) => {
+    const v = vals[key]
+    const value = typeof v === 'number' && !Number.isNaN(v) ? v : null
+    return { key, label, category, value, value_label: _mdLabel(value, unit), direction }
+  })
+}
+
+// ── categories_detail (wave 3) ───────────────────────────────────────────
+// Desglose métrica por métrica de las 5 categorías (incl. Dividendos). Las
+// shapes matchean el contrato exacto para que demo == real:
+//   category: { key, label, question, score (0-100|null), metrics[] }
+//   metric:   { key, label, value, value_label, direction, status,
+//               status_label, info }
+//   direction: "higher"|"lower"|"info"; status: "green"|"amber"|"red"|"na".
+//
+// Spec por categoría: [key, label, direction, unit, info, threshold(value)→status]
+// La función de threshold devuelve "green"|"amber"|"red"; "info" no la usa.
+const _STATUS_LABEL = { green: 'Excelente', amber: 'Aceptable', red: 'Bajo', na: '' }
+// Para valuación el label "rojo" es "Muy caro" y el ámbar "Aceptable".
+const _VAL_STATUS_LABEL = { green: 'Excelente', amber: 'Aceptable', red: 'Muy caro', na: '' }
+
+// Umbrales (replican el contrato backend).
+const _thHigher = (g, a) => (v) => (v >= g ? 'green' : v >= a ? 'amber' : 'red')
+const _thLower = (g, a) => (v) => (v < 0 ? 'red' : v <= g ? 'green' : v <= a ? 'amber' : 'red')
+
+const _CD_SPEC = [
+  {
+    key: 'valuation', label: 'Valuación', question: '¿Qué tan cara está respecto a sus fundamentos?',
+    labels: _VAL_STATUS_LABEL,
+    metrics: [
+      ['pe', 'P/E', 'lower', 'x', 'Precio / ganancias por acción. Menor = más barato.', _thLower(15, 30)],
+      ['pe_fwd', 'P/E Forward', 'lower', 'x', 'P/E usando ganancias estimadas a futuro.', _thLower(15, 25)],
+      ['pb', 'P/B', 'lower', 'x', 'Precio / valor libro. Menor = más barato vs activos.', _thLower(3, 8)],
+      ['ev_ebitda', 'EV/EBITDA', 'lower', 'x', 'Valor empresa / EBITDA. Menor = más barato.', _thLower(10, 18)],
+      ['peg', 'PEG', 'lower', 'x', 'P/E ajustado por crecimiento. <1 suele ser barato.', _thLower(1, 2)],
+    ],
+  },
+  {
+    key: 'growth', label: 'Crecimiento', question: '¿Está creciendo sus ventas y ganancias?',
+    labels: _STATUS_LABEL,
+    metrics: [
+      ['rev_growth_3y', 'CAGR Ingresos 3A', 'higher', '%', 'Crecimiento anual de ingresos en 3 años.', _thHigher(15, 5)],
+      ['rev_growth_5y', 'CAGR Ingresos 5A', 'higher', '%', 'Crecimiento anual de ingresos en 5 años.', _thHigher(15, 5)],
+      ['eps_growth_3y', 'Crecimiento EPS 3A', 'higher', '%', 'Crecimiento anual de ganancias por acción en 3 años.', _thHigher(15, 5)],
+      ['rev_growth_yoy', 'Ingresos vs año anterior', 'higher', '%', 'Variación de ingresos contra el año pasado.', _thHigher(15, 5)],
+      ['earnings_yoy', 'Ganancias vs año anterior', 'higher', '%', 'Variación de ganancias contra el año pasado.', _thHigher(15, 5)],
+    ],
+  },
+  {
+    key: 'profitability', label: 'Rentabilidad', question: '¿Genera ganancias de forma eficiente?',
+    labels: _STATUS_LABEL,
+    metrics: [
+      ['roe', 'ROE', 'higher', '%', 'Retorno sobre el patrimonio de los accionistas.', _thHigher(15, 8)],
+      ['roa', 'ROA', 'higher', '%', 'Retorno sobre los activos totales.', _thHigher(8, 3)],
+      ['net_margin', 'Margen Neto', 'higher', '%', 'Ganancia neta como % de los ingresos.', _thHigher(15, 5)],
+      ['oper_margin', 'Margen Operativo', 'higher', '%', 'Ganancia operativa como % de los ingresos.', _thHigher(15, 5)],
+      ['gross_margin', 'Margen Bruto', 'higher', '%', 'Ingresos menos costo de ventas, como %.', _thHigher(40, 20)],
+    ],
+  },
+  {
+    key: 'health', label: 'Salud Financiera', question: '¿Es financieramente sólida?',
+    labels: _STATUS_LABEL,
+    metrics: [
+      ['debt_equity', 'Deuda/Patrimonio', 'lower', 'x', 'Deuda total vs patrimonio. Menor = menos apalancada.', _thLower(0.5, 1.5)],
+      ['current_ratio', 'Liquidez Corriente', 'higher', 'x', 'Activos corrientes / pasivos corrientes.', _thHigher(2, 1)],
+      ['quick_ratio', 'Prueba Ácida', 'higher', 'x', 'Liquidez sin inventarios.', _thHigher(1, 0.7)],
+      ['interest_coverage', 'Cobertura de Intereses', 'higher', 'x', 'EBIT / intereses. Cuántas veces cubre su deuda.', _thHigher(5, 2)],
+      ['total_cash', 'Caja Total', 'info', '$', 'Efectivo y equivalentes disponibles.', null],
+      ['total_debt', 'Deuda Total', 'info', '$', 'Deuda total de la empresa.', null],
+    ],
+  },
+  {
+    key: 'dividends', label: 'Dividendos', question: '¿Reparte dividendos sostenibles?',
+    labels: _STATUS_LABEL,
+    metrics: [
+      ['dividend_yield', 'Dividend Yield', 'higher', '%', 'Dividendo anual como % del precio.', _thHigher(3, 1)],
+      ['payout', 'Payout Ratio', 'lower', '%', 'Qué % de las ganancias reparte como dividendos.', _thLower(60, 90)],
+      ['avg_yield_5y', 'Yield Promedio 5A', 'info', '%', 'Dividend yield promedio de los últimos 5 años.', null],
+    ],
+  },
+]
+
+function _cdValueLabel(value, unit) {
+  if (value == null || Number.isNaN(value)) return '—'
+  if (unit === '%') return `${value.toFixed(2)}%`
+  if (unit === '$') return _fundUsdCompact(value)
+  return `${value.toFixed(2)}x`
+}
+
+function _fundUsdCompact(n) {
+  if (n == null || Number.isNaN(n)) return '—'
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '−' : ''
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`
+  return `${sign}$${abs.toFixed(0)}`
+}
+
+// status → points para derivar el score de categoría (igual que backend).
+const _CD_POINTS = { green: 90, amber: 55, red: 18 }
+
+// vals: { key: number } — arma las 5 categorías. Las claves ausentes salen
+// null/"—" (sin badge/barra). Dividendos: score null (no entra al overall).
+function _categoriesDetail(vals = {}) {
+  return _CD_SPEC.map(spec => {
+    const points = []
+    const metrics = spec.metrics.map(([key, label, direction, unit, info, th]) => {
+      const v = vals[key]
+      const value = typeof v === 'number' && !Number.isNaN(v) ? v : null
+      let status = 'na'
+      if (direction !== 'info' && value != null && th) {
+        status = th(value)
+        points.push(_CD_POINTS[status])
+      }
+      const status_label = direction === 'info' ? '' : (spec.labels[status] || '')
+      return {
+        key, label, value,
+        value_label: _cdValueLabel(value, unit),
+        direction, status, status_label, info,
+      }
+    })
+    const score =
+      spec.key === 'dividends'
+        ? null
+        : (points.length ? Math.round(points.reduce((a, b) => a + b, 0) / points.length) : null)
+    return { key: spec.key, label: spec.label, question: spec.question, score, metrics }
+  })
+}
+
+// Deriva el score HEADLINE (4 cards + overall) desde categories_detail, igual
+// que el backend _score_categories(). Garantiza demo == real y que las cards y
+// el detalle NUNCA se contradigan. Reusa _fundCategories (preguntas cortas, como
+// _FUND_CATEGORY_META del backend). Dividendos NO entra al overall.
+const _CORE_WEIGHTS = { valuation: 0.30, profitability: 0.25, health: 0.25, growth: 0.20 }
+function _deriveScoreFromCategoriesDetail(cd) {
+  const byKey = {}
+  for (const c of (cd || [])) byKey[c.key] = c
+  const sc = (k) => (byKey[k] && typeof byKey[k].score === 'number' ? byKey[k].score : null)
+  const valuation = sc('valuation'), growth = sc('growth')
+  const profitability = sc('profitability'), health = sc('health')
+  let acc = 0, wsum = 0
+  for (const [k, v] of [['valuation', valuation], ['growth', growth], ['profitability', profitability], ['health', health]]) {
+    if (typeof v === 'number') { acc += v * _CORE_WEIGHTS[k]; wsum += _CORE_WEIGHTS[k] }
+  }
+  const overall = wsum > 0 ? Math.round(acc / wsum) : null
+  return { overall, label: _fundLabel(overall), categories: _fundCategories({ valuation, growth, profitability, health }) }
+}
+
+// Fichas explícitas para los holdings demo principales.
+const _FUND_FIXTURES = {
+  NVDA: {
+    ticker: 'NVDA', company_name: 'NVIDIA Corporation', sector: 'Technology',
+    currency: 'USD', as_of: '2026-05-20', stale: false,
+    score: {
+      overall: 85, label: 'Excelente',
+      categories: _fundCategories({
+        valuation: 44, growth: 100, profitability: 100, health: 93,
+        valMetrics: [
+          { name: 'P/E (precio/ganancias)', value_label: '32.88', status: 'amber', reference: 'vs forward 28.1' },
+        ],
+      }),
+    },
+    opportunity: {
+      available: true, kind: 'analyst', value_pct: 50.0, label: 'Oportunidad',
+      position_pct: 18.0, caption: '50% de upside vs el precio objetivo de los analistas',
+    },
+    analysts: {
+      available: true, recommendation_key: 'strong_buy', recommendation_label: 'Compra fuerte',
+      n_analysts: 58, target_mean_usd: 298.0, current_price_usd: 198.7, upside_pct: 50.0,
+    },
+    metrics: {
+      trailing_pe: 32.88, forward_pe: 28.1, peg_ratio: 1.2,
+      dividend_yield_pct: 0.47, payout_ratio_pct: 1.9,
+      roe_pct: 114.28, profit_margin_pct: 62.96, revenue_growth_pct: 100.04,
+      debt_to_equity: 0.41, market_cap_usd: 3.2e12, beta: 1.7,
+      week_52_high_usd: 153.0, week_52_low_usd: 86.0,
+    },
+    metrics_detail: _metricsDetail({
+      pe: 32.88, pe_fwd: 28.06, pb: 14.59, ev_ebitda: 32.07, peg: 2.17,
+      rev_growth_3y: 100.04, eps_growth_3y: 120.5, earnings_yoy: 168.0,
+      roe: 114.28, net_margin: 62.96, oper_margin: 64.1, gross_margin: 75.0,
+      debt_equity: 0.41, payout: 1.9, fcf_margin: 47.0,
+    }),
+    categories_detail: _categoriesDetail({
+      pe: 32.88, pe_fwd: 28.06, pb: 14.59, ev_ebitda: 32.07, peg: 2.17,
+      rev_growth_3y: 100.04, rev_growth_5y: 72.4, eps_growth_3y: 120.5,
+      rev_growth_yoy: 94.0, earnings_yoy: 168.0,
+      roe: 114.28, roa: 65.2, net_margin: 62.96, oper_margin: 64.1, gross_margin: 75.0,
+      debt_equity: 0.41, current_ratio: 4.10, quick_ratio: 3.62, interest_coverage: 45.0,
+      total_cash: 4.34e10, total_debt: 1.0e10,
+      dividend_yield: 0.47, payout: 1.9, avg_yield_5y: 0.10,
+    }),
+  },
+  MSFT: {
+    ticker: 'MSFT', company_name: 'Microsoft Corporation', sector: 'Technology',
+    currency: 'USD', as_of: '2026-04-30', stale: false,
+    score: {
+      overall: 82, label: 'Excelente',
+      categories: _fundCategories({
+        valuation: 55, growth: 78, profitability: 100, health: 90,
+        valMetrics: [
+          { name: 'P/E (precio/ganancias)', value_label: '35.10', status: 'amber', reference: 'vs forward 30.4' },
+        ],
+      }),
+    },
+    opportunity: {
+      available: true, kind: 'analyst', value_pct: 14.0, label: 'Oportunidad',
+      position_pct: 33.0, caption: '14% de upside vs el precio objetivo de los analistas',
+    },
+    analysts: {
+      available: true, recommendation_key: 'buy', recommendation_label: 'Compra',
+      n_analysts: 51, target_mean_usd: 510.0, current_price_usd: 447.0, upside_pct: 14.0,
+    },
+    metrics: {
+      trailing_pe: 35.1, forward_pe: 30.4, peg_ratio: 2.1,
+      dividend_yield_pct: 0.72, payout_ratio_pct: 25.0,
+      roe_pct: 38.5, profit_margin_pct: 36.4, revenue_growth_pct: 17.0,
+      debt_to_equity: 0.33, market_cap_usd: 3.3e12, beta: 0.9,
+      week_52_high_usd: 468.0, week_52_low_usd: 362.0,
+    },
+    metrics_detail: _metricsDetail({
+      pe: 35.10, pe_fwd: 30.40, pb: 11.20, ev_ebitda: 24.50, peg: 2.10,
+      rev_growth_3y: 16.80, eps_growth_3y: 22.40, earnings_yoy: 18.20,
+      roe: 38.50, roa: 18.10, net_margin: 36.40, oper_margin: 44.6, gross_margin: 69.4,
+      debt_equity: 0.33, current_ratio: 1.30, quick_ratio: 1.27, payout: 25.0, fcf_margin: 30.1,
+    }),
+    categories_detail: _categoriesDetail({
+      pe: 35.10, pe_fwd: 30.40, pb: 11.20, ev_ebitda: 24.50, peg: 2.10,
+      rev_growth_3y: 16.80, rev_growth_5y: 15.4, eps_growth_3y: 22.40,
+      rev_growth_yoy: 17.0, earnings_yoy: 18.20,
+      roe: 38.50, roa: 18.10, net_margin: 36.40, oper_margin: 44.6, gross_margin: 69.4,
+      debt_equity: 0.33, current_ratio: 1.30, quick_ratio: 1.27, interest_coverage: 38.0,
+      total_cash: 7.5e10, total_debt: 4.7e10,
+      dividend_yield: 0.72, payout: 25.0, avg_yield_5y: 0.85,
+    }),
+  },
+  MELI: {
+    ticker: 'MELI', company_name: 'MercadoLibre, Inc.', sector: 'Consumer Cyclical',
+    currency: 'USD', as_of: '2026-03-31', stale: false,
+    score: {
+      overall: 50, label: 'Mixto',
+      categories: _fundCategories({
+        valuation: 30, growth: 88, profitability: 60, health: 45,
+        valMetrics: [
+          { name: 'P/E (precio/ganancias)', value_label: '43.29', status: 'red', reference: 'vs forward 33.0' },
+        ],
+      }),
+    },
+    opportunity: {
+      available: true, kind: 'analyst', value_pct: 22.0, label: 'Oportunidad',
+      position_pct: 28.0, caption: '22% de upside vs el precio objetivo de los analistas',
+    },
+    analysts: {
+      available: true, recommendation_key: 'buy', recommendation_label: 'Compra',
+      n_analysts: 24, target_mean_usd: 2450.0, current_price_usd: 2008.0, upside_pct: 22.0,
+    },
+    metrics: {
+      trailing_pe: 43.29, forward_pe: 33.0, peg_ratio: 1.03,
+      dividend_yield_pct: null, payout_ratio_pct: 0.0,
+      roe_pct: 31.26, profit_margin_pct: 9.3, revenue_growth_pct: 37.0,
+      debt_to_equity: 1.1, market_cap_usd: 1.0e11, beta: 1.6,
+      week_52_high_usd: 2120.0, week_52_low_usd: 1300.0,
+    },
+    metrics_detail: _metricsDetail({
+      pe: 43.29, pe_fwd: 33.00, pb: 18.40, ev_ebitda: 28.90, peg: 1.03,
+      rev_growth_3y: 38.91, eps_growth_3y: 54.20, earnings_yoy: 41.0,
+      roe: 31.26, net_margin: 9.30, oper_margin: 11.8, gross_margin: 49.5,
+      debt_equity: 1.10, payout: 0.0,
+    }),
+    categories_detail: _categoriesDetail({
+      pe: 43.29, pe_fwd: 33.00, pb: 18.40, ev_ebitda: 28.90, peg: 1.03,
+      rev_growth_3y: 38.91, rev_growth_5y: 42.0, eps_growth_3y: 54.20,
+      rev_growth_yoy: 37.0, earnings_yoy: 41.0,
+      roe: 31.26, roa: 8.4, net_margin: 9.30, oper_margin: 11.8, gross_margin: 49.5,
+      debt_equity: 1.10, current_ratio: 1.30, quick_ratio: 1.18, interest_coverage: 6.2,
+      total_cash: 2.1e9, total_debt: 3.4e9,
+      // MELI no paga dividendos → yield 0/na, payout 0 (na), avg null.
+    }),
+  },
+  GOOGL: {
+    ticker: 'GOOGL', company_name: 'Alphabet Inc.', sector: 'Communication Services',
+    currency: 'USD', as_of: '2026-03-31', stale: false,
+    score: {
+      overall: 81, label: 'Excelente',
+      categories: _fundCategories({
+        valuation: 66, growth: 72, profitability: 100, health: 95,
+        valMetrics: [
+          { name: 'P/E (precio/ganancias)', value_label: '24.10', status: 'green', reference: 'vs forward 21.3' },
+        ],
+      }),
+    },
+    opportunity: {
+      available: true, kind: 'analyst', value_pct: 12.0, label: 'Oportunidad',
+      position_pct: 35.0, caption: '12% de upside vs el precio objetivo de los analistas',
+    },
+    analysts: {
+      available: true, recommendation_key: 'strong_buy', recommendation_label: 'Compra fuerte',
+      n_analysts: 47, target_mean_usd: 205.0, current_price_usd: 183.0, upside_pct: 12.0,
+    },
+    metrics: {
+      trailing_pe: 24.1, forward_pe: 21.3, peg_ratio: 1.3,
+      dividend_yield_pct: 0.45, payout_ratio_pct: 8.0,
+      roe_pct: 30.8, profit_margin_pct: 27.7, revenue_growth_pct: 15.0,
+      debt_to_equity: 0.1, market_cap_usd: 2.2e12, beta: 1.0,
+      week_52_high_usd: 191.0, week_52_low_usd: 130.0,
+    },
+    metrics_detail: _metricsDetail({
+      pe: 24.10, pe_fwd: 21.30, pb: 6.80, ev_ebitda: 17.40, peg: 1.30,
+      rev_growth_3y: 14.20, rev_growth_5y: 18.6, eps_growth_3y: 21.10, earnings_yoy: 28.6,
+      roe: 30.80, roa: 19.4, net_margin: 27.70, oper_margin: 32.0, gross_margin: 57.5,
+      debt_equity: 0.10, current_ratio: 1.95, quick_ratio: 1.90, payout: 8.0, fcf_margin: 25.3,
+    }),
+    categories_detail: _categoriesDetail({
+      pe: 24.10, pe_fwd: 21.30, pb: 6.80, ev_ebitda: 17.40, peg: 1.30,
+      rev_growth_3y: 14.20, rev_growth_5y: 18.6, eps_growth_3y: 21.10,
+      rev_growth_yoy: 15.0, earnings_yoy: 28.6,
+      roe: 30.80, roa: 19.4, net_margin: 27.70, oper_margin: 32.0, gross_margin: 57.5,
+      debt_equity: 0.10, current_ratio: 1.95, quick_ratio: 1.90, interest_coverage: 28.0,
+      total_cash: 1.1e11, total_debt: 1.3e10,
+      dividend_yield: 0.45, payout: 8.0, avg_yield_5y: 0.52,
+    }),
+  },
+  AAPL: {
+    ticker: 'AAPL', company_name: 'Apple Inc.', sector: 'Technology',
+    currency: 'USD', as_of: '2026-03-29', stale: false,
+    score: {
+      overall: 73, label: 'Bueno',
+      categories: _fundCategories({
+        valuation: 48, growth: 55, profitability: 100, health: 78,
+        valMetrics: [
+          { name: 'P/E (precio/ganancias)', value_label: '29.40', status: 'amber', reference: 'vs forward 27.0' },
+        ],
+      }),
+    },
+    opportunity: {
+      available: true, kind: 'analyst', value_pct: 8.0, label: 'En precio',
+      position_pct: 52.0, caption: '8% de upside vs el precio objetivo de los analistas',
+    },
+    analysts: {
+      available: true, recommendation_key: 'hold', recommendation_label: 'Mantener',
+      n_analysts: 40, target_mean_usd: 235.0, current_price_usd: 218.0, upside_pct: 8.0,
+    },
+    metrics: {
+      trailing_pe: 29.4, forward_pe: 27.0, peg_ratio: 2.9,
+      dividend_yield_pct: 0.55, payout_ratio_pct: 15.0,
+      roe_pct: 147.0, profit_margin_pct: 26.3, revenue_growth_pct: 5.0,
+      debt_to_equity: 1.5, market_cap_usd: 3.3e12, beta: 1.2,
+      week_52_high_usd: 237.0, week_52_low_usd: 164.0,
+    },
+    metrics_detail: _metricsDetail({
+      pe: 29.40, pe_fwd: 27.00, pb: 48.20, ev_ebitda: 22.10, peg: 2.90,
+      rev_growth_3y: 6.80, eps_growth_3y: 9.40, earnings_yoy: 5.2,
+      roe: 147.00, roa: 28.6, net_margin: 26.30, oper_margin: 30.7, gross_margin: 46.2,
+      debt_equity: 1.50, current_ratio: 0.99, quick_ratio: 0.95, payout: 15.0, fcf_margin: 28.4,
+    }),
+    categories_detail: _categoriesDetail({
+      pe: 29.40, pe_fwd: 27.00, pb: 48.20, ev_ebitda: 22.10, peg: 2.90,
+      rev_growth_3y: 6.80, rev_growth_5y: 7.9, eps_growth_3y: 9.40,
+      rev_growth_yoy: 5.0, earnings_yoy: 5.2,
+      roe: 147.00, roa: 28.6, net_margin: 26.30, oper_margin: 30.7, gross_margin: 46.2,
+      debt_equity: 1.50, current_ratio: 0.99, quick_ratio: 0.95, interest_coverage: 32.0,
+      total_cash: 2.95e10, total_debt: 1.04e11,
+      dividend_yield: 0.55, payout: 15.0, avg_yield_5y: 0.62,
+    }),
+  },
+  NFLX: {
+    ticker: 'NFLX', company_name: 'Netflix, Inc.', sector: 'Communication Services',
+    currency: 'USD', as_of: '2026-03-31', stale: false,
+    score: {
+      overall: 75, label: 'Bueno',
+      categories: _fundCategories({
+        valuation: 52, growth: 92, profitability: 88, health: 80,
+        valMetrics: [
+          { name: 'P/E (precio/ganancias)', value_label: '34.77', status: 'amber', reference: 'vs forward 29.0' },
+        ],
+      }),
+    },
+    opportunity: {
+      available: true, kind: 'analyst', value_pct: 16.0, label: 'Oportunidad',
+      position_pct: 30.0, caption: '16% de upside vs el precio objetivo de los analistas',
+    },
+    analysts: {
+      available: true, recommendation_key: 'buy', recommendation_label: 'Compra',
+      n_analysts: 39, target_mean_usd: 780.0, current_price_usd: 672.0, upside_pct: 16.0,
+    },
+    metrics: {
+      trailing_pe: 34.77, forward_pe: 29.0, peg_ratio: 0.95,
+      dividend_yield_pct: null, payout_ratio_pct: 0.0,
+      roe_pct: 48.49, profit_margin_pct: 22.30, revenue_growth_pct: 15.0,
+      debt_to_equity: 0.54, market_cap_usd: 2.9e11, beta: 1.3,
+      week_52_high_usd: 700.0, week_52_low_usd: 420.0,
+    },
+    metrics_detail: _metricsDetail({
+      pe: 34.77, pe_fwd: 29.00, pb: 14.20, ev_ebitda: 26.40, peg: 0.95,
+      rev_growth_3y: 14.30, eps_growth_3y: 86.40, earnings_yoy: 82.80,
+      roe: 48.49, net_margin: 22.30, oper_margin: 26.7, gross_margin: 46.0,
+      debt_equity: 0.54, payout: 0.0, fcf_margin: 18.4,
+    }),
+    categories_detail: _categoriesDetail({
+      pe: 34.77, pe_fwd: 29.00, pb: 14.20, ev_ebitda: 26.40, peg: 0.95,
+      rev_growth_3y: 14.30, rev_growth_5y: 16.8, eps_growth_3y: 86.40,
+      rev_growth_yoy: 15.0, earnings_yoy: 82.80,
+      roe: 48.49, roa: 14.2, net_margin: 22.30, oper_margin: 26.7, gross_margin: 46.0,
+      debt_equity: 0.54, current_ratio: 1.12, quick_ratio: 1.12, interest_coverage: 12.0,
+      total_cash: 7.8e9, total_debt: 1.6e10,
+      // NFLX no paga dividendos → categoría Dividendos en na/"—".
+    }),
+  },
+}
+
+// Fallback determinístico para cualquier otra acción (no listada arriba).
+// Genera scores estables a partir del hash del símbolo → la misma acción
+// siempre devuelve el mismo scorecard.
+function _hashStr(s) {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) >>> 0
+  }
+  return h
+}
+
+function _genericFundamentals(ticker) {
+  const h = _hashStr(ticker)
+  const span = (seed, min, max) => min + (seed % (max - min + 1))
+  const valuation = span(h, 35, 75)
+  const growth = span(h >> 3, 40, 95)
+  const profitability = span(h >> 6, 45, 95)
+  const health = span(h >> 9, 50, 95)
+  // weighted mean (val .30, prof .25, health .25, growth .20)
+  const overall = Math.round(
+    valuation * 0.30 + profitability * 0.25 + health * 0.25 + growth * 0.20
+  )
+  const upside = span(h >> 12, -12, 35)
+  const recKey = upside > 18 ? 'buy' : upside > 5 ? 'hold' : 'underperform'
+  const recLabel = upside > 18 ? 'Compra' : upside > 5 ? 'Mantener' : 'Vender'
+  const price = 50 + (h % 400)
+  const target = +(price * (1 + upside / 100)).toFixed(2)
+  return {
+    available: true, ticker, company_name: ticker, sector: 'Equity',
+    currency: 'USD', as_of: null, stale: false,
+    score: {
+      overall, label: _fundLabel(overall),
+      categories: _fundCategories({ valuation, growth, profitability, health }),
+    },
+    opportunity: {
+      available: true, kind: 'analyst', value_pct: upside,
+      label: upside > 15 ? 'Oportunidad' : upside > 0 ? 'En precio' : 'Flojo',
+      position_pct: Math.max(0, Math.min(100, 50 - upside)),
+      caption: `${upside >= 0 ? '+' : ''}${upside}% vs el precio objetivo de los analistas`,
+    },
+    analysts: {
+      available: true, recommendation_key: recKey, recommendation_label: recLabel,
+      n_analysts: span(h >> 15, 6, 45), target_mean_usd: target,
+      current_price_usd: price, upside_pct: upside,
+    },
+    metrics: {
+      trailing_pe: +(12 + (h % 30)).toFixed(2), forward_pe: null, peg_ratio: null,
+      dividend_yield_pct: +((h % 400) / 100).toFixed(2), payout_ratio_pct: null,
+      roe_pct: +(8 + (h % 40)).toFixed(2), profit_margin_pct: +(5 + (h % 35)).toFixed(2),
+      revenue_growth_pct: +((h % 60) - 10).toFixed(2),
+      debt_to_equity: +((h % 200) / 100).toFixed(2), market_cap_usd: null, beta: null,
+      week_52_high_usd: null, week_52_low_usd: null,
+    },
+    // metrics_detail determinístico: derivamos las magnitudes del hash. Dejamos
+    // algunas keys en null/"—" para que se vea realista (datos parciales).
+    metrics_detail: _metricsDetail({
+      pe: +(12 + (h % 30)).toFixed(2),
+      pe_fwd: +(10 + (h % 26)).toFixed(2),
+      pb: +(1 + (h % 800) / 100).toFixed(2),
+      ev_ebitda: +(8 + (h % 22)).toFixed(2),
+      peg: +(0.6 + (h % 250) / 100).toFixed(2),
+      rev_growth_3y: +((h % 45) - 5).toFixed(2),
+      eps_growth_3y: +((h % 60) - 8).toFixed(2),
+      earnings_yoy: +((h % 50) - 6).toFixed(2),
+      roe: +(8 + (h % 40)).toFixed(2),
+      net_margin: +(5 + (h % 35)).toFixed(2),
+      gross_margin: +(30 + (h % 45)).toFixed(2),
+      debt_equity: +((h % 200) / 100).toFixed(2),
+      payout: +((h % 60)).toFixed(2),
+      // rev_growth_5y / roa / oper_margin / liquidez / fcf_margin → null ("—")
+    }),
+    // categories_detail determinístico — deja algunas keys en null ("—") para
+    // un look de datos parciales realista (igual que metrics_detail).
+    categories_detail: _categoriesDetail({
+      pe: +(12 + (h % 30)).toFixed(2),
+      pe_fwd: +(10 + (h % 26)).toFixed(2),
+      pb: +(1 + (h % 800) / 100).toFixed(2),
+      ev_ebitda: +(8 + (h % 22)).toFixed(2),
+      peg: +(0.6 + (h % 250) / 100).toFixed(2),
+      rev_growth_3y: +((h % 45) - 5).toFixed(2),
+      eps_growth_3y: +((h % 60) - 8).toFixed(2),
+      rev_growth_yoy: +((h % 50) - 6).toFixed(2),
+      earnings_yoy: +((h % 50) - 6).toFixed(2),
+      roe: +(8 + (h % 40)).toFixed(2),
+      net_margin: +(5 + (h % 35)).toFixed(2),
+      gross_margin: +(30 + (h % 45)).toFixed(2),
+      debt_equity: +((h % 200) / 100).toFixed(2),
+      current_ratio: +(0.8 + (h % 250) / 100).toFixed(2),
+      total_debt: 1e8 + (h % 900) * 1e7,
+      dividend_yield: +((h % 400) / 100).toFixed(2),
+      payout: +((h % 60)).toFixed(2),
+      // rev_growth_5y / roa / oper_margin / quick / interest_cov / total_cash
+      // / avg_yield_5y → null ("—")
+    }),
+  }
+}
+
+function _buildDemoFundamentals(rawTicker) {
+  const ticker = (rawTicker || '').toUpperCase()
+  if (!ticker) {
+    return { available: false, ticker, reason: 'Ticker vacío.' }
+  }
+  // Cripto → sin fundamentales
+  if (_FUND_CRYPTO.has(ticker)) {
+    return {
+      available: false, ticker,
+      reason: `yfinance no tiene fundamentales para ${ticker} (cripto, bono o ticker inválido)`,
+    }
+  }
+  // Bonos AR / .BA (CEDEAR en ARS)
+  if (isBondTicker(ticker)) {
+    return {
+      available: false, ticker,
+      reason: `yfinance no tiene fundamentales para ${ticker} (cripto, bono o ticker inválido)`,
+    }
+  }
+  if (ticker.endsWith('.BA')) {
+    const us = ticker.slice(0, -3)
+    return {
+      available: false, ticker,
+      reason: `Usá el ticker en USD: ${us} en vez de ${ticker}`,
+    }
+  }
+  const fixture = _FUND_FIXTURES[ticker]
+  const result = fixture ? { available: true, ...fixture } : _genericFundamentals(ticker)
+  // Single source of truth (igual que el backend): el score headline se DERIVA
+  // de categories_detail, así las cards y el detalle nunca se contradicen.
+  if (result.available && Array.isArray(result.categories_detail)) {
+    result.score = _deriveScoreFromCategoriesDetail(result.categories_detail)
+  }
+  return result
+}
+
+// Resúmenes IA por ticker (matchean el contrato: {summary:{intro,pros,cons}}).
+const _FUND_AI_SUMMARIES = {
+  NVDA: {
+    intro: 'NVIDIA se volvió el motor de la IA, fabricando los chips que alimentan los modelos más avanzados.',
+    pros: [
+      'Sus ingresos crecieron a una tasa anual del 100% en tres años.',
+      'De cada 100 dólares que factura, se queda con 63 de ganancia neta.',
+      'ROE de 114%: exprime al máximo el capital de los accionistas.',
+    ],
+    cons: [
+      'Está cara: un P/E de 32.9 implica pagar caro cada dólar de ganancia; si decepciona, puede corregir fuerte.',
+      'No es para vivir de dividendos: rinde 0.47%, casi nada.',
+    ],
+  },
+  MSFT: {
+    intro: 'Microsoft es una máquina de generar caja con nube (Azure), software y, cada vez más, IA integrada.',
+    pros: [
+      'Rentabilidad altísima y constante: márgenes del 36% año tras año.',
+      'Balance muy sólido, poca deuda y caja de sobra para invertir.',
+      'Negocio diversificado: nube, Office, gaming y publicidad.',
+    ],
+    cons: [
+      'No está barata: el mercado ya le paga el optimismo de la IA.',
+      'El dividendo es chico (0.7%): no es una acción para renta.',
+    ],
+  },
+  MELI: {
+    intro: 'MercadoLibre es el Amazon + PayPal de Latinoamérica: e-commerce y fintech creciendo a toda velocidad.',
+    pros: [
+      'Crece muy rápido: ventas +37% anual aprovechando la digitalización de la región.',
+      'Domina el e-commerce y los pagos en sus mercados clave.',
+      'El negocio de crédito (Mercado Pago) suma una palanca de ganancias enorme.',
+    ],
+    cons: [
+      'Carísima: un P/E de 43 deja poco margen de error si frena el crecimiento.',
+      'Expuesta a la volatilidad de monedas latinoamericanas y al riesgo regulatorio.',
+    ],
+  },
+  GOOGL: {
+    intro: 'Alphabet (Google) domina la búsqueda y la publicidad online, con YouTube y la nube como motores extra.',
+    pros: [
+      'Rentabilidad excelente con márgenes cercanos al 28%.',
+      'Balance impecable: prácticamente sin deuda y montañas de caja.',
+      'Valuación razonable para la calidad: P/E de 24, más barata que sus pares.',
+    ],
+    cons: [
+      'Depende mucho de la publicidad: una recesión le pega directo a los ingresos.',
+      'La IA generativa amenaza el corazón de su negocio de búsqueda.',
+    ],
+  },
+  AAPL: {
+    intro: 'Apple vende un ecosistema, no solo productos: iPhone, servicios y una base de usuarios ultra leal.',
+    pros: [
+      'Rentabilidad extraordinaria: ROE de 147%, de las mejores del mercado.',
+      'El negocio de servicios crece y suaviza la dependencia del iPhone.',
+      'Marca y fidelidad que le dan poder de fijar precios.',
+    ],
+    cons: [
+      'El crecimiento se desaceleró: ventas casi planas (+5%).',
+      'Está algo cara para lo poco que crece hoy; los analistas la ven "en precio".',
+    ],
+  },
+  NFLX: {
+    intro: 'Netflix dominó el streaming y ahora exprime ese liderazgo con publicidad, planes con anuncios y un control de costos mucho más fino.',
+    pros: [
+      'Las ganancias por acción crecieron 86% anual en los últimos 3 años.',
+      'ROE de 48%: usa el capital de los accionistas de forma muy eficiente.',
+      'Márgenes en expansión y generación de caja libre creciente.',
+    ],
+    cons: [
+      'No es barata: un P/E de 35 ya descuenta varios años de buen crecimiento.',
+      'Competencia feroz (Disney, Amazon, YouTube) presiona precios y contenido.',
+    ],
+  },
+}
+
+function _genericAISummary(ticker, fund) {
+  const m = fund?.metrics || {}
+  const pros = []
+  const cons = []
+  if ((m.revenue_growth_pct ?? 0) > 12) {
+    pros.push(`Está creciendo: las ventas suben ${m.revenue_growth_pct}% al año.`)
+  } else {
+    cons.push('El crecimiento es flojo: las ventas casi no se mueven.')
+  }
+  if ((m.profit_margin_pct ?? 0) > 15) {
+    pros.push(`Buena rentabilidad: se queda con ${m.profit_margin_pct} de cada 100 que factura.`)
+  } else {
+    cons.push('Márgenes ajustados: gana poco por cada dólar que vende.')
+  }
+  if ((m.roe_pct ?? 0) > 15) {
+    pros.push(`Usa bien el capital: ROE de ${m.roe_pct}%.`)
+  }
+  if ((m.trailing_pe ?? 0) > 30) {
+    cons.push(`Está cara: un P/E de ${m.trailing_pe} deja poco margen de error.`)
+  } else if ((m.trailing_pe ?? 0) > 0) {
+    pros.push(`Valuación razonable: P/E de ${m.trailing_pe}.`)
+  }
+  if (pros.length === 0) pros.push('Tiene fundamentales decentes en algunas métricas clave.')
+  if (cons.length === 0) cons.push('Revisá la valuación antes de entrar: el precio ya descuenta lo bueno.')
+  return {
+    intro: `${ticker} es una empresa cotizante. Acá va lo bueno y lo malo de sus números, en criollo.`,
+    pros: pros.slice(0, 3),
+    cons: cons.slice(0, 2),
+  }
+}
+
+function _buildDemoAISummary(rawTicker) {
+  const ticker = (rawTicker || '').toUpperCase()
+  const fund = _buildDemoFundamentals(ticker)
+  if (!fund.available) {
+    // El backend devolvería 422/available:false — replicamos available:false.
+    return { available: false, ticker, reason: fund.reason }
+  }
+  const summary = _FUND_AI_SUMMARIES[ticker] || _genericAISummary(ticker, fund)
+  // Incluimos `usage` para igualar el shape del backend real (el frontend lo
+  // lee para mostrar la cuota). En demo simulamos Pro con cupo amplio.
+  return {
+    summary,
+    cached: true,
+    tier: 'pro',
+    usage: { analyses_count: 1, analyses_limit: 60, analyses_remaining: 59, resets_on: null },
+  }
+}
 
 // ─── Mock handler para api.js ────────────────────────────────────────────────
 // Recibe (method, path) y devuelve la respuesta. null = no hay mock → la
@@ -2076,6 +2844,11 @@ export function handleDemoRequest(method, path, body) {
       }
     }
     // Insights endpoints opcionales — devuelven shape vacío para no romper
+    // Fundamentals — ficha de scorecard por ticker.
+    if (basePath.startsWith('/fundamentals/')) {
+      const t = decodeURIComponent(basePath.slice('/fundamentals/'.length)).split('?')[0]
+      return _buildDemoFundamentals(t)
+    }
     if (basePath.startsWith('/insights')) return {}
     if (basePath.startsWith('/goals'))    return []
     return null
@@ -2151,6 +2924,11 @@ export function handleDemoRequest(method, path, body) {
   if (basePath.startsWith('/imports')) return blocked()
   if (basePath.startsWith('/brokers')) return blocked()
   if (basePath.startsWith('/auth/change-password')) return blocked()
+
+  // ── Fundamentals AI summary: resumen canned por ticker
+  if (method === 'POST' && basePath === '/fundamentals/ai-summary') {
+    return _buildDemoAISummary(body?.ticker)
+  }
 
   // ── AI chat: respuesta hardcodeada explicando el demo
   if (basePath === '/ai/chat') {
