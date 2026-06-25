@@ -463,9 +463,14 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             .filter(([_, v]) => v !== '')
             .map(([cur, v]) => {
               const F = Number(b.final_balance?.[cur] || 0)
-              return [cur, Number(v) - F]
+              return [cur, Number(v) - F]   // ajuste = saldo_real − estimado (+ o −)
             })
-            .filter(([_, deposit]) => deposit > 0)
+            // Mandamos el ajuste sea POSITIVO (faltaba plata previa) o NEGATIVO
+            // (el cash estimado por los trades quedó más alto que el real — típico
+            // en imports cross-currency/MEP). El backend lo aplica como depósito o
+            // retiro sintético. Antes el filtro `>0` descartaba el caso negativo,
+            // así que la corrección del usuario "hacia abajo" se ignoraba.
+            .filter(([_, adj]) => Math.abs(adj) > 0.005)
         ),
         assets: (b.assets || [])
           .filter(a => a.symbol && Number(a.qty) > 0 && a.cost_basis_unit !== '')
@@ -717,7 +722,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                     onClick={goToSeedStep}
                     className="px-4 py-2 text-sm rounded-md font-semibold transition bg-rendi-accent hover:bg-rendi-accent/90 text-white flex items-center gap-2"
                   >
-                    Confirmar mi saldo →
+                    Confirmar mi cash →
                   </button>
                 )
               }
@@ -767,7 +772,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                   </button>
                   {!cashComplete && (
                     <span className="text-[11px] text-ink-3">
-                      Confirmá el saldo de cada cuenta para seguir.
+                      Confirmá el cash de cada cuenta para seguir.
                     </span>
                   )}
                 </div>
@@ -802,7 +807,7 @@ function Stepper({ step, skipMap, hasSeed }) {
         { id: STEP_MAP, label: 'Mapear columnas' },
         { id: STEP_PREVIEW, label: 'Previsualización' },
       ]
-  const seedSteps = hasSeed ? [{ id: STEP_SEED, label: 'Tu saldo' }] : []
+  const seedSteps = hasSeed ? [{ id: STEP_SEED, label: 'Tu cash' }] : []
   const steps = [...baseSteps, ...seedSteps, { id: STEP_DONE, label: 'Listo' }]
   // Si el step actual es SEED pero hasSeed=false (caso transitorio), igual lo
   // resaltamos comparando por id.
@@ -1478,7 +1483,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                 Editar y rehacer
               </div>
               <p className="text-xs text-ink-2">
-                Revertimos el import original y reprocesamos los mismos datos. Ajustá lo que haga falta (omitir filas, confirmar tu saldo, etc.) y confirmá para crear un import nuevo.
+                Revertimos el import original y reprocesamos los mismos datos. Ajustá lo que haga falta (omitir filas, confirmar tu cash, etc.) y confirmá para crear un import nuevo.
               </p>
             </div>
           </div>
@@ -1490,12 +1495,12 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             <Info size={16} className="mt-0.5 flex-shrink-0 text-blue-500" />
             <div>
               <div className="font-semibold text-ink-0 mb-0.5">
-                Falta confirmar tu saldo — tranqui, no es un error
+                Falta confirmar tu cash — tranqui, no es un error
               </div>
               <p className="text-xs text-ink-2">
                 Tu archivo arranca con la cuenta ya en uso. Para que las cuentas cierren, en el paso
-                siguiente te preguntamos cuánto cash tenés <span className="font-medium text-ink-1">hoy</span> en
-                el broker — nada de fechas viejas. Es rápido, casi siempre un solo clic.
+                siguiente te preguntamos cuánto <span className="font-medium text-ink-1">efectivo</span> tenés <span className="font-medium text-ink-1">hoy</span> en
+                el broker (la plata sin invertir, no el total) — nada de fechas viejas. Es rápido, casi siempre un solo clic.
               </p>
             </div>
           </div>
@@ -1504,7 +1509,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             onClick={onSeedClick}
             className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rendi-accent hover:bg-rendi-accent/90 text-white transition"
           >
-            Confirmar mi saldo →
+            Confirmar mi cash →
           </button>
         </div>
       )}
@@ -1772,8 +1777,8 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
               ¿El número de arriba te parece raro (negativo o muy alto)? <span className="font-medium text-ink-1">Tranqui, es normal.</span> El
               archivo de tu broker no siempre trae todos los movimientos de plata (depósitos, transferencias
               o conversiones a dólar), así que ese cash estimado puede quedar desfasado.{' '}
-              <span className="font-medium text-ink-1">Tus operaciones se tomaron bien igual</span> — solo poné el saldo real que tenés
-              hoy en tu broker y nosotros ajustamos lo anterior solos.
+              <span className="font-medium text-ink-1">Tus operaciones se tomaron bien igual</span> — solo poné el efectivo
+              (la plata sin invertir) que tenés hoy en tu broker y nosotros ajustamos lo anterior solos.
             </p>
           </div>
         </div>
@@ -1781,7 +1786,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
 
       {brokers.length === 0 && (
         <div className="text-sm text-ink-3 text-center py-6">
-          Tu cartera ya cierra — no hay saldo para confirmar.
+          Tu cartera ya cierra — no hay cash para confirmar.
         </div>
       )}
 
@@ -1808,9 +1813,12 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
             <div className="p-3 space-y-3">
               {/* Cash */}
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1.5">
-                  ¿Cuánto cash tenés hoy en {b.broker}?
+                <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1">
+                  ¿Cuánto efectivo (cash) tenés hoy en {b.broker}?
                 </div>
+                <p className="text-[11px] text-ink-3 mb-1.5">
+                  Solo la plata <span className="font-medium text-ink-1">disponible sin invertir</span> — <span className="font-medium text-ink-1">no</span> el total de la cuenta (ese incluye tus acciones, bonos y fondos).
+                </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {Array.from(cashCurrencies).map(cur => {
                     const curLabel = displayCur(cur, b.broker)  // "USDT"→"USD" en sub-brokers AR
@@ -1869,11 +1877,11 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                         />
                         {(current === '' || current == null) ? (
                           <div className="mt-1 flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 font-semibold">
-                            <AlertTriangle size={12} /> Falta confirmar tu saldo de hoy
+                            <AlertTriangle size={12} /> Falta confirmar tu cash de hoy
                           </div>
                         ) : (
                           <div className="mt-1 flex items-center gap-1 text-[11px] text-rendi-pos font-medium">
-                            <CheckCircle2 size={12} /> Saldo confirmado
+                            <CheckCircle2 size={12} /> Cash confirmado
                           </div>
                         )}
                       </div>
@@ -2082,8 +2090,8 @@ function DoneStep({ result }) {
               </h4>
               <p className="text-xs text-ink-3 mt-0.5 leading-relaxed">
                 Abrí la app de cada broker y comparalo. Si no coincide,
-                {' '}<strong>tipeá el saldo real</strong> y la diferencia se registra como aporte/retiro
-                pre-CSV. Si ya coincide, podés saltarlo.
+                {' '}<strong>tipeá el efectivo real</strong> (la plata sin invertir, no el total) y la diferencia
+                se registra como aporte/retiro pre-CSV. Si ya coincide, podés saltarlo.
               </p>
             </div>
           </div>

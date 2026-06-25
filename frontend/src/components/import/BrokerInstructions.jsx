@@ -82,7 +82,7 @@ const BROKERS = [
       'Descargá los movimientos de todos los años disponibles (cuantos más, mejor).',
       'Subí ese (o esos) archivo(s) acá.',
     ],
-    parserNote: 'Con tus movimientos completos reconstruimos solas tus posiciones activas. Si faltara historial viejo, te pedimos confirmar el saldo de tu cuenta en el paso siguiente — es rápido.',
+    parserNote: 'Con tus movimientos completos reconstruimos solas tus posiciones activas. Si faltara historial viejo, te pedimos confirmar cuánto efectivo (cash sin invertir) tenés hoy en la cuenta en el paso siguiente — es rápido.',
   },
   {
     id: 'balanz',
