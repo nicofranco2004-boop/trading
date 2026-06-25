@@ -33,7 +33,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     # Tickers del user (non-cash, qty > 0)
     rows = conn.execute(
-        """SELECT asset, broker, quantity, invested, is_cash
+        """SELECT asset, asset_type, broker, currency, quantity, invested,
+                  is_cash, price_override
              FROM positions
             WHERE user_id = ? AND (is_cash = 0 OR is_cash IS NULL)
               AND quantity > 0""",
@@ -65,52 +66,18 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         (*tickers, today.isoformat(), cutoff.isoformat()),
     ).fetchall()
 
-    # Necesitamos valor de cartera + por-ticker para weight_pct
-    # Reutilizamos pricing simple: si el ticker tiene precio, usamos market value
-    # Si no, fallback al invested (best effort).
-    brokers = [dict(r) for r in conn.execute(
-        "SELECT * FROM brokers WHERE user_id=?", (user_id,)
-    ).fetchall()]
-    tc_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
-    ).fetchone()
-    try:
-        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1
-    except (TypeError, ValueError):
-        tc_blue = 1
-    if tc_blue <= 0:
-        tc_blue = 1
-
-    ars_broker_set = {b["name"] for b in brokers if b.get("currency") == "ARS"}
-
-    prices: Dict[str, float] = {}
-    try:
-        from home.market import _fetch_batch_quotes
-        symbols = set()
-        for p in positions:
-            if p.get("broker") in ars_broker_set:
-                symbols.add(f"{p['asset']}.BA")
-            else:
-                symbols.add(p["asset"])
-        if symbols:
-            quotes = _fetch_batch_quotes(list(symbols))
-            prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price")}
-    except Exception:
-        prices = {}
+    # Valor de cartera + por-ticker para weight_pct. Valuación canónica de
+    # Análisis (MEP para holdings AR/.BA; CEDEAR en sub-broker '· USD' por su .BA,
+    # no el ticker US → fix C1). Antes reimplementaba al blue/ticker US.
+    from analysis_prep import currency_context
+    from behavioral import _position_value_usd
+    prices, tc_blue, tc_cedear = currency_context(conn, user_id, positions)
 
     # USD value por ticker (agregado)
     value_by_ticker: Dict[str, float] = {}
     total_value = 0.0
     for p in positions:
-        is_ar = p.get("broker") in ars_broker_set
-        qty = p.get("quantity") or 0
-        invested = p.get("invested") or 0
-        if is_ar:
-            price = prices.get(f"{p['asset']}.BA")
-            v = (price * qty) / tc_blue if price else invested / tc_blue
-        else:
-            price = prices.get(p["asset"])
-            v = price * qty if price else invested
+        v = _position_value_usd(p, prices, tc_blue, tc_cedear)
         value_by_ticker[p["asset"]] = value_by_ticker.get(p["asset"], 0) + v
         total_value += v
     total_value = max(total_value, 1)

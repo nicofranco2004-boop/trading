@@ -74,6 +74,8 @@ from snapshots_job import (
     compute_live_portfolio_value,
     fetch_prices_for_symbols,
     compute_broker_value_usd,
+    build_price_symbols,
+    _user_tc_cedear,
     apply_last_known_prices,
 )
 from passlib.context import CryptContext
@@ -85,7 +87,16 @@ import math
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 if not SECRET_KEY:
-    # In dev, generate a random key per process (tokens reset on restart — acceptable for dev)
+    # En prod fallamos cerrado: una key efímera por proceso desloguea a todos en
+    # cada deploy/restart y, con >1 worker, un token firmado por el worker A lo
+    # rechaza (401) el worker B. Ver CORRECTNESS_AUDIT_2026-06-25.md (M-SEC1).
+    if os.environ.get("RENDI_ENV", "dev").lower() == "prod":
+        raise RuntimeError(
+            "SECRET_KEY es obligatoria en producción (RENDI_ENV=prod). "
+            "Seteá la env var SECRET_KEY antes de bootear."
+        )
+    # En dev, generamos una key random por proceso (los tokens se resetean al
+    # reiniciar — aceptable para dev).
     SECRET_KEY = secrets.token_hex(32)
     print("⚠️  WARNING: SECRET_KEY not set. Generated ephemeral key — tokens will reset on restart. Set SECRET_KEY env var in production.")
 
@@ -4614,18 +4625,23 @@ def _news_row_to_dict(row):
 
 # ─── Prices ──────────────────────────────────────────────────────────────────
 
+# NOTA: 'CVX' y 'DASH' NO van acá aunque existan como cripto (Convex Finance /
+# Dash): colisionan con Chevron (CVX) y DoorDash (DASH), que son acciones/CEDEARs
+# que los users SÍ tienen. El routing de /api/prices es por símbolo, así que
+# incluirlos los preciaría como la cripto (Chevron ~156× barato, incl. el CEDEAR
+# CVX.BA). Ver CORRECTNESS_AUDIT_2026-06-25.md (C3).
 CRYPTO_SYMBOLS = {
     'BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'AVAX', 'DOGE', 'TRX', 'DOT',
     'MATIC', 'POL', 'LINK', 'LTC', 'BCH', 'NEAR', 'UNI', 'ATOM', 'XLM', 'ETC',
     'APT', 'ARB', 'OP', 'AAVE', 'MKR', 'SNX', 'CRV', 'COMP', 'SUSHI', 'YFI',
     '1INCH', 'BAL', 'DYDX', 'GMX', 'BLUR', 'GRT', 'LRC', 'ZRX', 'BAT', 'REN',
     'ALGO', 'VET', 'EGLD', 'FTM', 'FLOW', 'HBAR', 'THETA', 'XTZ', 'EOS', 'WAVES',
-    'ZIL', 'NEO', 'QTUM', 'ICX', 'ONT', 'IOTA', 'ZEC', 'DASH', 'XMR', 'KAVA',
+    'ZIL', 'NEO', 'QTUM', 'ICX', 'ONT', 'IOTA', 'ZEC', 'XMR', 'KAVA',
     'SAND', 'MANA', 'AXS', 'ENJ', 'IMX', 'CHZ', 'GALA', 'ILV',
     'SHIB', 'PEPE', 'FLOKI', 'BONK', 'WIF', 'DEGEN',
     'SUI', 'SEI', 'TIA', 'INJ', 'JTO', 'PYTH', 'STRK', 'WLD', 'MANTA', 'ALT',
     'ORDI', 'RUNE', 'FIL', 'STX', 'CORE', 'CFX', 'ID', 'ARKM', 'CYBER',
-    'RDNT', 'APE', 'LDO', 'RPL', 'FXS', 'CVX', 'FRAX', 'PENDLE', 'SSV',
+    'RDNT', 'APE', 'LDO', 'RPL', 'FXS', 'FRAX', 'PENDLE', 'SSV',
     'WBTC', 'STETH',
 }
 
@@ -10214,61 +10230,117 @@ def admin_approve_user(user_id: int, uid: int = Depends(get_admin_user)):
     return {"ok": True}
 
 
+def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
+    """Limpieza nuclear de los datos de UN broker para UN usuario.
+
+    Borra operations, positions y monthly_entries del broker POR NOMBRE (no por
+    import_op_links) → atrapa también los huérfanos que el revert por-link no
+    alcanza (operaciones sin link, lotes fantasma de imports viejos, etc.).
+    Marca los batches asociados como reverted, recalcula los aggregates globales
+    y regenera los snapshots:
+      - intradiario de HOY: se descarta PRIMERO (pudo quedar inflado por el
+        auto-snapshot del dashboard mientras el broker todavía estaba cargado).
+      - month-ends: rebackfill DESPUÉS desde monthly_entries ya corregidos.
+
+    Incluye el sibling '· USD': los brokers ARS (Balanz/Cocos/IOL) tienen un
+    sub-broker auto-creado '<Padre> · USD' donde viven las tenencias/cash/ops en
+    dólares (por NOMBRE, no por FK). Borrar solo el nombre elegido dejaría esas
+    filas HUÉRFANAS inflando el total tras un "clean slate". Resolvemos el par
+    padre↔sibling en cualquier dirección y limpiamos los dos (igual que
+    delete_broker).
+
+    Scoped al uid: nunca toca datos de otro usuario. Idempotente (correr 2 veces
+    no hace daño). Reversible re-importando. Devuelve el conteo de filas borradas.
+    """
+    # Resolver el par padre↔sibling. Si el user eligió el sibling (tiene
+    # parent_broker_id) sumamos el padre; si eligió el padre, sumamos el sibling.
+    sel = conn.execute(
+        "SELECT id, parent_broker_id FROM brokers WHERE user_id=? AND name=?",
+        (uid, broker),
+    ).fetchone()
+    broker_names = [broker]
+    if sel:
+        if sel["parent_broker_id"]:
+            parent = conn.execute(
+                "SELECT name FROM brokers WHERE user_id=? AND id=?",
+                (uid, sel["parent_broker_id"]),
+            ).fetchone()
+            if parent and parent["name"] not in broker_names:
+                broker_names.append(parent["name"])
+        else:
+            child = conn.execute(
+                "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=?",
+                (uid, sel["id"]),
+            ).fetchone()
+            if child and child["name"] not in broker_names:
+                broker_names.append(child["name"])
+    ph = ",".join("?" * len(broker_names))
+
+    counts: dict = {}
+    with conn:
+        cur = conn.execute(
+            f"DELETE FROM operations WHERE user_id=? AND broker IN ({ph})",
+            (uid, *broker_names),
+        )
+        counts["operations_deleted"] = cur.rowcount
+
+        cur = conn.execute(
+            f"DELETE FROM positions WHERE user_id=? AND broker IN ({ph})",
+            (uid, *broker_names),
+        )
+        counts["positions_deleted"] = cur.rowcount
+
+        cur = conn.execute(
+            f"DELETE FROM monthly_entries WHERE user_id=? AND broker IN ({ph})",
+            (uid, *broker_names),
+        )
+        counts["monthly_entries_deleted"] = cur.rowcount
+
+        cur = conn.execute(
+            f"""UPDATE import_batches
+               SET status='reverted', reverted_at=datetime('now')
+               WHERE user_id=? AND broker IN ({ph}) AND status IN ('confirmed','preview')""",
+            (uid, *broker_names),
+        )
+        counts["batches_marked_reverted"] = cur.rowcount
+
+    # Recalcular aggregates globales (el 'global' sumaba el broker borrado).
+    try:
+        with conn:
+            _recalc_pnl_realized_from_ops(conn, uid)
+    except Exception as ex:
+        log.error("Recalc tras wipe falló (uid=%s broker=%s): %s", uid, broker, ex)
+
+    # Regenerar snapshots. ORDEN CRÍTICO (igual que revert_batch): descartar
+    # PRIMERO el intradiario de hoy y rebackfillear los month-ends DESPUÉS. Al
+    # revés, un wipe corrido justo un día de cierre de mes borraría el month-end
+    # legítimo recién recreado, dejando un hueco permanente en "Evolución".
+    try:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        with conn:
+            conn.execute(
+                "DELETE FROM snapshots WHERE user_id=? AND date=?", (uid, today),
+            )
+            _import_persister._backfill_snapshots_from_monthly(conn, uid)
+    except Exception as ex:
+        log.error("Limpieza de snapshots tras wipe falló (uid=%s): %s", uid, ex)
+
+    return counts
+
+
 @app.post("/api/admin/wipe-broker-data")
 def admin_wipe_broker_data(broker: str, uid: int = Depends(get_admin_user)):
-    """Limpieza nuclear de datos de un broker: borra operations, positions,
-    monthly_entries, snapshots y marca batches asociados como reverted.
-    El broker en sí queda — el user lo sigue viendo en `/posiciones` y puede
-    re-importar limpio.
-
-    Útil cuando imports viejos dejaron huérfanos (operaciones sin
-    import_op_links, commissions infladas por mapeo equivocado del parser
-    genérico, etc.) y el revert estándar no los pudo limpiar.
-
-    Idempotente: correr 2 veces no hace daño.
-    """
+    """(Admin) Limpieza nuclear de los datos de un broker del admin actual.
+    Idempotente. La lógica vive en `_wipe_broker_data`; el endpoint user-facing
+    equivalente es POST /api/imports/wipe-broker."""
     conn = get_db()
     try:
-        # Verificar que el broker exista para este admin
         b = conn.execute(
             "SELECT id FROM brokers WHERE user_id=? AND name=?", (uid, broker),
         ).fetchone()
         if not b:
             raise HTTPException(404, f"Broker '{broker}' no existe para este usuario")
-
-        counts: Dict[str, int] = {}
-        with conn:
-            cur = conn.execute(
-                "DELETE FROM operations WHERE user_id=? AND broker=?", (uid, broker),
-            )
-            counts["operations_deleted"] = cur.rowcount
-
-            cur = conn.execute(
-                "DELETE FROM positions WHERE user_id=? AND broker=?", (uid, broker),
-            )
-            counts["positions_deleted"] = cur.rowcount
-
-            cur = conn.execute(
-                "DELETE FROM monthly_entries WHERE user_id=? AND broker=?", (uid, broker),
-            )
-            counts["monthly_entries_deleted"] = cur.rowcount
-
-            cur = conn.execute(
-                """UPDATE import_batches
-                   SET status='reverted', reverted_at=datetime('now')
-                   WHERE user_id=? AND broker=? AND status IN ('confirmed','preview')""",
-                (uid, broker),
-            )
-            counts["batches_marked_reverted"] = cur.rowcount
-
-        # Recalcular aggregates globales (afecta el 'global' que sumaba el
-        # broker borrado). Snapshots se regeneran solas via cron o recalc.
-        try:
-            with conn:
-                _recalc_pnl_realized_from_ops(conn, uid)
-        except Exception as ex:
-            log.error("Recalc tras wipe falló: %s", ex)
-
+        counts = _wipe_broker_data(conn, uid, broker)
         return {"ok": True, "broker": broker, **counts}
     finally:
         conn.close()
@@ -12993,8 +13065,8 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
                 "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
             ).fetchall()]
             pos_query = (
-                "SELECT broker, asset, is_cash, invested, quantity, commissions, "
-                "price_override FROM positions WHERE user_id=?"
+                "SELECT broker, asset, asset_type, is_cash, invested, quantity, "
+                "commissions, price_override FROM positions WHERE user_id=?"
             )
             pos_args: tuple = (uid,)
             if asset_filter:
@@ -13003,6 +13075,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
             positions = [dict(r) for r in conn.execute(pos_query, pos_args).fetchall()]
 
             tc_blue = _user_tc_blue(conn, uid)
+            tc_cedear = _user_tc_cedear(conn, uid, tc_blue)
 
             unrealized_usd = 0.0
             market_value_usd = 0.0
@@ -13011,18 +13084,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
             in_portfolio_now = False
 
             if brokers and positions:
-                ars_brokers = {b['name'] for b in brokers if b['currency'] == 'ARS'}
-                usd_brokers = {b['name'] for b in brokers if b['currency'] != 'ARS'}
-                ars_symbols = list({
-                    f"{p['asset']}.BA" for p in positions
-                    if p['broker'] in ars_brokers and not p['is_cash']
-                })
-                usd_symbols = list({
-                    p['asset'] for p in positions
-                    if p['broker'] in usd_brokers and not p['is_cash']
-                       and p['asset'] not in ('USDT', 'USD')
-                })
-                all_symbols = ars_symbols + usd_symbols
+                all_symbols = build_price_symbols(positions, brokers)
                 try:
                     prices = fetch_prices_for_symbols(all_symbols, CRYPTO_YF) if all_symbols else {}
                 except Exception as ex:
@@ -13034,7 +13096,8 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
                     if not bpos:
                         continue
                     try:
-                        r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue)
+                        r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue,
+                                                     broker_name=b['name'], cedear_rate=tc_cedear)
                         market_value_usd += r.get('value', 0) or 0
                         invested_usd += r.get('invested', 0) or 0
                     except Exception as ex:
@@ -16324,6 +16387,35 @@ def import_recalc_pnl(uid: int = Depends(get_current_user)):
         return {"recalculated": True, "rows_updated": updates}
     except Exception as ex:
         raise HTTPException(500, f"Error al recalcular P&L: {ex}")
+    finally:
+        conn.close()
+
+
+@app.post("/api/imports/wipe-broker")
+def import_wipe_broker(broker: str, uid: int = Depends(get_current_user)):
+    """Limpia TODOS los datos de un broker del usuario actual: posiciones,
+    operaciones y movimientos mensuales, y marca sus imports como revertidos.
+
+    Es la versión "nuclear" del revert: borra POR NOMBRE de broker (no por los
+    links del import), así que también elimina los huérfanos que un revert
+    parcial pudo dejar — la causa típica de "importé, revertí y el saldo sigue
+    mal". Reversible re-importando.
+
+    Scoped al usuario: sólo toca sus propios datos. Idempotente.
+    """
+    conn = get_db()
+    try:
+        b = conn.execute(
+            "SELECT id FROM brokers WHERE user_id=? AND name=?", (uid, broker),
+        ).fetchone()
+        if not b:
+            raise HTTPException(404, f"No tenés un broker llamado '{broker}'.")
+        counts = _wipe_broker_data(conn, uid, broker)
+        return {"ok": True, "broker": broker, **counts}
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"No se pudo limpiar el broker: {ex}")
     finally:
         conn.close()
 

@@ -5888,5 +5888,183 @@ class CrossCurrencyRealizedPnlTest(unittest.TestCase):
         conn.close()
 
 
+class WipeBrokerUserEndpointTest(unittest.TestCase):
+    """POST /api/imports/wipe-broker — versión user-facing del wipe nuclear.
+
+    Lo central que NO hace el revert por-link: borra TODO lo del broker POR
+    NOMBRE, así que limpia también los huérfanos que un revert parcial dejaría
+    (la causa de "importé, revertí y el saldo sigue inflado"). Además está
+    scoped al usuario y descarta el snapshot intradiario de hoy.
+    """
+
+    def setUp(self):
+        from datetime import datetime
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"wipe-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Binance", "USDT")
+        # Posición HUÉRFANA: existe por nombre de broker pero sin import_op_links
+        # (simula lo que deja un revert parcial / import viejo).
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested)
+               VALUES (?,'Binance','BTC',0,1,50000)""",
+            (self.uid,),
+        )
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
+               VALUES (?,'Binance','USDT',1,1000)""",
+            (self.uid,),
+        )
+        conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, pnl_usd)
+               VALUES (?,'2026-05-01','Binance','BTC','BUY',0)""",
+            (self.uid,),
+        )
+        conn.execute(
+            """INSERT INTO monthly_entries (user_id, broker, year, month,
+                   capital_inicio, capital_final, deposits, withdrawals, pnl_realized, pnl_unrealized)
+               VALUES (?,'Binance',2026,5,0,50000,50000,0,0,0)""",
+            (self.uid,),
+        )
+        # Snapshot de HOY con valor inflado (lo que postea el dashboard cuando el
+        # broker estaba cargado).
+        self.today = datetime.utcnow().strftime("%Y-%m-%d")
+        conn.execute(
+            """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+               VALUES (?,?,200000,50000,50000)""",
+            (self.uid, self.today),
+        )
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _wipe(self, broker="Binance"):
+        return self.client.post(
+            "/api/imports/wipe-broker",
+            params={"broker": broker},  # encoda '·'/espacios del sibling
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def test_wipes_orphan_positions_by_broker_name(self):
+        """Borra TODAS las posiciones del broker aunque no tengan import link."""
+        res = self._wipe()
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertTrue(body["ok"])
+        self.assertGreaterEqual(body["positions_deleted"], 2)
+        conn = main.get_db()
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM positions WHERE user_id=? AND broker='Binance'",
+            (self.uid,),
+        ).fetchone()["c"]
+        conn.close()
+        self.assertEqual(n, 0, "deben borrarse TODAS las posiciones del broker")
+
+    def test_today_snapshot_is_cleared(self):
+        """El snapshot intradiario de hoy (inflado) se descarta tras el wipe."""
+        self.assertEqual(self._wipe().status_code, 200)
+        conn = main.get_db()
+        snap = conn.execute(
+            "SELECT 1 FROM snapshots WHERE user_id=? AND date=?",
+            (self.uid, self.today),
+        ).fetchone()
+        conn.close()
+        self.assertIsNone(snap, "el snapshot de hoy debía borrarse")
+
+    def test_scoped_to_user(self):
+        """No toca el mismo broker de OTRO usuario."""
+        conn = main.get_db()
+        other = _new_user(conn, email=f"wipe-other-{id(self)}@rendi.test")
+        _add_broker(conn, other, "Binance", "USDT")
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested)
+               VALUES (?,'Binance','ETH',0,2,3000)""",
+            (other,),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._wipe().status_code, 200)
+        conn = main.get_db()
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM positions WHERE user_id=? AND broker='Binance'",
+            (other,),
+        ).fetchone()["c"]
+        conn.close()
+        self.assertEqual(n, 1, "las posiciones del otro usuario quedan intactas")
+
+    def test_unknown_broker_404(self):
+        res = self._wipe(broker="NoExiste")
+        self.assertEqual(res.status_code, 404, res.text)
+
+    def test_marks_batches_reverted(self):
+        """Los batches confirmados del broker quedan 'reverted'."""
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO import_batches (id, user_id, broker, parser_format, file_hash, status)
+               VALUES ('b-wipe-1', ?, 'Binance', 'binance', 'h-wipe-1', 'confirmed')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._wipe().status_code, 200)
+        conn = main.get_db()
+        st = conn.execute(
+            "SELECT status FROM import_batches WHERE id='b-wipe-1'",
+        ).fetchone()["status"]
+        conn.close()
+        self.assertEqual(st, "reverted")
+
+    def _seed_pair(self, parent_name, currency="ARS"):
+        """Crea un broker ARS padre + su sibling '<Padre> · USD' (vía
+        parent_broker_id) con posiciones bajo AMBOS nombres. Devuelve (parent, sibling)."""
+        sib = f"{parent_name} · USD"
+        conn = main.get_db()
+        parent_id = _add_broker(conn, self.uid, parent_name, currency)
+        conn.execute(
+            "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
+            (self.uid, sib, "USDT", parent_id),
+        )
+        # Tenencia ARS bajo el padre + tenencia/cash USD bajo el sibling.
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested) VALUES (?,?,'AL30',0,100,1000)",
+            (self.uid, parent_name),
+        )
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested) VALUES (?,?,'AAPL',0,5,800)",
+            (self.uid, sib),
+        )
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, invested) VALUES (?,?,'USDT',1,500)",
+            (self.uid, sib),
+        )
+        conn.commit()
+        conn.close()
+        return parent_name, sib
+
+    def _count_pair(self, parent, sib):
+        conn = main.get_db()
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM positions WHERE user_id=? AND broker IN (?,?)",
+            (self.uid, parent, sib),
+        ).fetchone()["c"]
+        conn.close()
+        return n
+
+    def test_wipes_usd_sibling_when_parent_selected(self):
+        """M1: wipe del PADRE ARS también borra el sibling '· USD' (donde viven las
+        tenencias/cash en dólares). Sin esto el total seguía inflado tras el wipe."""
+        parent, sib = self._seed_pair("Balanz")
+        self.assertEqual(self._count_pair(parent, sib), 3)
+        self.assertEqual(self._wipe(broker=parent).status_code, 200)
+        self.assertEqual(self._count_pair(parent, sib), 0, "padre Y sibling '· USD' deben quedar vacíos")
+
+    def test_wipes_parent_when_sibling_selected(self):
+        """M1 (dirección inversa): elegir el sibling '· USD' también borra el padre."""
+        parent, sib = self._seed_pair("Cocos")
+        self.assertEqual(self._wipe(broker=sib).status_code, 200)
+        self.assertEqual(self._count_pair(parent, sib), 0, "elegir el sibling también limpia el padre")
+
+
 if __name__ == "__main__":
     unittest.main()

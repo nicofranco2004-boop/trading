@@ -28,11 +28,34 @@ Outputs comunes (shape uniforme para que el frontend renderee genérico):
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
 # ─── Helpers compartidos ─────────────────────────────────────────────────────
+
+_FIXED_INCOME_TYPES = frozenset({'BOND', 'BONO', 'ON', 'LETRA', 'LECAP'})
+
+# Sub-broker '<Padre> · USD' — mismo regex que snapshots_job y el frontend
+# (isArUsdBroker /·\s*USD$/). Una sola definición evita drift entre capas.
+_AR_USD_SUBBROKER_RE = re.compile(r'·\s*usd$')
+
+
+def _trust_mkt_value_usd(mkt_usd: float, cost_usd: float, asset_type) -> bool:
+    """Guard anti-distorsión — port de frontend `_trustMktValue` (valuation.js)
+    y snapshots_job._trust_mkt_value. Si el valor de mercado se va absurdamente
+    lejos del costo (colisión de ticker, bono cotizado ×100 "por lámina", CEDEAR
+    priceado como la acción US), NO confiamos en el precio y caemos a costo.
+    AMBOS montos deben venir en la MISMA moneda (USD). Solo capea divergencias
+    ABSURDAS — el P&L real pasa. Sin esto, Análisis/IA mostraba ~100× distinto al
+    Dashboard y a la curva de snapshots para el mismo activo."""
+    if not (cost_usd and cost_usd > 0) or not (mkt_usd and mkt_usd > 0):
+        return True  # sin costo no hay con qué comparar
+    mult = mkt_usd / cost_usd
+    if (asset_type or '').upper() in _FIXED_INCOME_TYPES:
+        return 0.02 <= mult <= 4
+    return 0.002 <= mult <= 50
 
 
 def _is_trade(op: Dict[str, Any]) -> bool:
@@ -128,6 +151,29 @@ def _is_usd_subbroker(broker: Optional[str]) -> bool:
         return False
     b = broker.lower().strip()
     return b.endswith("· usd") or b.endswith("·usd") or b.endswith("- usd") or b.endswith(" usd")
+
+
+def _is_ar_usd_subbroker(broker: Optional[str]) -> bool:
+    """Sub-broker '<Padre> · USD' ESTRICTO (separador '·'). Para la resolución de
+    PRECIO (.BA): a diferencia de _is_usd_subbroker (laxa, usada para la moneda del
+    COSTO), un 'Mi Broker USD' sin '·' NO rutea a .BA. Espejo de
+    snapshots_job._is_ar_usd_subbroker (mismo criterio que el Dashboard)."""
+    return bool(_AR_USD_SUBBROKER_RE.search((broker or "").strip().lower()))
+
+
+def _price_is_ars(p: Dict[str, Any]) -> bool:
+    """¿El precio LIVE de la posición cotiza en ARS (.BA)? Decisión ESTRUCTURAL,
+    no solo por nombre de broker — un CEDEAR en 'PPI · USD' (sin hint AR) igual
+    cotiza en .BA. Es True si: asset_type=='CEDEAR', sub-broker '· USD', broker AR
+    (hints), o currency ARS estampada. Espejo de snapshots_job.position_price_key
+    para que Análisis y Dashboard valúen igual; si no, reaparece C1 (ticker US
+    15-100× inflado para CEDEARs/AR en brokers USD sin hint en el nombre)."""
+    if (p.get("asset_type") or "").upper() == "CEDEAR":
+        return True
+    broker = p.get("broker") or ""
+    if _is_ar_usd_subbroker(broker) or _is_ars_broker(broker):
+        return True
+    return (p.get("currency") or "").strip().upper() == "ARS"
 
 
 def _native_ccy(p: Dict[str, Any]) -> str:
@@ -251,8 +297,13 @@ def _is_ar_economic_exposure(asset: str, broker: Optional[str] = None) -> bool:
     return False
 
 
-def _resolve_price(asset: str, broker: Optional[str], prices: Optional[Dict[str, float]]) -> Optional[float]:
+def _resolve_price(asset: str, broker: Optional[str], prices: Optional[Dict[str, float]],
+                   is_ars: Optional[bool] = None) -> Optional[float]:
     """Resuelve el precio actual del activo en la MONEDA NATIVA del broker.
+
+    `is_ars`: si se pasa, decide explícitamente si el precio se busca en .BA (ARS)
+    en vez de inferirlo por el nombre del broker. Los callers que conocen
+    asset_type/sub-broker '· USD' deben pasarlo (estructural, no por nombre).
 
     CRÍTICO: para brokers AR (Cocos/IOL/etc) los tickers normalmente son
     CEDEARs que cotizan en ARS. El precio del ticker US (ej. META US$ 618)
@@ -269,7 +320,8 @@ def _resolve_price(asset: str, broker: Optional[str], prices: Optional[Dict[str,
     if not prices or not asset:
         return None
     a = asset.upper()
-    is_ars = _is_ars_broker(broker)
+    if is_ars is None:
+        is_ars = _is_ars_broker(broker)
     if is_ars:
         # Broker AR: el precio que buscamos está en ARS. CEDEARs siempre con .BA.
         if a.endswith(".BA"):
@@ -283,9 +335,13 @@ def _resolve_price(asset: str, broker: Optional[str], prices: Optional[Dict[str,
 
 
 def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = None,
-                         tc_blue: float = 1415.0, tc_cedear: Optional[float] = None) -> float:
+                         tc_blue: float = 1415.0, tc_cedear: Optional[float] = None,
+                         honor_override: bool = True) -> float:
     """Valor USD-equivalente de una position. Maneja:
     - Cash (usa invested directo)
+    - price_override (precio manual del user) con prioridad — igual que snapshots
+      y el frontend. honor_override=False lo ignora, para computar el cost basis
+      puro (los builders llaman con prices={}, honor_override=False).
     - Posiciones con precio actual disponible (price × quantity)
     - Fallback a invested si no hay precio
     - Conversión ARS → USD para brokers AR
@@ -308,7 +364,10 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
     #    AR-resident (incluido el sub-broker '· USD', cuyo CEDEAR cotiza en ARS).
     #    Decide si convertir el valor de mercado live.
     cost_ccy = _native_ccy(p)
-    price_is_ars = _is_ars_broker(broker)
+    # Resolución de PRECIO estructural (CEDEAR / '· USD' / AR / currency ARS) —
+    # no solo por nombre de broker. Sin esto, un CEDEAR en 'PPI · USD' se valuaba
+    # por el ticker US (C1, 15-100× inflado). Espejo del Dashboard.
+    price_is_ars = _price_is_ars(p)
     qty = p.get("quantity") or 0
     invested_native = float(p.get("invested") or 0)
 
@@ -318,15 +377,31 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
             return invested_native / tc_blue if tc_blue > 0 else 0.0
         return invested_native
 
-    # No-cash: preferimos precio actual × quantity.
+    # No-cash: price_override (manual) primero, después precio live × quantity.
     if qty:
-        price = _resolve_price(asset, broker, prices)
+        override = p.get("price_override") if honor_override else None
+        if override is not None:
+            # Override en la moneda NATIVA del cost basis (cost_ccy): ARS → a USD
+            # por MEP; USD (incl. sub-broker '· USD') → directo. price_override
+            # tiene prioridad sobre el precio live (mirror del `??` del frontend).
+            value_native = float(override) * float(qty)
+            if cost_ccy == "ARS" and rate_holdings > 0:
+                return value_native / rate_holdings
+            return value_native
+        price = _resolve_price(asset, broker, prices, is_ars=price_is_ars)
         if price and price > 0:
             value_native = float(price) * float(qty)
             # El precio live de un broker AR está en ARS (.BA) → a USD vía MEP.
-            if price_is_ars and rate_holdings > 0:
-                return value_native / rate_holdings
-            return value_native
+            mkt_usd = (value_native / rate_holdings) if (price_is_ars and rate_holdings > 0) else value_native
+            # Guard anti-distorsión (mismo que el Dashboard y la curva de
+            # snapshots): si el mercado se va absurdamente lejos del costo (bono
+            # ×100, colisión de ticker), caemos a costo. Comparamos en USD —
+            # invested → USD por su moneda nativa (ARS por MEP) — para que un
+            # CEDEAR en '· USD' (precio ARS, costo USD) no dispare el guard de más.
+            cost_usd = (invested_native / rate_holdings) if (cost_ccy == "ARS" and rate_holdings > 0) else invested_native
+            if _trust_mkt_value_usd(mkt_usd, cost_usd, p.get("asset_type")):
+                return mkt_usd
+            # precio no confiable → cae al cost basis de abajo (sin inventar P&L)
 
     # Fallback al cost basis (invested), en su moneda nativa (ARS .BA → MEP).
     if cost_ccy == "ARS" and rate_holdings > 0:

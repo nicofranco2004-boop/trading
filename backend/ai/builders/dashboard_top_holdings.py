@@ -36,37 +36,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     positions = [dict(r) for r in conn.execute(
         "SELECT * FROM positions WHERE user_id=?", (user_id,)
     ).fetchall()]
-    brokers = [dict(r) for r in conn.execute(
-        "SELECT * FROM brokers WHERE user_id=?", (user_id,)
-    ).fetchall()]
-    tc_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
-    ).fetchone()
-    try:
-        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1
-    except (TypeError, ValueError):
-        tc_blue = 1
-    if tc_blue <= 0:
-        tc_blue = 1
-
-    ars_brokers = {b["name"] for b in brokers if b.get("currency") == "ARS"}
-
-    prices: Dict[str, float] = {}
-    try:
-        from home.market import _fetch_batch_quotes
-        symbols = set()
-        for p in positions:
-            if p.get("is_cash") or not p.get("asset"):
-                continue
-            if p.get("broker") in ars_brokers:
-                symbols.add(f"{p['asset']}.BA")
-            else:
-                symbols.add(p["asset"])
-        if symbols:
-            quotes = _fetch_batch_quotes(list(symbols))
-            prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price")}
-    except Exception:
-        prices = {}
+    # Valuación canónica de Análisis: estampa moneda, arma precios .BA-aware y
+    # devuelve tc_cedear (dólar-MEP). Así los holdings AR/.BA se valúan a MEP (no
+    # blue) y un CEDEAR en sub-broker '· USD' por su .BA (no el ticker US, que
+    # valía 15-100× más). Antes este builder reimplementaba la valuación al blue
+    # y compartía el bug C1. Ver CORRECTNESS_AUDIT (M-AI1 / C1).
+    from analysis_prep import currency_context
+    from behavioral import _position_value_usd
+    prices, tc_blue, tc_cedear = currency_context(conn, user_id, positions)
 
     today = datetime.utcnow().date()
     enriched: List[Dict[str, Any]] = []
@@ -75,19 +52,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     for p in positions:
         if p.get("is_cash"):
             continue
-        is_ar = p.get("broker") in ars_brokers
         qty = p.get("quantity") or 0
         invested = p.get("invested") or 0
         if invested <= 0 or qty <= 0:
             continue
-        if is_ar:
-            price = p.get("price_override") or prices.get(f"{p['asset']}.BA")
-            value_usd = (price * qty) / tc_blue if price else invested / tc_blue
-            invested_usd = invested / tc_blue
-        else:
-            price = p.get("price_override") or prices.get(p.get("asset"))
-            value_usd = price * qty if price else invested
-            invested_usd = invested
+        # value con precios; invested con {} → fallback a costo, MISMA regla de
+        # moneda (evita FX-phantom: ambos al MEP para holdings AR).
+        value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
+        invested_usd = _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False)
         pnl_pct = ((value_usd - invested_usd) / invested_usd) if invested_usd > 0 else 0
         grand += value_usd
 

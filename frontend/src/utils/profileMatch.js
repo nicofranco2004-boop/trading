@@ -438,10 +438,17 @@ export function computeStyleCoherence(profile, operations, monthsWindow = 6) {
     }
   }
 
-  // Filtramos solo SELLs (trades cerrados). Ignoramos BUYs, DEPOSITS, etc.
+  // Contamos trades cerrados (Venta/Futuros) como proxy de actividad. Mismo
+  // criterio que Insights.isTradeOp: excluimos Compra/Dividendo/Interés/Conversión
+  // (retorno pasivo o cambio de moneda, no decisiones de trading). El DB guarda
+  // op_type en español ('Venta'), NO 'SELL' — el filtro viejo nunca matcheaba y
+  // la card quedaba muerta. Ver CORRECTNESS_AUDIT_2026-06-25.md (M-MET1).
   const sells = (operations || []).filter(o => {
-    const t = String(o.op_type || '').toUpperCase()
-    return t === 'SELL' && o.date
+    const t = String(o.op_type || '').trim()
+    if (!t || !o.date) return false
+    if (t === 'Compra' || t === 'Dividendo' || t === 'Interés') return false
+    if (t.startsWith('CONVERSION') || t.startsWith('Conversión')) return false
+    return true
   })
 
   if (sells.length < 3) {

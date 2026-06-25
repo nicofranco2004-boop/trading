@@ -297,6 +297,11 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
         # persistirla como compra normal.
         tx.cost_basis_pending = bool(d.get("_cost_basis_pending"))
 
+        # Cierre por acción societaria a proceeds cero (ej. "Reducción de
+        # capital" de Balanz): el validador debe aceptar el precio 0 de la VENTA
+        # (que en general rechaza con MISSING_PRICE).
+        tx.corporate_close = bool(d.get("_corporate_close"))
+
         # Fallback de monto para filas non-FX en CSVs con columnas separadas
         # por moneda (típico en Argentina: monto_ars + monto_usd). Si la fila
         # tiene monto_usd pero no monto, usamos monto_usd como el monto en

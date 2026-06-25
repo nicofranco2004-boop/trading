@@ -98,8 +98,16 @@ def _fetch_positions_for_concentration(conn, uid: int, broker_filter: str,
     """Devuelve lista de {asset, value_usd, is_cash} para usar en CONCENTRATION_RISK.
 
     Computa value en USD igual que el frontend (price × qty para non-cash,
-    invested para cash). Para ARS convierte vía tc_blue.
+    invested para cash). Cash en pesos → dólar-blue; holdings AR/.BA → dólar-MEP
+    (tc_cedear), igual que el resto de Análisis. Ver CORRECTNESS_AUDIT (M-REP).
     """
+    try:
+        from analysis_prep import user_fx
+        _, tc_cedear = user_fx(conn, uid)
+        if not (tc_cedear and tc_cedear > 0):
+            tc_cedear = tc_blue
+    except Exception:
+        tc_cedear = tc_blue
     br_sql = "" if broker_filter == "global" else " AND p.broker = ?"
     br_args = () if broker_filter == "global" else (broker_filter,)
     rows = conn.execute(
@@ -131,12 +139,12 @@ def _fetch_positions_for_concentration(conn, uid: int, broker_filter: str,
         if price is None:
             # sin precio, usar invested como aproximación
             val = float(r["invested"] or 0)
-            if (r["currency"] or "").upper() == "ARS" and tc_blue > 0:
-                val = val / tc_blue
+            if (r["currency"] or "").upper() == "ARS" and tc_cedear > 0:
+                val = val / tc_cedear
         else:
             val = float(price) * qty
-            if (r["currency"] or "").upper() == "ARS" and tc_blue > 0:
-                val = val / tc_blue
+            if (r["currency"] or "").upper() == "ARS" and tc_cedear > 0:
+                val = val / tc_cedear
         out.append({"asset": asset, "value_usd": val, "is_cash": False})
     return out
 

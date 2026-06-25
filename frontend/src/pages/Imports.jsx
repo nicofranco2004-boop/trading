@@ -8,7 +8,6 @@ import EmptyState from '../components/EmptyState'
 import Modal from '../components/Modal'
 import ImportWizard from '../components/import/ImportWizard'
 import { api } from '../utils/api'
-import { useAuth } from '../contexts/AuthContext'
 
 // Flag de localStorage: si el user nunca completó un import → al confirmar
 // el primero lo redirigimos a /bienvenida para el "primer insight" en lugar
@@ -19,7 +18,6 @@ export default function Imports() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const fromOnboarding = searchParams.get('from') === 'onboarding'
-  const { user } = useAuth()
   const [batches, setBatches] = useState([])
   const [loading, setLoading] = useState(true)
   const [reverting, setReverting] = useState(null) // batch_id en proceso
@@ -147,9 +145,9 @@ export default function Imports() {
     if (!wipeSel) return
     setWiping(true); setError(null); setInfo(null)
     try {
-      const data = await api.post(`/admin/wipe-broker-data?broker=${encodeURIComponent(wipeSel)}`, {})
+      const data = await api.post(`/imports/wipe-broker?broker=${encodeURIComponent(wipeSel)}`, {})
       window.dispatchEvent(new Event('rendi:portfolio-changed'))
-      setInfo(`Broker "${wipeSel}" limpiado: ${data.operations_deleted} operations, ${data.positions_deleted} positions, ${data.monthly_entries_deleted} monthly_entries borrados.`)
+      setInfo(`Listo: borramos todos los datos de "${wipeSel}" (${data.positions_deleted} posiciones, ${data.operations_deleted} operaciones). Ya podés volver a importar limpio.`)
       setWipeOpen(false); setWipeSel(null)
       await load()
     } catch (ex) {
@@ -184,11 +182,11 @@ export default function Imports() {
                 Recalcular aggregates
               </button>
             )}
-            {!isFirstUse && user?.is_admin && (
+            {!isFirstUse && (
               <button
                 onClick={openWipe}
                 disabled={wiping}
-                title="Borra TODAS las operations / positions / monthly_entries de un broker, incluyendo huérfanos de imports viejos. Solo admin."
+                title="Borra TODOS los datos de un broker (posiciones, operaciones y movimientos), incluyendo cualquier resto de imports viejos. Después podés volver a importar limpio."
                 className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-rendi-neg/30 bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50"
               >
                 {wiping
@@ -426,7 +424,7 @@ export default function Imports() {
         </Modal>
       )}
 
-      {/* Modal: limpiar datos de un broker (admin) — selección + warning + CONFIRMAR */}
+      {/* Modal: limpiar datos de un broker — selección + warning + CONFIRMAR */}
       {wipeOpen && (
         <Modal title="Limpiar datos de un broker" onClose={() => { setWipeOpen(false); setError(null) }}>
           <div className="space-y-4 text-sm text-ink-1">
@@ -468,7 +466,8 @@ export default function Imports() {
                 <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
                 <span>
                   Al confirmar vas a borrar <strong>todos los datos de {wipeSel}</strong> (operaciones, posiciones y
-                  movimientos). <strong>Esta acción no se puede deshacer.</strong>
+                  movimientos), incluido cualquier resto de imports anteriores. Para recuperarlos vas a tener que{' '}
+                  <strong>volver a importar el CSV</strong>.
                 </span>
               </div>
             )}

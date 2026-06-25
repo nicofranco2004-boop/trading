@@ -14,7 +14,7 @@ Uso típico:
 """
 from typing import Dict, List, Any, Optional, Tuple
 
-from behavioral import stamp_positions_currency, _is_ars_broker
+from behavioral import stamp_positions_currency, _is_ars_broker, _price_is_ars
 
 
 def _config_float(conn, user_id: int, key: str, default: float) -> float:
@@ -45,7 +45,10 @@ def fetch_ba_aware_prices(positions: List[Dict[str, Any]]) -> Dict[str, float]:
         if not p.get("asset") or p.get("is_cash"):
             continue
         a = p["asset"]
-        if _is_ars_broker(p.get("broker")) and not a.upper().endswith(".BA"):
+        # Estructural (no solo por nombre): un CEDEAR / sub-broker '· USD' / AR /
+        # currency ARS cotiza en .BA aunque el nombre no tenga hint AR. Debe
+        # coincidir con behavioral._price_is_ars (que decide la valuación).
+        if _price_is_ars(p) and not a.upper().endswith(".BA"):
             symbols.add(a + ".BA")
         else:
             symbols.add(a)

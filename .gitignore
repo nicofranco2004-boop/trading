@@ -9,10 +9,17 @@ backend/*.db-wal
 *.db-shm
 *.db-wal
 # Snapshots / backups antes de operaciones destructivas (formato libre:
-# trading.db.backup-..., dump.sql.bak, etc.)
+# trading.db.backup-..., trading.db.bak-..., dump.sql.bak, *.db.gz, etc.)
+# IMPORTANTE: estos backups contienen datos reales de usuarios (emails + hashes
+# bcrypt). NUNCA deben commitearse. Ver CORRECTNESS_AUDIT_2026-06-25.md (C4).
 *.backup
 *.backup-*
 *.sql.bak
+*.bak
+*.bak-*
+*.db.bak*
+*.db.gz
+backend/backups/
 backend/.env
 .env
 .env.local

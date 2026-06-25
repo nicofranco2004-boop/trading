@@ -34,36 +34,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     brokers = [dict(r) for r in conn.execute(
         "SELECT * FROM brokers WHERE user_id=?", (user_id,)
     ).fetchall()]
-    tc_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
-    ).fetchone()
-    try:
-        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1
-    except (TypeError, ValueError):
-        tc_blue = 1
-    if tc_blue <= 0:
-        tc_blue = 1
-
-    prices: Dict[str, float] = {}
-    try:
-        from home.market import _fetch_batch_quotes
-        ars_brokers = {b["name"] for b in brokers if b.get("currency") == "ARS"}
-        symbols = set()
-        for p in positions:
-            if p.get("is_cash") or not p.get("asset"):
-                continue
-            if p.get("broker") in ars_brokers:
-                symbols.add(f"{p['asset']}.BA")
-            else:
-                symbols.add(p["asset"])
-        if symbols:
-            quotes = _fetch_batch_quotes(list(symbols))
-            prices = {s: q["price"] for s, q in quotes.items() if q and q.get("price")}
-    except Exception:
-        prices = {}
+    # Valuación canónica de Análisis: estampa moneda, precios .BA-aware y MEP.
+    # Holdings AR/.BA → MEP (no blue); CEDEAR en sub-broker '· USD' → su .BA.
+    from analysis_prep import currency_context
+    from behavioral import _position_value_usd
+    prices, tc_blue, tc_cedear = currency_context(conn, user_id, positions)
 
     # Agregamos por broker
-    ars_broker_set = {b["name"] for b in brokers if b.get("currency") == "ARS"}
     by_broker: Dict[str, Dict[str, float]] = {}
     grand = 0.0
 
@@ -71,20 +48,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         bname = p.get("broker")
         if not bname:
             continue
-        is_ar = bname in ars_broker_set
-        invested = p.get("invested") or 0
-        qty = p.get("quantity") or 0
-        if p.get("is_cash"):
-            v = invested / tc_blue if is_ar else invested
-            inv_usd = v  # cash: invested == value
-        elif is_ar:
-            price = p.get("price_override") or prices.get(f"{p['asset']}.BA")
-            v = (price * qty) / tc_blue if price else invested / tc_blue
-            inv_usd = invested / tc_blue
-        else:
-            price = p.get("price_override") or prices.get(p.get("asset"))
-            v = price * qty if price else invested
-            inv_usd = invested
+        # value con precios; invested con {} → costo (misma regla de moneda).
+        v = _position_value_usd(p, prices, tc_blue, tc_cedear)
+        inv_usd = _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False)
 
         slot = by_broker.setdefault(bname, {"value": 0.0, "invested": 0.0, "count": 0})
         slot["value"] += v

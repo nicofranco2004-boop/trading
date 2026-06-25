@@ -107,8 +107,13 @@ def validate(
             if not _gt_zero(tx.quantity):
                 row_errs.append(RowError(ridx, "cantidad", "MISSING_QUANTITY", "La venta necesita una cantidad mayor a 0."))
             # El normalizer ya intentó autocompletar precio si vino monto + cantidad.
-            # Si igual falta, exigir uno u otro.
-            if not _gt_zero(tx.unit_price) and not _gt_zero(tx.gross_amount):
+            # Si igual falta, exigir uno u otro. Excepción: una venta marcada como
+            # cierre por acción societaria (Reducción/Devolución de capital) tiene
+            # proceeds CERO de forma intencional — el papel se canceló y el capital
+            # devuelto ya entra por la fila de Dividendo. La aceptamos a precio 0
+            # (cierra la posición; no inventa cash) en vez de rechazarla.
+            if (not _gt_zero(tx.unit_price) and not _gt_zero(tx.gross_amount)
+                    and not getattr(tx, "corporate_close", False)):
                 row_errs.append(RowError(ridx, "precio", "MISSING_PRICE",
                                          "La venta necesita 'precio' o 'monto' para calcular el resultado. "
                                          "Mapeá una de las dos columnas en el wizard."))

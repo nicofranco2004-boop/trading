@@ -101,8 +101,20 @@ class RendiGenericParser(Parser):
             return result
 
         for idx, row in enumerate(reader, start=1):
-            data = {header_map[k]: (v.strip() if isinstance(v, str) else v)
-                    for k, v in row.items() if k is not None}
+            # Seguridad: descartamos columnas cuyo header normalizado empieza con
+            # "_". Ese namespace es para flags INTERNOS que los parsers de confianza
+            # setean a mano en el dict (_corporate_close, _cost_basis_pending,
+            # _hoja…). Un CSV de usuario NO debe poder inyectarlos vía una columna
+            # homónima — p.ej. _corporate_close saltearía el guard MISSING_PRICE de
+            # una venta a precio 0. (monto_usd y demás no llevan "_" inicial.)
+            data = {}
+            for k, v in row.items():
+                if k is None:
+                    continue
+                hk = header_map[k]
+                if hk.startswith("_"):
+                    continue
+                data[hk] = v.strip() if isinstance(v, str) else v
             # Saltar filas completamente vacías
             if not any((v or "").strip() for v in data.values() if isinstance(v, str)):
                 continue

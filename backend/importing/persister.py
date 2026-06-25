@@ -1297,6 +1297,16 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                 "DELETE FROM snapshots WHERE user_id=? AND date=?",
                 (uid, f"{yy:04d}-{mm:02d}-{last_day:02d}"),
             )
+    # Descartar el snapshot intradiario de HOY: el dashboard lo auto-guarda con
+    # el valor pre-revert (inflado) y el cleanup de month-ends de arriba no lo
+    # toca (hoy no es fin de mes salvo casualidad). Sin esto, el chart
+    # "Evolución" seguía mostrando el punto de hoy con el valor viejo aun
+    # después de revertir. El dashboard lo recrea con el valor real en el
+    # próximo load (POST /snapshots, que upserta por fecha).
+    conn.execute(
+        "DELETE FROM snapshots WHERE user_id=? AND date=?",
+        (uid, datetime.utcnow().strftime("%Y-%m-%d")),
+    )
     _backfill_snapshots_from_monthly(conn, uid)
 
     return {"reverted": True, "batch_id": batch_id}

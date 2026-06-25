@@ -39,19 +39,24 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     if not asset:
         raise ValueError("Falta param 'asset' — ticker exacto de la posición.")
 
-    # Posición agregada (qty, invested) — match por asset (+ broker si viene)
-    if broker:
-        rows = conn.execute(
-            "SELECT * FROM positions WHERE user_id=? AND asset=? AND broker=? AND quantity > 0",
-            (user_id, asset, broker),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM positions WHERE user_id=? AND asset=? AND quantity > 0",
-            (user_id, asset),
-        ).fetchall()
+    # Valuación canónica de Análisis (MEP para holdings AR/.BA; CEDEAR en
+    # sub-broker '· USD' por su .BA, NO el ticker US → fix C1). Cargamos TODAS las
+    # posiciones una vez: para valuar la pedida y el total de cartera (weight) con
+    # la misma fuente de precios. currency_context estampa currency in-place.
+    from analysis_prep import currency_context
+    from behavioral import _position_value_usd, _resolve_price, _price_is_ars
+    all_pos = [dict(r) for r in conn.execute(
+        "SELECT * FROM positions WHERE user_id=?", (user_id,)
+    ).fetchall()]
+    prices, tc_blue, tc_cedear = currency_context(conn, user_id, all_pos)
 
-    positions = [dict(r) for r in rows]
+    # Subconjunto pedido (de all_pos ya estampado) — match por asset (+ broker).
+    positions = [
+        p for p in all_pos
+        if (p.get("asset") or "").strip() == asset
+        and (not broker or (p.get("broker") or "").strip() == broker)
+        and float(p.get("quantity") or 0) > 0
+    ]
     if not positions:
         raise ValueError(
             f"Posición no encontrada para asset='{asset}' broker='{broker or '*'}'."
@@ -60,62 +65,30 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     qty = sum(float(p.get("quantity") or 0) for p in positions)
     invested = sum(float(p.get("invested") or 0) for p in positions)
     broker_resolved = positions[0].get("broker") or broker
+    currency = (positions[0].get("currency") or "USD").upper()
 
-    # Currency del broker
-    brokers_row = conn.execute(
-        "SELECT currency FROM brokers WHERE user_id=? AND name=?",
-        (user_id, broker_resolved),
-    ).fetchone()
-    currency = (brokers_row["currency"] or "USD").upper() if brokers_row else "USD"
-    is_ars = currency == "ARS"
-
-    # TC blue
-    tc_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
-    ).fetchone()
-    try:
-        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1415.0
-    except (TypeError, ValueError):
-        tc_blue = 1415.0
-    if tc_blue <= 0:
-        tc_blue = 1415.0
-
-    invested_usd = invested / tc_blue if is_ars else invested
+    invested_usd = sum(
+        _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False)
+        for p in positions
+    )
+    current_value_usd = sum(
+        _position_value_usd(p, prices, tc_blue, tc_cedear) for p in positions
+    )
     avg_price = (invested / qty) if qty > 0 else None
-
-    # Precio actual
-    current_price = None
-    try:
-        from home.market import _fetch_batch_quotes
-        symbol = f"{asset}.BA" if is_ars else asset
-        quotes = _fetch_batch_quotes([symbol])
-        q = quotes.get(symbol) or {}
-        if q.get("price"):
-            current_price = float(q["price"])
-    except Exception:
-        current_price = None
-
-    current_value_usd = (current_price * qty) / tc_blue if (current_price and is_ars) else (
-        current_price * qty if current_price else invested_usd
+    # Precio actual por unidad, en moneda nativa (.BA ARS para AR, US$ para USD).
+    p0 = positions[0]
+    current_price = _resolve_price(
+        (p0.get("asset") or "").upper(), p0.get("broker"), prices,
+        is_ars=_price_is_ars(p0),
     )
     pnl_usd = current_value_usd - invested_usd
     pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd > 0 else None
 
-    # Weight % vs cartera total
-    all_pos = conn.execute(
-        "SELECT broker, quantity, invested, is_cash FROM positions WHERE user_id=?",
-        (user_id,),
-    ).fetchall()
-    brokers_currency = {}
-    for r in conn.execute("SELECT name, currency FROM brokers WHERE user_id=?", (user_id,)):
-        brokers_currency[r["name"]] = (r["currency"] or "USD").upper()
-
-    total_value = 0.0
-    for p in all_pos:
-        v = float(p["invested"] or 0)
-        if brokers_currency.get(p["broker"], "USD") == "ARS":
-            v = v / tc_blue
-        total_value += v
+    # Weight % vs total de cartera (cost basis canónico, misma moneda/MEP).
+    total_value = sum(
+        _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False)
+        for p in all_pos
+    )
     weight_pct = (current_value_usd / total_value * 100) if total_value > 0 else None
 
     # Días en posición (primer Compra del ticker)

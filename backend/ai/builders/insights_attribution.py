@@ -75,66 +75,27 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     # ── Unrealized: precio actual * qty - invested por posición abierta ──────
     positions = [dict(r) for r in conn.execute(
-        "SELECT asset, broker, quantity, invested, is_cash FROM positions "
+        "SELECT asset, asset_type, broker, currency, quantity, invested, is_cash FROM positions "
         "WHERE user_id=? AND quantity > 0 AND (is_cash = 0 OR is_cash IS NULL)",
         (user_id,),
     ).fetchall()]
 
-    brokers = conn.execute(
-        "SELECT name, currency FROM brokers WHERE user_id=?", (user_id,)
-    ).fetchall()
-    broker_currency = {b["name"]: (b["currency"] or "USD").upper() for b in brokers}
-
-    tc_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (user_id,)
-    ).fetchone()
-    try:
-        tc_blue = float(tc_row["value"]) if tc_row and tc_row["value"] else 1415.0
-    except (TypeError, ValueError):
-        tc_blue = 1415.0
-    if tc_blue <= 0:
-        tc_blue = 1415.0
-
-    prices: Dict[str, float] = {}
-    try:
-        from home.market import _fetch_batch_quotes
-        symbols = set()
-        for p in positions:
-            asset = p.get("asset")
-            if not asset:
-                continue
-            currency = broker_currency.get(p.get("broker") or "", "USD").upper()
-            if currency == "ARS":
-                symbols.add(f"{asset}.BA")
-            else:
-                symbols.add(asset)
-        if symbols:
-            quotes = _fetch_batch_quotes(list(symbols))
-            prices = {s: q["price"] for s, q in quotes.items()
-                      if q and q.get("price") is not None}
-    except Exception:
-        prices = {}
+    # Valuación canónica de Análisis (estampa moneda, precios .BA-aware, MEP).
+    # Antes valuaba holdings AR al blue y un CEDEAR en sub-broker '· USD' por el
+    # ticker US (C1). Ahora value e invested salen del mismo valuador → sin
+    # FX-phantom y con MEP. Ver CORRECTNESS_AUDIT (C1 / M-AI1).
+    from analysis_prep import currency_context
+    from behavioral import _position_value_usd
+    prices, tc_blue, tc_cedear = currency_context(conn, user_id, positions)
 
     unrealized_by_ticker: Dict[str, float] = {}
     for p in positions:
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        currency = broker_currency.get(p.get("broker") or "", "USD").upper()
-        qty = float(p.get("quantity") or 0)
-        invested = float(p.get("invested") or 0)
-        if currency == "ARS":
-            price = prices.get(f"{asset}.BA")
-            mv_usd = (price * qty) / tc_blue if price else 0
-            invested_usd = invested / tc_blue
-        else:
-            price = prices.get(asset)
-            mv_usd = price * qty if price else 0
-        pnl = mv_usd - (invested / tc_blue if currency == "ARS" else invested)
-        # Si no hay precio actual, no podemos computar unrealized — skip
-        if price is None:
-            continue
-        unrealized_by_ticker[asset] = unrealized_by_ticker.get(asset, 0) + pnl
+        mv_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
+        invested_usd = _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False)
+        unrealized_by_ticker[asset] = unrealized_by_ticker.get(asset, 0) + (mv_usd - invested_usd)
 
     # Tickers presentes EN CARTERA HOY (positions con quantity > 0). Sirve
     # para el flag in_portfolio_now de cada item de attribution.

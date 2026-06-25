@@ -227,6 +227,12 @@ class NormalizedTx:
     # se ofrecen como "estado inicial" (seed) para que el usuario complete el
     # cost basis, y de ahí sale la compra sintética con el precio real.
     cost_basis_pending: bool = False
+    # True para una VENTA que cierra una posición por acción societaria a
+    # proceeds CERO (ej. "Reducción/Devolución de capital" de Balanz). El
+    # validador acepta su precio 0 (que en general rechazaría) porque es un
+    # cierre intencional, no un precio faltante: el papel se canceló y el
+    # capital devuelto ya entró por la fila de Dividendo asociada.
+    corporate_close: bool = False
 
     def to_db_dict(self) -> Dict[str, Any]:
         return asdict(self)

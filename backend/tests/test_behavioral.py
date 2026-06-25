@@ -720,6 +720,48 @@ class CurrencyAuditTest(unittest.TestCase):
         p_ars = {"broker": "Cocos Capital", "asset": "ARS", "is_cash": 1, "invested": 1_415_000}
         self.assertAlmostEqual(_position_value_usd(p_ars, None, 1415.0), 1000.0, places=2)
 
+    # ── C1 final-audit: la resolución de PRECIO (.BA vs ticker US) es ESTRUCTURAL
+    #    (asset_type/·USD/AR/currency), no por nombre de broker. Sin esto, un
+    #    CEDEAR en 'PPI · USD' se valuaba por el ticker US (15-100× inflado).
+    def test_cedear_in_nonhint_usd_subbroker_values_via_ba_mep(self):
+        from behavioral import _position_value_usd, _price_is_ars
+        p = {"broker": "Mi Cartera · USD", "asset": "TSLA", "asset_type": "CEDEAR",
+             "is_cash": 0, "invested": 180, "quantity": 15, "currency": "USD"}
+        self.assertTrue(_price_is_ars(p))
+        v = _position_value_usd(p, {"TSLA.BA": 14000}, tc_blue=1500, tc_cedear=1200)
+        self.assertAlmostEqual(v, 14000 * 15 / 1200, places=2)  # 175, NO 6600
+
+    def test_cedear_by_asset_type_in_plain_usd_broker(self):
+        from behavioral import _position_value_usd
+        p = {"broker": "PPI", "asset": "AAPL", "asset_type": "CEDEAR",
+             "is_cash": 0, "invested": 200, "quantity": 20, "currency": "USD"}
+        v = _position_value_usd(p, {"AAPL.BA": 30000}, tc_blue=1500, tc_cedear=1200)
+        self.assertAlmostEqual(v, 30000 * 20 / 1200, places=2)
+
+    def test_genuine_usd_broker_not_routed_to_ba(self):
+        # 'Mi Broker USD' (sin '·') es USD genuino → ticker US, NO .BA.
+        from behavioral import _position_value_usd, _price_is_ars
+        p = {"broker": "Mi Broker USD", "asset": "NVDA", "asset_type": "STOCK",
+             "is_cash": 0, "invested": 1000, "quantity": 10, "currency": "USD"}
+        self.assertFalse(_price_is_ars(p))
+        v = _position_value_usd(p, {"NVDA": 150, "NVDA.BA": 999999}, tc_blue=1500, tc_cedear=1200)
+        self.assertAlmostEqual(v, 1500.0, places=2)
+
+    def test_nonhint_ars_broker_holding_values_via_mep(self):
+        from behavioral import _position_value_usd
+        p = {"broker": "Santander", "asset": "GGAL", "asset_type": "STOCK_AR",
+             "is_cash": 0, "invested": 50000, "quantity": 10, "currency": "ARS"}
+        v = _position_value_usd(p, {"GGAL.BA": 7000}, tc_blue=1500, tc_cedear=1200)
+        self.assertAlmostEqual(v, 7000 * 10 / 1200, places=2)
+
+    def test_price_override_honored_for_value_not_cost(self):
+        from behavioral import _position_value_usd
+        p = {"broker": "Schwab", "asset": "X", "is_cash": 0, "invested": 300,
+             "quantity": 10, "price_override": 50, "currency": "USD"}
+        self.assertAlmostEqual(_position_value_usd(p, {}, 1500, 1200), 500.0, places=2)
+        self.assertAlmostEqual(
+            _position_value_usd(p, {}, 1500, 1200, honor_override=False), 300.0, places=2)
+
     def test_position_size_usd_converts_ars(self):
         from behavioral import _position_size_usd
         # Op en broker AR (ARS) → notional convertido a USD

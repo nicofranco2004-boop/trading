@@ -16,6 +16,7 @@ sin levantar la app entera.
 
 import logging
 import math
+import re
 import sqlite3
 from datetime import date as date_cls, datetime
 from pathlib import Path
@@ -30,29 +31,119 @@ log = logging.getLogger('snapshots_job')
 # El algoritmo replica `computeBrokerValue` exactamente para que el snapshot
 # generado server-side coincida con lo que ve el usuario en el Dashboard.
 
+# Tipos de renta fija — cotizan cerca de la par; banda estrecha en el guard.
+_FIXED_INCOME_TYPES = frozenset({'BOND', 'BONO', 'ON', 'LETRA', 'LECAP'})
+
+
+def _trust_mkt_value(mkt_value: float, real_cost: float, asset_type) -> bool:
+    """Port de frontend `_trustMktValue` (valuation.js:125-132). Si el valor de
+    mercado se va absurdamente lejos del costo, NO confiamos en el precio
+    (colisión de ticker, bono cotizado ×100, CEDEAR priceado como acción US) y
+    caemos a costo. Solo capea divergencias ABSURDAS — el P&L real pasa."""
+    if not (real_cost and real_cost > 0) or not (mkt_value and mkt_value > 0):
+        return True  # sin costo no hay con qué comparar
+    mult = mkt_value / real_cost
+    if (asset_type or '').upper() in _FIXED_INCOME_TYPES:
+        return 0.02 <= mult <= 4
+    return 0.002 <= mult <= 50
+
+
+_AR_USD_SUBBROKER_RE = re.compile(r'·\s*usd$')
+
+
+def _is_ar_usd_subbroker(broker_name) -> bool:
+    """Sub-broker '<Padre> · USD' (CEDEARs / acciones AR comprados por dólar-MEP).
+    Mirror EXACTO del frontend isArUsdBroker (/·\\s*USD$/): requiere el separador
+    '·'. A diferencia de behavioral._is_usd_subbroker (que decide MONEDA y es más
+    laxo), acá decidimos RESOLUCIÓN DE PRECIO (.BA vs ticker US), así que un broker
+    USD genuino llamado 'Mi Broker USD' NO debe matchear (tiene acciones US, no
+    CEDEARs). Esto es lo que hace el frontend para la misma decisión."""
+    return bool(_AR_USD_SUBBROKER_RE.search((broker_name or '').strip().lower()))
+
+
+def _broker_name_sets(brokers: list):
+    """(ars_names, ar_usd_names) — para decidir si una posición se valúa por .BA."""
+    ars_names = {b['name'] for b in brokers if b.get('currency') == 'ARS'}
+    ar_usd_names = {b['name'] for b in brokers if _is_ar_usd_subbroker(b.get('name'))}
+    return ars_names, ar_usd_names
+
+
+def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
+    """Símbolo de precio que valúa esta posición: '<ASSET>.BA' (precio LOCAL ARS)
+    si se valúa por su .BA — holdings en broker ARS, en sub-broker '· USD', o
+    CEDEAR (asset_type) — si no, el ticker US. SSoT compartida por el armado de
+    símbolos a fetchear, el chequeo de cobertura y la valuación, para que los tres
+    nunca diverjan (raíz del bug C1: el snapshot pedía/valuaba el ticker US de un
+    CEDEAR comprado por dólar-MEP → 15-100× inflado)."""
+    asset = p.get('asset')
+    broker = p.get('broker')
+    wants_ba = (broker in ars_names or broker in ar_usd_names
+                or (p.get('asset_type') or '').upper() == 'CEDEAR')
+    return f"{asset}.BA" if wants_ba else asset
+
+
+def build_price_symbols(positions: list, brokers: list) -> list:
+    """Símbolos a fetchear para valuar (sin cash ni cash-USD). Usa
+    position_price_key, así un CEDEAR/instrumento BYMA en broker USD pide su
+    precio .BA (ARS), no el ticker US."""
+    ars_names, ar_usd_names = _broker_name_sets(brokers)
+    syms = set()
+    for p in positions:
+        if p.get('is_cash'):
+            continue
+        asset = p.get('asset')
+        if not asset or asset in ('USDT', 'USD'):
+            continue
+        syms.add(position_price_key(p, ars_names, ar_usd_names))
+    return list(syms)
+
+
+def _user_tc_cedear(conn, uid: int, tc_blue: float) -> float:
+    """dólar-MEP del user (config 'tc_mep') para valuar holdings .BA. Reusa la
+    SSoT `analysis_prep.user_fx` (lazy import para evitar ciclos); cae a tc_blue
+    si no hay config de MEP."""
+    try:
+        from analysis_prep import user_fx
+        _, tc_cedear = user_fx(conn, uid)
+        return tc_cedear if (tc_cedear and tc_cedear > 0) else tc_blue
+    except Exception:
+        return tc_blue
+
+
 def compute_broker_value_usd(
     broker_positions: list,
     prices: dict,
     broker_currency: str,
     tc_blue: float,
+    broker_name: str = '',
+    cedear_rate: Optional[float] = None,
 ) -> dict:
-    """Equivalente Python de frontend `computeBrokerValue`. Devuelve
-    {value, invested} en USD. Maneja FX-phantom fix para brokers ARS
-    (cost basis al blue actual, no al tc_compra histórico).
+    """Equivalente Python de frontend `computeBrokerValue` (port fiel, incluida la
+    rama CEDEAR). Devuelve {value, invested} en USD. Maneja FX-phantom fix para
+    brokers ARS (cost basis al blue actual, no al tc_compra histórico).
 
     Args:
-        broker_positions: lista de dicts con keys (asset, is_cash, invested,
+        broker_positions: dicts con keys (asset, asset_type, is_cash, invested,
                           quantity, commissions, price_override)
-        prices: dict {symbol: price_or_None}. Para ARS, key = 'ASSET.BA'.
+        prices: dict {symbol: price_or_None}. Para holdings .BA, key = 'ASSET.BA'.
         broker_currency: 'ARS' | 'USDT' | 'USD'
-        tc_blue: ARS/USD blue rate actual
+        tc_blue: ARS/USD blue rate — cash en pesos y cost basis ARS.
+        broker_name: nombre del broker — detecta el sub-broker '· USD'.
+        cedear_rate: dólar-MEP — valúa CEDEARs / instrumentos BYMA en brokers USD
+            por su precio .BA ÷ MEP (NO el ticker US, que vale 15-100× más).
+            Default = tc_blue (sin regresión). Ver CORRECTNESS_AUDIT (C1).
     """
+    if not cedear_rate or cedear_rate <= 0:
+        cedear_rate = tc_blue
+    ar_usd = _is_ar_usd_subbroker(broker_name)
     value = 0.0
     invested = 0.0
 
     for p in broker_positions:
         comm = p.get('commissions') or 0
         real_cost = (p.get('invested') or 0) + comm
+        asset_type = p.get('asset_type')
+        override = p.get('price_override')
 
         if broker_currency == 'ARS':
             if p.get('is_cash'):
@@ -63,25 +154,42 @@ def compute_broker_value_usd(
             else:
                 inv_usd = real_cost / tc_blue if tc_blue > 0 else 0
                 invested += inv_usd
-                price_ars = p.get('price_override') or prices.get(f"{p['asset']}.BA")
+                # `is not None` (no `or`): un price_override=0 es válido (activo
+                # marcado sin valor) y NO debe caer al precio de mercado. Mirror
+                # del `??` del frontend (valuation.js:163).
+                price_ars = override if override is not None else prices.get(f"{p['asset']}.BA")
                 if price_ars is not None:
-                    mkt_ars = price_ars * (p.get('quantity') or 0)
-                    value += mkt_ars / tc_blue if tc_blue > 0 else 0
+                    mkt_usd = (price_ars * (p.get('quantity') or 0)) / tc_blue if tc_blue > 0 else 0
+                    trust = override is not None or _trust_mkt_value(mkt_usd, inv_usd, asset_type)
+                    value += mkt_usd if trust else inv_usd
                 else:
                     value += inv_usd  # sin precio: mostrar cost como value
         else:
-            # USDT / USD — moneda base USD, sin conversión
+            # USDT / USD — moneda base USD
             if p.get('is_cash'):
                 v = p.get('invested') or 0
                 value += v
                 invested += v
             else:
                 invested += real_cost
-                price = p.get('price_override') or prices.get(p['asset'])
-                if price is not None:
-                    value += price * (p.get('quantity') or 0)
+                # CEDEAR (o cualquier instrumento BYMA en sub-broker '· USD'): se
+                # valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por el ticker US.
+                # Port de valuation.js:184-193.
+                if (asset_type == 'CEDEAR' or ar_usd) and override is None:
+                    price_ars = prices.get(f"{p['asset']}.BA")
+                    if price_ars is not None:
+                        mkt_usd = (price_ars * (p.get('quantity') or 0)) / cedear_rate if cedear_rate > 0 else 0
+                        value += mkt_usd if _trust_mkt_value(mkt_usd, real_cost, asset_type) else real_cost
+                    else:
+                        value += real_cost
                 else:
-                    value += real_cost
+                    price = override if override is not None else prices.get(p['asset'])
+                    if price is not None:
+                        mkt = price * (p.get('quantity') or 0)
+                        trust = override is not None or _trust_mkt_value(mkt, real_cost, asset_type)
+                        value += mkt if trust else real_cost
+                    else:
+                        value += real_cost
 
     return {'value': value, 'invested': invested}
 
@@ -323,7 +431,7 @@ def take_snapshot_for_user(
         "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
     ).fetchall()]
     positions = [dict(r) for r in conn.execute(
-        "SELECT broker, asset, is_cash, invested, quantity, commissions, price_override "
+        "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override "
         "FROM positions WHERE user_id=?",
         (uid,)
     ).fetchall()]
@@ -338,21 +446,9 @@ def take_snapshot_for_user(
         return {'ok': False, 'reason': 'no_data', 'total_value': 0,
                 'total_invested': 0, 'net_deposited': 0, 'symbols_fetched': 0}
 
-    # 2. Determinar símbolos a fetchear (excluyendo cash + USDT cash)
-    ars_brokers = {b['name'] for b in brokers if b['currency'] == 'ARS'}
-    usd_brokers = {b['name'] for b in brokers if b['currency'] != 'ARS'}
-
-    ars_symbols = list({
-        f"{p['asset']}.BA"
-        for p in positions
-        if p['broker'] in ars_brokers and not p['is_cash']
-    })
-    usd_symbols = list({
-        p['asset']
-        for p in positions
-        if p['broker'] in usd_brokers and not p['is_cash'] and p['asset'] not in ('USDT', 'USD')
-    })
-    all_symbols = ars_symbols + usd_symbols
+    # 2. Determinar símbolos a fetchear. build_price_symbols pide '.BA' para
+    # CEDEARs / instrumentos en sub-brokers '· USD' (no el ticker US → C1 fix).
+    all_symbols = build_price_symbols(positions, brokers)
 
     prices = fetch_prices_for_symbols(all_symbols, crypto_yf) if all_symbols else {}
 
@@ -380,6 +476,7 @@ def take_snapshot_for_user(
     # activo sin precio yfinance que sea fracción chica no bloquea; una caída
     # masiva de cobertura (yfinance caído) sí. price_override cuenta como precio.
     broker_ccy = {b['name']: b['currency'] for b in brokers}
+    _ars_names, _ar_usd_names = _broker_name_sets(brokers)
 
     def _cost_usd(p):
         c = (p.get('invested') or 0) + (p.get('commissions') or 0)
@@ -389,9 +486,9 @@ def take_snapshot_for_user(
     def _has_price(p):
         if p.get('price_override') is not None:
             return True
-        ccy = broker_ccy.get(p['broker'], 'USD')
-        key = f"{p['asset']}.BA" if ccy == 'ARS' else p['asset']
-        return prices.get(key) is not None
+        # Mismo símbolo con el que se valúa (CEDEAR/sub-broker '· USD' → .BA):
+        # si no, la cobertura miraría el ticker US que ya no fetcheamos para esos.
+        return prices.get(position_price_key(p, _ars_names, _ar_usd_names)) is not None
 
     non_cash = [p for p in positions if not p['is_cash']]
     total_cost = sum(_cost_usd(p) for p in non_cash)
@@ -409,11 +506,13 @@ def take_snapshot_for_user(
                 'symbols_fetched': len(all_symbols)}
 
     # 3. Calcular total_value e invested por broker, sumar
+    tc_cedear = _user_tc_cedear(conn, uid, tc_blue)
     total_value = 0.0
     total_invested = 0.0
     for b in brokers:
         bpos = [p for p in positions if p['broker'] == b['name']]
-        r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue)
+        r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue,
+                                     broker_name=b['name'], cedear_rate=tc_cedear)
         total_value += r['value']
         total_invested += r['invested']
 
@@ -475,26 +574,14 @@ def compute_live_portfolio_value(
         "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
     ).fetchall()]
     positions = [dict(r) for r in conn.execute(
-        "SELECT broker, asset, is_cash, invested, quantity, commissions, price_override "
+        "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override "
         "FROM positions WHERE user_id=?",
         (uid,)
     ).fetchall()]
     if not brokers or not positions:
         return None
 
-    ars_brokers = {b['name'] for b in brokers if b['currency'] == 'ARS'}
-    usd_brokers = {b['name'] for b in brokers if b['currency'] != 'ARS'}
-
-    ars_symbols = list({
-        f"{p['asset']}.BA" for p in positions
-        if p['broker'] in ars_brokers and not p['is_cash']
-    })
-    usd_symbols = list({
-        p['asset'] for p in positions
-        if p['broker'] in usd_brokers and not p['is_cash']
-           and p['asset'] not in ('USDT', 'USD')
-    })
-    all_symbols = ars_symbols + usd_symbols
+    all_symbols = build_price_symbols(positions, brokers)
     if not all_symbols:
         return None
 
@@ -504,11 +591,13 @@ def compute_live_portfolio_value(
         log.warning(f"compute_live_portfolio_value: fetch_prices failed: {e}")
         return None
 
+    tc_cedear = _user_tc_cedear(conn, uid, tc_blue)
     total_value = 0.0
     for b in brokers:
         bpos = [p for p in positions if p['broker'] == b['name']]
         try:
-            r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue)
+            r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue,
+                                         broker_name=b['name'], cedear_rate=tc_cedear)
             total_value += r['value']
         except Exception as e:
             log.warning(f"compute_live_portfolio_value: broker {b['name']} failed: {e}")

@@ -115,6 +115,109 @@ class TestComputeBrokerValueUsd(unittest.TestCase):
         self.assertEqual(r['invested'], 1050)  # cost + commissions
 
 
+class TestCedearValuationInUsdSubbroker(unittest.TestCase):
+    """C1 regression — un CEDEAR comprado por dólar-MEP vive en un sub-broker
+    '<Padre> · USD' (currency='USDT') con asset_type='CEDEAR'. DEBE valuarse por
+    su precio LOCAL .BA (ARS) ÷ dólar-MEP, NO por el ticker US (que vale 15-100×
+    más). Ver CORRECTNESS_AUDIT_2026-06-25.md (C1) y frontend valuation.js:184-193.
+    """
+
+    def test_cedear_in_usd_subbroker_values_via_ba_and_mep(self):
+        # 15 CEDEARs de TSLA: la acción US vale 440, el CEDEAR .BA vale 14.000 ARS.
+        # Correcto: 14.000 × 15 / MEP(1200) = 175 USD. Bug: 440 × 15 = 6.600 USD.
+        positions = [
+            {'asset': 'TSLA', 'asset_type': 'CEDEAR', 'is_cash': False,
+             'invested': 6000, 'quantity': 15, 'commissions': 0, 'price_override': None},
+        ]
+        prices = {'TSLA': 440, 'TSLA.BA': 14000}
+        r = compute_broker_value_usd(positions, prices, 'USDT', tc_blue=1000,
+                                     broker_name='Cocos Capital · USD', cedear_rate=1200)
+        self.assertAlmostEqual(r['value'], 14000 * 15 / 1200, places=4)
+        self.assertNotAlmostEqual(r['value'], 6600, places=0)
+
+    def test_cedear_detected_by_asset_type_without_subbroker_name(self):
+        # asset_type='CEDEAR' por sí solo dispara la rama .BA/MEP, sin importar el
+        # nombre del broker (mismo criterio que el frontend).
+        positions = [
+            {'asset': 'AAPL', 'asset_type': 'CEDEAR', 'is_cash': False,
+             'invested': 5000, 'quantity': 20, 'commissions': 0, 'price_override': None},
+        ]
+        prices = {'AAPL': 250, 'AAPL.BA': 30000}
+        r = compute_broker_value_usd(positions, prices, 'USD', tc_blue=1000,
+                                     broker_name='Balanz', cedear_rate=1200)
+        self.assertAlmostEqual(r['value'], 30000 * 20 / 1200, places=4)
+
+    def test_ar_usd_subbroker_values_ar_stock_via_ba_and_mep(self):
+        # Una acción AR (PAMP, sin acción US) en un sub-broker '· USD' se valúa por
+        # .BA/MEP aunque asset_type no sea 'CEDEAR' — la detecta el nombre '· USD'.
+        positions = [
+            {'asset': 'PAMP', 'asset_type': 'STOCK_AR', 'is_cash': False,
+             'invested': 100, 'quantity': 50, 'commissions': 0, 'price_override': None},
+        ]
+        prices = {'PAMP.BA': 6000}
+        r = compute_broker_value_usd(positions, prices, 'USDT', tc_blue=1000,
+                                     broker_name='IOL · USD', cedear_rate=1200)
+        self.assertAlmostEqual(r['value'], 6000 * 50 / 1200, places=4)
+
+    def test_normal_us_stock_unaffected(self):
+        # Regresión: una acción US normal en un broker USD se sigue valuando por su
+        # ticker US, NO por .BA.
+        positions = [
+            {'asset': 'NVDA', 'asset_type': 'STOCK', 'is_cash': False,
+             'invested': 1000, 'quantity': 10, 'commissions': 0, 'price_override': None},
+        ]
+        prices = {'NVDA': 150, 'NVDA.BA': 999999}
+        r = compute_broker_value_usd(positions, prices, 'USDT', tc_blue=1000,
+                                     broker_name='IBKR', cedear_rate=1200)
+        self.assertEqual(r['value'], 1500)
+
+    def test_trust_guard_caps_absurd_cedear_price(self):
+        # Si el .BA está roto/colisionado y da un valor absurdo (>50× el costo),
+        # caemos a costo en vez de distorsionar la cartera.
+        positions = [
+            {'asset': 'X', 'asset_type': 'CEDEAR', 'is_cash': False,
+             'invested': 100, 'quantity': 1, 'commissions': 0, 'price_override': None},
+        ]
+        prices = {'X.BA': 6_000_000}  # /1000 = 6000 USD vs costo 100 → mult 60 >50
+        r = compute_broker_value_usd(positions, prices, 'USDT', tc_blue=1000,
+                                     broker_name='Cocos · USD', cedear_rate=1000)
+        self.assertEqual(r['value'], 100)  # cae a costo
+
+    def test_price_override_on_cedear_respected(self):
+        # price_override (USD a mano) siempre gana, incluso para un CEDEAR.
+        positions = [
+            {'asset': 'TSLA', 'asset_type': 'CEDEAR', 'is_cash': False,
+             'invested': 100, 'quantity': 10, 'commissions': 0, 'price_override': 20},
+        ]
+        prices = {'TSLA.BA': 14000}
+        r = compute_broker_value_usd(positions, prices, 'USDT', tc_blue=1000,
+                                     broker_name='Cocos · USD', cedear_rate=1200)
+        self.assertEqual(r['value'], 200)  # 20 × 10, en USD directo
+
+    def test_override_zero_values_at_zero(self):
+        # price_override=0 (activo marcado sin valor) → value 0, NO el de mercado.
+        # Audit Fase 1: `is not None`, no `or` (mirror del `??` del frontend).
+        positions = [
+            {'asset': 'DEAD', 'asset_type': 'STOCK', 'is_cash': False,
+             'invested': 1000, 'quantity': 10, 'commissions': 0, 'price_override': 0},
+        ]
+        r = compute_broker_value_usd(positions, {'DEAD': 150}, 'USDT', tc_blue=1000,
+                                     broker_name='IBKR', cedear_rate=1200)
+        self.assertEqual(r['value'], 0)
+
+    def test_genuine_usd_broker_not_treated_as_subbroker(self):
+        # Un broker USD genuino llamado '... USD' (sin '·') NO es sub-broker AR:
+        # sus acciones US se valúan por su ticker US, no por .BA/MEP. Audit Fase 1.
+        positions = [
+            {'asset': 'NVDA', 'asset_type': 'STOCK', 'is_cash': False,
+             'invested': 1000, 'quantity': 10, 'commissions': 0, 'price_override': None},
+        ]
+        prices = {'NVDA': 150, 'NVDA.BA': 999999}
+        r = compute_broker_value_usd(positions, prices, 'USDT', tc_blue=1000,
+                                     broker_name='Mi Broker USD', cedear_rate=1200)
+        self.assertEqual(r['value'], 1500)  # ticker US, NO .BA
+
+
 class TestComputeNetDeposited(unittest.TestCase):
     def test_empty_returns_zero(self):
         self.assertEqual(compute_net_deposited([]), 0)
@@ -179,7 +282,7 @@ class TestSnapshotEndToEnd(unittest.TestCase):
                 invested REAL,
                 quantity REAL,
                 commissions REAL DEFAULT 0,
-                price_override REAL
+                price_override REAL, asset_type TEXT
             );
             CREATE TABLE monthly_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,7 +448,7 @@ class TestRunDailySnapshotFxPersistence(unittest.TestCase):
                 user_id INTEGER NOT NULL, broker TEXT NOT NULL,
                 asset TEXT NOT NULL, is_cash INTEGER DEFAULT 0,
                 invested REAL, quantity REAL, commissions REAL DEFAULT 0,
-                price_override REAL
+                price_override REAL, asset_type TEXT
             );
             CREATE TABLE monthly_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -425,7 +528,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
             CREATE TABLE brokers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, currency TEXT);
             CREATE TABLE positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, broker TEXT, asset TEXT,
-                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL
+                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL, asset_type TEXT
             );
             CREATE TABLE monthly_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, year INTEGER, month INTEGER,
@@ -541,6 +644,75 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         row = conn.execute("SELECT price FROM asset_last_price WHERE symbol='AAPL'").fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row['price'], 175.0)
+        conn.close()
+
+
+class TestSnapshotCedearValuationE2E(unittest.TestCase):
+    """C1 end-to-end: un CEDEAR en sub-broker '· USD' (currency='USDT') se persiste
+    valuado por su precio .BA ÷ MEP, NO por el ticker US. Prueba el wiring completo
+    de take_snapshot_for_user (SELECT asset_type, build_price_symbols pide .BA, la
+    cobertura mira .BA, compute usa cedear_rate=MEP)."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.db_path = self.tmp.name
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
+            CREATE TABLE brokers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, currency TEXT);
+            CREATE TABLE positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, broker TEXT, asset TEXT,
+                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL, asset_type TEXT
+            );
+            CREATE TABLE monthly_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, year INTEGER, month INTEGER,
+                broker TEXT, capital_inicio REAL DEFAULT 0, deposits REAL DEFAULT 0, withdrawals REAL DEFAULT 0
+            );
+            CREATE TABLE snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
+                total_value REAL NOT NULL, total_invested REAL NOT NULL, net_deposited REAL DEFAULT 0,
+                fx_to_usd_blue REAL, UNIQUE(user_id, date)
+            );
+            CREATE TABLE asset_last_price (symbol TEXT PRIMARY KEY, price REAL NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE config (user_id INTEGER, key TEXT, value REAL);
+            INSERT INTO users (id, email) VALUES (1, 't@x.com');
+            INSERT INTO brokers (user_id, name, currency) VALUES (1, 'Cocos Capital · USD', 'USDT');
+            INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity, asset_type)
+            VALUES (1, 'Cocos Capital · USD', 'TSLA', 0, 180, 15, 'CEDEAR');
+            INSERT INTO monthly_entries (user_id, year, month, broker, capital_inicio)
+            VALUES (1, 2026, 1, 'global', 180);
+            INSERT INTO config (user_id, key, value) VALUES (1, 'tc_mep', 1200), (1, 'tc_blue', 1500);
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_cedear_persisted_via_ba_and_mep_not_us_ticker(self):
+        seen = {}
+
+        def fake_fetch(syms, cy):
+            seen['syms'] = list(syms)
+            # Devolvemos SOLO el .BA (14.000 ARS). Si el código pidiera el ticker US,
+            # quedaría sin precio → cobertura 0% → no escribiría.
+            return {s: (14000.0 if s == 'TSLA.BA' else None) for s in syms}
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        with patch('snapshots_job.fetch_prices_for_symbols', side_effect=fake_fetch):
+            with conn:
+                r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
+        # Pidió el .BA, NO el ticker US (que daría ~6.600 USD).
+        self.assertIn('TSLA.BA', seen['syms'])
+        self.assertNotIn('TSLA', seen['syms'])
+        self.assertTrue(r['ok'])
+        snap = conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=1 AND date='2026-06-02'"
+        ).fetchone()
+        # 14.000 × 15 / 1200 (MEP) = 175. NO 440×15=6.600 (US), NI /1500 (blue).
+        self.assertAlmostEqual(snap['total_value'], 14000 * 15 / 1200, places=2)
         conn.close()
 
 

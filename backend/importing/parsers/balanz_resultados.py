@@ -14,7 +14,14 @@ Dispatch por `Tipo Movimiento`:
   • Cupón                   → INTERÉS (monto = Cupones)
   • Dividendo               → DIVIDENDO (monto = Dividendos)
   • Caución - Pase - Cheque → INTERÉS (monto = Intereses)
-  • resto                   → skip
+  • resto (desconocido)     → skip + RowError (evita COMPRA espuria)
+
+Acciones societarias (vía Operacion Compra / Operacion Venta):
+  • "Dividendo en acciones" / "Split" con Precio Compra=0 → COMPRA a costo CERO
+    (lote válido de acciones recibidas gratis; sin esto se tiraba en silencio).
+  • "Reducción/Devolución de capital" con PrecioVenta=0 en una Orden → VENTA a 0
+    para CERRAR la posición (no deja tenencia fantasma; el capital devuelto entra
+    por la fila de Dividendo asociada).
 
 `asset_type` sale de la columna `Tipo` (Bonos/Corporativos/Letras→BOND,
 Cedears→CEDEAR, Acciones→STOCK, Fondos→FUND) — más preciso que adivinar por
@@ -43,12 +50,15 @@ def _norm_header(h: str) -> str:
 _FIELD_ALIASES: Dict[str, List[str]] = {
     "cantidad":       ["cantidad"],
     "activo":         ["ticker", "especie"],
+    "asset_name":     ["descripcion"],
     "clase":          ["tipo"],
     "tipo_mov":       ["tipo movimiento", "tipomovimiento"],
     "fecha":          ["fecha"],
     "fecha_compra":   ["fechacompra", "fecha compra"],
     "precio_compra":  ["precio compra", "preciocompra"],
     "precio_venta":   ["precioventa", "precio venta"],
+    "op_compra":      ["operacion compra", "operacioncompra"],
+    "op_venta":       ["operacion venta", "operacionventa"],
     "moneda_compra":  ["moneda compra", "moneda de compra"],
     "moneda_venta":   ["moneda venta", "moneda de venta"],
     "gastos":         ["gastos"],
@@ -222,19 +232,28 @@ class BalanzResultadosParser(Parser):
                 result.raw_rows.append(RawRow(row_index=ridx, data=d))
 
             # ── Renta (no necesita precio/cantidad) ──────────────────────────
+            # asset_type va al dict de renta para que la categorización por clase
+            # de activo funcione (sin el hint, el normalizer cae a OTHER para todo
+            # ticker AR). No afecta P&L ni cash — es solo para reporting.
             if mov.startswith("cupon"):
                 monto = _pos(_g(row, "cupones"))
                 if monto and activo:
-                    _emit({"fecha": fecha, "tipo": "INTERES", "broker": "Balanz",
-                           "activo": activo, "monto": str(monto),
-                           "moneda": _norm_ccy(_g(row, "moneda_venta"))})
+                    d = {"fecha": fecha, "tipo": "INTERES", "broker": "Balanz",
+                         "activo": activo, "monto": str(monto),
+                         "moneda": _norm_ccy(_g(row, "moneda_venta"))}
+                    if asset_type:
+                        d["asset_type"] = asset_type
+                    _emit(d)
                 continue
             if mov.startswith("dividendo"):
                 monto = _pos(_g(row, "dividendos"))
                 if monto and activo:
-                    _emit({"fecha": fecha, "tipo": "DIVIDENDO", "broker": "Balanz",
-                           "activo": activo, "monto": str(monto),
-                           "moneda": _norm_ccy(_g(row, "moneda_venta"))})
+                    d = {"fecha": fecha, "tipo": "DIVIDENDO", "broker": "Balanz",
+                         "activo": activo, "monto": str(monto),
+                         "moneda": _norm_ccy(_g(row, "moneda_venta"))}
+                    if asset_type:
+                        d["asset_type"] = asset_type
+                    _emit(d)
                 continue
             if mov.startswith("caucion"):
                 monto = _pos(_g(row, "intereses"))
@@ -247,10 +266,39 @@ class BalanzResultadosParser(Parser):
             # ── Posiciones / trades (necesitan ticker + precio + cantidad) ────
             if not activo:
                 continue
-            cantidad = _pos(_g(row, "cantidad"))
-            pc = _pos(_g(row, "precio_compra"))
-            if cantidad is None or pc is None:
+
+            # Solo "No Realizado" (lote abierto) y "Orden" (round-trip cerrado)
+            # crean posiciones. Un Tipo Movimiento desconocido (ej. Balanz agrega
+            # "Rescate"/"Suscripcion"/"Canje" en otro período) caería acá y, si trae
+            # precio+cantidad, generaría una COMPRA ESPURIA → posición fantasma.
+            # Mejor avisar al usuario que tragarlo en silencio.
+            if mov and not (mov.startswith("no realizado") or mov.startswith("orden")):
+                result.parse_errors.append(RowError(
+                    ridx + 1, activo, "BALANZ_RES_TIPO_DESCONOCIDO",
+                    f"Tipo de movimiento no reconocido para {activo}: "
+                    f"'{_g(row, 'tipo_mov')}'. Se omitió la fila — escribinos si "
+                    f"creés que debería importarse."))
                 continue
+
+            op_compra = _norm_header(_g(row, "op_compra"))
+            op_venta = _norm_header(_g(row, "op_venta"))
+            asset_name = _g(row, "asset_name") or None
+
+            cantidad = _pos(_g(row, "cantidad"))
+            if cantidad is None:
+                continue
+
+            # Acción societaria que entrega acciones a costo CERO ("Dividendo en
+            # acciones" / "Split"): Precio Compra=0 es un lote VÁLIDO de costo-cero,
+            # no un precio faltante. Sin esto _pos(0)=None tiraba el lote en silencio
+            # (BYMA y SPY quedaban con menos nominales de los reales).
+            is_free_lot = op_compra.startswith("dividendo en acciones") or op_compra.startswith("split")
+            pc = _pos(_g(row, "precio_compra"))
+            if pc is None:
+                if is_free_lot:
+                    pc = 0.0
+                else:
+                    continue
             fecha_compra = _g(row, "fecha_compra") or fecha
 
             # La COMPRA va siempre (abierta o cerrada). Gastos al lote de compra.
@@ -259,17 +307,41 @@ class BalanzResultadosParser(Parser):
                    "comisiones": gastos or "", "moneda": _norm_ccy(_g(row, "moneda_compra"))}
             if asset_type:
                 buy["asset_type"] = asset_type
+            if asset_name:
+                buy["asset_name"] = asset_name
             _emit(buy)
 
             # Si está cerrada (Orden), emitimos también la VENTA.
             if mov.startswith("orden"):
                 pv = _pos(_g(row, "precio_venta"))
+                # Acción societaria que CIERRA la posición sin precio de venta:
+                # "Reducción/Devolución de capital" cancela el papel. PrecioVenta=0
+                # → emitimos la VENTA a 0 igual, para NO dejar la posición FANTASMA
+                # abierta (DESP quedaba abierto a 22600 ARS, inflando la cartera).
+                # Trade-off conciente: vender a 0 NO acredita cash (proceeds=0, no
+                # infla el saldo) pero registra una pérdida realizada = costo del
+                # lote. El capital devuelto entra por SEPARADO (p.ej. como Dividendo,
+                # a veces en USD en el sub-broker), así que el P&L neto se aproxima
+                # en agregado pero la línea de DESP queda en -100% compensada por ese
+                # ingreso, no 1:1. Priorizamos cash y valuación correctos (la queja
+                # real de los usuarios) sobre la prolijidad de la atribución del P&L.
+                is_capital_return = ("reduccion de capital" in op_venta
+                                     or "devolucion de capital" in op_venta)
+                if pv is None and is_capital_return:
+                    pv = 0.0
                 if pv is not None:
                     sell = {"fecha": fecha, "tipo": "VENTA", "broker": "Balanz",
                             "activo": activo, "cantidad": str(cantidad), "precio": str(pv),
                             "comisiones": "", "moneda": _norm_ccy(_g(row, "moneda_venta"))}
                     if asset_type:
                         sell["asset_type"] = asset_type
+                    if asset_name:
+                        sell["asset_name"] = asset_name
+                    # Venta a proceeds 0 por acción societaria → marcar para que el
+                    # validador la acepte (si no, MISSING_PRICE la descartaría y la
+                    # posición quedaría fantasma abierta).
+                    if is_capital_return and pv == 0.0:
+                        sell["_corporate_close"] = True
                     _emit(sell)
 
         return result
