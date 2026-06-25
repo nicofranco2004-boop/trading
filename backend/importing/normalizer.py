@@ -18,6 +18,7 @@ from .schema import (
     OP_TRANSFER, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE,
     AT_STOCK, AT_CEDEAR, AT_ETF, AT_CRYPTO, AT_FIAT, AT_BOND, AT_OTHER,
 )
+from .fci_map import resolve_fci_symbol
 
 
 _DATE_FORMATS = [
@@ -273,13 +274,24 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
         else:
             asset_type = guess_asset_type(asset_raw)
 
+        # FCI propietarios: el parser emite el ticker CRUDO del broker (COCOA,
+        # COCOACCA…) + asset_type=FUND. Lo traducimos al símbolo del catálogo
+        # (FCI:<slug>) para que valúe con el VCP live, igual que un FCI cargado a
+        # mano. Si el ticker no está en el mapa curado, queda crudo (= al costo,
+        # sin regresión). Solo toca filas FUND, así nunca pisa un ticker normal.
+        asset_symbol = asset_raw
+        if asset_type == "FUND" and asset_raw:
+            _fci_sym = resolve_fci_symbol(asset_raw)
+            if _fci_sym:
+                asset_symbol = _fci_sym
+
         # Construcción específica por op_type
         tx = NormalizedTx(
             row_index=ridx,
             date=date,
             broker=broker,
             operation_type=op_type,
-            asset_symbol=asset_raw,
+            asset_symbol=asset_symbol,
             asset_name=asset_name,
             asset_type=asset_type,
             quantity=quantity,

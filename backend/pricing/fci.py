@@ -59,6 +59,23 @@ MM_ALLOWLIST = [
     "Max Money Market",
 ]
 
+# Fondos propietarios de brokers AR (Cocos, Balanz…) que entran por IMPORT y que
+# el importador mapea desde su ticker (COCOA, COCOACCA…) — ver importing/fci_map.py.
+# Separado de MM_ALLOWLIST porque NO son money market: hay rentaVariable /
+# rentaFija (USD) / rentaMixta. Cada base-name acá se seedea en TODAS sus clases
+# (el importador elige la clase exacta). Nombres EXACTOS de ArgentinaDatos,
+# verificados 2026-06-25. Sólo se incluyen fondos confirmados con alta confianza
+# (los no confirmables — p.ej. "Cocos Pesos Plus", que no figura en la fuente —
+# quedan fuera y se valúan al costo, sin inventar precio).
+BROKER_FCI_ALLOWLIST = [
+    "Cocos Ahorro",            # mercadoDinero ARS
+    "Cocos Ahorro Dólares",    # rentaFija USD
+    "Cocos Dólares Plus",      # rentaFija USD
+    "Cocos Rendimiento",       # rentaMixta ARS
+    "Cocos Acciones",          # rentaVariable ARS
+    "SBS Acciones Argentina",  # rentaVariable ARS (vía plataforma Cocos)
+]
+
 
 # ── HTTP ────────────────────────────────────────────────────────────────────
 def _http_json(url, timeout=20):
@@ -120,18 +137,21 @@ def _slug(name):
     return f"{base}-{clase}" if clase else base
 
 
-# Allowlist de money market normalizada (sin acentos, lower) para match exacto.
+# Allowlists normalizadas (sin acentos, lower) para match EXACTO por base-name.
 _MM_ALLOW_NORM = {_strip_accents(p).lower() for p in MM_ALLOWLIST}
+_BROKER_FCI_NORM = {_strip_accents(p).lower() for p in BROKER_FCI_ALLOWLIST}
 
 
 def _is_seed_fund(name):
     """FIMA: clases retail A/B/C/P. Otros: el nombre-base debe coincidir EXACTO
-    con un fondo de la allowlist (evita que 'Allaria Ahorro' arrastre
-    'Allaria Ahorro Dinámico')."""
+    con un fondo de las allowlists (evita que 'Allaria Ahorro' arrastre
+    'Allaria Ahorro Dinámico'). BROKER_FCI_ALLOWLIST suma los fondos
+    propietarios que entran por import (Cocos/Balanz)."""
     low = (name or "").lower()
     if low.startswith("fima"):
         return _parse_clase(name) in FIMA_CLASSES
-    return _strip_accents(_base_name(name)).lower() in _MM_ALLOW_NORM
+    base = _strip_accents(_base_name(name)).lower()
+    return base in _MM_ALLOW_NORM or base in _BROKER_FCI_NORM
 
 
 # ── Schema ──────────────────────────────────────────────────────────────────
