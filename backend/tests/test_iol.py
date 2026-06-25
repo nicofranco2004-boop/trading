@@ -257,19 +257,48 @@ class TestDates(unittest.TestCase):
 
 
 class TestAmountRouting(unittest.TestCase):
-    def test_trade_uses_qty_price_not_monto(self):
-        # COMPRA: cantidad + precio presentes; monto vacío (lo arma el triángulo).
-        d = _parse([_row("Compra(GGAL)", cant="100", precio="1500", monto="150236")]).raw_rows[0].data
-        self.assertEqual(d["cantidad"], "100")
-        self.assertEqual(d["precio"], "1500")
-        self.assertEqual(d["monto"], "")
+    def test_trade_uses_monto_as_cash_not_qty_price(self):
+        # El cash real del trade es Monto, NO cantidad × Precio. Para un bono que
+        # cotiza "por 100 nominales", cantidad × Precio se infla ~100×; el parser
+        # debe usar |Monto| y derivar precio = |Monto|/qty.
+        rows = _parse([_row("Venta(AL30)", cant="231", precio="91370", monto="-209.988,27")])
+        d = rows.raw_rows[0].data
+        self.assertAlmostEqual(float(d["monto"]), 209988.27, places=2)        # NO 231×91370=21M
+        self.assertAlmostEqual(float(d["precio"]), 209988.27 / 231, places=4)
+        self.assertEqual(d["comisiones"], "0")                                # Monto ya es neto
+        norm, errs = normalize_rows(rows.raw_rows)
+        self.assertEqual(len(errs), 0)
+        self.assertAlmostEqual(norm[0].gross_amount, 209988.27, places=2)
+
+    def test_dolar_mep_leg_uses_monto(self):
+        # Pata dólar-MEP: Precio en otra escala (cantidad × Precio se va a millones),
+        # pero el cash real es Monto. Caso real: Venta(NOW) q=57 p=8747193 Monto=49.527,18.
+        rows = _parse([_row("Venta(NOW)", cant="57", precio="8747193",
+                            monto="49.527,18", cuenta="Inversion Argentina Dolares")])
+        norm, _ = normalize_rows(rows.raw_rows)
+        self.assertAlmostEqual(norm[0].gross_amount, 49527.18, places=2)      # NO 498 millones
+        self.assertEqual(norm[0].currency, "USD")
+
+    def test_trade_falls_back_to_qty_price_without_monto(self):
+        # Si no hay Monto usable, cae a cantidad × Precio (comportamiento viejo).
+        rows = _parse([_row("Compra(GGAL)", cant="100", precio="1500", monto="")])
+        norm, _ = normalize_rows(rows.raw_rows)
+        self.assertAlmostEqual(norm[0].gross_amount, 150000.0, places=2)
 
     def test_cash_uses_monto(self):
         d = _parse([_row("Depósito de Fondos - BANCO X", monto="500000")]).raw_rows[0].data
-        self.assertEqual(d["monto"], "500000")
+        self.assertAlmostEqual(float(d["monto"]), 500000.0)
         self.assertEqual(d["cantidad"], "")
         self.assertEqual(d["precio"], "")
         self.assertEqual(d["comisiones"], "0")
+
+    def test_withdrawal_negative_monto_abs(self):
+        # Extracción: IOL pone Monto negativo; la dirección la da el tipo RETIRO.
+        rows = _parse([_row("Extracción de Fondos - BANCO Y", monto="-21.476,30")])
+        norm, errs = normalize_rows(rows.raw_rows)
+        self.assertEqual(len(errs), 0)
+        self.assertEqual(norm[0].operation_type, "WITHDRAW")
+        self.assertAlmostEqual(norm[0].gross_amount, 21476.30, places=2)
 
     def test_fees_summed(self):
         d = _parse([_row("Compra(GGAL)", cant="100", precio="1500",

@@ -320,25 +320,45 @@ class IolParser(Parser):
             fees = _num(G(row, "comis")) + _num(G(row, "ivacom")) + _num(G(row, "otrosimp"))
 
             if tipo_rendi in ("COMPRA", "VENTA"):
-                # Bruto = cantidad × precio (lo arma el normalizer). La columna
-                # Monto de IOL incluye/descuenta fees → no la usamos como bruto.
+                # El cash REAL del trade es la columna `Monto` (neto, con signo),
+                # NO cantidad × Precio. Para bonos (cotizan "por 100 nominales") y
+                # patas dólar-MEP/cable, IOL pone un Precio en otra escala y
+                # cantidad × Precio se infla hasta 10.000× → caja fantasma de
+                # millones. Usamos |Monto| como bruto y derivamos precio = |Monto|
+                # / cantidad (siempre consistente con la caja), igual que Cocos.
+                # Fees=0 porque Monto ya viene neto de comisiones.
                 cantidad = G(row, "canttitulos")
-                precio = G(row, "precio")
-                monto = ""
-                comisiones = f"{fees:.2f}" if fees else "0"
+                qty_val = _num(cantidad)
+                monto_cash = abs(_num(G(row, "monto")))
+                if monto_cash > 0 and qty_val:
+                    monto = repr(monto_cash)
+                    precio = repr(monto_cash / qty_val)
+                    comisiones = "0"
+                else:
+                    # Fallback (sin Monto usable): caemos a cantidad × Precio.
+                    precio = G(row, "precio")
+                    monto = ""
+                    comisiones = f"{fees:.2f}" if fees else "0"
             else:
-                # DEPOSITO / RETIRO / DIVIDENDO / INTERES: cash neto = Monto.
+                # DEPOSITO / RETIRO / DIVIDENDO / INTERES: cash = Monto.
                 cantidad = ""
                 precio = ""
-                monto = G(row, "monto")
                 comisiones = "0"
-                # Eventos de dividendo/renta/amortización de bonos en IOL vienen
-                # en DOS filas: una con el cash (Monto>0) y otra puramente NOMINAL
-                # (Cant. titulos > 0, Monto vacío) que solo refleja la baja de VN.
-                # La nominal no mueve caja → la salteamos (el importe real entra
-                # por la fila hermana). Sin esto tiraba MISSING_AMOUNT por fila.
-                # Idem dividendo/interés con Monto exactamente 0.
-                if tipo_rendi in ("DIVIDENDO", "INTERES") and (not monto or _num(monto) == 0):
+                raw_monto = G(row, "monto")
+                if tipo_rendi in ("DEPOSITO", "RETIRO"):
+                    # La dirección la define el tipo; el Monto de IOL viene con
+                    # signo (Extracción negativo) → tomamos el valor absoluto.
+                    val = abs(_num(raw_monto))
+                    monto = repr(val) if val else ""
+                else:
+                    # DIVIDENDO / INTERES: mantenemos el signo. Un dividendo NETO
+                    # negativo (retención > pago) lo trata el normalizer como FEE.
+                    monto = raw_monto
+                # Filas sin caja: eventos de bono que IOL parte en una fila de
+                # cash + otra NOMINAL (Cant. titulos, Monto vacío) que solo baja
+                # VN, y cualquier cash flow con Monto 0. No mueven caja → skip
+                # (el importe real entra por la fila hermana). Sin esto: MISSING_AMOUNT.
+                if not monto or _num(monto) == 0:
                     continue
 
             # Notas: tipo original + nro de boleto (auditoría / trazabilidad).
