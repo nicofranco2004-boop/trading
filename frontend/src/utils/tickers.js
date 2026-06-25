@@ -92,6 +92,7 @@ export const STOCKS_US = [
   { s: 'MRNA', n: 'Moderna' }, { s: 'BNTX', n: 'BioNTech' }, { s: 'NVAX', n: 'Novavax' },
   { s: 'OXY', n: 'Occidental Petroleum' }, { s: 'SLB', n: 'Schlumberger' }, { s: 'COP', n: 'ConocoPhillips' },
   { s: 'EOG', n: 'EOG Resources' }, { s: 'PSX', n: 'Phillips 66' }, { s: 'MPC', n: 'Marathon Petroleum' },
+  { s: 'VIST', n: 'Vista Energy' },
   { s: 'WBD', n: 'Warner Bros. Discovery' }, { s: 'PARA', n: 'Paramount Global' }, { s: 'T', n: 'AT&T' },
   { s: 'VZ', n: 'Verizon' }, { s: 'TMUS', n: 'T-Mobile US' }, { s: 'CMCSA', n: 'Comcast' },
 ]
@@ -171,7 +172,7 @@ export const CEDEARS_LIST = [
   { s: 'PFE', n: 'Pfizer' }, { s: 'MRK', n: 'Merck' }, { s: 'ABBV', n: 'AbbVie' },
   { s: 'LLY', n: 'Eli Lilly' }, { s: 'BMY', n: 'Bristol-Myers' }, { s: 'GILD', n: 'Gilead' },
   { s: 'AMGN', n: 'Amgen' }, { s: 'MRNA', n: 'Moderna' }, { s: 'XOM', n: 'Exxon Mobil' },
-  { s: 'CVX', n: 'Chevron' }, { s: 'COP', n: 'ConocoPhillips' }, { s: 'BA', n: 'Boeing' },
+  { s: 'CVX', n: 'Chevron' }, { s: 'COP', n: 'ConocoPhillips' }, { s: 'VIST', n: 'Vista Energy' }, { s: 'BA', n: 'Boeing' },
   { s: 'CAT', n: 'Caterpillar' }, { s: 'GE', n: 'General Electric' }, { s: 'F', n: 'Ford' },
   { s: 'GM', n: 'General Motors' }, { s: 'UBER', n: 'Uber' }, { s: 'ABNB', n: 'Airbnb' },
   { s: 'SHOP', n: 'Shopify' }, { s: 'SQ', n: 'Block' }, { s: 'COIN', n: 'Coinbase' },
