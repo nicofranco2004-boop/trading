@@ -33,6 +33,10 @@ _CSV = (
     "DOLAR,COUW,2025-12-10 03:00:00,2025-12-10 03:00:00,308302,-,-,-,296,USD\n"
     "DOLAR,PAUW,2026-06-03 03:00:00,2026-06-03 03:00:00,788241,-,-,-,-289,USD\n"
     "EWZ,NDMP,2025-07-08 03:00:00,2025-07-08 03:00:00,52740,-,-,-510,-,ARS\n"
+    # Códigos del export real (v2) que el demo no tenía:
+    "TGNO4,COBR,2025-08-01 03:00:00,2025-08-01 03:00:00,900001,-,-,1018,-,ARS\n"
+    "GGAL,NDIT,2025-08-02 03:00:00,2025-08-02 03:00:00,900002,-,-,-671.09,-,ARS\n"
+    "DOLAR,CU$V,2025-08-03 03:00:00,2025-08-03 03:00:00,900003,-,-,-,52,USD\n"
 )
 
 
@@ -52,8 +56,15 @@ class IebParserTest(unittest.TestCase):
         self.assertEqual(p.format_id, "ieb")
 
     def test_all_rows_parsed_no_errors(self):
-        self.assertEqual(len(self.res.raw_rows), 14)
+        self.assertEqual(len(self.res.raw_rows), 17)
         self.assertEqual(len(self.res.parse_errors), 0)
+
+    def test_v2_codes_cobr_ndit_cuv(self):
+        # Códigos del export real que rompían el import (eran "no soportado").
+        self.assertEqual(self.by_nro["900001"]["tipo"], "DEPOSITO")  # COBR (cobro)
+        self.assertEqual(self.by_nro["900002"]["tipo"], "FEE")       # NDIT (nota débito impuesto)
+        self.assertEqual((self.by_nro["900003"]["tipo"],
+                          self.by_nro["900003"]["moneda"]), ("DEPOSITO", "USD"))  # CU$V
 
     def test_compra_ars(self):
         d = self.by_nro["51085"]

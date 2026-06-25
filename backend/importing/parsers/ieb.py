@@ -129,15 +129,28 @@ def _resolve_op(code: str, amount: Optional[float]) -> Optional[str]:
     # Pago / cargo (PAGW) → siempre FEE.
     if code == "PAGW":
         return "FEE"
-    # Compra/venta de dólar (conversión FX, sin tenencia): por signo del importe.
-    # COUW (dólares acreditados) = DEPOSITO; PAUW (dólares pagados) = RETIRO.
-    if code in ("COUW", "PAUW"):
+    # Operaciones de dólar (conversión FX, sin tenencia): por signo del importe.
+    # COUW (dólares acreditados) = DEPOSITO; PAUW (dólares pagados) = RETIRO;
+    # CU$V = otra operación de dólar (ref 'DOLAR') → mismo criterio por signo.
+    if code in ("COUW", "PAUW", "CU$V"):
         return "DEPOSITO" if (amount or 0) >= 0 else "RETIRO"
 
     # FCI (MM Pesos / Ciclo Nova): suscripción (LS*) / rescate (LR*). MVP: flujo de
     # caja por signo (no como posición de cuotaparte).
-    if code.startswith("LS") or code.startswith("LR") or code.startswith("LSU"):
+    if code.startswith("LS") or code.startswith("LR"):
         return "RETIRO" if (amount or 0) < 0 else "DEPOSITO"
+
+    # ── Fallbacks por familia (cubren variantes que no estaban en el demo, para
+    #    que el export real no rechace filas por un código nuevo) ───────────────
+    # Notas de débito (impuestos / sellados / derechos): ND, NDMP, NDIT, ND… → FEE.
+    if code.startswith("ND"):
+        return "FEE"
+    # Cobros / acreditaciones a la caja: COBW, COBR, COB… → cash in.
+    # NOTA: cuando el cobro es sobre un TICKER (ej. dividendo/renta de TGNO4/GGAL)
+    # esto debería ser DIVIDENDO, no DEPOSITO — refinamiento pendiente de confirmar
+    # con el export real (ver audit). Hoy: DEPOSITO (mantiene el cash correcto).
+    if code.startswith("COB"):
+        return "DEPOSITO"
 
     return None
 
