@@ -257,15 +257,22 @@ def build_seed_txs(seed_state: Dict[str, Any]) -> List[NormalizedTx]:
             user_cash = float(cash_in.get(cur) or 0)
             covered_cost = cost_by_currency.get(cur, 0.0)
             total = user_cash + covered_cost
-            if total > 0:
+            # total > 0 → DEPOSIT (faltaba plata previa / fondear seed-assets).
+            # total < 0 → WITHDRAW: el cash que estimaron los trades quedó MÁS ALTO
+            #   que el real del usuario (típico en imports cross-currency/MEP, donde
+            #   las ventas en USD inflan el cash USD). Bajamos el cash al real con un
+            #   retiro sintético. Sin esto, la corrección del usuario se ignoraba.
+            if abs(total) >= 0.01:
+                op_type = OP_DEPOSIT if total > 0 else OP_WITHDRAW
+                label = "depósito" if total > 0 else "retiro"
                 out.append(NormalizedTx(
                     row_index=next_idx,
                     date=seed_date,
                     broker=broker,
-                    operation_type=OP_DEPOSIT,
-                    gross_amount=round(total, 4),
+                    operation_type=op_type,
+                    gross_amount=round(abs(total), 4),
                     currency=cur,
-                    notes="Estado inicial — depósito sintético (Rendi)",
+                    notes=f"Estado inicial — {label} sintético (Rendi)",
                 ))
                 next_idx += 1
 
