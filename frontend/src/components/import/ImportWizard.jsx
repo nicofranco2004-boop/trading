@@ -1516,6 +1516,24 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
           </div>
         </div>
       )}
+      {(preview.brokers_already_imported || []).length > 0 && !redoBanner && (
+        <div className="px-3 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/50 text-sm">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={15} className="mt-0.5 flex-shrink-0 text-amber-500" />
+            <div className="flex flex-col gap-1">
+              <div className="font-semibold text-ink-0">
+                Ojo: ya tenés posiciones de {preview.brokers_already_imported.join(', ')} importadas
+              </div>
+              <p className="text-xs text-ink-2">
+                Si estás subiendo los <span className="font-medium text-ink-1">mismos datos de nuevo</span> (ej. otro
+                export del mismo broker), confirmar va a <span className="font-medium text-ink-1">duplicar</span> tus
+                posiciones. Si es eso, primero <span className="font-medium text-ink-1">revertí el import anterior</span> desde
+                "Importar CSV". Si son movimientos NUEVOS, seguí tranquilo.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       {seedSug?.needed && (
         <div className="px-3 py-3 rounded-md bg-blue-500/10 border border-blue-500/40 text-sm">
           <div className="flex items-start gap-2 mb-2">

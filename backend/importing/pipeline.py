@@ -593,6 +593,18 @@ def run_preview(
     preview_payload["new_brokers_created"] = new_brokers_created
     preview_payload["duplicate_row_indices"] = duplicate_row_indices
 
+    # Aviso de re-import: si los brokers de este import YA tienen posiciones,
+    # volver a importar puede DUPLICAR (ej. subir Órdenes y luego Resultados del
+    # mismo broker, o reimportar el mismo archivo). El dedup por fila no atrapa el
+    # caso de exports distintos del mismo portfolio (mismos trades, valores
+    # distintos). El front muestra un aviso para que el user revierta el anterior
+    # si está cargando lo mismo de nuevo.
+    _import_brokers = {(tx.broker or "").strip() for tx in normalized if tx.broker}
+    _existing_brokers = {b for (b, _a) in existing_pos.keys()}
+    preview_payload["brokers_already_imported"] = sorted(
+        b for b in _import_brokers if b and b in _existing_brokers
+    )
+
     # Cash simulation pre-confirm: detecta filas que pondrían el cash en
     # negativo y reporta como warnings (no errores — el persister permite
     # overdraft, esto es informativo).
