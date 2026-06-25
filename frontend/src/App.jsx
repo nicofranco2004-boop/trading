@@ -52,6 +52,7 @@ const Wrapped = lazy(() => import('./pages/Wrapped'))
 // Las páginas internas siguen existiendo como rutas (alias) — ver redirects.
 const Analisis = lazy(() => import('./pages/Analisis'))
 const Fundamentals = lazy(() => import('./pages/Fundamentals'))
+const AssetDetail = lazy(() => import('./pages/AssetDetail'))
 const Cartera = lazy(() => import('./pages/Cartera'))
 const More = lazy(() => import('./pages/More'))
 const Planes = lazy(() => import('./pages/Planes'))
@@ -149,6 +150,7 @@ function AppRoutes() {
       <Route path="/posiciones" element={<Cartera />} />
       <Route path="/analisis" element={<Analisis />} />
       <Route path="/fundamentals" element={<Fundamentals />} />
+      <Route path="/activo/:ticker" element={<AssetDetail />} />
       {/* Redirects de rutas viejas al wrapper consolidado, preservando query */}
       <Route path="/dashboard"       element={<Navigate to="/posiciones?tab=evolucion"   replace />} />
       <Route path="/objetivos"       element={<Navigate to="/posiciones?tab=objetivos"   replace />} />

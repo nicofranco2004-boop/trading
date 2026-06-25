@@ -293,7 +293,7 @@ function CategoryWinners({ comparison }) {
   return (
     <section>
       <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">Ganador por categoría</p>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {CATEGORY_ORDER.map(cat => {
           const Icon = CATEGORY_ICON[cat]
           const w = categoryWinner[cat]
@@ -368,11 +368,11 @@ function CategorySection({ category, rows, tickers }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line/40">
-                <th className="text-left font-normal text-[10px] font-mono uppercase tracking-caps text-ink-3 px-4 py-2">
+                <th scope="col" className="text-left font-normal text-[10px] font-mono uppercase tracking-caps text-ink-3 px-4 py-2">
                   Métrica
                 </th>
                 {tickers.map(t => (
-                  <th key={t} className="text-right font-mono text-xs font-semibold text-ink-1 px-3 py-2 whitespace-nowrap">
+                  <th key={t} scope="col" className="text-right font-mono text-xs font-semibold text-ink-1 px-3 py-2 whitespace-nowrap">
                     {t}
                   </th>
                 ))}

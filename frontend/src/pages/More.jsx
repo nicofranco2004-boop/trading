@@ -7,7 +7,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  LayoutDashboard, Bell, BarChart3, Brain, List, Upload,
+  LayoutDashboard, Bell, BarChart3, Brain, List, Upload, Gauge,
   Target, Sparkles, Settings, Shield, ChevronRight, LogOut, BellRing, BellOff, Send, UserRound, MessageCircle,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
@@ -32,8 +32,9 @@ const GROUPS = [
   {
     label: 'Análisis',
     items: [
-      { to: '/analisis',  label: 'Análisis',  icon: Brain,    sub: 'Diagnóstico, métricas pro, sesgos' },
-      { to: '/novedades', label: 'Novedades', icon: Bell,     sub: 'Noticias + eventos' },
+      { to: '/analisis',     label: 'Análisis',     icon: Brain, sub: 'Diagnóstico, métricas pro, sesgos' },
+      { to: '/fundamentals', label: 'Fundamentals', icon: Gauge, sub: 'Score + análisis de acciones' },
+      { to: '/novedades',    label: 'Novedades',    icon: Bell,  sub: 'Noticias + eventos' },
     ],
   },
   {

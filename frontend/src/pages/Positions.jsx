@@ -1355,7 +1355,16 @@ function PositionsDesktop() {
                               <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                               <div className="min-w-0">
                                 <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
-                                  {p.asset}
+                                  {p.is_cash ? p.asset : (
+                                    <button
+                                      type="button"
+                                      onClick={() => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
+                                      className="hover:text-rendi-accent transition-colors"
+                                      title={`Ver detalle de ${p.asset}`}
+                                    >
+                                      {p.asset}
+                                    </button>
+                                  )}
                                   {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                   {isBond && (
                                     <span
@@ -1548,7 +1557,16 @@ function PositionsDesktop() {
                             <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                             <div className="min-w-0">
                               <div className="font-semibold text-ink-0 flex items-center gap-1.5 flex-wrap">
-                                {p.asset}
+                                {p.is_cash ? p.asset : (
+                                  <button
+                                    type="button"
+                                    onClick={() => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
+                                    className="hover:text-rendi-accent transition-colors"
+                                    title={`Ver detalle de ${p.asset}`}
+                                  >
+                                    {p.asset}
+                                  </button>
+                                )}
                                 {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                 {isBond && (
                                   <span

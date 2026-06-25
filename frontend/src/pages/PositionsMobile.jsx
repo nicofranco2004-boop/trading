@@ -1467,9 +1467,9 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
     <>
     <SwipeRow
       actions={actions}
-      onTap={p._isAgg
-        ? () => onToggleTicker?.(`t:${p.broker}:${p.asset}`)
-        : () => navigate(p.id ? `/posiciones/${p.id}` : '/posiciones')}
+      onTap={(p._isLot || p.is_cash)
+        ? () => navigate(p.id ? `/posiciones/${p.id}` : '/posiciones')
+        : () => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
       rowId={p._isAgg ? `agg:${p.broker}:${p.asset}` : `${p.broker}:${p.asset}:${p.id || ''}`}
     >
       <div
@@ -1491,14 +1491,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
             {p.is_cash
               ? 'Cash'
               : p._isAgg
-                ? (
-                  <>
-                    <span>{`${formatQty(p.quantity)} · ${cur} · ${p._lotCount} lotes`}</span>
-                    {p._expanded
-                      ? <ChevronUp size={11} strokeWidth={2} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
-                      : <ChevronDown size={11} strokeWidth={2} className="text-ink-3 flex-shrink-0" aria-hidden="true" />}
-                  </>
-                )
+                ? `${formatQty(p.quantity)} · ${cur} · ${p._lotCount} lotes`
                 : `${formatQty(p.quantity)} · ${cur}`}
           </div>
         </div>
