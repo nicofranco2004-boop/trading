@@ -2841,6 +2841,25 @@ def _current_ccl():
     return None
 
 
+def _current_cedear_rate():
+    """Dólar-MEP del caché dolarapi para valuar CEDEARs/holdings .BA — MISMA
+    cascada que el frontend cedearRate (mep→ccl→cripto). Así Análisis/snapshots/IA
+    usan el mismo dólar live que el Dashboard, en vez del config.tc_mep persistido
+    (que podía quedar stale). None si el caché está frío → el caller cae a
+    config.tc_mep / blue. Ver CORRECTNESS_AUDIT (item 2 cedearRate)."""
+    try:
+        cached = _dolar_cache.get("data") if _dolar_cache else None
+        if cached:
+            for casa in ("mep", "ccl", "cripto"):
+                obj = cached.get(casa)
+                v = obj.get("venta") if isinstance(obj, dict) else obj
+                if v and float(v) > 0:
+                    return float(v)
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return None
+
+
 @app.get("/api/dolar")
 def get_dolar(uid: int = Depends(get_current_user)):
     return _get_dolar_data()

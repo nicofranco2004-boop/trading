@@ -400,6 +400,17 @@ class TimelineTest(unittest.TestCase):
         self.assertAlmostEqual(tsla["value_usd"], 14000 * 15 / tc_cedear, places=2)
         self.assertLess(tsla["value_usd"], 1000)  # NO el ticker US (~6600)
 
+    def test_user_fx_mep_is_live_first(self):
+        # item 2 (follow-up): tc_cedear sale del MEP live del caché dolarapi (igual
+        # que el frontend), no del config.tc_mep persistido. Frío → cae a config.
+        import main as _m
+        from unittest.mock import patch
+        from analysis_prep import user_fx
+        with patch.object(_m, "_dolar_cache", {"data": {"mep": {"venta": 1234.0}}}):
+            self.assertEqual(user_fx(self.conn, self.uid)[1], 1234.0)  # live gana
+        with patch.object(_m, "_dolar_cache", {"data": None}):
+            self.assertNotEqual(user_fx(self.conn, self.uid)[1], 1234.0)  # frío → config
+
 
 if __name__ == "__main__":
     unittest.main()

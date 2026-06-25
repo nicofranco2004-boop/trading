@@ -29,9 +29,22 @@ def _config_float(conn, user_id: int, key: str, default: float) -> float:
 
 
 def user_fx(conn, user_id: int) -> Tuple[float, float]:
-    """(tc_blue, tc_cedear). tc_cedear (dólar-MEP) cae a tc_blue si no hay 'tc_mep'."""
+    """(tc_blue, tc_cedear).
+
+    tc_cedear (dólar-MEP, para valuar holdings .BA) es LIVE-FIRST: usa el MEP del
+    caché dolarapi (misma cascada mep→ccl que el frontend cedearRate), para que el
+    backend (Análisis/snapshots/IA) no diverja del Dashboard. Si el caché está frío
+    (ej. cron sin fetch), cae a config.tc_mep (override manual del user) y después a
+    tc_blue. Ver CORRECTNESS_AUDIT (item 2). tc_blue sigue saliendo del config."""
     tc_blue = _config_float(conn, user_id, "tc_blue", 1415.0)
-    tc_cedear = _config_float(conn, user_id, "tc_mep", tc_blue)
+    live_mep = None
+    try:
+        from main import _current_cedear_rate
+        live_mep = _current_cedear_rate()  # MEP live del caché; None si frío
+    except Exception:
+        live_mep = None
+    tc_cedear = live_mep if (live_mep and live_mep > 0) else _config_float(
+        conn, user_id, "tc_mep", tc_blue)
     return tc_blue, tc_cedear
 
 
