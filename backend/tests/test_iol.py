@@ -468,5 +468,148 @@ class TestIolImportE2E(unittest.TestCase):
             conn.close()
 
 
+class TestMepConduit(unittest.TestCase):
+    """Conducto dólar-MEP: un bono usado como puente para convertir PESOS↔DÓLARES
+    se colapsa en UN FX, sin posición del bono. El audit (2026-06-25) encontró que
+    cada pata se emitía como trade → AL30 fantasma (−169), P&L basura, cash
+    fabricado; y el re-audit pidió no sobre-colapsar trades reales en USD."""
+
+    def _norm(self, rows):
+        from importing.normalizer import normalize_rows
+        norm, errs = normalize_rows(_parse(rows).raw_rows)
+        return norm
+
+    def _by_op(self, norm):
+        out = {}
+        for t in norm:
+            out.setdefault(t.operation_type, []).append(t)
+        return out
+
+    def test_peso_dollar_conversion_collapses_to_fx(self):
+        # Comprar dólares (MISMO DÍA): Compra(AL30) pesos + Venta(AL30C) dólares,
+        # misma cantidad. La pata dólar viene partida (USD real + residual pesos).
+        norm = self._norm([
+            _row("Compra(AL30)", concert="01/05/2025", cant="565", precio="91930",
+                 monto="-522053.46", cuenta="Inversion Argentina Pesos", mov="100", boleto="100"),
+            _row("Venta(AL30C)", concert="01/05/2025", cant="565", precio="61.84",
+                 monto="347.65", cuenta="Inversion Estados Unidos Dolares", mov="101", boleto="101"),
+            _row("Venta(AL30C)", concert="01/05/2025", cant="565", precio="61.84",
+                 monto="-49.61", cuenta="Inversion Argentina Pesos", mov="101", boleto="101"),
+        ])
+        # Sin trades del bono — colapsa en UN FX (sin inflar capital aportado).
+        self.assertEqual([t for t in norm if t.operation_type in ("BUY", "SELL")], [])
+        fxs = [t for t in norm if "FX" in t.operation_type]
+        self.assertEqual([t.operation_type for t in fxs], ["FX_ARS_TO_USD"])
+        self.assertAlmostEqual(fxs[0].gross_amount, 522053.46, places=2)  # ARS
+        self.assertAlmostEqual(fxs[0].quantity, 347.65, places=2)         # USD
+        # El residual en pesos (impuesto) NO se pierde: entra como FEE → el cash
+        # ARS no queda inflado (audit MED: net ARS conservado).
+        fees = [t for t in norm if t.operation_type == "FEE"]
+        self.assertEqual(len(fees), 1)
+        self.assertEqual(fees[0].currency, "ARS")
+        self.assertAlmostEqual(fees[0].gross_amount, 49.61, places=2)
+
+    def test_implausible_rate_not_collapsed(self):
+        # Guarda de tasa (audit): un Monto malformado (10 USD por 100 bonos →
+        # tc=500000) NO debe colapsar en un FX con tasa basura; las patas quedan
+        # como trades reales (reversible y visible).
+        norm = self._norm([
+            _row("Compra(AL30)", concert="01/05/2025", cant="100", precio="50000",
+                 monto="-5000000", cuenta="Inversion Argentina Pesos", mov="700", boleto="700"),
+            _row("Venta(AL30C)", concert="01/05/2025", cant="100", precio="0.1",
+                 monto="10", cuenta="Inversion Estados Unidos Dolares", mov="701", boleto="701"),
+            _row("Venta(AL30C)", concert="01/05/2025", cant="100", precio="0.1",
+                 monto="-1", cuenta="Inversion Argentina Pesos", mov="701", boleto="701"),
+        ])
+        self.assertEqual([t for t in norm if "FX" in t.operation_type], [])  # NO FX
+
+    def test_dollar_dollar_swing_stays_real_trade(self):
+        # REGRESIÓN (audit HIGH): un swing genuino en USD (Compra(AL30D) +
+        # Venta(AL30D), misma cantidad) NO es una conversión de moneda → debe
+        # quedar como compra/venta reales (no se borra el P&L).
+        norm = self._norm([
+            _row("Compra(AL30D)", concert="01/05/2025", cant="300", precio="60",
+                 monto="-18000", cuenta="Inversion Argentina Dolares", mov="500", boleto="500"),
+            _row("Venta(AL30D)", concert="03/05/2025", cant="300", precio="63",
+                 monto="18900", cuenta="Inversion Argentina Dolares", mov="501", boleto="501"),
+        ])
+        self.assertEqual([t.operation_type for t in norm if "FX" in t.operation_type], [])
+        ops = self._by_op(norm)
+        self.assertEqual(len(ops.get("BUY", [])), 1)
+        self.assertEqual(len(ops.get("SELL", [])), 1)
+        self.assertEqual(ops["BUY"][0].currency, "USD")
+        self.assertEqual(ops["SELL"][0].currency, "USD")
+
+    def test_cross_currency_days_apart_not_merged(self):
+        # REGRESIÓN (audit MED): una compra-pesos + venta-dólar genuinas a días de
+        # distancia (NO mismo día) NO deben fusionarse en una conversión falsa.
+        norm = self._norm([
+            _row("Compra(AL30)", concert="01/05/2025", cant="50", precio="91000",
+                 monto="-4550000", cuenta="Inversion Argentina Pesos", mov="600", boleto="600"),
+            _row("Venta(AL30D)", concert="05/05/2025", cant="50", precio="62",
+                 monto="3100", cuenta="Inversion Argentina Dolares", mov="601", boleto="601"),
+            _row("Venta(AL30D)", concert="05/05/2025", cant="50", precio="62",
+                 monto="-5", cuenta="Inversion Argentina Pesos", mov="601", boleto="601"),
+        ])
+        self.assertEqual([t for t in norm if "FX" in t.operation_type], [])
+        ops = self._by_op(norm)
+        self.assertEqual(len(ops.get("BUY", [])), 1)   # compra pesos real
+        self.assertEqual(len(ops.get("SELL", [])), 1)  # venta dólar real
+        self.assertEqual(ops["BUY"][0].currency, "ARS")
+        self.assertEqual(ops["SELL"][0].currency, "USD")
+
+    def test_unpaired_dollar_leg_stays_real_trade(self):
+        # Compra(NUD) en dólares SIN contraparte pesos → tenencia genuina en USD;
+        # el residual en pesos del mismo boleto se descarta.
+        norm = self._norm([
+            _row("Compra(NUD)", concert="01/05/2025", cant="14", precio="6.8",
+                 monto="-95.78", cuenta="Inversion Argentina Dolares", mov="300", boleto="300"),
+            _row("Compra(NUD)", concert="01/05/2025", cant="14", precio="6.8",
+                 monto="-80.92", cuenta="Inversion Argentina Pesos", mov="300", boleto="300"),
+        ])
+        buys = [t for t in norm if t.operation_type == "BUY"]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(buys[0].asset_symbol, "NU")
+        self.assertEqual(buys[0].currency, "USD")
+        self.assertAlmostEqual(buys[0].quantity, 14, places=6)
+
+    def test_genuine_peso_trade_untouched(self):
+        # Compra(GGAL) en pesos, sin conducto → compra normal (no se toca).
+        norm = self._norm([
+            _row("Compra(GGAL)", cant="100", precio="1500", monto="-150000",
+                 cuenta="Inversion Argentina Pesos", mov="400", boleto="400"),
+        ])
+        self.assertEqual(len(norm), 1)
+        self.assertEqual(norm[0].operation_type, "BUY")
+        self.assertEqual(norm[0].asset_symbol, "GGAL")
+
+
+class TestIolFci(unittest.TestCase):
+    def test_fci_carries_fund_type_and_maps_when_known(self):
+        from importing.normalizer import normalize_rows
+        # COCOA está en fci_map → debe terminar en FCI:<slug> (cotiza live).
+        res = _parse([_row("Suscripción FCI(COCOA)", cant="1000", monto="-2290",
+                           cuenta="Inversion Argentina Pesos")])
+        self.assertEqual(res.raw_rows[0].data.get("asset_type"), "FUND")
+        norm, _ = normalize_rows(res.raw_rows)
+        self.assertEqual(norm[0].asset_type, "FUND")
+        self.assertEqual(norm[0].asset_symbol, "FCI:COCOS-AHORRO-A")
+
+    def test_fci_unmapped_stays_raw_at_cost(self):
+        from importing.normalizer import normalize_rows
+        # CNXPOPA no está confirmado → FUND pero símbolo crudo (al costo).
+        res = _parse([_row("Suscripción FCI(CNXPOPA)", cant="596", monto="-80318.78",
+                           cuenta="Inversion Argentina Pesos")])
+        self.assertEqual(res.raw_rows[0].data.get("asset_type"), "FUND")
+        norm, _ = normalize_rows(res.raw_rows)
+        self.assertEqual(norm[0].asset_symbol, "CNXPOPA")
+        self.assertEqual(norm[0].asset_type, "FUND")
+
+    def test_equity_emits_asset_name(self):
+        res = _parse([_row("Compra(GGAL)", cant="10", monto="-15000",
+                           cuenta="Inversion Argentina Pesos")])
+        self.assertEqual(res.raw_rows[0].data.get("asset_name"), "GGAL")
+
+
 if __name__ == "__main__":
     unittest.main()

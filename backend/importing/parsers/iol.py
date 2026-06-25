@@ -49,6 +49,23 @@ el MISMO subyacente, así que consolidamos al ticker base para que valúe bien.
 PERO hay CEDEARs/cripto que terminan en C/D de forma legítima (AMD, GOLD,
 INTC, YPFD, BTC…): esos NO se tocan (_KNOWN_CD_TICKERS, espejo de tickers.js).
 
+Conducto dólar-MEP (_detect_iol_conduits): cuando un bono se usa como PUENTE
+para convertir PESOS↔DÓLARES (dólar bolsa), IOL lo exporta como una pata en
+PESOS (ticker base) + una pata en DÓLARES (ticker con sufijo C/D) del MISMO
+papel, MISMA cantidad, dirección opuesta, MISMO DÍA; la pata dólar viene partida
+en 2 filas (monto USD real + un residual en pesos = el impuesto). Si se toma
+cada pata como un trade real del bono, queda una posición FANTASMA (ej. AL30
+neto −169), P&L basura (el FIFO cruza patas ARS vs USD) y caja fabricada. Por
+eso lo colapsamos en UNA conversión FX (FX_ARS_USD / FX_USD_ARS) — sin posición
+del bono y sin inflar 'capital aportado' (un DEPOSITO/RETIRO sí lo inflaría); el
+residual en pesos se DESCARTA. NO se tocan los round-trips en una sola moneda
+(canje D↔C o swing D↔D, ambos USD: quedan como compra/venta reales que netean
+por FIFO), ni una pata dólar SUELTA (tenencia genuina en USD).
+
+FCI: las suscripciones/rescates llevan asset_type='FUND', así el normalizer las
+mapea a 'FCI:<slug>' (importing/fci_map) y cotizan al VCP live cuando el ticker
+está confirmado; si no, quedan al costo (sin inventar precio).
+
 Números: pasamos cantidad/precio/monto como strings crudos — el normalizer
 (parse_number) tolera tanto formato es-AR ('1.234,56') como en-US ('1,234.56'),
 así que no asumimos un separador decimal acá. Las comisiones (Comis. + Iva Com.
@@ -223,6 +240,142 @@ def _skip_reason(tipo_mov: str) -> Optional[tuple]:
     return None
 
 
+def _has_dollar_suffix(raw_ticker: Optional[str]) -> bool:
+    """True si el ticker es una pata DÓLAR del conducto (sufijo C/D que
+    _clean_ticker consolida sobre el subyacente), NO un ticker que legítimamente
+    termina en C/D (AMD, GOLD, INTC…). Mismo criterio que _clean_ticker."""
+    if not raw_ticker:
+        return False
+    t = re.sub(r"\s*(US\$|U\$S)$", "", raw_ticker.strip().upper()).strip()
+    return len(t) >= 3 and t[-1] in ("D", "C") and t not in _KNOWN_CD_TICKERS
+
+
+def _days_between(a: Optional[str], b: Optional[str]) -> Optional[int]:
+    if not a or not b:
+        return None
+    from datetime import date as _date
+    try:
+        return abs((_date.fromisoformat(a) - _date.fromisoformat(b)).days)
+    except ValueError:
+        return None
+
+
+def _detect_iol_conduits(rows: List[dict], G) -> tuple:
+    """Detecta la maniobra dólar-MEP de IOL (un bono como PUENTE para convertir
+    PESOS↔DÓLARES) y la colapsa en UNA conversión FX, en vez de dos trades del
+    bono que dejaban posición FANTASMA (AL30 neto −169), P&L basura y cash
+    fabricado.
+
+    Estructura real (verificada contra el export): la conversión es una pata en
+    PESOS (fila ÚNICA del ticker base, ej. Compra(AL30)) + una pata en DÓLARES
+    PARTIDA en 2 filas (el monto USD real + un residual en pesos = el impuesto,
+    MISMO Nro. de Boleto). Mismo papel, MISMA cantidad, dirección OPUESTA, MISMO
+    DÍA. La firma de una conversión genuina es exactamente esa: cruza MONEDA
+    (pesos↔dólares) y la pata dólar está partida.
+
+    Tratamiento:
+      • El residual en pesos de la pata dólar se DESCARTA.
+      • La pata pesos + la pata dólar USD se colapsan en UN FX_ARS_USD /
+        FX_USD_ARS (sin posición del bono, sin inflar 'capital aportado' como
+        haría un DEPOSITO/RETIRO). El persister mueve el cash pesos↔dólares.
+
+    Lo que NO se toca (clave para no romper trades reales):
+      • Round-trips en UNA sola moneda (canje D↔C o swing D↔D, ambos USD): quedan
+        como compra/venta reales y netean por FIFO con su P&L. Acá NO hay
+        conversión de moneda.
+      • Una pata dólar SUELTA (sin contraparte pesos) → tenencia genuina en USD.
+      • Cualquier trade en pesos normal.
+    Guardas para no sobre-colapsar (audit 2026-06-25): exigimos cruce de MONEDA
+    (no D↔D/D↔C), que la pata dólar esté PARTIDA (residual mismo boleto) y MISMO
+    DÍA — así una compra-pesos + venta-dólar genuinas a días de distancia, o un
+    swing USD, no se fusionan por error.
+
+    Devuelve (fx, fee, drop):
+      fx:   {row_index → (fx_op, ars_amount, usd_amount)}  en la fila carrier (pesos)
+      fee:  set(row_index)  residuales en pesos de patas dólar → emitir como FEE
+            (es un costo real; descartarlos inflaría el cash en ARS)
+      drop: set(row_index)  la pata dólar USD ya colapsada dentro del FX
+    """
+    legs = []   # toda fila COMPRA/VENTA con sus atributos
+    for i, row in enumerate(rows, start=1):
+        tipo_mov = _strip(G(row, "tipomov"))
+        op = _resolve_op(tipo_mov)
+        if op not in ("COMPRA", "VENTA"):
+            continue
+        raw = _extract_raw_ticker(tipo_mov)
+        if not raw:
+            continue
+        qty = _num(G(row, "canttitulos"))
+        if qty <= 0:
+            continue
+        cuenta = _deaccent(G(row, "tipocuenta").lower())
+        legs.append({
+            "idx": i, "base": _clean_ticker(raw), "qty": qty,
+            "dir": "C" if op == "COMPRA" else "V",
+            "date": _parse_date(G(row, "concert")),
+            "usd": _has_usd_suffix(raw) or any(h in cuenta for h in _CUENTA_USD_HINTS),
+            "dc": _has_dollar_suffix(raw),
+            "boleto": _strip(G(row, "nrodeboleto")),
+            "cash": abs(_num(G(row, "monto"))),
+        })
+
+    def _same_boleto_residual(usd_leg):
+        """La pata dólar USD está PARTIDA si hay otra fila D/C en ARS del mismo
+        papel y mismo Boleto (el residual = el impuesto)."""
+        b = usd_leg["boleto"]
+        if not b or b == "0":
+            return None
+        for o in legs:
+            if (o["idx"] != usd_leg["idx"] and o["boleto"] == b and o["dc"]
+                    and not o["usd"] and o["base"] == usd_leg["base"]):
+                return o
+        return None
+
+    fx: dict = {}
+    fee = set()    # residuales en pesos de patas dólar → FEE (son costo real, no se pierden)
+    drop = set()   # pata dólar USD ya fundida en un FX
+    used = set()
+    # Conversión PESOS↔DÓLARES: pata dólar USD (partida) + pata pesos del base.
+    for u in legs:
+        if u["idx"] in used or not (u["dc"] and u["usd"]):
+            continue
+        residual = _same_boleto_residual(u)
+        if residual is None:
+            continue   # pata dólar suelta (no partida) → no es conversión: trade real
+        for p in legs:
+            if (p["idx"] in used or p["idx"] == u["idx"] or p["dc"] or p["usd"]):
+                continue  # contraparte: pata PESOS del ticker base (no D/C, ARS)
+            if not (p["base"] == u["base"] and abs(p["qty"] - u["qty"]) < 1e-6
+                    and p["dir"] != u["dir"]
+                    and _days_between(p["date"], u["date"]) == 0
+                    and p["cash"] > 0 and u["cash"] > 0):
+                continue
+            # Guarda de tasa: una conversión real tiene un TC plausible. Si el
+            # ratio ARS/USD es absurdo (Monto malformado o falso match), NO
+            # colapsamos — dejamos las patas como trades reales (reversible y
+            # visible) en vez de emitir un FX con tasa basura.
+            if not (100.0 <= p["cash"] / u["cash"] <= 100000.0):
+                continue
+            # peso paga (Compra) → ARS→USD; peso cobra (Venta) → USD→ARS.
+            fx[p["idx"]] = ("FX_ARS_USD" if p["dir"] == "C" else "FX_USD_ARS",
+                            p["cash"], u["cash"])
+            drop.add(u["idx"])           # la pata dólar USD se funde en el FX
+            fee.add(residual["idx"])     # el residual en pesos es un costo real → FEE
+            used.add(p["idx"]); used.add(u["idx"]); used.add(residual["idx"])
+            break
+
+    # Residuales de patas dólar PARTIDAS que NO entraron en un FX (la pata dólar
+    # quedó como trade real USD): igual son un costo en pesos → FEE, no se pierden.
+    for leg in legs:
+        if (leg["idx"] not in drop and leg["idx"] not in fee and leg["dc"]
+                and not leg["usd"] and leg["boleto"] and leg["boleto"] != "0"):
+            if any(o["idx"] != leg["idx"] and o["boleto"] == leg["boleto"]
+                   and o["dc"] and o["usd"] and o["base"] == leg["base"]
+                   for o in legs):
+                fee.add(leg["idx"])
+    return fx, fee, drop
+
+
 class IolParser(Parser):
     format_id = "iol"
     display_name = "IOL (InvertirOnline)"
@@ -280,10 +433,52 @@ class IolParser(Parser):
             col = norm_to_orig.get(norm_key)
             return _strip(row.get(col, "")) if col else ""
 
-        for idx, row in enumerate(reader, start=1):
+        rows = list(reader)
+        # Conducto dólar-MEP: un bono usado como puente para convertir
+        # pesos↔dólares. Lo colapsamos en UN FX (no dos trades del bono) y
+        # descartamos el residual + la pata dólar fundida. Sin esto: posición
+        # fantasma del bono + P&L basura + cash fabricado. Ver _detect_iol_conduits.
+        conduit_fx, conduit_fee, conduit_drop = _detect_iol_conduits(rows, G)
+
+        for idx, row in enumerate(rows, start=1):
+            if idx in conduit_drop:
+                continue  # pata dólar USD ya fundida en un FX
             tipo_mov = G(row, "tipomov")
             if not tipo_mov:
                 continue  # fila vacía / sin tipo
+
+            # Residual en pesos de una pata dólar (impuesto/comisión del dólar-MEP):
+            # es un costo REAL en pesos → FEE. Si lo descartáramos, el cash en ARS
+            # quedaría inflado por la suma de los residuales.
+            if idx in conduit_fee:
+                amt = abs(_num(G(row, "monto")))
+                if amt > 0:
+                    boleto = G(row, "nrodeboleto")
+                    result.raw_rows.append(RawRow(row_index=idx, data={
+                        "fecha": _parse_date(G(row, "concert")) or "",
+                        "tipo": "FEE", "broker": "IOL", "activo": "",
+                        "cantidad": "", "precio": "", "monto": repr(amt),
+                        "monto_usd": "", "tc": "", "comisiones": "0", "moneda": "ARS",
+                        "notas": f"Impuesto/comisión dólar-MEP ({tipo_mov})"
+                                 + (f" · Boleto {boleto}" if boleto and boleto != "0" else ""),
+                    }))
+                continue
+
+            # Conversión dólar-MEP colapsada: la fila pesos es el carrier del FX.
+            fxinfo = conduit_fx.get(idx)
+            if fxinfo:
+                fx_op, ars_amt, usd_amt = fxinfo
+                boleto = G(row, "nrodeboleto")
+                result.raw_rows.append(RawRow(row_index=idx, data={
+                    "fecha": _parse_date(G(row, "concert")) or "",
+                    "tipo": fx_op, "broker": "IOL", "activo": "",
+                    "cantidad": "", "precio": "",
+                    "monto": repr(ars_amt), "monto_usd": repr(usd_amt), "tc": "",
+                    "comisiones": "0", "moneda": "",
+                    "notas": f"Conversión dólar-MEP ({tipo_mov})"
+                             + (f" · Boleto {boleto}" if boleto and boleto != "0" else ""),
+                }))
+                continue
 
             skip = _skip_reason(tipo_mov)
             if skip:
@@ -312,10 +507,16 @@ class IolParser(Parser):
             else:
                 moneda = "ARS"
 
+            # asset_type: FCI (Suscripción/Rescate) → FUND, para que el normalizer
+            # lo mapee a FCI:<slug> y cotice live (igual que Cocos/Balanz). El
+            # resto queda sin hint (el normalizer adivina por símbolo).
+            head = _deaccent(_PAREN_RX.split(tipo_mov, 1)[0].strip().lower())
+            asset_type = "FUND" if ("suscripcion" in head or "rescate" in head) else ""
+
             # Ticker (solo para operaciones con activo).
             ticker = _clean_ticker(raw_ticker) if raw_ticker else ""
             if tipo_rendi in ("DEPOSITO", "RETIRO", "INTERES"):
-                ticker = ""   # cash flows sin activo
+                ticker = ""   # cash flows sin activo (incluye patas del conducto)
 
             fees = _num(G(row, "comis")) + _num(G(row, "ivacom")) + _num(G(row, "otrosimp"))
 
@@ -379,6 +580,13 @@ class IolParser(Parser):
                 "moneda":     moneda,
                 "notas":      notas,
             }
+            # asset_type=FUND (FCI) → habilita el rewrite a FCI:<slug> en el
+            # normalizer. asset_name = ticker crudo (popula el campo para auditoría
+            # y futuro sweep por nombre).
+            if asset_type:
+                data["asset_type"] = asset_type
+            if ticker:
+                data["asset_name"] = raw_ticker
             result.raw_rows.append(RawRow(row_index=idx, data=data))
 
         return result
