@@ -31,8 +31,8 @@ const FEATURES = [
 
 const HOW_STEPS = [
   { n: 1, title: 'Creá tu cuenta gratis en Rendi', desc: 'Sin tarjeta. El plan Free te permite empezar a trackear 1 broker.' },
-  { n: 2, title: 'Exportá tu historial de IOL', desc: 'En IOL: Mi Cuenta → Movimientos → Exportar. Descargás el CSV con compras, ventas, dividendos y depósitos.' },
-  { n: 3, title: 'Importá el CSV en Rendi', desc: 'Mapeamos automáticamente los campos de IOL (asset, fecha, cantidad, precio, broker). Verificá la previa antes de confirmar.' },
+  { n: 2, title: 'Exportá tu historial de IOL', desc: 'En IOL: Mi Cuenta → Movimientos → Detalle de Movimientos. Elegí desde el inicio de tu cuenta hasta hoy y, abajo de todo, “Descargar movimientos históricos” (.xls).' },
+  { n: 3, title: 'Importá el .xls en Rendi', desc: 'Mapeamos automáticamente los campos de IOL (asset, fecha, cantidad, precio, broker). Verificá la previa antes de confirmar.' },
   { n: 4, title: 'Ves tu cartera en USD + insights', desc: 'Dashboard con KPIs, gráfico de evolución, allocation por activo, top 5. Tu cartera real en USD blue, no en pesos.' },
 ]
 

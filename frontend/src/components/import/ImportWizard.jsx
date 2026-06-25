@@ -83,6 +83,7 @@ const PLATFORM_BASE_CURRENCY = {
   schwab: 'USD',
   ibkr: 'USD',
   bullmarket: 'ARS',
+  iol: 'ARS',
 }
 
 // Plataformas cuya importación está temporalmente deshabilitada (parser
@@ -92,22 +93,17 @@ const PLATFORM_BASE_CURRENCY = {
 // en vez del uploader, y se bloquea el botón Continuar. Para reactivar:
 // borrá la entrada de acá.
 //
-// Las que NO tienen parser en el backend (ej: IOL) se inyectan en el dropdown
-// vía withBlockedPlatforms(); las que sí lo tienen (ej: Balanz) ya vienen del
-// registry, así que no se duplican.
-const BLOCKED_IMPORT_PLATFORMS = {
-  iol: {
-    label: 'IOL',
-    title: 'La importación de IOL todavía no está disponible',
-    body: 'Estamos terminando de soportar el formato de exportación de IOL. Si tenés operaciones de IOL, escribinos por WhatsApp y te ayudamos a cargarlas.',
-    waMessage: 'Hola, tengo operaciones de IOL y quiero importarlas a Rendi.',
-  },
-}
+// Las que NO tienen parser en el backend se inyectan en el dropdown vía
+// withBlockedPlatforms(); las que sí lo tienen (ej: Cocos, Balanz, IOL) ya
+// vienen del registry, así que no se duplican.
+//
+// IOL pasó a tener parser nativo (importing/parsers/iol.py) — ya no está acá.
+const BLOCKED_IMPORT_PLATFORMS = {}
 
 // Inyecta en la lista de parserGroups las plataformas bloqueadas que NO tienen
-// un parser real en el backend (ej: IOL), para que aparezcan en el dropdown y
-// disparen el card de contacto. No duplica las que ya vienen del registry
-// (ej: Balanz). El export sintético queda como `supported: false`.
+// un parser real en el backend, para que aparezcan en el dropdown y disparen el
+// card de contacto. No duplica las que ya vienen del registry (Cocos, Balanz,
+// IOL…). Hoy BLOCKED_IMPORT_PLATFORMS está vacío → no inyecta nada.
 function withBlockedPlatforms(groups) {
   const list = Array.isArray(groups) ? groups : []
   const present = new Set(list.map(g => g.platform))
@@ -822,8 +818,8 @@ function Stepper({ step, skipMap, hasSeed }) {
 // Dos preguntas antes de subir nada:
 //   1. ¿El archivo es de un broker o es propio?
 //      • broker  → grid de brokers soportados (parser específico, auto-crea el
-//        broker). "No encuentro mi broker" → CTA WhatsApp (acá entran Balanz/IOL
-//        y cualquier broker sin parser).
+//        broker). "No encuentro mi broker" → CTA WhatsApp (acá entra cualquier
+//        broker sin parser dedicado).
 //      • propio  → moneda + broker destino (elegir o crear inline) + mezcla.
 //   2. Moneda: en la rama broker la define la plataforma; en la propia, la elige
 //      el user. Si es ARS, se pregunta por operaciones en USD (sub-broker).
@@ -832,7 +828,7 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
                      importMode, setImportMode, brokers, singleBroker, setSingleBroker,
                      onCreateBroker, isArsContext }) {
   // Brokers soportados para la rama "de un broker": del registry, excluyendo el
-  // genérico y las plataformas bloqueadas (Balanz/IOL → "no encuentro mi broker").
+  // genérico y cualquier plataforma bloqueada (BLOCKED_IMPORT_PLATFORMS).
   const supportedBrokers = (parserGroups || []).filter(g =>
     g.platform !== 'generic' &&
     !BLOCKED_IMPORT_PLATFORMS[g.platform] &&
@@ -897,7 +893,7 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
             })}
           </div>
 
-          {/* No encuentro mi broker → WhatsApp (Balanz/IOL/otros caen acá) */}
+          {/* No encuentro mi broker → WhatsApp (brokers sin parser dedicado) */}
           <a
             href={whatsappUrl('Hola, quiero importar a Rendi operaciones de un broker que todavía no está en la lista. Mi broker es: ')}
             target="_blank"
@@ -1045,7 +1041,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
     const valid = []
     for (const f of incoming) {
       const name = (f.name || '').toLowerCase()
-      if (!(name.endsWith('.csv') || name.endsWith('.txt') || name.endsWith('.xlsx'))) {
+      if (!(name.endsWith('.csv') || name.endsWith('.txt') || name.endsWith('.xlsx') || name.endsWith('.xls'))) {
         errors.push(`"${f.name}" no es un CSV ni Excel.`)
         continue
       }
@@ -1065,7 +1061,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
     if (errors.length > 0) {
       const hasPdf = errors.some(e => /\.pdf/i.test(e))
       const hasXlsx = errors.some(e => /\.xlsx?/i.test(e))
-      let helpText = ' Solo aceptamos CSV. '
+      let helpText = ' Aceptamos CSV, Excel (.xls, .xlsx) y TXT. '
       if (hasPdf) helpText += 'Si tu broker exportó un PDF, buscá la opción "Exportar a CSV" o "Descargar movimientos en CSV".'
       else if (hasXlsx) helpText += 'Abrí el Excel y guardalo como CSV (Archivo → Guardar como → Tipo: CSV UTF-8).'
       else helpText += 'Si tu broker no exporta CSV, podés pegar los datos en Google Sheets y descargar como CSV.'
@@ -1126,7 +1122,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
 
       {/* Dropzone */}
       <div>
-        <label className="block text-xs text-ink-3 mb-1">Archivo CSV</label>
+        <label className="block text-xs text-ink-3 mb-1">Archivo CSV / Excel</label>
         {fileError && (
           <div className="mb-2 flex items-start gap-2 px-3 py-2 rounded-sm bg-rendi-warn/[0.08] border border-rendi-warn/25 text-rendi-warn text-xs">
             <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
@@ -1136,7 +1132,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
         <div
           role="button"
           tabIndex={0}
-          aria-label="Seleccionar archivos CSV — arrastrá o hacé clic"
+          aria-label="Seleccionar archivos CSV o Excel — arrastrá o hacé clic"
           onClick={() => inputRef.current?.click()}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
@@ -1151,7 +1147,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
           <input
             ref={inputRef}
             type="file"
-            accept=".csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            accept=".csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel"
             multiple
             className="hidden"
             onChange={e => pickFiles(e.target.files)}

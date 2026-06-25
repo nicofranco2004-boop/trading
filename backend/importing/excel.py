@@ -134,13 +134,23 @@ def _decode_html_bytes(file_bytes: bytes) -> str:
 
 def is_html_table(file_bytes: bytes) -> bool:
     """True si los bytes parecen un documento HTML con una tabla. Cubre el .xls
-    de IOL (que es un <table> HTML, no Excel binario). Conservador: exige
-    '<table' y al menos una fila/celda, así un CSV con un '<' suelto no matchea.
+    de IOL (que es un <table> HTML, no Excel binario).
+
+    Conservador en dos frentes para no robarle archivos al path de CSV:
+    1. El contenido debe ARRANCAR con '<' (tras BOM/whitespace). Así un CSV que
+       trae '<table>' adentro de una celda (ej. una nota) NO se enruta acá.
+    2. Además exige '<table' y al menos una fila/celda en el prefijo.
     """
     if not file_bytes:
         return False
-    head = file_bytes[:16384].lower()
-    return b"<table" in head and (b"<tr" in head or b"<td" in head)
+    head = file_bytes[:16384]
+    stripped = head.lstrip()
+    if stripped[:3] == b"\xef\xbb\xbf":   # BOM UTF-8
+        stripped = stripped[3:].lstrip()
+    if not stripped.startswith(b"<"):     # un CSV real no empieza con '<'
+        return False
+    low = head.lower()
+    return b"<table" in low and (b"<tr" in low or b"<td" in low)
 
 
 class _FirstTableExtractor(HTMLParser):
@@ -162,29 +172,40 @@ class _FirstTableExtractor(HTMLParser):
         t = tag.lower()
         if t == "table":
             self._table_depth += 1
-        elif t == "tr" and self._table_depth:
+        elif t == "tr" and self._table_depth == 1:
+            # Solo filas de la tabla EXTERIOR. Un <tr> de una tabla anidada
+            # (depth>1) no debe pisar la fila en curso ni crear filas espurias.
             self._row = []
-        elif t in ("td", "th") and self._row is not None:
+        elif t in ("td", "th") and self._table_depth == 1 and self._row is not None:
+            # Solo celdas del nivel exterior. Las de una tabla anidada se
+            # ignoran (no arrancan _cell), así no se cuelan en la fila exterior.
             self._cell = []
 
     def handle_data(self, data):
-        if self._cell is not None:
+        # Solo texto de celdas del nivel exterior (depth 1). El de tablas
+        # anidadas se descarta — no debe colarse en la celda en curso.
+        if self._cell is not None and self._table_depth == 1:
             self._cell.append(data)
 
     def handle_endtag(self, tag):
         if self._done:
             return
         t = tag.lower()
+        if t == "table":
+            # El cierre de tabla SIEMPRE decrementa (puede ser una anidada).
+            if self._table_depth:
+                self._table_depth -= 1
+                if self._table_depth == 0:
+                    self._done = True  # solo la primera tabla (la exterior)
+            return
+        if self._table_depth != 1:
+            return  # td/th/tr de tablas anidadas → ignorar
         if t in ("td", "th") and self._cell is not None and self._row is not None:
             self._row.append(" ".join("".join(self._cell).split()))
             self._cell = None
         elif t == "tr" and self._row is not None:
             self.rows.append(self._row)
             self._row = None
-        elif t == "table" and self._table_depth:
-            self._table_depth -= 1
-            if self._table_depth == 0:
-                self._done = True  # solo la primera tabla
 
 
 def html_table_to_csv(file_bytes: bytes) -> str:
@@ -201,6 +222,13 @@ def html_table_to_csv(file_bytes: bytes) -> str:
         raise ValueError(
             "No pudimos leer la tabla del archivo. Verificá que sea el export de movimientos."
         ) from ex
+    # Si quedó una fila/celda abierta sin su </tr>/</td>, el archivo se cortó a
+    # la mitad (descarga interrumpida) — html.parser.close() no flushea tags
+    # abiertos, así que esa última fila se perdería en silencio. Avisamos.
+    if extractor._row is not None or extractor._cell is not None:
+        raise ValueError(
+            "El archivo parece incompleto (la descarga se cortó). Volvé a descargar el export."
+        )
     rows = [r for r in extractor.rows if any(c.strip() for c in r)]
     if not rows:
         raise ValueError("El archivo no contiene una tabla con datos.")

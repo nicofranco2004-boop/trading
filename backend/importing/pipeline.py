@@ -19,7 +19,7 @@ from .validator import validate
 from .preview import build_preview
 from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
 from .cash_sim import simulate as simulate_cash
-from .excel import to_csv_text, is_xlsx, xlsx_to_csv
+from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_to_csv
 from . import seed as _seed
 
 
@@ -165,6 +165,11 @@ def _decode_csv(file_bytes: bytes) -> Optional[str]:
     if is_xlsx(file_bytes):
         try:
             return xlsx_to_csv(file_bytes)
+        except ValueError:
+            return None
+    if is_html_table(file_bytes):
+        try:
+            return html_table_to_csv(file_bytes)
         except ValueError:
             return None
     for enc in ("utf-8-sig", "cp1252", "latin-1"):

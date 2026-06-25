@@ -1,9 +1,10 @@
 """Parser de IOL (InvertirOnline) — "Movimientos Históricos".
 
-Cómo bajar el archivo (referencia para el wizard):
-    1. Entrar a https://www.invertironline.com
-    2. Ir a Mi Cuenta → Movimientos → Movimientos Históricos
-    3. Elegir el rango de fechas y Exportar / Descargar
+Cómo bajar el archivo (paso a paso confirmado por usuarios de IOL):
+    1. Iniciar sesión en IOL (invertironline.com o la app).
+    2. Ir a Mi Cuenta → Movimientos → Detalle de Movimientos.
+    3. Elegir fecha de inicio (desde que abrió la cuenta) y fecha actual.
+    4. Abajo de todo: "Descargar movimientos históricos" → baja un .xls.
 
 El archivo viene como .xls, pero NO es Excel binario: es una tabla HTML (un
 <table>). El reader del pipeline (importing/excel.py: is_html_table /
@@ -228,7 +229,7 @@ class IolParser(Parser):
     is_supported = True
     platform = "iol"
     platform_label = "IOL (InvertirOnline)"
-    export_label = "Mi Cuenta → Movimientos → Movimientos Históricos"
+    export_label = "Mi Cuenta → Movimientos → Detalle de Movimientos"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}
