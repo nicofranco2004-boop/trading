@@ -63,19 +63,25 @@ export default function Imports() {
         : `/imports/${batch.id}/revert`
       await api.post(url, {})
       window.dispatchEvent(new Event('rendi:portfolio-changed'))
-      setInfo(`Importación del ${fmtDate(batch.created_at)} revertida correctamente.`)
+      setInfo(force
+        ? 'Import revertido en modo forzado. Revisá tu cartera: las posiciones que ventas del lote consumieron no se recrean automáticamente.'
+        : `Importación del ${fmtDate(batch.created_at)} revertida correctamente.`)
       setConfirmRevert(null)
       await load()
     } catch (ex) {
-      // Si el revert safe falló por ventas/conversiones, lo dejamos disponible
-      // como "Forzar revert" en el mismo modal (sin cerrarlo).
       const msg = ex.message || 'No se pudo revertir.'
-      const isSellFxBlock = /ventas|conversiones|fifo/i.test(msg)
-      if (!force && isSellFxBlock) {
-        setError(msg + ' Podés forzar el revert desde el botón "Forzar revert".')
-      } else {
+      // Errores terminales donde forzar tampoco ayuda → cerramos el modal.
+      const terminal = /no encontrado|confirmad/i.test(msg)
+      if (force || terminal) {
         setError(msg)
         setConfirmRevert(null)
+      } else {
+        // Cualquier OTRO fallo del revert safe (ventas, conversiones, o una
+        // posición "vendida después del import") mantiene el modal abierto y
+        // ofrece "Forzar revert". Antes el regex /ventas|conversiones|fifo/ no
+        // matcheaba "vendida" → el modal se cerraba y el usuario quedaba sin
+        // forma de borrar el import: los datos quedaban cargados (F1).
+        setError(msg + ' Si querés borrarlo igual, usá "Forzar revert".')
       }
     } finally {
       setReverting(null)
@@ -120,15 +126,31 @@ export default function Imports() {
   }
 
   const [wiping, setWiping] = useState(false)
-  async function doWipeBroker() {
-    const name = prompt('Nombre del broker a limpiar (ej: Binance). Esto borra TODAS sus operations, positions y monthly_entries — y no se puede deshacer. El broker en sí queda.')
-    if (!name) return
-    if (!confirm(`¿Confirmás wipe de "${name}"?`)) return
+  const [wipeOpen, setWipeOpen] = useState(false)        // modal abierto
+  const [wipeBrokers, setWipeBrokers] = useState([])     // brokers cargados del user
+  const [wipeSel, setWipeSel] = useState(null)           // broker seleccionado
+
+  // Abre el modal: trae la lista de brokers del user para que SELECCIONE
+  // (antes había que escribir el nombre a mano en un prompt nativo).
+  async function openWipe() {
+    setError(null); setInfo(null); setWipeSel(null)
+    try {
+      const data = await api.get('/brokers')
+      setWipeBrokers(data || [])
+    } catch {
+      setWipeBrokers([])
+    }
+    setWipeOpen(true)
+  }
+
+  async function confirmWipe() {
+    if (!wipeSel) return
     setWiping(true); setError(null); setInfo(null)
     try {
-      const data = await api.post(`/admin/wipe-broker-data?broker=${encodeURIComponent(name)}`, {})
+      const data = await api.post(`/admin/wipe-broker-data?broker=${encodeURIComponent(wipeSel)}`, {})
       window.dispatchEvent(new Event('rendi:portfolio-changed'))
-      setInfo(`Broker "${name}" limpiado: ${data.operations_deleted} operations, ${data.positions_deleted} positions, ${data.monthly_entries_deleted} monthly_entries borrados. ${data.batches_marked_reverted} batches marcados revertidos.`)
+      setInfo(`Broker "${wipeSel}" limpiado: ${data.operations_deleted} operations, ${data.positions_deleted} positions, ${data.monthly_entries_deleted} monthly_entries borrados.`)
+      setWipeOpen(false); setWipeSel(null)
       await load()
     } catch (ex) {
       setError(ex.message || 'No se pudo limpiar el broker.')
@@ -164,7 +186,7 @@ export default function Imports() {
             )}
             {!isFirstUse && user?.is_admin && (
               <button
-                onClick={doWipeBroker}
+                onClick={openWipe}
                 disabled={wiping}
                 title="Borra TODAS las operations / positions / monthly_entries de un broker, incluyendo huérfanos de imports viejos. Solo admin."
                 className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-rendi-neg/30 bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50"
@@ -398,6 +420,83 @@ export default function Imports() {
                 {reverting === confirmRevert.id && <Loader2 size={12} className="animate-spin" />}
                 <Trash2 size={12} />
                 Revertir
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: limpiar datos de un broker (admin) — selección + warning + CONFIRMAR */}
+      {wipeOpen && (
+        <Modal title="Limpiar datos de un broker" onClose={() => { setWipeOpen(false); setError(null) }}>
+          <div className="space-y-4 text-sm text-ink-1">
+            <p className="text-ink-2">
+              Elegí el broker cuyos datos querés borrar. Se eliminan <strong className="text-ink-0">todas</strong> sus
+              operaciones, posiciones y movimientos mensuales. El broker en sí queda.
+            </p>
+
+            {wipeBrokers.length === 0 ? (
+              <p className="text-ink-3 text-xs">No tenés brokers cargados.</p>
+            ) : (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {wipeBrokers.map((b) => {
+                  const sel = wipeSel === b.name
+                  return (
+                    <button
+                      key={b.name}
+                      type="button"
+                      onClick={() => setWipeSel(b.name)}
+                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg border text-left transition-colors ${
+                        sel ? 'border-rendi-neg/50 bg-rendi-neg/[0.08]' : 'border-line hover:border-line-2 hover:bg-bg-2/60'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <span className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${sel ? 'border-rendi-neg' : 'border-line-2'}`}>
+                          {sel && <span className="w-2 h-2 rounded-full bg-rendi-neg" />}
+                        </span>
+                        <span className="font-medium text-ink-0 truncate">{b.name}</span>
+                      </span>
+                      <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 flex-shrink-0">{b.currency}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {wipeSel && (
+              <div className="flex items-start gap-2 px-3 py-2.5 rounded-md bg-rendi-neg/[0.08] border border-rendi-neg/30 text-xs text-rendi-neg">
+                <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+                <span>
+                  Al confirmar vas a borrar <strong>todos los datos de {wipeSel}</strong> (operaciones, posiciones y
+                  movimientos). <strong>Esta acción no se puede deshacer.</strong>
+                </span>
+              </div>
+            )}
+
+            {error && (
+              <div className="flex items-start gap-2 px-3 py-2 rounded-md bg-rendi-neg/[0.08] border border-rendi-neg/25 text-xs text-rendi-neg">
+                <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => { setWipeOpen(false); setError(null) }}
+                className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmWipe}
+                disabled={!wipeSel || wiping}
+                className="px-4 py-2 text-sm bg-rendi-neg/15 hover:bg-rendi-neg/25 text-rendi-neg border border-rendi-neg/30 rounded-md font-semibold uppercase tracking-caps transition disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+              >
+                {wiping && <Loader2 size={12} className="animate-spin" />}
+                <Trash2 size={12} />
+                Confirmar
               </button>
             </div>
           </div>

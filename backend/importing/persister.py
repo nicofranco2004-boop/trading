@@ -448,7 +448,7 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         seed_invested = missing_qty * seed_price
         # entry_date: la misma fecha de la venta (FIFO lo ordena por entry_date,
         # luego por id — queda al final entre lotes con la misma fecha).
-        conn.execute(
+        seed_cur = conn.execute(
             """INSERT INTO positions
                   (user_id, broker, asset, quantity, invested,
                    buy_price, commissions, entry_date, is_cash, currency, asset_type)
@@ -458,6 +458,9 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
              seed_price, tx.date, (tx.currency or "USD").upper(),
              (tx.asset_type or None)),
         )
+        # Linkear el seed lot al batch para que el revert lo borre. Sin esto
+        # quedaba una posición fantasma que sobrevivía todos los reverts (B3).
+        _link(conn, batch_id, raw_row_id, position_id=seed_cur.lastrowid)
         # Re-leer positions para que el FIFO encuentre el seed lot
         positions = conn.execute(
             """SELECT * FROM positions
@@ -1240,6 +1243,17 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                 (l["operation_id"], uid),
             )
 
+    # Barrido final de posiciones: borrar cualquier position (no-cash) linkeada al
+    # batch que siga existiendo. Cubre el seed lot de ventas FIFO y cualquier lote
+    # que no pase por el handler BUY (B3). Las cash positions NO se tocan acá: su
+    # balance ya lo revierte el accounting de arriba.
+    for l in links:
+        if l["position_id"]:
+            conn.execute(
+                "DELETE FROM positions WHERE id=? AND user_id=? AND is_cash=0",
+                (l["position_id"], uid),
+            )
+
     # Marcar el batch como 'reverted' ANTES del repair/recalc. CRÍTICO: el
     # self-heal `_recalc_pnl_realized_from_ops` reconstruye, de forma
     # autoritativa, deposits = imports_CONFIRMED + manual_*. Si el batch
@@ -1263,5 +1277,26 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
     recalc_fn = getattr(helpers, "_recalc_pnl_realized_from_ops", None)
     if recalc_fn:
         recalc_fn(conn, uid)
+
+    # B1: limpiar snapshots que dejó el import. Sin esto, el chart "Evolución del
+    # portfolio" seguía mostrando los puntos del import aun después de revertirlo
+    # (queja "quedan datos cargados"). Para los meses que tocó el batch: si el
+    # revert dejó el mes sin monthly_entries global, borramos su snapshot; después
+    # recomputamos el resto desde los monthly_entries ya corregidos (re-backfill,
+    # idéntico a lo que hace el import en confirm → simétrico).
+    import calendar as _cal
+    batch_months = {(int(t["date"][:4]), int(t["date"][5:7])) for t in txs if t["date"]}
+    for (yy, mm) in batch_months:
+        has_entry = conn.execute(
+            "SELECT 1 FROM monthly_entries WHERE user_id=? AND broker='global' AND year=? AND month=? LIMIT 1",
+            (uid, yy, mm),
+        ).fetchone()
+        if not has_entry:
+            last_day = _cal.monthrange(yy, mm)[1]
+            conn.execute(
+                "DELETE FROM snapshots WHERE user_id=? AND date=?",
+                (uid, f"{yy:04d}-{mm:02d}-{last_day:02d}"),
+            )
+    _backfill_snapshots_from_monthly(conn, uid)
 
     return {"reverted": True, "batch_id": batch_id}
