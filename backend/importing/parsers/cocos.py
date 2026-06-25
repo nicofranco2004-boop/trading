@@ -52,6 +52,7 @@ import re
 from typing import List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..maturity import is_bond_like_name, maturity_from_name, synth_letra_ticker
 
 
 # Headers requeridos para detectar formato Cocos. Si al menos 3 de estos
@@ -356,6 +357,15 @@ class CocosParser(Parser):
 
             # Asset (ticker)
             ticker = _extract_ticker(instrumento)
+            if not ticker and is_bond_like_name(instrumento):
+                # Letra/LECAP que Cocos exporta SIN ticker entre paréntesis
+                # ("LT REP ARGENTINA CAP V11/11/24 $ CG"): sintetizamos un ticker
+                # decodable desde la fecha de vencimiento del nombre. Si no, todas
+                # caerían en un activo VACÍO (se mergean varias letras distintas en
+                # una posición fantasma sin símbolo) y el sweep no podría cerrarlas.
+                mat = maturity_from_name(instrumento)
+                if mat:
+                    ticker = synth_letra_ticker(mat)
             if tipo_rendi in ("DEPOSITO", "RETIRO", "DIVIDENDO", "INTERES", "FEE"):
                 # Cash flows / dividendos / fees sin asset asociado (incluye
                 # variantes como "Recibo De Cobro Dolares", sin instrumento, y las

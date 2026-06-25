@@ -15918,6 +15918,7 @@ def ai_delete_fact(
 from importing import pipeline as _import_pipeline
 from importing import persister as _import_persister
 from importing import rebuild as _import_rebuild
+from importing import maturity as _import_maturity
 from importing.parsers.registry import get_parser as _get_parser
 
 # Namespace simple con los helpers que el persister consume.
@@ -16162,6 +16163,18 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
                 _import_rebuild.rebuild_fifo_after_import(
                     conn, uid, data.session_id, tc_blue=_tc_blue_rb,
                 )
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+            # Sweep de vencimientos: las letras/LECAPs se rescatan al vencer SIN
+            # una venta explícita — el cash entra como "Renta Y Amortizacion"
+            # (→ dividendo) pero la posición quedaría como tenencia FANTASMA para
+            # siempre (ej. S31O5 12,1M unidades). Cerramos las letras cuyo
+            # vencimiento ya pasó dentro de la ventana de datos importada. No toca
+            # cash (ya entró) ni posiciones manuales. Best-effort.
+            try:
+                _import_maturity.sweep_matured_letras(conn, uid)
             except Exception:
                 import traceback
                 traceback.print_exc()
