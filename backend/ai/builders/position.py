@@ -65,7 +65,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     qty = sum(float(p.get("quantity") or 0) for p in positions)
     invested = sum(float(p.get("invested") or 0) for p in positions)
     broker_resolved = positions[0].get("broker") or broker
-    currency = (positions[0].get("currency") or "USD").upper()
+    # Moneda nativa de los lotes — el MISMO ticker puede estar en ARS y USD. Si los
+    # lotes difieren → 'MIXED' (no reportar la del primero a ciegas). Los totales
+    # USD (invested_usd/current_value_usd) ya valúan cada lote por su moneda nativa.
+    from behavioral import _native_ccy
+    _ccys = {_native_ccy(p) for p in positions}
+    currency = next(iter(_ccys)) if len(_ccys) == 1 else "MIXED"
 
     invested_usd = sum(
         _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False)
@@ -74,7 +79,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     current_value_usd = sum(
         _position_value_usd(p, prices, tc_blue, tc_cedear) for p in positions
     )
-    avg_price = (invested / qty) if qty > 0 else None
+    # avg_price solo si todos los lotes comparten moneda (sumar invested ARS+USD
+    # daría un promedio sin sentido).
+    avg_price = (invested / qty) if (qty > 0 and currency != "MIXED") else None
     # Precio actual por unidad, en moneda nativa (.BA ARS para AR, US$ para USD).
     # price_override (manual) tiene prioridad, igual que el valor (que lo respeta
     # vía _position_value_usd) — antes el precio unitario lo ignoraba. (LOW item 4.)

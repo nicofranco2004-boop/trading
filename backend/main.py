@@ -503,6 +503,27 @@ def init_db():
     cols = _table_cols(conn, 'positions')
     if cols and 'currency' not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN currency TEXT")
+    # Backfill de currency NULL (lotes manuales viejos + pre-migración): la moneda
+    # nativa es USD si el asset es un token de cash USD, ARS si asset='ARS', si no
+    # ARS cuando el broker es ARS y USD en cualquier otro (sub-broker '· USD' es
+    # currency USDT). Mismo criterio que behavioral._native_ccy resuelto por broker.
+    # Sin esto los lotes NULL mezclan ARS+USD en el FIFO/agrupado por moneda.
+    # Idempotente (solo toca NULL); los lotes importados ya traen currency.
+    try:
+        conn.execute("""
+            UPDATE positions
+               SET currency = CASE
+                     WHEN UPPER(asset) IN ('USDT','USDC','USD','DAI','BUSD','TUSD') THEN 'USD'
+                     WHEN UPPER(asset) = 'ARS' THEN 'ARS'
+                     WHEN (SELECT br.currency FROM brokers br
+                            WHERE br.user_id = positions.user_id
+                              AND br.name = positions.broker) = 'ARS' THEN 'ARS'
+                     ELSE 'USD'
+                   END
+             WHERE currency IS NULL OR currency = ''
+        """)
+    except Exception:
+        pass  # no fatal en el boot
     # Migración: columna asset_type — clasificación del activo (CEDEAR/STOCK/ETF/…).
     # Crítica para valuar bien un CEDEAR comprado en USD (dólar-MEP): sin asset_type
     # el frontend lo precia como la acción US (≈100× inflado) en vez del CEDEAR (.BA).
@@ -5544,6 +5565,10 @@ class PositionIn(BaseModel):
     # Clasificación del activo (CEDEAR/STOCK/ETF/…). Para un CEDEAR comprado en USD
     # define que se valúe por su precio LOCAL (.BA), no por la acción US del ticker.
     asset_type: Optional[str] = Field(None, max_length=16)
+    # Moneda nativa del lote ('ARS'|'USD'|'USDT'). El MISMO ticker se puede tener
+    # en pesos Y en dólares; sin moneda por lote, las dos patas se mezclan (FIFO
+    # cruzado, P&L basura). None → el backend la infiere del broker.
+    currency: Optional[str] = Field(None, max_length=8)
 
     @field_validator('entry_date')
     @classmethod
@@ -5553,6 +5578,14 @@ class PositionIn(BaseModel):
         if not _DATE_RE.match(v):
             raise ValueError('Fecha inválida')
         return v
+
+    @field_validator('currency')
+    @classmethod
+    def clean_currency(cls, v):
+        if not v:
+            return None
+        u = v.strip().upper()
+        return u if u in ('ARS', 'USD', 'USDT') else None
 
     @field_validator('asset')
     @classmethod
@@ -5585,13 +5618,22 @@ def create_position(p: PositionIn, uid: int = Depends(get_current_user)):
         with conn:  # transacción atómica: insert + cash debit
             # Auto-fill entry_date a hoy si no viene del cliente
             entry_date = p.entry_date or datetime.utcnow().strftime("%Y-%m-%d")
+            # Moneda nativa del lote: explícita del form, o inferida del broker
+            # (ARS si el broker es ARS, USD si es el sub-broker '· USD'/USDT). Sin
+            # esto los lotes manuales quedaban NULL y se mezclaban ARS+USD en el FIFO.
+            resolved_ccy = p.currency
+            if not resolved_ccy and not p.is_cash:
+                _br = conn.execute(
+                    "SELECT currency FROM brokers WHERE user_id=? AND name=?",
+                    (uid, p.broker)).fetchone()
+                resolved_ccy = "ARS" if (_br and _br["currency"] == "ARS") else "USD"
             cur = conn.execute(
                 """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
-                   invested, tc_compra, price_override, notes, entry_date, commissions, asset_type)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
                  p.invested, p.tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
-                 (p.asset_type or None)),
+                 (p.asset_type or None), resolved_ccy),
             )
             new_id = cur.lastrowid
 
@@ -5630,11 +5672,12 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_current_user
         """UPDATE positions SET broker=?, asset=?, is_cash=?, buy_price=?, quantity=?,
            invested=?, tc_compra=?, price_override=?, notes=?, commissions=?,
            entry_date=COALESCE(?, entry_date),
-           asset_type=COALESCE(?, asset_type)
+           asset_type=COALESCE(?, asset_type),
+           currency=COALESCE(?, currency)
            WHERE id=? AND user_id=?""",
         (p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
          p.invested, p.tc_compra, p.price_override, p.notes, p.commissions or 0,
-         p.entry_date, (p.asset_type or None), pid, uid),
+         p.entry_date, (p.asset_type or None), p.currency, pid, uid),
     )
     conn.commit()
     # FIXED: include user_id in SELECT to prevent IDOR data leak
@@ -7687,6 +7730,9 @@ class SellIn(BaseModel):
     date: Optional[str] = Field(None, max_length=10)
     tc_venta: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)  # opcional para brokers ARS
     commissions: Optional[float] = Field(0, ge=0, le=_FINITE_BOUND)  # comisión total de la venta (en moneda nativa del broker)
+    # Moneda de la venta ('ARS'|'USD'). Define qué LOTES consume el FIFO: el mismo
+    # ticker se puede tener en pesos y en dólares. None → la del broker (back-compat).
+    currency: Optional[str] = Field(None, max_length=8)
 
     @field_validator('exit_price', 'quantity', 'tc_venta', 'commissions')
     @classmethod
@@ -7728,16 +7774,30 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
             currency = br["currency"] if br else "USDT"
             # Moneda de venta normalizada (USDT→USD) + blue actual como fallback
             # para la conversión de cost basis cross-currency.
-            sell_ccy = "ARS" if currency == "ARS" else "USD"
+            # Moneda de la venta: la que elige el user (data.currency) o la del
+            # broker (back-compat). Define qué LOTES consume el FIFO.
+            if data.currency:
+                sell_ccy = "ARS" if data.currency.strip().upper() == "ARS" else "USD"
+            else:
+                sell_ccy = "ARS" if currency == "ARS" else "USD"
             cur_blue = _user_tc_blue(conn, uid)
 
-            # Posiciones del par, FIFO por entry_date (NULLs al final como fallback), tie-break por id
-            positions = conn.execute(
+            # Posiciones del par, FIFO por entry_date (NULLs al final), tie-break por id.
+            all_positions = conn.execute(
                 """SELECT * FROM positions
                    WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
                    ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
                 (uid, data.broker, data.asset)
             ).fetchall()
+            # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo
+            # ticker se puede tener en ARS y USD). La moneda nativa de cada lote la
+            # resuelve behavioral._native_ccy (cubre currency NULL legacy). Si NO hay
+            # lotes de la moneda de la venta (data vieja / dólar-MEP legacy), cae a
+            # TODOS con conversión cross-currency (red de seguridad: no rompe P&L
+            # existente ni genera seeds fantasma).
+            from behavioral import _native_ccy
+            _same_ccy = [p for p in all_positions if _native_ccy(dict(p)) == sell_ccy]
+            positions = _same_ccy if _same_ccy else all_positions
 
             total = sum((p["quantity"] or 0) for p in positions)
             if data.quantity > total + 1e-9:

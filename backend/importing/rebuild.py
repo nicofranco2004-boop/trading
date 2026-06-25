@@ -144,7 +144,16 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         tc_venta = tc_blue if sell_currency == "ARS" else 1.0
         remaining = qty_to_sell
 
-        for lot in lots:
+        # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo ticker
+        # se puede tener en ARS y USD). Los lots son dicts compartidos: consumir los
+        # de _consume_from reduce su qty y deja intactos los de otra moneda. Si NO
+        # hay lotes de esa moneda (legacy), cae a todos (cross-currency, red de
+        # seguridad). En import el routing ya separa por broker → no-op para data
+        # ruteada; cubre same-broker dual-currency.
+        _same = [l for l in lots if (l["currency"] or currency) == currency]
+        _consume_from = _same if _same else lots
+
+        for lot in _consume_from:
             if remaining <= _EPS:
                 break
             pos_qty = lot["qty"]

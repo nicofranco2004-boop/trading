@@ -46,7 +46,7 @@ export const today = () => new Date().toISOString().slice(0, 10)
 export const EMPTY_POS = {
   broker: '', asset: '', is_cash: false,
   buy_price: '', quantity: '', invested: '', tc_compra: '', commissions: '', notes: '',
-  entry_date: '', asset_type: '',
+  entry_date: '', asset_type: '', currency: '',
 }
 
 // Categoría del flujo "Agregar" → asset_type guardado. Lo importante es CEDEAR:
@@ -482,6 +482,9 @@ function PositionsDesktop() {
       tc_compra: form.tc_compra !== '' ? +form.tc_compra : null,
       commissions: form.commissions !== '' ? +form.commissions : 0,
       entry_date: form.entry_date || null,
+      // Moneda del lote (mismo ticker en ARS vs USD). Vacío → el backend la
+      // infiere del broker.
+      currency: form.currency || null,
     }
     // MAN-03: no guardar posiciones rotas. Sin activo/cantidad/precio quedan
     // valuadas en $0 y el usuario concluye que "la app no funciona".
@@ -516,13 +519,20 @@ function PositionsDesktop() {
   function openSell(p) {
     if (p.is_cash) return
     const broker = brokers.find(b => b.name === p.broker)
-    const isARS = broker?.currency === 'ARS'
+    // Moneda de la venta = la del LOTE (el mismo ticker se puede tener en ARS y
+    // USD). Define qué lotes consume el FIFO y la sugerencia de precio/tc.
+    const posCcy = (p.currency || '').toUpperCase()
+    const sellCcy = posCcy === 'ARS' ? 'ARS'
+      : (posCcy === 'USD' || posCcy === 'USDT') ? 'USD'
+      : isArUsdBroker(p.broker) ? 'USD'
+      : (broker?.currency === 'ARS' ? 'ARS' : 'USD')
+    const isARS = sellCcy === 'ARS'
     const c = isARS ? calcARS(p) : calcUSDT(p)
     const suggested = isARS ? c.priceArs : c.price
     setSellForm({
       broker: p.broker,
       asset: p.asset,
-      currency: broker?.currency || 'USDT',
+      currency: sellCcy,
       quantity: '',
       exit_price: suggested != null ? +suggested.toFixed(4) : '',
       tc_venta: isARS ? +tcBlue.toFixed(2) : '',
@@ -540,6 +550,8 @@ function PositionsDesktop() {
       exit_price: +sellForm.exit_price,
       date: sellForm.date,
       commissions: sellForm.commissions !== '' ? +sellForm.commissions : 0,
+      // Moneda de la venta → el FIFO consume solo lotes de esa moneda.
+      currency: sellForm.currency === 'ARS' ? 'ARS' : 'USD',
       ...(sellForm.currency === 'ARS' && sellForm.tc_venta ? { tc_venta: +sellForm.tc_venta } : {}),
     }
     if (!body.quantity || body.quantity <= 0) return toast.push('La cantidad ingresada no es válida.', { type: 'warn' })
@@ -757,16 +769,20 @@ function PositionsDesktop() {
   // El P&L no realizado de la posición abierta = valor − costo (independiente
   // del orden de lotes), así que sumar los lotes ABIERTOS da el costo FIFO
   // correcto. id 'agg:...' la distingue de una posición real (no se edita/borra).
-  function _buildAgg(asset, lots) {
+  function _buildAgg(asset, lots, ccy) {
     const totalQty = lots.reduce((s, x) => s + (x.quantity || 0), 0)
     const totalInv = lots.reduce((s, x) => s + (x.invested || 0), 0)
     const totalComm = lots.reduce((s, x) => s + (x.commissions || 0), 0)
     const overrides = [...new Set(lots.map(x => x.price_override).filter(v => v != null))]
     const dates = lots.map(x => x.entry_date).filter(Boolean).sort()
     return {
-      id: `agg:${lots[0].broker}:${asset}`,
+      id: `agg:${lots[0].broker}:${asset}:${ccy || ''}`,
       broker: lots[0].broker,
       asset,
+      // Moneda del grupo: el agregado suma SOLO lotes de la misma moneda, así que
+      // currency/buy_price/asset_type quedan consistentes y la valuación es correcta.
+      currency: ccy || lots[0].currency || null,
+      asset_type: lots[0].asset_type || null,
       is_cash: false,
       quantity: totalQty,
       invested: totalInv,
@@ -785,16 +801,26 @@ function PositionsDesktop() {
   function aggregateAndSort(arr, isARS) {
     const cash = arr.filter(p => p.is_cash)
     const noCash = arr.filter(p => !p.is_cash)
+    // Agrupar por (asset, MONEDA): el MISMO ticker se puede tener en pesos Y en
+    // dólares en el mismo broker (dólar-MEP) → dos filas separadas, cada una con su
+    // P&L/valuación. La moneda sale de p.currency (estampada por el backend); si
+    // falta, se infiere (sub-broker '· USD' → USD; si no, el contexto del broker).
     const byAsset = new Map()
     for (const p of noCash) {
-      if (!byAsset.has(p.asset)) byAsset.set(p.asset, [])
-      byAsset.get(p.asset).push(p)
+      const c = (p.currency || '').toUpperCase()
+      const ccy = c === 'ARS' ? 'ARS'
+        : (c === 'USD' || c === 'USDT') ? 'USD'
+        : isArUsdBroker(p.broker) ? 'USD'
+        : (isARS ? 'ARS' : 'USD')
+      const k = `${p.asset}::${ccy}`
+      if (!byAsset.has(k)) byAsset.set(k, { asset: p.asset, ccy, lots: [] })
+      byAsset.get(k).lots.push(p)
     }
     const groups = []
-    for (const [asset, lots] of byAsset) {
+    for (const [, { asset, ccy, lots }] of byAsset) {
       groups.push(lots.length === 1
-        ? { key: `t:${asset}`, p: lots[0], lots, isAgg: false }
-        : { key: `t:${asset}`, p: _buildAgg(asset, lots), lots, isAgg: true })
+        ? { key: `t:${asset}:${ccy}`, p: lots[0], lots, isAgg: false }
+        : { key: `t:${asset}:${ccy}`, p: _buildAgg(asset, lots, ccy), lots, isAgg: true })
     }
     const cmp = _posComparator(isARS)
     groups.sort((ga, gb) => cmp(ga.p, gb.p))

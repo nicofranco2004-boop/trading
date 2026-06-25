@@ -427,12 +427,23 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         sell_currency = broker_currency  # fallback defensivo
     currency = sell_currency  # alias usado abajo (mantengo el nombre antiguo)
 
-    positions = conn.execute(
+    # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo ticker se
+    # puede tener en ARS y USD). En import el routing ya separa ARS (padre)/USD
+    # (sibling) por broker → esto es un no-op para data ruteada; cubre el caso
+    # same-broker dual-currency y lotes NULL legacy. Fallback a todos si no hay
+    # lotes de esa moneda (red de seguridad: no rompe P&L existente).
+    from behavioral import _native_ccy as _nccy
+
+    def _by_ccy(rows):
+        same = [p for p in rows if _nccy(dict(p)) == currency]
+        return same if same else rows
+
+    positions = _by_ccy(conn.execute(
         """SELECT * FROM positions
            WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
            ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
         (uid, tx.broker, tx.asset_symbol),
-    ).fetchall()
+    ).fetchall())
     total_avail = sum((p["quantity"] or 0) for p in positions)
     qty_to_sell = float(tx.quantity or 0)
 
@@ -461,13 +472,14 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         # Linkear el seed lot al batch para que el revert lo borre. Sin esto
         # quedaba una posición fantasma que sobrevivía todos los reverts (B3).
         _link(conn, batch_id, raw_row_id, position_id=seed_cur.lastrowid)
-        # Re-leer positions para que el FIFO encuentre el seed lot
-        positions = conn.execute(
+        # Re-leer positions para que el FIFO encuentre el seed lot (mismo filtro
+        # por moneda — el seed se creó en la moneda de la venta).
+        positions = _by_ccy(conn.execute(
             """SELECT * FROM positions
                WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
                ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
             (uid, tx.broker, tx.asset_symbol),
-        ).fetchall()
+        ).fetchall())
         total_avail = sum((p["quantity"] or 0) for p in positions)
 
     exit_price = float(tx.unit_price or 0)
