@@ -74,8 +74,12 @@ _OP_MAP = {
     "nota de credito conversion":  "DEPOSITO",
 }
 
-# Tipos reconocidos pero que skipeamos (evitar doble conteo / ruido).
-_OP_SKIP = {"dividendos en especie"}
+# Tipos reconocidos pero que skipeamos (evitar doble conteo / ruido). El caso
+# "dividendos/renta en especie" ya NO se skipea en bloque: se discrimina en
+# parse() según el instrumento (USD/acciones en especie → skip; pesos → ingreso),
+# porque había maduraciones de bonos acreditadas "en especie" por millones de
+# pesos que se estaban perdiendo.
+_OP_SKIP: set = set()
 
 
 def _resolve_op(tipo: str) -> Optional[str]:
@@ -90,6 +94,15 @@ def _resolve_op(tipo: str) -> Optional[str]:
     """
     if tipo in _OP_MAP:
         return _OP_MAP[tipo]
+    # Dividendos PRIMERO (antes que las notas de crédito/débito genéricas, así
+    # "Nota Credito Dividendos ARS" cae como dividendo y no como depósito).
+    if "dividendo" in tipo:
+        return "DIVIDENDO"
+    # Renta (cupón) y/o amortización de bonos y LECAPs = ingreso de caja. Sin
+    # esto, "Renta Y Amortizacion" (maduración/amortización) se dropeaba y se
+    # perdían millones de pesos de ingresos para carteras de bonos.
+    if "amortizacion" in tipo or tipo.startswith("renta"):
+        return "DIVIDENDO"
     if tipo.startswith("recibo de cobro"):    # incluye "...dolares"
         return "DEPOSITO"
     if tipo.startswith("orden de pago"):
@@ -106,12 +119,22 @@ def _resolve_op(tipo: str) -> Optional[str]:
         # entra (DEPOSITO en USD). Sin esto, el ruteo por moneda partía las dos
         # patas en brokers distintos y quedaba una tenencia FANTASMA del bono.
         return "DEPOSITO" if tipo.startswith("venta") else "RETIRO"
+    if "caucion" in tipo:
+        # Caución colocadora: "contado/apertura" saca plata (la prestás) y
+        # "término/cierre" la devuelve con interés. La tratamos como flujo de
+        # caja por el signo del par (el neto es el interés ganado). Sin esto la
+        # fila se dropeaba y el saldo no cuadraba.
+        return "DEPOSITO" if ("termino" in tipo or "cierre" in tipo) else "RETIRO"
+    if "nota" in tipo and "credito" in tipo:
+        # Notas de crédito (devoluciones, ajustes, conversiones cable) = cash in.
+        return "DEPOSITO"
+    if "nota" in tipo and ("debito" in tipo or "débito" in tipo):
+        # Notas de débito (impuestos Bienes Personales / Ganancias, ajustes) = cash out.
+        return "FEE"
     if tipo.startswith("compra"):             # compra dolar mep / trading / etc.
         return "COMPRA"
     if tipo.startswith("venta"):
         return "VENTA"
-    if "dividendo" in tipo:
-        return "DIVIDENDO"
     return None
 
 # Ticker entre paréntesis al final de instrumento: 'CEDEAR TESLA, INC. (TSLA)' → 'TSLA'
@@ -283,10 +306,36 @@ class CocosParser(Parser):
             tipo_raw = G(row, "tipooperacion").lower()
             if not tipo_raw:
                 continue  # fila vacía o sin tipo
-            if tipo_raw in _OP_SKIP:
-                continue  # skip silencioso (ej: DIVIDENDOS EN ESPECIE)
+            instrumento = G(row, "instrumento")
+            moneda_raw = G(row, "moneda").upper()
 
-            tipo_rendi = _resolve_op(tipo_raw)
+            # Moneda no soportada (EXT = cable/exterior, "Concepto EXT migracion",
+            # "Nota De Credito Conversion Cable"): montos marginales (centavos) que
+            # no podemos representar en ARS/USD → skip silencioso.
+            if moneda_raw not in ("ARS", "USD", ""):
+                continue
+            # Canje (split / cambio de especie por reorg): no mueve caja y la qty
+            # la maneja una corporate action que no importamos → skip silencioso.
+            if "canje" in tipo_raw:
+                continue
+
+            # "En especie": Cocos lo usa para DOS cosas muy distintas —
+            #  (a) retención de un dividendo USD pagado en especie (instrumento
+            #      "Dólar estadounidense", total chico/negativo): el cash real
+            #      entra después como "Nota De Credito Conversion" → SKIP (evita
+            #      doble conteo); idem dividendo en ACCIONES (instrumento = ticker).
+            #  (b) amortización/maduración de un bono o LECAP acreditada EN PESOS
+            #      (instrumento "Peso argentino", total grande positivo): es CASH
+            #      real → la tomamos como ingreso (dividendo). Sin esto dropeábamos
+            #      millones de pesos de maduraciones acreditadas "en especie".
+            if "en especie" in tipo_raw:
+                instr_low = instrumento.lower()
+                if "peso argentino" in instr_low or not instrumento.strip():
+                    tipo_rendi = "DIVIDENDO"
+                else:
+                    continue
+            else:
+                tipo_rendi = _resolve_op(tipo_raw)
             if tipo_rendi is None:
                 # Tipo desconocido — lo reportamos pero seguimos con las demás.
                 result.parse_errors.append(RowError(
@@ -295,8 +344,6 @@ class CocosParser(Parser):
                 ))
                 continue
             fecha = _parse_date_ddmmyyyy(G(row, "fechaejecucion"))
-            instrumento = G(row, "instrumento")
-            moneda_raw = G(row, "moneda").upper()
             comprobante = G(row, "nrocomprobante")
 
             # Currency: Compra/Venta Dolar Mep son siempre USD; el resto desde la columna.
@@ -309,9 +356,11 @@ class CocosParser(Parser):
 
             # Asset (ticker)
             ticker = _extract_ticker(instrumento)
-            if tipo_rendi in ("DEPOSITO", "RETIRO", "DIVIDENDO"):
-                # Cash flows / dividendos sin asset asociado (incluye variantes
-                # como "Recibo De Cobro Dolares", que vienen sin instrumento).
+            if tipo_rendi in ("DEPOSITO", "RETIRO", "DIVIDENDO", "INTERES", "FEE"):
+                # Cash flows / dividendos / fees sin asset asociado (incluye
+                # variantes como "Recibo De Cobro Dolares", sin instrumento, y las
+                # notas de débito de impuestos, que sí traen ticker pero no son
+                # una operación sobre el activo).
                 ticker = None
             # asset_type hint: los CEDEARs de BYMA cotizan en pesos y se valúan por
             # su precio LOCAL (.BA), NO por la acción US del mismo ticker (el CEDEAR
