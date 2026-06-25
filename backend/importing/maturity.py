@@ -53,9 +53,12 @@ _CODE_BY_MONTH = {v: k for k, v in _MONTH_CODE.items()}
 # Símbolo de letra/LECAP: una letra inicial + día (1-2 díg) + código-mes + año (1 díg).
 _LETRA_RX = re.compile(r"^([A-Z])(\d{1,2})([EFMAYJLGSOND])(\d)$")
 
-# Fecha de vencimiento embebida en el NOMBRE del instrumento ("V11/11/24",
-# "V.14/02/25", "14/02/2025"). day/month/year (year de 2 o 4 dígitos).
-_NAME_DATE_RX = re.compile(r"V?\.?\s?(\d{1,2})/(\d{1,2})/(\d{2,4})\b")
+# Fecha de vencimiento en el NOMBRE del instrumento. Dos regex:
+#  - con prefijo "V"/"V." ("V11/11/24", "V.14/02/25") = marca explícita de venc.
+#  - suelta ("14/02/25") como fallback cuando el nombre no usa "V".
+# day/month/year (year de 2 o 4 dígitos).
+_VENC_DATE_RX = re.compile(r"V\.?\s?(\d{1,2})/(\d{1,2})/(\d{2,4})\b")
+_BARE_DATE_RX = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b")
 
 # Palabras que delatan una letra/bono corto del Tesoro (para el fallback del parser).
 _BOND_NAME_HINTS = ("letra", "lt rep", "lete", "lecap", "bono tesoro", "bono del tesoro",
@@ -90,14 +93,23 @@ def letra_maturity(symbol: Optional[str]) -> Optional[str]:
 
 
 def maturity_from_name(name: Optional[str]) -> Optional[str]:
-    """Extrae el vencimiento (ISO) de la fecha embebida en el nombre de una letra
-    ("LT REP ARGENTINA CAP V11/11/24 $ CG" → '2024-11-11'). None si no hay fecha."""
+    """Extrae el vencimiento (ISO) de la fecha embebida en el nombre de un bono/
+    letra ("LT REP ARGENTINA CAP V11/11/24 $ CG" → '2024-11-11'). None si no hay.
+
+    Como el sweep BORRA posiciones, somos cuidadosos para no cerrar por una fecha
+    que NO sea el vencimiento (ej. una fecha de emisión/amortización en el nombre):
+      1. Preferimos fechas con prefijo "V"/"V." (la marca explícita de vencimiento
+         en los nombres AR), y de ésas la ÚLTIMA.
+      2. Si no hay ninguna con "V", caemos a la ÚLTIMA fecha suelta del nombre
+         (el vencimiento suele ir al final; ej. "LETRAS DEL TESORO CAP $ 14/02/25").
+    """
     if not name:
         return None
-    m = _NAME_DATE_RX.search(name)
-    if not m:
+    v_matches = _VENC_DATE_RX.findall(name)          # con prefijo V — explícitas
+    matches = v_matches or _BARE_DATE_RX.findall(name)
+    if not matches:
         return None
-    dd, mm, yy = m.groups()
+    dd, mm, yy = matches[-1]
     year = int(yy)
     if year < 100:
         year += 2000
@@ -186,7 +198,14 @@ def sweep_matured_letras(conn, uid: int, *, ref_date: Optional[str] = None) -> D
             WHERE b.user_id = ? AND n.asset_name IS NOT NULL AND n.asset_symbol != ''""",
         (uid,),
     ).fetchall():
-        name_map.setdefault((r["broker"], r["asset_symbol"]), r["asset_name"])
+        key = (r["broker"], r["asset_symbol"])
+        # Preferimos el nombre que SÍ codifica un vencimiento: el mismo ticker
+        # puede venir con dos nombres en imports distintos (ej. T2X5 como "BONO
+        # DEL TESORO (T2X5)" sin fecha y "BONO TESORO ... V.14/02/25 (T2X5)" con
+        # fecha). setdefault se quedaba con el primero (a veces el sin fecha) →
+        # no cerraba el bono. Acá ganamos el que rinde un vencimiento parseable.
+        if key not in name_map or (maturity_from_name(r["asset_name"]) and not maturity_from_name(name_map[key])):
+            name_map[key] = r["asset_name"]
 
     rows = conn.execute(
         "SELECT id, broker, asset, quantity FROM positions "

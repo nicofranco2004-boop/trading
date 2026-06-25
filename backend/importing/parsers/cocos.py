@@ -444,7 +444,7 @@ class CocosParser(Parser):
             # NEGATIVO (el impuesto SALE de la cuenta). Es un costo, no un ingreso
             # → FEE. Sin esto, _abs_number_str borraba el signo y un -416 entraba
             # como +416 de dividendo (doble error de 833 por fila).
-            if tipo_rendi == "DIVIDENDO" and tipo_raw == "dividendos" \
+            if tipo_rendi == "DIVIDENDO" and tipo_raw.startswith("dividendos") \
                     and _clean_ar_number(G(row, "total")).startswith("-"):
                 tipo_rendi = "FEE"
 

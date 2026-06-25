@@ -61,6 +61,12 @@ class TestLetraMaturity(unittest.TestCase):
         self.assertEqual(maturity_from_name("LETRAS DEL TESORO CAP $ 14/02/25  (S14F5)"), "2025-02-14")
         self.assertIsNone(maturity_from_name("GRUPO FINANCIERO GALICIA (GGAL)"))
 
+    def test_maturity_from_name_prefiere_venc_no_amortizacion(self):
+        # Si el nombre trae DOS fechas (amortización + vencimiento), debe ganar la
+        # del prefijo "V" (vencimiento real), no la primera (amortización) — sino
+        # el sweep cerraría una posición VIVA antes de tiempo.
+        self.assertEqual(maturity_from_name("BONO AM. 15/03/25 V.15/06/27 (BXYZ)"), "2027-06-15")
+
     def test_is_bond_like_name(self):
         self.assertTrue(is_bond_like_name("LT REP ARGENTINA CAP V11/11/24 $ CG"))
         self.assertTrue(is_bond_like_name("LETRAS DEL TESORO CAP $ V31/07/25 (S31L5)"))
@@ -185,6 +191,33 @@ class TestSweep(unittest.TestCase):
             n = conn.execute("SELECT COUNT(*) c FROM positions WHERE user_id=? AND is_cash=0",
                              (self.uid,)).fetchone()["c"]
             self.assertEqual(n, 0)
+        finally:
+            conn.close()
+
+    def test_name_map_prefiere_nombre_con_fecha(self):
+        # T2X5 importado con DOS nombres (uno sin fecha primero, uno con fecha
+        # después): el sweep debe usar el que trae la fecha y cerrar igual.
+        conn = main.get_db()
+        try:
+            _seed_position(conn, self.uid, "Cocos", "T2X5", 27_286, linked=True)
+            conn.execute("INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status) "
+                         "VALUES (?,?,?,?)", ("batch_sweep_test", 1, "{}", "confirmed"))
+            conn.execute("INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status) "
+                         "VALUES (?,?,?,?)", ("batch_sweep_test", 2, "{}", "confirmed"))
+            ids = [r["id"] for r in conn.execute("SELECT id FROM import_raw_rows ORDER BY id").fetchall()]
+            # SIN fecha primero, CON fecha después
+            conn.execute("""INSERT INTO import_normalized_tx
+                 (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name)
+                 VALUES (?,?,?,?,?,?,?)""",
+                ("batch_sweep_test", ids[0], "2025-01-20", "Cocos", "BUY", "T2X5", "BONO DEL TESORO (T2X5)"))
+            conn.execute("""INSERT INTO import_normalized_tx
+                 (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name)
+                 VALUES (?,?,?,?,?,?,?)""",
+                ("batch_sweep_test", ids[1], "2025-01-23", "Cocos", "BUY", "T2X5",
+                 "BONO TESORO $ AJ. CER 4,25% V.14/02/25 (T2X5)"))
+            conn.commit()
+            res = sweep_matured_letras(conn, self.uid, ref_date="2026-06-25")
+            self.assertEqual({s["asset"] for s in res["swept"]}, {"T2X5"})
         finally:
             conn.close()
 
