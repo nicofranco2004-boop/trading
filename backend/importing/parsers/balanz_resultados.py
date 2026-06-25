@@ -55,10 +55,14 @@ _FIELD_ALIASES: Dict[str, List[str]] = {
     "cupones":        ["cupones", "cupon", "cupon"],
     "dividendos":     ["dividendos", "dividendo"],
     "intereses":      ["intereses", "interes"],
+    "_dolar":         ["operacionventadolarccl", "operacionventadolarmep", "dolarccl", "dolarmep"],
     "_hoja":          ["_hoja"],
 }
 
-_REQUIRED = ("tipo_mov", "activo", "precio_compra")
+# Detectamos el reporte de Resultados por: TipoMovimiento + Ticker + alguna
+# columna distintiva (precio de compra, cupones, o el TC del dólar por operación).
+_REQUIRED = ("tipo_mov", "activo")
+_DISCRIMINATORS = ("precio_compra", "cupones", "_dolar")
 
 
 def _norm_ccy(s: str) -> str:
@@ -137,7 +141,7 @@ class BalanzResultadosParser(Parser):
 
     def can_handle(self, headers: List[str]) -> bool:
         cols = _resolve_columns(headers)
-        return all(cols.get(f) for f in _REQUIRED)
+        return all(cols.get(f) for f in _REQUIRED) and any(cols.get(d) for d in _DISCRIMINATORS)
 
     def template_csv(self) -> str:
         # Balanz exporta esto como xlsx multi-hoja; el template muestra las
@@ -170,11 +174,24 @@ class BalanzResultadosParser(Parser):
             return result
 
         cols = _resolve_columns(headers)
-        if not all(cols.get(f) for f in _REQUIRED):
+        if not (all(cols.get(f) for f in _REQUIRED) and any(cols.get(d) for d in _DISCRIMINATORS)):
             result.parse_errors.append(RowError(
                 0, None, "BALANZ_RES_HEADERS_MISMATCH",
                 "Este archivo no coincide con el reporte de Resultados de Balanz "
                 "(Actividad → Resultados). Asegurate de subir el Excel completo."))
+            return result
+
+        # Variante CSV "sin precios": trae movimientos pero NO las columnas de
+        # precio (Precio Compra / PrecioVenta). Sin precio no hay posición ni
+        # P&L — solo cupones, que no alcanzan para una cartera. Mejor cortar con
+        # un mensaje accionable que importar una cartera vacía.
+        if not cols.get("precio_compra"):
+            result.parse_errors.append(RowError(
+                0, None, "BALANZ_RES_NO_PRICES",
+                "Este export de Balanz no incluye precios, así que no podemos "
+                "reconstruir posiciones ni P&L. Exportá el EXCEL de Resultados "
+                "(Actividad → Resultados → Excel/.xlsx), que sí trae los precios "
+                "de compra y venta — o usá el export de Operaciones → Órdenes."))
             return result
 
         def _g(row, field_name):

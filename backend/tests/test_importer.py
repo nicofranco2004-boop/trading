@@ -354,6 +354,22 @@ class BalanzResultadosParserTest(unittest.TestCase):
         self.assertEqual(len(res.parse_errors), 1)
         self.assertEqual(res.parse_errors[0].code, "BALANZ_RES_HEADERS_MISMATCH")
 
+    def test_price_less_csv_gives_actionable_error(self):
+        # La variante CSV de Resultados SIN columnas de precio se reconoce pero
+        # se rechaza con un mensaje que manda al Excel (que sí trae precios).
+        from importing.parsers.balanz_resultados import BalanzResultadosParser
+        csv = (
+            "Cantidad,Descripción,Fecha,Gastos,Moneda de venta,Operacion Compra,"
+            "Operación Venta,Ticker,Cupones,Tipo,TipoMovimiento,OperacionVentaDolarCCL,"
+            "OperacionVentaDolarMEP,OperacionVentaDolarOficial\n"
+            "1,BONO AE38,2026-06-24,4.3,,Boleto,,AE38,,Bonos - Dólar,No Realizado,1544,1499,1471\n"
+        )
+        p = BalanzResultadosParser()
+        self.assertTrue(p.can_handle(csv.splitlines()[0].split(",")))  # lo reconoce
+        res = p.parse(csv)
+        self.assertEqual(len(res.raw_rows), 0)
+        self.assertEqual(res.parse_errors[0].code, "BALANZ_RES_NO_PRICES")
+
 
 class BinanceTransactionHistoryTest(unittest.TestCase):
     """Parser del export completo de Binance (Spot + Futures + Funding)."""
