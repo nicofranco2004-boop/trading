@@ -166,62 +166,95 @@ class BinanceParserTest(unittest.TestCase):
 
 
 class BalanzParserTest(unittest.TestCase):
-    def test_parses_canonical_headers(self):
-        from importing.parsers.balanz import BalanzParser
-        csv = (
-            "Fecha Concertación,Fecha Liquidación,Tipo,Especie,Descripción,"
-            "Cantidad,Precio,Moneda,Importe Bruto,Comisiones,Importe Neto,Plazo,N° Boleto\n"
-            "15/01/2025,17/01/2025,Compra,GGAL,Grupo Galicia,100,4850.00,ARS,485000.00,2425.00,487425.00,48hs,001234567\n"
-            "05/02/2025,07/02/2025,Venta,AL30,Bonar 2030,1000,68.45,USD,684.50,3.42,681.08,48hs,001235012\n"
-        )
-        parser = BalanzParser()
-        result = parser.parse(csv)
-        self.assertEqual(len(result.parse_errors), 0)
-        self.assertEqual(len(result.raw_rows), 2)
-        first = result.raw_rows[0].data
-        self.assertEqual(first["fecha"], "15/01/2025")
-        self.assertEqual(first["tipo"], "Compra")
-        self.assertEqual(first["activo"], "GGAL")
-        self.assertEqual(first["moneda"], "ARS")
-        self.assertEqual(first["broker"], "Balanz")
-        self.assertIn("Boleto 001234567", first["notas"])
+    """Parser del export real de Órdenes de Balanz (formato 'ordenes')."""
 
-    def test_handles_pesos_dolares_variants(self):
+    _HEADERS = ("Operacion,Estado,id Orden,Ticker,Moneda,Fecha,Hora,Cantidad,"
+                "Precio,Monto,Precio Operado,Cantidad Operada\n")
+
+    def _parse(self, body):
+        from importing.parsers.balanz import BalanzParser
+        return BalanzParser().parse(self._HEADERS + body)
+
+    def test_can_handle_ordenes(self):
+        from importing.parsers.balanz import BalanzParser
+        self.assertTrue(BalanzParser().can_handle(self._HEADERS.strip().split(",")))
+
+    def test_parses_compra_venta(self):
+        res = self._parse(
+            "Compra 24hs,Ejecutada,1,ALUA,Pesos,2026-01-17,13:37:05,157,3963.2,622222.4,3963.2,157\n"
+            "Venta CI,Ejecutada,2,GGAL,Pesos,2026-01-20,11:02:10,100,8200,820000,8200,100\n"
+        )
+        self.assertEqual(len(res.parse_errors), 0)
+        self.assertEqual(len(res.raw_rows), 2)
+        a, b = res.raw_rows[0].data, res.raw_rows[1].data
+        self.assertEqual(a["tipo"], "COMPRA")
+        self.assertEqual(a["activo"], "ALUA")
+        self.assertEqual(a["broker"], "Balanz")
+        self.assertEqual(a["moneda"], "ARS")
+        self.assertEqual(b["tipo"], "VENTA")
+
+    def test_filters_non_executed(self):
+        res = self._parse(
+            "Compra CI,Cancelada,1,ALUA,Pesos,2026-01-17,10:00:00,10,100,1000,-1,-1\n"
+            "Compra CI,Rechazada,2,GGAL,Pesos,2026-01-17,10:00:00,10,100,1000,-1,-1\n"
+            "Compra CI,Ejecutada,3,YPFD,Pesos,2026-01-17,10:00:00,10,100,1000,100,10\n"
+        )
+        self.assertEqual(len(res.raw_rows), 1)  # solo la Ejecutada
+        self.assertEqual(res.raw_rows[0].data["activo"], "YPFD")
+
+    def test_skips_plumbing(self):
+        # Transferencia, Dólar Bolsa, Suscripción, Canje, Caución → no son trades.
+        res = self._parse(
+            "Transferencia,Ejecutada,1,,Pesos,2026-01-06,19:00:00,-1,-1,12057.94,-1,-1\n"
+            "Compra Dólar Bolsa,Ejecutada,2,FCI02,Pesos,2026-01-06,19:00:00,212,659.88,139673,1,-1\n"
+            "Suscripción Desde Cuenta Balanz,Ejecutada,3,DOLAR,Dólares,2026-01-06,19:00:00,-1,-1,182,118.46,1.54\n"
+            "Canje,Ejecutada,4,,Dólares C.V. 7000,2026-01-06,19:00:00,111,-1,96.66,-1,111\n"
+            "Caución Colocadora 24hs,Ejecutada,5,CAUC1,Pesos,2026-01-06,19:00:00,1,1,1000,1,1\n"
+            "Compra CI,Ejecutada,6,ALUA,Pesos,2026-01-06,19:00:00,10,100,1000,100,10\n"
+        )
+        self.assertEqual(len(res.raw_rows), 1)  # solo la Compra de ALUA
+        self.assertEqual(res.raw_rows[0].data["activo"], "ALUA")
+
+    def test_prefers_executed_values(self):
+        # Cantidad/Precio Operada ganan sobre los ordenados (fill parcial).
+        res = self._parse(
+            "Compra CI,Parcialmente Cancelada,1,ALUA,Pesos,2026-01-17,10:00:00,100,4000,400000,3963.2,60\n"
+        )
+        self.assertEqual(len(res.raw_rows), 1)
+        d = res.raw_rows[0].data
+        self.assertEqual(d["cantidad"], "60.0")     # operada, no 100
+        self.assertEqual(d["precio"], "3963.2")     # operado, no 4000
+
+    def test_executed_sentinel_falls_back(self):
+        # Si Operada viene -1 (centinela), cae a la ordenada.
+        res = self._parse(
+            "Compra CI,Ejecutada,1,ALUA,Pesos,2026-01-17,10:00:00,157,3963.2,622222,-1,-1\n"
+        )
+        self.assertEqual(res.raw_rows[0].data["cantidad"], "157.0")
+        self.assertEqual(res.raw_rows[0].data["precio"], "3963.2")
+
+    def test_currency_variants(self):
         from importing.parsers.balanz import _norm_currency
         self.assertEqual(_norm_currency("Pesos"), "ARS")
-        self.assertEqual(_norm_currency("$"), "ARS")
         self.assertEqual(_norm_currency("Dólares"), "USD")
-        self.assertEqual(_norm_currency("U$S"), "USD")
-        self.assertEqual(_norm_currency("USD"), "USD")
+        self.assertEqual(_norm_currency("Dólares C.V. 7000"), "USD")
+        self.assertEqual(_norm_currency("US Dollar (Cable)"), "USD")
+
+    def test_classifies_asset_type(self):
+        from importing.parsers.balanz import _classify_asset
+        self.assertEqual(_classify_asset("GD30"), "BOND")     # soberano
+        self.assertEqual(_classify_asset("S31L5"), "BOND")    # letra
+        self.assertEqual(_classify_asset("TECPO"), "BOND")    # ON
+        self.assertEqual(_classify_asset("BPOA7"), "BOND")    # BOPREAL
+        self.assertEqual(_classify_asset("FCI02"), "FUND")    # fondo
+        self.assertIsNone(_classify_asset("ALUA"))            # acción
+        self.assertIsNone(_classify_asset("AUSO"))            # acción terminada en O (≤4 chars)
 
     def test_rejects_non_balanz_csv(self):
         from importing.parsers.balanz import BalanzParser
-        csv = "Date,Pair,Side\n2024-01-01,BTCUSDT,BUY\n"
-        parser = BalanzParser()
-        result = parser.parse(csv)
-        self.assertEqual(len(result.parse_errors), 1)
-        self.assertEqual(result.parse_errors[0].code, "BALANZ_HEADERS_MISMATCH")
-
-    def test_accepts_gemini_variant_headers(self):
-        # Variante reportada por Gemini: "Fecha de Liquidación" + "Tipo de Operación"
-        # + "Cantidad / Valor Nominal" + "Arancel / Comisión" + "Monto Neto"
-        from importing.parsers.balanz import BalanzParser
-        csv = (
-            "Fecha de Liquidación,Tipo de Operación,Especie,Cantidad / Valor Nominal,"
-            "Precio,Moneda,Arancel / Comisión,Monto Neto,Plazo\n"
-            "15/05/2026,Compra,AL30,1000,54500.00,USD,250.40,54750.40,48hs\n"
-            "20/05/2026,Venta,GGAL,50,8200.00,ARS,820.00,409180.00,CI\n"
-        )
-        parser = BalanzParser()
-        result = parser.parse(csv)
-        self.assertEqual(len(result.parse_errors), 0, f"errors: {result.parse_errors}")
-        self.assertEqual(len(result.raw_rows), 2)
-        first = result.raw_rows[0].data
-        self.assertEqual(first["activo"], "AL30")
-        self.assertEqual(first["tipo"], "Compra")
-        self.assertEqual(first["moneda"], "USD")
-        self.assertEqual(first["cantidad"], "1000")
-        self.assertEqual(first["comisiones"], "250.40")
+        res = BalanzParser().parse("Date,Pair,Side\n2024-01-01,BTCUSDT,BUY\n")
+        self.assertEqual(len(res.parse_errors), 1)
+        self.assertEqual(res.parse_errors[0].code, "BALANZ_HEADERS_MISMATCH")
 
 
 class BinanceTransactionHistoryTest(unittest.TestCase):

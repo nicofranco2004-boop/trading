@@ -96,12 +96,6 @@ const PLATFORM_BASE_CURRENCY = {
 // vía withBlockedPlatforms(); las que sí lo tienen (ej: Balanz) ya vienen del
 // registry, así que no se duplican.
 const BLOCKED_IMPORT_PLATFORMS = {
-  balanz: {
-    label: 'Balanz',
-    title: 'La importación de Balanz todavía no está disponible',
-    body: 'Estamos terminando de soportar el formato de exportación de Balanz. Si tenés operaciones de Balanz, escribinos por WhatsApp y te ayudamos a cargarlas.',
-    waMessage: 'Hola, tengo operaciones de Balanz y quiero importarlas a Rendi.',
-  },
   iol: {
     label: 'IOL',
     title: 'La importación de IOL todavía no está disponible',

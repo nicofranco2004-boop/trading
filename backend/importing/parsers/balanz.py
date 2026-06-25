@@ -1,126 +1,138 @@
-"""Parser de Balanz — formato de export real de la app móvil.
+"""Parser de Balanz — export real de "Órdenes" (app/web Balanz).
 
-Headers del CSV "Resultados del período" de Balanz (Actividad → Reportes →
-Resultados del período):
+Headers del export de órdenes (Operaciones → Órdenes → Exportar):
 
-    Tipo, Ticker, Descripcion, Fecha, FechaLote, Cantidad, PrecioCompra,
-    Gastos, Moneda, Operacion, DolarMEP, DolarCCL, DolarOficial
+    Operacion, Estado, id Orden, Ticker, Moneda, Fecha, Hora, Cantidad,
+    Precio, Monto, Precio Operado, Cantidad Operada
 
-Distinción clave del formato actual de Balanz:
-  • `Tipo`      = tipo de INSTRUMENTO (Acción / Bono / CEDEAR / FCI / Letra…)
-  • `Operacion` = tipo de OPERACIÓN  (Compra / Venta / Dividendo / Cupón / …)
+Particularidades del formato y decisiones de importación:
 
-Particularidades manejadas:
-- Fechas DD/MM/YYYY (formato AR) — el normalizer convierte a YYYY-MM-DD.
-- Decimales con coma o punto (toleramos ambos).
-- Moneda: ARS / USD / Pesos / Dólares — normalizamos.
-- `DolarMEP/CCL/Oficial` stampados por operación → los guardamos en `notas`
-  para que el persister tenga referencia histórica del FX.
-- `FechaLote`: identifica el lote consumido en ventas. Lo guardamos en
-  `notas` (audit-only); el FIFO interno de Rendi sigue su propia lógica.
+- `Estado`: solo importamos `Ejecutada` y `Parcialmente Cancelada`. Las
+  Cancelada / Rechazada / "Finalizada (Cancelando)" son ruido (no son trades).
+- `Operacion` trae el plazo de liquidación pegado: "Compra 24hs", "Venta CI",
+  "Compra 48hs". Solo importamos compra/venta de TÍTULOS. El resto es plumbing
+  de cash/FX que NO mapea limpio y se saltea (ver `_map_operacion`):
+    • Transferencia → sin señal de dirección (Monto siempre positivo) → skip.
+    • Compra/Venta Dólar Bolsa → MEP ejecutado vía un FCI de liquidez → skip.
+    • Suscripción/Rescate (Cuenta/Banco) → fondos de liquidez (parking) → skip.
+    • Canje → sin ticker → skip. Caución / Cambio de Fondo → skip.
+- Usamos `Cantidad Operada` / `Precio Operado` (lo realmente ejecutado), con
+  fallback a `Cantidad` / `Precio` si vienen con el centinela -1.
+- Moneda: Pesos→ARS; Dólares / "Dólares C.V. …" / "US Dollar (Cable)"→USD.
+- Fecha en ISO (YYYY-MM-DD). Sin columna de comisiones en este export.
+- `asset_type`: clasificamos por patrón de ticker (BOND para renta fija, FUND
+  para FCI). Esto alimenta el guard anti-distorsión de la valuación, que para
+  renta fija usa una banda estrecha (un bono no multibaggea) — así un ticker
+  mal-priceado nunca infla la posición ×100.
 
-COMPAT con formato viejo (hipotético): si en algún momento Balanz cambió el
-export y "Tipo" cumplía el rol de "Operacion" (Compra/Venta directamente),
-el parser cae a ese fallback automáticamente.
-
-LIMITACIÓN: este parser fue construido a partir de un export muestra. Si
-Balanz cambia el formato (renombres, columnas nuevas), puede requerir
-ajustes. Si los headers no matchean, usá el template genérico de Rendi.
+LIMITACIÓN: construido sobre un export real (2026-01). Si Balanz cambia los
+headers, puede requerir ajustes; si no matchean, usá el template genérico.
 """
 from __future__ import annotations
 import csv
 import io
+import re
 from typing import Dict, List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
 
 
 def _norm_header(h: str) -> str:
-    """Normaliza headers para comparación: lowercase + saca tildes/eñe + reemplaza
-    separadores raros (°, /, -) por espacios. Caracteres camelCase pegados como
-    PrecioCompra → preciocompra (sin separador)."""
+    """lowercase + saca tildes + colapsa espacios. 'Precio Operado' →
+    'precio operado'; 'id Orden' → 'id orden'."""
     if not h:
         return ""
     s = (h.strip().lower()
            .replace("ó", "o").replace("í", "i").replace("á", "a")
-           .replace("é", "e").replace("ú", "u").replace("ñ", "n")
-           .replace("°", "").replace("/", " ").replace("-", " "))
+           .replace("é", "e").replace("ú", "u").replace("ñ", "n"))
     return " ".join(s.split())
 
 
-# Mapping de campos internos → posibles headers reales del CSV.
-# Cubre el formato actual de la app de Balanz (camelCase pegados como
-# "PrecioCompra", "FechaLote", "DolarMEP") y variantes con separadores.
+# Mapping de campos internos → headers reales del export de órdenes de Balanz.
 _FIELD_ALIASES: Dict[str, List[str]] = {
-    "fecha": [
-        "fecha", "fecha operacion", "fecha de operacion",
-        "fecha concertacion", "fecha de concertacion",
-        "fecha liquidacion", "fecha de liquidacion",
-    ],
-    "fecha_lote": [
-        "fechalote", "fecha lote", "fecha de lote", "fecha del lote",
-    ],
-    "operacion": [
-        "operacion", "tipo de operacion", "tipo operacion", "movimiento",
-    ],
-    "tipo_instrumento": [
-        "tipo", "tipo instrumento", "tipo de instrumento", "clase",
-    ],
-    "activo": [
-        "ticker", "especie", "simbolo", "instrumento",
-    ],
-    "cantidad": [
-        "cantidad", "valor nominal", "cantidad valor nominal",
-        "nominales", "vn", "qty", "quantity",
-    ],
-    "precio": [
-        # Header real del export actual: "PrecioCompra" → norm "preciocompra".
-        # Aliases adicionales por si Balanz cambia el wording.
-        "preciocompra", "precio compra", "precio",
-        "precio unitario", "precio promedio", "preciopromedio",
-    ],
-    "moneda": [
-        "moneda", "moneda operacion", "moneda de la operacion",
-    ],
-    "monto": [
-        "importe bruto", "monto bruto", "bruto",
-        "importe neto", "monto neto", "neto", "monto", "importe",
-    ],
-    "comisiones": [
-        # Header real del export actual: "Gastos".
-        "gastos", "gastos comisiones", "gastos y comisiones",
-        "comisiones", "comision", "arancel",
-    ],
-    "dolar_mep":     ["dolarmep", "dolar mep"],
-    "dolar_ccl":     ["dolarccl", "dolar ccl"],
-    "dolar_oficial": ["dolaroficial", "dolar oficial"],
-    "_descripcion":  ["descripcion", "detalle"],
-    "_boleto": [
-        "n boleto", "nro boleto", "numero boleto", "boleto",
-        "n operacion", "nro operacion", "comprobante",
-    ],
+    "operacion":       ["operacion", "operación", "tipo", "tipo de operacion"],
+    "estado":          ["estado", "status"],
+    "_id_orden":       ["id orden", "id de orden", "nro orden", "n orden", "orden id"],
+    "activo":          ["ticker", "especie", "simbolo", "instrumento", "activo"],
+    "moneda":          ["moneda", "moneda operacion"],
+    "fecha":           ["fecha", "fecha operacion", "fecha concertacion", "fecha de concertacion"],
+    "_hora":           ["hora"],
+    "cantidad":        ["cantidad", "cantidad ordenada", "nominales", "valor nominal"],
+    "precio":          ["precio", "precio ordenado", "precio unitario"],
+    "monto":           ["monto", "importe", "importe bruto", "monto bruto"],
+    "precio_operado":  ["precio operado", "precio ejecutado", "precio promedio operado"],
+    "cantidad_operada": ["cantidad operada", "cantidad ejecutada", "nominales operados"],
 }
 
-# Para detectar Balanz exigimos al menos: fecha + ticker + una indicación de op
-# (Operacion en formato nuevo, o Tipo en formato viejo hipotético).
-_REQUIRED_NEW = ("fecha", "operacion", "activo")
-_REQUIRED_OLD = ("fecha", "tipo_instrumento", "activo")
+# Para detectar Balanz-órdenes: operación + estado + ticker + fecha, y al menos
+# una columna distintiva del export de órdenes (id orden / precio operado /
+# cantidad operada) para no matchear otros brokers AR.
+_REQUIRED = ("operacion", "estado", "activo", "fecha")
+_DISCRIMINATORS = ("_id_orden", "precio_operado", "cantidad_operada")
+
+# Estados que representan un trade real (consumieron al menos parte de la orden).
+_OK_ESTADOS = {"ejecutada", "parcialmente cancelada"}
 
 
 def _norm_currency(s: str) -> str:
-    """ARS / Pesos / $ → ARS. USD / Dólares / U$S → USD. Otro → tal cual."""
+    """Pesos / $ → ARS. Dólares / Dólares C.V. / US Dollar (Cable) → USD."""
     if not s:
         return ""
-    v = s.strip().upper().replace("Ó", "O").replace("É", "E")
-    if v in ("ARS", "PESOS", "PESO", "$", "AR$"):
+    v = " ".join(s.strip().lower().replace("ó", "o").split())
+    if v.startswith("peso") or v in ("ars", "$", "ar$"):
         return "ARS"
-    if v in ("USD", "USDT", "DOLARES", "DOLAR", "U$S", "US$"):
+    if v.startswith("dolar") or "dollar" in v or v in ("usd", "u$s", "us$"):
         return "USD"
-    return v
+    return s.strip().upper()
+
+
+def _map_operacion(op: str) -> Optional[str]:
+    """Balanz `Operacion` → token canónico Rendi ('COMPRA'/'VENTA'), o None
+    para saltear. Solo compra/venta de títulos; el resto es plumbing de cash/FX
+    que no mapea limpio (ver docstring del módulo)."""
+    o = " ".join((op or "").strip().lower().replace("ó", "o").split())
+    if not o:
+        return None
+    # Dólar Bolsa (MEP vía FCI) empieza con compra/venta pero NO es un trade
+    # de título — excluir antes del match genérico.
+    if "dolar bolsa" in o:
+        return None
+    if o.startswith("compra"):   # Compra CI / 24hs / 48hs
+        return "COMPRA"
+    if o.startswith("venta"):    # Venta CI / 24hs / 48hs
+        return "VENTA"
+    # Transferencia, Suscripcion, Rescate, Canje, Caucion, Cambio de Fondo, Deposito → skip
+    return None
+
+
+# ── Clasificación de asset_type por patrón de ticker (renta fija AR) ──────────
+# Conservadora: solo marcamos BOND/FUND cuando estamos razonablemente seguros.
+# Lo que no matchea queda sin hint (el normalizer cae a OTHER) → guard suelto,
+# que es lo correcto para acciones/CEDEARs (pueden multibaggear de verdad).
+_AR_BOND_PREFIXES = ("AL", "GD", "AE", "AY", "GE", "BA", "BB", "BP", "PB",
+                     "PA", "TX", "TZ", "TT", "DN", "BD")
+
+
+def _classify_asset(ticker: str) -> Optional[str]:
+    t = (ticker or "").strip().upper()
+    if not t:
+        return None
+    if t.startswith("FCI"):
+        return "FUND"
+    # Letras / Lecaps / Boncer: S/T/X + dígito (S31L5, T2X5, X30N6, TX28).
+    if re.match(r"^[STX]\d", t):
+        return "BOND"
+    # Soberanos / BOPREAL / provinciales: prefijo conocido + algún dígito.
+    if any(t.startswith(p) for p in _AR_BOND_PREFIXES) and any(c.isdigit() for c in t):
+        return "BOND"
+    # ONs corporativas: 5+ chars terminadas en 'O' (TECPO, GNCXO, MGC1O…).
+    # Las acciones AR terminadas en O del panel son de ≤4 chars (AUSO, CADO, CTIO).
+    if len(t) >= 5 and t.endswith("O"):
+        return "BOND"
+    return None  # acción / CEDEAR / otro → sin hint
 
 
 def _resolve_columns(headers: List[str]) -> Dict[str, Optional[str]]:
-    """Para cada campo de Rendi, encuentra el header real del archivo (o None)."""
     norm_to_orig: Dict[str, str] = {}
     for h in headers:
         norm_to_orig.setdefault(_norm_header(h), h)
@@ -138,45 +150,52 @@ def _resolve_columns(headers: List[str]) -> Dict[str, Optional[str]]:
     return resolved
 
 
+def _num(s) -> Optional[float]:
+    """Parsea un número tolerando coma decimal. Devuelve None si no parsea."""
+    if s is None:
+        return None
+    txt = str(s).strip()
+    if not txt:
+        return None
+    # Si tiene coma y no punto, es decimal AR (1.234,56 → 1234.56).
+    if "," in txt and "." in txt:
+        txt = txt.replace(".", "").replace(",", ".")
+    elif "," in txt:
+        txt = txt.replace(",", ".")
+    try:
+        return float(txt)
+    except ValueError:
+        return None
+
+
+def _val(x) -> Optional[float]:
+    """Valor 'operado' válido: número > 0 (el export usa -1 como centinela)."""
+    n = _num(x)
+    return n if (n is not None and n > 0) else None
+
+
 class BalanzParser(Parser):
     format_id = "balanz"
     display_name = "Balanz"
     is_supported = True
     platform = "balanz"
     platform_label = "Balanz"
-    export_label = "Actividad → Reportes → Resultados del período"
+    export_label = "Operaciones → Órdenes → Exportar"
 
     def can_handle(self, headers: List[str]) -> bool:
-        resolved = _resolve_columns(headers)
-        # Acepta formato actual (con Operacion separada) O formato viejo
-        # (con Tipo cumpliendo el rol de op-type).
-        new_ok = all(resolved.get(f) for f in _REQUIRED_NEW)
-        old_ok = all(resolved.get(f) for f in _REQUIRED_OLD)
-        if not (new_ok or old_ok):
+        cols = _resolve_columns(headers)
+        if not all(cols.get(f) for f in _REQUIRED):
             return False
-
-        # Discriminator: al menos UNA columna única de Balanz para no
-        # matchear archivos de otros brokers AR (Cocos, IOL) que también
-        # tienen Fecha + Operación + Especie/Ticker.
-        # DolarMEP/CCL/Oficial y FechaLote son específicas del export de Balanz.
-        has_balanz_unique = bool(
-            resolved.get("dolar_mep") or
-            resolved.get("dolar_ccl") or
-            resolved.get("dolar_oficial") or
-            resolved.get("fecha_lote")
-        )
-        return has_balanz_unique
+        return any(cols.get(d) for d in _DISCRIMINATORS)
 
     def template_csv(self) -> str:
-        # Template con los headers EXACTOS del export real de Balanz
-        # (Actividad → Reportes → Resultados del período, snapshot 2026-05).
         return (
-            "Tipo,Ticker,Descripcion,Fecha,FechaLote,Cantidad,PrecioCompra,"
-            "Gastos,Moneda,Operacion,DolarMEP,DolarCCL,DolarOficial\n"
-            "Acción,GGAL,Grupo Galicia,15/01/2026,,100,4850.00,2425.00,ARS,Compra,1180,1195,1050\n"
-            "Acción,GGAL,Grupo Galicia,22/01/2026,15/01/2026,100,5200.00,2600.00,ARS,Venta,1210,1230,1075\n"
-            "Bono,AL30,Bonar 2030,05/02/2026,,1000,68.45,3.42,USD,Compra,,,\n"
-            "CEDEAR,AAPL,Apple Inc CEDEAR,10/02/2026,,50,12340.50,3085.13,ARS,Compra,1245,1265,1085\n"
+            "Operacion,Estado,id Orden,Ticker,Moneda,Fecha,Hora,Cantidad,"
+            "Precio,Monto,Precio Operado,Cantidad Operada\n"
+            "Compra 24hs,Ejecutada,100746376,ALUA,Pesos,2026-01-17,13:37:05,157,3963.2,622222.4,3963.2,157\n"
+            "Venta CI,Ejecutada,100746377,GGAL,Pesos,2026-01-20,11:02:10,100,8200,820000,8200,100\n"
+            "Compra 48hs,Ejecutada,100599473,GD30,Dólares,2025-12-31,16:06:25,1000,66.04,660.4,66.04,1000\n"
+            "Compra CI,Ejecutada,100513140,TECPO,Pesos,2025-12-30,12:21:26,50,98000,4900000,98000,50\n"
         )
 
     def parse(self, content: str, file_name: Optional[str] = None) -> ParseResult:
@@ -197,17 +216,14 @@ class BalanzParser(Parser):
             return result
 
         cols = _resolve_columns(headers)
-        new_ok = all(cols.get(f) for f in _REQUIRED_NEW)
-        old_ok = all(cols.get(f) for f in _REQUIRED_OLD)
-        if not (new_ok or old_ok):
-            missing_new = [f for f in _REQUIRED_NEW if not cols.get(f)]
+        if not all(cols.get(f) for f in _REQUIRED):
+            missing = [f for f in _REQUIRED if not cols.get(f)]
             result.parse_errors.append(RowError(
                 0, None, "BALANZ_HEADERS_MISMATCH",
-                f"Este archivo no coincide con la estructura esperada de Balanz. "
-                f"Faltan columnas para: {', '.join(missing_new)}. Aceptamos los "
-                f"exports de la app de Balanz (Actividad → Reportes → Resultados "
-                f"del período). Si tu export tiene headers distintos, usá el "
-                f"template genérico de Rendi y mapeá manualmente."))
+                f"Este archivo no coincide con el export de Órdenes de Balanz. "
+                f"Faltan columnas para: {', '.join(missing)}. Exportá desde "
+                f"Operaciones → Órdenes. Si tu export tiene otra estructura, usá "
+                f"el template genérico de Rendi."))
             return result
 
         def _g(row, field_name):
@@ -215,50 +231,44 @@ class BalanzParser(Parser):
             return (row.get(col) or "").strip() if col else ""
 
         for idx, row in enumerate(reader, start=1):
+            estado = _norm_header(_g(row, "estado"))
+            if estado and estado not in _OK_ESTADOS:
+                continue  # Cancelada / Rechazada / etc → no es un trade
+
+            tipo = _map_operacion(_g(row, "operacion"))
+            if not tipo:
+                continue  # plumbing de cash/FX → skip
+
+            activo = _g(row, "activo").upper()
+            if not activo:
+                continue  # un trade sin ticker no es importable
+
             fecha = _g(row, "fecha")
-            # Formato nuevo: Operacion = Compra/Venta/Dividendo/etc.
-            # Formato viejo (fallback): Tipo cumplía ese rol.
-            operacion = _g(row, "operacion") or _g(row, "tipo_instrumento")
-            activo = _g(row, "activo")
-            if not fecha or not operacion:
+            if not fecha:
                 continue
 
-            # Notas: metadata útil para audit + reconciliación con la app de Balanz.
-            descripcion = _g(row, "_descripcion")
-            boleto = _g(row, "_boleto")
-            fecha_lote = _g(row, "fecha_lote")
-            dolar_mep = _g(row, "dolar_mep")
-            dolar_ccl = _g(row, "dolar_ccl")
-            tipo_instr = _g(row, "tipo_instrumento")
-
-            notes_parts = []
-            if descripcion:
-                notes_parts.append(descripcion)
-            # Solo incluir tipo_instrumento si NO duplica con operacion (en
-            # formato viejo apuntan al mismo header → noise).
-            if tipo_instr and tipo_instr.lower() != operacion.lower():
-                notes_parts.append(f"Tipo: {tipo_instr}")
-            if fecha_lote:
-                notes_parts.append(f"Lote {fecha_lote}")
-            if boleto:
-                notes_parts.append(f"Boleto {boleto}")
-            if dolar_mep:
-                notes_parts.append(f"MEP {dolar_mep}")
-            if dolar_ccl:
-                notes_parts.append(f"CCL {dolar_ccl}")
+            # Cantidad / precio: preferimos lo OPERADO (ejecutado), con fallback
+            # a lo ordenado si trae el centinela -1.
+            cantidad = _val(_g(row, "cantidad_operada")) or _val(_g(row, "cantidad"))
+            precio = _val(_g(row, "precio_operado")) or _val(_g(row, "precio"))
+            if cantidad is None or precio is None:
+                continue  # sin cantidad/precio confiable no podemos armar el trade
 
             data = {
                 "fecha": fecha,
-                "tipo": operacion,
+                "tipo": tipo,
                 "broker": "Balanz",
-                "activo": activo.upper() if activo else "",
-                "cantidad": _g(row, "cantidad"),
-                "precio": _g(row, "precio"),
+                "activo": activo,
+                "cantidad": str(cantidad),
+                "precio": str(precio),
                 "monto": _g(row, "monto"),
-                "comisiones": _g(row, "comisiones"),
+                "comisiones": "",  # el export de órdenes no trae comisiones
                 "moneda": _norm_currency(_g(row, "moneda")),
-                "notas": " · ".join(notes_parts),
             }
+            asset_type = _classify_asset(activo)
+            if asset_type:
+                data["asset_type"] = asset_type
+
             result.raw_rows.append(RawRow(row_index=idx, data=data))
 
         return result
