@@ -257,6 +257,104 @@ class BalanzParserTest(unittest.TestCase):
         self.assertEqual(res.parse_errors[0].code, "BALANZ_HEADERS_MISMATCH")
 
 
+class BalanzResultadosParserTest(unittest.TestCase):
+    """Parser del reporte de Resultados de Balanz (hoja por_realizado)."""
+
+    _HEADERS = ("Cantidad,Descripcion,Fecha,FechaCompra,Gastos,Moneda Compra,Moneda Venta,"
+                "Operacion Compra,Operacion Venta,Precio Compra,PrecioVenta,Ticker,Tipo,"
+                "Tipo Movimiento,Cupones,Dividendos,Intereses\n")
+
+    def _parse(self, body):
+        from importing.parsers.balanz_resultados import BalanzResultadosParser
+        return BalanzResultadosParser().parse(self._HEADERS + body)
+
+    def test_can_handle(self):
+        from importing.parsers.balanz_resultados import BalanzResultadosParser
+        self.assertTrue(BalanzResultadosParser().can_handle(self._HEADERS.strip().split(",")))
+
+    def test_no_realizado_to_open_buy(self):
+        res = self._parse(
+            "1000,BONO GD30,2026-06-25,2025-05-29,4785,Pesos,,Boleto,,66.0,,GD30,Bonos - Dólar,No Realizado,,,\n"
+        )
+        self.assertEqual(len(res.raw_rows), 1)
+        d = res.raw_rows[0].data
+        self.assertEqual(d["tipo"], "COMPRA")
+        self.assertEqual(d["activo"], "GD30")
+        self.assertEqual(d["precio"], "66.0")
+        self.assertEqual(d["fecha"], "2025-05-29")   # FechaCompra
+        self.assertEqual(d["comisiones"], "4785")
+        self.assertEqual(d["asset_type"], "BOND")
+
+    def test_orden_to_buy_and_sell(self):
+        res = self._parse(
+            "100,BONO AL35,2025-09-18,2025-09-10,150,Dólares,US Dollar (Cable),"
+            "Boleto,Boleto,0.46,0.50,AL35,Bonos - Dólar,Orden,,,\n"
+        )
+        self.assertEqual(len(res.raw_rows), 2)
+        buy, sell = res.raw_rows[0].data, res.raw_rows[1].data
+        self.assertEqual(buy["tipo"], "COMPRA")
+        self.assertEqual(buy["precio"], "0.46")
+        self.assertEqual(buy["fecha"], "2025-09-10")
+        self.assertEqual(sell["tipo"], "VENTA")
+        self.assertEqual(sell["precio"], "0.5")
+        self.assertEqual(sell["fecha"], "2025-09-18")
+        self.assertEqual(sell["moneda"], "USD")
+
+    def test_cupon_to_interest(self):
+        res = self._parse(
+            "0,BOPREAL BPC7,2025-10-31,,1037,,Dólares,,Renta,,,BPC7,Bonos - Dólar,Cupón,146726,,\n"
+        )
+        self.assertEqual(len(res.raw_rows), 1)
+        d = res.raw_rows[0].data
+        self.assertEqual(d["tipo"], "INTERES")
+        self.assertEqual(d["activo"], "BPC7")
+        self.assertEqual(d["monto"], "146726.0")
+        self.assertEqual(d["moneda"], "USD")
+
+    def test_dividendo(self):
+        res = self._parse(
+            "0,CEDEAR AMZN,2026-06-17,,0,,Dólares,,Dividendo,,,AMZN,Cedears,Dividendo,,0.13,\n"
+        )
+        self.assertEqual(len(res.raw_rows), 1)
+        self.assertEqual(res.raw_rows[0].data["tipo"], "DIVIDENDO")
+        self.assertEqual(res.raw_rows[0].data["monto"], "0.13")
+
+    def test_caucion_to_interest(self):
+        res = self._parse(
+            "0,PESOS,2025-07-22,,237,,Pesos,,Boleto,,,PESOS,Efectivo,Caución - Pase - Cheque,,,2746\n"
+        )
+        self.assertEqual(len(res.raw_rows), 1)
+        self.assertEqual(res.raw_rows[0].data["tipo"], "INTERES")
+        self.assertEqual(res.raw_rows[0].data["monto"], "2746.0")
+
+    def test_asset_type_from_clase(self):
+        from importing.parsers.balanz_resultados import _asset_type_from_clase
+        self.assertEqual(_asset_type_from_clase("Bonos - Dólar"), "BOND")
+        self.assertEqual(_asset_type_from_clase("Corporativos - Dólar"), "BOND")
+        self.assertEqual(_asset_type_from_clase("Letras - ARS"), "BOND")
+        self.assertEqual(_asset_type_from_clase("Cedears"), "CEDEAR")
+        self.assertEqual(_asset_type_from_clase("Acciones"), "STOCK")
+        self.assertEqual(_asset_type_from_clase("Fondos"), "FUND")
+        self.assertIsNone(_asset_type_from_clase("Efectivo"))
+
+    def test_only_realizado_sheet(self):
+        # Con columna _hoja, solo procesa la hoja por_realizado (ignora lotes).
+        body = (
+            "1000,BONO X,2026-06-25,2025-05-29,10,Pesos,,B,,66.0,,XXX,Bonos - Dólar,No Realizado,,,,resultados_por_lotes_iniciales\n"
+            "1000,BONO Y,2026-06-25,2025-05-29,10,Pesos,,B,,66.0,,YYY,Bonos - Dólar,No Realizado,,,,resultados_por_realizado\n"
+        )
+        from importing.parsers.balanz_resultados import BalanzResultadosParser
+        res = BalanzResultadosParser().parse(self._HEADERS.rstrip("\n") + ",_hoja\n" + body)
+        self.assertEqual(len(res.raw_rows), 1)
+        self.assertEqual(res.raw_rows[0].data["activo"], "YYY")
+
+    def test_rejects_wrong_format(self):
+        from importing.parsers.balanz_resultados import BalanzResultadosParser
+        res = BalanzResultadosParser().parse("Date,Pair,Side\n2024-01-01,BTC,BUY\n")
+        self.assertEqual(len(res.parse_errors), 1)
+        self.assertEqual(res.parse_errors[0].code, "BALANZ_RES_HEADERS_MISMATCH")
+
+
 class BinanceTransactionHistoryTest(unittest.TestCase):
     """Parser del export completo de Binance (Spot + Futures + Funding)."""
 
