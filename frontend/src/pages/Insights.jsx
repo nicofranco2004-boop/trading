@@ -568,6 +568,26 @@ function InsightsDesktop({ _embeddedTab }) {
   //     No tiene sentido mezclar posiciones USD al tipo de cambio → inflación.
   const arsBrokerNames = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
 
+  // Entradas mensuales de los brokers ARS, agregadas por mes (suma si hay varios)
+  // en la MISMA forma que globalMonthly (valores en USD). Fuente ÚNICA que
+  // comparten la línea del portfolio ARS (benchSeriesArs) y los shadows de
+  // benchmark en pesos — así ambos corren sobre EXACTAMENTE los mismos flujos.
+  const arsMonthly = (() => {
+    if (arsBrokerNames.size === 0) return []
+    const byMk = {}
+    for (const m of monthly) {
+      if (!arsBrokerNames.has(m.broker)) continue
+      const k = monthKey(m.year, m.month)
+      if (!byMk[k]) byMk[k] = { year: m.year, month: m.month, capital_inicio: 0, capital_final: 0, deposits: 0, withdrawals: 0, pnl_realized: 0 }
+      byMk[k].capital_inicio += m.capital_inicio || 0
+      byMk[k].capital_final  += m.capital_final || 0
+      byMk[k].deposits       += m.deposits || 0
+      byMk[k].withdrawals    += m.withdrawals || 0
+      byMk[k].pnl_realized   += m.pnl_realized || 0
+    }
+    return Object.values(byMk).sort((a, b) => (a.year - b.year) || (a.month - b.month))
+  })()
+
   // Label legible para una clave "YYYY-MM" o 'today'
   const benchLabel = (k) => {
     if (k === 'today') return 'Hoy'
@@ -659,30 +679,18 @@ function InsightsDesktop({ _embeddedTab }) {
   let arsWindowLastKey = null
   const benchSeriesArs = (() => {
     if (arsBrokerNames.size === 0 || !bench?.dolar_blue) return []
-    // Agrupar monthly entries de brokers ARS por mes (suma si hay varios brokers)
-    const byMk = {}
-    for (const m of monthly) {
-      if (!arsBrokerNames.has(m.broker)) continue
-      const k = monthKey(m.year, m.month)
-      if (!byMk[k]) byMk[k] = { year: m.year, month: m.month, capital_inicio: 0, capital_final: 0, deposits: 0, withdrawals: 0, pnl_realized: 0 }
-      byMk[k].capital_inicio  += m.capital_inicio || 0
-      byMk[k].capital_final   += m.capital_final || 0
-      byMk[k].deposits        += m.deposits || 0
-      byMk[k].withdrawals     += m.withdrawals || 0
-      byMk[k].pnl_realized    += m.pnl_realized || 0
-    }
-    const arsMonths = Object.entries(byMk).sort(([a], [b]) => a < b ? -1 : 1)
-    if (arsMonths.length === 0) return []
+    // Flujos mensuales de los brokers ARS (fuente compartida con los shadows).
+    if (arsMonthly.length === 0) return []
 
-    const firstKey = arsMonths[0][0]
+    const firstKey = monthKey(arsMonthly[0].year, arsMonthly[0].month)
     const blueBase = lookupBlue(firstKey)
     if (!blueBase) return []
     // Rango real de la serie ARS — se usa para recortar la inflación al mismo período.
     arsWindowFirstKey = firstKey
-    arsWindowLastKey = arsMonths[arsMonths.length - 1][0]
+    arsWindowLastKey = monthKey(arsMonthly[arsMonthly.length - 1].year, arsMonthly[arsMonthly.length - 1].month)
 
     const out = []
-    const baselinePesos = arsMonths[0][1].capital_inicio * blueBase
+    const baselinePesos = arsMonthly[0].capital_inicio * blueBase
     let netFlowsPesos = 0, cumRealizedPesos = 0
     // Mismo treatment de peak-stable denom que benchSeriesUsd (ver arriba)
     let peakInvestedPesos = baselinePesos > 0 ? baselinePesos : 0
@@ -690,7 +698,8 @@ function InsightsDesktop({ _embeddedTab }) {
       (cur >= peak * 0.6 && cur > 1000) ? cur : peak
     out.push({ key: firstKey, label: benchLabel(firstKey), total: 0, realized: 0 })
 
-    for (const [k, m] of arsMonths) {
+    for (const m of arsMonthly) {
+      const k = monthKey(m.year, m.month)
       const fx = lookupBlue(k) || blueBase
       const net = (m.deposits || 0) - (m.withdrawals || 0)
       netFlowsPesos += net * fx
@@ -814,15 +823,22 @@ function InsightsDesktop({ _embeddedTab }) {
   const chartData = (() => {
     const monthKeyOf = k => (k === 'today' ? k : k.slice(0, 7))
 
+    // En ARS los benchmarks corren sobre los flujos de los brokers ARS (los
+    // mismos que la línea del portfolio) y se miden EN PESOS; en USD, sobre
+    // globalMonthly en USD. Así la comparación es apples-to-apples en la moneda
+    // que se está viendo, sin mezclar retorno-en-pesos con retorno-en-dólares.
+    const isArs = currency === 'ARS'
+    const simMonthly = isArs ? arsMonthly : globalMonthly
+
     // Skeleton de meses para dibujar SOLO el benchmark cuando la serie del
     // portfolio (windowSeries) viene vacía — p.ej. en ARS sin dolar_blue, donde
     // benchSeriesArs no se puede construir. El benchmark (inflación/Merval/S&P)
-    // se calcula desde globalMonthly, así que puede dibujarse igual con el
-    // portfolio en null en lugar de colapsar TODO el gráfico (ver más abajo).
+    // se calcula aparte, así que puede dibujarse igual con el portfolio en null
+    // en lugar de colapsar TODO el gráfico (ver más abajo).
     const buildBenchOnlySkeleton = () => {
-      if (globalMonthly.length === 0) return []
+      if (simMonthly.length === 0) return []
       const byMonth = {}
-      for (const m of globalMonthly) {
+      for (const m of simMonthly) {
         const k = monthKey(m.year, m.month)
         byMonth[k.slice(0, 7)] = { key: k, label: benchLabel(k), total: null, realized: null }
       }
@@ -893,6 +909,52 @@ function InsightsDesktop({ _embeddedTab }) {
       return result
     }
 
+    // Versión en PESOS del shadow — espejo exacto de benchSeriesArs. El simulador
+    // devuelve valores USD-equiv; acá los pasamos a pesos (× blue del mes) y
+    // medimos el retorno contra el capital aportado en pesos (flows × blue del
+    // mes). Se usa en modo ARS para que el benchmark sea comparable a la línea
+    // del portfolio, que también es retorno-en-pesos. Sin esto, comparábamos
+    // retorno-en-pesos (cartera) contra retorno-en-dólares (benchmark).
+    function buildShadowFromSimArs(simResult) {
+      const result = new Map()
+      if (!simResult || !simResult.series || simResult.series.length === 0) return result
+      if (arsMonthly.length === 0) return result
+      const firstK = monthKey(arsMonthly[0].year, arsMonthly[0].month)
+      const blueBase = lookupBlue(firstK)
+      if (!blueBase) return result
+
+      const baselinePesos = (arsMonthly[0].capital_inicio || 0) * blueBase
+      let netFlowsPesos = 0
+      let peakInvestedPesos = baselinePesos > 0 ? baselinePesos : 0
+
+      const simByKey = {}
+      for (const p of simResult.series) simByKey[p.key] = p.value // USD-equiv
+
+      for (const m of arsMonthly) {
+        const mk = monthKey(m.year, m.month)
+        const fx = lookupBlue(mk) || blueBase
+        netFlowsPesos += ((m.deposits || 0) - (m.withdrawals || 0)) * fx
+        const investedNowPesos = baselinePesos + netFlowsPesos
+        if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
+        const denomP = stableInv(investedNowPesos, peakInvestedPesos)
+        const shadowUsd = simByKey[mk]
+        if (shadowUsd == null) continue
+        const gainP = (shadowUsd * fx) - investedNowPesos
+        const pct = denomP > 0 ? (gainP / denomP) * 100 : 0
+        result.set(mk, +Math.min(Math.max(pct, -99), 200).toFixed(2))
+      }
+
+      // "Today": último valor del sim al blue ACTUAL — igual que el punto Hoy del
+      // portfolio (valor live × tcBlue), para que ambos reciban el mismo salto de FX.
+      const last = simResult.series[simResult.series.length - 1]
+      const investedNowPesos = baselinePesos + netFlowsPesos
+      const denomP = stableInv(investedNowPesos, peakInvestedPesos)
+      const gainP = (last.value * tcBlue) - investedNowPesos
+      const pct = denomP > 0 ? (gainP / denomP) * 100 : 0
+      result.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
+      return result
+    }
+
     // Helper para obtener el último precio disponible del map del benchmark
     // (usado en el "today" — extrapola si el bench tiene data más reciente
     // que la última entry del user).
@@ -902,7 +964,7 @@ function InsightsDesktop({ _embeddedTab }) {
       return keys.length > 0 ? priceMap[keys[keys.length - 1]] : null
     }
 
-    function buildInflationCumPct() {
+    function buildInflationCumPct(monthlyArr) {
       // Inflación: % macro acumulativo, NO portfolio. cum = Π(1 + ipc_m).
       //
       // Componemos TODOS los meses del INDEC entre el primer y último mes del
@@ -911,12 +973,13 @@ function InsightsDesktop({ _embeddedTab }) {
       // subestima la inflación acumulada del benchmark (la inflación corrió
       // igual aunque el user no haya registrado el mes). Reconstruimos la
       // serie mes a mes sobre el rango completo usando las claves 'YYYY-MM'
-      // de bench.inflation_ar.
+      // de bench.inflation_ar. El rango se toma de monthlyArr (en ARS = los
+      // meses de los brokers ARS, mismo span que la línea del portfolio).
       const result = new Map()
-      if (!bench?.inflation_ar || globalMonthly.length === 0) return result
+      if (!bench?.inflation_ar || monthlyArr.length === 0) return result
 
-      const firstMk = monthKey(globalMonthly[0].year, globalMonthly[0].month)
-      const lastM = globalMonthly[globalMonthly.length - 1]
+      const firstMk = monthKey(monthlyArr[0].year, monthlyArr[0].month)
+      const lastM = monthlyArr[monthlyArr.length - 1]
       const lastMk = monthKey(lastM.year, lastM.month)
 
       // Itera mes a mes entre firstMk y lastMk (inclusive), avanzando el
@@ -942,44 +1005,30 @@ function InsightsDesktop({ _embeddedTab }) {
       return result
     }
 
-    // Dispatcher: cada benchmark seleccionado calcula su propio shadowPctByMonth.
-    // Para benchmarks con finalUnits (S&P, SHV, GLD), pasamos latestBenchPrice
-    // para que el "today" del shadow extrapole al precio actual del benchmark
-    // (caso del audit M3: user que no cargó mes en curso pero el bench sí lo tiene).
+    // Dispatcher: cada benchmark calcula su propio shadowPctByMonth. En ARS los
+    // simuladores corren sobre simMonthly (= flujos de brokers ARS) y el shadow
+    // se mide en PESOS (buildShadowFromSimArs); en USD, sobre globalMonthly en
+    // dólares (buildShadowFromSim, con latestPrice para extrapolar el "today").
+    const buildShadow = (sim, latestPrice) =>
+      isArs ? buildShadowFromSimArs(sim) : buildShadowFromSim(sim, latestPrice)
+
     let shadowPctByMonth = new Map()
     if (selectedBench === 'sp500' && bench?.sp500) {
-      shadowPctByMonth = buildShadowFromSim(
-        simulateSp500(globalMonthly, bench.sp500),
-        latestPriceOf(bench.sp500),
-      )
+      shadowPctByMonth = buildShadow(simulateSp500(simMonthly, bench.sp500), latestPriceOf(bench.sp500))
     } else if (selectedBench === 'tbill' && bench?.shv) {
-      shadowPctByMonth = buildShadowFromSim(
-        simulateShv(globalMonthly, bench.shv),
-        latestPriceOf(bench.shv),
-      )
+      shadowPctByMonth = buildShadow(simulateShv(simMonthly, bench.shv), latestPriceOf(bench.shv))
     } else if (selectedBench === 'gold' && bench?.gld) {
-      shadowPctByMonth = buildShadowFromSim(
-        simulateGold(globalMonthly, bench.gld),
-        latestPriceOf(bench.gld),
-      )
+      shadowPctByMonth = buildShadow(simulateGold(simMonthly, bench.gld), latestPriceOf(bench.gld))
     } else if (selectedBench === 'dolar_cash') {
-      shadowPctByMonth = buildShadowFromSim(simulateDolarCash(globalMonthly))
+      shadowPctByMonth = buildShadow(simulateDolarCash(simMonthly))
     } else if (selectedBench === 'inflation') {
-      shadowPctByMonth = buildInflationCumPct()
+      shadowPctByMonth = buildInflationCumPct(simMonthly)
     } else if (selectedBench === 'merval' && bench?.merval && bench?.dolar_blue) {
-      // Merval no usa finalUnits porque la conversión USD-ARS es compleja —
-      // dejamos el último value del sim como "today".
-      shadowPctByMonth = buildShadowFromSim(
-        simulateMerval(globalMonthly, bench.merval, bench.dolar_blue),
-      )
+      shadowPctByMonth = buildShadow(simulateMerval(simMonthly, bench.merval, bench.dolar_blue))
     } else if (selectedBench === 'plazo_fijo' && bench?.uva && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadowFromSim(
-        simulatePlazoFijoUva(globalMonthly, bench.uva, bench.dolar_blue),
-      )
+      shadowPctByMonth = buildShadow(simulatePlazoFijoUva(simMonthly, bench.uva, bench.dolar_blue))
     } else if (selectedBench === 'pesos_cash' && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadowFromSim(
-        simulateArsCash(globalMonthly, bench.dolar_blue),
-      )
+      shadowPctByMonth = buildShadow(simulateArsCash(simMonthly, bench.dolar_blue))
     }
 
     // DESACOPLE: el benchmark no depende de la serie del portfolio. Si el
