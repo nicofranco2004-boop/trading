@@ -49,7 +49,8 @@ from __future__ import annotations
 import csv
 import io
 import re
-from typing import List, Optional
+from datetime import date
+from typing import Dict, List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
 from ..maturity import is_bond_like_name, maturity_from_name, synth_letra_ticker
@@ -95,8 +96,12 @@ def _resolve_op(tipo: str) -> Optional[str]:
     """
     if tipo in _OP_MAP:
         return _OP_MAP[tipo]
-    # Dividendos PRIMERO (antes que las notas de crédito/débito genéricas, así
-    # "Nota Credito Dividendos ARS" cae como dividendo y no como depósito).
+    # Notas de DÉBITO primero: "Nota Debito Dividendos ARS" contiene la subcadena
+    # "dividendo" pero es un cargo/retención (cash out), NO un ingreso → FEE. Va
+    # antes del check de dividendo para que no lo capture por la subcadena.
+    if "nota" in tipo and ("debito" in tipo or "débito" in tipo):
+        return "FEE"
+    # Dividendos (incluye "Nota Credito Dividendos ARS", que es ingreso real).
     if "dividendo" in tipo:
         return "DIVIDENDO"
     # Renta (cupón) y/o amortización de bonos y LECAPs = ingreso de caja. Sin
@@ -112,13 +117,15 @@ def _resolve_op(tipo: str) -> Optional[str]:
         return "COMPRA"
     if "rescate fci" in tipo:                 # liq/liquidacion rescate fci [usd]
         return "VENTA"
-    if "registracion" in tipo:
+    if "registracion" in tipo or "esp app" in tipo:
         # Maniobra dólar-MEP/CCL con un bono dual: se "compra" el bono en pesos y
         # se "vende" en dólares el mismo día (neto CERO como tenencia) — es una
         # CONVERSIÓN de moneda, no un trade de activo. La tratamos como flujo de
         # caja: la compra es plata que sale (RETIRO en ARS), la venta plata que
         # entra (DEPOSITO en USD). Sin esto, el ruteo por moneda partía las dos
         # patas en brokers distintos y quedaba una tenencia FANTASMA del bono.
+        # "esp app" (Compra Esp App Pesos / Venta Esp App Dolares) es la misma
+        # maniobra con otra etiqueta de Cocos.
         return "DEPOSITO" if tipo.startswith("venta") else "RETIRO"
     if "caucion" in tipo:
         # Caución colocadora: "contado/apertura" saca plata (la prestás) y
@@ -128,18 +135,19 @@ def _resolve_op(tipo: str) -> Optional[str]:
         return "DEPOSITO" if ("termino" in tipo or "cierre" in tipo) else "RETIRO"
     if "nota" in tipo and "credito" in tipo:
         # Notas de crédito (devoluciones, ajustes, conversiones cable) = cash in.
+        # (Las de débito ya se resolvieron arriba como FEE.)
         return "DEPOSITO"
-    if "nota" in tipo and ("debito" in tipo or "débito" in tipo):
-        # Notas de débito (impuestos Bienes Personales / Ganancias, ajustes) = cash out.
-        return "FEE"
     if tipo.startswith("compra"):             # compra dolar mep / trading / etc.
         return "COMPRA"
     if tipo.startswith("venta"):
         return "VENTA"
     return None
 
-# Ticker entre paréntesis al final de instrumento: 'CEDEAR TESLA, INC. (TSLA)' → 'TSLA'
-_TICKER_RX = re.compile(r'\(([A-Z0-9.]+)\)\s*$')
+# Ticker entre paréntesis al final de instrumento: 'CEDEAR TESLA, INC. (TSLA)' → 'TSLA'.
+# Permite espacios dentro del paréntesis para FCI multi-token ('(SBSACAR AR)') y
+# nos quedamos con el primer token → 'SBSACAR'. Sin esto, los FCI con espacio en
+# el ticker quedaban sin activo y se dropeaban (MISSING_ASSET).
+_TICKER_RX = re.compile(r'\(([A-Z0-9.][A-Z0-9. ]*)\)\s*$')
 
 
 def _strip(s) -> str:
@@ -172,7 +180,10 @@ def _extract_ticker(instrumento: str) -> Optional[str]:
     if not instrumento:
         return None
     m = _TICKER_RX.search(instrumento.upper())
-    return m.group(1) if m else None
+    if not m:
+        return None
+    # Primer token: 'SBSACAR AR' → 'SBSACAR' (el sufijo de país/segmento sobra).
+    return m.group(1).split()[0]
 
 
 def _clean_ar_number(s: str) -> str:
@@ -248,6 +259,79 @@ def _safe_div_str(num_str: str, den_str: str) -> str:
         return ""
 
 
+# Instrumentos que son bonos/ONs/letras (no acciones ni CEDEARs). Se usa para
+# acotar la detección de conduits dólar-MEP a papeles que SÍ se usan como
+# conducto de conversión (bonos), evitando falsos positivos con acciones.
+_BOND_INSTR_HINTS = ("bono", "on ", "oblig", "letra", "lt ", "lecap", "cer ",
+                     "boncer", "bonar", "bopreal", "titulo")
+
+
+def _is_bond_instrument(instrumento: str) -> bool:
+    u = (instrumento or "").lower()
+    return any(h in u for h in _BOND_INSTR_HINTS)
+
+
+def _days_between(a: Optional[str], b: Optional[str]) -> Optional[int]:
+    if not a or not b:
+        return None
+    try:
+        return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
+    except ValueError:
+        return None
+
+
+def _detect_mep_conduits(rows: List[dict], G) -> Dict[int, str]:
+    """Detecta la maniobra dólar-MEP hecha con un BONO como conducto: una
+    "Compra" en ARS + una "Venta Dolar Mep" en USD del MISMO bono, MISMA
+    cantidad, fechas a ≤5 días. Es una conversión ARS→USD (neto de tenencia = 0),
+    no un trade. Devuelve {row_index_1based: 'RETIRO'|'DEPOSITO'} para tratar la
+    compra como RETIRO(ARS) y la venta como DEPOSITO(USD).
+
+    Sin esto, con route_by_currency las dos patas caen en brokers distintos
+    (la compra ARS en el padre, la venta USD en el sibling) → el FIFO no las
+    netea y queda una posición FANTASMA del bono. Acotado a bonos para no tocar
+    ventas dólar-MEP legítimas de acciones que el usuario sí mantiene.
+    """
+    def fnum(s: str) -> float:
+        try:
+            return abs(float(_clean_ar_number(s or "0")))
+        except (ValueError, TypeError):
+            return 0.0
+
+    ars_buys = []   # (idx, instrumento, qty, fecha)
+    usd_sells = []
+    for i, row in enumerate(rows, start=1):
+        instr = G(row, "instrumento")
+        if not _is_bond_instrument(instr):
+            continue
+        t = G(row, "tipooperacion").lower()
+        mon = G(row, "moneda").upper()
+        qty = fnum(G(row, "cantidad"))
+        d = _parse_date_ddmmyyyy(G(row, "fechaejecucion"))
+        if qty <= 0:
+            continue
+        if (t.startswith("compra") and mon == "ARS"
+                and not any(k in t for k in ("dolar mep", "registracion", "esp app", "fci"))):
+            ars_buys.append((i, instr, qty, d))
+        elif "venta" in t and "dolar mep" in t and mon == "USD":
+            usd_sells.append((i, instr, qty, d))
+
+    conduit: Dict[int, str] = {}
+    used = set()
+    for (si, sinstr, sqty, sd) in usd_sells:
+        for (bi, binstr, bqty, bd) in ars_buys:
+            if bi in used:
+                continue
+            dd = _days_between(sd, bd)
+            if (binstr == sinstr and abs(bqty - sqty) < 1e-6
+                    and dd is not None and dd <= 5):
+                conduit[bi] = "RETIRO"     # pata ARS: sale plata
+                conduit[si] = "DEPOSITO"   # pata USD: entra plata
+                used.add(bi)
+                break
+    return conduit
+
+
 class CocosParser(Parser):
     format_id = "cocos"
     display_name = "Cocos Capital"
@@ -303,7 +387,14 @@ class CocosParser(Parser):
             col = norm_to_orig.get(norm_key)
             return _strip(row.get(col, "")) if col else ""
 
-        for idx, row in enumerate(reader, start=1):
+        rows = list(reader)
+        # Conduits dólar-MEP con bono (Compra ARS + Venta Dolar Mep USD del mismo
+        # papel, misma cantidad): los reclasificamos a RETIRO/DEPOSITO (conversión
+        # de moneda) para que no queden posiciones FANTASMA al partirse en dos
+        # brokers por el ruteo de moneda. {idx: 'RETIRO'|'DEPOSITO'}.
+        conduit = _detect_mep_conduits(rows, G)
+
+        for idx, row in enumerate(rows, start=1):
             tipo_raw = G(row, "tipooperacion").lower()
             if not tipo_raw:
                 continue  # fila vacía o sin tipo
@@ -320,6 +411,10 @@ class CocosParser(Parser):
             if "canje" in tipo_raw:
                 continue
 
+            if idx in conduit:
+                # Pata de un conduit dólar-MEP con bono → flujo de caja puro
+                # (sin tenencia). RETIRO la pata ARS, DEPOSITO la pata USD.
+                tipo_rendi = conduit[idx]
             # "En especie": Cocos lo usa para DOS cosas muy distintas —
             #  (a) retención de un dividendo USD pagado en especie (instrumento
             #      "Dólar estadounidense", total chico/negativo): el cash real
@@ -329,7 +424,7 @@ class CocosParser(Parser):
             #      (instrumento "Peso argentino", total grande positivo): es CASH
             #      real → la tomamos como ingreso (dividendo). Sin esto dropeábamos
             #      millones de pesos de maduraciones acreditadas "en especie".
-            if "en especie" in tipo_raw:
+            elif "en especie" in tipo_raw:
                 instr_low = instrumento.lower()
                 if "peso argentino" in instr_low or not instrumento.strip():
                     tipo_rendi = "DIVIDENDO"
@@ -344,6 +439,15 @@ class CocosParser(Parser):
                     f"Tipo de operación no soportado: '{G(row, 'tipooperacion')}'.",
                 ))
                 continue
+
+            # Retención de dividendo (CEDEAR): Cocos manda "Dividendos" con `total`
+            # NEGATIVO (el impuesto SALE de la cuenta). Es un costo, no un ingreso
+            # → FEE. Sin esto, _abs_number_str borraba el signo y un -416 entraba
+            # como +416 de dividendo (doble error de 833 por fila).
+            if tipo_rendi == "DIVIDENDO" and tipo_raw == "dividendos" \
+                    and _clean_ar_number(G(row, "total")).startswith("-"):
+                tipo_rendi = "FEE"
+
             fecha = _parse_date_ddmmyyyy(G(row, "fechaejecucion"))
             comprobante = G(row, "nrocomprobante")
 
@@ -377,7 +481,15 @@ class CocosParser(Parser):
             # de MELI ≈ US$14; la acción ≈ US$2.400). Cocos lo dice explícito en el
             # instrumento ("CEDEAR …"). Sin este hint la posición quedaría OTHER y se
             # valuaría como acción US → precio inflado.
-            asset_type = "CEDEAR" if instrumento.strip().upper().startswith("CEDEAR") else ""
+            _instr_up = instrumento.strip().upper()
+            if _instr_up.startswith("CEDEAR"):
+                asset_type = "CEDEAR"
+            elif "FCI" in _instr_up or "fci" in tipo_raw:
+                # Fondos comunes: clasificar como FUND para que la valuación use
+                # el VCP de la cuotaparte y no intente cotizarlo como acción.
+                asset_type = "FUND"
+            else:
+                asset_type = ""
 
             # Monto y campos numéricos
             if tipo_rendi in ("COMPRA", "VENTA"):

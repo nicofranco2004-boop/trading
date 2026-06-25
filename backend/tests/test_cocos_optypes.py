@@ -120,6 +120,67 @@ class TestSkipsSinError(unittest.TestCase):
         self.assertEqual(len(r.parse_errors), 0)
 
 
+class TestTickerWithSpace(unittest.TestCase):
+    def test_fci_ticker_con_espacio(self):
+        from importing.parsers.cocos import _extract_ticker
+        # 'SBSACAR AR' tiene espacio → antes quedaba sin activo y se dropeaba.
+        self.assertEqual(_extract_ticker("SBS ACCIONES ARGENTINA CL.A $ FCI (SBSACAR AR)"), "SBSACAR")
+        # los tickers normales siguen funcionando.
+        self.assertEqual(_extract_ticker("CEDEAR APPLE INC. (AAPL)"), "AAPL")
+
+    def test_fci_se_clasifica_fund(self):
+        r = _parse("1;;30-01-2025;30-01-2025;Liquidacion Suscripcion Fci;"
+                   "FCI COCOS RENDIMIENTO CL. A $ ESC (COCORMA);ARS;;16215,39;7380,20;-119673;0;0;0;0;-119673")
+        self.assertEqual(r.raw_rows[0].data["activo"], "COCORMA")
+        self.assertEqual(r.raw_rows[0].data["asset_type"], "FUND")
+
+
+class TestDividendoSigno(unittest.TestCase):
+    def test_dividendo_negativo_es_fee(self):
+        # Retención de impuesto sobre dividendo CEDEAR (total negativo) → FEE.
+        r = _parse("1;;01-02-2024;01-02-2024;Dividendos;CEDEAR SPDR S&P 500 (SPY);ARS;;;;;-0,7;0;0;0;-0,7")
+        self.assertEqual(_by_tipo(r), ["FEE"])
+
+    def test_dividendo_positivo_sigue_dividendo(self):
+        r = _parse("1;;23-05-2024;23-05-2024;Dividendos;GRUPO FINANCIERO GALICIA (GGAL);ARS;;;;;18013,72;0;0;0;18013,72")
+        self.assertEqual(_by_tipo(r), ["DIVIDENDO"])
+
+    def test_nota_debito_dividendos_es_fee(self):
+        # "Nota Debito Dividendos ARS" contiene "dividendo" pero es un cargo → FEE.
+        r = _parse("1;;30-10-2025;30-10-2025;Nota Debito Dividendos ARS;;ARS;;;;;0;0;0;0;-30,71")
+        self.assertEqual(_by_tipo(r), ["FEE"])
+
+    def test_nota_credito_dividendos_sigue_dividendo(self):
+        r = _parse("1;;14-02-2025;14-02-2025;Nota Credito Dividendos ARS;;ARS;;;;;0;0;0;0;177604,57")
+        self.assertEqual(_by_tipo(r), ["DIVIDENDO"])
+
+
+class TestMepConduits(unittest.TestCase):
+    def test_compra_venta_dolar_mep_mismo_bono_es_conversion(self):
+        # RCCPO: Compra ARS + Venta Dolar Mep USD del mismo bono, misma cantidad →
+        # conversión de moneda (RETIRO/DEPOSITO), NO tenencia → sin posición fantasma.
+        r = _parse(
+            "1;;06-05-2025;06-05-2025;Compra;ON ARCOR CL.24 V07/10/25 $ CG (RCCPO);ARS;BYMA;128103;103,8;-132.970,91;0;-13,30;0;0;-132.984,21",
+            "2;;06-05-2025;06-05-2025;Venta Dolar Mep;ON ARCOR CL.24 V07/10/25 $ CG (RCCPO);USD;BYMA;-128103;0,087;111,45;0;-0,01;0;0;111,44",
+        )
+        self.assertEqual(_by_tipo(r), ["RETIRO", "DEPOSITO"])
+        self.assertTrue(all(not row.data["activo"] for row in r.raw_rows))
+
+    def test_esp_app_es_conversion(self):
+        # 'Compra Esp App Pesos' + 'Venta Esp App Dolares' (AL30) → RETIRO/DEPOSITO.
+        r = _parse(
+            "1;;03-01-2024;03-01-2024;Compra Esp App Pesos;BONO REP. ARGENTINA (AL30);ARS;BYMA;167;38408;-64142,2;0;-6,41;0;0;-64790,03",
+            "2;;04-01-2024;04-01-2024;Venta Esp App Dolares;BONO REP. ARGENTINA (AL30);USD;BYMA;-167;0;62,59;0;-0,01;0;0;62,42",
+        )
+        self.assertEqual(_by_tipo(r), ["RETIRO", "DEPOSITO"])
+
+    def test_compra_dolar_mep_accion_sigue_siendo_compra(self):
+        # Compra Dolar Mep de un CEDEAR (sin par ARS) = compra real en USD, NO conduit.
+        r = _parse("1;;17-09-2024;17-09-2024;Compra Dolar Mep;CEDEAR MERCADOLIBRE INC. (MELI);USD;BYMA;32;18,05;-577,6;-1,44;-0,46;-0,4;0;-579,9")
+        self.assertEqual(_by_tipo(r), ["COMPRA"])
+        self.assertEqual(r.raw_rows[0].data["activo"], "MELI")
+
+
 class TestNoUnknownErrors(unittest.TestCase):
     def test_mix_no_deja_ops_desconocidas(self):
         # Un mix representativo no debe dejar NINGÚN COCOS_OP_UNKNOWN.
