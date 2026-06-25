@@ -12,6 +12,7 @@ from .balanz_resultados import BalanzResultadosParser
 from .iol import IolParser
 from .schwab import SchwabParser
 from .bullmarket import BullMarketParser
+from .ieb import IebParser
 
 
 _PARSERS: List[Parser] = [
@@ -25,6 +26,7 @@ _PARSERS: List[Parser] = [
     IolParser(),
     SchwabParser(),
     BullMarketParser(),
+    IebParser(),
 ]
 
 
