@@ -441,6 +441,11 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
         qty: String(a.min_qty || ''),
         cost_basis_unit: '',
         min_qty: a.min_qty,
+        // exact_qty: la cantidad es conocida y fija (posición transferida) — el
+        // user solo completa el precio. Sin esto (sell sin compra previa) la qty
+        // es un mínimo editable.
+        exact_qty: !!a.exact_qty,
+        reason: a.reason || '',
       })),
     }))
     return {
@@ -455,6 +460,9 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     const brokers = (seedState.brokers || [])
       .map(b => ({
         broker: b.broker,
+        // Moneda del broker — el backend la usa como moneda de las compras
+        // sintéticas cuando no hay cash declarado (posiciones transferidas).
+        broker_currency: b.broker_currency,
         // El user tipea su SALDO ACTUAL; el depósito inicial que necesita el
         // backend = saldo_actual − saldo_que_da_el_CSV (final_balance, puede ser
         // negativo). Solo mandamos si el depósito da > 0.
@@ -473,11 +481,15 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             .filter(([_, adj]) => Math.abs(adj) > 0.005)
         ),
         assets: (b.assets || [])
-          .filter(a => a.symbol && Number(a.qty) > 0 && a.cost_basis_unit !== '')
+          // Las de cantidad exacta (posiciones transferidas) SIEMPRE se incluyen,
+          // aunque el user no haya puesto precio: se crean con costo 0 (editable
+          // luego) para no volver a perderlas. Las de qty mínima (sell sin compra
+          // previa) siguen siendo opcionales — solo si el user cargó el precio.
+          .filter(a => a.symbol && Number(a.qty) > 0 && (a.cost_basis_unit !== '' || a.exact_qty))
           .map(a => ({
             symbol: a.symbol.trim().toUpperCase(),
             qty: Number(a.qty),
-            cost_basis_unit: Number(a.cost_basis_unit),
+            cost_basis_unit: a.cost_basis_unit === '' ? 0 : Number(a.cost_basis_unit),
           })),
       }))
       .filter(b => Object.keys(b.cash).length > 0 || b.assets.length > 0)
@@ -511,7 +523,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     }
   }
 
-  // Acción del botón "Cargar estado inicial" en preview
+  // Acción del botón que lleva al paso de cash/precios (seed) desde el preview
   function goToSeedStep() {
     if (!seedState) {
       const initial = initSeedStateFromSuggestions()
@@ -536,6 +548,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
           step={step}
           skipMap={isSpecificParser}
           hasSeed={!!preview?.seed_suggestions?.needed}
+          hasSeedAssets={(preview?.seed_suggestions?.brokers || []).some(b => (b.assets || []).length > 0)}
         />
 
         <div className="p-5 overflow-y-auto flex-1">
@@ -713,6 +726,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               const toImport = Math.max(0, valid - skipped)
               const totalSkip = invalid + skipped
               const hasSeedSug = !!preview?.seed_suggestions?.needed
+              const seedHasAssets = (preview?.seed_suggestions?.brokers || []).some(b => (b.assets || []).length > 0)
               // Si falta el saldo inicial, NO dejamos confirmar acá: el único
               // camino hacia adelante es ir a resolverlo (paso siguiente). Así
               // nadie importa con la caja en negativo sin querer.
@@ -722,7 +736,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                     onClick={goToSeedStep}
                     className="px-4 py-2 text-sm rounded-md font-semibold transition bg-rendi-accent hover:bg-rendi-accent/90 text-white flex items-center gap-2"
                   >
-                    Confirmar mi cash →
+                    {seedHasAssets ? 'Completar mis datos →' : 'Confirmar mi cash →'}
                   </button>
                 )
               }
@@ -760,19 +774,31 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                   return v !== '' && v != null
                 })
               })
+              // Las posiciones de cantidad EXACTA (transferidas / compras sin
+              // precio) deben tener un precio cargado — o el user tocó "No sé el
+              // precio" (que setea 0). Las de qty mínima (ventas sin compra) son
+              // opcionales. Sin esto, alguien podía pasar de largo y dejarlas mal.
+              const assetsComplete = (seedState?.brokers || []).every(b =>
+                (b.assets || []).every(a =>
+                  !a.exact_qty || (a.cost_basis_unit !== '' && a.cost_basis_unit != null)
+                )
+              )
+              const seedComplete = cashComplete && assetsComplete
               return (
                 <div className="flex flex-col items-end gap-1">
                   <button
                     onClick={() => confirm({ withSeed: true })}
-                    disabled={busy || !cashComplete}
+                    disabled={busy || !seedComplete}
                     className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                   >
                     {busy && <Loader2 size={14} className="animate-spin" />}
                     Confirmar e importar
                   </button>
-                  {!cashComplete && (
+                  {!seedComplete && (
                     <span className="text-[11px] text-ink-3">
-                      Confirmá el cash de cada cuenta para seguir.
+                      {!cashComplete
+                        ? 'Confirmá el cash de cada cuenta para seguir.'
+                        : 'Completá el precio de cada posición (o tocá "No sé el precio").'}
                     </span>
                   )}
                 </div>
@@ -794,7 +820,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
 }
 
 
-function Stepper({ step, skipMap, hasSeed }) {
+function Stepper({ step, skipMap, hasSeed, hasSeedAssets }) {
   const baseSteps = skipMap
     ? [
         { id: STEP_INTRO, label: 'Inicio' },
@@ -807,7 +833,7 @@ function Stepper({ step, skipMap, hasSeed }) {
         { id: STEP_MAP, label: 'Mapear columnas' },
         { id: STEP_PREVIEW, label: 'Previsualización' },
       ]
-  const seedSteps = hasSeed ? [{ id: STEP_SEED, label: 'Tu cash' }] : []
+  const seedSteps = hasSeed ? [{ id: STEP_SEED, label: hasSeedAssets ? 'Cash y precios' : 'Tu cash' }] : []
   const steps = [...baseSteps, ...seedSteps, { id: STEP_DONE, label: 'Listo' }]
   // Si el step actual es SEED pero hasSeed=false (caso transitorio), igual lo
   // resaltamos comparando por id.
@@ -1471,6 +1497,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
   const breakdown = preview.routing_breakdown || []
   const isMulti = preview.is_multi_broker
   const seedSug = preview.seed_suggestions
+  const seedHasAssets = (seedSug?.brokers || []).some(b => (b.assets || []).length > 0)
 
   return (
     <div className="space-y-4">
@@ -1495,12 +1522,15 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             <Info size={16} className="mt-0.5 flex-shrink-0 text-blue-500" />
             <div>
               <div className="font-semibold text-ink-0 mb-0.5">
-                Falta confirmar tu cash — tranqui, no es un error
+                {seedHasAssets
+                  ? 'Te faltan un par de datos — tranqui, no es un error'
+                  : 'Falta confirmar tu cash — tranqui, no es un error'}
               </div>
               <p className="text-xs text-ink-2">
                 Tu archivo arranca con la cuenta ya en uso. Para que las cuentas cierren, en el paso
-                siguiente te preguntamos cuánto <span className="font-medium text-ink-1">efectivo</span> tenés <span className="font-medium text-ink-1">hoy</span> en
-                el broker (la plata sin invertir, no el total) — nada de fechas viejas. Es rápido, casi siempre un solo clic.
+                siguiente te pedimos cuánto <span className="font-medium text-ink-1">efectivo</span> tenés <span className="font-medium text-ink-1">hoy</span> en
+                el broker (la plata sin invertir, no el total) y, si hace falta, el <span className="font-medium text-ink-1">precio de compra</span> de
+                algunas posiciones. Es rápido, casi siempre un solo clic.
               </p>
             </div>
           </div>
@@ -1509,7 +1539,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
             onClick={onSeedClick}
             className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rendi-accent hover:bg-rendi-accent/90 text-white transition"
           >
-            Confirmar mi cash →
+            {seedHasAssets ? 'Completar mis datos →' : 'Confirmar mi cash →'}
           </button>
         </div>
       )}
@@ -1753,12 +1783,23 @@ function displayCur(cur, brokerName) {
 
 function SeedStep({ suggestions, seedState, setSeedState }) {
   const brokers = seedState?.brokers || []
+  const hasAssets = brokers.some(b => (b.assets || []).length > 0)
 
   function setCash(idx, currency, value) {
     setSeedState(s => {
       const next = { ...s, brokers: [...(s.brokers || [])] }
       const b = { ...next.brokers[idx], cash: { ...(next.brokers[idx].cash || {}) } }
       b.cash[currency] = value
+      next.brokers[idx] = b
+      return next
+    })
+  }
+
+  function setAsset(idx, assetIdx, field, value) {
+    setSeedState(s => {
+      const next = { ...s, brokers: [...(s.brokers || [])] }
+      const b = { ...next.brokers[idx], assets: [...(next.brokers[idx].assets || [])] }
+      b.assets[assetIdx] = { ...b.assets[assetIdx], [field]: value }
       next.brokers[idx] = b
       return next
     })
@@ -1771,7 +1812,9 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
           <Info size={15} className="mt-0.5 flex-shrink-0 text-rendi-accent" />
           <div className="flex flex-col gap-1">
             <div className="text-ink-0 font-semibold">
-              Confirmá cuánto cash tenés hoy — es el último paso
+              {hasAssets
+                ? 'Completá tu cash y el precio de tus posiciones — es el último paso'
+                : 'Confirmá cuánto cash tenés hoy — es el último paso'}
             </div>
             <p className="text-xs text-ink-2">
               ¿El número de arriba te parece raro (negativo o muy alto)? <span className="font-medium text-ink-1">Tranqui, es normal.</span> El
@@ -1889,6 +1932,78 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                   })}
                 </div>
               </div>
+
+              {/* Precio de compra — posiciones transferidas / compras sin precio / ventas sin compra previa */}
+              {(b.assets || []).length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-ink-3 mb-1">
+                    Precio de compra de tus posiciones en {b.broker}
+                  </div>
+                  <p className="text-[11px] text-ink-3 mb-2">
+                    Estas posiciones no traen precio en el archivo (entraron por transferencia, o el
+                    archivo no incluía la compra original). Poné el{' '}
+                    <span className="font-medium text-ink-1">precio promedio al que las compraste</span> para que el P&L salga bien.
+                  </p>
+                  <div className="space-y-2">
+                    {(b.assets || []).map((a, ai) => {
+                      const curLabel = displayCur(b.broker_currency, b.broker)
+                      const empty = a.cost_basis_unit === '' || a.cost_basis_unit == null
+                      const isZero = !empty && Number(a.cost_basis_unit) === 0
+                      // exact_qty = posición que SÍ se va a crear (transferida o
+                      // compra sin precio) → el precio es requerido (o "no sé" → 0).
+                      // min_qty = venta sin compra previa → opcional (el motor
+                      // auto-sintetiza al precio de venta si se deja vacío).
+                      const needsPrice = a.exact_qty && empty
+                      return (
+                        <div key={ai} className="flex items-center gap-2 flex-wrap rounded-md border border-line px-2 py-1.5">
+                          <span className="font-mono font-semibold text-ink-0 text-sm w-14">{a.symbol}</span>
+                          <span className="text-[11px] text-ink-3">
+                            {a.exact_qty ? '' : 'mín. '}{Number(a.qty).toLocaleString('es-AR', { maximumFractionDigits: 8 })} nominales
+                          </span>
+                          {needsPrice && (
+                            <button
+                              type="button"
+                              onClick={() => setAsset(bi, ai, 'cost_basis_unit', '0')}
+                              className="text-[10px] text-ink-3 hover:text-ink-1 underline decoration-dotted"
+                            >
+                              No sé el precio
+                            </button>
+                          )}
+                          <div className="flex items-center gap-1.5 ml-auto">
+                            <span className="text-[10px] text-ink-3 uppercase">{curLabel}</span>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={a.cost_basis_unit}
+                              onChange={e => setAsset(bi, ai, 'cost_basis_unit', e.target.value)}
+                              placeholder={a.exact_qty ? 'precio prom.' : 'precio (opcional)'}
+                              className={`w-32 bg-bg-2 dark:bg-bg-1/40 border rounded-md px-2 py-1.5 text-xs text-ink-0 ${
+                                needsPrice ? 'border-amber-500/60' : 'border-line'
+                              }`}
+                            />
+                          </div>
+                          {needsPrice && (
+                            <div className="w-full flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
+                              <AlertTriangle size={12} /> Falta el precio — o tocá "No sé el precio" para crearla con costo 0
+                            </div>
+                          )}
+                          {a.exact_qty && isZero && (
+                            <div className="w-full flex items-center gap-1 text-[11px] text-ink-3">
+                              <Info size={12} /> Se crea con costo 0 — la editás después en Posiciones
+                            </div>
+                          )}
+                          {!a.exact_qty && (
+                            <div className="w-full text-[11px] text-ink-3">
+                              Opcional — si lo dejás vacío, usamos el precio de la venta como referencia.
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )
