@@ -176,6 +176,18 @@ def sweep_matured_letras(conn, uid: int, *, ref_date: Optional[str] = None) -> D
     linked = _import_linked_position_ids(conn, uid)
     swept: List[Dict[str, Any]] = []
 
+    # Mapa (broker, activo) → nombre del instrumento importado, para derivar el
+    # vencimiento de BONOS cuyo ticker no lo codifica (ej. T2X5 Boncer, RCCPO):
+    # el nombre trae "V.14/02/25" y maturity_from_name lo parsea.
+    name_map: Dict[tuple, str] = {}
+    for r in conn.execute(
+        """SELECT DISTINCT n.broker, n.asset_symbol, n.asset_name
+             FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+            WHERE b.user_id = ? AND n.asset_name IS NOT NULL AND n.asset_symbol != ''""",
+        (uid,),
+    ).fetchall():
+        name_map.setdefault((r["broker"], r["asset_symbol"]), r["asset_name"])
+
     rows = conn.execute(
         "SELECT id, broker, asset, quantity FROM positions "
         "WHERE user_id=? AND is_cash=0",
@@ -183,9 +195,11 @@ def sweep_matured_letras(conn, uid: int, *, ref_date: Optional[str] = None) -> D
     ).fetchall()
 
     for p in rows:
-        mat = letra_maturity(p["asset"])
+        # Vencimiento por ticker (letra estándar) o, si no, por el nombre del
+        # instrumento (bonos/Boncer/ON que codifican la fecha en el nombre).
+        mat = letra_maturity(p["asset"]) or maturity_from_name(name_map.get((p["broker"], p["asset"])))
         if not mat:
-            continue                       # no es letra → no tocar
+            continue                       # ni letra ni bono con vencimiento → no tocar
         if mat > ref_date:
             continue                       # todavía no venció dentro de la ventana
         if p["id"] not in linked:

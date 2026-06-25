@@ -258,6 +258,10 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
 
         currency = _norm_currency(d.get("moneda"))
         notes = (d.get("notas") or "").strip() or None
+        # asset_name: nombre completo del instrumento si el parser lo pasa (ej.
+        # Cocos manda "BONO TESORO ... V.14/02/25 (T2X5)"). Sirve para derivar el
+        # vencimiento de bonos cuyo ticker no lo codifica (sweep de vencimientos).
+        asset_name = (d.get("asset_name") or "").strip() or None
 
         # asset_type: el parser puede pasar un hint explícito en data["asset_type"]
         # (útil para Schwab donde "ETH" significa Grayscale Ethereum Mini ETF,
@@ -276,6 +280,7 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             broker=broker,
             operation_type=op_type,
             asset_symbol=asset_raw,
+            asset_name=asset_name,
             asset_type=asset_type,
             quantity=quantity,
             unit_price=unit_price,

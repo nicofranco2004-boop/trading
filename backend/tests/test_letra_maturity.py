@@ -161,6 +161,33 @@ class TestSweep(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_cierra_bono_por_nombre_del_instrumento(self):
+        # T2X5 (Boncer) no matchea el patrón de letra, pero su NOMBRE trae el
+        # vencimiento ("V.14/02/25") → el sweep lo cierra vía maturity_from_name.
+        conn = main.get_db()
+        try:
+            pid = _seed_position(conn, self.uid, "Cocos", "T2X5", 27_286, linked=True)
+            conn.execute(
+                "INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status) "
+                "VALUES (?,?,?,?)", ("batch_sweep_test", 1, "{}", "confirmed"),
+            )
+            rrid = conn.execute("SELECT id FROM import_raw_rows LIMIT 1").fetchone()["id"]
+            conn.execute(
+                """INSERT INTO import_normalized_tx
+                     (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name)
+                   VALUES (?,?,?,?,?,?,?)""",
+                ("batch_sweep_test", rrid, "2025-01-23", "Cocos", "BUY", "T2X5",
+                 "BONO TESORO $ AJ. CER 4,25% V.14/02/25 (T2X5)"),
+            )
+            conn.commit()
+            res = sweep_matured_letras(conn, self.uid, ref_date="2026-06-25")
+            self.assertEqual({s["asset"] for s in res["swept"]}, {"T2X5"})
+            n = conn.execute("SELECT COUNT(*) c FROM positions WHERE user_id=? AND is_cash=0",
+                             (self.uid,)).fetchone()["c"]
+            self.assertEqual(n, 0)
+        finally:
+            conn.close()
+
     def test_ventana_de_datos_no_cierra_futuras(self):
         # Si la data del usuario termina antes del vencimiento, la letra sigue viva.
         conn = main.get_db()

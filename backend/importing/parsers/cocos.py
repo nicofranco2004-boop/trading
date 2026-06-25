@@ -543,6 +543,7 @@ class CocosParser(Parser):
                 "comisiones": fees,
                 "moneda":     moneda,
                 "asset_type": asset_type,  # "CEDEAR" → se valúa por .BA, no como acción US
+                "asset_name": instrumento,  # nombre completo (trae el vencimiento de bonos)
                 "notas":      notas,
             }
             result.raw_rows.append(RawRow(row_index=idx, data=data))
