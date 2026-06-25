@@ -177,7 +177,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // el monto absoluto). Si llega un value viejo de localStorage que ya no es
   // válido (e.g. 'dolar_cash'), caemos al default.
   const VALID_USD_BENCH = ['sp500', 'tbill', 'gold']
-  const VALID_ARS_BENCH = ['inflation', 'merval', 'plazo_fijo', 'pesos_cash']
+  const VALID_ARS_BENCH = ['inflation', 'merval', 'plazo_fijo', 'pesos_cash', 'sp500']
   const [benchUsd, setBenchUsd] = useState(() => {
     try {
       const v = localStorage.getItem('rendi_insights_bench_usd')
@@ -763,6 +763,7 @@ function InsightsDesktop({ _embeddedTab }) {
   const BENCHMARK_OPTIONS_ARS = [
     { key: 'inflation',  label: 'Inflación AR',    available: hasData(bench?.inflation_ar) },
     { key: 'merval',     label: 'Merval',          available: hasData(bench?.merval) && hasData(bench?.dolar_blue) },
+    { key: 'sp500',      label: 'S&P 500',         available: hasData(bench?.sp500) },
     { key: 'plazo_fijo', label: 'Plazo fijo UVA',  available: hasData(bench?.uva) && hasData(bench?.dolar_blue) },
     { key: 'pesos_cash', label: 'Pesos cash (blue)', available: hasData(bench?.dolar_blue) },
   ]
@@ -811,11 +812,25 @@ function InsightsDesktop({ _embeddedTab }) {
   // pero bench.sp500 y bench.inflation_ar son mensuales ("YYYY-MM").
   // Normalizamos siempre con monthKeyOf(key) = key.slice(0,7) para el lookup.
   const chartData = (() => {
-    if (windowSeries.length === 0) return []
-
     const monthKeyOf = k => (k === 'today' ? k : k.slice(0, 7))
-    const rawFirstKey = (windowSeries.find(x => x.key !== 'today') || windowSeries[0]).key
-    const windowFirstMonthKey = monthKeyOf(rawFirstKey)
+
+    // Skeleton de meses para dibujar SOLO el benchmark cuando la serie del
+    // portfolio (windowSeries) viene vacía — p.ej. en ARS sin dolar_blue, donde
+    // benchSeriesArs no se puede construir. El benchmark (inflación/Merval/S&P)
+    // se calcula desde globalMonthly, así que puede dibujarse igual con el
+    // portfolio en null en lugar de colapsar TODO el gráfico (ver más abajo).
+    const buildBenchOnlySkeleton = () => {
+      if (globalMonthly.length === 0) return []
+      const byMonth = {}
+      for (const m of globalMonthly) {
+        const k = monthKey(m.year, m.month)
+        byMonth[k.slice(0, 7)] = { key: k, label: benchLabel(k), total: null, realized: null }
+      }
+      let monthlyPts = Object.values(byMonth).sort((a, b) => a.key < b.key ? -1 : 1)
+      if (effectiveRange) monthlyPts = monthlyPts.slice(-effectiveRange)
+      monthlyPts.push({ key: 'today', label: 'Hoy', total: null, realized: null })
+      return monthlyPts
+    }
 
     // ── Shadow portfolio del benchmark seleccionado ──────────────────────
     // Apples-to-apples: aplicamos TUS flows reales al benchmark elegido.
@@ -967,7 +982,19 @@ function InsightsDesktop({ _embeddedTab }) {
       )
     }
 
-    const withBench = windowSeries.map(s => {
+    // DESACOPLE: el benchmark no depende de la serie del portfolio. Si el
+    // portfolio en pesos no se pudo armar (windowSeries vacío) pero hay un
+    // benchmark para dibujar, usamos un skeleton de meses y dejamos la línea
+    // del portfolio en null — así inflación/Merval/S&P siguen apareciendo en
+    // vez de colapsar el gráfico al empty-state.
+    let series = windowSeries
+    if (series.length === 0) {
+      if (shadowPctByMonth.size === 0) return []
+      series = buildBenchOnlySkeleton()
+    }
+    if (series.length === 0) return []
+
+    const withBench = series.map(s => {
       let benchPct = null
       if (shadowPctByMonth.size > 0) {
         const mk = monthKeyOf(s.key)
@@ -1925,7 +1952,9 @@ function InsightsDesktop({ _embeddedTab }) {
         {chartData.length === 0 ? (
           <div className="text-center py-10 text-ink-3 text-sm mt-4">
             <Info size={20} className="mx-auto mb-2 opacity-50" />
-            Cargá al menos un mes en Resumen Mensual para visualizar la evolución.
+            {globalMonthly.length === 0
+              ? 'Cargá al menos un mes en Resumen Mensual para visualizar la evolución.'
+              : 'Cargando la comparativa… si no aparece, los datos del benchmark no están disponibles por ahora.'}
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={320}>
