@@ -1761,18 +1761,19 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
 
   return (
     <div className="space-y-4">
-      <div className="px-3 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/40 text-sm">
+      <div className="px-3 py-2.5 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
         <div className="flex items-start gap-2">
-          <AlertTriangle size={15} className="mt-0.5 flex-shrink-0 text-amber-500" />
+          <Info size={15} className="mt-0.5 flex-shrink-0 text-rendi-accent" />
           <div className="flex flex-col gap-1">
             <div className="text-ink-0 font-semibold">
-              Confirmá tu cash de hoy — es obligatorio para que la cartera quede bien
+              Confirmá cuánto cash tenés hoy — es el último paso
             </div>
             <p className="text-xs text-ink-2">
-              Poné el saldo que ves <span className="font-medium text-ink-1">hoy</span> en tu broker
-              (uno por cada cuenta y moneda) y nosotros calculamos lo anterior solos. Si coincide con
-              lo que estimó Rendi, tocá el tick.{' '}
-              <span className="font-medium text-ink-1">Si lo dejás sin completar, tu cartera va a quedar con un saldo equivocado.</span>
+              ¿El número de arriba te parece raro (negativo o muy alto)? <span className="font-medium text-ink-1">Tranqui, es normal.</span> El
+              archivo de tu broker no siempre trae todos los movimientos de plata (depósitos, transferencias
+              o conversiones a dólar), así que ese cash estimado puede quedar desfasado.{' '}
+              <span className="font-medium text-ink-1">Tus operaciones se tomaron bien igual</span> — solo poné el saldo real que tenés
+              hoy en tu broker y nosotros ajustamos lo anterior solos.
             </p>
           </div>
         </div>
