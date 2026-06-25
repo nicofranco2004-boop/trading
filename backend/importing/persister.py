@@ -61,6 +61,35 @@ def blue_for_date(conn, date_str, fallback):
     return fallback
 
 
+def broker_pair(conn, uid: int, broker: str) -> List[str]:
+    """Nombres del PAR de brokers padre↔'· USD' al que pertenece `broker`.
+
+    El MISMO activo comprado en una moneda y vendido en la otra (dólar-MEP con
+    acciones/CEDEARs) queda PARTIDO por el routing: la pata USD en el sibling
+    '· USD' y la pata ARS en el padre. Para que el FIFO las NETEE (neto de
+    tenencia = 0, P&L realizado correcto) sin romper el cash (que sí queda
+    per-broker), el FIFO consume lotes del activo en AMBOS brokers del par.
+    Si `broker` no tiene par, devuelve [broker].
+    """
+    row = conn.execute(
+        "SELECT id, parent_broker_id FROM brokers WHERE user_id=? AND name=?",
+        (uid, broker)).fetchone()
+    if not row:
+        return [broker]
+    names = {broker}
+    if row["parent_broker_id"]:                    # es sibling → sumar el padre
+        pr = conn.execute("SELECT name FROM brokers WHERE id=? AND user_id=?",
+                          (row["parent_broker_id"], uid)).fetchone()
+        if pr:
+            names.add(pr["name"])
+    else:                                          # es padre → sumar su(s) sibling(s)
+        for s in conn.execute(
+                "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=?",
+                (uid, row["id"])).fetchall():
+            names.add(s["name"])
+    return sorted(names)
+
+
 class PersistError(Exception):
     """Error fatal durante la persistencia. Aborta toda la transacción."""
     def __init__(self, row_index: int, message: str):
@@ -438,11 +467,22 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         same = [p for p in rows if _nccy(dict(p)) == currency]
         return same if same else rows
 
+    # NETEO CROSS-BROKER del par padre↔'· USD': el MISMO activo comprado vía
+    # dólar-MEP (pata USD ruteada al sibling) y vendido en pesos (pata ARS en el
+    # padre) queda PARTIDO por el routing. Una compra-USD de BMA en el sibling +
+    # su venta-ARS en el padre deben NETEAR (tenencia 0), no dejar un fantasma en
+    # el sibling. Buscamos los lotes del activo en AMBOS brokers del par; _by_ccy
+    # prioriza los de la moneda de la venta y, si no hay (este caso: venta ARS,
+    # lote USD), cae al lote cross-currency y lo valúa con tc_blue. El CASH no se
+    # toca acá → sigue per-broker correcto (USD sale del sibling, ARS entra al padre).
+    _pair = broker_pair(conn, uid, tx.broker)
+    _ph = ",".join("?" * len(_pair))
+
     positions = _by_ccy(conn.execute(
-        """SELECT * FROM positions
-           WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
+        f"""SELECT * FROM positions
+           WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0
            ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-        (uid, tx.broker, tx.asset_symbol),
+        (uid, *_pair, tx.asset_symbol),
     ).fetchall())
     total_avail = sum((p["quantity"] or 0) for p in positions)
     qty_to_sell = float(tx.quantity or 0)
@@ -473,12 +513,13 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         # quedaba una posición fantasma que sobrevivía todos los reverts (B3).
         _link(conn, batch_id, raw_row_id, position_id=seed_cur.lastrowid)
         # Re-leer positions para que el FIFO encuentre el seed lot (mismo filtro
-        # por moneda — el seed se creó en la moneda de la venta).
+        # por moneda + mismo par de brokers — el seed se creó en la moneda/broker
+        # de la venta).
         positions = _by_ccy(conn.execute(
-            """SELECT * FROM positions
-               WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
+            f"""SELECT * FROM positions
+               WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0
                ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-            (uid, tx.broker, tx.asset_symbol),
+            (uid, *_pair, tx.asset_symbol),
         ).fetchall())
         total_avail = sum((p["quantity"] or 0) for p in positions)
 

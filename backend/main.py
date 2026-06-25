@@ -7782,12 +7782,21 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
                 sell_ccy = "ARS" if currency == "ARS" else "USD"
             cur_blue = _user_tc_blue(conn, uid)
 
+            # NETEO CROSS-BROKER del par padre↔'· USD': el mismo activo comprado vía
+            # dólar-MEP (pata USD en el sibling) y vendido en pesos (pata ARS en el
+            # padre) debe NETEAR. Buscamos lotes del activo en AMBOS brokers del par.
+            # En la práctica es casi no-op para ventas manuales (el user vende desde
+            # la fila donde vive el lote), pero deja el modelo FIFO idéntico al del
+            # import/rebuild. El cash sigue per-broker (entra al broker de la venta).
+            from importing.persister import broker_pair
+            _pair = broker_pair(conn, uid, data.broker)
+            _ph = ",".join("?" * len(_pair))
             # Posiciones del par, FIFO por entry_date (NULLs al final), tie-break por id.
             all_positions = conn.execute(
-                """SELECT * FROM positions
-                   WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
+                f"""SELECT * FROM positions
+                   WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0
                    ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-                (uid, data.broker, data.asset)
+                (uid, *_pair, data.asset)
             ).fetchall()
             # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo
             # ticker se puede tener en ARS y USD). La moneda nativa de cada lote la

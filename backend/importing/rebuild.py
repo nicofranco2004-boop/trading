@@ -56,7 +56,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from .schema import OP_BUY, OP_SELL
-from .persister import _link
+from .persister import _link, broker_pair
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +106,12 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 "batch_id": ev["batch_id"],
                 "raw_row_id": ev["raw_row_id"],
                 "is_seed": False,
+                # Broker DEL LOTE (no del grupo): con el neteo cross-broker del par
+                # padre↔'· USD' un mismo activo tiene lotes en distintos brokers
+                # (compra dólar-MEP en el sibling). El lote sobreviviente se escribe
+                # a SU broker.
+                "_broker": ev["broker"],
+                "_asset": ev["asset_symbol"],
             })
             continue
 
@@ -139,6 +145,9 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 "batch_id": None,      # semilla sintética: sin origen → sin link
                 "raw_row_id": None,
                 "is_seed": True,
+                # El seed vive en el broker de la VENTA que lo necesitó.
+                "_broker": ev["broker"],
+                "_asset": ev["asset_symbol"],
             })
 
         tc_venta = tc_blue if sell_currency == "ARS" else 1.0
@@ -234,44 +243,50 @@ def _affected_assets(conn, uid: int, batch_id: str) -> List[Dict[str, str]]:
     return [{"broker": r["broker"], "asset": r["asset_symbol"]} for r in rows]
 
 
-def _full_events(conn, uid: int, broker: str, asset: str) -> List[Dict[str, Any]]:
-    """Todos los BUY/SELL confirmados de (broker, activo), orden cronológico
-    determinístico (fecha asc; BUY antes que SELL el mismo día; id asc).
+def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[str, Any]]:
+    """Todos los BUY/SELL confirmados del activo en los brokers del par, orden
+    cronológico determinístico (fecha asc; BUY antes que SELL el mismo día; id asc).
+
+    `brokers` es el par padre↔'· USD' (o [broker] si no tiene par): así una compra
+    dólar-MEP ruteada al sibling y su venta en el padre se replayan JUNTAS y netean.
 
     INVARIANTE: import_normalized_tx = "lo que se aplicó". Las filas que el
     usuario marca para saltear (skip_row_indices) se BORRAN de esta tabla en
     import_confirm antes de llegar acá; si no, este replay las resucitaría."""
+    _ph = ",".join("?" * len(brokers))
     rows = conn.execute(
-        """SELECT n.id, n.batch_id, n.raw_row_id, n.date, n.broker, n.asset_symbol,
+        f"""SELECT n.id, n.batch_id, n.raw_row_id, n.date, n.broker, n.asset_symbol,
                   n.operation_type, n.quantity, n.unit_price, n.gross_amount,
                   n.fees, n.currency, n.created_position_id
              FROM import_normalized_tx n
              JOIN import_batches b ON b.id = n.batch_id
             WHERE b.user_id = ?
               AND b.status = 'confirmed'
-              AND n.broker = ?
+              AND n.broker IN ({_ph})
               AND n.asset_symbol = ?
               AND n.operation_type IN (?, ?)
             ORDER BY n.date ASC,
                      CASE n.operation_type WHEN ? THEN 0 ELSE 1 END ASC,
                      n.id ASC""",
-        (uid, broker, asset, OP_BUY, OP_SELL, OP_BUY),
+        (uid, *brokers, asset, OP_BUY, OP_SELL, OP_BUY),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def _is_safe_to_rebuild(conn, uid: int, broker: str, asset: str) -> bool:
-    """True si TODAS las positions (lotes abiertos) y ventas actuales de
-    (broker, activo) fueron creadas por imports (vinculadas en import_op_links).
-    Si hay cualquier fila manual / sin vincular (incluye lotes semilla huérfanos),
-    devolvemos False → se saltea, nunca se corrompe data no reproducible."""
+def _is_safe_to_rebuild(conn, uid: int, brokers: List[str], asset: str) -> bool:
+    """True si TODAS las positions (lotes abiertos) y ventas actuales del activo
+    en los brokers del par fueron creadas por imports (vinculadas en
+    import_op_links). Si hay cualquier fila manual / sin vincular (incluye lotes
+    semilla huérfanos), devolvemos False → se saltea, nunca se corrompe data no
+    reproducible."""
+    _ph = ",".join("?" * len(brokers))
     cur_pos = [r["id"] for r in conn.execute(
-        "SELECT id FROM positions WHERE user_id=? AND broker=? AND asset=? AND is_cash=0",
-        (uid, broker, asset),
+        f"SELECT id FROM positions WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0",
+        (uid, *brokers, asset),
     ).fetchall()]
     cur_sells = [r["id"] for r in conn.execute(
-        "SELECT id FROM operations WHERE user_id=? AND broker=? AND asset=? AND op_type='Venta'",
-        (uid, broker, asset),
+        f"SELECT id FROM operations WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND op_type='Venta'",
+        (uid, *brokers, asset),
     ).fetchall()]
 
     linked_pos = {r["position_id"] for r in conn.execute(
@@ -294,10 +309,10 @@ def _is_safe_to_rebuild(conn, uid: int, broker: str, asset: str) -> bool:
     return True
 
 
-def _clear_old_state(conn, uid: int, broker: str, asset: str,
+def _clear_old_state(conn, uid: int, brokers: List[str], asset: str,
                      events: List[Dict[str, Any]]) -> Dict[tuple, Optional[int]]:
-    """Borra los lotes abiertos + ventas import-creadas de (broker, activo) y
-    limpia su vinculación de revert, dejando todo listo para re-crear.
+    """Borra los lotes abiertos + ventas import-creadas del activo en los brokers
+    del par y limpia su vinculación de revert, dejando todo listo para re-crear.
 
     Devuelve {(batch_id, raw_row_id): old_created_position_id} para las filas
     BUY — lo usamos para dejar un "tombstone" en las compras que el rebuild
@@ -308,13 +323,14 @@ def _clear_old_state(conn, uid: int, broker: str, asset: str,
         if ev["operation_type"] == OP_BUY:
             old_buy_pos[(ev["batch_id"], ev["raw_row_id"])] = ev.get("created_position_id")
 
+    _ph = ",".join("?" * len(brokers))
     conn.execute(
-        "DELETE FROM positions WHERE user_id=? AND broker=? AND asset=? AND is_cash=0",
-        (uid, broker, asset),
+        f"DELETE FROM positions WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0",
+        (uid, *brokers, asset),
     )
     conn.execute(
-        "DELETE FROM operations WHERE user_id=? AND broker=? AND asset=? AND op_type='Venta'",
-        (uid, broker, asset),
+        f"DELETE FROM operations WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND op_type='Venta'",
+        (uid, *brokers, asset),
     )
     # Resetear la vinculación de cada raw row afectado (las vamos a re-linkear).
     for ev in events:
@@ -435,9 +451,21 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
     skipped_no_sell: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
 
+    seen_groups: set = set()
     for i, ba in enumerate(_affected_assets(conn, uid, batch_id)):
         broker, asset = ba["broker"], ba["asset"]
-        events = _full_events(conn, uid, broker, asset)
+        # NETEO CROSS-BROKER: procesamos el PAR padre↔'· USD' como UN grupo, así
+        # una compra dólar-MEP ruteada al sibling y su venta en pesos en el padre
+        # se replayan juntas y netean (el fantasma de tenencia en el sibling no
+        # sobrevive). Dedup: cada (par, activo) se procesa una sola vez aunque el
+        # batch toque ambos brokers del par.
+        pair = broker_pair(conn, uid, broker)
+        gkey = (tuple(pair), asset)
+        if gkey in seen_groups:
+            continue
+        seen_groups.add(gkey)
+
+        events = _full_events(conn, uid, pair, asset)
         if not events:
             continue
         # Sin ventas → el orden FIFO no afecta nada (solo compras abiertas).
@@ -445,14 +473,21 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
             skipped_no_sell.append(ba)
             continue
         # Frontera de seguridad: data manual no reproducible → no tocar.
-        if not _is_safe_to_rebuild(conn, uid, broker, asset):
+        if not _is_safe_to_rebuild(conn, uid, pair, asset):
             skipped_manual.append(ba)
-            log.info("rebuild_fifo: skip %s/%s (ops manuales no vinculadas)", broker, asset)
+            log.info("rebuild_fifo: skip %s/%s (ops manuales no vinculadas)",
+                     "+".join(pair), asset)
             continue
 
-        # Moneda del broker (fallback para ventas sin moneda explícita).
+        # Moneda de referencia del grupo (fallback para ventas sin moneda
+        # explícita). Usamos el broker PADRE del par (sin parent_broker_id); cada
+        # evento igual trae su propia moneda, así que esto casi nunca aplica.
+        _ph_pair = ",".join("?" * len(pair))
         br = conn.execute(
-            "SELECT currency FROM brokers WHERE name=? AND user_id=?", (broker, uid),
+            f"""SELECT currency FROM brokers
+                 WHERE user_id=? AND name IN ({_ph_pair}) AND parent_broker_id IS NULL
+                 ORDER BY id ASC LIMIT 1""",
+            (uid, *pair),
         ).fetchone()
         broker_currency = (br["currency"] if br else "USDT")
         if broker_currency == "USDT":
@@ -461,10 +496,9 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
             broker_currency = "USD"
 
         replay = _replay_asset(events, broker_currency, tc_blue)
-        # Inyectar broker/asset del grupo en cada lote abierto para el insert.
-        for lot in replay["open_lots"]:
-            lot["_broker"] = broker
-            lot["_asset"] = asset
+        # Los lotes/ops ya cargan su _broker desde el evento (neteo cross-broker):
+        # un lote comprado en el sibling se reescribe al sibling, uno del padre al
+        # padre. NO sobreescribimos con un broker de grupo.
 
         # Atomicidad por activo: SAVEPOINT. Si la reconstrucción de UN activo
         # falla a mitad (borró las ops viejas pero no escribió las nuevas), se
@@ -473,7 +507,7 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         sp = f"rebuild_{i}"
         conn.execute(f"SAVEPOINT {sp}")
         try:
-            old_buy_pos = _clear_old_state(conn, uid, broker, asset, events)
+            old_buy_pos = _clear_old_state(conn, uid, pair, asset, events)
             _write_rebuilt(conn, uid, replay)
             _ensure_monthly_rows(conn, uid, replay["operations"])
 
