@@ -977,14 +977,19 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(len(valid), 3, f"Errores: {[e.to_dict() for e in errors]}")
         self.assertEqual(len(errors), 0)
 
-    def test_buy_with_no_price_and_no_amount_still_rejected(self):
-        """Pero si price Y monto están AMBOS undefined (None), sí rechazamos."""
+    def test_buy_with_no_price_and_no_amount_diverted_to_seed(self):
+        """COMPRA con activo + cantidad pero SIN precio NI monto: ya no se rechaza
+        con MISSING_PRICE — se deriva al seed (cost_basis_pending) para que el
+        usuario complete el cost basis. No es válida (no se persiste directo) ni
+        error visible."""
         rows = [RawRow(1, {"fecha": "2024-01-15", "tipo": "COMPRA", "broker": "IBKR",
                            "activo": "AAPL", "cantidad": "10", "moneda": "USD"})]
         txs, _ = normalize_rows(rows)
         valid, errors = validate(txs, user_brokers={"IBKR": {"currency": "USDT"}}, existing_positions={})
         self.assertEqual(len(valid), 0)
-        self.assertTrue(any(e.code == "MISSING_PRICE" for e in errors))
+        self.assertEqual(len(errors), 0)
+        self.assertFalse(any(e.code == "MISSING_PRICE" for e in errors))
+        self.assertTrue(txs[0].cost_basis_pending)
 
 
 class PipelineE2ETest(unittest.TestCase):
@@ -2183,6 +2188,33 @@ class SeedStateE2ETest(unittest.TestCase):
             self.assertEqual(binance["broker"], "Binance")
             symbols = [a["symbol"] for a in binance["assets"]]
             self.assertIn("BTC", symbols)
+        finally:
+            conn.close()
+
+    def test_buy_without_price_offered_as_seed_asset(self):
+        """Una COMPRA con cantidad pero SIN precio ni monto no se rechaza:
+        se deriva al seed como activo de cantidad exacta para que el usuario
+        cargue el cost basis — mismo flujo que las posiciones transferidas.
+        (Antes daba MISSING_PRICE y la fila se descartaba)."""
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2025-11-15,COMPRA,Binance,ETH,2,,,,,,USDT,sin precio en el archivo
+"""
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="noprice.csv",
+                    broker_hint="Binance", parser_format="rendi_generic",
+                )
+            # No es fila válida (se derivó) ni error visible.
+            self.assertEqual(payload["summary"]["valid_rows"], 0)
+            self.assertEqual(payload["summary"]["invalid_rows"], 0)
+            sug = payload.get("seed_suggestions")
+            self.assertIsNotNone(sug, "esperaba seed_suggestions por la compra sin precio")
+            binance = next(b for b in sug["brokers"] if b["broker"] == "Binance")
+            eth = next(a for a in binance["assets"] if a["symbol"] == "ETH")
+            self.assertTrue(eth["exact_qty"])
+            self.assertAlmostEqual(eth["min_qty"], 2, places=6)
         finally:
             conn.close()
 
@@ -5589,14 +5621,46 @@ class SchwabParserTest(unittest.TestCase):
                         if "399RGT026" in (e.message or "")]
         self.assertEqual(warrants_err, [])
 
-    def test_internal_transfer_journaled_shares_skipped(self):
-        """Migraciones TDA→Schwab no se importan como BUY/SELL."""
+    def test_security_transfer_in_imported_as_cost_basis_pending(self):
+        """Migración TDA→Schwab: la pata IN (Internal Transfer, cantidad +) se
+        importa como posición con precio pendiente; la pata OUT (Journaled Shares,
+        cantidad −) se ignora. Antes se descartaban ambas y la posición
+        transferida se perdía (bug: el usuario no veía AAPL/MELI tras importar)."""
         result = self.parser.parse(self.fixture)
-        # Las filas con "TDA TRAN" en notas no deberían convertirse en BUYs
-        tda_buys = [r for r in result.raw_rows
-                    if r.data["tipo"] == "COMPRA"
-                    and "TDA TRAN" in r.data["notas"]]
-        self.assertEqual(tda_buys, [])
+        ggal = [r for r in result.raw_rows if r.data["activo"] == "GGAL"]
+        # Solo la pata IN (+288) entra; la OUT (−288) se ignora → 1 sola fila.
+        self.assertEqual(len(ggal), 1)
+        row = ggal[0]
+        self.assertEqual(row.data["tipo"], "COMPRA")
+        self.assertEqual(row.data["cantidad"], "288")
+        self.assertEqual(row.data["precio"], "")
+        self.assertEqual(row.data.get("_cost_basis_pending"), "1")
+
+    def test_cash_only_transfers_still_skipped(self):
+        """Las transferencias internas SIN símbolo (movimientos de cash que
+        netean entre cuentas) se siguen ignorando — no inventan cash flows."""
+        csv = (
+            '"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"\n'
+            '"09/05/2023","Journaled Shares","","TDA TRAN - CASH MOVEMENT OF OUTGOING","","","","-$222.64"\n'
+            '"09/05/2023","Internal Transfer","","TDA TO CS&CO TRANSFER","","","","$222.64"\n'
+        )
+        result = self.parser.parse(csv)
+        self.assertEqual(result.parse_errors, [])
+        self.assertEqual(result.raw_rows, [])
+
+    def test_moneylink_adj_and_deposit_are_cash_flows(self):
+        """MoneyLink Adj / Deposit (variantes de ACH) se importan como cash flows
+        según el signo del Amount — antes caían en SCHWAB_OP_UNKNOWN."""
+        csv = (
+            '"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"\n'
+            '"01/23/2024","MoneyLink Deposit","","TRUIST","","","","$100.50"\n'
+            '"01/31/2024","MoneyLink Adj","","Tfr TRUIST BANK","","","","-$3000.00"\n'
+            '"02/06/2024","MoneyLink Transfer","","Tfr TRUIST BANK","","","","$3000.00"\n'
+        )
+        result = self.parser.parse(csv)
+        self.assertEqual(result.parse_errors, [])
+        tipos = sorted(r.data["tipo"] for r in result.raw_rows)
+        self.assertEqual(tipos, ["DEPOSITO", "DEPOSITO", "RETIRO"])
 
     def test_qual_div_reinvest_is_dividend(self):
         result = self.parser.parse(self.fixture)
@@ -5610,6 +5674,101 @@ class SchwabParserTest(unittest.TestCase):
         result = self.parser.parse(t)
         # No errores fatales y al menos algunas filas válidas
         self.assertGreater(len(result.raw_rows), 0)
+
+
+class SchwabSecurityTransferE2ETest(unittest.TestCase):
+    """E2E del fix de posiciones transferidas (migración TD Ameritrade → Schwab):
+    una posición que entra 100% por Internal Transfer (sin un Buy posterior) ya NO
+    se pierde — se ofrece como seed-asset con cantidad EXACTA y, al confirmar con
+    el precio, se crea la posición con el cost basis del usuario, en la moneda del
+    broker (USD, no USDT)."""
+
+    # LOMA = compra real (precio en el CSV). AAPL = entra solo por transferencia
+    # TDA→Schwab: pata OUT (Journaled −39) + pata IN (Internal +39).
+    CSV = (
+        b'"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"\n'
+        b'"01/02/2024","Buy","LOMA","LOMA NEGRA ADR","150","$7.06","","-$1059.00"\n'
+        b'"09/05/2023","Journaled Shares","AAPL","TDA TRAN - TRANSFER OF SECURITY OUT (AAPL)","-39","","",""\n'
+        b'"09/05/2023","Internal Transfer","AAPL","APPLE INC","39","","",""\n'
+    )
+
+    def setUp(self):
+        conn = main.get_db()
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions",
+                  "monthly_entries", "brokers", "users"):
+            conn.execute(f"DELETE FROM {t}")
+        conn.commit()
+        self.uid = _new_user(conn, email="schwab_xfer@rendi.test")
+        _add_broker(conn, self.uid, "Schwab", "USD")
+        conn.commit()
+        conn.close()
+
+    def test_transfer_position_surfaced_in_seed(self):
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=self.CSV, file_name="schwab.csv",
+                    broker_hint="Schwab", parser_format="schwab",
+                )
+            sug = payload.get("seed_suggestions")
+            self.assertIsNotNone(sug, "esperaba seed_suggestions por la transferencia")
+            self.assertTrue(sug["needed"])
+            schwab = next(b for b in sug["brokers"] if b["broker"] == "Schwab")
+            aapl = next(a for a in schwab["assets"] if a["symbol"] == "AAPL")
+            self.assertTrue(aapl["exact_qty"], "la qty de una transferencia es exacta")
+            self.assertAlmostEqual(aapl["min_qty"], 39, places=6)
+            # LOMA tiene precio real → NO debe pedir cost basis.
+            self.assertNotIn("LOMA", [a["symbol"] for a in schwab["assets"]])
+        finally:
+            conn.close()
+
+    def test_confirm_creates_transferred_position_in_usd(self):
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=self.CSV, file_name="schwab.csv",
+                    broker_hint="Schwab", parser_format="schwab",
+                )
+            session_id = payload["session_id"]
+            seed_state = {
+                "seed_date": payload["seed_suggestions"]["seed_date"],
+                "brokers": [{
+                    "broker": "Schwab",
+                    "broker_currency": "USD",
+                    "cash": {},
+                    "assets": [{"symbol": "AAPL", "qty": 39, "cost_basis_unit": 150.0}],
+                }],
+            }
+            with conn:
+                txs, raw = pl.load_session_with_seed_revalidate(
+                    conn, uid=self.uid, session_id=session_id, seed_state=seed_state,
+                )
+                ps.persist_batch(
+                    conn, uid=self.uid, batch_id=session_id, txs=txs,
+                    raw_row_ids_by_index=raw, helpers=_helpers(), seed_state=seed_state,
+                )
+            # AAPL recuperada: qty 39, cost basis 150, en USD (no USDT).
+            aapl = conn.execute(
+                "SELECT quantity, buy_price, currency FROM positions "
+                "WHERE user_id=? AND broker='Schwab' AND asset='AAPL' AND is_cash=0",
+                (self.uid,),
+            ).fetchone()
+            self.assertIsNotNone(aapl, "AAPL debería existir tras importar (antes se perdía)")
+            self.assertAlmostEqual(aapl["quantity"], 39, places=6)
+            self.assertAlmostEqual(aapl["buy_price"], 150.0, places=2)
+            self.assertEqual(aapl["currency"], "USD")
+            # LOMA (compra real del CSV) también está, con sus 150 nominales.
+            loma = conn.execute(
+                "SELECT quantity FROM positions WHERE user_id=? AND broker='Schwab' AND asset='LOMA' AND is_cash=0",
+                (self.uid,),
+            ).fetchone()
+            self.assertIsNotNone(loma)
+            self.assertAlmostEqual(loma["quantity"], 150, places=6)
+        finally:
+            conn.close()
 
 
 class CocosVisibleInDropdownTest(unittest.TestCase):

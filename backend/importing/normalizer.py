@@ -286,6 +286,12 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             notes=notes,
         )
 
+        # Marca del parser: la fila aporta una posición pero el CSV no trae el
+        # precio de compra (securities transferidas, p.ej. TDA→Schwab). El
+        # pipeline la deriva al flujo de "estado inicial" (seed) en vez de
+        # persistirla como compra normal.
+        tx.cost_basis_pending = bool(d.get("_cost_basis_pending"))
+
         # Fallback de monto para filas non-FX en CSVs con columnas separadas
         # por moneda (típico en Argentina: monto_ars + monto_usd). Si la fila
         # tiene monto_usd pero no monto, usamos monto_usd como el monto en

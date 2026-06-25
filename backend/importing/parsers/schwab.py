@@ -83,10 +83,27 @@ _OP_MAP = {
     "adr mgmt fee":       "FEE",
 }
 
-# Skipeados sin reportar (corporate actions / movimientos internos).
+# Skipeados sin reportar (corporate actions informativas, sin impacto en cash).
 _OP_SKIP_SILENT = {
     "expired warrants",
     "dist rgts n-trans",
+}
+
+# Transferencias de securities entre cuentas — el caso clásico es la migración
+# TD Ameritrade → Schwab (2023): muchísimos usuarios AR la vivieron. Cada activo
+# viene en un PAR por fecha:
+#   • "Journaled Shares"  con cantidad NEGATIVA = pata OUT (lado de la cuenta
+#     origen, p.ej. TDA, que ya no trackeamos).
+#   • "Internal Transfer" con cantidad POSITIVA = pata IN = la posición que el
+#     usuario realmente tiene hoy en Schwab.
+# Antes descartábamos AMBAS en silencio → las posiciones que entraron 100% por
+# transferencia (sin un Buy posterior) desaparecían del import. Ahora la pata IN
+# (cantidad > 0) se importa como aporte de posición; como el CSV no trae el
+# precio de compra, la marcamos "cost basis pendiente" para que el wizard lo pida.
+# La pata OUT (cantidad < 0) se ignora para no netear la posición a 0.
+# Las filas SIN símbolo (movimientos de cash interno: "TDA TO CS&CO TRANSFER",
+# "CASH MOVEMENT…") netean entre sí → no afectan el cash, las ignoramos.
+_OP_SECURITY_TRANSFER = {
     "internal transfer",
     "journaled shares",
 }
@@ -228,6 +245,40 @@ class SchwabParser(Parser):
             fees_raw = _clean_money(G(row, "feescomm"))
             amount_raw = _clean_money(G(row, "amount"))
 
+            # ───── Transferencia de securities (migración TDA→Schwab, etc.) ──
+            if action_raw in _OP_SECURITY_TRANSFER:
+                # Sin símbolo → es cash interno (netea) → ignorar.
+                if not symbol or not qty_raw:
+                    continue
+                try:
+                    qnum = float(qty_raw)
+                except ValueError:
+                    continue
+                # Pata OUT (cantidad ≤ 0) = lado de la cuenta origen → ignorar.
+                if qnum <= 0:
+                    continue
+                # Pata IN (cantidad > 0) = la posición que el user tiene hoy. El
+                # CSV no trae precio de compra → cost basis pendiente (lo pide el
+                # wizard vía el paso de "estado inicial").
+                data = {
+                    "fecha":      fecha or "",
+                    "tipo":       "COMPRA",
+                    "broker":     "Schwab",
+                    "activo":     symbol,
+                    "cantidad":   qty_raw,
+                    "precio":     "",
+                    "monto":      "",
+                    "monto_usd":  "",
+                    "tc":         "",
+                    "comisiones": "0",
+                    "moneda":     "USD",
+                    "notas":      f"Transferencia de {symbol} a Schwab — falta el precio de compra original",
+                    "asset_type": "ETF" if symbol in _KNOWN_ETF_TICKERS else "",
+                    "_cost_basis_pending": "1",
+                }
+                result.raw_rows.append(RawRow(row_index=idx, data=data))
+                continue
+
             # ───── Stock Split: BUY sintético con price=0 ─────────────────
             # Schwab emite una row "Stock Split" cuando un papel del user
             # split-ea (ej.: XLK split 1→2 le dió 3 shares extra). Rendi no
@@ -262,8 +313,12 @@ class SchwabParser(Parser):
                 result.raw_rows.append(RawRow(row_index=idx, data=data))
                 continue
 
-            # MoneyLink Transfer: dirección depende del signo del Amount
-            if action_raw == "moneylink transfer":
+            # MoneyLink (Transfer / Deposit / Adj): transferencia bancaria ACH.
+            # La dirección depende del signo del Amount (+ depósito, − retiro).
+            # "Adj" suele ser el reverso de un Transfer (mismo monto, signo
+            # opuesto) → al importar ambos, netean correctamente. "Deposit" es
+            # un depósito ACH directo. Antes estos dos caían en SCHWAB_OP_UNKNOWN.
+            if action_raw in ("moneylink transfer", "moneylink deposit", "moneylink adj"):
                 if not amount_raw:
                     continue  # informational sin valor
                 tipo_rendi = "RETIRO" if amount_raw.startswith("-") else "DEPOSITO"

@@ -63,6 +63,15 @@ def validate(
         ridx = tx.row_index
         row_errs: List[RowError] = []
 
+        # Posición transferida sin precio (p.ej. migración TDA→Schwab): el CSV
+        # trae la cantidad pero no el cost basis. No la validamos ni la
+        # persistimos como compra normal — no es ni "válida" (le falta precio)
+        # ni un "error" del usuario. El pipeline la levanta como seed-asset para
+        # que el usuario complete el precio de compra; de ahí sale la compra
+        # sintética. La diferimos acá para que no caiga en MISSING_PRICE.
+        if tx.operation_type == OP_BUY and getattr(tx, "cost_basis_pending", False):
+            continue
+
         # Broker debe existir
         if tx.broker not in user_brokers:
             row_errs.append(RowError(ridx, "broker", "UNKNOWN_BROKER",
@@ -80,13 +89,16 @@ def validate(
                 row_errs.append(RowError(ridx, "cantidad", "MISSING_QUANTITY",
                                          "La compra necesita una cantidad mayor a 0. Si tu CSV solo tiene 'monto' "
                                          "sin desglosar cantidad y precio, completá precio para que lo calculemos."))
-            # Aceptamos price=0 / monto=0 explícitos (caso típico: Stock Split,
-            # share grants, transfer-in con cost basis 0). Solo rechazamos si
-            # AMBOS están UNDEFINED (None), señalando que el CSV no aportó info.
-            if tx.unit_price is None and tx.gross_amount is None:
-                row_errs.append(RowError(ridx, "precio", "MISSING_PRICE",
-                                         "La compra necesita 'precio' o 'monto' para calcular el costo. "
-                                         "Mapeá una de las dos columnas en el wizard."))
+            # Compra con activo + cantidad válidos pero SIN precio NI monto: ya no
+            # la rechazamos con MISSING_PRICE. La derivamos al "estado inicial"
+            # (seed) para que el usuario complete el cost basis — mismo flujo que
+            # las posiciones transferidas. Cubre cualquier CSV que traiga la
+            # cantidad pero no el precio de compra.
+            # (price=0 / monto=0 EXPLÍCITOS sí valen como compra normal — stock
+            # splits, grants, transfer-in con costo 0 —; por eso None, no falsy.)
+            if not row_errs and tx.unit_price is None and tx.gross_amount is None:
+                tx.cost_basis_pending = True
+                continue
 
         elif op == OP_SELL:
             if not tx.asset_symbol:

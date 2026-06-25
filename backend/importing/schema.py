@@ -221,6 +221,12 @@ class NormalizedTx:
     # el `import_normalized_tx.gross_amount_usd` stamped. Sin esto, había
     # drift potencial si tc_blue cambiaba entre confirm y persist.
     gross_amount_usd: Optional[float] = None
+    # True cuando la fila aporta una posición pero el CSV no trae el precio de
+    # compra (caso típico: securities transferidas entre cuentas, p.ej. la
+    # migración TD Ameritrade → Schwab). Estas filas NO se persisten directo:
+    # se ofrecen como "estado inicial" (seed) para que el usuario complete el
+    # cost basis, y de ahí sale la compra sintética con el precio real.
+    cost_basis_pending: bool = False
 
     def to_db_dict(self) -> Dict[str, Any]:
         return asdict(self)

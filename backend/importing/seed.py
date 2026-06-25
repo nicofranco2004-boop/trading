@@ -192,6 +192,52 @@ def enrich_with_sell_assets(
     return suggestions
 
 
+def enrich_with_transfer_assets(
+    suggestions: Dict[str, Any],
+    *,
+    transfers: List[Tuple[str, str, float]],   # (broker, asset, qty)
+    user_brokers: Optional[Dict[str, dict]] = None,
+) -> Dict[str, Any]:
+    """Agrega al seed las posiciones que entraron por transferencia de securities
+    (p.ej. migración TDA→Schwab). A diferencia de las ventas-sin-compra, acá la
+    cantidad es EXACTA y conocida (la trae el CSV) — solo falta el precio de
+    compra. Marcamos `exact_qty=True` para que el front muestre la cantidad fija
+    y pida únicamente el cost basis. Mutates and returns.
+    """
+    user_brokers = user_brokers or {}
+    brokers_map = {b["broker"]: b for b in suggestions.get("brokers", [])}
+    agg: Dict[Tuple[str, str], float] = defaultdict(float)
+    for broker, asset, qty in transfers:
+        if asset and qty > 0:
+            agg[(broker, asset)] += qty
+    for (broker, asset), qty in agg.items():
+        info = brokers_map.setdefault(broker, {
+            "broker": broker,
+            "broker_currency": (user_brokers.get(broker) or {}).get("currency", ""),
+            "assets": [],
+            "cash_overdraft": {},
+            "final_balance": {},
+            "trigger_count": 0,
+        })
+        if not info.get("broker_currency"):
+            info["broker_currency"] = (user_brokers.get(broker) or {}).get("currency", "")
+        existing = next((a for a in info["assets"] if a.get("symbol") == asset), None)
+        if existing:
+            existing["min_qty"] = round(qty, 8)
+            existing["exact_qty"] = True
+            existing["reason"] = "transferida sin precio de compra"
+        else:
+            info["assets"].append({
+                "symbol": asset,
+                "min_qty": round(qty, 8),
+                "exact_qty": True,
+                "reason": "transferida sin precio de compra",
+            })
+            info["trigger_count"] += 1
+    suggestions["brokers"] = list(brokers_map.values())
+    return suggestions
+
+
 def build_seed_txs(seed_state: Dict[str, Any]) -> List[NormalizedTx]:
     """Convierte el seed_state que mandó el frontend en una lista de NormalizedTx.
 
@@ -236,8 +282,15 @@ def build_seed_txs(seed_state: Dict[str, Any]) -> List[NormalizedTx]:
         # Asumimos que el costo de cada activo está en la moneda nativa del broker.
         # Si quisiéramos soportar mezcla, habría que pedirle al usuario la
         # moneda por activo. Para MVP: una moneda por broker.
-        # Tomamos la primera moneda con cash declarado, sino "USDT".
-        primary_currency = next(iter(cash_in.keys()), "USDT") if cash_in else "USDT"
+        # Tomamos la primera moneda con cash declarado; si no hay cash (caso de
+        # seed-assets de transferencias sin overdraft), usamos la moneda del
+        # broker; último fallback "USDT". Sin esto, una posición transferida a un
+        # broker USD (Schwab) se creaba en USDT.
+        primary_currency = (
+            next(iter(cash_in.keys()), None)
+            or (b.get("broker_currency") or "").strip().upper()
+            or "USDT"
+        )
 
         valid_assets = []
         for a in assets:

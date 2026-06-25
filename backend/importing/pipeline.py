@@ -707,6 +707,39 @@ def run_preview(
                     fb[cur] = round(float(val), 2)
         preview_payload["seed_suggestions"] = seed_suggestions
 
+    # Posiciones que entraron por transferencia de securities SIN precio en el
+    # CSV (caso típico: migración TD Ameritrade → Schwab, muy común en usuarios
+    # AR). El parser las marcó cost_basis_pending y el validator las derivó acá.
+    # Las ofrecemos como seed-assets con cantidad EXACTA para que el user cargue
+    # el cost basis → de ahí sale la compra sintética. Sin esto, una posición
+    # que llegó 100% por transferencia (sin un Buy posterior) se perdía.
+    transfer_assets = [
+        (tx.broker, tx.asset_symbol, float(tx.quantity or 0))
+        for tx in normalized
+        if getattr(tx, "cost_basis_pending", False)
+        and tx.asset_symbol and (tx.quantity or 0) > 0
+    ]
+    if transfer_assets:
+        if not seed_suggestions:
+            _dates = [t.date for t in normalized if t.date]
+            _earliest = min(_dates) if _dates else None
+            seed_suggestions = {
+                "needed": True,
+                "earliest_csv_date": _earliest,
+                "seed_date": _seed._minus_one_day(_earliest) if _earliest else None,
+                "brokers": [],
+                "totals": {"sell_errors": 0, "cash_warnings": 0},
+            }
+        _seed.enrich_with_transfer_assets(
+            seed_suggestions, transfers=transfer_assets, user_brokers=user_brokers,
+        )
+        for b in seed_suggestions.get("brokers", []):
+            fb = b.setdefault("final_balance", {})
+            for (br, cur), val in standalone_final.items():
+                if br == b.get("broker") and cur not in fb:
+                    fb[cur] = round(float(val), 2)
+        preview_payload["seed_suggestions"] = seed_suggestions
+
     # Routing summary: por cada broker ARS con filas USD, cuántas van al padre
     # y cuántas al sibling. Sirve para que el frontend muestre chips claros.
     if route_by_currency and valid_txs:
