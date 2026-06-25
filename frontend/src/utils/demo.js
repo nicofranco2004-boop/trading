@@ -197,35 +197,35 @@ const PREV_CLOSE = (() => {
 // Este es el target al que MONTHLY tiene que converger en su último mes
 // para que el Dashboard no muestre un "Últimos 10 días" inflado.
 const _DEMO_TC_BLUE = 1415  // matches /config en demo
-const _COMPUTED_PORTFOLIO_TOTAL_USD = (() => {
-  let total = 0
+
+// Valor live POR BROKER (USD), con el mismo algoritmo que computeBrokerValue
+// del frontend (valuation.js):
+//   • USD broker → price × quantity (o invested para cash).
+//   • ARS broker (Cocos) → precio[asset+'.BA'] × quantity en ARS, / tcBlue;
+//     sin precio (ej. asset ya termina en '.BA') → cost basis (invested) / tcBlue.
+//   • Cash ARS → quantity / tcBlue; cash USD/USDT → invested.
+// Se usa para (a) el total del portfolio y (b) derivar los pesos por broker de
+// MONTHLY, así el último mes de cada broker ≈ su valor live y la serie de
+// Insights (cuyo punto "Hoy" sale del valor live) no pega un salto.
+const _BROKER_LIVE_USD = (() => {
+  const by = {}
+  for (const b of BROKERS) by[b.name] = 0
   for (const p of POSITIONS) {
+    let v = 0
     if (p.is_cash) {
-      // Cocos cash: p.quantity está en ARS, lo convertimos a USD.
-      // Schwab USD / Binance USDT: invested ya es USD.
-      total += p.broker === 'Cocos' ? (p.quantity || 0) / _DEMO_TC_BLUE : (p.invested || 0)
-      continue
-    }
-    if (p.broker === 'Cocos') {
-      // valuation.js hace prices[p.asset + '.BA']. Para 'GGAL' → 'GGAL.BA' ✓.
-      // Para 'AAPL.BA' → 'AAPL.BA.BA' (undefined) → fallback a cost basis.
+      v = p.broker === 'Cocos' ? (p.quantity || 0) / _DEMO_TC_BLUE : (p.invested || 0)
+    } else if (p.broker === 'Cocos') {
       const priceArs = PRICES[p.asset + '.BA']
-      if (priceArs != null) {
-        total += (priceArs * (p.quantity || 0)) / _DEMO_TC_BLUE
-      } else {
-        total += (p.invested || 0) / _DEMO_TC_BLUE
-      }
+      v = priceArs != null ? (priceArs * (p.quantity || 0)) / _DEMO_TC_BLUE : (p.invested || 0) / _DEMO_TC_BLUE
     } else {
       const priceUsd = PRICES[p.asset]
-      if (priceUsd != null) {
-        total += priceUsd * (p.quantity || 0)
-      } else {
-        total += p.invested || 0  // fallback
-      }
+      v = priceUsd != null ? priceUsd * (p.quantity || 0) : (p.invested || 0)
     }
+    if (by[p.broker] != null) by[p.broker] += v
   }
-  return total
+  return by
 })()
+const _COMPUTED_PORTFOLIO_TOTAL_USD = Object.values(_BROKER_LIVE_USD).reduce((a, b) => a + b, 0)
 
 // Cierres mensuales (para Monthly Reports / Reports timeline / Insights chart).
 // CRÍTICO: tiene que incluir capital_final para que buildCumulativeReturnSeries
@@ -239,7 +239,18 @@ const _COMPUTED_PORTFOLIO_TOTAL_USD = (() => {
 // Pesos relativos por broker (suman ~1.0). Determinan cuánto del global
 // corresponde a cada broker — el chart ARS de Insights filtra por broker
 // específico, así que sin entries por broker el chart ARS queda vacío.
-const BROKER_WEIGHTS = { Schwab: 0.51, Cocos: 0.06, Binance: 0.43 }
+//
+// Se DERIVAN del valor live real de cada broker (no hardcoded). Así el último
+// mes de cada broker en MONTHLY ≈ su valor live, y la línea de Insights —que
+// toma el punto "Hoy" del valor live— no pega un salto. Antes Cocos estaba fijo
+// en 0.06 pero su share real es ~0.13 (la posición AL30 lo infla) → la línea
+// ARS saltaba x2 en "Hoy".
+const BROKER_WEIGHTS = (() => {
+  const total = _COMPUTED_PORTFOLIO_TOTAL_USD || 1
+  const w = {}
+  for (const b of BROKERS) w[b.name] = (_BROKER_LIVE_USD[b.name] || 0) / total
+  return w
+})()
 
 const MONTHLY = (() => {
   const out = []
@@ -1648,9 +1659,11 @@ const BENCHMARKS = (() => {
     const baseInflation = Math.max(2.5, 12 - monthsSince * 0.25)
     const infl = Math.round((baseInflation + (Math.random() - 0.5) * 1.5) * 100) / 100
     out.inflation_ar[key] = infl
-    // Dólar blue tendencial
-    const driftBlue = 0.025 - monthsSince * 0.0008  // se desacelera
-    blue = blue * (1 + driftBlue + (Math.random() - 0.5) * 0.04)
+    // Dólar blue tendencial — sube SIEMPRE (realista para AR), desacelerando
+    // pero sin caer nunca. El driftBlue viejo (0.025 - month*0.0008) se hacía
+    // negativo a mitad de la serie → el blue caía y la cartera en pesos "perdía".
+    const driftBlue = Math.max(0.005, 0.022 - monthsSince * 0.0003)  // desacelera, nunca negativo
+    blue = blue * (1 + driftBlue + (Math.random() - 0.5) * 0.02)
     out.dolar_blue[key] = Math.round(blue)
     // T-Bills (SHV): carry chico, casi plano
     shv = shv * (1 + 0.0035 + (Math.random() - 0.5) * 0.004)
@@ -1665,6 +1678,18 @@ const BENCHMARKS = (() => {
     uva = uva * (1 + infl / 100)
     out.uva[key] = Math.round(uva * 100) / 100
     start.setMonth(start.getMonth() + 1)
+  }
+  // Continuidad del blue en "Hoy": la serie ARS de Insights valúa el punto "Hoy"
+  // al blue ACTUAL (tcBlue=_DEMO_TC_BLUE) y el último mes al blue de ese mes. Si
+  // el blue del fixture no termina en ~tcBlue, "Hoy" pega un salto de FX (~16%)
+  // en TODAS las líneas. Escalamos la serie para que su último mes = tcBlue. Los
+  // % de retorno son invariantes al escalado uniforme del blue, así que esto solo
+  // arregla la continuidad sin tocar ninguna comparación.
+  const _bKeys = Object.keys(out.dolar_blue).sort()
+  const _lastBlue = _bKeys.length ? out.dolar_blue[_bKeys[_bKeys.length - 1]] : 0
+  if (_lastBlue > 0) {
+    const _blueScale = _DEMO_TC_BLUE / _lastBlue
+    for (const k of _bKeys) out.dolar_blue[k] = Math.round(out.dolar_blue[k] * _blueScale)
   }
   return { ...out, fetched_at: new Date().toISOString() }
 })()
