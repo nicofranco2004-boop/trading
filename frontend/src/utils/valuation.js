@@ -107,6 +107,30 @@ export function isArUsdBroker(brokerName) {
   return /·\s*USD$/.test(brokerName || '')
 }
 
+// ─── Guard anti-distorsión ───────────────────────────────────────────────────
+// Un precio de mercado JAMÁS debe inflar una posición muy por encima de su costo.
+// Casos reales: un bono cotizado "per 100 face" multiplicado por el nominal
+// (×100), o una colisión de ticker (un CEDEAR/bono priceado como la acción US).
+// Si el valor de mercado se va absurdamente lejos del costo, NO confiamos en el
+// precio y caemos a costo (mismo efecto que "sin precio"). Así un ticker que no
+// conocemos bien nunca distorsiona la cartera ($5.000 → $100.000).
+//
+// Solo capeamos divergencias ABSURDAS — las ganancias y pérdidas reales pasan:
+//   • Renta fija (bonos/ONs/letras): cotiza cerca de la par, no multibaggea →
+//     banda estrecha [0.02×, 4×]. Atrapa el ×100 y las colisiones.
+//   • Acciones/CEDEARs/cripto: permiten multibaggers reales → cap generoso ×50
+//     (un ×50 casi siempre es bug de pricing, no un 50-bagger).
+// price_override (precio puesto a mano por el usuario) siempre se respeta.
+const _FIXED_INCOME_TYPES = new Set(['BOND', 'BONO', 'ON', 'LETRA', 'LECAP'])
+function _trustMktValue(mktValue, realCost, assetType) {
+  if (!(realCost > 0) || !(mktValue > 0)) return true  // sin costo no hay con qué comparar
+  const mult = mktValue / realCost
+  if (_FIXED_INCOME_TYPES.has((assetType || '').toUpperCase())) {
+    return mult <= 4 && mult >= 0.02
+  }
+  return mult <= 50 && mult >= 0.002
+}
+
 export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue) {
   const bpos = allPositions.filter(p => p.broker === broker.name)
   const arUsd = isArUsdBroker(broker.name)
@@ -137,12 +161,14 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
         invested += invUsd
 
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
-        if (priceArs != null) {
-          const mktArs = priceArs * (p.quantity || 0)
+        const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
+        const trustArs = mktArs != null &&
+          (p.price_override != null || _trustMktValue(mktArs, realCost, p.asset_type))
+        if (trustArs) {
           valueArs += mktArs
           value    += mktArs / tcBlue
         } else {
-          // No price — show cost as value; P&L stays 0 for this position.
+          // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
           valueArs += realCost
           value    += invUsd
         }
@@ -162,19 +188,16 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
           // (cedearRate = dólar-MEP, la plata local), que es lo que muestra el
           // broker. NO por el ticker US. cedearRate default = blue (sin regresión).
           const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-          if (priceArs != null) {
-            value += (priceArs * (p.quantity || 0)) / cedearRate
-          } else {
-            value += realCost
-          }
+          const mktUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / cedearRate : null
+          value += (mktUsd != null && _trustMktValue(mktUsd, realCost, p.asset_type))
+            ? mktUsd : realCost
         } else {
           const price = p.price_override ?? prices[p.asset]
-          if (price != null) {
-            value += price * (p.quantity || 0)
-          } else {
-            // No price — show cost as value; P&L stays 0 for this position.
-            value += realCost
-          }
+          const mkt = price != null ? price * (p.quantity || 0) : null
+          const trust = mkt != null &&
+            (p.price_override != null || _trustMktValue(mkt, realCost, p.asset_type))
+          // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
+          value += trust ? mkt : realCost
         }
       }
     }

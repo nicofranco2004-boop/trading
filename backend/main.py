@@ -4702,12 +4702,18 @@ def _fetch_prev_close_one(yf_ticker: str):
 # cambios de convención.
 
 # Cobertura validada (2026-05-12): 11 soberanos canje 2020 + 5 CER con precio.
+# Ampliación 2026-06 (export real de Balanz): BOPREAL (BB37D, BPOA7/C7/D7),
+# un dual CER (T30J6) y una ON (PNDCO) — precio live verificado en data912.
 # ONs corporativas tienen tickers no-coincidentes con bondMeta.js — se fixea
 # por separado actualizando los IDs en bondMeta.
 AR_BONDS_DATA912 = {
     'AL29', 'AL30', 'AL35', 'AE38', 'AL41',
     'GD29', 'GD30', 'GD35', 'GD38', 'GD41', 'GD46',
     'TX26', 'TX28', 'T2X5', 'TZX26', 'TZX27', 'TZX28',
+    # Ampliación 2026-06 — del export de Balanz, con precio live en data912:
+    'BB37D', 'BPOA7', 'BPOC7', 'BPOD7',   # BOPREAL (Bonos del BCRA)
+    'T30J6',                              # Boncer/dual 2026
+    'PNDCO',                             # ON (Pan American Energy)
 }
 
 _data912_cache = {'data': None, 'ts': 0}
