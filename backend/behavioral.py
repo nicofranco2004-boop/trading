@@ -107,7 +107,7 @@ def _position_size_usd(op: Dict[str, Any], tc_blue: float = 1415.0) -> float:
 # ─── Helpers de valuación + clasificación geográfica ─────────────────────────
 
 # Brokers AR-resident — la moneda nativa de las posiciones está en ARS.
-_AR_BROKER_HINTS = ("cocos", "iol", "bull", "balanz", "naranja", "pppi", "invertironline")
+_AR_BROKER_HINTS = ("cocos", "iol", "bull", "balanz", "naranja", "pppi", "invertironline", "ieb")
 
 # Prefijos de bonos soberanos AR. Pattern: 2 letras + dígito al menos.
 _AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX")

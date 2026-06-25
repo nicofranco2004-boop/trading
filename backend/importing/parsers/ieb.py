@@ -122,10 +122,13 @@ def _resolve_op(code: str, amount: Optional[float]) -> Optional[str]:
     if code in _CAUCION_IN:
         return "DEPOSITO"
 
+    # Pago / cargo (PAGW) → siempre FEE.
+    if code == "PAGW":
+        return "FEE"
     # Compra/venta de dólar (conversión FX, sin tenencia): por signo del importe.
     # COUW (dólares acreditados) = DEPOSITO; PAUW (dólares pagados) = RETIRO.
-    if code in ("COUW", "PAUW") or code == "PAGW":
-        return "DEPOSITO" if (amount or 0) >= 0 else "RETIRO" if code != "PAGW" else "FEE"
+    if code in ("COUW", "PAUW"):
+        return "DEPOSITO" if (amount or 0) >= 0 else "RETIRO"
 
     # FCI (MM Pesos / Ciclo Nova): suscripción (LS*) / rescate (LR*). MVP: flujo de
     # caja por signo (no como posición de cuotaparte).
