@@ -76,11 +76,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     )
     avg_price = (invested / qty) if qty > 0 else None
     # Precio actual por unidad, en moneda nativa (.BA ARS para AR, US$ para USD).
+    # price_override (manual) tiene prioridad, igual que el valor (que lo respeta
+    # vía _position_value_usd) — antes el precio unitario lo ignoraba. (LOW item 4.)
     p0 = positions[0]
-    current_price = _resolve_price(
-        (p0.get("asset") or "").upper(), p0.get("broker"), prices,
-        is_ars=_price_is_ars(p0),
-    )
+    if p0.get("price_override") is not None:
+        current_price = float(p0["price_override"])
+    else:
+        current_price = _resolve_price(
+            (p0.get("asset") or "").upper(), p0.get("broker"), prices,
+            is_ars=_price_is_ars(p0),
+        )
     pnl_usd = current_value_usd - invested_usd
     pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd > 0 else None
 

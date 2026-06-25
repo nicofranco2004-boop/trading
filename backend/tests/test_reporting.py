@@ -381,6 +381,25 @@ class TimelineTest(unittest.TestCase):
             for w in m.children:
                 self.assertEqual(w.period_type, "week")
 
+    def test_concentration_routes_usd_subbroker_cedear_via_ba(self):
+        # LOW C1 (follow-up): un CEDEAR en sub-broker '· USD' (currency='USDT') se
+        # valúa por su precio .BA ÷ MEP, NO por el ticker US (que daría 440*15=6600).
+        from analysis_prep import user_fx
+        conn, uid = self.conn, self.uid
+        conn.execute(
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?, 'PPI · USD', 'USDT')",
+            (uid,))
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, asset_type, is_cash, invested, quantity) "
+            "VALUES (?, 'PPI · USD', 'TSLA', 'CEDEAR', 0, 180, 15)", (uid,))
+        conn.commit()
+        _, tc_cedear = user_fx(conn, uid)
+        out = timeline._fetch_positions_for_concentration(
+            conn, uid, "global", {"TSLA.BA": 14000}, 1500)
+        tsla = next(p for p in out if p["asset"] == "TSLA")
+        self.assertAlmostEqual(tsla["value_usd"], 14000 * 15 / tc_cedear, places=2)
+        self.assertLess(tsla["value_usd"], 1000)  # NO el ticker US (~6600)
+
 
 if __name__ == "__main__":
     unittest.main()

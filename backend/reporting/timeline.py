@@ -111,41 +111,25 @@ def _fetch_positions_for_concentration(conn, uid: int, broker_filter: str,
     br_sql = "" if broker_filter == "global" else " AND p.broker = ?"
     br_args = () if broker_filter == "global" else (broker_filter,)
     rows = conn.execute(
-        f"""SELECT p.asset, p.broker, p.quantity, p.invested, p.is_cash,
-                   p.price_override, br.currency
+        f"""SELECT p.asset, p.asset_type, p.broker, p.quantity, p.invested,
+                   p.is_cash, p.price_override, br.currency
               FROM positions p
               JOIN brokers br ON br.name = p.broker AND br.user_id = p.user_id
              WHERE p.user_id = ?{br_sql}""",
         (uid, *br_args),
     ).fetchall()
 
+    # Valuamos por el canónico _position_value_usd: maneja el doble eje de moneda
+    # (costo por _native_ccy; precio .BA por _price_is_ars ESTRUCTURAL → un CEDEAR
+    # en sub-broker '· USD' rutea a .BA aunque currency='USDT'), el guard y el
+    # price_override. Con prices={} cae a costo igual que antes (sin regresión),
+    # pero elimina el residuo latente de rutear por currency=='ARS'. (LOW C1.)
+    from behavioral import _position_value_usd
     out = []
     for r in rows:
-        asset = r["asset"]
-        if r["is_cash"]:
-            cash = float(r["invested"] or 0)
-            if (r["currency"] or "").upper() == "ARS" and tc_blue > 0:
-                cash = cash / tc_blue
-            out.append({"asset": asset, "value_usd": cash, "is_cash": True})
-            continue
-        qty = float(r["quantity"] or 0)
-        price = r["price_override"]
-        if price is None:
-            # Buscar en prices dict, con sufijo .BA para ARS
-            if (r["currency"] or "").upper() == "ARS":
-                price = (prices or {}).get(f"{asset}.BA")
-            else:
-                price = (prices or {}).get(asset)
-        if price is None:
-            # sin precio, usar invested como aproximación
-            val = float(r["invested"] or 0)
-            if (r["currency"] or "").upper() == "ARS" and tc_cedear > 0:
-                val = val / tc_cedear
-        else:
-            val = float(price) * qty
-            if (r["currency"] or "").upper() == "ARS" and tc_cedear > 0:
-                val = val / tc_cedear
-        out.append({"asset": asset, "value_usd": val, "is_cash": False})
+        p = dict(r)
+        v = _position_value_usd(p, prices, tc_blue, tc_cedear)
+        out.append({"asset": r["asset"], "value_usd": v, "is_cash": bool(r["is_cash"])})
     return out
 
 
