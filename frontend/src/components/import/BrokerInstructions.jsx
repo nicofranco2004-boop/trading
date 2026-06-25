@@ -68,6 +68,16 @@ function BullMarketLogo({ size = 18 }) {
   )
 }
 
+function IebLogo({ size = 18 }) {
+  // IEB (Invertir en Bolsa): índigo sobre fondo oscuro.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect width="24" height="24" rx="4" fill="#2D2A6E" />
+      <text x="12" y="16" textAnchor="middle" fontFamily="-apple-system,sans-serif" fontWeight="800" fontSize="9" fill="#FFFFFF">IEB</text>
+    </svg>
+  )
+}
+
 // Diccionario broker → contenido. El user va a actualizar `steps` y `summary`
 // cuando mande los ejemplos reales.
 const BROKERS = [
@@ -148,6 +158,19 @@ const BROKERS = [
       'Abajo de todo tocá “Descargar movimientos históricos”: baja un archivo .xls. Subílo acá tal cual, sin abrirlo ni convertirlo.',
     ],
     parserNote: 'Importamos compras, ventas, dividendos, rentas y amortizaciones de bonos, intereses de cuenta, depósitos y extracciones, y suscripciones/rescates de FCI. Detectamos la moneda (pesos/dólares) de cada movimiento y consolidamos las patas dólar-MEP/cable (ej. GGALD → GGAL). Las transferencias de títulos se cargan a mano porque no traen el costo.',
+  },
+  {
+    id: 'ieb',
+    label: 'IEB',
+    Logo: IebLogo,
+    summary: 'Usamos el export de "Toda la actividad" (Movimientos totales) para reconstruir tus operaciones, dividendos, renta y caja.',
+    steps: [
+      'Entrá al homebanking web de IEB (hb.iebmas.com.ar) e iniciá sesión. ⚠️ Tiene que ser desde la WEB, no desde la app.',
+      'Andá a Actividad → Toda la actividad (Movimientos totales).',
+      'En "Desde" poné la fecha más antigua posible (idealmente desde que abriste la cuenta) y en "Hasta" la fecha de hoy.',
+      'Descargá el archivo (.xlsx) y subílo acá tal cual, sin abrirlo ni convertirlo.',
+    ],
+    parserNote: 'Importamos compras y ventas (en pesos y en dólares), dividendos, renta y amortización de bonos, comisiones, compra/venta de dólar (MEP) y el interés de tus cauciones. Detectamos la moneda de cada operación. Si el export no llega hasta el inicio de tu cuenta, te pedimos confirmar tu saldo/tenencia inicial en el paso siguiente. Los fondos comunes (FCI) abiertos hoy, por ahora, cargalos a mano desde Posiciones.',
   },
 ]
 

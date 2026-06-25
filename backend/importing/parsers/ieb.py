@@ -1,7 +1,11 @@
 """Parser de IEB (Invertir en Bolsa S.A.) — export de movimientos (.xlsx → CSV).
 
-Cómo bajar el archivo (referencia para el wizard — CONFIRMAR con el paso a paso real):
-    (pendiente: pedirle al usuario el paso a paso de cómo obtener este export)
+Cómo bajar el archivo (SÍ O SÍ desde la WEB, no la app):
+    1. Homebanking web de IEB: https://hb.iebmas.com.ar → iniciar sesión.
+    2. Actividad → Toda la actividad (Movimientos totales):
+       https://hb.iebmas.com.ar/actividad/movimientos-totales
+    3. Elegir el rango Desde/Hasta (Desde lo más antiguo posible para historia completa).
+    4. Descargar el .xlsx y subirlo tal cual.
 
 Estructura del export (una sola hoja 'Export', el pipeline lo pasa a CSV
 point-decimal; los vacíos vienen como '-'):
