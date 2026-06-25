@@ -1613,10 +1613,20 @@ ADMIN_SIGNUP_ALERT_LIMIT = int(os.environ.get("ADMIN_SIGNUP_ALERT_LIMIT", "100")
 def _frontend_url() -> str:
     """Base URL del frontend para construir magic links (password reset, etc).
 
-    Para dev: http://localhost:5173. Para prod: https://rendi.finance (cambiar
-    en el .env vía MP_FRONTEND_BASE_URL — el nombre es histórico, se usa
-    también para no-billing)."""
-    return (os.environ.get("MP_FRONTEND_BASE_URL") or "http://localhost:5173").rstrip("/")
+    Prioridad:
+      1. MP_FRONTEND_BASE_URL si está seteada (override explícito; nombre histórico
+         de billing, se usa también para no-billing).
+      2. Default según entorno (igual que _DEFAULT_ORIGINS): en prod NUNCA caer a
+         localhost — el link del mail de reseteo quedaría roto (bug reportado: un
+         user en prod recibía http://localhost:5173/reset-password). Solo en dev
+         se usa localhost.
+    """
+    explicit = os.environ.get("MP_FRONTEND_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    if os.environ.get("RENDI_ENV", "dev").lower() == "prod":
+        return "https://rendi.finance"
+    return "http://localhost:5173"
 
 
 def _gen_reset_token() -> str:
