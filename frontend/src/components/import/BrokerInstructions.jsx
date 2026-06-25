@@ -1,8 +1,7 @@
 // Widget "Antes de subir / Cómo descargar tus archivos" — mostrado arriba
 // del file picker en el wizard de import. Es informativo: no controla el
 // parser que se elige abajo, solo le dice al usuario cómo bajar el archivo
-// de cada broker. Para Balanz / IOL (sin parser nativo) hay una nota al
-// final que los manda al parser Genérico.
+// de cada broker. Cada broker tiene su parserNote describiendo qué se importa.
 //
 // Cuando el user pase los ejemplos reales de import, actualizar BROKERS.
 import { useState } from 'react'
@@ -89,12 +88,13 @@ const BROKERS = [
     id: 'balanz',
     label: 'Balanz',
     Logo: BalanzLogo,
-    summary: 'Recomendado: el Excel de Resultados — un solo archivo con todo (posiciones, P&L y renta).',
+    summary: 'Recomendado: el reporte "Resultados del período" en informe "Completo" — un Excel con todo (posiciones, P&L y renta).',
     steps: [
-      'En Balanz (web o app) → Actividad → Resultados.',
-      'Poné el rango de fechas desde lo más antiguo posible hasta hoy.',
-      'Exportá a Excel (descarga un .xlsx con 3 hojas).',
-      'Subí ese archivo acá. (Alternativa: el export de Operaciones → Órdenes.)',
+      'En Balanz (web o app), en el menú de la izquierda tocá "Reportes" → se abre "Descargar Reportes".',
+      'En "Reporte" elegí "Resultados del período".',
+      'En "Informe" elegí "Completo". ⚠️ Importante: NO elijas "Realizado" — ese viene sin precios y no sirve.',
+      'En "Período" poné desde lo más antiguo posible hasta hoy.',
+      'Tocá "Descargar" (baja un Excel .xlsx con 3 hojas) y subílo acá.',
     ],
     parserNote: 'Del Excel de Resultados reconstruimos tus posiciones abiertas, las operaciones cerradas (con su P&L) y la renta —cupones, dividendos e intereses— además de las comisiones. Clasificamos cada activo (bono, CEDEAR, acción, fondo) automáticamente. Por ahora NO tomamos los movimientos de caja (depósitos/retiros) ni las compras de dólar MEP — si necesitás ajustar el saldo, lo cargás a mano en el paso siguiente.',
   },
@@ -140,13 +140,14 @@ const BROKERS = [
     id: 'iol',
     label: 'IOL',
     Logo: IolLogo,
-    summary: 'Usamos el Excel de Movimientos Históricos para reconstruir movimientos y transferencias.',
+    summary: 'Usamos el export de Detalle de Movimientos para reconstruir tus operaciones y movimientos de dinero.',
     steps: [
-      'Mi cuenta → Movimientos → Detalle de Movimientos.',
-      'Seleccioná el rango de fechas completo desde el inicio de tu cuenta hasta hoy.',
-      'Hacé clic en Descargar movimientos históricos y guardá el Excel como CSV (Archivo → Guardar como → CSV UTF-8).',
+      'Iniciá sesión en IOL (invertironline.com o la app).',
+      'Andá a Mi Cuenta → Movimientos → Detalle de Movimientos.',
+      'Elegí la fecha de inicio (desde que abriste la cuenta) y la fecha de hoy.',
+      'Abajo de todo tocá “Descargar movimientos históricos”: baja un archivo .xls. Subílo acá tal cual, sin abrirlo ni convertirlo.',
     ],
-    parserNote: 'IOL todavía no tiene parser dedicado — convertí el Excel a CSV y mapealo en el paso siguiente con el parser Genérico.',
+    parserNote: 'Importamos compras, ventas, dividendos, rentas y amortizaciones de bonos, intereses de cuenta, depósitos y extracciones, y suscripciones/rescates de FCI. Detectamos la moneda (pesos/dólares) de cada movimiento y consolidamos las patas dólar-MEP/cable (ej. GGALD → GGAL). Las transferencias de títulos se cargan a mano porque no traen el costo.',
   },
 ]
 
@@ -272,7 +273,7 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos', lockBrok
             <div className="mt-2 pl-[26px] text-xs text-ink-2 leading-relaxed">
               <div className="font-medium text-ink-1 mb-0.5">Opción 2 — CSV mensual (recomendado si operás mucho)</div>
               <div className="text-ink-3">
-                Una vez por mes, descargá el CSV nuevo de tu broker con los movimientos del mes y subilo acá. Rendi suma lo nuevo sin duplicar.
+                Una vez por mes, descargá el archivo de movimientos nuevo de tu broker (CSV o Excel, según el broker) y subilo acá. Rendi suma lo nuevo sin duplicar.
               </div>
             </div>
           </div>
