@@ -739,12 +739,22 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               // No dejamos cerrar hasta que cada cuenta con saldo negativo tenga
               // su monto confirmado (con el tick "es el mismo monto" o tipeando
               // el real). El cash queda "resuelto" cuando el input no está vacío.
-              const cashComplete = (seedState?.brokers || []).every(b =>
-                Object.keys(b.cash_overdraft || {}).every(cur => {
+              // OBLIGATORIO: hay que confirmar el saldo de HOY de TODAS las
+              // monedas que se muestran — no solo las que dieron negativo. Un
+              // import sin depósitos (ej. Balanz) deja el cash mal; si el user
+              // saltea este paso, la cartera queda con saldos fantasma. Cada
+              // moneda mostrada debe tener un valor (tipeado o vía "es el mismo").
+              const cashComplete = (seedState?.brokers || []).every(b => {
+                const currencies = new Set([
+                  ...Object.keys(b.cash_overdraft || {}),
+                  ...Object.keys(b.cash || {}),
+                ])
+                if (b.broker_currency) currencies.add(b.broker_currency)
+                return Array.from(currencies).every(cur => {
                   const v = b.cash?.[cur]
                   return v !== '' && v != null
                 })
-              )
+              })
               return (
                 <div className="flex flex-col items-end gap-1">
                   <button
@@ -1751,17 +1761,18 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
 
   return (
     <div className="space-y-4">
-      <div className="px-3 py-2.5 rounded-md bg-rendi-accent/10 border border-rendi-accent/30 text-sm">
+      <div className="px-3 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/40 text-sm">
         <div className="flex items-start gap-2">
-          <Info size={15} className="mt-0.5 flex-shrink-0 text-rendi-accent" />
+          <AlertTriangle size={15} className="mt-0.5 flex-shrink-0 text-amber-500" />
           <div className="flex flex-col gap-1">
             <div className="text-ink-0 font-semibold">
-              ¿Cuánto cash tenés hoy?
+              Confirmá tu cash de hoy — es obligatorio para que la cartera quede bien
             </div>
             <p className="text-xs text-ink-2">
-              Es lo único que falta para que tu cartera cierre. Poné el saldo que ves
-              <span className="font-medium text-ink-1"> hoy</span> en tu broker y nosotros calculamos
-              lo anterior solos. Si coincide con lo que estimó Rendi, tocá el tick y listo.
+              Poné el saldo que ves <span className="font-medium text-ink-1">hoy</span> en tu broker
+              (uno por cada cuenta y moneda) y nosotros calculamos lo anterior solos. Si coincide con
+              lo que estimó Rendi, tocá el tick.{' '}
+              <span className="font-medium text-ink-1">Si lo dejás sin completar, tu cartera va a quedar con un saldo equivocado.</span>
             </p>
           </div>
         </div>
@@ -1849,8 +1860,21 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           value={current}
                           onChange={e => setCash(bi, cur, e.target.value)}
                           placeholder={`¿Cuánto ${curLabel} tenés hoy?`}
-                          className="w-full bg-bg-2 dark:bg-bg-1/40 border border-line rounded-md px-2 py-1.5 text-xs text-ink-0"
+                          className={`w-full bg-bg-2 dark:bg-bg-1/40 border rounded-md px-2 py-1.5 text-xs text-ink-0 ${
+                            (current === '' || current == null)
+                              ? 'border-amber-500/60'
+                              : 'border-line'
+                          }`}
                         />
+                        {(current === '' || current == null) ? (
+                          <div className="mt-1 flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 font-semibold">
+                            <AlertTriangle size={12} /> Falta confirmar tu saldo de hoy
+                          </div>
+                        ) : (
+                          <div className="mt-1 flex items-center gap-1 text-[11px] text-rendi-pos font-medium">
+                            <CheckCircle2 size={12} /> Saldo confirmado
+                          </div>
+                        )}
                       </div>
                     )
                   })}
