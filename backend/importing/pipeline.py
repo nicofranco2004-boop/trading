@@ -308,6 +308,25 @@ def run_preview(
 
     # Parsear
     parse_result = parser.parse(content, file_name=file_name)
+
+    # Fallback robusto: si se eligió un parser ESPECÍFICO que no matchea el
+    # archivo (headers mismatch → 0 filas), reintentamos con autodetect sobre
+    # los headers reales. Cubre el caso del usuario que en el wizard elige
+    # "Balanz" (que defaultea al export de Órdenes) pero subió el de Resultados
+    # —o viceversa— y, en general, cualquier broker con >1 formato de export.
+    if (parse_result.parse_errors and not parse_result.raw_rows
+            and parser.format_id != "rendi_generic"):
+        try:
+            import csv as _csv, io as _io
+            headers = next(_csv.reader(_io.StringIO(content)), [])
+        except Exception:
+            headers = []
+        auto = autodetect(headers)
+        if auto is not None and auto.format_id != parser.format_id:
+            alt = auto.parse(content, file_name=file_name)
+            if alt.raw_rows:
+                parser, parse_result = auto, alt
+
     if parse_result.parse_errors and not parse_result.raw_rows:
         # Error fatal a nivel archivo
         return {
