@@ -189,6 +189,68 @@ class UsdCommissionNormalizationTest(unittest.TestCase):
         self.assertEqual(n2, 0)   # 2da corrida no re-divide
 
 
+class TagBondsFromData912Test(unittest.TestCase):
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("positions", "brokers", "users"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("tagbond@rendi.test", "x")).lastrowid
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _add(self, asset, at):
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested, asset_type) "
+            "VALUES (?,?,?,0,?,?,?)", (self.uid, "B", asset, 100.0, 100.0, at))
+        self.conn.commit()
+
+    def _type(self, asset):
+        return self.conn.execute(
+            "SELECT asset_type FROM positions WHERE user_id=? AND asset=?",
+            (self.uid, asset)).fetchone()["asset_type"]
+
+    _UNIVERSE = {"AO28", "YM39O", "IRCPO", "AL30"}   # data912 fake (soberano + ONs)
+
+    def _is_bond(self, ticker):
+        t = (ticker[:-3] if ticker.endswith(".BA") else ticker).upper()
+        return t in self._UNIVERSE
+
+    def test_untyped_on_gets_tagged_bond(self):
+        self._add("YM39O", None)
+        self._add("IRCPO", "")
+        self._add("AO28", "OTHER")
+        n = rb.tag_bonds_from_data912(self.conn, self.uid, is_bond_ticker=self._is_bond)
+        self.assertEqual(n, 3)
+        self.assertEqual(self._type("YM39O"), "BOND")
+        self.assertEqual(self._type("IRCPO"), "BOND")
+        self.assertEqual(self._type("AO28"), "BOND")
+
+    def test_typed_position_untouched(self):
+        self._add("SPY", "CEDEAR")
+        self._add("YPFD", "STOCK")
+        rb.tag_bonds_from_data912(self.conn, self.uid, is_bond_ticker=self._is_bond)
+        self.assertEqual(self._type("SPY"), "CEDEAR")
+        self.assertEqual(self._type("YPFD"), "STOCK")
+
+    def test_non_data912_untyped_untouched(self):
+        self._add("AAPL", None)
+        rb.tag_bonds_from_data912(self.conn, self.uid, is_bond_ticker=self._is_bond)
+        self.assertIn(self._type("AAPL"), (None, ""))
+
+    def test_idempotent(self):
+        self._add("AO28", None)
+        rb.tag_bonds_from_data912(self.conn, self.uid, is_bond_ticker=self._is_bond)
+        n2 = rb.tag_bonds_from_data912(self.conn, self.uid, is_bond_ticker=self._is_bond)
+        self.assertEqual(n2, 0)
+
+
 class GuessAssetTypeBondTest(unittest.TestCase):
     def test_known_ar_bond_tagged(self):
         self.assertEqual(guess_asset_type("AL30"), "BOND")

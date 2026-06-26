@@ -134,8 +134,32 @@ def normalize_usd_commissions(conn, uid: int, *, tc_blue: float) -> int:
     return n
 
 
+def tag_bonds_from_data912(conn, uid: int, *, is_bond_ticker: Callable) -> int:
+    """Tagea asset_type='BOND' a posiciones de renta fija que data912 cotiza
+    (soberanos, CER, BOPREAL y OBLIGACIONES NEGOCIABLES) y que están sin tipo o como
+    OTHER — típico de IEB, que no etiqueta el tipo. Así se agrupan solas en la zona
+    Renta Fija sin mantener una lista curada. NO toca posiciones con tipo específico
+    (CEDEAR/STOCK/FUND/CRYPTO). `is_bond_ticker(ticker)` consulta el universo data912.
+    Devuelve nº tageadas."""
+    rows = conn.execute(
+        "SELECT id, asset, asset_type FROM positions WHERE user_id=? AND is_cash=0 AND quantity>0",
+        (uid,),
+    ).fetchall()
+    n = 0
+    for r in rows:
+        at = (r["asset_type"] or "").upper()
+        if at and at != "OTHER":
+            continue   # ya tiene un tipo específico → no tocar
+        if is_bond_ticker(r["asset"]):
+            conn.execute("UPDATE positions SET asset_type='BOND' WHERE id=? AND user_id=?",
+                         (r["id"], uid))
+            n += 1
+    return n
+
+
 def recompute_user(conn, uid: int, *, recalc: Callable,
-                   bond_price_per1: Callable = None) -> None:
+                   bond_price_per1: Callable = None,
+                   tag_bond_ticker: Callable = None) -> None:
     """Misma secuencia post-persist que import_confirm. Muta en la transacción
     abierta (el caller commitea)."""
     tc_blue = _persister._read_tc_blue(conn, uid)
@@ -146,6 +170,8 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
         _rebuild.rebuild_fifo_after_import(conn, uid, bid, tc_blue=tc_blue)
     _maturity.sweep_matured_letras(conn, uid)
     _maturity.sweep_bond_amortizations(conn, uid)
+    if tag_bond_ticker is not None:
+        tag_bonds_from_data912(conn, uid, is_bond_ticker=tag_bond_ticker)
     if bond_price_per1 is not None:
         normalize_bond_units(conn, uid, bond_price_per1=bond_price_per1)
     normalize_usd_commissions(conn, uid, tc_blue=tc_blue)
@@ -153,7 +179,7 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
 
 
 def run_backfill(conn, users: List[int], *, recalc: Callable,
-                 bond_price_per1: Callable = None,
+                 bond_price_per1: Callable = None, tag_bond_ticker: Callable = None,
                  max_changes: int = 1000) -> Dict[str, Any]:
     """Recorre `users`, recomputa y COMMITEA por usuario. Devuelve un resumen
     estructurado. Para dry-run, pasar una conn a una COPIA del DB (ver
@@ -166,7 +192,8 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
         before = positions_snapshot(conn, uid)
         cash_before = cash_total(conn, uid)
         try:
-            recompute_user(conn, uid, recalc=recalc, bond_price_per1=bond_price_per1)
+            recompute_user(conn, uid, recalc=recalc, bond_price_per1=bond_price_per1,
+                           tag_bond_ticker=tag_bond_ticker)
         except Exception as ex:
             conn.rollback()
             summary["errors"].append({"uid": uid, "error": str(ex)})
@@ -322,7 +349,7 @@ def _apply_safe(real_conn, uid: int, safe: List[Dict[str, Any]], linked: set) ->
 
 
 def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
-                  bond_price_per1: Callable = None) -> Dict[str, Any]:
+                  bond_price_per1: Callable = None, tag_bond_ticker: Callable = None) -> Dict[str, Any]:
     """Backfill SOLO de cambios seguros (ver _classify_safe). El estado 'ideal' se
     computa sobre UNA copia (no por usuario — clonar el DB por cada usuario hacía
     timeout-ear el endpoint); solo los cambios inequívocos se aplican a la real.
@@ -350,7 +377,8 @@ def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
         real_conn.backup(clone)
         for uid in with_pos:
             try:
-                recompute_user(clone, uid, recalc=recalc, bond_price_per1=bond_price_per1)
+                recompute_user(clone, uid, recalc=recalc, bond_price_per1=bond_price_per1,
+                               tag_bond_ticker=tag_bond_ticker)
                 clone.commit()
                 after_by_user[uid] = positions_snapshot(clone, uid)
             except Exception as ex:
@@ -400,7 +428,7 @@ def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
 
 
 def dry_run_summary(real_conn, users: List[int], *, recalc: Callable,
-                    bond_price_per1: Callable = None) -> Dict[str, Any]:
+                    bond_price_per1: Callable = None, tag_bond_ticker: Callable = None) -> Dict[str, Any]:
     """Clona el DB (snapshot consistente, incluye WAL) y corre el backfill sobre
     la COPIA → la base real NUNCA se toca. Devuelve el mismo resumen que
     run_backfill, sin haber mutado nada real."""
@@ -410,7 +438,8 @@ def dry_run_summary(real_conn, users: List[int], *, recalc: Callable,
     clone.row_factory = sqlite3.Row
     try:
         real_conn.backup(clone)
-        return run_backfill(clone, users, recalc=recalc, bond_price_per1=bond_price_per1)
+        return run_backfill(clone, users, recalc=recalc, bond_price_per1=bond_price_per1,
+                            tag_bond_ticker=tag_bond_ticker)
     finally:
         clone.close()
         for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):

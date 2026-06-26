@@ -5133,6 +5133,18 @@ def _bond_price_per1(symbol, currency):
     return _resolve_ar_bond_price(str(symbol))
 
 
+def _is_data912_bond(ticker):
+    """True si data912 cotiza este ticker como renta fija — universo COMPLETO
+    (arg_bonds + arg_corp): soberanos, CER, BOPREAL y obligaciones negociables (ONs).
+    Sirve para tagear el tipo de activo sin lista curada — igual que el pricing.
+    Seguro para no-renta-fija: una acción/CEDEAR no está en esos endpoints → False."""
+    if not ticker:
+        return False
+    t = (ticker[:-3] if ticker.endswith(".BA") else ticker).upper()
+    d = _fetch_data912_bonds()
+    return bool(d) and (t in d or (t + "D") in d)
+
+
 # ─── Cache in-memory para /api/prices ────────────────────────────────────────
 # Endpoint más caliente del stack: Dashboard, Positions, Insights, HomeMobile,
 # Goals y Events lo pegan en cada page-mount con sets de símbolos casi
@@ -9793,13 +9805,13 @@ def admin_backfill_recompute(apply: bool = False, safe_only: bool = True,
             # inflaciones/reducciones dudosas de bonos-conducto. apply=False solo
             # clasifica (sobre una copia); apply=True aplica los seguros a la real.
             summary = _rb.safe_backfill(conn, users, recalc=_recalc_pnl_realized_from_ops, apply=bool(apply),
-                                        bond_price_per1=_bond_price_per1)
+                                        bond_price_per1=_bond_price_per1, tag_bond_ticker=_is_data912_bond)
         elif apply:
             summary = _rb.run_backfill(conn, users, recalc=_recalc_pnl_realized_from_ops,
-                                       bond_price_per1=_bond_price_per1)
+                                       bond_price_per1=_bond_price_per1, tag_bond_ticker=_is_data912_bond)
         else:
             summary = _rb.dry_run_summary(conn, users, recalc=_recalc_pnl_realized_from_ops,
-                                          bond_price_per1=_bond_price_per1)
+                                          bond_price_per1=_bond_price_per1, tag_bond_ticker=_is_data912_bond)
         summary["ok"] = True
         summary["applied"] = bool(apply)
         summary["safe_only"] = bool(safe_only)
@@ -17020,6 +17032,16 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
             # no toca cash ni posiciones manuales. Best-effort.
             try:
                 _import_maturity.sweep_bond_amortizations(conn, uid)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+            # Tagear renta fija por el universo de data912 (soberanos, CER, BOPREAL,
+            # ONs): los imports que no etiquetan el tipo (IEB) dejan bonos/ONs como
+            # OTHER → no se agrupan en la zona Renta Fija. Esto los marca BOND sin
+            # lista curada. Best-effort.
+            try:
+                _import_recompute.tag_bonds_from_data912(conn, uid, is_bond_ticker=_is_data912_bond)
             except Exception:
                 import traceback
                 traceback.print_exc()
