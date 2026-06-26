@@ -649,6 +649,22 @@ def run_preview(
             }
             for (broker, currency), balance in sorted(sim.final_balances.items())
         ]
+        # Higiene de re-import (#3): el `projected_cash` de arriba está APILADO
+        # sobre el cash que ya tenías en la DB (starting_cash). Si esto es un
+        # re-import del mismo portfolio (no un alta incremental), ese apilado
+        # distorsiona el resultado — arrancás de un saldo viejo en vez de cero.
+        # Exponemos también el cash STANDALONE (este archivo SOLO, desde cero)
+        # para que el front pueda mostrar "este archivo, por sí solo, deja tu
+        # cash en X" y el usuario detecte que está re-importando sobre data vieja
+        # (combinado con `brokers_already_imported`). No cambia la persistencia.
+        preview_payload["projected_cash_standalone"] = [
+            {
+                "broker": broker,
+                "currency": currency,
+                "balance": _snap_cash(balance - starting_cash.get((broker, currency), 0.0)),
+            }
+            for (broker, currency), balance in sorted(sim.final_balances.items())
+        ]
 
     # Seed suggestions: si el CSV referencia activos sin posición previa
     # (sells que consumen stock no presente en el archivo) o tiene overdrafts

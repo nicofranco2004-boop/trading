@@ -317,13 +317,13 @@ def persist_batch(
 
                 elif op == OP_FX_ARS_TO_USD:
                     touched = _persist_fx(conn, uid, batch_id, raw_row_id, tx, helpers,
-                                          direction="ars_to_usd")
+                                          direction="ars_to_usd", tc_blue=tc_blue)
                     counts["conversions"] += 1
                     brokers_touched.update(touched)
 
                 elif op == OP_FX_USD_TO_ARS:
                     touched = _persist_fx(conn, uid, batch_id, raw_row_id, tx, helpers,
-                                          direction="usd_to_ars")
+                                          direction="usd_to_ars", tc_blue=tc_blue)
                     counts["conversions"] += 1
                     brokers_touched.update(touched)
 
@@ -838,7 +838,8 @@ def _adjust_cash_permissive(conn, uid: int, broker_name: str, asset: str, delta:
         )
 
 
-def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, direction: str):
+def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, direction: str,
+                tc_blue: float = 1415.0):
     """FX_ARS_TO_USD o FX_USD_TO_ARS. Después del normalizer:
        gross_amount = ARS, quantity = USD, unit_price = TC.
     """
@@ -857,6 +858,22 @@ def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, d
         usd_broker = helpers._ensure_usd_sibling(conn, uid, ars_broker)
         _adjust_cash_permissive(conn, uid, ars_broker["name"], "ARS", -ars_amount)
         _adjust_cash_permissive(conn, uid, usd_broker["name"], "USDT", usd_amount, tc_for_basis=tc)
+        # Capital aportado (FIX bug #1 — el FX no escribía monthly_entries): el
+        # depósito en pesos se registró al blue (subvaluado vs el MEP al que el
+        # usuario realmente convirtió). Corregimos el libro de capital para que
+        # refleje los USD efectivamente obtenidos: sacamos la pata ARS a su valor
+        # BLUE (cancela lo que sumó el depósito) y metemos la pata USD a valor
+        # FACE. Sin esto el "Capital Aportado" queda subvaluado y el return sale
+        # fantasma (1M ARS→1000 USD daba capital 706,71 y un +41% irreal). El
+        # criterio: valuar el capital a la MISMA tasa que las tenencias (ARS→blue,
+        # USD→face), así una conversión no inventa ni P&L ni capital nuevo, solo
+        # re-ancla la base a la moneda en que ahora está la plata.
+        _y, _m = int(tx.date[:4]), int(tx.date[5:7])
+        _ars_as_usd = (ars_amount / tc_blue) if tc_blue else 0.0
+        helpers._update_monthly_flow(conn, uid, ars_broker["name"], _y, _m, "withdraw", _ars_as_usd)
+        helpers._update_monthly_flow(conn, uid, "global", _y, _m, "withdraw", _ars_as_usd)
+        helpers._update_monthly_flow(conn, uid, usd_broker["name"], _y, _m, "deposit", usd_amount)
+        helpers._update_monthly_flow(conn, uid, "global", _y, _m, "deposit", usd_amount)
         from_b, from_curr, to_curr = ars_broker["name"], "ARS", "USDT"
         op_pnl_usd = 0.0
         op_pnl_pct = None
