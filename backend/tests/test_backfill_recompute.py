@@ -160,6 +160,64 @@ class BackfillRecomputeTest(unittest.TestCase):
         self.conn = main.get_db()
 
 
+class SafeClassifyTest(unittest.TestCase):
+    """El modo SEGURO: _classify_safe deja solo cambios inequívocos (fantasmas,
+    letras vencidas, bonos 100% amortizados, amortizaciones limpias) y omite las
+    inflaciones/reducciones dudosas de bonos-conducto."""
+
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions", "brokers", "users"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.conn.commit()
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("safe@rendi.test", "x")).lastrowid
+        pid = self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                                (self.uid, "Cocos", "ARS")).lastrowid
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
+                          (self.uid, "Cocos · USD", "USDT", pid))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _kinds(self, before, after):
+        from importing.recompute_backfill import _classify_safe
+        safe = _classify_safe(self.conn, self.uid, before, after)
+        return {(s["asset"]): s["kind"] for s in safe}
+
+    def test_equity_phantom_is_safe(self):
+        k = self._kinds({("Cocos · USD", "BMA"): 37.0}, {})
+        self.assertEqual(k.get("BMA"), "fantasma dólar-MEP")     # acción → 0 = seguro
+
+    def test_matured_letra_is_safe(self):
+        k = self._kinds({("Cocos", "S31E5"): 1000.0}, {})       # S31E5 = 31-ene-2025, vencida
+        self.assertEqual(k.get("S31E5"), "letra vencida")
+
+    def test_clean_amortization_is_safe(self):
+        k = self._kinds({("Cocos", "AL30"): 1000.0}, {("Cocos", "AL30"): 720.0})  # ×0.72
+        self.assertEqual(k.get("AL30"), "amortización")
+
+    def test_bond_inflation_is_skipped(self):
+        k = self._kinds({("IOL", "AL30"): 987.0}, {("IOL", "AL30"): 27496.0})
+        self.assertNotIn("AL30", k)                             # sube → NO seguro
+
+    def test_bond_to_zero_with_residual_is_skipped(self):
+        # AL30 → 0 con residual 0.72 (no es letra ni 100% amortizado) → ambiguo.
+        k = self._kinds({("Cocos", "AL30"): 1000.0}, {})
+        self.assertNotIn("AL30", k)
+
+    def test_genuine_pair_move_is_skipped(self):
+        # 5 que se mueven del sibling al padre (par total 5→5) → no es eliminación.
+        k = self._kinds({("Cocos · USD", "GGAL"): 5.0}, {("Cocos", "GGAL"): 5.0})
+        self.assertNotIn("GGAL", k)
+
+
 class BackfillEndpointTest(unittest.TestCase):
     """El botón admin: POST /api/admin/backfill-recompute (dry-run/apply + gate)."""
 
@@ -213,9 +271,10 @@ class BackfillEndpointTest(unittest.TestCase):
         r = self.client.post("/api/admin/backfill-recompute", headers=self._hdr(self.user))
         self.assertEqual(r.status_code, 403, r.text)
 
-    def test_dryrun_reports_without_mutating_then_apply(self):
-        # DRY-RUN: reporta el cambio pero NO toca la base real.
-        r = self.client.post("/api/admin/backfill-recompute?apply=false", headers=self._hdr(self.admin))
+    def test_full_mode_dryrun_then_apply(self):
+        # MODO FULL (safe_only=false): reporta el cambio pero NO toca la base real.
+        r = self.client.post("/api/admin/backfill-recompute?apply=false&safe_only=false",
+                             headers=self._hdr(self.admin))
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertTrue(body["ok"])
@@ -225,11 +284,24 @@ class BackfillEndpointTest(unittest.TestCase):
         self.assertTrue(any(c.get("asset") == "AAPL" and c["after"] == 0 for c in body["changes"]))
         self.assertEqual(self._aapl(), 10.0)   # real NO mutó
 
-        # APPLY: ahora sí.
-        r2 = self.client.post("/api/admin/backfill-recompute?apply=true", headers=self._hdr(self.admin))
+        r2 = self.client.post("/api/admin/backfill-recompute?apply=true&safe_only=false",
+                              headers=self._hdr(self.admin))
         self.assertEqual(r2.status_code, 200, r2.text)
         self.assertTrue(r2.json()["applied"])
         self.assertEqual(self._aapl(), 0.0)    # neteado en la real
+
+    def test_safe_mode_default_reports_and_applies_phantom(self):
+        # MODO SEGURO (default): el AAPL fantasma (no-bono → 0) es un cambio seguro.
+        r = self.client.post("/api/admin/backfill-recompute?apply=false", headers=self._hdr(self.admin))
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertTrue(body["safe_only"])
+        self.assertTrue(any(c["asset"] == "AAPL" and c["after"] == 0 and "fantasma" in c["kind"]
+                            for c in body["changes"]))
+        self.assertEqual(self._aapl(), 10.0)   # dry-run no mutó
+        r2 = self.client.post("/api/admin/backfill-recompute?apply=true", headers=self._hdr(self.admin))
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(self._aapl(), 0.0)    # aplicado
 
 
 if __name__ == "__main__":

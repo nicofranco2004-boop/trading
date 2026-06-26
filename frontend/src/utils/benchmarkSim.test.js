@@ -86,6 +86,41 @@ describe('simulateBenchmark', () => {
     expect(r.finalUnits).toBeCloseTo(9, 5)
     expect(r.finalValue).toBeCloseTo(1800, 5)
   })
+
+  it('expone priceSeries (precio crudo del indice por mes) + firstPrice', () => {
+    const m = [
+      month(2025, 1, 1000, 0),
+      month(2025, 7, 0, 0, 1000, 0),
+      month(2025, 12, 0, 0),
+    ]
+    const prices = { '2025-01': 100, '2025-07': 110, '2025-12': 130 }
+    const r = simulateBenchmark(m, k => prices[k])
+    expect(r.firstPrice).toBe(100)
+    expect(r.priceSeries).toEqual([
+      { key: '2025-01', price: 100 },
+      { key: '2025-07', price: 110 },
+      { key: '2025-12', price: 130 },
+    ])
+  })
+
+  it('indice simple = retorno del periodo, NO flow-matched (bug S&P understated)', () => {
+    // Aporta 1000 en M1 (idx 100) y 1000 en M7 (idx 110); hoy idx 130.
+    // El retorno del INDICE en la ventana es 130/100 - 1 = +30% (lo que muestra
+    // el broker). El flow-matched (MWR) daria menos porque el 2do aporte entro
+    // tarde. priceSeries permite calcular el indice simple correcto.
+    const m = [
+      month(2025, 1, 1000, 0),
+      month(2025, 7, 0, 0, 1000, 0),
+      month(2025, 12, 0, 0),
+    ]
+    const prices = { '2025-01': 100, '2025-07': 110, '2025-12': 130 }
+    const r = simulateBenchmark(m, k => prices[k])
+    const fp = r.firstPrice
+    const simple = r.priceSeries.map(p => +((p.price / fp - 1) * 100).toFixed(2))
+    expect(simple).toEqual([0, 10, 30])             // indice simple = +30% en la ventana
+    const mwr = ((r.finalValue - 2000) / 2000) * 100
+    expect(mwr).toBeLessThan(30)                     // flow-matched understated (< indice)
+  })
 })
 
 // ── simulateSp500 ─────────────────────────────────────────────────────────────
@@ -171,6 +206,24 @@ describe('simulateArsCash', () => {
     const r = simulateArsCash(m, blue)
     expect(r.finalPesos).toBe(1_750_000)
     expect(r.finalValue).toBeCloseTo(1_750_000 / 1500, 2)
+  })
+
+  it('priceSeries = 1/blue → índice simple: 0% en pesos, devaluación en USD', () => {
+    const m = [month(2025, 1, 1000, 0), month(2025, 2, 0, 0)]
+    const blue = { '2025-01': 1000, '2025-02': 1500 }
+    const r = simulateArsCash(m, blue)
+    expect(r.firstPrice).toBeCloseTo(1 / 1000, 8)
+    expect(r.priceSeries).toEqual([
+      { key: '2025-01', price: 1 / 1000 },
+      { key: '2025-02', price: 1 / 1500 },
+    ])
+    // En PESOS: (price[k]*blue[k]) / (price[0]*blue[0]) - 1 = 0% (pesos quietos)
+    const fp = r.firstPrice
+    const arsRet = r.priceSeries.map(p => +(((p.price * blue[p.key]) / (fp * 1000) - 1) * 100).toFixed(4))
+    expect(arsRet).toEqual([0, 0])
+    // En USD: price[k]/price[0] - 1 = pérdida por devaluación (blue 1000→1500)
+    const usdRet = +((r.priceSeries[1].price / fp - 1) * 100).toFixed(2)
+    expect(usdRet).toBeCloseTo((1000 / 1500 - 1) * 100, 2)   // ≈ -33.3%
   })
 })
 

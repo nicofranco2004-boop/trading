@@ -616,60 +616,64 @@ function InsightsDesktop({ _embeddedTab }) {
     return found ? bench.dolar_blue[found] : null
   }
 
-  // benchSeriesUsd — portfolio total en USD (globalMonthly) en % MWR acumulado.
-  // Misma fórmula que seriesUsd arriba (consistente con el dashboard).
+  // benchSeriesUsd — portfolio total en USD (globalMonthly) en % TIME-WEIGHTED
+  // (Modified Dietz, chain-linked). Misma fórmula EXACTA que seriesUsd del gráfico
+  // principal, para que ambas líneas coincidan y sean comparables contra el
+  // benchmark de índice simple (también time-weighted). Antes usaba MWR
+  // (gain/invested), que mezclaba metodologías con el benchmark.
   const benchSeriesUsd = (() => {
     if (globalMonthly.length === 0) return []
     const out = []
+    let cumRealized = 0, cumNetDeposits = 0
+    let cumIdx = 1.0
     const baseline = globalMonthly[0].capital_inicio || 0
-    let netFlows = 0, cumRealized = 0
-    // Peak portfolio value y peak invested capital — usados como denominador
-    // estable cuando hay retiros grandes. Sin esto, un withdraw que achica
-    // `invested` (deposits - withdrawals) hace explotar el ratio
-    // (value - invested) / invested. Caso real: papá retira \$70k de \$100k,
-    // cierra una posición con +\$20k → invested cae a -\$50k → ratio explota.
-    let peakInvested = baseline > 0 ? baseline : 0
-    let peakValue = baseline > 0 ? baseline : 0
-
-    // Si current_invested cae bajo 60% del peak (señal de retiro grande),
-    // usamos el peak como base "real" del capital que llegó a trabajar.
-    const stableInvested = (cur, peak) =>
-      (cur >= peak * 0.6 && cur > 1000) ? cur : peak
+    let peakNetDeposits = baseline
+    const safeDenom = (netDep, peakDep) =>
+      netDep >= peakDep * 0.6 && netDep > 1000 ? netDep : peakDep
 
     const firstMk = monthKey(globalMonthly[0].year, globalMonthly[0].month)
     out.push({ key: firstMk, label: benchLabel(firstMk), total: 0, realized: 0 })
-    for (const m of globalMonthly) {
-      netFlows += (m.deposits || 0) - (m.withdrawals || 0)
+    for (let i = 0; i < globalMonthly.length; i++) {
+      const m = globalMonthly[i]
+      const isFirst = i === 0
+      const ci = m.capital_inicio || 0
+      const cf = m.capital_final || 0
+      const net = (m.deposits || 0) - (m.withdrawals || 0)
       cumRealized += (m.pnl_realized || 0)
-      const investedNow = baseline + netFlows
-      if (investedNow > peakInvested) peakInvested = investedNow
-      if ((m.capital_final || 0) > peakValue) peakValue = m.capital_final || 0
+      cumNetDeposits += net
+      if (cumNetDeposits > peakNetDeposits) peakNetDeposits = cumNetDeposits
 
-      // Numerador: gain REAL = value - investedNow (P&L = lo que tenés menos
-      // lo que está aportado neto AHORA). Si retirás \$70k, investedNow baja
-      // y capital_final también — pero la diferencia (el "gain") refleja
-      // correctamente solo las ganancias.
-      // Denominador: stableInvested usa peak cuando investedNow se achicó por
-      // un withdraw, así no inflamos el % al dividir por número chico.
-      const gain = (m.capital_final || 0) - investedNow
-      const denom = stableInvested(investedNow, peakInvested)
-      const rawTotal = denom > 0 ? (gain / denom) * 100 : 0
-      const total = Math.min(Math.max(rawTotal, -99), 200)
-      const real  = denom > 0 ? (cumRealized / denom) * 100 : 0
+      // Modified Dietz con heurística big-withdrawal (idéntica al chart principal).
+      const isImportInitial = isFirst && ci === 0 && net > 0
+      const flowRatio = ci > 0 ? Math.abs(net) / ci : 0
+      const isBigWithdraw = net < 0 && flowRatio > 0.3
+      const avgCap = isImportInitial ? net : (isBigWithdraw ? ci : ci + 0.5 * net)
+      const rRaw = avgCap > 0 ? (cf - ci - net) / avgCap : 0
+      const r = Math.min(Math.max(rRaw, -0.99), 0.5)
+      // El mes-1 es el ANCLA del gráfico de comparación (0%): su retorno intra-mes
+      // NO se cuenta, igual que el benchmark, que ancla en price[mes-1] (también 0%).
+      // Sin este guard, cumIdx arrastraba r1 mientras el punto base mostraba 0% →
+      // la cartera quedaba 1 mes de capitalización adelantada respecto del benchmark.
+      if (!isFirst) cumIdx *= (1 + r)
+
+      const totalPct = +((cumIdx - 1) * 100).toFixed(2)
+      const denom = safeDenom(cumNetDeposits, peakNetDeposits)
+      const realPct = denom > 0 ? +((cumRealized / denom) * 100).toFixed(2) : 0
       const k = monthKey(m.year, m.month)
-      out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
+      out.push({ key: k, label: benchLabel(k), total: totalPct, realized: realPct })
     }
-    // Punto "Hoy"
+    // Punto "Hoy" — extiende el último mes con el live portfolio (igual al chart).
     if (totalPortfolio > 0) {
-      if (totalPortfolio > peakValue) peakValue = totalPortfolio
-      const investedNow = baseline + netFlows
-      if (investedNow > peakInvested) peakInvested = investedNow
-      const gain = totalPortfolio - investedNow
-      const denom = stableInvested(investedNow, peakInvested)
-      const rawTotal = denom > 0 ? (gain / denom) * 100 : 0
-      const total = Math.min(Math.max(rawTotal, -99), 200)
-      const real  = denom > 0 ? (cumRealized / denom) * 100 : 0
-      out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
+      const lastM = globalMonthly[globalMonthly.length - 1]
+      const lastCf = lastM.capital_final || 0
+      if (lastCf > 0) {
+        const rLive = (totalPortfolio - lastCf) / lastCf
+        cumIdx *= (1 + Math.max(rLive, -0.99))
+      }
+      const totalLive = +((cumIdx - 1) * 100).toFixed(2)
+      const denomLive = safeDenom(cumNetDeposits, peakNetDeposits)
+      const realLive = denomLive > 0 ? +((cumRealized / denomLive) * 100).toFixed(2) : 0
+      out.push({ key: 'today', label: 'Hoy', total: totalLive, realized: realLive })
     }
     // Deduplicar por key (el primer mes aparece 2 veces: punto base + primera iteración del loop)
     const seen = new Set()
@@ -701,46 +705,65 @@ function InsightsDesktop({ _embeddedTab }) {
     const out = []
     const baselinePesos = arsMonthly[0].capital_inicio * blueBase
     let netFlowsPesos = 0, cumRealizedPesos = 0
-    // Mismo treatment de peak-stable denom que benchSeriesUsd (ver arriba)
+    let cumIdxArs = 1.0
+    // Mismo treatment de peak-stable denom que benchSeriesUsd (ver arriba) — solo
+    // para el realized% (la línea total ahora es TWR, no necesita denom).
     let peakInvestedPesos = baselinePesos > 0 ? baselinePesos : 0
     const stableInvestedPesos = (cur, peak) =>
       (cur >= peak * 0.6 && cur > 1000) ? cur : peak
     out.push({ key: firstKey, label: benchLabel(firstKey), total: 0, realized: 0 })
 
+    let idxArs = 0
     for (const m of arsMonthly) {
+      const isFirst = idxArs === 0
+      idxArs++
       const k = monthKey(m.year, m.month)
       const fx = lookupBlue(k) || blueBase
       const net = (m.deposits || 0) - (m.withdrawals || 0)
-      netFlowsPesos += net * fx
+      const ci = m.capital_inicio || 0
+      const cf = m.capital_final || 0
+      // TWR en pesos (Modified Dietz con flujos al fx del mes) — fórmula idéntica
+      // a seriesArs del chart principal, para que ambas líneas coincidan.
+      const ciArs = ci * fx
+      const cfArs = cf * fx
+      const netArs = net * fx
+      const isImportInitial = isFirst && ci === 0 && net > 0
+      const avgArs = isImportInitial ? netArs : ciArs + 0.5 * netArs
+      const rArsRaw = avgArs > 0 ? (cfArs - ciArs - netArs) / avgArs : 0
+      const rArs = Math.max(rArsRaw, -0.99)
+      // El mes-1 es el ancla (0%) — no se cuenta su retorno intra-mes (ver benchSeriesUsd).
+      if (!isFirst) cumIdxArs *= (1 + rArs)
+      // Realized% (MWR sobre denom estable — secundario, línea punteada)
+      netFlowsPesos += netArs
       cumRealizedPesos += (m.pnl_realized || 0) * fx
       const investedNowPesos = baselinePesos + netFlowsPesos
       if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
       const denomP = stableInvestedPesos(investedNowPesos, peakInvestedPesos)
-      const valuePesos = (m.capital_final || 0) * fx
-      const gainPesos = valuePesos - investedNowPesos
-      const rawTotal   = denomP > 0 ? (gainPesos / denomP) * 100 : 0
-      const total      = Math.min(Math.max(rawTotal, -99), 200)
-      const real       = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
-      portfolioReturnArsPctRaw = +rawTotal.toFixed(2)  // crudo (sin clamp) — para el diagnóstico
-      out.push({ key: k, label: benchLabel(k), total: +total.toFixed(2), realized: +real.toFixed(2) })
+      const total = +((cumIdxArs - 1) * 100).toFixed(2)
+      const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
+      portfolioReturnArsPctRaw = total  // TWR acumulado — para el diagnóstico de inflación
+      out.push({ key: k, label: benchLabel(k), total, realized: +real.toFixed(2) })
     }
-    // Punto "Hoy" — valor live de posiciones ARS al blue actual
+    // Punto "Hoy" — valor live de posiciones ARS al blue actual (extiende el TWR)
     const arsLiveUsd = brokers
       .filter(b => arsBrokerNames.has(b.name))
       .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).value, 0)
     if (arsLiveUsd > 0) {
-      const valueNow = arsLiveUsd * tcBlue
+      const lastM = arsMonthly[arsMonthly.length - 1]
+      const lastCfArs = (lastM.capital_final || 0) * tcBlue
+      const valueNowArs = arsLiveUsd * tcBlue
+      if (lastCfArs > 0) {
+        const rLiveArs = (valueNowArs - lastCfArs) / lastCfArs
+        cumIdxArs *= (1 + Math.max(rLiveArs, -0.99))
+      }
+      const total = +((cumIdxArs - 1) * 100).toFixed(2)
       const investedNowPesos = baselinePesos + netFlowsPesos
-      if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
       const denomP = stableInvestedPesos(investedNowPesos, peakInvestedPesos)
-      const gainPesos = valueNow - investedNowPesos
-      const rawTotal = denomP > 0 ? (gainPesos / denomP) * 100 : 0
-      const total = Math.min(Math.max(rawTotal, -99), 200)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
-      // El punto "Hoy" es el último de la serie → su crudo es el retorno final.
-      portfolioReturnArsPctRaw = +rawTotal.toFixed(2)
+      // El punto "Hoy" es el último de la serie → su TWR es el retorno final.
+      portfolioReturnArsPctRaw = total
       arsWindowLastKey = 'today'
-      out.push({ key: 'today', label: 'Hoy', total: +total.toFixed(2), realized: +real.toFixed(2) })
+      out.push({ key: 'today', label: 'Hoy', total, realized: +real.toFixed(2) })
     }
     // Deduplicar
     const seen = new Set()
@@ -875,46 +898,29 @@ function InsightsDesktop({ _embeddedTab }) {
     // su propio lookup interno con fallback al mes anterior disponible.
     const stableInv = (cur, peak) => (cur >= peak * 0.6 && cur > 1000) ? cur : peak
 
+    // Retorno SIMPLE del índice: (price[k] / price[primer mes] − 1) × 100. Es el
+    // retorno TIME-WEIGHTED del benchmark — "¿cuánto rindió el S&P?" — igual que el
+    // broker. Antes era flow-matched (gain/invested ponderado por TUS aportes), que
+    // subestimaba el S&P cuando el user aportaba cerca del pico (ej. +8,3% vs el
+    // +18,57% real). NO clampeamos el acumulado-desde-el-inicio: el rebase a la
+    // ventana (chain-link) necesita el valor crudo para dar el % correcto del período.
     function buildShadowFromSim(simResult, latestBenchPrice) {
       const result = new Map()
-      if (!simResult || !simResult.series || simResult.series.length === 0) return result
-      const baselineUsd = globalMonthly[0]?.capital_inicio || 0
-      let netFlows = 0
-      let peakInvested = baselineUsd > 0 ? baselineUsd : 0
-
-      // Index sim.series por key para lookup O(1).
-      const simByKey = {}
-      for (const p of simResult.series) simByKey[p.key] = p.value
-
-      for (const m of globalMonthly) {
-        const mk = monthKey(m.year, m.month)
-        netFlows += (m.deposits || 0) - (m.withdrawals || 0)
-        const investedNow = baselineUsd + netFlows
-        if (investedNow > peakInvested) peakInvested = investedNow
-        const denom = stableInv(investedNow, peakInvested)
-        const shadowValue = simByKey[mk]
-        if (shadowValue == null) continue
-        const gain = shadowValue - investedNow
-        const pct = denom > 0 ? (gain / denom) * 100 : 0
-        result.set(mk, +Math.min(Math.max(pct, -99), 200).toFixed(2))
+      const ps = simResult && simResult.priceSeries
+      const firstPrice = simResult && simResult.firstPrice
+      if (!ps || ps.length === 0 || !firstPrice || firstPrice <= 0) return result
+      for (const p of ps) {
+        if (p.price == null || p.price <= 0) continue
+        result.set(p.key, +((p.price / firstPrice - 1) * 100).toFixed(4))
       }
-
-      // "Today": para benchmarks tipo S&P/SHV/GLD (con finalUnits), si tenemos
-      // un precio MÁS RECIENTE que el último mes del user, lo usamos para
-      // extrapolar al estado actual. Si no, usamos el último value del sim.
-      //
-      // Cubre el caso donde el user no cargó la entry del mes en curso pero
-      // el bench ya tiene precio actualizado.
-      const last = simResult.series[simResult.series.length - 1]
-      const investedNow = baselineUsd + netFlows
-      const denom = stableInv(investedNow, peakInvested)
-      const todayShadowValue =
-        (latestBenchPrice != null && simResult.finalUnits != null && latestBenchPrice > 0)
-          ? simResult.finalUnits * latestBenchPrice
-          : last.value
-      const gain = todayShadowValue - investedNow
-      const pct = denom > 0 ? (gain / denom) * 100 : 0
-      result.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
+      // "Today": precio MÁS RECIENTE del benchmark si lo hay (el user puede no haber
+      // cargado el mes en curso pero el índice ya tiene precio actualizado); si no,
+      // el último mes disponible.
+      const lastPrice = ps[ps.length - 1].price
+      const todayPrice = (latestBenchPrice != null && latestBenchPrice > 0) ? latestBenchPrice : lastPrice
+      if (todayPrice != null && todayPrice > 0) {
+        result.set('today', +((todayPrice / firstPrice - 1) * 100).toFixed(4))
+      }
       return result
     }
 
@@ -924,14 +930,46 @@ function InsightsDesktop({ _embeddedTab }) {
     // mes). Se usa en modo ARS para que el benchmark sea comparable a la línea
     // del portfolio, que también es retorno-en-pesos. Sin esto, comparábamos
     // retorno-en-pesos (cartera) contra retorno-en-dólares (benchmark).
-    function buildShadowFromSimArs(simResult) {
+    function buildShadowFromSimArs(simResult, latestBenchPrice) {
       const result = new Map()
-      if (!simResult || !simResult.series || simResult.series.length === 0) return result
-      if (arsMonthly.length === 0) return result
+      if (!simResult || arsMonthly.length === 0) return result
       const firstK = monthKey(arsMonthly[0].year, arsMonthly[0].month)
       const blueBase = lookupBlue(firstK)
       if (!blueBase) return result
 
+      // Camino preferido: retorno SIMPLE del índice en PESOS — (price[k]×blue[k]) /
+      // (price[first]×blue[first]) − 1, time-weighted, sin ponderar por los flujos.
+      // Aplica a los benchmarks que exponen priceSeries (S&P/T-Bills/Oro/dólar-cash).
+      const ps = simResult.priceSeries
+      if (ps && ps.length > 0 && simResult.firstPrice > 0) {
+        const priceByKey = {}
+        for (const p of ps) priceByKey[p.key] = p.price
+        const priceBase = priceByKey[firstK] ?? simResult.firstPrice
+        if (priceBase > 0) {
+          const basePesos = priceBase * blueBase
+          for (const m of arsMonthly) {
+            const mk = monthKey(m.year, m.month)
+            const price = priceByKey[mk]
+            if (price == null || price <= 0) continue
+            const fx = lookupBlue(mk) || blueBase
+            result.set(mk, +(((price * fx) / basePesos - 1) * 100).toFixed(4))
+          }
+          // "Today": precio MÁS fresco del índice (latestBenchPrice, igual que el
+          // path USD) × blue actual. Usar ps[last] dejaba el "hoy" del benchmark
+          // congelado en el último mes cargado mientras la cartera live ya reflejaba
+          // el movimiento del índice → el benchmark se veía peor de lo real.
+          const lastPrice = ps[ps.length - 1].price
+          const todayIdx = (latestBenchPrice != null && latestBenchPrice > 0) ? latestBenchPrice : lastPrice
+          if (todayIdx != null && todayIdx > 0) {
+            result.set('today', +((((todayIdx * tcBlue) / basePesos) - 1) * 100).toFixed(4))
+          }
+          return result
+        }
+      }
+
+      // Fallback (benchmarks ARS-nativos SIN priceSeries: Merval / plazo fijo /
+      // pesos cash): método flow-matched anterior. TODO: portarlos a índice simple.
+      if (!simResult.series || simResult.series.length === 0) return result
       const baselinePesos = (arsMonthly[0].capital_inicio || 0) * blueBase
       let netFlowsPesos = 0
       let peakInvestedPesos = baselinePesos > 0 ? baselinePesos : 0
@@ -1019,7 +1057,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // se mide en PESOS (buildShadowFromSimArs); en USD, sobre globalMonthly en
     // dólares (buildShadowFromSim, con latestPrice para extrapolar el "today").
     const buildShadow = (sim, latestPrice) =>
-      isArs ? buildShadowFromSimArs(sim) : buildShadowFromSim(sim, latestPrice)
+      isArs ? buildShadowFromSimArs(sim, latestPrice) : buildShadowFromSim(sim, latestPrice)
 
     let shadowPctByMonth = new Map()
     if (selectedBench === 'sp500' && bench?.sp500) {

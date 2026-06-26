@@ -58,7 +58,7 @@ from typing import Any, Dict, List, Optional
 from datetime import date as _date
 
 from .schema import OP_BUY, OP_SELL
-from .persister import _link, broker_pair
+from .persister import _link, broker_pair, blue_for_date
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
 try:
@@ -180,7 +180,7 @@ def _cancel_conduit_pairs(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
-                   tc_blue: float) -> Dict[str, List[Dict[str, Any]]]:
+                   tc_blue: float, conn=None) -> Dict[str, List[Dict[str, Any]]]:
     """Replaya los eventos BUY/SELL (ya ordenados cronológicamente, BUY antes
     que SELL el mismo día) de UN (broker, activo) y devuelve:
       {"operations": [...], "open_lots": [...]}
@@ -366,7 +366,15 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 if lot_currency == "USD" and currency == "ARS":
                     base_invested = base_invested * tc_blue
                 elif lot_currency == "ARS" and currency == "USD":
-                    base_invested = base_invested / tc_blue
+                    # Dólar-MEP: el costo USD es lo que esos pesos valían CUANDO
+                    # COMPRASTE (blue de la fecha de entrada), NO el blue de hoy —
+                    # sino la devaluación achica el costo e infla la ganancia.
+                    # MISMA convención que el persister (persister.py:570-578);
+                    # antes rebuild usaba el blue de hoy y divergía → la P&L
+                    # realizada cambiaba según cuándo corría el rebuild. Sin conn
+                    # cae al tc_blue actual (back-compat con callers/tests viejos).
+                    _pblue = blue_for_date(conn, lot.get("entry_date"), tc_blue) if conn is not None else tc_blue
+                    base_invested = base_invested / (_pblue or tc_blue)
 
             entry_invested = base_invested * ratio if base_invested else None
             chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0
@@ -699,7 +707,7 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         # conversión de moneda, no tenencia. Si no, inflan/destruyen la tenencia
         # genuina del bono. `events` completo se usa para _clear_old_state (resetea
         # todos los links); el replay corre sobre los eventos sin conductos.
-        replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue)
+        replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue, conn=conn)
         # Los lotes/ops ya cargan su _broker desde el evento (neteo cross-broker):
         # un lote comprado en el sibling se reescribe al sibling, uno del padre al
         # padre. NO sobreescribimos con un broker de grupo.
