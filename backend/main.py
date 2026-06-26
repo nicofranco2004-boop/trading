@@ -928,6 +928,25 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_pf_user ON plazos_fijos(user_id);
     """)
+
+    # ─── Secciones de Renta Fija archivadas (borrado reversible) ───────────────
+    # Cuando el usuario "elimina" una sección (ej. Bonos USD) que importó mal, NO
+    # hard-deleteamos: serializamos sus posiciones a JSON y las sacamos de
+    # `positions` (así desaparecen de TODAS las superficies sin filtrar query por
+    # query), guardando el blob acá para poder RESTAURAR. `section` = 'BONO|USD'.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS archived_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            section TEXT NOT NULL,
+            label TEXT,
+            payload TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            archived_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_archpos_user ON archived_positions(user_id);
+    """)
+
     # Migración: columna `modalidad` para DBs creadas antes de este campo.
     # 'vencimiento' = interés al final (default); 'periodico' = pago de renta
     # (fast-follow, todavía no valuado distinto).
@@ -17108,6 +17127,119 @@ def import_wipe_broker(broker: str, uid: int = Depends(get_current_user)):
         raise
     except Exception as ex:
         raise HTTPException(500, f"No se pudo limpiar el broker: {ex}")
+    finally:
+        conn.close()
+
+
+# ─── Secciones de Renta Fija: borrado/restore reversible ─────────────────────
+class SectionKeyIn(BaseModel):
+    section: str   # 'BONO|USD', 'LETRA|ARS', 'FCI|USD', etc.
+
+
+class SectionRestoreIn(BaseModel):
+    archive_id: int
+
+
+def _positions_in_section(conn, uid: int, cat: str, ccy: str):
+    """Posiciones (no-cash) del user que caen en la sección (categoría, moneda)."""
+    from importing import sections as _sections
+    rows = conn.execute(
+        "SELECT * FROM positions WHERE user_id=? AND is_cash=0", (uid,)
+    ).fetchall()
+    out = []
+    for r in rows:
+        sec = _sections.position_section(r["asset_type"], r["asset"], r["currency"])
+        if sec == (cat, ccy):
+            out.append(r)
+    return out
+
+
+@app.get("/api/sections/archived")
+def sections_archived(uid: int = Depends(get_current_user)):
+    """Lista las secciones archivadas (para el botón de restaurar)."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, section, label, count, archived_at FROM archived_positions "
+            "WHERE user_id=? ORDER BY archived_at DESC", (uid,)
+        ).fetchall()
+        return {"archived": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/sections/archive")
+def sections_archive(data: SectionKeyIn, uid: int = Depends(get_current_user)):
+    """Archiva (borrado REVERSIBLE) todas las posiciones de una sección de renta
+    fija — ej. 'Bonos USD'. Serializa a JSON, las saca de `positions` (así salen de
+    toda la valuación) y guarda el blob para restaurar. NO toca el broker, ni las
+    acciones/CEDEARs, ni el cash. Reversible vía /api/sections/restore."""
+    import json as _json
+    from importing import sections as _sections
+    parsed = _sections.parse_section_key(data.section)
+    if not parsed:
+        raise HTTPException(400, "Sección inválida.")
+    cat, ccy = parsed
+    conn = get_db()
+    try:
+        with conn:
+            matched = _positions_in_section(conn, uid, cat, ccy)
+            if not matched:
+                raise HTTPException(404, "No hay posiciones en esa sección.")
+            label = _sections.section_label(cat, ccy)
+            payload = _json.dumps([dict(r) for r in matched])
+            conn.execute(
+                "INSERT INTO archived_positions (user_id, section, label, payload, count) "
+                "VALUES (?,?,?,?,?)",
+                (uid, _sections.section_key(cat, ccy), label, payload, len(matched)),
+            )
+            ids = [r["id"] for r in matched]
+            ph = ",".join("?" * len(ids))
+            conn.execute(
+                f"DELETE FROM positions WHERE user_id=? AND id IN ({ph})", (uid, *ids)
+            )
+        return {"ok": True, "archived": len(matched), "label": label}
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"No se pudo archivar la sección: {ex}")
+    finally:
+        conn.close()
+
+
+@app.post("/api/sections/restore")
+def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_current_user)):
+    """Restaura una sección archivada: re-inserta las posiciones (con su id original,
+    para no romper los links de revert) y borra el registro de archivo."""
+    import json as _json
+    conn = get_db()
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT * FROM archived_positions WHERE id=? AND user_id=?",
+                (data.archive_id, uid),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "No se encontró la sección archivada.")
+            items = _json.loads(row["payload"]) or []
+            restored = 0
+            for it in items:
+                cols = [k for k in it.keys()]
+                ph = ",".join("?" * len(cols))
+                conn.execute(
+                    f"INSERT INTO positions ({','.join(cols)}) VALUES ({ph})",
+                    tuple(it[c] for c in cols),
+                )
+                restored += 1
+            conn.execute(
+                "DELETE FROM archived_positions WHERE id=? AND user_id=?",
+                (data.archive_id, uid),
+            )
+        return {"ok": True, "restored": restored, "label": row["label"]}
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(500, f"No se pudo restaurar la sección: {ex}")
     finally:
         conn.close()
 
