@@ -539,6 +539,13 @@ def init_db():
             """)
         except Exception:
             pass  # la auditoría puede no existir aún en DBs nuevas; no bloquea el boot
+    # Migración: columna split_adjusted_through — watermark (YYYY-MM-DD) de la
+    # última ex-date de split/cambio de ratio YA aplicada a este lote. Es la única
+    # defensa contra doble-aplicar el ajuste (PUT re-save, re-import, backfill,
+    # manual+auto) → sin esto un 10:1 se aplicaría dos veces = 100×. Load-bearing.
+    cols = _table_cols(conn, 'positions')
+    if cols and 'split_adjusted_through' not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN split_adjusted_through TEXT")
     conn.commit()
 
     # monthly_entries
@@ -5442,6 +5449,200 @@ def delete_position(pid: int, uid: int = Depends(get_current_user)):
     conn.close()
     _ai_cache_invalidate(uid)
     return {"ok": True}
+
+
+# ─── Splits / cambios de ratio de CEDEARs ────────────────────────────────────
+# Cuando un CEDEAR cambia de ratio (split), el broker guardó la cantidad al ratio
+# VIEJO y yfinance da el precio al ratio NUEVO → pérdida fantasma. El fix conserva
+# la plata: quantity*=F, buy_price/=F, `invested` (el cost basis que usa el P&L)
+# INTACTO. Idempotente vía positions.split_adjusted_through (watermark por lote).
+
+_splits_cache = {}  # { 'SYM.BA': (timestamp, [(ex_date, factor)]) }
+
+
+def _fetch_ba_splits(ba_symbol: str):
+    """Splits de un símbolo .BA vía yfinance, cacheado con el TTL de eventos (6h).
+    Normaliza el índice tz-aware (idx.date().isoformat()) → 'YYYY-MM-DD' plano,
+    para NUNCA comparar el timestamp crudo contra entry_date."""
+    import time as _t
+    now = _t.time()
+    cached = _splits_cache.get(ba_symbol)
+    if cached and (now - cached[0]) < EVENTS_TTL:
+        return cached[1]
+    out = []
+    try:
+        s = yf.Ticker(ba_symbol).splits
+        for idx, factor in s.items():
+            try:
+                d = idx.date().isoformat()
+            except Exception:
+                d = str(idx)[:10]
+            f = float(factor)
+            if f and f > 0:
+                out.append((d, f))
+    except Exception as ex:
+        log.warning("fetch splits %s falló: %s", ba_symbol, ex)
+        out = cached[1] if cached else []
+    _splits_cache[ba_symbol] = (now, out)
+    return out
+
+
+_SPLIT_DEDUP_DAYS = 7  # ventana para tratar logs separados como el MISMO evento
+
+
+def _dedup_splits(splits):
+    """Colapsa el MISMO evento logueado dos veces (mismo factor a <=7 días — ej.
+    NVDA.BA loguea el 10:1 el 06-06 Y el 06-10) en uno solo. NUNCA multiplica
+    factores en silencio. Entrada/salida: [(ex_date, factor)] ordenado por fecha."""
+    out = []
+    for d, f in sorted(splits):
+        if out and abs(f - out[-1][1]) < 1e-9:
+            try:
+                prev = date.fromisoformat(out[-1][0])
+                cur = date.fromisoformat(d)
+                if abs((cur - prev).days) <= _SPLIT_DEDUP_DAYS:
+                    out[-1] = (d, f)  # mismo evento → quedate con la fecha más reciente
+                    continue
+            except Exception:
+                pass
+        out.append((d, f))
+    return out
+
+
+def _applicable_splits(base_symbol: str, entry: str, wm: str):
+    """Splits del .BA aplicables a un lote: posteriores a la compra (entry) Y al
+    watermark (wm). SSoT compartida por /split-check y /adjust-ratio para que
+    detección y escritura nunca diverjan. Trata como YA-aplicado cualquier split
+    dentro de la ventana de dedup del watermark — cubre el caso en que yfinance
+    re-loguea el MISMO evento con una fecha posterior después de que el user ya
+    ajustó (sin esto, el dedup —que guarda la fecha más reciente— se correría
+    pasando el watermark y re-aplicaría → 9×/100×)."""
+    out = []
+    for d, f in _dedup_splits(_fetch_ba_splits(f"{base_symbol}.BA")):
+        if entry and d <= entry:           # comprado el día del split o después → ya al ratio nuevo
+            continue
+        if wm:
+            if d <= wm:                     # ya cubierto por el watermark
+                continue
+            try:
+                if (date.fromisoformat(d) - date.fromisoformat(wm)).days <= _SPLIT_DEDUP_DAYS:
+                    continue                # mismo evento que el último aplicado (re-log tardío)
+            except Exception:
+                pass
+        out.append((d, f))
+    return out
+
+
+@app.post("/api/positions/{pid}/adjust-ratio")
+def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
+    """Ajusta un lote de CEDEAR por el/los cambio(s) de ratio (split) que el SERVER
+    detecta vía yfinance: quantity*=F, buy_price/=F, dejando invested/commissions/
+    monthly_entries INTACTOS (no inventa plata, solo arregla la pérdida fantasma).
+
+    Robustez (no confía en el cliente):
+    - Re-deriva el factor en el server (mismos splits que /split-check); el front
+      no manda factor/ex_date arbitrarios.
+    - Scopeado a asset_type='CEDEAR' → no toca lotes US de Schwab (que ya manejan
+      splits con un BUY sintético $0; ajustarlos contaría doble).
+    - Solo aplica splits con ex_date posterior a la compra Y al watermark (lote
+      comprado el día del split NO se ajusta).
+    - Idempotente y atómico: estampa el watermark con un UPDATE condicional
+      (split_adjusted_through < max_ex), así un re-POST (incluso con fecha
+      posterior) re-deriva los mismos splits → 0 nuevos → no-op (nunca 9×/100×).
+    - NO borra snapshots históricos (eran valor-en-su-fecha válido; el snapshot
+      diario se auto-corrige y deja, a lo sumo, un escalón de un día).
+    """
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Posición no encontrada.")
+        if row["is_cash"]:
+            raise HTTPException(400, "No se puede ajustar el ratio de una posición de cash.")
+        if (row["asset_type"] or "").upper() != "CEDEAR":
+            raise HTTPException(400, "El ajuste por cambio de ratio es solo para CEDEARs.")
+        asset = (row["asset"] or "").upper()
+        base = asset[:-3] if asset.endswith(".BA") else asset
+        entry = (row["entry_date"] or "")[:10]
+        wm = ((row["split_adjusted_through"] if "split_adjusted_through" in row.keys() else "") or "")[:10]
+        # Re-derivar los splits aplicables EN EL SERVER (no confiar en el cliente).
+        applicable = _applicable_splits(base, entry, wm)
+        if not applicable:
+            return {**dict(row), "already_applied": True}
+        combined = 1.0
+        for _, f in applicable:
+            combined *= f
+        max_ex = max(d for d, _ in applicable)
+        new_qty = float(row["quantity"] or 0) * combined
+        new_buy = (float(row["buy_price"]) / combined) if row["buy_price"] else row["buy_price"]
+        with conn:
+            # UPDATE condicional atómico: solo aplica si el watermark sigue por
+            # detrás de max_ex → cierra el TOCTOU y bloquea doble-aplicación.
+            cur = conn.execute(
+                """UPDATE positions
+                      SET quantity=?, buy_price=?, split_adjusted_through=?
+                    WHERE id=? AND user_id=?
+                      AND (split_adjusted_through IS NULL OR split_adjusted_through < ?)""",
+                (new_qty, new_buy, max_ex, pid, uid, max_ex),
+            )
+        if cur.rowcount == 0:
+            return {**dict(row), "already_applied": True}
+        out = conn.execute(
+            "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
+        ).fetchone()
+        _ai_cache_invalidate(uid)
+        return {**dict(out), "already_applied": False,
+                "factor": round(combined, 6), "ex_date": max_ex}
+    finally:
+        conn.close()
+
+
+@app.get("/api/positions/split-check")
+def positions_split_check(uid: int = Depends(get_current_user)):
+    """Detecta lotes de CEDEAR con un cambio de ratio (split) que Rendi todavía no
+    ajustó → P&L fantasma. Por cada CEDEAR con qty>0, busca splits del .BA con
+    ex_date posterior a la compra Y al watermark. Excluye el caso comprado EXACTO
+    el día del split (ya cotiza al ratio nuevo) y dedupea el mis-log de yfinance.
+    Scopeado a asset_type='CEDEAR' → no toca lotes US de Schwab (que ya maneja
+    splits con un BUY sintético $0)."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM positions
+                WHERE user_id=? AND is_cash=0 AND COALESCE(quantity,0) > 0
+                  AND UPPER(COALESCE(asset_type,'')) = 'CEDEAR'""",
+            (uid,),
+        ).fetchall()
+    finally:
+        conn.close()
+    suggestions = []
+    for r in rows:
+        asset = (r["asset"] or "").upper()
+        base = asset[:-3] if asset.endswith(".BA") else asset
+        if not base:
+            continue
+        entry = (r["entry_date"] or "")[:10]
+        wm = ((r["split_adjusted_through"] if "split_adjusted_through" in r.keys() else "") or "")[:10]
+        applicable = _applicable_splits(base, entry, wm)  # SSoT con /adjust-ratio
+        if not applicable:
+            continue
+        combined = 1.0
+        for _, f in applicable:
+            combined *= f
+        cur_qty = float(r["quantity"] or 0)
+        suggestions.append({
+            "pid": r["id"],
+            "asset": asset,
+            "broker": r["broker"],
+            "factor": round(combined, 6),
+            "ex_date": max(d for d, _ in applicable),
+            "current_qty": cur_qty,
+            "suggested_qty": round(cur_qty * combined, 6),
+            "raw_splits": [{"ex_date": d, "factor": f} for d, f in applicable],
+        })
+    return {"suggestions": suggestions}
 
 
 # ─── Plazos fijos ─────────────────────────────────────────────────────────────

@@ -31,6 +31,7 @@ const AddPositionFlow = lazy(() => import('../components/AddPositionFlow'))
 import { PositionFormModal, SellModal, EMPTY_POS, today } from './Positions'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
 import PfFormModal from '../components/PfFormModal'
+import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
@@ -804,6 +805,11 @@ export default function PositionsMobile() {
           </div>
         </div>
       </header>
+
+      {/* CEDEARs con cambio de ratio (split) sin ajustar → pérdida fantasma. */}
+      <div className="px-4 pt-3">
+        <SplitRatioBanner onAdjusted={loadAll} />
+      </div>
 
       {/* Lista */}
       {visibleCount === 0 ? (

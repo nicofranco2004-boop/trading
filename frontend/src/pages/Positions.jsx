@@ -13,6 +13,7 @@ import PlazosFijosGroup from '../components/PlazosFijosGroup'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
+import SplitRatioBanner from '../components/SplitRatioBanner'
 import { isBondTicker } from '../utils/tickers'
 import { detectPendingCashflows } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
@@ -1063,6 +1064,10 @@ function PositionsDesktop() {
         onConfirm={confirmPendingCashflow}
         onSkip={skipPendingCashflow}
       />
+
+      {/* CEDEARs con cambio de ratio (split) sin ajustar → pérdida fantasma.
+          Detecta y ofrece el ajuste de un clic. */}
+      <SplitRatioBanner onAdjusted={loadAll} />
 
       {/* ══════════════════════════════════════════════════════════════════════
           HERO — 'Tu cartera hoy' agregado total. Single hero per page rule.

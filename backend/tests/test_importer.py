@@ -6066,5 +6066,199 @@ class WipeBrokerUserEndpointTest(unittest.TestCase):
         self.assertEqual(self._count_pair(parent, sib), 0, "elegir el sibling también limpia el padre")
 
 
+SPY_SPLITS = [("2026-05-29", 3.0)]
+
+
+class SplitRatioAdjustTest(unittest.TestCase):
+    """POST /api/positions/{pid}/adjust-ratio + GET /api/positions/split-check —
+    cambios de ratio (split) de CEDEARs. Mata la pérdida fantasma sin inventar
+    plata: quantity*=F, buy_price/=F, invested INTACTO. El endpoint RE-DERIVA el
+    split en el server (no confía en el cliente) y es idempotente vía watermark."""
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"split-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Balanz", "ARS")
+        # CEDEAR del S&P comprado ANTES del split (qty al ratio viejo).
+        cur = conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                   invested, entry_date, asset_type)
+               VALUES (?,'Balanz','SPY',0,44900,10,449000,'2026-01-15','CEDEAR')""",
+            (self.uid,),
+        )
+        self.pid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _adjust(self, pid, splits=None):
+        """POST sin body; el server re-deriva. Mockeamos _fetch_ba_splits (la fuente
+        yfinance) para que el test sea determinístico."""
+        from unittest.mock import patch
+        splits = SPY_SPLITS if splits is None else splits
+        with patch.object(main, "_fetch_ba_splits", return_value=list(splits)):
+            return self.client.post(
+                f"/api/positions/{pid}/adjust-ratio",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+
+    def _row(self, pid):
+        conn = main.get_db()
+        r = conn.execute("SELECT * FROM positions WHERE id=?", (pid,)).fetchone()
+        conn.close()
+        return r
+
+    def test_adjust_multiplies_qty_keeps_invested(self):
+        """SPY F=3: qty 10->30, buy_price 44900->14966.7, invested INTACTO (449000).
+        El P&L (frontend) pasa de -58% a +26% solo con esto."""
+        res = self._adjust(self.pid)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertAlmostEqual(res.json()["factor"], 3.0)
+        r = self._row(self.pid)
+        self.assertAlmostEqual(r["quantity"], 30.0)
+        self.assertAlmostEqual(r["buy_price"], 44900 / 3, places=2)
+        self.assertAlmostEqual(r["invested"], 449000)            # NO cambia
+        self.assertEqual(r["split_adjusted_through"], "2026-05-29")
+
+    def test_idempotent_second_call_is_noop(self):
+        """Segundo POST (mismos splits del server) NO re-multiplica (watermark)."""
+        self._adjust(self.pid)
+        res = self._adjust(self.pid)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(res.json().get("already_applied"))
+        self.assertAlmostEqual(self._row(self.pid)["quantity"], 30.0, msg="no debe dar 90")
+
+    def test_relog_with_later_date_is_noop(self):
+        """CRÍTICO (regresión del review): si yfinance RE-LOGUEA el mismo split con
+        fecha posterior tras el ajuste, NO se re-aplica (qty queda 30, no 90). El
+        guard de ventana del watermark lo cubre."""
+        self._adjust(self.pid, splits=[("2026-05-29", 3.0)])
+        res = self._adjust(self.pid, splits=[("2026-05-29", 3.0), ("2026-05-30", 3.0)])
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(res.json().get("already_applied"))
+        self.assertAlmostEqual(self._row(self.pid)["quantity"], 30.0, msg="re-log no debe dar 90")
+
+    def test_non_cedear_rejected(self):
+        """Lote US (Schwab, asset_type=STOCK) → 400 y sin tocar: Schwab ya maneja
+        splits con un BUY sintético $0; ajustarlo contaría doble."""
+        conn = main.get_db()
+        _add_broker(conn, self.uid, "Schwab", "USDT")
+        cur = conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                   invested, entry_date, asset_type)
+               VALUES (?,'Schwab','AAPL',0,150,10,1500,'2026-01-01','STOCK')""",
+            (self.uid,),
+        )
+        spid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._adjust(spid).status_code, 400)
+        self.assertAlmostEqual(self._row(spid)["quantity"], 10.0, msg="no debe tocarse")
+
+    def test_bought_on_exdate_is_noop(self):
+        """Lote comprado EXACTO el día del split ya cotiza al ratio nuevo → no-op."""
+        conn = main.get_db()
+        cur = conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                   invested, entry_date, asset_type)
+               VALUES (?,'Balanz','SPY',0,15000,5,75000,'2026-05-29','CEDEAR')""",
+            (self.uid,),
+        )
+        bpid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        res = self._adjust(bpid)
+        self.assertTrue(res.json().get("already_applied"))
+        self.assertAlmostEqual(self._row(bpid)["quantity"], 5.0)
+
+    def test_snapshots_not_deleted(self):
+        """El ajuste NO borra snapshots históricos (eran valor-en-su-fecha válidos;
+        el snapshot diario se auto-corrige). Antes borraba >= ex_date y destruía
+        historia irrecuperable para users snapshot-only."""
+        conn = main.get_db()
+        for d in ("2026-05-28", "2026-05-29", "2026-06-01", "2026-06-10"):
+            conn.execute(
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+                   VALUES (?,?,1000,900,900)""",
+                (self.uid, d),
+            )
+        conn.commit()
+        conn.close()
+        self._adjust(self.pid)
+        conn = main.get_db()
+        n = conn.execute("SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (self.uid,)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(n, 4, "no debe borrar snapshots históricos")
+
+    def test_cash_position_rejected(self):
+        conn = main.get_db()
+        cur = conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, invested) VALUES (?,'Balanz','ARS',1,1000)",
+            (self.uid,),
+        )
+        cash_pid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._adjust(cash_pid).status_code, 400)
+
+    def test_not_found_404(self):
+        self.assertEqual(self._adjust(999999).status_code, 404)
+
+    def test_split_check_detects_skips_border_and_closed(self):
+        """Detecta el lote pre-split; excluye el comprado EXACTO el día del split
+        (ya cotiza al ratio nuevo) y el cerrado (qty<=0, que get_positions no filtra)."""
+        from unittest.mock import patch
+        conn = main.get_db()
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                   invested, entry_date, asset_type)
+               VALUES (?,'Balanz','SPY',0,15000,5,75000,'2026-05-29','CEDEAR')""",
+            (self.uid,),
+        )
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                   invested, entry_date, asset_type)
+               VALUES (?,'Balanz','SPY',0,44900,0,0,'2026-01-10','CEDEAR')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        with patch.object(main, "_fetch_ba_splits", return_value=[("2026-05-29", 3.0)]):
+            res = self.client.get(
+                "/api/positions/split-check",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        sugg = {s["pid"]: s for s in res.json()["suggestions"]}
+        self.assertIn(self.pid, sugg)
+        self.assertAlmostEqual(sugg[self.pid]["factor"], 3.0)
+        self.assertAlmostEqual(sugg[self.pid]["suggested_qty"], 30.0)
+        self.assertEqual(len(sugg), 1, "borde de fecha + qty<=0 deben excluirse")
+
+    def test_split_check_skips_non_cedear_schwab(self):
+        """Un US stock en Schwab (asset_type!=CEDEAR) NO se sugiere — Schwab ya
+        maneja splits con un BUY sintético $0; ajustarlo contaría doble."""
+        from unittest.mock import patch
+        conn = main.get_db()
+        _add_broker(conn, self.uid, "Schwab", "USDT")
+        conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                   invested, entry_date, asset_type)
+               VALUES (?,'Schwab','AAPL',0,150,10,1500,'2026-01-01','STOCK')""",
+            (self.uid,),
+        )
+        conn.commit()
+        conn.close()
+        with patch.object(main, "_fetch_ba_splits", return_value=[("2026-05-29", 3.0)]):
+            res = self.client.get(
+                "/api/positions/split-check",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+        assets = [s["asset"] for s in res.json()["suggestions"]]
+        self.assertNotIn("AAPL", assets)
+
+
 if __name__ == "__main__":
     unittest.main()
