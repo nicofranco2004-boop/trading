@@ -2471,21 +2471,225 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_current_user)):
         raise HTTPException(400, "Ya existe un broker con ese nombre")
 
 
+# ── Tablas cuyo vínculo con el broker es por NOMBRE (string), NO por broker_id.
+# El modelo de datos linkea positions/operations/etc. al broker por su `name`
+# (columna `broker TEXT`), no por FK a brokers.id. Por eso un rename del broker
+# DEBE reescribir ese nombre en TODAS estas tablas en cascada — si no, las filas
+# quedan con el nombre VIEJO → huérfanas → desaparecen del UI (que agrupa por el
+# nombre actual del broker). Ese era exactamente el bug reportado por el user:
+# renombrar "Cocos Capital" hacía desaparecer todas sus posiciones.
+#
+# NOTA: delete_broker limpia positions/operations/monthly_entries/import_batches
+# pero NO toca import_normalized_tx ni bond_cashflow_skips (orphan gap conocido).
+# En el rename SÍ las incluimos — el broker sigue existiendo y su historia debe
+# seguir atribuida.
+NAME_KEYED_TABLES = (
+    "positions",
+    "operations",
+    "monthly_entries",
+    "import_batches",
+    "import_normalized_tx",
+    "bond_cashflow_skips",
+)
+
+
 @app.put("/api/brokers/{bid}")
 def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_current_user)):
+    """Renombra (o cambia la moneda de) un broker, con cascade del nombre.
+
+    Como las tablas de data linkean al broker por NOMBRE (ver NAME_KEYED_TABLES),
+    un rename A → A2 reescribe el nombre en las 6 tablas dentro de UNA transacción
+    atómica. Un cascade parcial sería estrictamente peor que el bug original, así
+    que la atomicidad es obligatoria.
+
+    Reglas adicionales:
+      • Sibling USD (parent_broker_id IS NOT NULL): es plumbing derivado del padre.
+        No se puede renombrar directo (400) salvo no-op; al renombrar el padre se
+        renombra solo, derivando el nombre FRESCO desde el nuevo nombre del padre.
+      • Colisión de nombre con otro broker del mismo user → 409 (nunca merge, nunca
+        500). El merge violaría UNIQUE(user_id,year,month,broker) de monthly_entries
+        y fusionaría historias no relacionadas.
+    """
+    new_name = data.name          # BrokerIn ya hace .strip() y valida min_length=1
+    new_currency = data.currency
     conn = get_db()
-    conn.execute(
-        "UPDATE brokers SET name=?, currency=? WHERE id=? AND user_id=?",
-        (data.name, data.currency, bid, uid),
-    )
-    conn.commit()
-    # FIXED: include user_id in SELECT to prevent IDOR
-    row = conn.execute("SELECT * FROM brokers WHERE id=? AND user_id=?", (bid, uid)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404)
-    _ai_cache_invalidate(uid)
-    return dict(row)
+    try:
+        # 1) Traer el row actual PRIMERO (necesitamos old_name; además fija IDOR/404).
+        row = conn.execute(
+            "SELECT id, name, currency, parent_broker_id FROM brokers WHERE id=? AND user_id=?",
+            (bid, uid),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404)
+        old_name = row["name"]
+        is_sibling = row["parent_broker_id"] is not None
+        name_changed = (new_name != old_name)
+
+        # 2) Guard de sibling directo: prohibir renombrar el sub-broker USD a mano.
+        #    Un no-op (sin cambio de nombre) sí pasa (cambio de moneda / save idempotente).
+        if is_sibling and name_changed:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "sibling_rename_forbidden",
+                    "message": "El sub-broker USD se renombra automáticamente con su broker padre.",
+                },
+            )
+
+        # 2.5) Nombre reservado: 'global' es la CLAVE del agregado cross-broker en
+        #      monthly_entries (no es un broker real — ver _update_monthly_flow(...,'global',...)).
+        #      Renombrar un broker a 'global' chocaría con esas filas (UNIQUE de
+        #      monthly_entries → IntegrityError) y además corrompería los agregados.
+        #      Lo rechazamos explícito (con mensaje claro) en vez de dejarlo caer al
+        #      catch-all de IntegrityError de abajo.
+        if name_changed and new_name.strip().lower() == "global":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "broker_name_reserved",
+                    "broker_name": new_name,
+                    "message": "'global' es un nombre reservado del sistema. Elegí otro.",
+                },
+            )
+
+        # 3) Fast path no-op: nombre sin cambios → a lo sumo actualizar moneda, sin cascade.
+        if not name_changed:
+            if new_currency != row["currency"]:
+                with conn:
+                    conn.execute(
+                        "UPDATE brokers SET currency=? WHERE id=? AND user_id=?",
+                        (new_currency, bid, uid),
+                    )
+                _ai_cache_invalidate(uid)
+            updated = conn.execute(
+                "SELECT * FROM brokers WHERE id=? AND user_id=?", (bid, uid)
+            ).fetchone()
+            return dict(updated)
+
+        # 4) Calcular rename del sibling (solo path de padre; is_sibling ya excluido arriba).
+        #    El nombre nuevo del sibling se DERIVA FRESCO del nuevo nombre del padre
+        #    (f"{new_name} · USD", U+00B7), nunca por string-replace del prefijo viejo.
+        sibling = conn.execute(
+            "SELECT id, name FROM brokers WHERE user_id=? AND parent_broker_id=?",
+            (uid, bid),
+        ).fetchone()
+        old_sibling = sibling["name"] if sibling else None
+        new_sibling = f"{new_name} · USD" if sibling else None
+
+        # 5) Guard de colisión (409) — nuevo nombre del padre Y del sibling, excluyendo self.
+        #    Pasar este guard GARANTIZA que los cascades de monthly_entries y
+        #    bond_cashflow_skips no choquen con sus propios UNIQUE: ninguna fila puede
+        #    cargar new_name salvo que algún broker ya use new_name — que el 409 prohíbe.
+        clash = conn.execute(
+            "SELECT id, name FROM brokers WHERE user_id=? AND name=? AND id<>?",
+            (uid, new_name, bid),
+        ).fetchone()
+        if clash:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "broker_name_taken",
+                    "broker_name": new_name,
+                    "conflicting_broker_id": clash["id"],
+                    "message": f"Ya existe un broker llamado '{new_name}'. Elegí otro nombre.",
+                },
+            )
+        if new_sibling is not None:
+            sib_id = sibling["id"]
+            sib_clash = conn.execute(
+                "SELECT id, name FROM brokers WHERE user_id=? AND name=? AND id<>? AND id<>?",
+                (uid, new_sibling, bid, sib_id),
+            ).fetchone()
+            if sib_clash:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "broker_name_taken",
+                        "broker_name": new_sibling,
+                        "conflicting_broker_id": sib_clash["id"],
+                        "message": f"Ya existe un broker llamado '{new_sibling}'. Elegí otro nombre.",
+                    },
+                )
+
+        # 6) Lista de pares (viejo, nuevo) a cascadear.
+        rename_pairs = [(old_name, new_name)]
+        if old_sibling is not None:
+            rename_pairs.append((old_sibling, new_sibling))
+
+        # 7) UNA transacción atómica (auto-commit on success, ROLLBACK on exception).
+        #    get_db() ya setea busy_timeout=5000 + WAL.
+        #
+        #    Belt-and-suspenders: el guard de colisión de arriba solo mira la tabla
+        #    `brokers`. Pero el cascade también escribe el nombre nuevo en
+        #    monthly_entries (UNIQUE user_id,year,month,broker) y bond_cashflow_skips
+        #    (UNIQUE user_id,broker,asset,date). Filas HUÉRFANAS pre-existentes (de
+        #    renames del endpoint viejo bugueado, o de tablas que delete_broker no
+        #    limpia) podrían cargar el nombre nuevo SIN que exista un broker con ese
+        #    nombre → choque con esos UNIQUE → IntegrityError. El `with conn:` hace
+        #    ROLLBACK; lo convertimos en un 409 limpio en vez de un 500 crudo.
+        try:
+            with conn:
+                # brokers: nombre+moneda del padre, luego nombre del sibling (su moneda
+                # NO se toca — es plumbing interno USDT).
+                conn.execute(
+                    "UPDATE brokers SET name=?, currency=? WHERE id=? AND user_id=?",
+                    (new_name, new_currency, bid, uid),
+                )
+                if sibling is not None:
+                    conn.execute(
+                        "UPDATE brokers SET name=? WHERE id=? AND user_id=?",
+                        (new_sibling, sibling["id"], uid),
+                    )
+                # Las tablas linkeadas por nombre, para cada par de rename.
+                # Los nombres de tabla salen de la tupla fija NAME_KEYED_TABLES (nunca de
+                # input del user) → la interpolación f-string es segura; los VALUES van
+                # parametrizados. El WHERE broker=old nunca matchea '' (un nombre real de
+                # broker nunca es vacío) → las filas sin atribuir de import_normalized_tx
+                # quedan intactas.
+                #
+                # OJO: import_normalized_tx NO tiene columna user_id — está scopeada por
+                # batch_id (FK a import_batches, que SÍ tiene user_id). Por eso para esa
+                # tabla acotamos el user vía subquery de batch_id en vez de user_id directo.
+                for old_n, new_n in rename_pairs:
+                    for tbl in NAME_KEYED_TABLES:
+                        if tbl == "import_normalized_tx":
+                            conn.execute(
+                                """UPDATE import_normalized_tx SET broker=?
+                                   WHERE broker=?
+                                     AND batch_id IN (
+                                         SELECT id FROM import_batches WHERE user_id=?
+                                     )""",
+                                (new_n, old_n, uid),
+                            )
+                        else:
+                            conn.execute(
+                                f"UPDATE {tbl} SET broker=? WHERE user_id=? AND broker=?",
+                                (new_n, uid, old_n),
+                            )
+        except sqlite3.IntegrityError as ex:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "broker_rename_conflict",
+                    "broker_name": new_name,
+                    "message": (
+                        f"No se pudo renombrar a '{new_name}': colisiona con datos "
+                        f"existentes bajo ese nombre."
+                    ),
+                },
+            ) from ex
+
+        # 8) Solo invalidación de cache — NO _recalc: el rename no mueve ningún número,
+        #    solo reetiqueta la clave del broker (los agregados son idénticos bajo la
+        #    nueva clave porque _recalc agrupa por nombre ya reescrito).
+        _ai_cache_invalidate(uid)
+
+        updated = conn.execute(
+            "SELECT * FROM brokers WHERE id=? AND user_id=?", (bid, uid)
+        ).fetchone()
+        return dict(updated)
+    finally:
+        conn.close()
 
 
 @app.delete("/api/brokers/{bid}")
