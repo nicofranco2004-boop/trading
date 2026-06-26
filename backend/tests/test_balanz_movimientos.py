@@ -115,5 +115,87 @@ class BalanzMovimientosTest(unittest.TestCase):
         self.assertIsNotNone(get_parser("balanz_movimientos"))
 
 
+class BalanzMovimientosNuevosTiposTest(unittest.TestCase):
+    """Tipos que aparecieron en un export real más amplio (Actividad → Movimientos
+    de una cuenta de años): acciones societarias (split, cambio de ratio CEDEAR,
+    rescate parcial de bono), operación a plazo/diferida, cheque, intereses
+    devengados, prima/rescate de bono, y clases de FCI con espacio en el ticker."""
+
+    def _parse(self, *rows):
+        return BalanzMovimientosParser().parse(HDR + "\n" + "\n".join(rows) + "\n")
+
+    def _by_tipo(self, res):
+        by = {}
+        for rr in res.raw_rows:
+            by.setdefault(rr.data["tipo"], []).append(rr.data)
+        return by
+
+    def test_corporate_split_y_cambio_ratio_dan_lote_gratis(self):
+        # Split (+201) y cambio de ratio CEDEAR (+27): suman nominales SIN cash
+        # (importe 0) → COMPRA precio 0. No deben quedar flagged ni mover caja.
+        res = self._parse(
+            "Split / GGAL,GGALX,Acciones,2025-10-01,201,-1,2025-10-01,,0",
+            "Acreditación cambio de ratio / NVDA,NVDA,Cedears,2025-10-02,27,-1,2025-10-02,,0",
+        )
+        self.assertEqual(res.parse_errors, [])
+        by = self._by_tipo(res)
+        compras = {d["activo"]: d for d in by.get("COMPRA", [])}
+        self.assertEqual(float(compras["GGALX"]["precio"]), 0.0)
+        self.assertEqual(float(compras["GGALX"]["cantidad"]), 201.0)
+        self.assertEqual(float(compras["NVDA"]["cantidad"]), 27.0)
+        # cero cash emitido (todas precio 0, monto 0)
+        self.assertEqual(sum(float(rr.data.get("monto") or 0) for rr in res.raw_rows), 0.0)
+
+    def test_rescate_parcial_baja_nominal_sin_cash(self):
+        # Rescate parcial de bono: cantidad negativa, importe 0 → VENTA precio 0
+        # (baja el nominal). El cash del rescate viene en una fila "Rescate" aparte.
+        res = self._parse(
+            "Rescate parcial / TLC1O,TLC1O,Corporativos,2025-10-03,-427,-1,2025-10-03,,0")
+        self.assertEqual(res.parse_errors, [])
+        venta = self._by_tipo(res)["VENTA"][0]
+        self.assertEqual(venta["activo"], "TLC1O")
+        self.assertEqual(float(venta["precio"]), 0.0)
+        self.assertEqual(float(venta["cantidad"]), 427.0)
+
+    def test_operacion_diferida_netea_a_cero(self):
+        # El par "Operación Diferida" + "Liquidación de Operación Diferida" trae
+        # legs opuestos (cantidad y cash) → netea a 0 en posición y caja. Sin
+        # precio unitario: el tipo lo decide el SIGNO de Importe.
+        res = self._parse(
+            "Operación Diferida / Boleto : 6123382,VIST,Cedears,2025-10-04,-35,-1,2025-10-04,Pesos,693000",
+            "Liquidación de Operación Diferida / Boleto : 6123382,VIST,Cedears,2025-10-05,35,-1,2025-10-05,Pesos,-693000",
+        )
+        self.assertEqual(res.parse_errors, [])
+        net_qty = sum((float(rr.data["cantidad"]) if rr.data["tipo"] == "VENTA"
+                       else -float(rr.data["cantidad"]))
+                      for rr in res.raw_rows)  # VENTA suma, COMPRA resta (signo de tenencia)
+        net_cash = sum((float(rr.data["monto"]) if rr.data["tipo"] == "VENTA"
+                        else -float(rr.data["monto"])) for rr in res.raw_rows)
+        self.assertAlmostEqual(net_qty, 0.0, places=6)
+        self.assertAlmostEqual(net_cash, 0.0, places=6)
+
+    def test_cheque_intereses_y_rescate_son_cash_in(self):
+        # Acreditación de Cheque → depósito ; Intereses devengados / Rescate (cash
+        # de bono) / Prima por rescate → ingreso. Todos cash IN, reconcilian.
+        res = self._parse(
+            "Acreditación de Cheque #150 / BANCO,,,2025-10-06,0,-1,2025-10-06,Pesos,1580563.6",
+            "Intereses devengados / TLC1O,TLC1O,Corporativos,2025-10-07,0,-1,2025-10-07,Dólares,14.38",
+            "Rescate / TLC1O,TLC1O,Corporativos,2025-10-08,0,-1,2025-10-08,Dólares,432.89",
+            "Prima por rescate / TLC1O,TLC1O,Corporativos,2025-10-09,0,-1,2025-10-09,Dólares,2.32",
+        )
+        self.assertEqual(res.parse_errors, [])
+        by = self._by_tipo(res)
+        self.assertTrue(any("Cheque" in d["notas"] for d in by.get("DEPOSITO", [])))
+        ingresos = by.get("DIVIDENDO", [])
+        self.assertAlmostEqual(sum(float(d["monto"]) for d in ingresos), 14.38 + 432.89 + 2.32, places=2)
+
+    def test_ticker_con_espacio_se_normaliza(self):
+        # Clases de FCI vienen como "INSTITU A" y fragmentaban contra "INSTITUA".
+        res = self._parse(
+            "Liquidación de Suscripción / 7 / FCI,INSTITU A,Fondos,2025-10-10,100,1.35,2025-10-10,Pesos,-135")
+        self.assertEqual(res.parse_errors, [])
+        self.assertEqual(res.raw_rows[0].data["activo"], "INSTITUA")
+
+
 if __name__ == "__main__":
     unittest.main()

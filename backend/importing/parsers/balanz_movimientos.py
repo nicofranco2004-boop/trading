@@ -130,16 +130,29 @@ def _classify_desc(desc_norm: str) -> str:
     d = desc_norm
     if d.startswith("transferencia"):
         return "transfer"
-    if d.startswith("dividendo en acciones"):
-        return "free_lot"
-    if d.startswith("recibo de cobro"):
+    # Acciones societarias que cambian CANTIDAD sin cash (o casi): dividendo en
+    # acciones (lote gratis), split, cambio de ratio de CEDEAR, rescate parcial
+    # de bono (baja nominal). "rescate parcial" va acá (antes que "rescate" abajo).
+    if (d.startswith("dividendo en acciones") or d.startswith("split")
+            or d.startswith("acreditacion cambio de ratio")
+            or d.startswith("rescate parcial")):
+        return "corporate"
+    # Operación a plazo / diferida: trade con cantidad + cash pero sin precio
+    # unitario (precio=-1). Se resuelve por el signo de Importe.
+    if d.startswith("operacion diferida") or d.startswith("liquidacion de operacion diferida"):
+        return "diferida"
+    if d.startswith("recibo de cobro") or d.startswith("acreditacion de cheque"):
         return "deposito"
     if d.startswith("comprobante de pago"):
         return "retiro"
     if d.startswith("cargo por descubierto"):
         return "fee"
-    if (d.startswith("renta") or d.startswith("dividendo")
-            or d.startswith("amortizacion") or d.startswith("pago complementario")):
+    # Ingresos por título (entra) o retención (sale): cupón, dividendo en efectivo,
+    # amortización, intereses devengados, prima por rescate, rescate (cash de un
+    # bono que se rescata; el "rescate parcial" que baja nominal ya salió arriba).
+    if (d.startswith("renta") or d.startswith("dividendo") or d.startswith("amortizacion")
+            or d.startswith("pago complementario") or d.startswith("prima por rescate")
+            or d.startswith("intereses devengados") or d.startswith("rescate")):
         return "renta"
     if d.startswith("movimiento manual"):
         return "manual"
@@ -212,7 +225,10 @@ class BalanzMovimientosParser(Parser):
             desc = _norm_header(desc_raw)
             if not desc:
                 continue
-            ticker = _g(row, "activo").upper() or None
+            # Ticker sin espacios: las clases de FCI vienen como "INSTITU A" /
+            # "BCACC A" y fragmentaban contra "INSTITUA"/"BCACCA". Ningún ticker
+            # legítimo tiene espacios internos → normalizamos sacándolos.
+            ticker = _g(row, "activo").upper().replace(" ", "") or None
             moneda = _norm_ccy(_g(row, "moneda"))
             fecha = _g(row, "fecha")
             importe = _num(_g(row, "importe"))
@@ -221,12 +237,14 @@ class BalanzMovimientosParser(Parser):
             clase = _asset_type(_g(row, "clase"))
             kind = _classify_desc(desc)
 
-            if importe is None and kind != "free_lot":
-                continue  # sin importe no hay efecto de cash; nada que importar
-
             has_price = precio is not None and precio > 0
+            has_qty = qty is not None and abs(qty) > 1e-9
+            has_cash = importe is not None and abs(importe) > 0.001
             cash_in = (importe or 0) > 0
             notas = desc_raw[:120]
+
+            if not has_cash and not has_qty:
+                continue  # ni cash ni cantidad → nada que importar
 
             def base(tipo, **extra):
                 d = {"fecha": fecha, "tipo": tipo, "broker": "Balanz",
@@ -238,15 +256,32 @@ class BalanzMovimientosParser(Parser):
                 d.update(extra)
                 return d
 
-            # ── Dividendo en acciones: lote gratis (qty>0) ────────────────────
-            if kind == "free_lot":
-                if qty and ticker:
-                    _emit(base("COMPRA", activo=ticker, cantidad=str(abs(qty)),
-                               precio="0", monto="0"))
-                # Algunas traen ADEMÁS una retención/impuesto en pesos (importe≠0)
-                # → emitimos ese efecto de cash para que reconcilie (FEE si sale).
-                if importe is not None and abs(importe) > 0.001:
-                    _emit(base("FEE" if importe < 0 else "DIVIDENDO", monto=str(abs(importe))))
+            # ── Acción societaria: cambia CANTIDAD sin cash (split, cambio de
+            # ratio de CEDEAR, rescate parcial de bono, dividendo en acciones).
+            # qty>0 → entran nominales (COMPRA precio 0) ; qty<0 → salen (VENTA
+            # precio 0). Algunas (dividendo en acciones) traen ADEMÁS una
+            # retención (importe≠0) → ese efecto de cash va aparte para reconciliar.
+            if kind == "corporate":
+                if has_qty and ticker:
+                    _emit(base("COMPRA" if qty > 0 else "VENTA", activo=ticker,
+                               cantidad=str(abs(qty)), precio="0", monto="0"))
+                if has_cash:
+                    _emit(base("DIVIDENDO" if cash_in else "FEE", monto=str(abs(importe))))
+                continue
+
+            # ── Operación a plazo / diferida: trade con cantidad + cash pero SIN
+            # precio unitario (precio=-1). COMPRA/VENTA por el SIGNO de Importe; el
+            # normalizer deriva el precio (monto/cantidad). Si no trae cantidad es
+            # sólo un movimiento de caja → DEPOSITO/RETIRO por signo. El par
+            # "Operación Diferida" + "Liquidación de Operación Diferida" netea a 0
+            # (cantidad y cash) cuando la operación se cierra contra sí misma.
+            if kind == "diferida":
+                if has_qty and has_cash and ticker:
+                    tipo = "VENTA" if cash_in else "COMPRA"
+                    _emit(base(tipo, activo=ticker, cantidad=str(abs(qty)),
+                               monto=str(abs(importe))))
+                elif has_cash:
+                    _emit(base("DEPOSITO" if cash_in else "RETIRO", monto=str(abs(importe))))
                 continue
 
             # ── Transferencia Externa: título transferido DESDE OTRO BROKER ───
