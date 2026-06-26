@@ -5947,19 +5947,26 @@ class WipeBrokerUserEndpointTest(unittest.TestCase):
         )
 
     def test_wipes_orphan_positions_by_broker_name(self):
-        """Borra TODAS las posiciones del broker aunque no tengan import link."""
+        """Borra TODAS las posiciones del broker aunque no tengan import link, y
+        elimina la fila del broker → desaparece de la lista (bug reportado: el
+        broker reaparecía en el selector tras 'Limpiar broker')."""
         res = self._wipe()
         self.assertEqual(res.status_code, 200, res.text)
         body = res.json()
         self.assertTrue(body["ok"])
         self.assertGreaterEqual(body["positions_deleted"], 2)
+        self.assertGreaterEqual(body["brokers_deleted"], 1)
         conn = main.get_db()
         n = conn.execute(
             "SELECT COUNT(*) c FROM positions WHERE user_id=? AND broker='Binance'",
             (self.uid,),
         ).fetchone()["c"]
+        b = conn.execute(
+            "SELECT 1 FROM brokers WHERE user_id=? AND name='Binance'", (self.uid,),
+        ).fetchone()
         conn.close()
         self.assertEqual(n, 0, "deben borrarse TODAS las posiciones del broker")
+        self.assertIsNone(b, "el broker debe desaparecer de la lista")
 
     def test_today_snapshot_is_cleared(self):
         """El snapshot intradiario de hoy (inflado) se descarta tras el wipe."""
@@ -6051,19 +6058,30 @@ class WipeBrokerUserEndpointTest(unittest.TestCase):
         conn.close()
         return n
 
+    def _brokers_left(self, parent, sib):
+        conn = main.get_db()
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM brokers WHERE user_id=? AND name IN (?,?)",
+            (self.uid, parent, sib),
+        ).fetchone()["c"]
+        conn.close()
+        return n
+
     def test_wipes_usd_sibling_when_parent_selected(self):
         """M1: wipe del PADRE ARS también borra el sibling '· USD' (donde viven las
-        tenencias/cash en dólares). Sin esto el total seguía inflado tras el wipe."""
+        tenencias/cash en dólares). Padre Y sibling se eliminan de la lista."""
         parent, sib = self._seed_pair("Balanz")
         self.assertEqual(self._count_pair(parent, sib), 3)
         self.assertEqual(self._wipe(broker=parent).status_code, 200)
         self.assertEqual(self._count_pair(parent, sib), 0, "padre Y sibling '· USD' deben quedar vacíos")
+        self.assertEqual(self._brokers_left(parent, sib), 0, "padre y sibling se eliminan de la lista")
 
     def test_wipes_parent_when_sibling_selected(self):
         """M1 (dirección inversa): elegir el sibling '· USD' también borra el padre."""
         parent, sib = self._seed_pair("Cocos")
         self.assertEqual(self._wipe(broker=sib).status_code, 200)
         self.assertEqual(self._count_pair(parent, sib), 0, "elegir el sibling también limpia el padre")
+        self.assertEqual(self._brokers_left(parent, sib), 0, "ambos brokers se eliminan de la lista")
 
 
 SPY_SPLITS = [("2026-05-29", 3.0)]

@@ -10463,6 +10463,10 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
         auto-snapshot del dashboard mientras el broker todavía estaba cargado).
       - month-ends: rebackfill DESPUÉS desde monthly_entries ya corregidos.
 
+    También elimina la FILA del broker (y su sibling '· USD') para que desaparezca
+    de la lista — el user espera que "Limpiar broker" lo borre; si quedaba, reaparecía
+    en el selector y parecía no haberse borrado. Reversible: al re-importar se re-crea.
+
     Incluye el sibling '· USD': los brokers ARS (Balanz/Cocos/IOL) tienen un
     sub-broker auto-creado '<Padre> · USD' donde viven las tenencias/cash/ops en
     dólares (por NOMBRE, no por FK). Borrar solo el nombre elegido dejaría esas
@@ -10470,8 +10474,7 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     padre↔sibling en cualquier dirección y limpiamos los dos (igual que
     delete_broker).
 
-    Scoped al uid: nunca toca datos de otro usuario. Idempotente (correr 2 veces
-    no hace daño). Reversible re-importando. Devuelve el conteo de filas borradas.
+    Scoped al uid: nunca toca datos de otro usuario. Devuelve el conteo de filas borradas.
     """
     # Resolver el par padre↔sibling. Si el user eligió el sibling (tiene
     # parent_broker_id) sumamos el padre; si eligió el padre, sumamos el sibling.
@@ -10524,6 +10527,16 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
             (uid, *broker_names),
         )
         counts["batches_marked_reverted"] = cur.rowcount
+
+        # Borrar también la(s) fila(s) del broker (padre + sibling '· USD') para que
+        # DESAPAREZCA de la lista. El user espera que "Limpiar broker" lo elimine;
+        # si antes lo dejábamos, reaparecía en el selector y parecía "no se borró".
+        # Reversible: al re-importar, el broker se re-crea solo con su moneda.
+        cur = conn.execute(
+            f"DELETE FROM brokers WHERE user_id=? AND name IN ({ph})",
+            (uid, *broker_names),
+        )
+        counts["brokers_deleted"] = cur.rowcount
 
     # Recalcular aggregates globales (el 'global' sumaba el broker borrado).
     try:

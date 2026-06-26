@@ -147,7 +147,7 @@ export default function Imports() {
     try {
       const data = await api.post(`/imports/wipe-broker?broker=${encodeURIComponent(wipeSel)}`, {})
       window.dispatchEvent(new Event('rendi:portfolio-changed'))
-      setInfo(`Listo: borramos todos los datos de "${wipeSel}" (${data.positions_deleted} posiciones, ${data.operations_deleted} operaciones). Ya podés volver a importar limpio.`)
+      setInfo(`Listo: eliminamos "${wipeSel}" y todos sus datos (${data.positions_deleted} posiciones, ${data.operations_deleted} operaciones). Si volvés a importarlo, se crea de nuevo limpio.`)
       setWipeOpen(false); setWipeSel(null)
       await load()
     } catch (ex) {
@@ -426,11 +426,11 @@ export default function Imports() {
 
       {/* Modal: limpiar datos de un broker — selección + warning + CONFIRMAR */}
       {wipeOpen && (
-        <Modal title="Limpiar datos de un broker" onClose={() => { setWipeOpen(false); setError(null) }}>
+        <Modal title="Limpiar broker" onClose={() => { setWipeOpen(false); setError(null) }}>
           <div className="space-y-4 text-sm text-ink-1">
             <p className="text-ink-2">
-              Elegí el broker cuyos datos querés borrar. Se eliminan <strong className="text-ink-0">todas</strong> sus
-              operaciones, posiciones y movimientos mensuales. El broker en sí queda.
+              Elegí el broker que querés eliminar. Se borra <strong className="text-ink-0">todo</strong>: el broker y sus
+              operaciones, posiciones y movimientos. Si lo volvés a importar, se crea de nuevo limpio.
             </p>
 
             {wipeBrokers.length === 0 ? (
@@ -465,8 +465,8 @@ export default function Imports() {
               <div className="flex items-start gap-2 px-3 py-2.5 rounded-md bg-rendi-neg/[0.08] border border-rendi-neg/30 text-xs text-rendi-neg">
                 <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
                 <span>
-                  Al confirmar vas a borrar <strong>todos los datos de {wipeSel}</strong> (operaciones, posiciones y
-                  movimientos), incluido cualquier resto de imports anteriores. Para recuperarlos vas a tener que{' '}
+                  Al confirmar vas a <strong>eliminar {wipeSel}</strong> y todos sus datos (operaciones, posiciones y
+                  movimientos), incluido cualquier resto de imports anteriores. Para recuperarlo vas a tener que{' '}
                   <strong>volver a importar el CSV</strong>.
                 </span>
               </div>
