@@ -9776,6 +9776,40 @@ def admin_backfill_recompute(apply: bool = False, safe_only: bool = True,
         conn.close()
 
 
+@app.post("/api/admin/backfill-mtm")
+def admin_backfill_mtm(apply: bool = False, offset: int = 0, limit: int = 0,
+                       uid: int = Depends(get_admin_user)):
+    """Backfill de valuación histórica a MERCADO (MTM) para cuentas YA importadas.
+
+    Rellena monthly_entries.capital_final + snapshots de los meses CERRADOS con el
+    valor de MERCADO histórico (reconstruye las tenencias a fin de mes y las valúa a
+    precio de cierre histórico). Arregla el chart de Evolución (curva plana→real) y el
+    CAGR — ambos leen de snapshots. Sin esto, la historia importada queda al COSTO.
+
+    - apply=false (default): DRY-RUN sobre una COPIA del DB → la real NO se toca.
+    - apply=true: aplica y commitea por usuario. Idempotente (re-correr no daña),
+      degrada al costo si falta precio/FX (jamás infla), saltea cuentas sin import
+      confirmado, no toca el mes en curso ni positions/cash.
+
+    Por TANDAS (offset/limit) para no timeout-ear (fetch de precios históricos por
+    ticker). Gate: solo el admin logueado.
+    """
+    from scripts.backfill_historical_mtm import backfill_summary
+    from datetime import datetime as _dt
+    conn = get_db()
+    try:
+        all_users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
+        users = all_users[offset:offset + limit] if limit > 0 else all_users[offset:]
+        summary = backfill_summary(conn, users, _dt.utcnow().date(), apply=bool(apply))
+        summary.update(ok=True, applied=bool(apply), total_all_users=len(all_users),
+                       offset=offset, processed=len(users))
+        log.info("admin_backfill_mtm apply=%s users_changed=%s errors=%s",
+                 apply, summary["users_changed"], len(summary["errors"]))
+        return summary
+    finally:
+        conn.close()
+
+
 @app.post("/api/admin/delete-snapshot")
 def admin_delete_snapshot(date: str, uid: int = Depends(get_admin_user)):
     """Borra un snapshot específico del user admin logueado (no afecta otros).

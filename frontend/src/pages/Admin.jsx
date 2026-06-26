@@ -223,6 +223,8 @@ export default function Admin() {
       {/* ── Backfill: recomputar posiciones de cuentas ya importadas (FIFO + amort) ── */}
       <BackfillPanel toast={toast} />
 
+      <MtmBackfillPanel toast={toast} />
+
       {/* ── Alerta de billing: pagaron pero figuran en Free ──────────────── */}
       {affected.length > 0 && (
         <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
@@ -821,6 +823,145 @@ function BackfillPanel({ toast }) {
               disabled={applying || loading}
               className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-md bg-data-violet text-white hover:bg-data-violet/90 disabled:opacity-50"
             >
+              <Check size={14} className={applying ? 'animate-pulse' : ''} />
+              {applying ? 'Aplicando…' : `Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}`}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+
+// ─── MtmBackfillPanel — valuación histórica a mercado (arregla chart + CAGR) ──
+// Rellena monthly_entries.capital_final + snapshots de meses cerrados con el valor
+// de MERCADO histórico → la curva de Evolución deja de estar plana y el CAGR refleja
+// el retorno real. Simular (sobre copia) → revisar → Aplicar.
+function MtmBackfillPanel({ toast }) {
+  const CHUNK = 10  // usuarios por request — el fetch de precios históricos es lento
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [progress, setProgress] = useState(null)
+
+  async function runChunks(doApply) {
+    let offset = 0, total = 1
+    const agg = { users_changed: 0, changes: [], errors: [], total_users: 0, skipped: 0 }
+    do {
+      const r = await api.post(`/admin/backfill-mtm?apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
+      total = r.total_all_users || 0
+      agg.users_changed += r.users_changed || 0
+      agg.skipped += r.skipped || 0
+      agg.total_users = total
+      if (agg.changes.length < 2000) agg.changes.push(...(r.changes || []))
+      else agg.truncated = true
+      if (r.errors?.length) agg.errors.push(...r.errors)
+      offset += CHUNK
+      setProgress({ done: Math.min(offset, total), total })
+    } while (offset < total)
+    return agg
+  }
+
+  async function simulate() {
+    setLoading(true); setPreview(null); setProgress({ done: 0, total: 0 })
+    try { setPreview(await runChunks(false)) }
+    catch (e) { toast.push('Error al simular: ' + e.message, { type: 'error' }) }
+    finally { setLoading(false); setProgress(null) }
+  }
+
+  async function apply() {
+    if (!preview) return
+    if (!confirm(`¿Aplicar la valuación histórica a mercado en ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
+                 `Hacé un backup antes. Solo es reversible desde backup.`)) return
+    setApplying(true); setProgress({ done: 0, total: 0 })
+    try {
+      const r = await runChunks(true)
+      toast.push(`Aplicado: ${r.users_changed} cuenta${r.users_changed === 1 ? '' : 's'} con historia a mercado`, { type: 'success' })
+      await simulate()  // re-simular → debería dar 0 (idempotente)
+    } catch (e) { toast.push('Error al aplicar: ' + e.message, { type: 'error' }) }
+    finally { setApplying(false); setProgress(null) }
+  }
+
+  const changes = preview?.changes || []
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <TrendingUp size={16} className="text-data-violet" />
+          <h2 className="font-semibold text-ink-0">Valuación histórica a mercado — chart + CAGR</h2>
+        </div>
+        <button onClick={simulate} disabled={loading || applying}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Volver a simular' : 'Simular'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Rellena la historia de las cuentas <b>importadas</b> con el valor de <b>mercado</b> de cada mes (reconstruye qué
+        tenías y lo valúa al precio de cierre histórico). Arregla el chart de <b>Evolución</b> (la curva deja de estar
+        plana y de "saltar" al final) y el <b>CAGR</b>. <b>Simular</b> corre sobre una copia (no toca nada) y muestra
+        qué cambiaría; recién <b>Aplicar</b> modifica. Idempotente, degrada al costo si falta un precio (<b>nunca infla</b>),
+        no toca posiciones ni cash, saltea cuentas sin import. Hacé un backup antes.
+      </p>
+
+      {progress && progress.total > 0 && (loading || applying) && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-ink-3">
+            <span>{applying ? 'Aplicando…' : 'Simulando…'}</span>
+            <span className="tabular">{progress.done} / {progress.total} cuentas</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-bg-2 dark:bg-bg-2/40 overflow-hidden">
+            <div className="h-full bg-data-violet transition-all" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+          </div>
+        </div>
+      )}
+
+      {preview && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <ConvCell label="Cuentas con historia a mercado" value={preview.users_changed} hint={`de ${preview.total_users}`} />
+            <ConvCell label="Sin import (salteadas)" value={preview.skipped} hint="cuentas manuales" />
+          </div>
+
+          {changes.length > 0 ? (
+            <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+                    <th className="text-left px-2 py-1">Usuario</th>
+                    <th className="text-right px-2 py-1">Meses</th>
+                    <th className="text-left px-2 py-1">Primer mes (antes→después)</th>
+                    <th className="text-left px-2 py-1">Último mes (antes→después)</th>
+                    <th className="text-right px-2 py-1">Al costo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {changes.map((c, i) => (
+                    <tr key={i} className="border-b border-line/20">
+                      <td className="px-2 py-1 text-ink-2">#{c.uid}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-2">{c.months_changed}</td>
+                      <td className="px-2 py-1 text-ink-1 tabular">{c.first_ym}: {Math.round(c.first_before).toLocaleString()}→{Math.round(c.first_after).toLocaleString()}</td>
+                      <td className="px-2 py-1 text-ink-1 tabular">{c.last_ym}: {Math.round(c.last_before).toLocaleString()}→{Math.round(c.last_after).toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-3">{c.cost_fallbacks}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {preview.truncated && <p className="text-[11px] text-ink-3 px-2 py-1">… lista truncada; los totales de arriba son completos.</p>}
+            </div>
+          ) : (
+            <p className="text-xs text-ink-3">No hay cambios — la historia ya está a mercado, o no hay cuentas importadas reconstruibles. ✅</p>
+          )}
+
+          {preview.errors?.length > 0 && (
+            <p className="text-xs text-rose-500">{preview.errors.length} cuenta(s) con error (se saltean): {preview.errors.slice(0, 5).map(e => `#${e.uid}`).join(', ')}</p>
+          )}
+
+          {preview.users_changed > 0 && (
+            <button onClick={apply} disabled={applying || loading}
+              className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-md bg-data-violet text-white hover:bg-data-violet/90 disabled:opacity-50">
               <Check size={14} className={applying ? 'animate-pulse' : ''} />
               {applying ? 'Aplicando…' : `Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}`}
             </button>

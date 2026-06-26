@@ -248,7 +248,56 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
     return res
 
 
-# ─── Runner (dry-run sobre copia / --apply commitea por user) ─────────────────
+# ─── Engine para el endpoint admin (resumen estructurado) ────────────────────
+def backfill_summary(real_conn, users, today, apply: bool) -> dict:
+    """Corre el backfill MTM sobre `users` y devuelve un resumen estructurado para el
+    panel de Admin. apply=False → sobre una COPIA del DB (la real NO se toca);
+    apply=True → commitea por user. Espeja recompute_backfill.run_backfill/dry_run."""
+    def _loop(conn):
+        out = {"users_changed": 0, "skipped": 0, "changes": [], "errors": []}
+        for uid in users:
+            try:
+                s = backfill_user(conn, uid, today)
+            except Exception as ex:
+                conn.rollback()
+                out["errors"].append({"uid": uid, "error": str(ex)})
+                continue
+            if s["skipped"]:
+                out["skipped"] += 1
+                continue
+            changed = [m for m in s["months"] if abs(m["after"] - m["before"]) > 0.01]
+            if changed:
+                out["users_changed"] += 1
+                first, last = changed[0], changed[-1]
+                out["changes"].append({
+                    "uid": uid, "months_changed": len(changed),
+                    "first_ym": first["ym"], "first_before": round(first["before"], 2), "first_after": round(first["after"], 2),
+                    "last_ym": last["ym"], "last_before": round(last["before"], 2), "last_after": round(last["after"], 2),
+                    "cost_fallbacks": s["cost_fallbacks"],
+                })
+            if apply:
+                conn.commit()
+        return out
+
+    if apply:
+        return _loop(real_conn)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    clone = sqlite3.connect(tmp.name)
+    clone.row_factory = sqlite3.Row
+    try:
+        real_conn.backup(clone)
+        return _loop(clone)
+    finally:
+        clone.close()
+        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
+# ─── Runner CLI (dry-run sobre copia / --apply commitea por user) ──────────────
 def _run_on(conn, users, today, apply):
     summaries = []
     for uid in users:
