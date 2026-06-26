@@ -252,6 +252,8 @@ export const BONDS_AR_SOV_USD = [
   { s: 'GD38', n: 'Argentina 2038 (USD ley extranjera)' },
   { s: 'GD41', n: 'Argentina 2041 (USD ley extranjera)' },
   { s: 'GD46', n: 'Argentina 2046 (USD ley extranjera)' },
+  // Sub-soberano provincial (precio live en data912):
+  { s: 'BA37D', n: 'Buenos Aires 2037 (Prov., USD ley NY)' },
 ]
 
 // === BONOS — Soberanos AR en pesos / CER ====================================

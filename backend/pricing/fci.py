@@ -74,6 +74,7 @@ BROKER_FCI_ALLOWLIST = [
     "Cocos Rendimiento",       # rentaMixta ARS
     "Cocos Acciones",          # rentaVariable ARS
     "SBS Acciones Argentina",  # rentaVariable ARS (vía plataforma Cocos)
+    "IEB Renta Fija Dólar",    # rentaFija USD (IEB) — reportado por user 2026-06-25
 ]
 
 

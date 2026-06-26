@@ -4756,6 +4756,7 @@ AR_BONDS_DATA912 = {
     'BB37D', 'BPOA7', 'BPOC7', 'BPOD7',   # BOPREAL (Bonos del BCRA)
     'T30J6',                              # Boncer/dual 2026
     'PNDCO',                             # ON (Pan American Energy)
+    'BA37D',                             # Buenos Aires 2037 (sub-soberano provincial USD)
 }
 
 _data912_cache = {'data': None, 'ts': 0}
