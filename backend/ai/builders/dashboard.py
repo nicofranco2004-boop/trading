@@ -161,20 +161,15 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
                 twr_30d_pct = (end_val - start_val) / start_val
                 delta_30d_usd = end_val - start_val
 
-    # ─── TWR lifetime desde monthly_entries (mismo cálculo que /goals/cagr) ──
-    twr_lifetime_pct = None
-    if len(monthly) >= 2:
-        prod = 1.0
-        for m in monthly:
-            ci = m.get("capital_inicio") or 0
-            cf = m.get("capital_final") or 0
-            net = (m.get("deposits") or 0) - (m.get("withdrawals") or 0)
-            if ci <= 0:
-                continue
-            ret = (cf - ci - net) / ci
-            ret = max(-0.95, min(5.0, ret))
-            prod *= (1 + ret)
-        twr_lifetime_pct = prod - 1
+    # ─── TWR lifetime — MISMA fuente que /api/goals/cagr (snapshots durables MTM,
+    # fallback a monthly). Antes se computaba inline desde monthly_entries, que en
+    # meses cerrados está al COSTO → subestimaba el retorno y contradecía la card de
+    # Objetivos. Ahora lee el TWRR de snapshots → consistente con el chart y la CAGR.
+    try:
+        from main import _historical_cagr_global
+        twr_lifetime_pct = _historical_cagr_global(conn, user_id).get("total_return")
+    except Exception:
+        twr_lifetime_pct = None
 
     # ─── Benchmarks 30d (S&P 500 + inflación AR) ──────────────────────────
     vs_sp500_pp = None

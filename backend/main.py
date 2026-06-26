@@ -9425,31 +9425,9 @@ def goal_diagnostic(gid: int, uid: int = Depends(get_current_user)):
             except Exception:
                 continue
 
-        # CAGR histórico desde monthly_entries (mismo cálculo que /api/goals/cagr)
-        rows = conn.execute(
-            """SELECT year, month, deposits, withdrawals, capital_inicio, capital_final
-               FROM monthly_entries WHERE user_id=? AND broker='global'
-               ORDER BY year ASC, month ASC""",
-            (uid,),
-        ).fetchall()
-        user_cagr_pct = None
-        if len(rows) >= 2:
-            factors = []
-            for r in rows:
-                ci = r["capital_inicio"] or 0
-                cf = r["capital_final"] or 0
-                net = (r["deposits"] or 0) - (r["withdrawals"] or 0)
-                if ci <= 0:
-                    continue
-                ret_m = (cf - ci - net) / ci
-                ret_m = max(-0.95, min(5.0, ret_m))
-                factors.append(1 + ret_m)
-            if factors:
-                prod = 1.0
-                for f in factors:
-                    prod *= f
-                avg_monthly = prod ** (1 / len(factors))
-                user_cagr_pct = round((avg_monthly ** 12 - 1) * 100, 2)
+        # CAGR histórico — MISMA fuente que /api/goals/cagr (snapshots durables MTM,
+        # fallback a monthly). Así la card de Objetivos y el diagnóstico no divergen.
+        user_cagr_pct = _historical_cagr_global(conn, uid).get("cagr")
 
         # Behavioral cards
         try:
@@ -9471,19 +9449,12 @@ def goal_diagnostic(gid: int, uid: int = Depends(get_current_user)):
     )
 
 
-@app.get("/api/goals/cagr")
-def historical_cagr(uid: int = Depends(get_current_user)):
-    """Calcula el CAGR histórico real del usuario usando monthly_entries (broker='global').
-    TWR mensual: ret_m = (capital_final - capital_inicio - net_deposits) / capital_inicio
-    Annualizado vía media geométrica."""
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT year, month, deposits, withdrawals, capital_inicio, capital_final
-           FROM monthly_entries WHERE user_id=? AND broker='global'
-           ORDER BY year ASC, month ASC""",
-        (uid,),
-    ).fetchall()
-    conn.close()
+def _cagr_from_monthly_rows(rows) -> dict:
+    """CAGR TWR mensual desde rows de monthly_entries (broker='global'): media
+    geométrica anualizada. Fallback cuando no hay snapshots (cuenta sin historia
+    valuada todavía). NOTA: monthly_entries de meses cerrados está al COSTO
+    (pnl_unrealized=0) → este path subestima el retorno; por eso el camino
+    principal lee de snapshots (ver _historical_cagr_global)."""
     if len(rows) < 2:
         return {"cagr": None, "months": len(rows), "reason": "Necesitás al menos 2 meses cargados."}
     factors = []
@@ -9493,19 +9464,77 @@ def historical_cagr(uid: int = Depends(get_current_user)):
         net = (r["deposits"] or 0) - (r["withdrawals"] or 0)
         if ci <= 0:
             continue
-        ret_m = (cf - ci - net) / ci
-        # cap razonable para evitar outliers locos
-        ret_m = max(-0.95, min(5.0, ret_m))
+        ret_m = max(-0.95, min(5.0, (cf - ci - net) / ci))
         factors.append(1 + ret_m)
     if not factors:
         return {"cagr": None, "months": len(rows), "reason": "Datos insuficientes."}
-    # media geométrica anualizada
     prod = 1.0
     for f in factors:
         prod *= f
-    avg_monthly = prod ** (1 / len(factors))
-    cagr = avg_monthly ** 12 - 1
-    return {"cagr": round(cagr * 100, 2), "months": len(factors), "reason": None}
+    cagr = prod ** (12 / len(factors)) - 1
+    return {"cagr": round(cagr * 100, 2), "months": len(factors),
+            "total_return": round(prod - 1, 6), "reason": None}
+
+
+def _historical_cagr_global(conn, uid: int) -> dict:
+    """CAGR histórico TWR del user, leído de los SNAPSHOTS (durables, valuados a
+    MERCADO vía el cron diario y/o el backfill histórico MTM), reducidos a fin de mes,
+    con el MISMO encadenado TWRR que el chart "Evolución". Así el CAGR queda
+    CONSISTENTE con la curva y NO se revierte cuando _repair_monthly_chain re-deriva
+    monthly al costo (los meses cerrados de monthly tienen pnl_unrealized=0).
+
+    Cae a monthly_entries si hay <2 fines de mes en snapshots (cuenta sin snapshots
+    todavía) — preserva el comportamiento previo para cuentas nuevas."""
+    snaps = conn.execute(
+        "SELECT date, total_value, net_deposited FROM snapshots WHERE user_id=? ORDER BY date ASC",
+        (uid,),
+    ).fetchall()
+    # Reducir a fin de mes: el ÚLTIMO snapshot de cada YYYY-MM (orden asc → pisa).
+    by_month = {}
+    for s in snaps:
+        by_month[s["date"][:7]] = s
+    months = [by_month[k] for k in sorted(by_month)]
+    if len(months) < 2:
+        rows = conn.execute(
+            """SELECT deposits, withdrawals, capital_inicio, capital_final
+               FROM monthly_entries WHERE user_id=? AND broker='global'
+               ORDER BY year ASC, month ASC""", (uid,)).fetchall()
+        return _cagr_from_monthly_rows(rows)
+    # TWRR chain-linked (espejo de buildEvolutionFromSnapshots): el 1er fin de mes es
+    # baseline (cum=1); cada período acumula su retorno ajustado por flujos.
+    cum = 1.0
+    prev_val = prev_dep = None
+    n = 0
+    for s in months:
+        val = s["total_value"] or 0
+        dep = s["net_deposited"] or 0
+        if prev_val is not None and prev_val > 0:
+            flows = dep - prev_dep
+            pnl = (val - prev_val) - flows
+            flow_ratio = abs(flows) / prev_val if prev_val > 0 else 0
+            big_wd = flows < 0 and flow_ratio > 0.3        # retiro grande → avg = prev_val
+            avg = prev_val if big_wd else (prev_val + 0.5 * flows)
+            r = (pnl / avg) if avg > 0 else 0
+            r = max(-0.99, min(0.5, r))                    # mismo clamp que el chart
+            cum *= (1 + r)
+            n += 1
+        prev_val, prev_dep = val, dep
+    if n == 0:
+        return {"cagr": None, "months": len(months), "total_return": None, "reason": "Datos insuficientes."}
+    cagr = cum ** (12 / n) - 1
+    return {"cagr": round(cagr * 100, 2), "months": n,
+            "total_return": round(cum - 1, 6), "reason": None}
+
+
+@app.get("/api/goals/cagr")
+def historical_cagr(uid: int = Depends(get_current_user)):
+    """CAGR histórico TWR. Lee de snapshots (durables, MTM) → consistente con el chart
+    y no se revierte con el recompute mensual. Fallback a monthly_entries sin snapshots."""
+    conn = get_db()
+    try:
+        return _historical_cagr_global(conn, uid)
+    finally:
+        conn.close()
 
 
 # ─── Admin ───────────────────────────────────────────────────────────────────
