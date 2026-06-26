@@ -5098,6 +5098,19 @@ def _resolve_ar_bond_price(symbol):
     return raw / 100.0
 
 
+def _bond_price_per1(symbol, currency):
+    """Precio per-1 VN de un bono AR en la moneda `currency` (ARS o USD), o None.
+
+    USD/USDT → ticker base + 'D' (precio dólar-MEP); ARS → ticker .BA (precio en
+    pesos). Reusa _resolve_ar_bond_price (data912, que ya devuelve per-1). Lo usa la
+    normalización de unidad de bonos (per-100 → per-1) como referencia de mercado."""
+    if not symbol:
+        return None
+    if (currency or "").upper() == "ARS":
+        return _resolve_ar_bond_price(str(symbol) + ".BA")
+    return _resolve_ar_bond_price(str(symbol))
+
+
 # ─── Cache in-memory para /api/prices ────────────────────────────────────────
 # Endpoint más caliente del stack: Dashboard, Positions, Insights, HomeMobile,
 # Goals y Events lo pegan en cada page-mount con sets de símbolos casi
@@ -9719,9 +9732,11 @@ def admin_backfill_recompute(apply: bool = False, uid: int = Depends(get_admin_u
     try:
         users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
         if apply:
-            summary = _rb.run_backfill(conn, users, recalc=_recalc_pnl_realized_from_ops)
+            summary = _rb.run_backfill(conn, users, recalc=_recalc_pnl_realized_from_ops,
+                                       bond_price_per1=_bond_price_per1)
         else:
-            summary = _rb.dry_run_summary(conn, users, recalc=_recalc_pnl_realized_from_ops)
+            summary = _rb.dry_run_summary(conn, users, recalc=_recalc_pnl_realized_from_ops,
+                                          bond_price_per1=_bond_price_per1)
         summary["ok"] = True
         summary["applied"] = bool(apply)
         log.info("admin_backfill_recompute apply=%s users_changed=%s positions=%s cash_warnings=%s errors=%s",
@@ -16634,6 +16649,7 @@ from importing import pipeline as _import_pipeline
 from importing import persister as _import_persister
 from importing import rebuild as _import_rebuild
 from importing import maturity as _import_maturity
+from importing import recompute_backfill as _import_recompute
 from importing.parsers.registry import get_parser as _get_parser
 
 # Namespace simple con los helpers que el persister consume.
@@ -16903,6 +16919,17 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
             # no toca cash ni posiciones manuales. Best-effort.
             try:
                 _import_maturity.sweep_bond_amortizations(conn, uid)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+            # Normalización de unidad de bonos: el importador puede guardar el costo
+            # "por 100 nominales" (IEB siempre; Balanz a veces) mientras el precio
+            # actual se trae "por 1 VN" → P&L -99% fantasma. Lleva el cost basis a
+            # per-1 detectando la unidad contra el precio de mercado (no rompe lotes
+            # ya per-1). Idempotente, no toca cash. Best-effort.
+            try:
+                _import_recompute.normalize_bond_units(conn, uid, bond_price_per1=_bond_price_per1)
             except Exception:
                 import traceback
                 traceback.print_exc()

@@ -145,6 +145,16 @@ _CRYPTO_HINTS = {"BTC", "ETH", "USDT", "USDC", "SOL", "ADA", "BNB", "DOGE", "MAT
 _FIAT_HINTS = {"USD", "ARS", "EUR", "BRL", "CLP", "MXN"}
 
 
+def _is_known_ar_bond(symbol: str) -> bool:
+    """True si el ticker es un bono/letra AR conocido. Import lazy con fallback
+    (igual que rebuild.py): si el módulo de metadata no está, no rompemos."""
+    try:
+        from ai.ar_bonds_metadata import is_known_ar_bond
+    except Exception:
+        return False
+    return bool(is_known_ar_bond(symbol))
+
+
 def guess_asset_type(symbol: Optional[str]) -> str:
     if not symbol:
         return AT_OTHER
@@ -153,6 +163,12 @@ def guess_asset_type(symbol: Optional[str]) -> str:
         return AT_CRYPTO
     if s in _FIAT_HINTS:
         return AT_FIAT
+    # Bonos/letras AR por ticker. Crítico para IEB, que NO etiqueta el tipo en su
+    # export (asset_type='') → sin esto, AL30/GD30/etc. caían a OTHER y no recibían
+    # el tratamiento de renta fija (guard de valuación, normalización de unidad,
+    # reporting). El precio se resuelve por ticker igual, pero el tipo importa.
+    if _is_known_ar_bond(s):
+        return AT_BOND
     return AT_OTHER  # Sin más contexto del broker, no asumimos STOCK/CEDEAR
 
 

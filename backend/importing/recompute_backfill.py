@@ -43,7 +43,72 @@ def cash_total(conn, uid: int) -> float:
     return round(float(r["c"] or 0), 2)
 
 
-def recompute_user(conn, uid: int, *, recalc: Callable) -> None:
+_FIXED_INCOME_TYPES = {"BOND", "BONO", "ON", "LETRA", "LECAP"}
+
+
+def _is_known_ar_bond(symbol: str) -> bool:
+    try:
+        from ai.ar_bonds_metadata import is_known_ar_bond
+    except Exception:
+        return False
+    return bool(is_known_ar_bond(symbol))
+
+
+def bond_per100_factor(unit_cost: float, market_per1: float) -> float:
+    """Factor para llevar el cost basis de un bono a per-1 VN (canónico del sistema).
+
+    1.0 si ya está per-1; 0.01 si está per-100 (hay que ÷100). Decide por el ratio
+    costo/precio-de-mercado: per-1 ≈ 1×, per-100 ≈ 100×. El umbral 10 (media
+    geométrica de 1 y 100) los separa — el precio de un bono no varía 10× entre la
+    compra y hoy, así que es robusto y no confunde "compré barato/caro" con un cambio
+    de unidad. Fuera de (10, 1000) → 1.0 (no es un per-100 limpio: no tocar)."""
+    if not unit_cost or not market_per1 or market_per1 <= 0:
+        return 1.0
+    ratio = unit_cost / market_per1
+    return 0.01 if 10.0 < ratio < 1000.0 else 1.0
+
+
+def normalize_bond_units(conn, uid: int, *, bond_price_per1: Callable) -> int:
+    """Lleva a per-1 VN el cost basis de los bonos guardados per-100 (bug del
+    importador: IEB exporta por 100 nominales, Balanz a veces también; el precio
+    actual ya se trae per-1 → P&L -99% fantasma). Detecta la unidad comparando el
+    costo unitario contra el precio de mercado per-1, así NO rompe los lotes que ya
+    vienen per-1 (Balanz USD/ARS). Idempotente (tras ÷100 el ratio ≈1, no re-dispara).
+    No toca cash. Devuelve nº de posiciones ajustadas. `bond_price_per1(sym, ccy)`
+    devuelve el precio per-1 del bono en esa moneda, o None."""
+    rows = conn.execute(
+        "SELECT id, asset, quantity, invested, buy_price, currency, asset_type "
+        "FROM positions WHERE user_id=? AND is_cash=0 AND quantity>0", (uid,)
+    ).fetchall()
+    n = 0
+    for r in rows:
+        sym = (r["asset"] or "").upper()
+        at = (r["asset_type"] or "").upper()
+        if not (at in _FIXED_INCOME_TYPES or _is_known_ar_bond(sym)):
+            continue
+        qty = r["quantity"] or 0
+        if qty <= 0:
+            continue
+        inv = r["invested"]
+        unit_cost = (inv / qty) if inv else (r["buy_price"] or 0)
+        m1 = bond_price_per1(sym, r["currency"])
+        if not m1:
+            continue
+        factor = bond_per100_factor(unit_cost, m1)
+        if factor == 1.0:
+            continue
+        new_inv = round((inv or 0) * factor, 6) if inv is not None else None
+        new_bp = round((r["buy_price"] or 0) * factor, 6) if r["buy_price"] is not None else None
+        conn.execute(
+            "UPDATE positions SET invested=?, buy_price=? WHERE id=? AND user_id=?",
+            (new_inv, new_bp, r["id"], uid),
+        )
+        n += 1
+    return n
+
+
+def recompute_user(conn, uid: int, *, recalc: Callable,
+                   bond_price_per1: Callable = None) -> None:
     """Misma secuencia post-persist que import_confirm. Muta en la transacción
     abierta (el caller commitea)."""
     tc_blue = _persister._read_tc_blue(conn, uid)
@@ -54,10 +119,13 @@ def recompute_user(conn, uid: int, *, recalc: Callable) -> None:
         _rebuild.rebuild_fifo_after_import(conn, uid, bid, tc_blue=tc_blue)
     _maturity.sweep_matured_letras(conn, uid)
     _maturity.sweep_bond_amortizations(conn, uid)
+    if bond_price_per1 is not None:
+        normalize_bond_units(conn, uid, bond_price_per1=bond_price_per1)
     recalc(conn, uid)
 
 
 def run_backfill(conn, users: List[int], *, recalc: Callable,
+                 bond_price_per1: Callable = None,
                  max_changes: int = 1000) -> Dict[str, Any]:
     """Recorre `users`, recomputa y COMMITEA por usuario. Devuelve un resumen
     estructurado. Para dry-run, pasar una conn a una COPIA del DB (ver
@@ -70,7 +138,7 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
         before = positions_snapshot(conn, uid)
         cash_before = cash_total(conn, uid)
         try:
-            recompute_user(conn, uid, recalc=recalc)
+            recompute_user(conn, uid, recalc=recalc, bond_price_per1=bond_price_per1)
         except Exception as ex:
             conn.rollback()
             summary["errors"].append({"uid": uid, "error": str(ex)})
@@ -106,7 +174,8 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
     return summary
 
 
-def dry_run_summary(real_conn, users: List[int], *, recalc: Callable) -> Dict[str, Any]:
+def dry_run_summary(real_conn, users: List[int], *, recalc: Callable,
+                    bond_price_per1: Callable = None) -> Dict[str, Any]:
     """Clona el DB (snapshot consistente, incluye WAL) y corre el backfill sobre
     la COPIA → la base real NUNCA se toca. Devuelve el mismo resumen que
     run_backfill, sin haber mutado nada real."""
@@ -116,7 +185,7 @@ def dry_run_summary(real_conn, users: List[int], *, recalc: Callable) -> Dict[st
     clone.row_factory = sqlite3.Row
     try:
         real_conn.backup(clone)
-        return run_backfill(clone, users, recalc=recalc)
+        return run_backfill(clone, users, recalc=recalc, bond_price_per1=bond_price_per1)
     finally:
         clone.close()
         for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):

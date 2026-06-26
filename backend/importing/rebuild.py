@@ -60,6 +60,7 @@ from datetime import date as _date
 from .schema import OP_BUY, OP_SELL
 from .persister import _link, broker_pair
 from .maturity import is_bond_like_name
+from .normalizer import guess_asset_type
 try:
     from ai.ar_bonds_metadata import is_known_ar_bond
 except Exception:  # pragma: no cover
@@ -263,6 +264,7 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 # a SU broker.
                 "_broker": ev["broker"],
                 "_asset": ev["asset_symbol"],
+                "_asset_type": ev.get("asset_type"),
             })
             continue
 
@@ -298,6 +300,7 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 "currency": _norm_cur(ev["currency"]),
                 "batch_id": None, "raw_row_id": None, "is_seed": True,
                 "_broker": ev["broker"], "_asset": ev["asset_symbol"],
+                "_asset_type": ev.get("asset_type"),
             }
             lots.append(seed)
             return seed
@@ -446,7 +449,7 @@ def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[st
     rows = conn.execute(
         f"""SELECT n.id, n.batch_id, n.raw_row_id, n.date, n.broker, n.asset_symbol,
                   n.asset_name, n.operation_type, n.quantity, n.unit_price, n.gross_amount,
-                  n.fees, n.currency, n.created_position_id
+                  n.fees, n.currency, n.asset_type, n.created_position_id
              FROM import_normalized_tx n
              JOIN import_batches b ON b.id = n.batch_id
             WHERE b.user_id = ?
@@ -563,14 +566,21 @@ def _write_rebuilt(conn, uid: int, replay: Dict[str, List[Dict[str, Any]]]) -> N
     """Inserta los lotes abiertos + ventas reconstruidos y re-vincula para revert."""
     for lot in replay["open_lots"]:
         # broker/asset vienen del grupo (_broker/_asset), no del lote individual.
+        # asset_type: el rebuild ANTES lo perdía (no estaba en el INSERT) → los bonos
+        # quedaban sin tipo y no recibían el guard de renta fija. Lo arrastramos del
+        # evento; si falta (seeds, o parsers que no lo setean como IEB), lo inferimos
+        # del ticker (guess detecta bonos AR conocidos).
+        at = lot.get("_asset_type")
+        if not at or at == "OTHER":
+            at = guess_asset_type(lot["_asset"]) or at
         cur = conn.execute(
             """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price,
                    quantity, invested, tc_compra, price_override, notes, entry_date,
-                   commissions, currency)
-               VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?)""",
+                   commissions, currency, asset_type)
+               VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)""",
             (uid, lot["_broker"], lot["_asset"], lot["buy_price"], lot["qty"],
              lot["invested"], None, None, None, lot["entry_date"],
-             lot["commissions"], lot["currency"]),
+             lot["commissions"], lot["currency"], at),
         )
         position_id = cur.lastrowid
         # Lotes semilla no tienen origen → no se linkean (igual que el persister).
