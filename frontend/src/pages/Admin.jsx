@@ -718,7 +718,7 @@ function BackfillPanel({ toast }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RotateCcw size={16} className="text-data-violet" />
-          <h2 className="font-semibold text-ink-0">Recomputar posiciones (cuentas ya importadas)</h2>
+          <h2 className="font-semibold text-ink-0">Recomputar posiciones — solo cambios seguros</h2>
         </div>
         <button
           onClick={simulate}
@@ -730,27 +730,19 @@ function BackfillPanel({ toast }) {
       </div>
 
       <p className="text-xs text-ink-3 leading-relaxed">
-        Aplica a las cuentas <b>ya importadas</b> los arreglos de FIFO (mismo ticker en pesos y dólares, fantasmas
-        dólar-MEP) y la amortización de bonos — <b>sin</b> que el usuario tenga que volver a importar. <b>Simular</b> corre
-        sobre una copia (no toca nada) y te muestra qué cambiaría; recién <b>Aplicar</b> modifica. Idempotente y no toca el
-        cash. Hacé un backup antes de aplicar.
+        Aplica a las cuentas <b>ya importadas</b> SOLO los cambios <b>inequívocos</b>: fantasmas dólar-MEP de acciones que
+        van a <b>cero</b>, <b>letras vencidas</b>, <b>bonos 100% amortizados</b> y <b>amortizaciones limpias</b> (× su
+        factor exacto). Todo lo dudoso de bonos-conducto (inflaciones, reducciones raras) se <b>omite</b> — así no rompe
+        nada. <b>Simular</b> corre sobre una copia (no toca nada) y te muestra qué cambiaría; recién <b>Aplicar</b> modifica.
+        Idempotente, no toca el cash. Hacé un backup antes de aplicar.
       </p>
 
       {preview && (
         <>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <ConvCell label="Cuentas a corregir" value={preview.users_changed} hint={`de ${preview.total_users}`} />
-            <ConvCell label="Posiciones que cambian" value={preview.positions_changed} hint="netos/ajustes" />
-            <ConvCell label="Alertas de cash" value={preview.cash_warnings} hint="deberían ser 0" />
+            <ConvCell label="Cambios seguros" value={preview.positions_changed} hint="solo lo inequívoco" />
           </div>
-
-          {cashWarns.length > 0 && (
-            <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border border-amber-300/50 rounded-md p-2">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>Hay {cashWarns.length} cuenta(s) donde el cash cambiaría — NO debería. Revisá antes de aplicar
-                (uids: {cashWarns.map(c => c.uid).join(', ')}).</span>
-            </div>
-          )}
 
           {changes.length > 0 ? (
             <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
@@ -760,6 +752,7 @@ function BackfillPanel({ toast }) {
                     <th className="text-left px-2 py-1">Usuario</th>
                     <th className="text-left px-2 py-1">Broker</th>
                     <th className="text-left px-2 py-1">Activo</th>
+                    <th className="text-left px-2 py-1">Tipo</th>
                     <th className="text-right px-2 py-1">Antes</th>
                     <th className="text-right px-2 py-1">Después</th>
                   </tr>
@@ -770,6 +763,7 @@ function BackfillPanel({ toast }) {
                       <td className="px-2 py-1 text-ink-2">#{c.uid}</td>
                       <td className="px-2 py-1 text-ink-2">{c.broker}</td>
                       <td className="px-2 py-1 text-ink-1">{c.asset}</td>
+                      <td className="px-2 py-1 text-ink-3">{c.kind}</td>
                       <td className="px-2 py-1 text-right tabular text-ink-2">{c.before?.toLocaleString()}</td>
                       <td className={`px-2 py-1 text-right tabular ${c.after === 0 ? 'text-rose-500' : 'text-ink-1'}`}>
                         {c.after?.toLocaleString()} {c.after === 0 && '· eliminada'}

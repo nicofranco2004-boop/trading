@@ -9699,7 +9699,7 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
 
 
 @app.post("/api/admin/backfill-recompute")
-def admin_backfill_recompute(apply: bool = False, uid: int = Depends(get_admin_user)):
+def admin_backfill_recompute(apply: bool = False, safe_only: bool = True, uid: int = Depends(get_admin_user)):
     """Recomputa las posiciones de TODOS los usuarios (no solo el admin) para
     aplicar a cuentas YA importadas los fixes de FIFO (currency-aware + neteo
     cross-broker dólar-MEP) y la amortización de bonos, sin que nadie re-importe.
@@ -9718,15 +9718,22 @@ def admin_backfill_recompute(apply: bool = False, uid: int = Depends(get_admin_u
     conn = get_db()
     try:
         users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
-        if apply:
+        if safe_only:
+            # SOLO cambios inequívocos (fantasmas dólar-MEP de acciones, letras
+            # vencidas, bonos 100% amortizados, amortizaciones limpias). Omite las
+            # inflaciones/reducciones dudosas de bonos-conducto. apply=False solo
+            # clasifica (sobre una copia); apply=True aplica los seguros a la real.
+            summary = _rb.safe_backfill(conn, users, recalc=_recalc_pnl_realized_from_ops, apply=bool(apply))
+        elif apply:
             summary = _rb.run_backfill(conn, users, recalc=_recalc_pnl_realized_from_ops)
         else:
             summary = _rb.dry_run_summary(conn, users, recalc=_recalc_pnl_realized_from_ops)
         summary["ok"] = True
         summary["applied"] = bool(apply)
-        log.info("admin_backfill_recompute apply=%s users_changed=%s positions=%s cash_warnings=%s errors=%s",
-                 apply, summary["users_changed"], summary["positions_changed"],
-                 summary["cash_warnings"], len(summary["errors"]))
+        summary["safe_only"] = bool(safe_only)
+        log.info("admin_backfill_recompute apply=%s safe_only=%s users_changed=%s positions=%s cash_warnings=%s errors=%s",
+                 apply, safe_only, summary["users_changed"], summary["positions_changed"],
+                 summary.get("cash_warnings", 0), len(summary["errors"]))
         return summary
     finally:
         conn.close()
