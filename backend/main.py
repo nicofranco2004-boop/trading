@@ -6092,10 +6092,29 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         #    siempre los huérfanos de imports revertidos mal restados). Esto hace
         #    el recalc AUTORITATIVO: deposits = imports_confirmados + manual, y
         #    sobrescribe cualquier drift huérfano que hubiera quedado en deposits.
-        existing = conn.execute(
-            "SELECT manual_deposits, manual_withdrawals FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
-            (uid, broker, y, m),
-        ).fetchone()
+        # Para brokers reales el manual se lee de su propia fila. Para el broker
+        # sintético 'global' lo RECOMPUTAMOS como Σ(per-broker): cada flujo manual
+        # se escribe per-broker Y en 'global' (invariante de diseño), así que
+        # global.manual debe ser la suma. Antes leíamos la columna manual_* propia
+        # de 'global', que NO se decrementaba al borrar un broker → dejaba
+        # deposits/withdrawals fantasma en el dashboard (capital aportado /
+        # ganancias retiradas que no volvían a cero con revert/recalc/limpiar
+        # brokers). Sumando per-broker, 'global' se auto-corrige: sin brokers
+        # reales → 0 → la fila 'global' queda all-zero, se limpia abajo, y con ello
+        # se borran también los snapshots.
+        if broker == "global":
+            existing = conn.execute(
+                """SELECT COALESCE(SUM(manual_deposits), 0) AS manual_deposits,
+                          COALESCE(SUM(manual_withdrawals), 0) AS manual_withdrawals
+                     FROM monthly_entries
+                    WHERE user_id=? AND broker!='global' AND year=? AND month=?""",
+                (uid, y, m),
+            ).fetchone()
+        else:
+            existing = conn.execute(
+                "SELECT manual_deposits, manual_withdrawals FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
+                (uid, broker, y, m),
+            ).fetchone()
         # Clamp defensivo a ≥0 (alineado con el backfill): manual_* nunca debería
         # ser negativo, pero si un fix futuro introdujera un decremento que cruce
         # 0, esto evita que deposits se vuelva negativo.
@@ -6114,6 +6133,15 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
                WHERE user_id=? AND broker=? AND year=? AND month=?""",
             (new_pnl, new_deposits, new_withdrawals, uid, broker, y, m),
         )
+        # Para 'global', sincronizar sus columnas manual_* con la suma per-broker
+        # recién calculada, así no vuelve a driftear en futuros _update_monthly_flow
+        # (que incrementan sobre el valor existente).
+        if broker == "global":
+            conn.execute(
+                """UPDATE monthly_entries SET manual_deposits=?, manual_withdrawals=?
+                   WHERE user_id=? AND broker='global' AND year=? AND month=?""",
+                (manual_dep, manual_wit, uid, y, m),
+            )
         updates += 1
         brokers_touched.add(broker)
 
