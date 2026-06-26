@@ -650,7 +650,11 @@ function InsightsDesktop({ _embeddedTab }) {
       const avgCap = isImportInitial ? net : (isBigWithdraw ? ci : ci + 0.5 * net)
       const rRaw = avgCap > 0 ? (cf - ci - net) / avgCap : 0
       const r = Math.min(Math.max(rRaw, -0.99), 0.5)
-      cumIdx *= (1 + r)
+      // El mes-1 es el ANCLA del gráfico de comparación (0%): su retorno intra-mes
+      // NO se cuenta, igual que el benchmark, que ancla en price[mes-1] (también 0%).
+      // Sin este guard, cumIdx arrastraba r1 mientras el punto base mostraba 0% →
+      // la cartera quedaba 1 mes de capitalización adelantada respecto del benchmark.
+      if (!isFirst) cumIdx *= (1 + r)
 
       const totalPct = +((cumIdx - 1) * 100).toFixed(2)
       const denom = safeDenom(cumNetDeposits, peakNetDeposits)
@@ -727,7 +731,8 @@ function InsightsDesktop({ _embeddedTab }) {
       const avgArs = isImportInitial ? netArs : ciArs + 0.5 * netArs
       const rArsRaw = avgArs > 0 ? (cfArs - ciArs - netArs) / avgArs : 0
       const rArs = Math.max(rArsRaw, -0.99)
-      cumIdxArs *= (1 + rArs)
+      // El mes-1 es el ancla (0%) — no se cuenta su retorno intra-mes (ver benchSeriesUsd).
+      if (!isFirst) cumIdxArs *= (1 + rArs)
       // Realized% (MWR sobre denom estable — secundario, línea punteada)
       netFlowsPesos += netArs
       cumRealizedPesos += (m.pnl_realized || 0) * fx
@@ -925,7 +930,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // mes). Se usa en modo ARS para que el benchmark sea comparable a la línea
     // del portfolio, que también es retorno-en-pesos. Sin esto, comparábamos
     // retorno-en-pesos (cartera) contra retorno-en-dólares (benchmark).
-    function buildShadowFromSimArs(simResult) {
+    function buildShadowFromSimArs(simResult, latestBenchPrice) {
       const result = new Map()
       if (!simResult || arsMonthly.length === 0) return result
       const firstK = monthKey(arsMonthly[0].year, arsMonthly[0].month)
@@ -949,9 +954,14 @@ function InsightsDesktop({ _embeddedTab }) {
             const fx = lookupBlue(mk) || blueBase
             result.set(mk, +(((price * fx) / basePesos - 1) * 100).toFixed(4))
           }
+          // "Today": precio MÁS fresco del índice (latestBenchPrice, igual que el
+          // path USD) × blue actual. Usar ps[last] dejaba el "hoy" del benchmark
+          // congelado en el último mes cargado mientras la cartera live ya reflejaba
+          // el movimiento del índice → el benchmark se veía peor de lo real.
           const lastPrice = ps[ps.length - 1].price
-          if (lastPrice != null && lastPrice > 0) {
-            result.set('today', +((((lastPrice * tcBlue) / basePesos) - 1) * 100).toFixed(4))
+          const todayIdx = (latestBenchPrice != null && latestBenchPrice > 0) ? latestBenchPrice : lastPrice
+          if (todayIdx != null && todayIdx > 0) {
+            result.set('today', +((((todayIdx * tcBlue) / basePesos) - 1) * 100).toFixed(4))
           }
           return result
         }
@@ -1047,7 +1057,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // se mide en PESOS (buildShadowFromSimArs); en USD, sobre globalMonthly en
     // dólares (buildShadowFromSim, con latestPrice para extrapolar el "today").
     const buildShadow = (sim, latestPrice) =>
-      isArs ? buildShadowFromSimArs(sim) : buildShadowFromSim(sim, latestPrice)
+      isArs ? buildShadowFromSimArs(sim, latestPrice) : buildShadowFromSim(sim, latestPrice)
 
     let shadowPctByMonth = new Map()
     if (selectedBench === 'sp500' && bench?.sp500) {
