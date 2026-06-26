@@ -7,30 +7,35 @@
 // Los items específicos (drawdown, win rate, etc.) los puede inferir o
 // calcular vía tool_use.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { X, Loader2, AlertCircle } from 'lucide-react'
 import AICoach from '../AICoach'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 import { api } from '../../utils/api'
-
-// TTL del cache de snapshot — dentro de la sesión, abrir/cerrar el drawer no
-// regenera el snapshot a menos que pasen más de 60s.
-const SNAPSHOT_TTL_MS = 60_000
 
 export default function AICoachDrawer() {
   const { isOpen, close, initialQuestion } = useCoachDrawer()
   const [snapshot, setSnapshot] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const fetchedAtRef = useRef(0)
+  // Espejo del snapshot para leerlo dentro del effect sin meterlo en deps
+  // (si estuviera en deps, cada setSnapshot dispararía un refetch en loop).
+  const snapshotRef = useRef(null)
 
-  // Cuando abre el drawer, traer data si no hay cache fresco
+  // Re-traer el contexto VIVO cada vez que se abre el drawer. Antes se cacheaba
+  // 60s para ahorrar refetch en aperturas rápidas, pero eso causaba un bug de
+  // correctness: si el user borraba/agregaba una posición y reabría el chat
+  // dentro de esos 60s, el snapshot viejo seguía incluyendo la posición vieja y
+  // el coach la "tomaba" como abierta (caso reportado: posición eliminada que
+  // el chat seguía contando como abierta). En una app de plata el contexto del
+  // chat tiene que reflejar el estado real de la cartera — el ahorro de un
+  // fetch chico no lo justifica. Si ya hay snapshot, lo dejamos a la vista y
+  // refrescamos en background (sin loader); si no, mostramos el loader.
   useEffect(() => {
     if (!isOpen) return
-    const fresh = snapshot && Date.now() - fetchedAtRef.current < SNAPSHOT_TTL_MS
-    if (fresh) return
+    let cancelled = false
 
-    setLoading(true)
+    if (!snapshotRef.current) setLoading(true)  // primer fetch → loader; refresh → silencioso
     setError(null)
     Promise.all([
       api.get('/positions'),
@@ -43,6 +48,7 @@ export default function AICoachDrawer() {
       api.get('/operations').catch(() => []),  // no crítico si falla
     ])
       .then(([positions, monthly, brokers, operations]) => {
+        if (cancelled) return
         // Snapshot — datos crudos, el modelo deriva lo que necesite.
         // Operations capeadas a 100 más recientes para no inflar el snapshot
         // (200KB hard cap del backend; user con 500+ ops cae sin esto).
@@ -54,14 +60,19 @@ export default function AICoachDrawer() {
           monthly: monthly || [],
           brokers: brokers || [],
         }
+        snapshotRef.current = snap
         setSnapshot(snap)
-        fetchedAtRef.current = Date.now()
         setLoading(false)
       })
       .catch(err => {
-        setError(err?.message || 'No pudimos cargar el contexto del coach.')
+        if (cancelled) return
+        // Si ya teníamos un snapshot, un error de refresh en background NO debe
+        // tirar abajo el chat funcionando — lo tragamos y seguimos con el viejo.
+        if (!snapshotRef.current) setError(err?.message || 'No pudimos cargar el contexto del coach.')
         setLoading(false)
       })
+
+    return () => { cancelled = true }
   }, [isOpen])
 
   // Cerrar con ESC
