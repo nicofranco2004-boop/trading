@@ -28,6 +28,7 @@ export default function RentaFijaSections({ positions = [], valuePos, brokers = 
   const groups = {}
   for (const p of positions) {
     if (p.is_cash) continue
+    if (!p.quantity) continue   // un bono 100% amortizado/vendido no deja fila fantasma
     const sec = positionSection(p.asset_type, p.asset, p.currency)
     if (!sec) continue
     const key = sectionKey(sec.category, sec.currency)
