@@ -5562,8 +5562,22 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
             raise HTTPException(404, "Posición no encontrada.")
         if row["is_cash"]:
             raise HTTPException(400, "No se puede ajustar el ratio de una posición de cash.")
-        if (row["asset_type"] or "").upper() != "CEDEAR":
-            raise HTTPException(400, "El ajuste por cambio de ratio es solo para CEDEARs.")
+        # Gate alineado con la valuación (priceSymbol en valuation.js): un holding
+        # se precia vía .BA —y por ende puede tener cambio de ratio— si su
+        # asset_type es CEDEAR, O si vive en un broker ARS (cualquier equity de
+        # BYMA: CEDEAR, acción AR, o un ticker ambiguo como SPY/QQQ que quedó
+        # mal-taggeado). Antes exigíamos asset_type='CEDEAR' literal y se perdían
+        # esos casos: la valuación los muestra en pesos (de ahí la pérdida
+        # fantasma) pero el ajuste no aparecía. Excluimos bonos/ONs, FCI, cripto y
+        # fiat (no tienen split de equity). Schwab (USD) queda fuera salvo CEDEAR.
+        asset_type = (row["asset_type"] or "").upper()
+        excluded = asset_type in ("BOND", "FIAT", "CRYPTO") or (row["asset"] or "").startswith("FCI:")
+        broker_row = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, row["broker"]),
+        ).fetchone()
+        broker_is_ars = bool(broker_row) and (broker_row["currency"] or "").upper() == "ARS"
+        if excluded or not (asset_type == "CEDEAR" or broker_is_ars):
+            raise HTTPException(400, "El ajuste por cambio de ratio es solo para CEDEARs o equities en brokers ARS.")
         asset = (row["asset"] or "").upper()
         base = asset[:-3] if asset.endswith(".BA") else asset
         entry = (row["entry_date"] or "")[:10]
@@ -5602,18 +5616,30 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
 
 @app.get("/api/positions/split-check")
 def positions_split_check(uid: int = Depends(get_current_user)):
-    """Detecta lotes de CEDEAR con un cambio de ratio (split) que Rendi todavía no
-    ajustó → P&L fantasma. Por cada CEDEAR con qty>0, busca splits del .BA con
+    """Detecta lotes con un cambio de ratio (split) que Rendi todavía no ajustó →
+    P&L fantasma. Por cada equity de BYMA con qty>0, busca splits del .BA con
     ex_date posterior a la compra Y al watermark. Excluye el caso comprado EXACTO
     el día del split (ya cotiza al ratio nuevo) y dedupea el mis-log de yfinance.
-    Scopeado a asset_type='CEDEAR' → no toca lotes US de Schwab (que ya maneja
-    splits con un BUY sintético $0)."""
+
+    Gate alineado con la valuación (priceSymbol): califica si asset_type='CEDEAR'
+    O el broker es ARS (todo equity de BYMA se precia vía .BA — CEDEAR, acción AR,
+    o un ticker ambiguo como SPY/QQQ mal-taggeado). Excluye bonos/ONs, FCI, cripto
+    y fiat. Schwab (USD) queda fuera salvo CEDEAR explícito (ya maneja splits con
+    un BUY sintético $0)."""
     conn = get_db()
     try:
         rows = conn.execute(
-            """SELECT * FROM positions
-                WHERE user_id=? AND is_cash=0 AND COALESCE(quantity,0) > 0
-                  AND UPPER(COALESCE(asset_type,'')) = 'CEDEAR'""",
+            """SELECT p.* FROM positions p
+                WHERE p.user_id=? AND p.is_cash=0 AND COALESCE(p.quantity,0) > 0
+                  AND COALESCE(p.asset,'') NOT LIKE 'FCI:%'
+                  AND UPPER(COALESCE(p.asset_type,'')) NOT IN ('BOND','FIAT','CRYPTO')
+                  AND (
+                        UPPER(COALESCE(p.asset_type,'')) = 'CEDEAR'
+                        OR EXISTS (SELECT 1 FROM brokers b
+                                    WHERE b.user_id = p.user_id
+                                      AND b.name = p.broker
+                                      AND UPPER(COALESCE(b.currency,'')) = 'ARS')
+                      )""",
             (uid,),
         ).fetchall()
     finally:
