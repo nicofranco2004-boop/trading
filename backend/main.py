@@ -9728,7 +9728,8 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
 
 
 @app.post("/api/admin/backfill-recompute")
-def admin_backfill_recompute(apply: bool = False, safe_only: bool = True, uid: int = Depends(get_admin_user)):
+def admin_backfill_recompute(apply: bool = False, safe_only: bool = True,
+                             offset: int = 0, limit: int = 0, uid: int = Depends(get_admin_user)):
     """Recomputa las posiciones de TODOS los usuarios (no solo el admin) para
     aplicar a cuentas YA importadas los fixes de FIFO (currency-aware + neteo
     cross-broker dólar-MEP) y la amortización de bonos, sin que nadie re-importe.
@@ -9746,7 +9747,11 @@ def admin_backfill_recompute(apply: bool = False, safe_only: bool = True, uid: i
     from importing import recompute_backfill as _rb
     conn = get_db()
     try:
-        users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
+        all_users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
+        total_all = len(all_users)
+        # Procesamiento por TANDAS (offset/limit) para que ningún request sea largo
+        # (clonar+recomputar a todos juntos timeout-eaba). limit=0 → todos.
+        users = all_users[offset:offset + limit] if limit > 0 else all_users[offset:]
         if safe_only:
             # SOLO cambios inequívocos (fantasmas dólar-MEP de acciones, letras
             # vencidas, bonos 100% amortizados, amortizaciones limpias). Omite las
@@ -9760,6 +9765,9 @@ def admin_backfill_recompute(apply: bool = False, safe_only: bool = True, uid: i
         summary["ok"] = True
         summary["applied"] = bool(apply)
         summary["safe_only"] = bool(safe_only)
+        summary["total_all_users"] = total_all
+        summary["offset"] = offset
+        summary["processed"] = len(users)
         log.info("admin_backfill_recompute apply=%s safe_only=%s users_changed=%s positions=%s cash_warnings=%s errors=%s",
                  apply, safe_only, summary["users_changed"], summary["positions_changed"],
                  summary.get("cash_warnings", 0), len(summary["errors"]))

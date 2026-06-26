@@ -227,26 +227,66 @@ def _apply_safe(real_conn, uid: int, safe: List[Dict[str, Any]], linked: set) ->
 
 def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool) -> Dict[str, Any]:
     """Backfill SOLO de cambios seguros (ver _classify_safe). El estado 'ideal' se
-    computa sobre una COPIA (la real no se toca para clasificar); solo los cambios
-    inequívocos se aplican a la real (si apply). Devuelve resumen con `kind` por cambio."""
+    computa sobre UNA copia (no por usuario — clonar el DB por cada usuario hacía
+    timeout-ear el endpoint); solo los cambios inequívocos se aplican a la real.
+    Pensado para correr por TANDAS (el caller pasa un chunk de `users`)."""
     from .maturity import _import_linked_position_ids
     summary: Dict[str, Any] = {
         "mode": "safe", "total_users": len(users), "users_changed": 0,
         "positions_changed": 0, "changes": [], "errors": [], "truncated": False,
     }
-    for uid in users:
+    # Saltear usuarios sin posiciones (vacíos): no hay nada que recomputar.
+    with_pos = [u for u in users if real_conn.execute(
+        "SELECT 1 FROM positions WHERE user_id=? AND is_cash=0 AND quantity>0 LIMIT 1",
+        (u,)).fetchone()]
+    if not with_pos:
+        return summary
+
+    # Clonar UNA vez (snapshot consistente). Recomputamos cada usuario sobre la MISMA
+    # copia (commit por usuario para aislar fallos) y guardamos su estado 'ideal'.
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    clone = sqlite3.connect(tmp.name)
+    clone.row_factory = sqlite3.Row
+    after_by_user: Dict[int, Dict[tuple, float]] = {}
+    try:
+        real_conn.backup(clone)
+        for uid in with_pos:
+            try:
+                recompute_user(clone, uid, recalc=recalc)
+                clone.commit()
+                after_by_user[uid] = positions_snapshot(clone, uid)
+            except Exception as ex:
+                clone.rollback()
+                summary["errors"].append({"uid": uid, "error": str(ex)})
+    finally:
+        clone.close()
+        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+    for uid in with_pos:
+        after = after_by_user.get(uid)
+        if after is None:
+            continue
         before = positions_snapshot(real_conn, uid)
         try:
-            after = _after_state_on_clone(real_conn, uid, recalc)
+            safe = _classify_safe(real_conn, uid, before, after)
         except Exception as ex:
-            summary["errors"].append({"uid": uid, "error": str(ex)})
+            summary["errors"].append({"uid": uid, "error": "classify: " + str(ex)})
             continue
-        safe = _classify_safe(real_conn, uid, before, after)
         if not safe:
             continue
         if apply:
-            _apply_safe(real_conn, uid, safe, _import_linked_position_ids(real_conn, uid))
-            real_conn.commit()
+            try:
+                _apply_safe(real_conn, uid, safe, _import_linked_position_ids(real_conn, uid))
+                real_conn.commit()
+            except Exception as ex:
+                real_conn.rollback()
+                summary["errors"].append({"uid": uid, "error": "apply: " + str(ex)})
+                continue
         summary["users_changed"] += 1
         for ch in safe:
             summary["positions_changed"] += 1

@@ -681,37 +681,55 @@ function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
 // la amortización de bonos, sin que el usuario re-importe. Simular (sobre copia,
 // no toca nada) → revisar → Aplicar.
 function BackfillPanel({ toast }) {
+  const CHUNK = 25  // usuarios por request (clonar+recomputar a todos juntos timeout-eaba)
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)
+  const [progress, setProgress] = useState(null)  // {done, total}
+
+  // Procesa TODOS los usuarios por tandas de CHUNK, acumulando el resultado.
+  async function runChunks(doApply) {
+    let offset = 0, total = 1
+    const agg = { users_changed: 0, positions_changed: 0, changes: [], errors: [], total_users: 0, safe_only: true }
+    do {
+      const r = await api.post(`/admin/backfill-recompute?safe_only=true&apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
+      total = r.total_all_users || 0
+      agg.users_changed += r.users_changed || 0
+      agg.positions_changed += r.positions_changed || 0
+      agg.total_users = total
+      if (agg.changes.length < 2000) agg.changes.push(...(r.changes || []))
+      else agg.truncated = true
+      if (r.errors?.length) agg.errors.push(...r.errors)
+      offset += CHUNK
+      setProgress({ done: Math.min(offset, total), total })
+    } while (offset < total)
+    return agg
+  }
 
   async function simulate() {
-    setLoading(true)
+    setLoading(true); setPreview(null); setProgress({ done: 0, total: 0 })
     try {
-      setPreview(await api.post('/admin/backfill-recompute?apply=false'))
+      setPreview(await runChunks(false))
     } catch (e) {
       toast.push('Error al simular: ' + e.message, { type: 'error' })
-    } finally { setLoading(false) }
+    } finally { setLoading(false); setProgress(null) }
   }
 
   async function apply() {
     if (!preview) return
     if (!confirm(`¿Aplicar la corrección a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'} ` +
-                 `(${preview.positions_changed} posiciones)? Hacé un backup antes. Es reversible solo desde backup.`)) return
-    setApplying(true)
+                 `(${preview.positions_changed} cambios)? Hacé un backup antes. Solo es reversible desde backup.`)) return
+    setApplying(true); setProgress({ done: 0, total: 0 })
     try {
-      const r = await api.post('/admin/backfill-recompute?apply=true')
-      toast.push(`Aplicado: ${r.users_changed} cuentas · ${r.positions_changed} posiciones` +
-                 (r.cash_warnings ? ` · ⚠️ ${r.cash_warnings} alertas de cash` : ''),
-                 { type: r.cash_warnings ? 'warn' : 'success' })
+      const r = await runChunks(true)
+      toast.push(`Aplicado: ${r.users_changed} cuentas · ${r.positions_changed} cambios seguros`, { type: 'success' })
       await simulate()  // re-simular → debería dar 0 cambios (idempotente)
     } catch (e) {
       toast.push('Error al aplicar: ' + e.message, { type: 'error' })
-    } finally { setApplying(false) }
+    } finally { setApplying(false); setProgress(null) }
   }
 
-  const changes = (preview?.changes || []).filter(c => !c.cash_warning)
-  const cashWarns = (preview?.changes || []).filter(c => c.cash_warning)
+  const changes = preview?.changes || []
 
   return (
     <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
@@ -736,6 +754,21 @@ function BackfillPanel({ toast }) {
         nada. <b>Simular</b> corre sobre una copia (no toca nada) y te muestra qué cambiaría; recién <b>Aplicar</b> modifica.
         Idempotente, no toca el cash. Hacé un backup antes de aplicar.
       </p>
+
+      {progress && progress.total > 0 && (loading || applying) && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-ink-3">
+            <span>{applying ? 'Aplicando…' : 'Simulando…'}</span>
+            <span className="tabular">{progress.done} / {progress.total} cuentas</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-bg-2 dark:bg-bg-2/40 overflow-hidden">
+            <div
+              className="h-full bg-data-violet transition-all"
+              style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {preview && (
         <>
