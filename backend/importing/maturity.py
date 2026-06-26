@@ -40,6 +40,9 @@ import re
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from .schema import OP_BUY, OP_SELL
+from pricing.bond_amortization import is_amortizing_bond, residual_factor
+
 log = logging.getLogger(__name__)
 
 # Código de mes de los tickers de letras AR (la inicial del mes, con desempate:
@@ -236,3 +239,124 @@ def sweep_matured_letras(conn, uid: int, *, ref_date: Optional[str] = None) -> D
         log.info("sweep_matured_letras user=%s cerró %d posiciones (ref_date=%s): %s",
                  uid, len(swept), ref_date, [s["asset"] for s in swept])
     return {"swept": swept, "ref_date": ref_date}
+
+
+def _bond_bought_minus_sold(conn, uid: int, broker: str, asset: str) -> float:
+    """Nominal NETO comprado (Σ BUY − Σ SELL) del bono según los imports
+    confirmados. Es la base ORIGINAL estable: los sweeps NO tocan
+    import_normalized_tx, así que recalcular desde acá hace el ajuste idempotente
+    (no depende de cuánto se haya bajado en corridas previas)."""
+    row = conn.execute(
+        """SELECT
+              COALESCE(SUM(CASE WHEN n.operation_type=? THEN n.quantity ELSE 0 END), 0)
+            - COALESCE(SUM(CASE WHEN n.operation_type=? THEN n.quantity ELSE 0 END), 0) AS net
+             FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+            WHERE b.user_id=? AND b.status='confirmed'
+              AND n.broker=? AND n.asset_symbol=?""",
+        (OP_BUY, OP_SELL, uid, broker, asset),
+    ).fetchone()
+    return float(row["net"] or 0) if row else 0.0
+
+
+def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) -> Dict[str, Any]:
+    """Baja el nominal de los bonos AR amortizantes (AL30/GD30/…) a su valor
+    RESIDUAL = (comprado − vendido) × factor_residual(ref_date). Idempotente y
+    seguro. Devuelve {'adjusted': [...], 'ref_date': ...}.
+
+    Por qué: un bono que amortiza devuelve capital en cuotas; el mercado lo cotiza
+    por nominal RESIDUAL, pero Rendi guarda el nominal ORIGINAL (la amortización se
+    importa como dividendo = solo cash). Sin esto la tenencia y la valuación quedan
+    sobrevaluadas, y un bono 100% amortizado sigue figurando como posición activa.
+
+    - ref_date = HOY por default: la amortización ocurre en tiempo calendario, no
+      depende de la ventana del export (a diferencia del sweep de letras).
+    - NO toca cash (ya entró por el dividendo) ni monthly_entries.
+    - Solo reduce lotes import-linked; respeta posiciones manuales.
+    - Reduce quantity + invested + commissions proporcional (mantiene el costo
+      unitario del residual).
+    """
+    if ref_date is None:
+        ref_date = date.today().isoformat()
+
+    linked = _import_linked_position_ids(conn, uid)
+    adjusted: List[Dict[str, Any]] = []
+
+    # nombre por (broker, activo): fallback para resolver el schedule por nombre si
+    # el ticker no matchea (defensivo; las posiciones de bono ya traen el ticker).
+    name_map: Dict[tuple, str] = {}
+    for r in conn.execute(
+        """SELECT DISTINCT n.broker, n.asset_symbol, n.asset_name
+             FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+            WHERE b.user_id=? AND n.asset_symbol != ''""",
+        (uid,),
+    ).fetchall():
+        name_map.setdefault((r["broker"], r["asset_symbol"]), r["asset_name"] or "")
+
+    # Lotes agrupados por (broker, activo), FIFO (entry_date asc, id asc).
+    groups: Dict[tuple, List[Any]] = {}
+    for p in conn.execute(
+        "SELECT id, broker, asset, quantity, invested, commissions, entry_date "
+        "FROM positions WHERE user_id=? AND is_cash=0 AND quantity > 0 "
+        "ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC",
+        (uid,),
+    ).fetchall():
+        groups.setdefault((p["broker"], p["asset"]), []).append(p)
+
+    for (broker, asset), lots in groups.items():
+        name = name_map.get((broker, asset), "")
+        # Resolver el schedule por ticker o, si no, por nombre.
+        if is_amortizing_bond(asset):
+            key = asset
+        elif is_amortizing_bond(name):
+            key = name
+        else:
+            continue
+        r = residual_factor(key, ref_date)
+        if r >= 1.0 - 1e-9:
+            continue  # todavía no amortizó nada → no-op
+
+        original = _bond_bought_minus_sold(conn, uid, broker, asset)
+        if original <= 1e-9:
+            continue
+        target = original * r
+        current = sum((l["quantity"] or 0) for l in lots)
+        reduce_by = current - target
+        if reduce_by <= 1e-9:
+            continue  # ya está en el residual → idempotente
+
+        remaining = reduce_by
+        reduced = 0.0
+        for l in lots:
+            if remaining <= 1e-9:
+                break
+            if l["id"] not in linked:
+                continue                      # lote manual → no tocar
+            lot_qty = l["quantity"] or 0
+            take = min(remaining, lot_qty)
+            if take <= 0:
+                continue
+            ratio = take / lot_qty
+            new_qty = lot_qty - take
+            new_inv = (l["invested"] or 0) * (1 - ratio)
+            new_com = (l["commissions"] or 0) * (1 - ratio)
+            if new_qty <= 1e-9:
+                conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (l["id"], uid))
+            else:
+                conn.execute(
+                    "UPDATE positions SET quantity=?, invested=?, commissions=? "
+                    "WHERE id=? AND user_id=?",
+                    (new_qty, round(new_inv, 6), round(new_com, 6), l["id"], uid),
+                )
+            remaining -= take
+            reduced += take
+
+        if reduced > 1e-9:
+            adjusted.append({
+                "broker": broker, "asset": asset,
+                "residual_factor": round(r, 6), "reduced": round(reduced, 6),
+            })
+
+    if adjusted:
+        log.info("sweep_bond_amortizations user=%s ajustó %d bonos (ref_date=%s): %s",
+                 uid, len(adjusted), ref_date, [a["asset"] for a in adjusted])
+    return {"adjusted": adjusted, "ref_date": ref_date}

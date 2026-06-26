@@ -16463,6 +16463,19 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
                 import traceback
                 traceback.print_exc()
 
+            # Sweep de amortizaciones: los bonos que amortizan (AL30/GD30/…)
+            # devuelven capital en cuotas; el mercado los cotiza por nominal
+            # RESIDUAL, pero Rendi guarda el nominal ORIGINAL (la amortización
+            # entra como dividendo = solo cash). Sin esto la tenencia/valuación
+            # quedan sobrevaluadas y un bono 100% amortizado sigue figurando.
+            # Baja el nominal a (comprado−vendido)×factor_residual(hoy). Idempotente,
+            # no toca cash ni posiciones manuales. Best-effort.
+            try:
+                _import_maturity.sweep_bond_amortizations(conn, uid)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
             # Auto-recalc post-import: el persister es incremental (cada tx
             # actualiza monthly_entries por separado vía _update_monthly_*).
             # Si quedó drift residual de cycles previos (capital_inicio
