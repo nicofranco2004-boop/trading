@@ -1579,6 +1579,14 @@ CRYPTO_BROKER_NAMES = {'binance', 'coinbase', 'kraken', 'bybit', 'kucoin',
                        'bitget', 'okx', 'huobi', 'gemini', 'crypto.com',
                        'ripio', 'buenbit', 'satoshitango', 'fiwind'}
 
+
+def is_exchange_broker(name) -> bool:
+    """¿El broker es un EXCHANGE cripto (Binance, Ripio…) y no un broker AR
+    (Cocos, Balanz…)? Decide el dólar con que se valúa la cripto: exchange →
+    spot/USDT; broker → dólar MEP (lo que muestra el broker). SSoT única,
+    compartida por la API (/api/brokers stampa is_exchange) y los valuadores."""
+    return (name or '').strip().lower() in CRYPTO_BROKER_NAMES
+
 MAX_STR = 100   # max length for names/assets
 MAX_NOTES = 500
 
@@ -2424,7 +2432,13 @@ def get_brokers(uid: int = Depends(get_current_user)):
     conn = get_db()
     rows = conn.execute("SELECT * FROM brokers WHERE user_id=? ORDER BY name", (uid,)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        # SSoT broker-vs-exchange para la valuación de cripto (front lo lee).
+        d["is_exchange"] = 1 if is_exchange_broker(d.get("name")) else 0
+        out.append(d)
+    return out
 
 
 @app.post("/api/brokers")
@@ -3087,6 +3101,22 @@ def _current_cedear_rate():
                 v = obj.get("venta") if isinstance(obj, dict) else obj
                 if v and float(v) > 0:
                     return float(v)
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _current_cripto_rate():
+    """Dólar CRIPTO del caché dolarapi — para valuar la cripto de un BROKER (no
+    exchange) al dólar que muestra el broker (cripto/MEP). None si el caché está
+    frío → el caller usa factor 1.0 (sin premium, comportamiento spot actual)."""
+    try:
+        cached = _dolar_cache.get("data") if _dolar_cache else None
+        if cached:
+            obj = cached.get("cripto")
+            v = obj.get("venta") if isinstance(obj, dict) else obj
+            if v and float(v) > 0:
+                return float(v)
     except (TypeError, ValueError, AttributeError):
         pass
     return None
@@ -4895,6 +4925,26 @@ CRYPTO_SYMBOLS = {
     'RDNT', 'APE', 'LDO', 'RPL', 'FXS', 'FRAX', 'PENDLE', 'SSV',
     'WBTC', 'STETH',
 }
+
+
+def crypto_broker_factor(asset, broker_name, has_override, cripto_rate, mep_rate) -> float:
+    """Factor para llevar la cripto de un BROKER (Cocos/Balanz, no exchange) del
+    dólar spot/cripto al dólar MEP que muestra el broker. Se multiplica al VALOR Y
+    al COSTO por igual → el P&L% queda invariante (una pérdida sigue siendo pérdida),
+    solo suben ~5% los montos absolutos para matchear el broker.
+
+    Devuelve 1.0 (sin premium = comportamiento spot actual) si: hay price_override,
+    el activo NO es cripto, el broker es un EXCHANGE, o falta/≤0 algún rate. Nunca
+    crashea ni devuelve 0. SSoT del factor, compartida por todos los valuadores BE."""
+    if has_override:
+        return 1.0
+    if (asset or '').upper() not in CRYPTO_SYMBOLS:
+        return 1.0
+    if is_exchange_broker(broker_name):
+        return 1.0
+    if not (cripto_rate and cripto_rate > 0) or not (mep_rate and mep_rate > 0):
+        return 1.0
+    return float(cripto_rate) / float(mep_rate)
 
 CRYPTO_YF = {sym: f"{sym}-USD" for sym in CRYPTO_SYMBOLS}
 

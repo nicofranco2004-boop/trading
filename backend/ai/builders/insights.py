@@ -376,6 +376,15 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # `current_holdings_top` y para cruzar con `in_portfolio_now` en attribution.
     geo_value: Dict[str, float] = {"ar": 0.0, "us": 0.0, "crypto": 0.0, "cash": 0.0}
     holdings_agg: Dict[str, Dict[str, Any]] = {}  # ticker → {market_value_usd, invested_usd, brokers}
+    # Premium dólar-cripto (broker no-exchange) + guard cripto (nunca es .BA).
+    try:
+        from main import (CRYPTO_SYMBOLS as _CRYPTO_SYMBOLS,
+                          crypto_broker_factor as _cb_factor, _current_cripto_rate)
+        _cripto_rate = _current_cripto_rate()
+    except Exception:
+        _CRYPTO_SYMBOLS = set()
+        _cb_factor = lambda *a: 1.0
+        _cripto_rate = None
     for p in positions:
         broker_name = p.get("broker") or ""
         broker_n = broker_name.lower()
@@ -398,14 +407,23 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             continue
         asset = (p.get("asset") or "").upper()
         qty = float(p.get("quantity") or 0)
-        if price_is_ars:
+        is_crypto = asset in _CRYPTO_SYMBOLS
+        if price_is_ars and not is_crypto:
             # El precio live .BA está en ARS → a USD por el MEP (no blue) para
-            # matchear cómo lo valúa Análisis.
+            # matchear cómo lo valúa Análisis. (La cripto NUNCA es .BA → spot.)
             price = prices.get(f"{asset}.BA")
             mv = (price * qty) / tc_cedear if price else cost_usd
         else:
             price = prices.get(asset)
             mv = price * qty if price else cost_usd
+        # Premium dólar-cripto (broker no-exchange): al VALOR (spot-USD) siempre; al
+        # COSTO solo si está en USD (cost_is_ars=False). Un costo en pesos ya pasó a
+        # dólar-MEP con /tc_cedear → no se multiplica de nuevo (compondría /MEP²).
+        cf = _cb_factor(asset, broker_name, p.get("price_override") is not None, _cripto_rate, tc_cedear)
+        if cf != 1.0:
+            mv *= cf
+            if not cost_is_ars:
+                cost_usd *= cf
         geo_value[_classify_geography(asset, broker_n)] += mv
         if asset not in holdings_agg:
             holdings_agg[asset] = {

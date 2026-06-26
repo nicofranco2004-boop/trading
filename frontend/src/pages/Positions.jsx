@@ -28,6 +28,7 @@ import {
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
+import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency } from '../contexts/CurrencyContext'
 import PageHeader from '../components/PageHeader'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
@@ -188,6 +189,16 @@ function PositionsDesktop() {
   // valuamos al MEP — es lo que muestra el broker (Cocos). Cascada MEP → CCL →
   // blue. Usar blue o CCL daba un valor más bajo que el real (Cocos al MEP).
   const tcCedear = tcMep || dolar?.ccl?.venta || tcBlue
+  // Dólar cripto (~spot + 5%). La cripto en un BROKER (Cocos/Balanz, no exchange)
+  // se valúa al cripto-dólar para empatar lo que muestra el broker AR; en un
+  // EXCHANGE (Binance/Ripio) queda a spot. cryptoBrokerFactor aplica esto.
+  const tcCripto = dolar?.cripto?.venta
+  // Set de brokers que son exchange (cripto a spot). Se usa en el cálculo inline
+  // por-posición (calcUSDT) que sólo tiene el NOMBRE del broker.
+  const exchangeBrokers = useMemo(
+    () => new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name)),
+    [brokers]
+  )
 
   // Fase B: publicamos tcBlue al CurrencyContext (mismo pattern que las
   // otras pages que ya fetchean /dolar — Reports / charts lo leen sin re-fetch).
@@ -847,7 +858,7 @@ function PositionsDesktop() {
   function calcUSDT(p) {
     if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null }
     let price
-    if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+    if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
       // Instrumento de BYMA en broker USD: CEDEAR o acción AR (PAMP/YPFD) en un
       // sub-broker "· USD". Se valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por
       // el ticker US (MELI se preciaría a ~US$1.600 en vez de ~14; PAMP/YPFD ni
@@ -858,9 +869,12 @@ function PositionsDesktop() {
       price = p.price_override ?? prices[p.asset]
     }
     if (price == null) return { value: null, pnl: null, pnlPct: null, price: null }
+    // Cripto en BROKER (no exchange) se valúa al cripto-dólar (~spot+5%). El factor
+    // escala tanto el valor de mercado como el costo, así el P&L% queda invariante.
+    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
     // Cost basis = invested + commissions (las comisiones de compra son costo real).
-    const realCost = (p.invested || 0) + (p.commissions || 0)
-    const value = price * p.quantity
+    const realCost = ((p.invested || 0) + (p.commissions || 0)) * f
+    const value = price * p.quantity * f
     const pnl = value - realCost
     return { value, pnl, pnlPct: realCost > 0 ? pnl / realCost : 0, price }
   }
@@ -935,14 +949,14 @@ function PositionsDesktop() {
   const totals = useMemo(() => {
     let value = 0, invested = 0
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear)
+      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto)
       value += r.value || 0
       invested += r.invested || 0
     }
     const pnl = value - invested
     const pct = invested > 0 ? pnl / invested : 0
     return { value, invested, pnl, pct }
-  }, [brokers, positions, prices, tcBlue])
+  }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto])
 
   // Delta vs último snapshot guardado. Se llama "variación diaria" cuando
   // dayDiff === 1, pero si el usuario no abrió la app durante varios días
@@ -1239,7 +1253,7 @@ function PositionsDesktop() {
         const bposRows = flattenGroups(aggregateAndSort(bposRaw, isARS))
         const isSubBroker = broker.parent_broker_id != null
         const showDetail = detailBrokers.has(broker.name)
-        const r = computeBrokerValue(bposRaw, prices, broker, tcBlue, tcCedear)
+        const r = computeBrokerValue(bposRaw, prices, broker, tcBlue, tcCedear, tcCripto)
 
         // Variación del día agregada del broker (suma de los Δ por posición con
         // cierre anterior disponible). En la moneda nativa del broker. `hasDay`

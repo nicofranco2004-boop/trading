@@ -59,6 +59,7 @@ export default function Goals() {
       const tcBlue = dolar?.blue?.venta || 1415
       // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
       const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue
+      const tcCripto = dolar?.cripto?.venta
       const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       const usdtBrokers = new Set(brokers.filter(b => b.currency !== 'ARS').map(b => b.name))
       // Símbolos a pedir: ARS y sub-brokers "· USD" piden el .BA (BYMA); brokers USD
@@ -71,7 +72,7 @@ export default function Goals() {
         try { pr = await api.get(`/prices?symbols=${all}`) } catch {}
       }
       const val = brokers.reduce(
-        (s, b) => s + computeBrokerValue(positions, pr, b, tcBlue, tcCedear).value,
+        (s, b) => s + computeBrokerValue(positions, pr, b, tcBlue, tcCedear, tcCripto).value,
         0
       )
       setCurrentValue(val)

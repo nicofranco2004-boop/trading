@@ -151,6 +151,8 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
   const [tcBlue, setTcBlue] = useState(1415)
   // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR "· USD" en USD.
   const [tcCedear, setTcCedear] = useState(1415)
+  // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
+  const [tcCripto, setTcCripto] = useState(null)
   // Benchmarks históricos (S&P 500 + inflación AR) para drivers por mes
   const [bench, setBench] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -182,6 +184,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         const tc = dol?.blue?.venta || cfg?.tc_blue || 1415
         setTcBlue(tc)
         setTcCedear(dol?.mep?.venta || dol?.ccl?.venta || tc)
+        setTcCripto(dol?.cripto?.venta ?? null)
         // Cargar precios para que el live value por broker sea exacto
         const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
         const usdtBrokers = new Set((bkrs || []).filter(b => b.currency !== 'ARS').map(b => b.name))
@@ -217,9 +220,9 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
 
   const data = useMemo(
     () => buildMonthlyReports(monthly, operations, snapshots, broker, {
-      positions, prices, brokers, tcBlue, tcCedear, bench,
+      positions, prices, brokers, tcBlue, tcCedear, tcCripto, bench,
     }),
-    [monthly, operations, snapshots, broker, positions, prices, brokers, tcBlue, tcCedear, bench]
+    [monthly, operations, snapshots, broker, positions, prices, brokers, tcBlue, tcCedear, tcCripto, bench]
   )
 
   return { loading, error, ...data, availableBrokers }
@@ -431,7 +434,7 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
     const brokerObj = context.brokers.find(b => b.name === selectedBroker)
     if (brokerObj) {
       try {
-        const r = computeBrokerValue(context.positions, context.prices || {}, brokerObj, context.tcBlue, context.tcCedear || context.tcBlue)
+        const r = computeBrokerValue(context.positions, context.prices || {}, brokerObj, context.tcBlue, context.tcCedear || context.tcBlue, context.tcCripto ?? null)
         liveValue = r.value
         // No tenemos liveDate por broker (sería del momento del fetch),
         // así que lo dejamos null y la UI no muestra fecha en ese caso.

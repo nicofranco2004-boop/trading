@@ -36,6 +36,7 @@ import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
+import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
@@ -423,6 +424,7 @@ export default function PositionsMobile() {
 
   const tcBlue = dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
 
   // Fase B: publish tcBlue al CurrencyContext (mismo pattern que Dashboard/HomeMobile)
   useEffect(() => {
@@ -431,6 +433,14 @@ export default function PositionsMobile() {
 
   const arsBrokerSet = useMemo(
     () => new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name)),
+    [brokers]
+  )
+
+  // Brokers que son EXCHANGE (Binance, Ripio…): la cripto adentro queda a spot.
+  // En un broker NO-exchange (Cocos, Balanz…) la cripto se valúa al dólar cripto
+  // (~spot+5%) para igualar al broker AR. cryptoBrokerFactor encapsula la regla.
+  const exchangeBrokerSet = useMemo(
+    () => new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name)),
     [brokers]
   )
 
@@ -453,7 +463,7 @@ export default function PositionsMobile() {
         priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceLocal) valueUsd = (priceLocal * qty) / tcBlue
         else valueUsd = invested / tcBlue
-      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
         // Instrumento BYMA en broker USD (CEDEAR o acción AR como PAMP/YPFD en un
         // sub-broker "· USD"): precio LOCAL .BA (ARS) → USD via MEP, no el ticker
         // US. priceLocal queda en USD.
@@ -465,7 +475,14 @@ export default function PositionsMobile() {
         if (priceLocal) valueUsd = priceLocal * qty
         else valueUsd = invested
       }
-      const investedUsd = isAR ? invested / tcBlue : invested
+      let investedUsd = isAR ? invested / tcBlue : invested
+      // Cripto en un broker NO-exchange (Cocos/Balanz…) se valúa al dólar cripto
+      // (~spot+5%), no al spot, para igualar al broker AR. El factor escala valor
+      // Y costo por igual ⇒ el P&L% queda intacto. Para todo lo demás (no-cripto,
+      // exchanges, override, sin tasa) f=1 y nada cambia.
+      const isExch = exchangeBrokerSet.has(p.broker)
+      const f = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
+      if (f !== 1) { valueUsd *= f; investedUsd *= f }
       const pnlUsd = valueUsd - investedUsd
       const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
       // P&L en la moneda local del broker (ARS para brokers en pesos, USD resto).
@@ -484,7 +501,9 @@ export default function PositionsMobile() {
         const prev = (cedearUsd && prevRaw != null) ? prevRaw / tcCedear : prevRaw
         if (prev != null && prev > 0) {
           const perUnit = priceLocal - prev
-          dayVarLocal = perUnit * qty
+          // Mismo factor cripto que el valor: el monto absoluto de var. día queda
+          // coherente con el valor mostrado. El % (perUnit/prev) es invariante.
+          dayVarLocal = perUnit * qty * f
           dayVarUsd = isAR ? dayVarLocal / tcBlue : dayVarLocal
           dayVarPct = perUnit / prev
         }
@@ -494,7 +513,7 @@ export default function PositionsMobile() {
         dayVarLocal, dayVarUsd, dayVarPct, isAR,
       }
     })
-  }, [positions, prices, prevClose, arsBrokerSet, tcBlue])
+  }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcBlue, tcCedear, tcCripto])
 
   // Filtro de búsqueda libre (asset o broker name)
   const filteredBySearch = useMemo(() => {

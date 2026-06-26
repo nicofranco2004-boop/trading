@@ -136,6 +136,16 @@ def compute_broker_value_usd(
     if not cedear_rate or cedear_rate <= 0:
         cedear_rate = tc_blue
     ar_usd = _is_ar_usd_subbroker(broker_name)
+    # Premium dólar-cripto para cripto de un BROKER (no exchange) — self-source del
+    # rate cripto; factor a valor Y costo (P&L% invariante). Fallback 1.0.
+    try:
+        from main import (crypto_broker_factor as _cb_factor, _current_cripto_rate,
+                          CRYPTO_SYMBOLS as _CS)
+        _cripto_rate = _current_cripto_rate()
+    except Exception:
+        _cb_factor = lambda *a: 1.0
+        _cripto_rate = None
+        _CS = set()
     value = 0.0
     invested = 0.0
 
@@ -175,11 +185,17 @@ def compute_broker_value_usd(
                 value += v
                 invested += v
             else:
-                invested += real_cost
+                # Premium cripto (1.0 para CEDEAR/acciones/exchange/sin-rate). Va al
+                # costo Y al valor para que el P&L% no cambie.
+                cf = _cb_factor(p['asset'], broker_name, override is not None, _cripto_rate, cedear_rate)
+                invested += real_cost * cf
                 # CEDEAR (o cualquier instrumento BYMA en sub-broker '· USD'): se
                 # valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por el ticker US.
-                # Port de valuation.js:184-193.
-                if (asset_type == 'CEDEAR' or ar_usd) and override is None:
+                # Port de valuation.js:184-193. La cripto NUNCA entra acá (no es .BA):
+                # sin el guard, una cripto en un sub-broker '· USD' se ruteaba al .BA
+                # (no existe BTC.BA) y escalaba el costo pero NO el valor → P&L invertido.
+                if (asset_type == 'CEDEAR' or ar_usd) and override is None \
+                        and (p.get('asset') or '').upper() not in _CS:
                     price_ars = prices.get(f"{p['asset']}.BA")
                     if price_ars is not None:
                         mkt_usd = (price_ars * (p.get('quantity') or 0)) / cedear_rate if cedear_rate > 0 else 0
@@ -191,9 +207,9 @@ def compute_broker_value_usd(
                     if price is not None:
                         mkt = price * (p.get('quantity') or 0)
                         trust = override is not None or _trust_mkt_value(mkt, real_cost, asset_type)
-                        value += mkt if trust else real_cost
+                        value += (mkt if trust else real_cost) * cf
                     else:
-                        value += real_cost
+                        value += real_cost * cf
 
     return {'value': value, 'invested': invested}
 

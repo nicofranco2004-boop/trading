@@ -1,3 +1,5 @@
+import { isCrypto, cryptoBrokerFactor } from './crypto'
+
 /**
  * computeBrokerValue
  * ─────────────────
@@ -131,7 +133,7 @@ function _trustMktValue(mktValue, realCost, assetType) {
   return mult <= 50 && mult >= 0.002
 }
 
-export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue) {
+export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue, tcCripto = null) {
   const bpos = allPositions.filter(p => p.broker === broker.name)
   const arUsd = isArUsdBroker(broker.name)
   let value = 0, invested = 0
@@ -182,14 +184,18 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
         value    += p.invested || 0
         invested += p.invested || 0
       } else {
-        invested += realCost
+        // Premium dólar-cripto: la cripto de un BROKER (no exchange) se valúa al
+        // dólar MEP que muestra el broker. Factor a COSTO Y valor → P&L% invariante.
+        // 1 para CEDEAR/acciones/exchange/override/sin-rate.
+        const f = cryptoBrokerFactor(p.asset, broker.is_exchange, p.price_override != null, tcCripto, cedearRate)
+        invested += realCost * f
 
-        if ((p.asset_type === 'CEDEAR' || arUsd) && p.price_override == null) {
+        if ((p.asset_type === 'CEDEAR' || arUsd) && !isCrypto(p.asset) && p.price_override == null) {
           // Instrumento de BYMA en broker USD: CEDEAR, o cualquier cosa en un
           // sub-broker AR "· USD" (acciones argentinas como PAMP/YPFD incluidas,
           // que NO tienen acción US). Se valúa por su precio LOCAL .BA (ARS) ÷ MEP
-          // (cedearRate = dólar-MEP, la plata local), que es lo que muestra el
-          // broker. NO por el ticker US. cedearRate default = blue (sin regresión).
+          // (cedearRate = dólar-MEP), que es lo que muestra el broker. NO por el
+          // ticker US. La cripto NUNCA entra acá (no es .BA) → va a la rama spot.
           const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
           const mktUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / cedearRate : null
           value += (mktUsd != null && _trustMktValue(mktUsd, realCost, p.asset_type))
@@ -200,7 +206,8 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
           const trust = mkt != null &&
             (p.price_override != null || _trustMktValue(mkt, realCost, p.asset_type))
           // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
-          value += trust ? mkt : realCost
+          // El factor cripto (1 para todo lo no-cripto-de-broker) escala valor.
+          value += (trust ? mkt : realCost) * f
         }
       }
     }

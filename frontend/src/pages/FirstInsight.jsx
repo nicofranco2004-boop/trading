@@ -13,6 +13,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
 import { track } from '../utils/track'
@@ -78,12 +79,13 @@ export default function FirstInsight() {
 
   const tcBlue = dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCripto = dolar?.cripto?.venta
 
   const stats = useMemo(() => {
     if (!brokers.length || !positions.length) return null
     let value = 0, invested = 0
     for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear)
+      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto)
       value += r.value || 0
       invested += r.invested || 0
     }
@@ -92,6 +94,7 @@ export default function FirstInsight() {
 
     // Mejor y peor activo por P&L USD individual
     const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
+    const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
     const byAsset = new Map()
     for (const p of positions) {
       if (p.is_cash) continue
@@ -107,8 +110,11 @@ export default function FirstInsight() {
       } else {
         const price = p.price_override ?? prices[p.asset]
         if (price != null) {
-          valueUsd = price * (p.quantity || 0)
-          pnlUsd = valueUsd - cost
+          // Premium dólar-cripto (broker no-exchange) a valor Y costo → ranking
+          // best/worst consistente con el resto de la app. f=1 para todo lo demás.
+          const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+          valueUsd = price * (p.quantity || 0) * f
+          pnlUsd = valueUsd - cost * f
         }
       }
       if (pnlUsd == null) continue

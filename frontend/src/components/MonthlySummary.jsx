@@ -89,6 +89,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     const tc = dol?.blue?.venta || cfg?.tc_blue || 1415
     // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
     const tcCedear = dol?.mep?.venta || dol?.ccl?.venta || tc
+    // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
+    const tcCripto = dol?.cripto?.venta
     setTcBlue(tc)
     setEntries(ents)
     setBench(bnch)
@@ -103,7 +105,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // doble I/O.
 
     // Pasamos brokers + tcBlue + tcCedear ya fetcheados — evita re-fetch redundante.
-    await syncUnrealizedForAll({ brokers: bkrs, tcBlue: tc, tcCedear })
+    await syncUnrealizedForAll({ brokers: bkrs, tcBlue: tc, tcCedear, tcCripto })
 
     setEntries(await api.get('/monthly'))
   }
@@ -237,11 +239,12 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // Ahorro: ~400ms al montar /mensual.
     // Save flow (línea ~300) llama sin prefetched → re-fetcha como antes.
     try {
-      let pos, bkrs, tc, tcCedear
+      let pos, bkrs, tc, tcCedear, tcCripto
       if (prefetched && prefetched.brokers && prefetched.tcBlue) {
         bkrs = prefetched.brokers
         tc = prefetched.tcBlue
         tcCedear = prefetched.tcCedear || tc
+        tcCripto = prefetched.tcCripto
         pos = await api.get('/positions')
       } else {
         const r = await Promise.all([api.get('/positions'), api.get('/brokers')])
@@ -252,6 +255,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         tc = dol?.blue?.venta || cfg?.tc_blue || tcBlue
         // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
         tcCedear = dol?.mep?.venta || dol?.ccl?.venta || tc
+        // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
+        tcCripto = dol?.cripto?.venta
       }
 
       const arsBrokerSet = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
@@ -266,7 +271,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       let liveTotal = 0
       const syncs = []
       for (const b of bkrs) {
-        const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear)
+        const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear, tcCripto)
         // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcBlue for ARS display);
         //               USD stores pnlUsd directly.
         const pnlForBroker = b.currency === 'ARS' ? result.pnlArs / tc : result.pnlUsd

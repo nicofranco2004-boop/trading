@@ -426,3 +426,38 @@ describe('computePf — valuación de plazo fijo (al vencimiento)', () => {
     expect(r.interes).toBeGreaterThan(simple.interes)
   })
 })
+
+// ─── Premium dólar-cripto (broker vs exchange) ───────────────────────────────
+// Mismos números que el backend test_crypto_premium.py → garantiza paridad FE/BE.
+describe('crypto premium — broker (MEP) vs exchange (spot)', () => {
+  const CRIPTO = 1554, MEP = 1499, BLUE = 1530, SPOT = 59281, QTY = 0.0114, COST = 700
+  const PREMIUM = CRIPTO / MEP
+  const cocos = { name: 'Cocos', currency: 'USDT', is_exchange: 0 }     // broker AR
+  const binance = { name: 'Binance', currency: 'USDT', is_exchange: 1 } // exchange
+  const btc = (broker, extra) => pos({ broker, asset: 'BTC', quantity: QTY, invested: COST, ...extra })
+
+  it('cripto en un BROKER → spot × premium, valor Y costo (P&L% invariante)', () => {
+    const r = computeBrokerValue([btc('Cocos')], { BTC: SPOT }, cocos, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(QTY * SPOT * PREMIUM, 2)
+    expect(r.invested).toBeCloseTo(COST * PREMIUM, 2)
+    expect((r.value - r.invested) / r.invested).toBeCloseTo((QTY * SPOT - COST) / COST, 5)
+  })
+  it('cripto en un EXCHANGE → spot (sin premium)', () => {
+    const r = computeBrokerValue([btc('Binance')], { BTC: SPOT }, binance, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(QTY * SPOT, 2)
+    expect(r.invested).toBeCloseTo(COST, 2)
+  })
+  it('sin tcCripto → spot (back-compat, comportamiento previo intacto)', () => {
+    const r = computeBrokerValue([btc('Cocos')], { BTC: SPOT }, cocos, BLUE, MEP)
+    expect(r.value).toBeCloseTo(QTY * SPOT, 2)
+  })
+  it('no-cripto en un broker → sin premium', () => {
+    const aapl = pos({ broker: 'Cocos', asset: 'AAPL', quantity: 10, invested: 1500 })
+    const r = computeBrokerValue([aapl], { AAPL: 150 }, cocos, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(1500, 2)
+  })
+  it('override en cripto → directo, sin premium', () => {
+    const r = computeBrokerValue([btc('Cocos', { price_override: 60000 })], { BTC: SPOT }, cocos, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(QTY * 60000, 2)
+  })
+})

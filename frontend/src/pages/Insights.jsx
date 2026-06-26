@@ -22,6 +22,7 @@ import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
+import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import {
@@ -258,8 +259,12 @@ function InsightsDesktop({ _embeddedTab }) {
   //                "¿qué tan expuesto estoy a un único activo?".
   const tcBlue = dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ cripto en broker AR
+  // Brokers que son exchange (Binance, Ripio…): la cripto se valúa a spot (factor 1).
+  // En un broker AR (Cocos, Balanz…) la cripto se valúa al dólar cripto (MEP-like).
+  const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
   const pieData = brokers
-    .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcBlue, tcCedear).value.toFixed(2) }))
+    .map(b => ({ name: b.name, value: +computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).value.toFixed(2) }))
     .filter(x => x.value > 0)
   const totalPortfolio = pieData.reduce((s, x) => s + x.value, 0)
 
@@ -272,18 +277,20 @@ function InsightsDesktop({ _embeddedTab }) {
       // Fallback sin precio = cost basis económico (invested + commissions),
       // mismo criterio que computeBrokerValue y aiPositions.
       const realCost = (p.invested || 0) + (p.commissions || 0)
+      // Cripto en broker AR se valúa al dólar cripto; en exchange, a spot (factor 1).
+      const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
       let val = 0
       if (broker?.currency === 'ARS') {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
-      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
         // CEDEAR / instrumento de BYMA en broker USD: valuar por su precio LOCAL
         // .BA (ARS) ÷ dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : realCost
       } else {
         const price = p.price_override ?? prices[p.asset]
-        val = price != null ? price * (p.quantity || 0) : realCost
+        val = (price != null ? price * (p.quantity || 0) : realCost) * f
       }
       const k = (p.asset || '').toUpperCase()
       valuesByAsset[k] = (valuesByAsset[k] || 0) + val
@@ -318,18 +325,20 @@ function InsightsDesktop({ _embeddedTab }) {
       // Fallback sin precio = cost basis económico (invested + commissions),
       // mismo criterio que computeBrokerValue y aiPositions.
       const realCost = (p.invested || 0) + (p.commissions || 0)
+      // Cripto en broker AR se valúa al dólar cripto; en exchange, a spot (factor 1).
+      const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
       let val = 0
       if (broker?.currency === 'ARS') {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
-      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
         // CEDEAR / instrumento de BYMA en broker USD: precio LOCAL .BA (ARS) ÷
         // dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : realCost
       } else {
         const price = p.price_override ?? prices[p.asset]
-        val = price != null ? price * (p.quantity || 0) : realCost
+        val = (price != null ? price * (p.quantity || 0) : realCost) * f
       }
       return { ...p, value_usd: val }
     })
@@ -351,7 +360,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
   const totalCostBasis = brokers.reduce((s, b) => {
-    return s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear).invested
+    return s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).invested
   }, 0)
   const unrealizedPnl = totalPortfolio - totalCostBasis
 
@@ -718,7 +727,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // Punto "Hoy" — valor live de posiciones ARS al blue actual
     const arsLiveUsd = brokers
       .filter(b => arsBrokerNames.has(b.name))
-      .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear).value, 0)
+      .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto).value, 0)
     if (arsLiveUsd > 0) {
       const valueNow = arsLiveUsd * tcBlue
       const investedNowPesos = baselinePesos + netFlowsPesos
@@ -1309,12 +1318,15 @@ function InsightsDesktop({ _embeddedTab }) {
     const isARS = arsBrokerSet.has(p.broker)
     // Cost basis económico = invested + buy commissions (igual que valuation.js).
     const realCost = (p.invested || 0) + (p.commissions || 0)
+    // Cripto en broker AR se valúa al dólar cripto; en exchange, a spot (factor 1).
+    // El factor escala value E invested por igual → el P&L% no cambia.
+    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
     let valueUsd, investedUsd
     if (isARS) {
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
       valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
       investedUsd = realCost / tcBlue
-    } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+    } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
       // CEDEAR / instrumento de BYMA en broker USD: precio LOCAL .BA (ARS) ÷
       // dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
       const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
@@ -1322,8 +1334,8 @@ function InsightsDesktop({ _embeddedTab }) {
       investedUsd = realCost
     } else {
       const price = p.price_override ?? prices[p.asset]
-      valueUsd = price != null ? price * (p.quantity || 0) : realCost
-      investedUsd = realCost
+      valueUsd = (price != null ? price * (p.quantity || 0) : realCost) * f
+      investedUsd = realCost * f
     }
     const pnlUsd = valueUsd - investedUsd
     return {

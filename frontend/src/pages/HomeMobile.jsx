@@ -32,6 +32,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { computeDailyPnl } from '../utils/evolution'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
@@ -94,6 +95,7 @@ export default function HomeMobile() {
 
   const tcBlue = dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
   const pf = pfUsd(usePfRollup(), tcBlue)  // plazos fijos → USD (suma al total mostrado)
 
   // Fase B: publicamos tcBlue al CurrencyContext (sin reemplazar el local;
@@ -103,13 +105,13 @@ export default function HomeMobile() {
   }, [tcBlue, publishTcBlue])
 
   const totals = useMemo(() => {
-    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear) }))
+    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto) }))
     const totalValue = bt.reduce((s, b) => s + b.value, 0)
     const totalCost = bt.reduce((s, b) => s + b.invested, 0)
     const totalPnl = totalValue - totalCost
     const pct = totalCost > 0 ? totalPnl / totalCost : 0
     return { totalValue, totalCost, totalPnl, pct }
-  }, [positions, prices, brokers, tcBlue])
+  }, [positions, prices, brokers, tcBlue, tcCedear, tcCripto])
 
   // Serie 30d desde snapshots — base para sparkline + delta del período
   const series30d = useMemo(() => {
@@ -150,19 +152,24 @@ export default function HomeMobile() {
     // Mejor activo hoy = mayor change_pct del día (necesitaría /prices con change — usamos % del PnL no real por ahora)
     let bestAsset = null
     let bestPct = -Infinity
+    const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
     for (const p of positions) {
       if (p.is_cash) continue
       const px = p.price_override ?? prices[p.asset] ?? prices[priceSymbol(p.asset, true)]
       if (!px || !p.invested) continue
-      const value = px * (p.quantity || 0)
-      const pct = (value - p.invested) / p.invested
+      // Cripto en broker AR (no exchange, sin override) se valúa al dólar cripto:
+      // escalamos value e invested por el mismo factor → el % queda invariante.
+      const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+      const value = px * (p.quantity || 0) * f
+      const invested = p.invested * f
+      const pct = (value - invested) / invested
       if (pct > bestPct) {
         bestPct = pct
         bestAsset = { symbol: p.asset, pct }
       }
     }
     return { pnlMonth, pnlDay, pnlDayMeta: daily, aportado, bestAsset }
-  }, [monthly, snapshots, positions, prices, totals])
+  }, [monthly, snapshots, positions, prices, totals, brokers, tcCripto, tcCedear])
 
   if (loading) {
     return (

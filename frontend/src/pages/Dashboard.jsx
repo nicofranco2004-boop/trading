@@ -26,6 +26,7 @@ import { useCurrency } from '../contexts/CurrencyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
@@ -144,6 +145,7 @@ export default function Dashboard() {
 
   const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ crypto en broker AR
 
   // Fase B (2026-05-31): publicamos tcBlue al CurrencyContext para que
   // los components que solo necesitan formatear (Reports cards, charts)
@@ -160,7 +162,7 @@ export default function Dashboard() {
   const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcBlue)
   const pf = pfUsd(usePfRollup(), tcBlue)   // plazos fijos → USD (valor + capital)
 
-  const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear) }))
+  const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto) }))
   const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0) + pf.valueUsd
   const totalCostBasis = brokerTotals.reduce((s, b) => s + b.invested, 0) + pf.investedUsd
   const totalPnl = totalValue - totalCostBasis
@@ -222,6 +224,9 @@ export default function Dashboard() {
 
   // Dynamic insight line — uses largest gainers/losers from open positions
   const arsBrokerNames = useMemo(() => new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name)), [brokers])
+  // Brokers que son EXCHANGE (Binance, Ripio…): crypto se valúa a spot. En un
+  // broker NO-exchange (Cocos, Balanz…), crypto va al dólar cripto (~5% sobre spot).
+  const exchangeBrokers = useMemo(() => new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name)), [brokers])
   const positionsForInsight = useMemo(() => {
     return positions.filter(p => !p.is_cash).map(p => {
       const isARS = arsBrokerNames.has(p.broker)
@@ -239,16 +244,22 @@ export default function Dashboard() {
         }
       } else {
         const price = p.price_override ?? prices[p.asset]
+        // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
+        // (factor 1 si no es crypto / es exchange / tiene override / falta rate).
+        const isExch = exchangeBrokers.has(p.broker)
+        const f = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
         if (price != null) {
-          valueUsd = price * (p.quantity || 0)
-          pnlUsd = valueUsd - realCost
+          valueUsd = price * (p.quantity || 0) * f
+          pnlUsd = valueUsd - realCost * f
         }
       }
-      const invForPct = isARS ? realCost / tcBlue : realCost
+      const isExchForPct = exchangeBrokers.has(p.broker)
+      const fForPct = isARS ? 1 : cryptoBrokerFactor(p.asset, isExchForPct, p.price_override != null, tcCripto, tcCedear)
+      const invForPct = isARS ? realCost / tcBlue : realCost * fForPct
       const pnlPct = pnlUsd != null && invForPct > 0 ? pnlUsd / invForPct : null
       return { asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct }
     })
-  }, [positions, prices, tcBlue, arsBrokerNames])
+  }, [positions, prices, tcBlue, arsBrokerNames, exchangeBrokers, tcCripto, tcCedear])
 
   const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, positions: positionsForInsight }), [totalValue, netDeposited, positionsForInsight])
 
@@ -324,9 +335,13 @@ export default function Dashboard() {
           if (p.is_cash) continue
           const price = p.price_override ?? prices[p.asset]
           if (price == null) continue
+          // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
+          // (factor 1 si no es crypto / es exchange / tiene override / falta rate),
+          // así el P&L queda honesto (ambos lados al mismo dólar).
+          const f = cryptoBrokerFactor(p.asset, b.is_exchange, p.price_override != null, tcCripto, tcCedear)
           // Cost basis USD = invested + commissions
           const costUsd = (p.invested || 0) + (p.commissions || 0)
-          pnlForBroker += price * (p.quantity || 0) - costUsd
+          pnlForBroker += price * (p.quantity || 0) * f - costUsd * f
         }
         pnlForGlobal = pnlForBroker
       }

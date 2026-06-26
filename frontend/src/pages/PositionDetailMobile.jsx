@@ -18,6 +18,7 @@ import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
+import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
 export default function PositionDetailMobile() {
@@ -89,8 +90,12 @@ export default function PositionDetailMobile() {
   const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
   const tcBlue = dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcCripto = dolar?.cripto?.venta  // dólar cripto p/ valuar crypto en broker AR
   const qty = p.quantity || 0
   const invested = p.invested || 0
+  // Crypto en broker (no exchange) se valúa al dólar cripto (~MEP); en exchange queda a spot.
+  const isExch = !!brokers.find(b => b.name === p.broker)?.is_exchange
+  const cryptoF = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
 
   // Compute current value + P/L
   let valueUsd = 0, priceLocal = null, pnlUsd = null, pnlPct = null
@@ -102,7 +107,7 @@ export default function PositionDetailMobile() {
     const investedUsd = invested / tcBlue
     pnlUsd = valueUsd - investedUsd
     pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
-  } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+  } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
     // Instrumento BYMA en broker USD (CEDEAR o acción AR en un sub-broker "· USD"):
     // precio LOCAL .BA (ARS) → USD via MEP, no el ticker US (que vale 15-100× más,
     // y las acciones AR ni existen como acción US → quedaban en "—").
@@ -113,9 +118,12 @@ export default function PositionDetailMobile() {
     pnlPct = invested > 0 ? pnlUsd / invested : 0
   } else {
     priceLocal = p.price_override ?? prices[p.asset]
-    valueUsd = priceLocal != null ? priceLocal * qty : invested
-    pnlUsd = valueUsd - invested
-    pnlPct = invested > 0 ? pnlUsd / invested : 0
+    // Crypto en broker AR (no exchange) → factor ~MEP sobre value y costo (P/L% invariante).
+    if (cryptoF !== 1 && priceLocal != null) priceLocal = priceLocal * cryptoF
+    const investedF = invested * cryptoF
+    valueUsd = priceLocal != null ? priceLocal * qty : investedF
+    pnlUsd = valueUsd - investedF
+    pnlPct = investedF > 0 ? pnlUsd / investedF : 0
   }
 
   const avgPrice = !p.is_cash && qty > 0 ? invested / qty : null

@@ -168,6 +168,15 @@ def _price_is_ars(p: Dict[str, Any]) -> bool:
     (hints), o currency ARS estampada. Espejo de snapshots_job.position_price_key
     para que Análisis y Dashboard valúen igual; si no, reaparece C1 (ticker US
     15-100× inflado para CEDEARs/AR en brokers USD sin hint en el nombre)."""
+    # La cripto (BTC/ETH/…) NUNCA cotiza en .BA — siempre spot USD. Sin este guard,
+    # una cripto en un broker con nombre AR (Cocos) se ruteaba a 'BTC.BA' (no existe)
+    # → caía a costo. El front rutea por broker.currency (USDT→spot), acá igualamos.
+    try:
+        from main import CRYPTO_SYMBOLS as _CS
+        if (p.get("asset") or "").upper() in _CS:
+            return False
+    except Exception:
+        pass
     if (p.get("asset_type") or "").upper() == "CEDEAR":
         return True
     broker = p.get("broker") or ""
@@ -371,6 +380,19 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
     qty = p.get("quantity") or 0
     invested_native = float(p.get("invested") or 0)
 
+    # Premium dólar-cripto: la cripto de un BROKER (Cocos/Balanz, NO exchange) la
+    # muestra el broker al dólar MEP, no al spot. Factor cripto/MEP aplicado a
+    # VALOR y COSTO por igual → P&L% invariante, solo suben ~5% los montos. 1.0
+    # para todo lo demás (cash, override, no-cripto, exchange, rate faltante).
+    # Self-source del rate cripto (no se pasa por firma → no rompe callers).
+    try:
+        from main import crypto_broker_factor, _current_cripto_rate
+        crypto_f = crypto_broker_factor(
+            asset, broker, p.get("price_override") is not None,
+            _current_cripto_rate(), rate_holdings)
+    except Exception:
+        crypto_f = 1.0
+
     # Cash — convertir solo si el cash es en pesos
     if p.get("is_cash"):
         if cost_ccy == "ARS":
@@ -400,13 +422,16 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
             # CEDEAR en '· USD' (precio ARS, costo USD) no dispare el guard de más.
             cost_usd = (invested_native / rate_holdings) if (cost_ccy == "ARS" and rate_holdings > 0) else invested_native
             if _trust_mkt_value_usd(mkt_usd, cost_usd, p.get("asset_type")):
-                return mkt_usd
+                return mkt_usd * crypto_f
             # precio no confiable → cae al cost basis de abajo (sin inventar P&L)
 
     # Fallback al cost basis (invested), en su moneda nativa (ARS .BA → MEP).
+    # El premium cripto SOLO aplica a montos spot-USD (los lleva a dólar-MEP).
+    # Un costo en PESOS ya pasa a dólar-MEP con /rate_holdings → NO multiplicar de
+    # nuevo por el factor (compondría /MEP²). El costo en USD sí: × factor.
     if cost_ccy == "ARS" and rate_holdings > 0:
         return invested_native / rate_holdings
-    return invested_native
+    return invested_native * crypto_f
 
 
 # ─── Detector 1: Disposition Effect ──────────────────────────────────────────
