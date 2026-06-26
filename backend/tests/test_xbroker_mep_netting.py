@@ -226,6 +226,59 @@ class XBrokerMepNetting(unittest.TestCase):
         self.assertAlmostEqual(self._qty("SPY", "%· USD%"), 4.0, places=6)     # USD genuino preservado
         self.assertAlmostEqual(self._qty("SPY"), 8.0, places=6)               # 4 ARS + 4 USD
 
+    def test_gradual_cross_currency_oversell_nets_to_zero(self):
+        """EL BUG BALANZ: un ticker con compras same-currency YA cerradas MÁS una pata
+        cruzada que se consume GRADUALMENTE en varias ventas chicas. 10 ARS (genuino,
+        se cierra) + 50 USD (dólar-MEP); después se venden 10 ARS (cierra la pata ARS)
+        y 50 ARS más en CINCO ventas de 10. Ninguna venta sola oversella ≥ la pata USD
+        de 50, así que el full_net por-venta NUNCA dispara y la decisión vieja dejaba
+        50 USD FANTASMA (AAPL/XLP/GD35/etc. del export real). El presupuesto AGREGADO
+        (oversell[ARS]=50 == pata USD=50 → full net global) lo netea a 0."""
+        csv = _csv(
+            "2025-01-02,COMPRA,Cocos,AAPL,10,1000,10000,,,0,ARS,",
+            "2025-01-03,COMPRA,Cocos,AAPL,50,10,500,,,0,USD,",
+            "2025-02-01,VENTA,Cocos,AAPL,10,1200,12000,,,0,ARS,",
+            "2025-03-01,VENTA,Cocos,AAPL,10,1300,13000,,,0,ARS,",
+            "2025-03-02,VENTA,Cocos,AAPL,10,1300,13000,,,0,ARS,",
+            "2025-03-03,VENTA,Cocos,AAPL,10,1300,13000,,,0,ARS,",
+            "2025-03-04,VENTA,Cocos,AAPL,10,1300,13000,,,0,ARS,",
+            "2025-03-05,VENTA,Cocos,AAPL,10,1300,13000,,,0,ARS,",
+        )
+        self._import(csv, rebuild=True)
+        self.assertAlmostEqual(self._qty("AAPL"), 0.0, places=6)               # neto total 0
+        self.assertAlmostEqual(self._qty("AAPL", "%· USD%"), 0.0, places=6)    # SIN fantasma USD
+
+    def test_usd_oversell_partial_spills_to_ars_leg(self):
+        """ASIMETRÍA (caso AMZN del archivo real): una venta USD oversold consume PARCIAL
+        la pata ARS genuina (no la entera). 100 ARS genuino + 30 USD; vende 50 USD
+        (oversell 20 < pata ARS 100). Debe quedar 80 ARS (se bajó el nominal ARS en 20
+        por el dólar-MEP), NO 100 (la regla binaria pura dejaría 100) ni 0."""
+        csv = _csv(
+            "2025-01-02,COMPRA,Cocos,AMZN,100,1000,100000,,,0,ARS,",
+            "2025-01-03,COMPRA,Cocos,AMZN,30,10,300,,,0,USD,",
+            "2025-02-01,VENTA,Cocos,AMZN,50,12,600,,,0,USD,",
+        )
+        self._import(csv, rebuild=True)
+        self.assertAlmostEqual(self._qty("AMZN"), 80.0, places=6)             # 100 ARS − 20 spill
+        self.assertAlmostEqual(self._qty("AMZN", "%· USD%"), 0.0, places=6)   # pata USD cerrada
+
+    def test_bidirectional_cross_currency_nets_to_zero(self):
+        """BIDIRECCIONAL (regresión que evita el enfoque combinado): el mismo ticker
+        operado por dólar-MEP en AMBAS direcciones. Compra 10 USD, vende 10 ARS, compra
+        10 ARS, vende 10 USD → neto 0. Los oversell AGREGADOS por moneda dan 0 (cada
+        moneda está balanceada), así que un presupuesto puro lo dejaría fantasma; la
+        decisión per-venta (never_held_same / full_net cronológicos) lo cierra. El
+        máximo entre ambas capacidades preserva este caso."""
+        csv = _csv(
+            "2025-01-02,COMPRA,Cocos,NVDA,10,10,100,,,0,USD,",
+            "2025-02-01,VENTA,Cocos,NVDA,10,1200,12000,,,0,ARS,",
+            "2025-03-01,COMPRA,Cocos,NVDA,10,1000,10000,,,0,ARS,",
+            "2025-04-01,VENTA,Cocos,NVDA,10,12,120,,,0,USD,",
+        )
+        self._import(csv, rebuild=True)
+        self.assertAlmostEqual(self._qty("NVDA"), 0.0, places=6)              # neto total 0
+        self.assertAlmostEqual(self._qty("NVDA", "%· USD%"), 0.0, places=6)   # sin fantasma
+
 
 if __name__ == "__main__":
     unittest.main()

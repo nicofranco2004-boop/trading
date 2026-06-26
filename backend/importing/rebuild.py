@@ -195,6 +195,49 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
     # holding cross-currency-only vendido en otra moneda (sí spill, dólar-MEP).
     seen_buy_ccy: set = set()
 
+    # ── Pass 1: presupuesto de spill cross-currency AGREGADO ───────────────────
+    # El neteo dólar-MEP cierra una compra en una moneda con una venta en la OTRA.
+    # La decisión per-venta de abajo (never_held_same / full_net) cubre el conducto
+    # puro y el neteo total de UNA venta, pero NO el caso en que la pata cruzada se
+    # consume GRADUALMENTE en muchas ventas chicas (Balanz: un ticker con decenas de
+    # operaciones — la pata USD se cierra de a poco y ninguna venta sola la cancela
+    # entera, así que full_net nunca dispara y queda fantasma). Para eso precomputamos
+    # sobre TODO el timeline del par cuánto de la pata opuesta puede consumir cada
+    # moneda de venta, y lo usamos como capacidad EXTRA de spill (tomamos el MÁXIMO
+    # con la per-venta → NUNCA quitamos capacidad, solo sumamos el caso gradual; así
+    # no se regresiona el neteo bidireccional/conducto que ya andaba).
+    def _ccy_of(ev):
+        c = _norm_cur(ev["currency"]) or broker_currency
+        return c if c in ("ARS", "USD") else broker_currency
+    _net_buy = {"ARS": 0.0, "USD": 0.0}
+    _net_sell = {"ARS": 0.0, "USD": 0.0}
+    for ev in events:
+        c = _ccy_of(ev)
+        if c not in _net_buy:
+            continue
+        if ev["operation_type"] == OP_BUY:
+            _net_buy[c] += _num(ev["quantity"])
+        elif ev["operation_type"] == OP_SELL:
+            _net_sell[c] += _num(ev["quantity"])
+    _oversell = {c: max(0.0, _net_sell[c] - _net_buy[c]) for c in _net_buy}
+    _genuine_leg = {c: max(0.0, _net_buy[c] - _net_sell[c]) for c in _net_buy}
+    # Presupuesto por moneda de venta C (otra moneda O). ASIMÉTRICO por la mecánica
+    # dólar-MEP: vender USD de más baja PROPORCIONALMENTE el nominal ARS (spill
+    # parcial — vendiste en dólares lo que compraste en pesos); vender ARS de más solo
+    # cancela la pata USD si la consume ENTERA (binario), para preservar una tenencia
+    # USD genuina (5 ARS + 5 USD, venta 7 ARS → no toca los 5 USD).
+    budget_left = {"ARS": 0.0, "USD": 0.0}
+    for _C in ("ARS", "USD"):
+        _O = "USD" if _C == "ARS" else "ARS"
+        if _oversell[_C] <= _EPS:
+            budget_left[_C] = 0.0
+        elif _net_buy[_C] <= _EPS or _C == "USD":
+            # conducto puro (cualquier dirección) o venta USD oversold → spill PARCIAL
+            budget_left[_C] = min(_oversell[_C], _genuine_leg[_O])
+        else:
+            # venta ARS oversold con compras ARS genuinas → BINARIO (full-net o nada)
+            budget_left[_C] = _genuine_leg[_O] if _oversell[_C] >= _genuine_leg[_O] - _EPS else 0.0
+
     for ev in events:
         op = ev["operation_type"]
 
@@ -279,35 +322,44 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         never_held_same = currency not in seen_buy_ccy
         do_spill = (_same_total <= _EPS and _other_total > _EPS and never_held_same) or full_net
 
-        if do_spill:
-            _consume_from = _same + _other
-            # Si la venta supera AMBAS monedas, seed same-currency para el resto.
-            if qty_to_sell > total_avail + _EPS:
-                _consume_from = _consume_from + [_seed(qty_to_sell - total_avail)]
-        else:
-            # Preservar la otra moneda. Si falta same-currency (oversell parcial o data
-            # incompleta), seed same-currency y consumir SOLO same-currency.
-            _consume_from = list(_same)
-            if oversell_same > _EPS:
-                _consume_from = _consume_from + [_seed(oversell_same)]
+        # Capacidad de consumo de la OTRA moneda (spill cross-currency), como el MÁX de:
+        #   - per-venta (do_spill): conducto puro o full-net de ESTA venta → toda la pata.
+        #   - agregada (budget_left): el caso gradual del Pass 1.
+        # Tomar el máximo nunca quita capacidad → no regresiona bidireccional/conducto.
+        per_sell_cap = _other_total if do_spill else 0.0
+        spill_cap = max(per_sell_cap, budget_left.get(currency, 0.0))
+        spill_qty = min(max(0.0, oversell_same), _other_total, spill_cap)
+
+        # Same-currency primero; la pata cruzada se capa a spill_qty DENTRO del loop.
+        _consume_from = list(_same)
+        if spill_qty > _EPS:
+            _consume_from = _consume_from + _other
+        seed_qty = max(0.0, oversell_same) - spill_qty
+        if seed_qty > _EPS:
+            _consume_from = _consume_from + [_seed(seed_qty)]
 
         tc_venta = tc_blue if sell_currency == "ARS" else 1.0
         remaining = qty_to_sell
+        spill_taken = 0.0   # cuánto de la pata cruzada (cross-currency) ya consumimos
 
         for lot in _consume_from:
             if remaining <= _EPS:
                 break
             pos_qty = lot["qty"]
             take = min(remaining, pos_qty)
-            if take <= 0:
+            lot_currency = lot["currency"] or currency
+            is_cross = lot_currency != currency
+            if is_cross:
+                # No consumir más de la pata cruzada que el presupuesto de spill.
+                take = min(take, spill_qty - spill_taken)
+            if take <= _EPS:
                 continue
             ratio = take / pos_qty if pos_qty > 0 else 0
             pos_buy_commissions = lot["commissions"] or 0
             base_invested = (lot["invested"] or 0) + pos_buy_commissions
 
-            lot_currency = lot["currency"] or currency
             # Cross-currency: valuar el invested del lote en la moneda de la venta.
-            if lot_currency != currency and tc_blue:
+            if is_cross and tc_blue:
                 if lot_currency == "USD" and currency == "ARS":
                     base_invested = base_invested * tc_blue
                 elif lot_currency == "ARS" and currency == "USD":
@@ -353,7 +405,12 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 lot["invested"] = round((lot["invested"] or 0) * remaining_ratio, 6) if lot["invested"] is not None else None
                 lot["commissions"] = round(pos_buy_commissions * remaining_ratio, 6)
             remaining -= take
+            if is_cross:
+                spill_taken += take
 
+        # El spill cross-currency consumido descuenta del presupuesto agregado, así
+        # las ventas posteriores no vuelven a cruzar de más.
+        budget_left[currency] = max(0.0, budget_left.get(currency, 0.0) - spill_taken)
         # limpiar lotes agotados
         lots = [l for l in lots if l["qty"] > _EPS]
 

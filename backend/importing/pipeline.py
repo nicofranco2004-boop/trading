@@ -359,6 +359,11 @@ def run_preview(
     # parsers específicos; el genérico ('rendi_generic') no está y sigue por fila.
     FORMAT_BASE_CURRENCY = {
         'cocos': 'ARS', 'bullmarket': 'ARS', 'balanz': 'ARS', 'iol': 'ARS',
+        # Variantes/otros parsers AR: el export de "Resultados" de Balanz y el de IEB
+        # también son brokers ARS. Sin esto, fmt_base=None → no ancla la moneda del
+        # padre → un broker auto-creado puede inferirse USD/USDT por mayoría de filas
+        # dólar-MEP (un export AR trae muchas filas USD por las compras MEP).
+        'balanz_resultados': 'ARS', 'ieb': 'ARS',
         'binance': 'USDT', 'schwab': 'USD', 'ibkr': 'USD',
     }
     fmt_base = FORMAT_BASE_CURRENCY.get(parser.format_id)
