@@ -30,6 +30,8 @@ import UpgradeModal from '../components/plan/UpgradeModal'
 const AddPositionFlow = lazy(() => import('../components/AddPositionFlow'))
 import { PositionFormModal, SellModal, EMPTY_POS, today } from './Positions'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
+import RentaFijaSections from '../components/RentaFijaSections'
+import { isFixedIncome } from '../utils/sections'
 import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
@@ -620,6 +622,7 @@ export default function PositionsMobile() {
     if (brokerFilter !== ALL_FILTER) return null
     const map = new Map()
     for (const p of filteredByBroker) {
+      if (isFixedIncome(p)) continue   // renta fija → zona "Renta Fija" (abajo)
       const b = brokers.find(x => x.name === p.broker)
       if (!map.has(p.broker)) {
         map.set(p.broker, { broker: b || { name: p.broker, currency: 'USDT' }, positions: [], totalUsd: 0 })
@@ -868,6 +871,9 @@ export default function PositionsMobile() {
             ))}
           </div>
           <div className="px-4 pb-2">
+            <RentaFijaSections positions={enriched}
+              valuePos={p => ({ valueUsd: p.valueUsd, investedUsd: p.investedUsd, pnlUsd: p.pnlUsd, pnlPct: p.pnlPct })}
+              brokers={brokers} displayCurrency={currency} tcBlue={tcBlue} onChanged={loadAll} />
             <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
           </div>
         </>

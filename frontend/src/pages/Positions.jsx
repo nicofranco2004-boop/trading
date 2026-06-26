@@ -10,6 +10,8 @@ import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
+import RentaFijaSections from '../components/RentaFijaSections'
+import { isFixedIncome } from '../utils/sections'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
@@ -898,6 +900,26 @@ function PositionsDesktop() {
     return { valueArs, valueUsd, pnlArs, pnlUsd, pnlPct: realCostArs > 0 ? pnlArs / realCostArs : 0, priceArs, invUsd }
   }
 
+  // Valuación unificada por posición (en USD) para la zona Renta Fija. Despacha a
+  // calcARS/calcUSDT según la moneda del broker REAL de la posición (la sección es
+  // cross-broker) — misma lógica que las tablas, sin duplicar valuación. Si no hay
+  // precio, cae al costo (P&L 0), como el resto de la app.
+  function valuePos(p) {
+    const b = brokers.find(bb => bb.name === p.broker)
+    if (b && b.currency === 'ARS') {
+      const c = calcARS(p)
+      const invUsd = ((p.invested || 0) + (p.commissions || 0)) / tcBlue
+      const valueUsd = c.valueUsd != null ? c.valueUsd : invUsd
+      const pnlUsd = valueUsd - invUsd
+      return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
+    }
+    const c = calcUSDT(p)
+    const invUsd = (p.invested || 0) + (p.commissions || 0)
+    const valueUsd = c.value != null ? c.value : invUsd
+    const pnlUsd = valueUsd - invUsd
+    return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
+  }
+
   // Variación del día por posición (market-based): (precio actual − cierre
   // anterior) × cantidad, más el % de movimiento. Usa el MISMO precio que
   // muestra la fila para que los números reconcilien. Devuelve null cuando es
@@ -1245,7 +1267,11 @@ function PositionsDesktop() {
         // entera (no dejamos el header vacío). `bpos` queda ordenado + cash al
         // final; `r` (header + footer) se calcula sobre el subset visible, así
         // los totales reflejan lo que se ve. Sin filtros: idéntico a antes.
-        const bposRaw = positions.filter(p => p.broker === broker.name && matchesAsset(p))
+        // Renta fija (bonos/letras/FCI) se excluye de la tabla del broker — se
+        // muestra agrupada en la zona "Renta Fija". El subtotal del broker usa este
+        // mismo subset, así no desajusta. El hero/total sí los cuenta (suma sobre
+        // TODAS las posiciones), por eso la partición no cambia el patrimonio.
+        const bposRaw = positions.filter(p => p.broker === broker.name && matchesAsset(p) && !isFixedIncome(p))
         if (assetFiltering && bposRaw.length === 0) return null
         // Vista default: 1 fila por ticker (agregado). bposRows aplana los grupos
         // a filas (activo + lotes si está expandido). bposRaw sigue teniendo TODOS
@@ -1746,6 +1772,10 @@ function PositionsDesktop() {
           />
         </div>
       )}
+
+      {/* Zona Renta Fija: bonos/letras/FCI agrupados cross-broker, con borrado/restore por sección */}
+      <RentaFijaSections positions={positions} valuePos={valuePos} brokers={brokers}
+        displayCurrency={displayCurrency} tcBlue={tcBlue} onChanged={loadAll} />
 
       {/* Grupo Plazos fijos + su form de alta (lo dispara el flujo o el header del grupo) */}
       <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
