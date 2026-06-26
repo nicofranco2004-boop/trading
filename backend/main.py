@@ -5051,6 +5051,11 @@ AR_BONDS_DATA912 = {
     'T30J6',                              # Boncer/dual 2026
     'PNDCO',                             # ON (Pan American Energy)
     'BA37D',                             # Buenos Aires 2037 (sub-soberano provincial USD)
+    # Ampliación 2026-06-26 — bonos/ONs que aparecían INFLADOS (precio per-100 sin
+    # ÷100 porque no estaban acá → caían a yfinance). data912 los cubre (verificado).
+    'AO28',                              # Bonar 2028 (soberano USD)
+    'TY30P',                             # Boncer/dual
+    'PN35O', 'YM39O', 'YMCJO', 'IRCPO',  # ONs (data912 arg_corp)
 }
 
 _data912_cache = {'data': None, 'ts': 0}
@@ -5090,27 +5095,25 @@ def _fetch_data912_bonds():
 def _resolve_ar_bond_price(symbol):
     """Resuelve el precio per-VN de un bono AR usando data912.
 
-    Reglas de mapeo según convención del frontend (ver `fetchPrices` en
-    Positions.jsx):
-      • Sufijo .BA: tipico de broker ARS → usamos el ticker base SIN sufijo
-        para obtener precio en ARS por 100 face → divido por 100.
-      • Sin sufijo .BA: vino de broker USD/USDT → usamos ticker base + 'D'
-        para obtener precio USD MEP por 100 face → divido por 100.
-
-    Devuelve None si el ticker no está en AR_BONDS_DATA912 o data912 no
-    tiene precio. El caller cae a yfinance como fallback.
+    Cobertura: TODO el universo de bonos/ONs que data912 devuelve (arg_bonds +
+    arg_corp), NO una allowlist hardcodeada — así cualquier bono que data912 cotice
+    queda cubierto solo, sin mantener una lista (antes AO28/YM39O/etc. quedaban
+    afuera y se valuaban ×100 vía yfinance). Mapeo según el símbolo que pide el front:
+      • Sufijo .BA (broker ARS, y sub-broker '· USD' que pide .BA): ticker base →
+        precio ARS por 100 face → ÷100.
+      • Sin sufijo (broker USD puro): ticker base + 'D' → precio USD MEP por 100 → ÷100.
+    Devuelve None si data912 no tiene ese ticker → el caller cae a yfinance.
+    Seguro para no-bonos: una acción/CEDEAR (MELI.BA, AAPL) no está en los endpoints
+    de bonos de data912 → devuelve None y sigue su path normal.
     """
     if not symbol:
-        return None
-    base = symbol[:-3] if symbol.endswith('.BA') else symbol
-    if base not in AR_BONDS_DATA912:
         return None
     prices = _fetch_data912_bonds()
     if not prices:
         return None
-    # ARS si vino con .BA, USD MEP si vino sin sufijo
-    lookup_key = base if symbol.endswith('.BA') else (base + 'D')
-    raw = prices.get(lookup_key)
+    base = symbol[:-3] if symbol.endswith('.BA') else symbol
+    # ARS si vino con .BA (ticker base), USD MEP si no (base + 'D')
+    raw = prices.get(base) if symbol.endswith('.BA') else prices.get(base + 'D')
     if raw is None or raw <= 0:
         return None
     # data912 quotea per 100 face. El resto del sistema usa per VN.
@@ -16949,6 +16952,15 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
             # ya per-1). Idempotente, no toca cash. Best-effort.
             try:
                 _import_recompute.normalize_bond_units(conn, uid, bond_price_per1=_bond_price_per1)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+            # Comisiones en ARS guardadas en posiciones USD (Balanz reporta Gastos en
+            # pesos aun para trades dólar/cable) → comisión ×MEP infla el costo (P&L
+            # fantasma, ej. YM39O -84%). Las pasa a USD. Best-effort.
+            try:
+                _import_recompute.normalize_usd_commissions(conn, uid, tc_blue=_tc_blue_rb)
             except Exception:
                 import traceback
                 traceback.print_exc()

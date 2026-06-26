@@ -137,6 +137,58 @@ class NormalizeBondUnitsTest(unittest.TestCase):
         self.assertAlmostEqual(r["buy_price"], 0.6716, places=6)
 
 
+class UsdCommissionNormalizationTest(unittest.TestCase):
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("positions", "brokers", "users"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("usdcom@rendi.test", "x")).lastrowid
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _add(self, asset, inv, com, ccy):
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested, "
+            "commissions, currency, asset_type) VALUES (?,?,?,0,?,?,?,?,?)",
+            (self.uid, "B", asset, 100.0, inv, com, ccy, "BOND"))
+        self.conn.commit()
+
+    def _com(self, asset):
+        return self.conn.execute(
+            "SELECT commissions FROM positions WHERE user_id=? AND asset=?",
+            (self.uid, asset)).fetchone()["commissions"]
+
+    def test_ars_commission_on_usd_position_converted(self):
+        # YM39O: invertido USD 5028, comisión 31701 (en pesos) → / tc_blue.
+        self._add("YM39O", 5028.0, 31701.54, "USD")
+        n = rb.normalize_usd_commissions(self.conn, self.uid, tc_blue=1432.0)
+        self.assertEqual(n, 1)
+        self.assertAlmostEqual(self._com("YM39O"), 31701.54 / 1432.0, places=4)
+
+    def test_normal_usd_commission_untouched(self):
+        self._add("AL30", 5028.0, 22.0, "USD")   # comisión sana (< invertido)
+        rb.normalize_usd_commissions(self.conn, self.uid, tc_blue=1432.0)
+        self.assertAlmostEqual(self._com("AL30"), 22.0, places=4)
+
+    def test_ars_position_untouched(self):
+        self._add("AO28", 4126973.0, 0.0, "ARS")  # ARS: invertido y comisión misma moneda
+        rb.normalize_usd_commissions(self.conn, self.uid, tc_blue=1432.0)
+        self.assertAlmostEqual(self._com("AO28"), 0.0, places=4)
+
+    def test_idempotent(self):
+        self._add("YM39O", 5028.0, 31701.54, "USD")
+        rb.normalize_usd_commissions(self.conn, self.uid, tc_blue=1432.0)
+        n2 = rb.normalize_usd_commissions(self.conn, self.uid, tc_blue=1432.0)
+        self.assertEqual(n2, 0)   # 2da corrida no re-divide
+
+
 class GuessAssetTypeBondTest(unittest.TestCase):
     def test_known_ar_bond_tagged(self):
         self.assertEqual(guess_asset_type("AL30"), "BOND")

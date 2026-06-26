@@ -107,6 +107,33 @@ def normalize_bond_units(conn, uid: int, *, bond_price_per1: Callable) -> int:
     return n
 
 
+def normalize_usd_commissions(conn, uid: int, *, tc_blue: float) -> int:
+    """Corrige comisiones en ARS guardadas en posiciones USD. Balanz reporta los
+    Gastos en PESOS aun para trades en dólares/cable, y el parser los guarda crudos
+    → en un bono USD la comisión queda ×MEP, infla el cost basis y da P&L fantasma
+    (ej. YM39O: comisión 31.701 sobre invertido 5.028 → -84%). Heurística a prueba de
+    balas: una comisión MAYOR que el invertido es imposible para una comisión real →
+    está en pesos → se pasa a USD ÷ tc_blue. Idempotente (tras dividir queda chica).
+    No toca posiciones ARS (ahí invertido y comisión están en la misma moneda)."""
+    if not tc_blue or tc_blue <= 0:
+        return 0
+    rows = conn.execute(
+        "SELECT id, invested, commissions, currency FROM positions "
+        "WHERE user_id=? AND is_cash=0 AND quantity>0", (uid,)
+    ).fetchall()
+    n = 0
+    for r in rows:
+        if (r["currency"] or "").upper() not in ("USD", "USDT"):
+            continue
+        inv = r["invested"] or 0
+        com = r["commissions"] or 0
+        if inv > 0 and com > inv:   # comisión > trade entero → está en pesos
+            conn.execute("UPDATE positions SET commissions=? WHERE id=? AND user_id=?",
+                         (round(com / tc_blue, 6), r["id"], uid))
+            n += 1
+    return n
+
+
 def recompute_user(conn, uid: int, *, recalc: Callable,
                    bond_price_per1: Callable = None) -> None:
     """Misma secuencia post-persist que import_confirm. Muta en la transacción
@@ -121,6 +148,7 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
     _maturity.sweep_bond_amortizations(conn, uid)
     if bond_price_per1 is not None:
         normalize_bond_units(conn, uid, bond_price_per1=bond_price_per1)
+    normalize_usd_commissions(conn, uid, tc_blue=tc_blue)
     recalc(conn, uid)
 
 
