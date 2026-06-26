@@ -648,6 +648,11 @@ def run_daily_snapshot(
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    # Mismas pragmas que el path de requests (get_db): esperar el lock (no fallar
+    # al instante con "database is locked") y WAL para no bloquear lectores.
+    # (Audit M-OPS2.)
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA journal_mode=WAL")
 
     try:
         # Phase C: persist el blue de HOY en fx_rates_daily. Idempotent —
@@ -676,19 +681,29 @@ def run_daily_snapshot(
         ok_count = 0
         failed_count = 0
         errors = []
-        with conn:
-            for uid in user_ids:
+        # NO envolvemos todo el loop en UNA transacción: eso mantenía el lock de
+        # escritura abierto a través del fetch de red de TODOS los users (minutos),
+        # y cualquier write concurrente (wipe-broker, import, compra) fallaba con
+        # "database is locked". Commiteamos POR-USER → el lock se toma solo para el
+        # write breve de cada uno y se libera entre fetches. Bonus: un user que
+        # falla no rollbackea a los demás. (Audit M-OPS1.)
+        for uid in user_ids:
+            try:
+                result = take_snapshot_for_user(conn, uid, tc_blue, crypto_yf, target)
+                conn.commit()
+                if result['ok']:
+                    ok_count += 1
+                    log.info(f"user={uid}: snapshot ok — value=${result['total_value']}")
+                else:
+                    log.info(f"user={uid}: skipped ({result.get('reason')})")
+            except Exception as e:
                 try:
-                    result = take_snapshot_for_user(conn, uid, tc_blue, crypto_yf, target)
-                    if result['ok']:
-                        ok_count += 1
-                        log.info(f"user={uid}: snapshot ok — value=${result['total_value']}")
-                    else:
-                        log.info(f"user={uid}: skipped ({result.get('reason')})")
-                except Exception as e:
-                    failed_count += 1
-                    errors.append({'user_id': uid, 'error': str(e)})
-                    log.error(f"user={uid}: snapshot falló — {e}")
+                    conn.rollback()
+                except Exception:
+                    pass
+                failed_count += 1
+                errors.append({'user_id': uid, 'error': str(e)})
+                log.error(f"user={uid}: snapshot falló — {e}")
 
         log.info(f"Job terminado: ok={ok_count}, failed={failed_count}")
         return {
