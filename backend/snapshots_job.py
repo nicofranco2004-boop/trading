@@ -311,12 +311,20 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
             _d = _fd("contadoconliqui")  # cron sin caché de dólar → fetch directo
             _ccl = (_d or {}).get("venta")
 
+    def _to_yf_us(s):
+        # Acción US: yfinance cotiza las CLASES con guión ('BRK-B'). Un import US
+        # (Schwab/IBKR) pudo guardar 'BRK B' (espacio) o 'BRK.B' (punto) → ninguno
+        # cotiza. Normalizamos a guión, manteniendo la KEY original (sym). NO tocar
+        # .BA (ARS), FCI ni cripto. El espacio además rompería el ' '.join de abajo.
+        if not s or s.endswith('.BA') or s.startswith('FCI:'):
+            return s
+        return re.sub(r'[\s.]+', '-', s)
     sym_to_yf = {}
     for sym in symbols:
         if sym in cedear_usd:
             sym_to_yf[sym] = cedear_usd[sym]  # ticker US (ej. BAC)
         else:
-            sym_to_yf[sym] = crypto_yf.get(sym) or sym
+            sym_to_yf[sym] = crypto_yf.get(sym) or _to_yf_us(sym)
     yf_tickers = list(set(sym_to_yf.values()))
     result = {sym: None for sym in symbols}
 

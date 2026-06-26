@@ -765,6 +765,25 @@ class NormalizerTest(unittest.TestCase):
         self.assertEqual(txs[0].quantity, 10)
         self.assertEqual(txs[0].fees, 2)
 
+    def test_normalizes_us_class_share_space_to_dash(self):
+        # 'BRK B' (Schwab/IBKR) → 'BRK-B' (forma canónica de yfinance). Sin esto el
+        # símbolo no cotiza: el gate _SYMBOL_RE de /api/prices lo descarta y el
+        # ' '.join de snapshots_job lo parte en dos tickers basura.
+        rows = [RawRow(1, {"fecha": "2024-09-24", "tipo": "COMPRA", "broker": "IBKR",
+                            "activo": "BRK B", "cantidad": "39", "precio": "489.79",
+                            "moneda": "USD"})]
+        txs, errors = normalize_rows(rows)
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0].asset_symbol, "BRK-B")
+
+    def test_fci_symbol_not_normalized(self):
+        # Un símbolo FCI (con prefijo 'FCI:') no debe tocarse.
+        rows = [RawRow(1, {"fecha": "2024-09-24", "tipo": "COMPRA", "broker": "Cocos",
+                            "activo": "FCI:COCOS-AHORRO-A", "cantidad": "100",
+                            "precio": "1", "moneda": "ARS"})]
+        txs, errors = normalize_rows(rows)
+        self.assertEqual(txs[0].asset_symbol, "FCI:COCOS-AHORRO-A")
+
     def test_asset_type_hint_overrides_guess(self):
         """Si el RawRow.data trae asset_type explícito, el normalizer lo usa
         (en vez de guess_asset_type que clasificaría 'ETH' como CRYPTO)."""

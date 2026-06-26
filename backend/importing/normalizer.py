@@ -236,6 +236,12 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
             continue
 
         asset_raw = (d.get("activo") or "").strip().upper() or None
+        # Símbolo de CLASE de acción US con espacio ('BRK B', Schwab/IBKR) → guión
+        # ('BRK-B', forma canónica de yfinance). Sin esto el símbolo no cotiza (el
+        # gate _SYMBOL_RE de /api/prices lo descarta y el ' '.join de snapshots lo
+        # parte). No tocar FCI ('FCI:...'). Los tickers reales no tienen espacios.
+        if asset_raw and not asset_raw.startswith("FCI:") and " " in asset_raw:
+            asset_raw = re.sub(r"\s+", "-", asset_raw)
 
         # Helper local para parsear cada campo numérico y registrar errores
         row_errors: List[RowError] = []

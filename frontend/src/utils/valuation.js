@@ -70,7 +70,13 @@ export function priceSymbol(asset, isARS, assetType) {
   // dólar-MEP). Sin esto, 'MELI' se preciaría como la acción (~US$2.400) en vez
   // del CEDEAR (~US$14). Ver computeBrokerValue (rama USD) para la conversión.
   if (assetType === 'CEDEAR' && !(asset || '').endsWith('.BA')) return `${asset}.BA`
-  return isARS ? `${asset}.BA` : asset
+  if (isARS) return `${asset}.BA`
+  // Acción US: yfinance cotiza las CLASES con guión ('BRK-B', 'BF-B'). El import de
+  // brokers US (Schwab/IBKR) puede guardar 'BRK B' (espacio) o 'BRK.B' (punto) →
+  // ninguno cotiza en yfinance. Normalizamos a guión para pedir/buscar el precio
+  // (se usa como request Y como key de lookup, así que queda consistente; el label
+  // de la posición sigue mostrando el símbolo crudo).
+  return (asset || '').replace(/[\s.]+/g, '-')
 }
 
 /**

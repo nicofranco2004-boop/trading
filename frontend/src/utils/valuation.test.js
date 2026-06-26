@@ -1,5 +1,29 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol } from './valuation.js'
+
+describe('priceSymbol — clases de acción US (BRK B)', () => {
+  it('normaliza espacio a guión (forma yfinance) para acción US', () => {
+    expect(priceSymbol('BRK B', false)).toBe('BRK-B')      // Schwab/IBKR import
+  })
+  it('normaliza punto a guión para acción US', () => {
+    expect(priceSymbol('BRK.B', false)).toBe('BRK-B')      // catálogo viejo
+  })
+  it('deja la forma canónica con guión intacta', () => {
+    expect(priceSymbol('BRK-B', false)).toBe('BRK-B')
+  })
+  it('no toca un ticker US normal', () => {
+    expect(priceSymbol('AAPL', false)).toBe('AAPL')
+  })
+  it('broker ARS sigue agregando .BA (sin normalizar el punto del sufijo)', () => {
+    expect(priceSymbol('GGAL', true)).toBe('GGAL.BA')
+  })
+  it('CEDEAR va por .BA y no se normaliza como US', () => {
+    expect(priceSymbol('MELI', false, 'CEDEAR')).toBe('MELI.BA')
+  })
+  it('FCI se pide tal cual', () => {
+    expect(priceSymbol('FCI:COCOS-AHORRO-A', false)).toBe('FCI:COCOS-AHORRO-A')
+  })
+})
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 

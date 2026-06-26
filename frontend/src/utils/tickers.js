@@ -46,7 +46,7 @@ export const STOCKS_US = [
   // Mega caps
   { s: 'AAPL', n: 'Apple' }, { s: 'MSFT', n: 'Microsoft' }, { s: 'GOOGL', n: 'Alphabet (A)' },
   { s: 'GOOG', n: 'Alphabet (C)' }, { s: 'AMZN', n: 'Amazon' }, { s: 'META', n: 'Meta Platforms' },
-  { s: 'NVDA', n: 'NVIDIA' }, { s: 'TSLA', n: 'Tesla' }, { s: 'BRK.B', n: 'Berkshire Hathaway' },
+  { s: 'NVDA', n: 'NVIDIA' }, { s: 'TSLA', n: 'Tesla' }, { s: 'BRK-B', n: 'Berkshire Hathaway' },
   { s: 'AVGO', n: 'Broadcom' }, { s: 'LLY', n: 'Eli Lilly' }, { s: 'JPM', n: 'JPMorgan Chase' },
   { s: 'V', n: 'Visa' }, { s: 'XOM', n: 'Exxon Mobil' }, { s: 'WMT', n: 'Walmart' },
   { s: 'UNH', n: 'UnitedHealth' }, { s: 'MA', n: 'Mastercard' }, { s: 'PG', n: 'Procter & Gamble' },
@@ -189,7 +189,7 @@ export const CEDEARS_LIST = [
   { s: 'MELI', n: 'MercadoLibre' }, { s: 'PBR', n: 'Petrobras' }, { s: 'VALE', n: 'Vale' },
   { s: 'ITUB', n: 'Itaú Unibanco' }, { s: 'BBD', n: 'Banco Bradesco' }, { s: 'NU', n: 'Nu Holdings' },
   { s: 'ABEV', n: 'Ambev' }, { s: 'AZN', n: 'AstraZeneca' }, { s: 'NOVN', n: 'Novartis' },
-  { s: 'BRK.B', n: 'Berkshire Hathaway' }, { s: 'BRKB', n: 'Berkshire Hathaway' },
+  { s: 'BRK-B', n: 'Berkshire Hathaway' },
   // ETFs disponibles como CEDEAR
   { s: 'SPY', n: 'SPDR S&P 500 (CEDEAR)' }, { s: 'QQQ', n: 'Nasdaq 100 (CEDEAR)' },
   { s: 'EEM', n: 'Emerging Markets (CEDEAR)' }, { s: 'EWZ', n: 'Brasil (CEDEAR)' },
@@ -361,7 +361,7 @@ export const POPULAR_TICKERS = [
   { symbol: 'KO',    name: 'Coca-Cola',               exchange: 'NYSE',   type: 'stock_us' },
   { symbol: 'PEP',   name: 'PepsiCo',                 exchange: 'NASDAQ', type: 'stock_us' },
   { symbol: 'XOM',   name: 'ExxonMobil',              exchange: 'NYSE',   type: 'stock_us' },
-  { symbol: 'BRK.B', name: 'Berkshire Hathaway',      exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'BRK-B', name: 'Berkshire Hathaway',      exchange: 'NYSE',   type: 'stock_us' },
   { symbol: 'MELI',  name: 'MercadoLibre',            exchange: 'NASDAQ', type: 'stock_us' },
   { symbol: 'GLOB',  name: 'Globant',                 exchange: 'NYSE',   type: 'stock_us' },
 
