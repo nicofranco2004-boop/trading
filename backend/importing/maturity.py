@@ -41,6 +41,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 from .schema import OP_BUY, OP_SELL
+from .persister import broker_pair
 from pricing.bond_amortization import is_amortizing_bond, residual_factor
 
 log = logging.getLogger(__name__)
@@ -241,21 +242,31 @@ def sweep_matured_letras(conn, uid: int, *, ref_date: Optional[str] = None) -> D
     return {"swept": swept, "ref_date": ref_date}
 
 
-def _bond_bought_minus_sold(conn, uid: int, broker: str, asset: str) -> float:
-    """Nominal NETO comprado (Σ BUY − Σ SELL) del bono según los imports
-    confirmados. Es la base ORIGINAL estable: los sweeps NO tocan
-    import_normalized_tx, así que recalcular desde acá hace el ajuste idempotente
-    (no depende de cuánto se haya bajado en corridas previas)."""
-    row = conn.execute(
-        """SELECT
-              COALESCE(SUM(CASE WHEN n.operation_type=? THEN n.quantity ELSE 0 END), 0)
-            - COALESCE(SUM(CASE WHEN n.operation_type=? THEN n.quantity ELSE 0 END), 0) AS net
-             FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
-            WHERE b.user_id=? AND b.status='confirmed'
-              AND n.broker=? AND n.asset_symbol=?""",
-        (OP_BUY, OP_SELL, uid, broker, asset),
-    ).fetchone()
-    return float(row["net"] or 0) if row else 0.0
+def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
+    """Nominal NETO GENUINO del bono (Σ BUY − Σ SELL) sobre el PAR de brokers,
+    CANCELANDO los pares de conducto dólar-MEP (compra+venta del mismo bono, igual
+    nominal, cruce de moneda, ≤ventana) con la misma lógica que el rebuild. Es la
+    base ORIGINAL estable para amortizar: si no se cancelan los conductos, la base
+    queda inflada (genuino + patas-puente) y la amortización no aplica o aplica mal.
+    Idempotente (recalcula desde import_normalized_tx, que los sweeps no tocan)."""
+    from .rebuild import _cancel_conduit_pairs  # lazy: evita ciclo rebuild↔maturity
+    _ph = ",".join("?" * len(brokers))
+    rows = conn.execute(
+        f"""SELECT n.asset_symbol, n.asset_name, n.operation_type, n.quantity,
+                   n.currency, n.date
+              FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+             WHERE b.user_id=? AND b.status='confirmed'
+               AND n.broker IN ({_ph}) AND n.asset_symbol=?
+               AND n.operation_type IN (?, ?)
+             ORDER BY n.date ASC, n.id ASC""",
+        (uid, *brokers, asset, OP_BUY, OP_SELL),
+    ).fetchall()
+    genuine = _cancel_conduit_pairs([dict(r) for r in rows])
+    net = 0.0
+    for e in genuine:
+        q = float(e["quantity"] or 0)
+        net += q if e["operation_type"] == OP_BUY else -q
+    return net
 
 
 def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) -> Dict[str, Any]:
@@ -292,7 +303,10 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
     ).fetchall():
         name_map.setdefault((r["broker"], r["asset_symbol"]), r["asset_name"] or "")
 
-    # Lotes agrupados por (broker, activo), FIFO (entry_date asc, id asc).
+    # Lotes agrupados por (PAR de brokers, activo), FIFO (entry_date asc, id asc).
+    # Agrupamos por el PAR padre↔'· USD' porque un bono-conducto reparte sus lotes
+    # genuinos entre los dos brokers; la amortización tiene que verlos juntos.
+    pair_cache: Dict[str, tuple] = {}
     groups: Dict[tuple, List[Any]] = {}
     for p in conn.execute(
         "SELECT id, broker, asset, quantity, invested, commissions, entry_date "
@@ -300,11 +314,13 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
         "ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC",
         (uid,),
     ).fetchall():
-        groups.setdefault((p["broker"], p["asset"]), []).append(p)
+        if p["broker"] not in pair_cache:
+            pair_cache[p["broker"]] = tuple(broker_pair(conn, uid, p["broker"]))
+        groups.setdefault((pair_cache[p["broker"]], p["asset"]), []).append(p)
 
-    for (broker, asset), lots in groups.items():
-        name = name_map.get((broker, asset), "")
-        # Resolver el schedule por ticker o, si no, por nombre.
+    for (pair, asset), lots in groups.items():
+        # Resolver el schedule por ticker o, si no, por nombre (cualquiera del par).
+        name = next((name_map.get((b, asset), "") for b in pair if name_map.get((b, asset))), "")
         if is_amortizing_bond(asset):
             key = asset
         elif is_amortizing_bond(name):
@@ -315,44 +331,44 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
         if r >= 1.0 - 1e-9:
             continue  # todavía no amortizó nada → no-op
 
-        original = _bond_bought_minus_sold(conn, uid, broker, asset)
+        # Base = nominal GENUINO sobre el par (conductos cancelados) — no inflada.
+        original = _bond_genuine_net(conn, uid, list(pair), asset)
         if original <= 1e-9:
             continue
         target = original * r
-        current = sum((l["quantity"] or 0) for l in lots)
-        reduce_by = current - target
-        if reduce_by <= 1e-9:
-            continue  # ya está en el residual → idempotente
-
-        remaining = reduce_by
+        # Solo los lotes import-linked se amortizan (los manuales se respetan).
+        linked_lots = [l for l in lots if l["id"] in linked]
+        current = sum((l["quantity"] or 0) for l in linked_lots)
+        if current <= 1e-9:
+            continue
+        # Reducción PROPORCIONAL (no FIFO): la amortización baja TODOS los lotes por el
+        # mismo factor — correcto para una amortización (cada lámina amortiza igual) y
+        # currency-aware (un bono con tenencia genuina en ARS y USD escala cada moneda
+        # por sí misma; el FIFO consumía una sola → audit 2026-06-26). factor =
+        # target/current: si ya está en el residual, factor≈1 → no-op (idempotente,
+        # target es estable desde import_normalized_tx).
+        factor = target / current
+        if factor >= 1.0 - 1e-9:
+            continue  # ya está en el residual o por debajo
         reduced = 0.0
-        for l in lots:
-            if remaining <= 1e-9:
-                break
-            if l["id"] not in linked:
-                continue                      # lote manual → no tocar
+        for l in linked_lots:
             lot_qty = l["quantity"] or 0
-            take = min(remaining, lot_qty)
-            if take <= 0:
-                continue
-            ratio = take / lot_qty
-            new_qty = lot_qty - take
-            new_inv = (l["invested"] or 0) * (1 - ratio)
-            new_com = (l["commissions"] or 0) * (1 - ratio)
+            new_qty = lot_qty * factor
+            new_inv = (l["invested"] or 0) * factor
+            new_com = (l["commissions"] or 0) * factor
             if new_qty <= 1e-9:
                 conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (l["id"], uid))
             else:
                 conn.execute(
                     "UPDATE positions SET quantity=?, invested=?, commissions=? "
                     "WHERE id=? AND user_id=?",
-                    (new_qty, round(new_inv, 6), round(new_com, 6), l["id"], uid),
+                    (round(new_qty, 6), round(new_inv, 6), round(new_com, 6), l["id"], uid),
                 )
-            remaining -= take
-            reduced += take
+            reduced += lot_qty - new_qty
 
         if reduced > 1e-9:
             adjusted.append({
-                "broker": broker, "asset": asset,
+                "broker": pair[0] if len(pair) == 1 else "+".join(pair), "asset": asset,
                 "residual_factor": round(r, 6), "reduced": round(reduced, 6),
             })
 

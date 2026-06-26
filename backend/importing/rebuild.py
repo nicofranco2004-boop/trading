@@ -55,8 +55,16 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from datetime import date as _date
+
 from .schema import OP_BUY, OP_SELL
 from .persister import _link, broker_pair
+from .maturity import is_bond_like_name
+try:
+    from ai.ar_bonds_metadata import is_known_ar_bond
+except Exception:  # pragma: no cover
+    def is_known_ar_bond(_t):
+        return False
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +81,101 @@ def _num(v) -> float:
 def _norm_cur(c: Optional[str]) -> Optional[str]:
     u = (c or "").upper() or None
     return "USD" if u == "USDT" else u
+
+
+def _days_apart(d1: Optional[str], d2: Optional[str]) -> Optional[int]:
+    """Días absolutos entre dos fechas ISO 'YYYY-MM-DD'. None si alguna no parsea."""
+    try:
+        a = _date.fromisoformat((d1 or "")[:10])
+        b = _date.fromisoformat((d2 or "")[:10])
+        return abs((a - b).days)
+    except (ValueError, TypeError):
+        return None
+
+
+# Ventana máxima entre las dos patas de un conducto dólar-MEP (parking ~T+1; algunos
+# brokers registran las patas con días de diferencia). Más allá, es un round-trip
+# genuino (con P&L real), no una conversión de moneda.
+_CONDUIT_WINDOW_DAYS = 7
+
+
+def _cancel_conduit_pairs(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Cancela pares de CONDUCTO dólar-MEP de BONOS antes del FIFO.
+
+    Un conducto = una COMPRA y una VENTA del MISMO bono, en monedas DISTINTAS,
+    MISMO nominal, cerca en el tiempo (≤ _CONDUIT_WINDOW_DAYS). Es una conversión de
+    moneda (comprás X nominal en pesos y vendés X en dólares — o al revés), NO una
+    tenencia: el neto del bono es 0. El parser intenta colapsarlos a FX, pero se le
+    escapan (cross-día, sin etiqueta 'Dolar Mep', etc.) y llegan acá como BUY/SELL.
+
+    Si NO se cancelan, el FIFO los trata como posiciones reales y, mezclados con una
+    tenencia GENUINA del mismo bono, la INFLAN (deja la pata cross-currency como
+    fantasma) o la DESTRUYEN. Reproducido: 1000 ARS genuino + 5000 USD conducto +
+    venta 5000 ARS → daba 5000 USD fantasma en vez de 1000 ARS.
+
+    Por qué no rompe tenencias genuinas dual-currency (5 ARS + 5 USD, venta 7 ARS):
+    el match exige nominal IGUAL compra↔venta; una venta de 7 no matchea una compra
+    de 5 → no se cancela nada, lo maneja el FIFO/spill como antes. Restringido a
+    BONOS para no tocar el neteo de acciones (ya testeado en _replay_asset)."""
+    if not events:
+        return events
+    # El grupo es un solo activo; basta con que alguna fila lo marque como bono
+    # (por símbolo soberano o por nombre tipo "ON …"/"BONO …"/"Letra …").
+    is_bond = any(
+        is_known_ar_bond(e.get("asset_symbol") or "") or is_bond_like_name(e.get("asset_name") or "")
+        for e in events
+    )
+    if not is_bond:
+        return events
+
+    buys = [e for e in events if e["operation_type"] == OP_BUY]
+    sells = [e for e in events if e["operation_type"] == OP_SELL]
+    cancelled: set = set()
+
+    # GATE net-short por moneda (audit 2026-06-26): una venta en la moneda X solo
+    # puede ser conducto si las COMPRAS en X NO alcanzan a cubrir las VENTAS en X
+    # (X está "corta" del lado compra → el faltante salió de la otra moneda vía MEP).
+    # Si las compras same-currency cubren las ventas same-currency, esa venta es
+    # tenencia genuina (o un round-trip same-currency), NO un conducto → no cancelar.
+    # Esto evita destruir una tenencia dual-currency genuina de igual nominal.
+    buys_by_ccy: Dict[Optional[str], float] = {}
+    sells_by_ccy: Dict[Optional[str], float] = {}
+    for e in events:
+        c = _norm_cur(e["currency"])
+        q = _num(e["quantity"])
+        if e["operation_type"] == OP_BUY:
+            buys_by_ccy[c] = buys_by_ccy.get(c, 0.0) + q
+        elif e["operation_type"] == OP_SELL:
+            sells_by_ccy[c] = sells_by_ccy.get(c, 0.0) + q
+
+    for s in sells:
+        s_ccy = _norm_cur(s["currency"])
+        s_qty = _num(s["quantity"])
+        if s_qty <= _EPS:
+            continue
+        # Moneda no corta (compras ≥ ventas) → la venta se cubre sola → no conducto.
+        if buys_by_ccy.get(s_ccy, 0.0) >= sells_by_ccy.get(s_ccy, 0.0) - _EPS:
+            continue
+        best = None  # (días, evento_compra)
+        for b in buys:
+            if id(b) in cancelled:
+                continue
+            if _norm_cur(b["currency"]) == s_ccy:      # misma moneda → no es conducto
+                continue
+            if abs(_num(b["quantity"]) - s_qty) > max(1e-6, 1e-6 * s_qty):
+                continue                                # nominal distinto → tenencia genuina
+            dd = _days_apart(s["date"], b["date"])
+            if dd is None or dd > _CONDUIT_WINDOW_DAYS:
+                continue                                # muy separados → round-trip genuino
+            if best is None or dd < best[0]:
+                best = (dd, b)
+        if best is not None:
+            cancelled.add(id(best[1]))
+            cancelled.add(id(s))
+
+    if not cancelled:
+        return events
+    return [e for e in events if id(e) not in cancelled]
 
 
 def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
@@ -285,7 +388,7 @@ def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[st
     _ph = ",".join("?" * len(brokers))
     rows = conn.execute(
         f"""SELECT n.id, n.batch_id, n.raw_row_id, n.date, n.broker, n.asset_symbol,
-                  n.operation_type, n.quantity, n.unit_price, n.gross_amount,
+                  n.asset_name, n.operation_type, n.quantity, n.unit_price, n.gross_amount,
                   n.fees, n.currency, n.created_position_id
              FROM import_normalized_tx n
              JOIN import_batches b ON b.id = n.batch_id
@@ -524,7 +627,12 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         if broker_currency not in ("ARS", "USD"):
             broker_currency = "USD"
 
-        replay = _replay_asset(events, broker_currency, tc_blue)
+        # Cancelamos los pares de conducto dólar-MEP de bonos (compra+venta del
+        # mismo bono, igual nominal, cruce de moneda, ≤ventana) ANTES del FIFO: son
+        # conversión de moneda, no tenencia. Si no, inflan/destruyen la tenencia
+        # genuina del bono. `events` completo se usa para _clear_old_state (resetea
+        # todos los links); el replay corre sobre los eventos sin conductos.
+        replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue)
         # Los lotes/ops ya cargan su _broker desde el evento (neteo cross-broker):
         # un lote comprado en el sibling se reescribe al sibling, uno del padre al
         # padre. NO sobreescribimos con un broker de grupo.
