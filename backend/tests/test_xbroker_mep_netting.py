@@ -105,6 +105,11 @@ class XBrokerMepNetting(unittest.TestCase):
             "SELECT COUNT(*) c FROM operations WHERE user_id=? AND asset=? AND op_type='Venta'",
             (self.uid, asset)).fetchone()["c"]
 
+    def _pnl(self, asset: str) -> float:
+        return float(self.conn.execute(
+            "SELECT COALESCE(SUM(pnl_usd),0) s FROM operations WHERE user_id=? AND asset=? AND op_type='Venta'",
+            (self.uid, asset)).fetchone()["s"])
+
     def _sibling_exists(self) -> bool:
         r = self.conn.execute(
             "SELECT COUNT(*) c FROM brokers WHERE user_id=? AND name LIKE ?",
@@ -156,6 +161,70 @@ class XBrokerMepNetting(unittest.TestCase):
         self._import(csv, rebuild=True)
         self.assertAlmostEqual(self._qty("GGAL"), 0.0, places=6)
         self.assertEqual(self._ventas("GGAL"), 1)
+
+    def test_ars_oversell_spills_to_usd_lot(self):
+        """Caso real IOL (AAPL/XLRE/JNJ): YA hay lotes ARS + una pata USD (dólar-MEP),
+        y una venta ARS supera los lotes ARS (oversell). El remanente debe consumir
+        el lote USD del sibling (spill cross-currency) y NETEAR a 0 — no dejar el
+        fantasma USD. Antes (`_same if _same else lots`) el remanente NO tocaba el
+        lote USD porque había lotes ARS → fantasma de 2 en '· USD'."""
+        csv = _csv(
+            "2025-07-28,COMPRA,Cocos,AAPL,11,100,1100,,,0,ARS,",   # 11 ARS (genuino)
+            "2025-07-29,COMPRA,Cocos,AAPL,2,10,20,,,0,USD,",       # 2 USD (dólar-MEP)
+            "2026-01-16,VENTA,Cocos,AAPL,13,120,1560,,,0,ARS,",    # vende 13 ARS → oversell por 2
+        )
+        self._import(csv, rebuild=True)
+        self.assertAlmostEqual(self._qty("AAPL"), 0.0, places=6)               # total neteado
+        self.assertAlmostEqual(self._qty("AAPL", "%· USD%"), 0.0, places=6)    # SIN fantasma USD
+        # P&L del chunk cross-currency (lote USD consumido por venta ARS, valuado con
+        # tc_blue) tiene que ser SANO — no un 100× fake. Costo USD 20 → ARS≈20k vs
+        # proceeds ARS 1560×(2/13)≈240 → pérdida acotada, lejos de cualquier 100×.
+        self.assertLess(abs(self._pnl("AAPL")), 1e6, "P&L del spill cross-currency fuera de rango")
+
+    def test_genuine_dual_currency_partial_oversell_preserves_usd(self):
+        """Tenencia GENUINA dual-currency: 5 ARS + 5 USD. Una venta ARS de 7 (oversell
+        de 2, PERO MENOR que la pata USD de 5) NO debe comerse la pata USD genuina —
+        el faltante se cubre con un seed same-currency (history-as-truth). El spill
+        cross-currency solo aplica cuando el oversell consume ENTERA la pata USD
+        (neteo total dólar-MEP), no a un oversell parcial. Regresión del audit
+        2026-06-26 (over-netting): antes `_same + _other` se comía 2 de la pata USD."""
+        csv = _csv(
+            "2025-07-01,COMPRA,Cocos,GGAL,5,1000,5000,,,0,ARS,",
+            "2025-07-02,COMPRA,Cocos,GGAL,5,10,50,,,0,USD,",
+            "2026-01-16,VENTA,Cocos,GGAL,7,1200,8400,,,0,ARS,",
+        )
+        self._import(csv, rebuild=True)
+        self.assertAlmostEqual(self._qty("GGAL", "%· USD%"), 5.0, places=6)   # pata USD GENUINA intacta
+        self.assertAlmostEqual(self._qty("GGAL"), 5.0, places=6)             # total = 5 (USD), ARS 0
+
+    def test_genuine_dual_currency_split_oversell_preserves_usd(self):
+        """Igual que el anterior pero el oversell ARS llega en DOS ventas (7 + 2). La
+        primera drena los lotes ARS; la segunda ve _same_total==0 y NO debe tratar la
+        pata USD genuina como conduit (case (a)) — el activo SÍ tuvo compra ARS
+        (seen_buy_ccy), así que se preserva. Order-independence (regresión audit
+        2026-06-26: la 2da venta se comía 2 de la pata USD)."""
+        csv = _csv(
+            "2025-07-01,COMPRA,Cocos,GGAL,5,1000,5000,,,0,ARS,",
+            "2025-07-02,COMPRA,Cocos,GGAL,5,10,50,,,0,USD,",
+            "2026-01-16,VENTA,Cocos,GGAL,7,1200,8400,,,0,ARS,",
+            "2026-02-16,VENTA,Cocos,GGAL,2,1300,2600,,,0,ARS,",
+        )
+        self._import(csv, rebuild=True)
+        self.assertAlmostEqual(self._qty("GGAL", "%· USD%"), 5.0, places=6)   # pata USD GENUINA intacta
+        self.assertAlmostEqual(self._qty("GGAL"), 5.0, places=6)
+
+    def test_ars_sell_within_lots_preserves_genuine_usd(self):
+        """Tenencia USD genuina NO se toca cuando la venta ARS se cubre con lotes ARS:
+        SPY 14 ARS + 4 USD, vende 10 ARS (dentro de los 14) → quedan 4 ARS + 4 USD = 8.
+        El spill cross-currency solo aplica al OVERSELL, no a ventas normales."""
+        csv = _csv(
+            "2025-07-28,COMPRA,Cocos,SPY,14,100,1400,,,0,ARS,",
+            "2025-07-29,COMPRA,Cocos,SPY,4,10,40,,,0,USD,",
+            "2026-01-16,VENTA,Cocos,SPY,10,120,1200,,,0,ARS,",
+        )
+        self._import(csv, rebuild=True)
+        self.assertAlmostEqual(self._qty("SPY", "%· USD%"), 4.0, places=6)     # USD genuino preservado
+        self.assertAlmostEqual(self._qty("SPY"), 8.0, places=6)               # 4 ARS + 4 USD
 
 
 if __name__ == "__main__":

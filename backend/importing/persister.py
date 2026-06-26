@@ -464,6 +464,12 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     from behavioral import _native_ccy as _nccy
 
     def _by_ccy(rows):
+        # Same-currency FIFO; fallback a todos solo si NO hay lotes de esa moneda
+        # (legacy NULL). El NETEO dólar-MEP (spill cross-currency con guarda de
+        # neteo-total) vive en rebuild._replay_asset, que es la fuente autoritativa
+        # de las posiciones finales post-import (sobrescribe lo que escribe el
+        # persister). Acá NO hacemos spill para no destruir tenencias dual-currency
+        # genuinas en el estado transitorio (audit 2026-06-26).
         same = [p for p in rows if _nccy(dict(p)) == currency]
         return same if same else rows
 

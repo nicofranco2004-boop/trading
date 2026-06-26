@@ -87,6 +87,10 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
     que no linkea las semillas)."""
     lots: List[Dict[str, Any]] = []   # lotes abiertos, FIFO desde el frente
     operations: List[Dict[str, Any]] = []
+    # Monedas en las que el activo TUVO una compra real (no seeds) en este replay.
+    # Distingue una tenencia GENUINA same-currency ya vendida (no spill) de un
+    # holding cross-currency-only vendido en otra moneda (sí spill, dólar-MEP).
+    seen_buy_ccy: set = set()
 
     for ev in events:
         op = ev["operation_type"]
@@ -96,6 +100,7 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             unit = _num(ev["unit_price"])
             invested = _num(ev["gross_amount"]) if ev["gross_amount"] is not None else unit * qty
             fees = _num(ev["fees"])
+            seen_buy_ccy.add(_norm_cur(ev["currency"]) or broker_currency)
             lots.append({
                 "qty": qty,
                 "invested": invested,
@@ -131,36 +136,60 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
 
         total_avail = sum(l["qty"] for l in lots)
 
-        # Política history-as-truth: si se vende más de lo disponible, lote
-        # semilla al precio de venta para el faltante → P&L = 0 sobre ese chunk.
-        if qty_to_sell > total_avail + _EPS:
-            missing = qty_to_sell - total_avail
-            lots.append({
-                "qty": missing,
-                "invested": missing * exit_price,
-                "buy_price": exit_price,
-                "commissions": 0.0,
-                "entry_date": op_date,
+        # Lotes en la moneda de la venta vs la OTRA moneda del par.
+        _same = [l for l in lots if (l["currency"] or currency) == currency]
+        _other = [l for l in lots if (l["currency"] or currency) != currency]
+        _same_total = sum(l["qty"] for l in _same)
+        _other_total = sum(l["qty"] for l in _other)
+        oversell_same = qty_to_sell - _same_total   # faltante en la moneda de la venta
+
+        def _seed(qty):
+            # Lote semilla history-as-truth al precio de venta (P&L = 0 sobre ese
+            # chunk). Vive en el broker/moneda de la venta que lo necesitó.
+            seed = {
+                "qty": qty, "invested": qty * exit_price, "buy_price": exit_price,
+                "commissions": 0.0, "entry_date": op_date,
                 "currency": _norm_cur(ev["currency"]),
-                "batch_id": None,      # semilla sintética: sin origen → sin link
-                "raw_row_id": None,
-                "is_seed": True,
-                # El seed vive en el broker de la VENTA que lo necesitó.
-                "_broker": ev["broker"],
-                "_asset": ev["asset_symbol"],
-            })
+                "batch_id": None, "raw_row_id": None, "is_seed": True,
+                "_broker": ev["broker"], "_asset": ev["asset_symbol"],
+            }
+            lots.append(seed)
+            return seed
+
+        # ¿Consumir la OTRA moneda del par (spill cross-currency = neteo dólar-MEP)?
+        # Sí en dos casos:
+        #   (a) el activo NUNCA tuvo una compra en la moneda de la venta → la venta es
+        #       ENTERAMENTE cross-currency (vendió en pesos lo que compró en dólares;
+        #       ej. BMA comprado 10 USD, vendido 4 ARS → consume 4 de la pata USD).
+        #       OJO: "nunca tuvo" (seen_buy_ccy), NO "no tiene AHORA" — si tuvo lotes
+        #       same-currency y se vendieron (split-sell), NO es conduit (audit).
+        #   (b) el oversell en la moneda de la venta consume ENTERA la pata de la otra
+        #       moneda — la pata USD compensa EXACTO el oversell ARS → tenencia TOTAL
+        #       del activo ≈ 0 (conversión: comprado USD en el sibling, vendido de más
+        #       en ARS en el padre; ej. AAPL 11 ARS + 2 USD, venta 13 ARS).
+        # Si HAY lotes same-currency y el oversell es MENOR que la pata cross-currency,
+        # esa pata es GENUINA (no un conduit) → NO la tocamos; el faltante se cubre con
+        # un seed same-currency. Así no destruimos una tenencia dual-currency real
+        # (audit 2026-06-26: 5 ARS + 5 USD, venta 7 ARS NO debe comerse la pata USD).
+        full_net = (oversell_same > _EPS and _other_total > _EPS
+                    and oversell_same >= _other_total - _EPS)
+        never_held_same = currency not in seen_buy_ccy
+        do_spill = (_same_total <= _EPS and _other_total > _EPS and never_held_same) or full_net
+
+        if do_spill:
+            _consume_from = _same + _other
+            # Si la venta supera AMBAS monedas, seed same-currency para el resto.
+            if qty_to_sell > total_avail + _EPS:
+                _consume_from = _consume_from + [_seed(qty_to_sell - total_avail)]
+        else:
+            # Preservar la otra moneda. Si falta same-currency (oversell parcial o data
+            # incompleta), seed same-currency y consumir SOLO same-currency.
+            _consume_from = list(_same)
+            if oversell_same > _EPS:
+                _consume_from = _consume_from + [_seed(oversell_same)]
 
         tc_venta = tc_blue if sell_currency == "ARS" else 1.0
         remaining = qty_to_sell
-
-        # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo ticker
-        # se puede tener en ARS y USD). Los lots son dicts compartidos: consumir los
-        # de _consume_from reduce su qty y deja intactos los de otra moneda. Si NO
-        # hay lotes de esa moneda (legacy), cae a todos (cross-currency, red de
-        # seguridad). En import el routing ya separa por broker → no-op para data
-        # ruteada; cubre same-broker dual-currency.
-        _same = [l for l in lots if (l["currency"] or currency) == currency]
-        _consume_from = _same if _same else lots
 
         for lot in _consume_from:
             if remaining <= _EPS:

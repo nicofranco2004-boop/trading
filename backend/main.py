@@ -7805,6 +7805,13 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_current_user)):
             # TODOS con conversión cross-currency (red de seguridad: no rompe P&L
             # existente ni genera seeds fantasma).
             from behavioral import _native_ccy
+            # Venta MANUAL: respeta la moneda explícita del user. Con lotes
+            # currency-aware (mismo ticker en ARS y USD en el mismo broker) una venta
+            # en USD consume SOLO lotes USD y se RECHAZA si no alcanzan — NO hace spill
+            # a los lotes ARS (eso sería romper la separación de monedas que el user
+            # eligió). El spill cross-currency (dólar-MEP) es exclusivo de la RECONSTRUCCIÓN
+            # de IMPORT (rebuild/persister), donde no hay intención de moneda por fila.
+            # Fallback a todos solo si NO hay lotes de esa moneda (data legacy NULL).
             _same_ccy = [p for p in all_positions if _native_ccy(dict(p)) == sell_ccy]
             positions = _same_ccy if _same_ccy else all_positions
 
