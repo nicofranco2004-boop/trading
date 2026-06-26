@@ -75,6 +75,11 @@ export function simulateBenchmark(globalMonthly, priceLookup) {
   // Capital inicial → unidades del benchmark al precio del primer mes.
   let units = (sorted[0].capital_inicio || 0) / firstPrice
   const series = []
+  // priceSeries = precio CRUDO del índice por mes (sin flujos). Lo usa el chart de
+  // benchmark para el retorno SIMPLE del índice (price[k]/price[first] − 1) =
+  // "¿cuánto rindió el S&P?", time-weighted, igual que el broker. El `series`
+  // flow-matched queda para back-compat / otros usos.
+  const priceSeries = []
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
@@ -83,12 +88,15 @@ export function simulateBenchmark(globalMonthly, priceLookup) {
     // Cada flujo del mes se ejecuta al precio de ese mes.
     if (price > 0) units += net / price
     series.push({ key: k, value: units * price })
+    priceSeries.push({ key: k, price })
   }
 
   return {
     finalValue: series[series.length - 1].value,
     series,
     finalUnits: units,
+    priceSeries,
+    firstPrice,
   }
 }
 
@@ -139,6 +147,11 @@ export function simulateArsCash(globalMonthly, blueMap) {
   // Convertir capital inicial USD a pesos al blue del primer mes.
   let pesos = (sorted[0].capital_inicio || 0) * firstBlue
   const series = []
+  // priceSeries = "precio" USD-equiv de 1 peso sostenido = 1/blue. Permite al
+  // chart medir el benchmark como índice simple (en pesos da 0%; en USD da la
+  // pérdida por devaluación). Ver buildShadowFromSim/Ars en Insights.
+  const priceSeries = []
+  const firstPrice = 1 / firstBlue
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
@@ -146,12 +159,15 @@ export function simulateArsCash(globalMonthly, blueMap) {
     const net = (m.deposits || 0) - (m.withdrawals || 0)
     pesos += net * blue
     series.push({ key: k, value: blue > 0 ? pesos / blue : 0 })
+    priceSeries.push({ key: k, price: blue > 0 ? 1 / blue : firstPrice })
   }
 
   return {
     finalValue: series[series.length - 1].value,
     series,
     finalPesos: pesos,
+    priceSeries,
+    firstPrice,
   }
 }
 
@@ -243,6 +259,10 @@ export function simulateMerval(globalMonthly, mervalArsMap, blueMap) {
   // Capital USD inicial → ARS al blue del primer mes → puntos del Merval
   let units = ((sorted[0].capital_inicio || 0) * firstBlue) / firstMerv
   const series = []
+  // priceSeries = "precio" USD-equiv de 1 punto del Merval = merv/blue. En pesos
+  // (×blue) reproduce el retorno del Merval; en USD lo ajusta por FX.
+  const priceSeries = []
+  const firstPrice = firstMerv / firstBlue
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
@@ -257,12 +277,15 @@ export function simulateMerval(globalMonthly, mervalArsMap, blueMap) {
     const valueArs = units * merv
     const valueUsd = blue > 0 ? valueArs / blue : 0
     series.push({ key: k, value: valueUsd })
+    priceSeries.push({ key: k, price: blue > 0 ? merv / blue : firstPrice })
   }
 
   return {
     finalValue: series[series.length - 1].value,
     series,
     finalUnits: units,
+    priceSeries,
+    firstPrice,
   }
 }
 
@@ -303,6 +326,10 @@ export function simulatePlazoFijoUva(globalMonthly, uvaMap, blueMap) {
   let valueArs = (sorted[0].capital_inicio || 0) * firstBlue
   let prevUva = firstUva  // primer mes: ratio = 1 → no capitaliza (alineado con S&P)
   const series = []
+  // priceSeries = "precio" USD-equiv del índice UVA = uva/blue. En pesos (×blue)
+  // reproduce el ajuste UVA (≈ inflación); en USD lo ajusta por FX.
+  const priceSeries = []
+  const firstPrice = firstUva / firstBlue
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
@@ -326,11 +353,14 @@ export function simulatePlazoFijoUva(globalMonthly, uvaMap, blueMap) {
     // Value USD-equiv = ARS / blue del mes
     const valueUsd = blue > 0 ? valueArs / blue : 0
     series.push({ key: k, value: valueUsd })
+    priceSeries.push({ key: k, price: (blue > 0 && uva > 0) ? uva / blue : firstPrice })
   }
 
   return {
     finalValue: series[series.length - 1].value,
     series,
     finalArs: valueArs,
+    priceSeries,
+    firstPrice,
   }
 }
