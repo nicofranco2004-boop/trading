@@ -160,5 +160,77 @@ class BackfillRecomputeTest(unittest.TestCase):
         self.conn = main.get_db()
 
 
+class BackfillEndpointTest(unittest.TestCase):
+    """El botón admin: POST /api/admin/backfill-recompute (dry-run/apply + gate)."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.conn = main.get_db()
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions", "monthly_entries",
+                  "snapshots", "config", "brokers", "users"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.conn.commit()
+        self.admin = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, is_admin) VALUES (?,?,1,1)",
+            ("admin@rendi.test", "x")).lastrowid
+        self.user = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, is_admin) VALUES (?,?,1,0)",
+            ("plebe@rendi.test", "x")).lastrowid
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.admin, "Cocos", "ARS"))
+        self.conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+                          (self.admin, "tc_blue", "1000"))
+        self.conn.commit()
+        # import fuera de orden en la cuenta admin → AAPL fantasma (10).
+        for csv in (_csv("2025-06-20,VENTA,Cocos,AAPL,10,200,2000,,,0,ARS,"),
+                    _csv("2024-03-15,COMPRA,Cocos,AAPL,10,150,1500,,,0,ARS,")):
+            with self.conn:
+                p = pl.run_preview(self.conn, uid=self.admin, file_bytes=csv, file_name="x.csv",
+                                   broker_hint="Cocos", parser_format="rendi_generic")
+            with self.conn:
+                txs, raw = pl.load_session_for_confirm(self.conn, uid=self.admin, session_id=p["session_id"])
+                ps.persist_batch(self.conn, uid=self.admin, batch_id=p["session_id"], txs=txs,
+                                 raw_row_ids_by_index=raw, helpers=_helpers())
+        self.conn.close()
+        self.client = TestClient(main.app)
+
+    def _hdr(self, uid):
+        return {"Authorization": f"Bearer {main.create_token(uid)}"}
+
+    def _aapl(self):
+        c = main.get_db()
+        try:
+            return float(c.execute("SELECT COALESCE(SUM(quantity),0) q FROM positions "
+                                   "WHERE asset='AAPL' AND is_cash=0").fetchone()["q"] or 0)
+        finally:
+            c.close()
+
+    def test_non_admin_forbidden(self):
+        r = self.client.post("/api/admin/backfill-recompute", headers=self._hdr(self.user))
+        self.assertEqual(r.status_code, 403, r.text)
+
+    def test_dryrun_reports_without_mutating_then_apply(self):
+        # DRY-RUN: reporta el cambio pero NO toca la base real.
+        r = self.client.post("/api/admin/backfill-recompute?apply=false", headers=self._hdr(self.admin))
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["applied"])
+        self.assertEqual(body["users_changed"], 1)
+        self.assertEqual(body["cash_warnings"], 0)
+        self.assertTrue(any(c.get("asset") == "AAPL" and c["after"] == 0 for c in body["changes"]))
+        self.assertEqual(self._aapl(), 10.0)   # real NO mutó
+
+        # APPLY: ahora sí.
+        r2 = self.client.post("/api/admin/backfill-recompute?apply=true", headers=self._hdr(self.admin))
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertTrue(r2.json()["applied"])
+        self.assertEqual(self._aapl(), 0.0)    # neteado en la real
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -220,6 +220,9 @@ export default function Admin() {
       {/* ── Campaña regalo Pro: avisar que les regalamos un mes + cargá historial ── */}
       <GiftPlanPanel toast={toast} />
 
+      {/* ── Backfill: recomputar posiciones de cuentas ya importadas (FIFO + amort) ── */}
+      <BackfillPanel toast={toast} />
+
       {/* ── Alerta de billing: pagaron pero figuran en Free ──────────────── */}
       {affected.length > 0 && (
         <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
@@ -673,6 +676,134 @@ function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
 
 // ─── ConversionPanel — analytics del paywall Free → Pro ──────────────────────
 // Aggregates de plan_events (Fase 3). Vacío si no hay events todavía.
+// ─── BackfillPanel — recomputar posiciones de cuentas ya importadas ──────────
+// Aplica a cuentas viejas los fixes de FIFO (currency-aware + neteo dólar-MEP) y
+// la amortización de bonos, sin que el usuario re-importe. Simular (sobre copia,
+// no toca nada) → revisar → Aplicar.
+function BackfillPanel({ toast }) {
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [applying, setApplying] = useState(false)
+
+  async function simulate() {
+    setLoading(true)
+    try {
+      setPreview(await api.post('/admin/backfill-recompute?apply=false'))
+    } catch (e) {
+      toast.push('Error al simular: ' + e.message, { type: 'error' })
+    } finally { setLoading(false) }
+  }
+
+  async function apply() {
+    if (!preview) return
+    if (!confirm(`¿Aplicar la corrección a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'} ` +
+                 `(${preview.positions_changed} posiciones)? Hacé un backup antes. Es reversible solo desde backup.`)) return
+    setApplying(true)
+    try {
+      const r = await api.post('/admin/backfill-recompute?apply=true')
+      toast.push(`Aplicado: ${r.users_changed} cuentas · ${r.positions_changed} posiciones` +
+                 (r.cash_warnings ? ` · ⚠️ ${r.cash_warnings} alertas de cash` : ''),
+                 { type: r.cash_warnings ? 'warn' : 'success' })
+      await simulate()  // re-simular → debería dar 0 cambios (idempotente)
+    } catch (e) {
+      toast.push('Error al aplicar: ' + e.message, { type: 'error' })
+    } finally { setApplying(false) }
+  }
+
+  const changes = (preview?.changes || []).filter(c => !c.cash_warning)
+  const cashWarns = (preview?.changes || []).filter(c => c.cash_warning)
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <RotateCcw size={16} className="text-data-violet" />
+          <h2 className="font-semibold text-ink-0">Recomputar posiciones (cuentas ya importadas)</h2>
+        </div>
+        <button
+          onClick={simulate}
+          disabled={loading || applying}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Volver a simular' : 'Simular corrección'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Aplica a las cuentas <b>ya importadas</b> los arreglos de FIFO (mismo ticker en pesos y dólares, fantasmas
+        dólar-MEP) y la amortización de bonos — <b>sin</b> que el usuario tenga que volver a importar. <b>Simular</b> corre
+        sobre una copia (no toca nada) y te muestra qué cambiaría; recién <b>Aplicar</b> modifica. Idempotente y no toca el
+        cash. Hacé un backup antes de aplicar.
+      </p>
+
+      {preview && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <ConvCell label="Cuentas a corregir" value={preview.users_changed} hint={`de ${preview.total_users}`} />
+            <ConvCell label="Posiciones que cambian" value={preview.positions_changed} hint="netos/ajustes" />
+            <ConvCell label="Alertas de cash" value={preview.cash_warnings} hint="deberían ser 0" />
+          </div>
+
+          {cashWarns.length > 0 && (
+            <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border border-amber-300/50 rounded-md p-2">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>Hay {cashWarns.length} cuenta(s) donde el cash cambiaría — NO debería. Revisá antes de aplicar
+                (uids: {cashWarns.map(c => c.uid).join(', ')}).</span>
+            </div>
+          )}
+
+          {changes.length > 0 ? (
+            <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+                    <th className="text-left px-2 py-1">Usuario</th>
+                    <th className="text-left px-2 py-1">Broker</th>
+                    <th className="text-left px-2 py-1">Activo</th>
+                    <th className="text-right px-2 py-1">Antes</th>
+                    <th className="text-right px-2 py-1">Después</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {changes.map((c, i) => (
+                    <tr key={i} className="border-b border-line/20">
+                      <td className="px-2 py-1 text-ink-2">#{c.uid}</td>
+                      <td className="px-2 py-1 text-ink-2">{c.broker}</td>
+                      <td className="px-2 py-1 text-ink-1">{c.asset}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-2">{c.before?.toLocaleString()}</td>
+                      <td className={`px-2 py-1 text-right tabular ${c.after === 0 ? 'text-rose-500' : 'text-ink-1'}`}>
+                        {c.after?.toLocaleString()} {c.after === 0 && '· eliminada'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {preview.truncated && <p className="text-[11px] text-ink-3 px-2 py-1">… lista truncada; los totales de arriba son completos.</p>}
+            </div>
+          ) : (
+            <p className="text-xs text-ink-3">No hay cambios pendientes — las cuentas ya están al día. ✅</p>
+          )}
+
+          {preview.errors?.length > 0 && (
+            <p className="text-xs text-rose-500">{preview.errors.length} cuenta(s) con error (se saltean): {preview.errors.slice(0, 5).map(e => `#${e.uid}`).join(', ')}</p>
+          )}
+
+          {preview.users_changed > 0 && (
+            <button
+              onClick={apply}
+              disabled={applying || loading}
+              className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-md bg-data-violet text-white hover:bg-data-violet/90 disabled:opacity-50"
+            >
+              <Check size={14} className={applying ? 'animate-pulse' : ''} />
+              {applying ? 'Aplicando…' : `Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}`}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 function ConversionPanel({ data }) {
   if (!data) {
     return (
