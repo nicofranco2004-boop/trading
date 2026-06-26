@@ -154,10 +154,13 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
         value     += cashUsd
         invested  += cashUsd  // cash en pesos: invested USD = value USD (no FX gain)
       } else {
-        // FX-phantom fix: cost basis USD se calcula al blue actual, no al
-        // tc_compra histórico. Así, value y invested se mueven juntos cuando
-        // el blue cambia y solo aparece P&L cuando el activo realmente rinde.
-        const invUsd = realCost / tcBlue
+        // Holdings (CEDEARs / acciones AR / bonos) → a USD por el dólar-MEP
+        // (cedearRate), que es el dólar al que REALMENTE salís de la inversión y
+        // el que muestra el broker. El blue es para el CASH, no para las tenencias.
+        // Antes valuábamos acá al blue y el total quedaba ~2% por debajo del broker.
+        // FX-phantom fix: invested y value usan el MISMO rate (MEP), así se mueven
+        // juntos y solo aparece P&L cuando el activo realmente rinde.
+        const invUsd = realCost / cedearRate
         invested += invUsd
 
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
@@ -166,7 +169,7 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
           (p.price_override != null || _trustMktValue(mktArs, realCost, p.asset_type))
         if (trustArs) {
           valueArs += mktArs
-          value    += mktArs / tcBlue
+          value    += mktArs / cedearRate
         } else {
           // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
           valueArs += realCost

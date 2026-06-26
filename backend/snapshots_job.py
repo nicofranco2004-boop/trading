@@ -152,14 +152,18 @@ def compute_broker_value_usd(
                 value += cash_usd
                 invested += cash_usd  # cash ARS: value USD = invested USD (no FX gain)
             else:
-                inv_usd = real_cost / tc_blue if tc_blue > 0 else 0
+                # Holdings (CEDEARs/acciones AR/bonos) → a USD por el dólar-MEP
+                # (cedear_rate), el dólar al que realmente salís de la inversión y
+                # el que muestra el broker. El blue es solo para el cash. invested y
+                # value usan el MISMO rate (MEP) → sin FX-phantom. (Ver valuation.js.)
+                inv_usd = real_cost / cedear_rate if cedear_rate > 0 else 0
                 invested += inv_usd
                 # `is not None` (no `or`): un price_override=0 es válido (activo
                 # marcado sin valor) y NO debe caer al precio de mercado. Mirror
                 # del `??` del frontend (valuation.js:163).
                 price_ars = override if override is not None else prices.get(f"{p['asset']}.BA")
                 if price_ars is not None:
-                    mkt_usd = (price_ars * (p.get('quantity') or 0)) / tc_blue if tc_blue > 0 else 0
+                    mkt_usd = (price_ars * (p.get('quantity') or 0)) / cedear_rate if cedear_rate > 0 else 0
                     trust = override is not None or _trust_mkt_value(mkt_usd, inv_usd, asset_type)
                     value += mkt_usd if trust else inv_usd
                 else:

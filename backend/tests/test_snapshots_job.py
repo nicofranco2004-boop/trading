@@ -217,6 +217,22 @@ class TestCedearValuationInUsdSubbroker(unittest.TestCase):
                                      broker_name='Mi Broker USD', cedear_rate=1200)
         self.assertEqual(r['value'], 1500)  # ticker US, NO .BA
 
+    def test_ars_broker_holdings_use_mep_cash_uses_blue(self):
+        # Fix: en un broker ARS, las TENENCIAS se valúan al dólar-MEP (cedear_rate)
+        # y el CASH al blue. Antes todo iba al blue → el total quedaba ~2% por
+        # debajo del broker (que usa MEP). GGAL 100 @ .BA 1500 = 150.000 ARS.
+        holding = [{'asset': 'GGAL', 'asset_type': 'STOCK_AR', 'is_cash': False,
+                    'invested': 140000, 'quantity': 100, 'commissions': 0, 'price_override': None}]
+        r = compute_broker_value_usd(holding, {'GGAL.BA': 1500}, 'ARS', tc_blue=1530,
+                                     broker_name='Balanz', cedear_rate=1499)
+        self.assertAlmostEqual(r['value'], 150000 / 1499, places=2)     # MEP, no /1530
+        self.assertAlmostEqual(r['invested'], 140000 / 1499, places=2)
+        cash = [{'asset': 'ARS', 'is_cash': True, 'invested': 153000, 'quantity': 0,
+                 'commissions': 0, 'price_override': None}]
+        rc = compute_broker_value_usd(cash, {}, 'ARS', tc_blue=1530,
+                                      broker_name='Balanz', cedear_rate=1499)
+        self.assertAlmostEqual(rc['value'], 153000 / 1530, places=2)    # cash al blue
+
 
 class TestComputeNetDeposited(unittest.TestCase):
     def test_empty_returns_zero(self):

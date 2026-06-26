@@ -137,6 +137,26 @@ describe('ARS broker — FX phantom eliminated', () => {
   })
 })
 
+describe('ARS broker — holdings al MEP (cedearRate), cash al blue', () => {
+  // Fix: las tenencias (CEDEARs/acciones AR) se valúan al dólar-MEP (cedearRate),
+  // NO al blue — es el dólar al que salís de la inversión y el que muestra el
+  // broker. El blue queda solo para el cash. Antes el total quedaba ~2% por
+  // debajo del broker.
+  const BLUE = 1530, MEP = 1499
+  it('holding usa MEP, no blue', () => {
+    const positions = [pos({ broker: 'Balanz', asset: 'GGAL', quantity: 100, invested: 140_000 })]
+    const r = computeBrokerValue(positions, { 'GGAL.BA': 1500 }, arsBroker('Balanz'), BLUE, MEP)
+    expect(r.value).toBeCloseTo(150_000 / MEP)       // 150.000 ARS / MEP
+    expect(r.value).not.toBeCloseTo(150_000 / BLUE)  // NO al blue
+    expect(r.invested).toBeCloseTo(140_000 / MEP)
+  })
+  it('cash sigue al blue', () => {
+    const positions = [pos({ broker: 'Balanz', asset: 'ARS', is_cash: true, invested: 153_000 })]
+    const r = computeBrokerValue(positions, {}, arsBroker('Balanz'), BLUE, MEP)
+    expect(r.value).toBeCloseTo(153_000 / BLUE)
+  })
+})
+
 describe('ARS broker — no live price (fallback to cost basis)', () => {
   const positions = [pos({ broker: 'Cocos', asset: 'GGAL', quantity: 10, invested: 90_000, tc_compra: TC1 })]
   const prices    = {}
