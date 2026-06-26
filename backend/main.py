@@ -17639,11 +17639,23 @@ def reports_timeline(
             "sp500": _fetch_sp500_monthly(),
         }
         # live_value es el TOTAL del portfolio (snapshots no se desagregan
-        # por broker). Solo aplica como end_value del mes en curso cuando
+        # por broker). Solo aplica como end_value del período en curso cuando
         # el reporte es global; con broker_filter se cae al capital_final
         # del monthly_entry, que ya incluye unrealized de ese broker.
-        live_value = _latest_snapshot_value(conn, uid) if broker == "global" else None
+        # Preferimos el valor VIVO (positions × precios, lo mismo que Posiciones)
+        # para que el MES en curso no quede atado a un snapshot desactualizado:
+        # si el cron del snapshot está stale/0, el reporte mostraba una pérdida
+        # fantasma (ej. -195%) aunque la cartera valga bien. Fallback al último
+        # snapshot si el cálculo live falla o da 0.
         tc_blue = _user_tc_blue(conn, uid)
+        live_value = None
+        if broker == "global":
+            try:
+                live_value = compute_live_portfolio_value(conn, uid, tc_blue, CRYPTO_YF)
+            except Exception:
+                live_value = None
+            if not live_value or live_value <= 0:
+                live_value = _latest_snapshot_value(conn, uid)
         timeline = build_timeline(
             conn, uid, broker_filter=broker, months=months,
             bench=bench_data, live_value=live_value,
@@ -17691,6 +17703,8 @@ def reports_period_detail(
                 iy, iw, _wd = today.isocalendar()
                 if period_key == f"{iy}-W{iw:02d}":
                     is_current_period_for_live = True
+            elif period_type == "month" and period_key == today.strftime("%Y-%m"):
+                is_current_period_for_live = True
             elif period_type == "year" and period_key == str(today.year):
                 is_current_period_for_live = True
             if is_current_period_for_live:
