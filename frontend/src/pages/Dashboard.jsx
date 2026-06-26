@@ -25,7 +25,7 @@ import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/f
 import { useCurrency } from '../contexts/CurrencyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
@@ -242,6 +242,13 @@ export default function Dashboard() {
           const invUsd = realCost / tcBlue
           pnlUsd = valueUsd - invUsd
         }
+      } else if (costInPesos(p)) {
+        // Lote en PESOS en cuenta USD: costo Y valor a USD por el dólar-MEP
+        // (.BA ÷ tcCedear), igual que un CEDEAR en broker AR. NO contar pesos
+        // como dólares (inflaba invertido/P&L). Sin precio, value=invested → pnl 0.
+        const u = pesoLotUsd(p, prices, tcCedear)
+        valueUsd = u.valueUsd
+        pnlUsd = u.valueUsd - u.investedUsd
       } else {
         const price = p.price_override ?? prices[p.asset]
         // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
@@ -255,7 +262,7 @@ export default function Dashboard() {
       }
       const isExchForPct = exchangeBrokers.has(p.broker)
       const fForPct = isARS ? 1 : cryptoBrokerFactor(p.asset, isExchForPct, p.price_override != null, tcCripto, tcCedear)
-      const invForPct = isARS ? realCost / tcBlue : realCost * fForPct
+      const invForPct = isARS ? realCost / tcBlue : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
       const pnlPct = pnlUsd != null && invForPct > 0 ? pnlUsd / invForPct : null
       return { asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct }
     })
@@ -333,6 +340,14 @@ export default function Dashboard() {
       } else {
         for (const p of bpos) {
           if (p.is_cash) continue
+          // Lote en PESOS en cuenta USD: costo Y valor a USD por el dólar-MEP
+          // (.BA ÷ tcCedear). NO contar pesos como dólares. Sin precio,
+          // pesoLotUsd da valueUsd=investedUsd → pnl 0 (igual que el continue US).
+          if (costInPesos(p)) {
+            const { investedUsd, valueUsd } = pesoLotUsd(p, prices, tcCedear)
+            pnlForBroker += valueUsd - investedUsd
+            continue
+          }
           const price = p.price_override ?? prices[p.asset]
           if (price == null) continue
           // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto

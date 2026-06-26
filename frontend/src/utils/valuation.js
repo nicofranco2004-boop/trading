@@ -115,6 +115,40 @@ export function isArUsdBroker(brokerName) {
   return /·\s*USD$/.test(brokerName || '')
 }
 
+/**
+ * costInPesos — ¿el COSTO de este lote está en pesos?
+ *
+ * La moneda del costo se decide por el LOTE (positions.currency), no por la
+ * cuenta. Un CEDEAR / acción AR comprado en PESOS queda marcado currency='ARS'
+ * aunque viva en una cuenta dólar (cargado a mano o mal ruteado). Su costo va a
+ * USD por el dólar-MEP — NO se cuenta como dólares (eso inflaba el "Invertido"
+ * ~MEP×). USD/USDT o sin marcar → se respeta el comportamiento USD actual.
+ * El VALOR de mercado ya se convierte aparte (.BA ÷ MEP), por eso solo el costo
+ * quedaba mal.
+ */
+export function costInPesos(p) {
+  // La cripto se valúa SIEMPRE en USD/spot (nunca por el MEP), aunque por error
+  // tenga currency='ARS' → la excluimos para no dividir un costo cripto por el MEP
+  // (y evitar doble conversión). Solo aplica a CEDEAR/acción AR/bono en pesos.
+  return (p?.currency || '').toUpperCase() === 'ARS' && !isCrypto(p?.asset)
+}
+
+/**
+ * pesoLotUsd — valuación USD de UN lote en PESOS (currency='ARS') que vive donde
+ * sea (típicamente una cuenta USD por carga/ruteo). Costo Y valor van a USD por el
+ * dólar-MEP (tcCedear) usando el precio LOCAL .BA, igual que un CEDEAR en un broker
+ * AR — NO se cuenta el costo en pesos como dólares. Sin precio, el valor cae al
+ * costo-USD (P&L 0). Helper compartido para que TODOS los consumidores (totales,
+ * filas, detalle, Dashboard, Insights/IA, Renta Fija) conviertan igual.
+ * Usar solo cuando costInPesos(p) es true.
+ */
+export function pesoLotUsd(p, prices, tcCedear) {
+  const investedUsd = ((p.invested || 0) + (p.commissions || 0)) / tcCedear
+  const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
+  const valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : investedUsd
+  return { investedUsd, valueUsd, priceUsd: priceArs != null ? priceArs / tcCedear : null }
+}
+
 // ─── Guard anti-distorsión ───────────────────────────────────────────────────
 // Un precio de mercado JAMÁS debe inflar una posición muy por encima de su costo.
 // Casos reales: un bono cotizado "per 100 face" multiplicado por el nominal
@@ -151,6 +185,24 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
     // Para cash o legacy data sin commissions, p.commissions es 0 o null.
     const comm = p.commissions || 0
     const realCost = (p.invested || 0) + comm
+
+    // Lote en PESOS (currency='ARS') alojado en una cuenta USD (CEDEAR/acción AR
+    // cargado en dólares o mal ruteado): se valúa estilo-ARS — costo Y valor a USD
+    // por el dólar-MEP (cedearRate), igual que en un broker AR. Sin esto el costo
+    // en pesos se contaba como dólares (invertido inflado ~MEP×) y el guard de
+    // confianza comparaba USD vs pesos (rechazaba el precio e inflaba el valor).
+    if (!p.is_cash && broker.currency !== 'ARS' && costInPesos(p)) {
+      const invUsd = realCost / cedearRate
+      invArs   += realCost
+      invested += invUsd
+      const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
+      const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
+      const trustArs = mktArs != null &&
+        (p.price_override != null || _trustMktValue(mktArs, realCost, p.asset_type))
+      if (trustArs) { valueArs += mktArs;   value += mktArs / cedearRate }
+      else          { valueArs += realCost; value += invUsd }
+      continue
+    }
 
     if (broker.currency === 'ARS') {
       invArs += realCost  // costo en pesos (moneda base del broker)

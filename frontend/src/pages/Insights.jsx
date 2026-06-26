@@ -21,7 +21,7 @@ import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/for
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, pesoLotUsd } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
@@ -283,6 +283,11 @@ function InsightsDesktop({ _embeddedTab }) {
       if (broker?.currency === 'ARS') {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
+      } else if (costInPesos(p)) {
+        // Lote en PESOS en cuenta USD: valor (y fallback sin precio) a USD por el
+        // dólar-MEP (.BA ÷ tcCedear). El fallback NO debe ser realCost crudo (pesos
+        // como dólares) — pesoLotUsd cae a investedUsd = realCost/tcCedear.
+        val = pesoLotUsd(p, prices, tcCedear).valueUsd
       } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
         // CEDEAR / instrumento de BYMA en broker USD: valuar por su precio LOCAL
         // .BA (ARS) ÷ dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
@@ -331,6 +336,10 @@ function InsightsDesktop({ _embeddedTab }) {
       if (broker?.currency === 'ARS') {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         val = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
+      } else if (costInPesos(p)) {
+        // Lote en PESOS en cuenta USD: valor (y fallback sin precio) a USD por el
+        // dólar-MEP (.BA ÷ tcCedear). El fallback NO debe ser realCost crudo.
+        val = pesoLotUsd(p, prices, tcCedear).valueUsd
       } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
         // CEDEAR / instrumento de BYMA en broker USD: precio LOCAL .BA (ARS) ÷
         // dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).
@@ -1364,6 +1373,12 @@ function InsightsDesktop({ _embeddedTab }) {
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
       valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcBlue : realCost / tcBlue
       investedUsd = realCost / tcBlue
+    } else if (costInPesos(p)) {
+      // Lote en PESOS en cuenta USD: costo Y valor a USD por el dólar-MEP
+      // (.BA ÷ tcCedear). NO contar pesos como dólares (inflaba invested/P&L).
+      const u = pesoLotUsd(p, prices, tcCedear)
+      investedUsd = u.investedUsd
+      valueUsd = u.valueUsd
     } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
       // CEDEAR / instrumento de BYMA en broker USD: precio LOCAL .BA (ARS) ÷
       // dólar-MEP (tcCedear), igual que computeBrokerValue (rama USD).

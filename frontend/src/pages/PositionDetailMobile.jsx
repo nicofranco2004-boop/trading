@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
@@ -101,6 +101,15 @@ export default function PositionDetailMobile() {
   let valueUsd = 0, priceLocal = null, pnlUsd = null, pnlPct = null
   if (p.is_cash) {
     valueUsd = isAR ? invested / tcBlue : invested
+  } else if (costInPesos(p) && !isAR) {
+    // Lote en PESOS (currency='ARS') en una cuenta USD: costo Y valor a USD por el
+    // dólar-MEP (.BA ÷ tcCedear), igual que un CEDEAR. NO contar los pesos como
+    // dólares (inflaba invertido/P&L). pesoLotUsd suma commissions al costo.
+    const u = pesoLotUsd(p, prices, tcCedear)
+    valueUsd = u.valueUsd
+    priceLocal = u.priceUsd
+    pnlUsd = u.valueUsd - u.investedUsd
+    pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
   } else if (isAR) {
     priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
     valueUsd = priceLocal != null ? (priceLocal * qty) / tcBlue : invested / tcBlue

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd } from './valuation.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
   it('normaliza espacio a guión (forma yfinance) para acción US', () => {
@@ -483,5 +483,78 @@ describe('crypto premium — broker (MEP) vs exchange (spot)', () => {
   it('override en cripto → directo, sin premium', () => {
     const r = computeBrokerValue([btc('Cocos', { price_override: 60000 })], { BTC: SPOT }, cocos, BLUE, MEP, CRIPTO)
     expect(r.value).toBeCloseTo(QTY * 60000, 2)
+  })
+})
+
+// ── Costo por moneda del LOTE, no de la cuenta (bug Christian: invertido inflado) ──
+// Un CEDEAR/acción AR comprado en PESOS pero alojado en una cuenta USD (cargado en
+// dólares o mal ruteado) tiene currency='ARS'. Su costo debe ir a USD por el MEP, no
+// contarse como dólares. El valor ya usaba .BA ÷ MEP; el costo quedaba inflado ~MEP×.
+describe('cuenta USD — lote en PESOS (currency=ARS) no se cuenta como dólares', () => {
+  const BLUE = 1200, MEP = 1486
+  const positions = [pos({ broker: 'MiUSD', asset: 'SPY', quantity: 1, invested: 48540, currency: 'ARS', asset_type: 'CEDEAR' })]
+  const r = computeBrokerValue(positions, { 'SPY.BA': 48540 }, usdBroker('MiUSD'), BLUE, MEP)
+  it('invested = costo ARS / MEP (NO el número de pesos como USD)', () => expect(r.invested).toBeCloseTo(48540 / MEP))
+  it('value    = .BA / MEP',                                       () => expect(r.value).toBeCloseTo(48540 / MEP))
+  it('pnlUsd   ≈ 0 (costo y valor al mismo MEP)',                  () => expect(r.pnlUsd).toBeCloseTo(0))
+})
+
+describe('cuenta USD — regresiones de moneda del lote', () => {
+  const BLUE = 1200, MEP = 1486
+  it('CEDEAR comprado en USD (currency=USD) NO se divide', () => {
+    const r = computeBrokerValue([pos({ broker: 'MiUSD', asset: 'AAPL', quantity: 1, invested: 32, currency: 'USD', asset_type: 'CEDEAR' })],
+      { 'AAPL.BA': 32 * MEP }, usdBroker('MiUSD'), BLUE, MEP)
+    expect(r.invested).toBeCloseTo(32)
+  })
+  it('acción US genuina (currency=USD) queda en USD', () => {
+    const r = computeBrokerValue([pos({ broker: 'IBKR', asset: 'NVDA', quantity: 2, invested: 1000, currency: 'USD' })],
+      { NVDA: 600 }, usdBroker('IBKR'), BLUE, MEP)
+    expect(r.invested).toBeCloseTo(1000)
+    expect(r.value).toBeCloseTo(1200)
+  })
+  it('currency NULL en cuenta USD → comportamiento USD conservador (sin dividir)', () => {
+    const r = computeBrokerValue([pos({ broker: 'MiUSD', asset: 'TSLA', quantity: 1, invested: 500, currency: null })],
+      { TSLA: 500 }, usdBroker('MiUSD'), BLUE, MEP)
+    expect(r.invested).toBeCloseTo(500)
+  })
+  it('lote en PESOS sin precio → valor cae al costo-USD (no a pesos crudos)', () => {
+    const r = computeBrokerValue([pos({ broker: 'MiUSD', asset: 'SPY', quantity: 1, invested: 48540, currency: 'ARS', asset_type: 'CEDEAR' })],
+      {}, usdBroker('MiUSD'), BLUE, MEP)
+    expect(r.invested).toBeCloseTo(48540 / MEP)
+    expect(r.value).toBeCloseTo(48540 / MEP)
+  })
+  it('lote en PESOS en cuenta ARS (rama ARS) sigue igual', () => {
+    const r = computeBrokerValue([pos({ broker: 'Cocos', asset: 'SPY', quantity: 1, invested: 48540, currency: 'ARS', asset_type: 'CEDEAR' })],
+      { 'SPY.BA': 48540 }, arsBroker('Cocos'), BLUE, MEP)
+    expect(r.invested).toBeCloseTo(48540 / MEP)
+  })
+})
+
+describe('costInPesos — moneda del costo por lote', () => {
+  it("currency='ARS' → true",        () => expect(costInPesos({ currency: 'ARS' })).toBe(true))
+  it("currency='USD' → false",       () => expect(costInPesos({ currency: 'USD' })).toBe(false))
+  it('currency NULL → false (cons.)', () => expect(costInPesos({ currency: null })).toBe(false))
+  it("cripto con currency='ARS' → false (cripto va a USD/spot, no por MEP)", () => expect(costInPesos({ currency: 'ARS', asset: 'BTC' })).toBe(false))
+  it("CEDEAR con currency='ARS' → true", () => expect(costInPesos({ currency: 'ARS', asset: 'SPY' })).toBe(true))
+})
+
+describe('pesoLotUsd — lote en pesos → USD por MEP (helper compartido)', () => {
+  const MEP = 1486
+  const p = { asset: 'SPY', quantity: 1, invested: 48540, commissions: 0, currency: 'ARS', asset_type: 'CEDEAR' }
+  it('con precio .BA: costo y valor ÷ MEP', () => {
+    const u = pesoLotUsd(p, { 'SPY.BA': 50000 }, MEP)
+    expect(u.investedUsd).toBeCloseTo(48540 / MEP)
+    expect(u.valueUsd).toBeCloseTo(50000 / MEP)
+    expect(u.priceUsd).toBeCloseTo(50000 / MEP)
+  })
+  it('sin precio: valor cae al costo-USD (P&L 0), no a pesos crudos', () => {
+    const u = pesoLotUsd(p, {}, MEP)
+    expect(u.investedUsd).toBeCloseTo(48540 / MEP)
+    expect(u.valueUsd).toBeCloseTo(48540 / MEP)
+    expect(u.priceUsd).toBe(null)
+  })
+  it('incluye comisiones en el costo', () => {
+    const u = pesoLotUsd({ ...p, commissions: 1486 }, {}, MEP)
+    expect(u.investedUsd).toBeCloseTo((48540 + 1486) / MEP)
   })
 })

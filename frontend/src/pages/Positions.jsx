@@ -29,7 +29,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, costInPesos } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency } from '../contexts/CurrencyContext'
 import PageHeader from '../components/PageHeader'
@@ -858,7 +858,19 @@ function PositionsDesktop() {
   }
 
   function calcUSDT(p) {
-    if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null }
+    if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null, investedUsd: p.invested }
+    // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
+    // (tcCedear): costo Y valor a USD por el mismo rate. Sin esto el costo en pesos
+    // se contaba como dólares (P&L de la fila roto). investedUsd = realCost/tcCedear
+    // alimenta la columna "Invertido" (no los pesos crudos como dólares).
+    if (costInPesos(p)) {
+      const realCost = ((p.invested || 0) + (p.commissions || 0)) / tcCedear
+      const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
+      if (priceArs == null) return { value: null, pnl: null, pnlPct: null, price: null, investedUsd: realCost }
+      const value = (priceArs * p.quantity) / tcCedear
+      const pnl = value - realCost
+      return { value, pnl, pnlPct: realCost > 0 ? pnl / realCost : 0, price: priceArs / tcCedear, investedUsd: realCost }
+    }
     let price
     if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
       // Instrumento de BYMA en broker USD: CEDEAR o acción AR (PAMP/YPFD) en un
@@ -870,15 +882,15 @@ function PositionsDesktop() {
     } else {
       price = p.price_override ?? prices[p.asset]
     }
-    if (price == null) return { value: null, pnl: null, pnlPct: null, price: null }
     // Cripto en BROKER (no exchange) se valúa al cripto-dólar (~spot+5%). El factor
     // escala tanto el valor de mercado como el costo, así el P&L% queda invariante.
     const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
     // Cost basis = invested + commissions (las comisiones de compra son costo real).
     const realCost = ((p.invested || 0) + (p.commissions || 0)) * f
+    if (price == null) return { value: null, pnl: null, pnlPct: null, price: null, investedUsd: realCost }
     const value = price * p.quantity * f
     const pnl = value - realCost
-    return { value, pnl, pnlPct: realCost > 0 ? pnl / realCost : 0, price }
+    return { value, pnl, pnlPct: realCost > 0 ? pnl / realCost : 0, price, investedUsd: realCost }
   }
 
   function calcARS(p) {
@@ -914,7 +926,9 @@ function PositionsDesktop() {
       return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
     }
     const c = calcUSDT(p)
-    const invUsd = (p.invested || 0) + (p.commissions || 0)
+    // invUsd respeta el lote en PESOS: calcUSDT.investedUsd = realCost/tcCedear
+    // para currency='ARS' (no los pesos crudos como dólares), y realCost USD si no.
+    const invUsd = c.investedUsd ?? ((p.invested || 0) + (p.commissions || 0))
     const valueUsd = c.value != null ? c.value : invUsd
     const pnlUsd = valueUsd - invUsd
     return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
@@ -1607,8 +1621,11 @@ function PositionsDesktop() {
                     const adjPnl = (c.pnl != null && pnlContrib)
                       ? c.pnl + pnlContrib
                       : c.pnl
-                    const adjPnlPct = (isBond && adjPnl != null && p.invested > 0)
-                      ? adjPnl / p.invested
+                    // P&L% del bono sobre el costo en USD (c.investedUsd ya respeta
+                    // la moneda del lote: un bono en pesos va ÷MEP, no se cuenta crudo).
+                    const adjPnlCost = c.investedUsd ?? p.invested
+                    const adjPnlPct = (isBond && adjPnl != null && adjPnlCost > 0)
+                      ? adjPnl / adjPnlCost
                       : c.pnlPct
                     const pnlBg = adjPnl == null ? '' : adjPnl > 0 ? 'bg-rendi-pos/[0.06]' : adjPnl < 0 ? 'bg-rendi-neg/[0.06]' : ''
                     const avgPrice = (!p.is_cash && p.quantity > 0)
@@ -1687,7 +1704,7 @@ function PositionsDesktop() {
                         <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? fmtUsd(avgPrice) : '—'}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
-                        <td className={`${tdClass} text-ink-1 tabular`}>{fmtUsd(p.invested)}</td>
+                        <td className={`${tdClass} text-ink-1 tabular`}>{fmtUsd(c.investedUsd ?? p.invested)}</td>
                         <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.value != null ? <FlashValue value={c.value}>{fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(adjPnl)} ${pnlBg}`} title={pnlTooltip}>
                           {adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—'}

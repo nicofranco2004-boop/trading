@@ -37,7 +37,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
@@ -453,6 +453,12 @@ export default function PositionsMobile() {
       const isAR = arsBrokerSet.has(p.broker)
       const qty = p.quantity || 0
       const invested = p.invested || 0
+      // Costo en USD por moneda del LOTE, no de la cuenta: ARS broker → blue; lote
+      // en PESOS (currency='ARS') alojado en una cuenta USD → MEP (tcCedear);
+      // USD-nativo → tal cual. Es también el fallback de valor cuando no hay precio.
+      let investedUsd = isAR ? invested / tcBlue
+        : costInPesos(p) ? invested / tcCedear
+        : invested
       let valueUsd = 0
       let priceLocal = null
       if (p.is_cash) {
@@ -464,20 +470,28 @@ export default function PositionsMobile() {
       } else if (isAR) {
         priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceLocal) valueUsd = (priceLocal * qty) / tcBlue
-        else valueUsd = invested / tcBlue
+        else valueUsd = investedUsd
       } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
         // Instrumento BYMA en broker USD (CEDEAR o acción AR como PAMP/YPFD en un
         // sub-broker "· USD"): precio LOCAL .BA (ARS) → USD via MEP, no el ticker
         // US. priceLocal queda en USD.
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         priceLocal = priceArs != null ? priceArs / tcCedear : null
-        valueUsd = priceLocal != null ? priceLocal * qty : invested
+        valueUsd = priceLocal != null ? priceLocal * qty : investedUsd
+      } else if (costInPesos(p)) {
+        // Lote en PESOS (currency='ARS') NO-CEDEAR en cuenta USD (acción AR/bono
+        // comprado en pesos): el VALOR va por su precio LOCAL .BA ÷ tcCedear, NO
+        // por el ticker US. El costo (investedUsd) ya quedó en MEP arriba. f=1.
+        const u = pesoLotUsd(p, prices, tcCedear)
+        priceLocal = u.priceUsd
+        // Sin precio → fallback al investedUsd local (sin commissions, igual que las
+        // demás ramas de este archivo) para que el P&L quede exactamente 0.
+        valueUsd = u.priceUsd != null ? u.valueUsd : investedUsd
       } else {
         priceLocal = p.price_override ?? prices[p.asset]
         if (priceLocal) valueUsd = priceLocal * qty
-        else valueUsd = invested
+        else valueUsd = investedUsd
       }
-      let investedUsd = isAR ? invested / tcBlue : invested
       // Cripto en un broker NO-exchange (Cocos/Balanz…) se valúa al dólar cripto
       // (~spot+5%), no al spot, para igualar al broker AR. El factor escala valor
       // Y costo por igual ⇒ el P&L% queda intacto. Para todo lo demás (no-cripto,
@@ -511,7 +525,7 @@ export default function PositionsMobile() {
         }
       }
       return {
-        ...p, valueUsd, priceLocal, pnlUsd, pnlPct, pnlLocal,
+        ...p, valueUsd, investedUsd, priceLocal, pnlUsd, pnlPct, pnlLocal,
         dayVarLocal, dayVarUsd, dayVarPct, isAR,
       }
     })
@@ -574,7 +588,9 @@ export default function PositionsMobile() {
       const totalQty = lots.reduce((s, x) => s + (x.quantity || 0), 0)
       const totalInv = lots.reduce((s, x) => s + (x.invested || 0), 0)
       const valueUsd = lots.reduce((s, x) => s + (x.valueUsd || 0), 0)
-      const investedUsd = lots.reduce((s, x) => s + (isAR ? (x.invested || 0) / tcBlue : (x.invested || 0)), 0)
+      // Reusa el costo USD ya resuelto por lote (costo por moneda del LOTE, no de
+      // la cuenta) en vez de recomputarlo por broker.
+      const investedUsd = lots.reduce((s, x) => s + (x.investedUsd || 0), 0)
       const pnlUsd = valueUsd - investedUsd
       const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
       const pnlLocal = isAR ? pnlUsd * tcBlue : pnlUsd

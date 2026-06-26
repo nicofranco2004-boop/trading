@@ -23,7 +23,7 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { inferType } from '../utils/tickers'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -38,6 +38,15 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
   if (p.is_cash) {
     const v = isAR ? invested / tcBlue : invested
     return { valueUsd: v, investedUsd: v, pnlUsd: 0, priceLocal: null }
+  }
+  // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
+  // (tcCedear): costo Y valor a USD por el mismo rate, no el costo en pesos como dólares.
+  if (costInPesos(p) && !isAR) {
+    const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
+    const investedUsd = invested / tcCedear
+    const priceLocal = priceArs != null ? priceArs / tcCedear : null
+    const valueUsd = priceLocal != null ? priceLocal * qty : investedUsd
+    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
   if (isAR) {
     const priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
@@ -64,7 +73,8 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
 function symbolFor(p, brokers) {
   if (p.is_cash) return null
   const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
-  const useBA = isAR || isArUsdBroker(p.broker)
+  // Lote en pesos (currency='ARS') aunque viva en cuenta USD → precio LOCAL .BA.
+  const useBA = isAR || isArUsdBroker(p.broker) || costInPesos(p)
   return priceSymbol(p.asset, useBA, p.asset_type)
 }
 
