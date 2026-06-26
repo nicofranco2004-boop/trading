@@ -21,11 +21,15 @@ from .schema import (
 from .fci_map import resolve_fci_symbol
 
 
+# Día y mes aceptan 1 o 2 dígitos (\d{1,2}): muchos exports / CSV editados en
+# Excel traen "1/6/2026" o "2026-1-6" (sin zero-pad). _validate_ymd normaliza a
+# 2 dígitos. Antes exigíamos \d{2} y esas filas (días/meses 1-9) fallaban con
+# "Fecha inválida". El año sí queda en \d{4}.
 _DATE_FORMATS = [
-    re.compile(r"^(\d{4})-(\d{2})-(\d{2})$"),
-    re.compile(r"^(\d{4})/(\d{2})/(\d{2})$"),
+    re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$"),
+    re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})$"),
 ]
-_DATE_DDMMYYYY = re.compile(r"^(\d{2})[/\-](\d{2})[/\-](\d{4})$")
+_DATE_DDMMYYYY = re.compile(r"^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})$")
 
 
 def parse_date(s: str) -> Optional[str]:

@@ -151,11 +151,11 @@ def _parse_date(s: str) -> Optional[str]:
     s = s.strip()
     if " as of " in s:
         s = s.split(" as of ", 1)[1].strip()
-    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", s)
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)
     if not m:
         return None
     mo, d, y = m.groups()
-    return f"{y}-{mo}-{d}"
+    return f"{y}-{int(mo):02d}-{int(d):02d}"
 
 
 def _clean_money(s: str) -> str:

@@ -167,11 +167,11 @@ def _norm_header(h: str) -> str:
 def _parse_date_ddmmyyyy(s: str) -> Optional[str]:
     """'06-01-2026' → '2026-01-06'. None si no parsea."""
     s = (s or "").strip()
-    m = re.match(r'^(\d{2})[-/](\d{2})[-/](\d{4})$', s)
+    m = re.match(r'^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$', s)
     if not m:
         return None
     d, mo, y = m.groups()
-    return f"{y}-{mo}-{d}"
+    return f"{y}-{int(mo):02d}-{int(d):02d}"
 
 
 def _extract_ticker(instrumento: str) -> Optional[str]:
