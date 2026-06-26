@@ -147,7 +147,7 @@ class BalanzResultadosParser(Parser):
     is_supported = True
     platform = "balanz"
     platform_label = "Balanz"
-    export_label = "Actividad → Resultados (recomendado)"
+    export_label = "Actividad → Resultados"
 
     def can_handle(self, headers: List[str]) -> bool:
         cols = _resolve_columns(headers)

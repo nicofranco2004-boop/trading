@@ -9,6 +9,7 @@ from .binance_transaction import BinanceTransactionHistoryParser
 from .cocos import CocosParser
 from .balanz import BalanzParser
 from .balanz_resultados import BalanzResultadosParser
+from .balanz_movimientos import BalanzMovimientosParser
 from .iol import IolParser
 from .schwab import SchwabParser
 from .bullmarket import BullMarketParser
@@ -22,6 +23,7 @@ _PARSERS: List[Parser] = [
     BinanceTransactionHistoryParser(),
     CocosParser(),
     BalanzParser(),
+    BalanzMovimientosParser(),
     BalanzResultadosParser(),
     IolParser(),
     SchwabParser(),
