@@ -9874,6 +9874,56 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+class RepairUserIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=200)
+
+
+@app.post("/api/admin/repair-user-history")
+def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_user)):
+    """Repara el HISTÓRICO de UN usuario cuyos snapshots quedaron contaminados por
+    un ciclo import/revert/reimport (subió un export malo, lo revirtió y reimportó
+    el bueno, pero los snapshots viejos —que el cron tomó mientras la data estaba
+    rota— sobrevivieron porque el revert solo los borra si la cuenta queda VACÍA).
+    Esos snapshots con total_value anómalo hacen explotar los % de 30d/anual/mes
+    (ej: +5941%).
+
+    Para el usuario (por email): recalcula monthly_entries desde operations (mata el
+    drift de deposits/withdrawals/pnl), BORRA todos sus snapshots, y los regenera
+    limpios de fin de mes desde monthly_entries. Rápido (no toca yfinance). Para la
+    curva a valor de MERCADO, correr después el botón de "Valuación histórica" (MTM).
+    La data estructural (posiciones, cash) NO se toca. Solo el admin logueado.
+    """
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, email FROM users WHERE lower(email)=lower(?)",
+            (data.email.strip(),),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, f"No hay usuario con email '{data.email}'.")
+        tu = row["id"]
+        before = conn.execute(
+            "SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (tu,)).fetchone()["c"]
+        with conn:
+            _recalc_pnl_realized_from_ops(conn, tu)              # 1) drift de monthly fuera
+            conn.execute("DELETE FROM snapshots WHERE user_id=?", (tu,))  # 2) limpiar contaminados
+            _import_persister._backfill_snapshots_from_monthly(conn, tu)  # 3) regenerar limpios
+            netdep = _recompute_snapshots_netdep_for_user(conn, tu)       # 4) net_deposited canónico
+            corrupt = _detect_and_remove_corrupt_snapshots(conn, tu)      # 5) barrer V-shapes residuales
+        after = conn.execute(
+            "SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (tu,)).fetchone()["c"]
+        log.info("admin_repair_user_history email=%s uid=%s snaps %s→%s corrupt=%s",
+                 row["email"], tu, before, after, len(corrupt))
+        return {
+            "ok": True, "email": row["email"], "user_id": tu,
+            "snapshots_before": before, "snapshots_after": after,
+            "corrupt_removed": len(corrupt),
+            "netdep_updated": netdep.get("snapshots_updated", 0),
+        }
+    finally:
+        conn.close()
+
+
 @app.post("/api/admin/backfill-recompute")
 def admin_backfill_recompute(apply: bool = False, safe_only: bool = True,
                              offset: int = 0, limit: int = 0, uid: int = Depends(get_admin_user)):

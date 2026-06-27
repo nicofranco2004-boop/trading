@@ -225,6 +225,8 @@ export default function Admin() {
 
       <MtmBackfillPanel toast={toast} />
 
+      <RepairUserPanel toast={toast} />
+
       {/* ── Alerta de billing: pagaron pero figuran en Free ──────────────── */}
       {affected.length > 0 && (
         <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
@@ -1071,6 +1073,62 @@ function MtmBackfillPanel({ toast }) {
             </button>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+// ─── RepairUserPanel — reparar histórico de un usuario (snapshots contaminados) ──
+function RepairUserPanel({ toast }) {
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+
+  async function repair() {
+    const e = email.trim()
+    if (!e) return
+    if (!confirm(`¿Reparar el histórico de ${e}? Borra y regenera sus snapshots (no toca posiciones ni cash).`)) return
+    setBusy(true); setResult(null)
+    try {
+      const r = await api.post('/admin/repair-user-history', { email: e })
+      setResult(r)
+      toast.push(`Histórico reparado: ${r.snapshots_before} → ${r.snapshots_after} snapshots`, { type: 'success' })
+    } catch (ex) {
+      toast.push('Error: ' + (ex.message || 'no se pudo reparar'), { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <RotateCcw size={16} className="text-rendi-warn" />
+        <h2 className="font-semibold text-ink-0">Reparar histórico de un usuario</h2>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Para una cuenta cuyos <b>% de 30 días / anual / mes están rotos</b> (ej: +5941%) por snapshots viejos
+        contaminados de un ciclo import → revertir → reimportar. Recalcula sus monthly_entries (mata el drift),
+        borra los snapshots contaminados y los regenera limpios. <b>No toca posiciones ni cash.</b> Para la
+        curva a valor de mercado, después corré "Valuación histórica" (MTM).
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="email" value={email} onChange={(ev) => setEmail(ev.target.value)}
+          placeholder="email del usuario" disabled={busy}
+          className="flex-1 text-sm px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-1 border border-line/60 text-ink-0 placeholder:text-ink-3"
+        />
+        <button
+          onClick={repair} disabled={busy || !email.trim()}
+          className="flex items-center gap-1 text-xs px-3 py-2 rounded-md bg-rendi-warn/15 text-rendi-warn hover:bg-rendi-warn/25 disabled:opacity-50 flex-shrink-0"
+        >
+          <RotateCcw size={13} className={busy ? 'animate-spin' : ''} /> Reparar
+        </button>
+      </div>
+      {result && (
+        <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-md px-3 py-2">
+          ✅ <b>{result.email}</b>: snapshots {result.snapshots_before} → {result.snapshots_after}
+          {result.corrupt_removed > 0 && ` · ${result.corrupt_removed} corruptos eliminados`}
+          {result.netdep_updated > 0 && ` · ${result.netdep_updated} net_deposited corregidos`}
+        </div>
       )}
     </div>
   )
