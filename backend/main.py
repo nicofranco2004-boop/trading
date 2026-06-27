@@ -5099,18 +5099,20 @@ def _fetch_prev_close_one(yf_ticker: str):
 
 # ─── Bonos AR — live price via data912.com ───────────────────────────────────
 # data912 expone cotizaciones live de BYMA (que yfinance no cubre para bonos
-# AR). Convención de los sufijos en data912:
-#   • Sin sufijo (AL30, GD30, AE38, TX26): cotización en ARS pesos por 100 face.
-#   • Sufijo D (AL30D, GD30D, AE38D): cotización USD MEP por 100 face.
-#   • Sufijo C: cotización USD CCL por 100 face.
+# AR). Sufijos: sin sufijo = ARS, sufijo D = USD-MEP, sufijo C = USD-CCL.
 #
 # Rendi mapea según el broker en el frontend:
 #   • Broker ARS → fetcha el ticker sin sufijo (precio en ARS).
 #   • Broker USD/USDT → fetcha ticker + "D" (precio USD MEP).
 #
-# Convertimos data912 (per 100 face) a "per VN" dividiendo por 100, así el
-# resto del frontend que computa `value = price × quantity` funciona sin
-# cambios de convención.
+# ⚠️ La convención de UNIDAD NO es uniforme (verificado live 2026-06-27):
+#   • Soberanos / BOPREAL / ONs → per-100 face (AL30=96300 ARS, AL30D=64.23 USD).
+#   • Bonos CER (TX*/TZX*)      → per-1     (TX26=702.9 ARS, TX26D=0.465 USD).
+# Dividir TODO por 100 (lo que hacíamos antes) dejaba a los CER valuados 100× para
+# ABAJO en la cartera viva. Ahora clasificamos per-100 vs per-1 por la magnitud en
+# USD-equivalente: per-1 ≈ parity/100 (< ~2 USD), per-100 ≈ parity (5-150 USD). El
+# umbral en USD NO se erosiona con la devaluación (uno fijo en pesos sí). Para el
+# path ARS convertimos a USD con el MEP implícito de data912 (AL30/AL30D).
 
 # Cobertura validada (2026-05-12): 11 soberanos canje 2020 + 5 CER con precio.
 # Ampliación 2026-06 (export real de Balanz): BOPREAL (BB37D, BPOA7/C7/D7),
@@ -5167,32 +5169,47 @@ def _fetch_data912_bonds():
         return cached or {}
 
 
+def _data912_peso_per_usd(prices):
+    """Pesos por USD (≈MEP) implícito en data912, de un par soberano per-100 líquido
+    (quote ARS / quote USD-D del MISMO bono). Sirve para clasificar la convención de
+    unidad de los quotes en pesos sin atarse a un umbral fijo que la devaluación
+    erosiona. Fallback ~1450 si no hay un par usable."""
+    for ref in ('AL30', 'GD30', 'AL35', 'AE38', 'GD35'):
+        a = prices.get(ref)
+        d = prices.get(ref + 'D')
+        if a and d and a > 0 and 0 < d < 1000:   # d<1000 descarta 'D' mal-denominados
+            return a / d
+    return 1450.0
+
+
 def _resolve_ar_bond_price(symbol):
-    """Resuelve el precio per-VN de un bono AR usando data912.
+    """Resuelve el precio per-1 VN de un bono AR usando data912.
 
     Cobertura: TODO el universo de bonos/ONs que data912 devuelve (arg_bonds +
-    arg_corp), NO una allowlist hardcodeada — así cualquier bono que data912 cotice
-    queda cubierto solo, sin mantener una lista (antes AO28/YM39O/etc. quedaban
-    afuera y se valuaban ×100 vía yfinance). Mapeo según el símbolo que pide el front:
-      • Sufijo .BA (broker ARS, y sub-broker '· USD' que pide .BA): ticker base →
-        precio ARS por 100 face → ÷100.
-      • Sin sufijo (broker USD puro): ticker base + 'D' → precio USD MEP por 100 → ÷100.
+    arg_corp), NO una allowlist hardcodeada. Mapeo según el símbolo que pide el front:
+      • Sufijo .BA (broker ARS, y sub-broker '· USD' que pide .BA): ticker base → ARS.
+      • Sin sufijo (broker USD puro): ticker base + 'D' → USD MEP.
     Devuelve None si data912 no tiene ese ticker → el caller cae a yfinance.
-    Seguro para no-bonos: una acción/CEDEAR (MELI.BA, AAPL) no está en los endpoints
-    de bonos de data912 → devuelve None y sigue su path normal.
+
+    UNIDAD: data912 NO es uniforme (soberanos per-100, CER per-1). Clasificamos por
+    la magnitud en USD-equivalente y dividimos por 100 SOLO a los per-100. Seguro
+    para no-bonos: una acción/CEDEAR no está en los endpoints de bonos → None.
     """
     if not symbol:
         return None
     prices = _fetch_data912_bonds()
     if not prices:
         return None
-    base = symbol[:-3] if symbol.endswith('.BA') else symbol
+    is_ars = symbol.endswith('.BA')
+    base = symbol[:-3] if is_ars else symbol
     # ARS si vino con .BA (ticker base), USD MEP si no (base + 'D')
-    raw = prices.get(base) if symbol.endswith('.BA') else prices.get(base + 'D')
+    raw = prices.get(base) if is_ars else prices.get(base + 'D')
     if raw is None or raw <= 0:
         return None
-    # data912 quotea per 100 face. El resto del sistema usa per VN.
-    return raw / 100.0
+    # Clasificación per-100 vs per-1 por USD-equivalente: per-1 ≈ parity/100 (<~2 USD),
+    # per-100 ≈ parity (5-150 USD). Umbral 3 USD (entre ambos, robusto a devaluación).
+    usd_equiv = raw if not is_ars else (raw / _data912_peso_per_usd(prices))
+    return raw / 100.0 if usd_equiv >= 3.0 else raw
 
 
 def _bond_price_per1(symbol, currency):

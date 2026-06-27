@@ -148,20 +148,24 @@ def bond_per100_factor(unit_cost: float, market_per1: float) -> float:
     return 0.01 if 10.0 < ratio < 1000.0 else 1.0
 
 
-def normalize_bond_units(conn, uid: int, *, bond_price_per1: Callable) -> int:
+def normalize_bond_units(conn, uid: int, *, bond_price_per1: Callable,
+                         tc_blue: float = None, linked_ids=None) -> int:
     """Lleva a per-1 VN el cost basis de los bonos guardados per-100 (bug del
     importador: IEB exporta por 100 nominales, Balanz a veces también; el precio
     actual ya se trae per-1 → P&L -99% fantasma). Detecta la unidad comparando el
     costo unitario contra el precio de mercado per-1, así NO rompe los lotes que ya
     vienen per-1 (Balanz USD/ARS). Idempotente (tras ÷100 el ratio ≈1, no re-dispara).
-    No toca cash. Devuelve nº de posiciones ajustadas. `bond_price_per1(sym, ccy)`
-    devuelve el precio per-1 del bono en esa moneda, o None."""
+    No toca cash. `linked_ids` (si se pasa) limita a posiciones creadas por imports
+    (no toca manuales). `tc_blue` se usa para el guard anti-distressed en posiciones
+    ARS. Devuelve nº de posiciones ajustadas."""
     rows = conn.execute(
         "SELECT id, asset, quantity, invested, buy_price, currency, asset_type "
         "FROM positions WHERE user_id=? AND is_cash=0 AND quantity>0", (uid,)
     ).fetchall()
     n = 0
     for r in rows:
+        if linked_ids is not None and r["id"] not in linked_ids:
+            continue   # posición manual → no reproducible → no tocar
         sym = (r["asset"] or "").upper()
         at = (r["asset_type"] or "").upper()
         if not (at in _FIXED_INCOME_TYPES or _is_known_ar_bond(sym)):
@@ -177,6 +181,20 @@ def normalize_bond_units(conn, uid: int, *, bond_price_per1: Callable) -> int:
         factor = bond_per100_factor(unit_cost, m1)
         if factor == 1.0:
             continue
+        # Guard anti-falso-positivo (bono DISTRESSED): el ratio (10,1000) no distingue
+        # "costo per-100" de "costo per-1 cuyo precio se desplomó >90%" — ambos dan
+        # costo ≈ 100× precio. El discriminador robusto es la MAGNITUD ABSOLUTA del
+        # costo unitario: un per-100 es grande (≥ ~3 USD-equiv), un per-1 (aun comprado
+        # a la par) es chico. Solo ÷100 si el costo es de escala per-100.
+        ccy = (r["currency"] or "").upper()
+        if ccy in ("USD", "USDT"):
+            usd_cost = unit_cost
+        elif tc_blue and tc_blue > 0:
+            usd_cost = unit_cost / tc_blue
+        else:
+            usd_cost = unit_cost / 1450.0   # fallback MEP aprox si no hay tc_blue
+        if usd_cost < 3.0:
+            continue   # escala per-1 → no es un per-100 mal-guardado → no tocar
         new_inv = round((inv or 0) * factor, 6) if inv is not None else None
         new_bp = round((r["buy_price"] or 0) * factor, 6) if r["buy_price"] is not None else None
         conn.execute(
@@ -187,14 +205,17 @@ def normalize_bond_units(conn, uid: int, *, bond_price_per1: Callable) -> int:
     return n
 
 
-def normalize_usd_commissions(conn, uid: int, *, tc_blue: float) -> int:
+def normalize_usd_commissions(conn, uid: int, *, tc_blue: float, linked_ids=None) -> int:
     """Corrige comisiones en ARS guardadas en posiciones USD. Balanz reporta los
     Gastos en PESOS aun para trades en dólares/cable, y el parser los guarda crudos
     → en un bono USD la comisión queda ×MEP, infla el cost basis y da P&L fantasma
-    (ej. YM39O: comisión 31.701 sobre invertido 5.028 → -84%). Heurística a prueba de
-    balas: una comisión MAYOR que el invertido es imposible para una comisión real →
-    está en pesos → se pasa a USD ÷ tc_blue. Idempotente (tras dividir queda chica).
-    No toca posiciones ARS (ahí invertido y comisión están en la misma moneda)."""
+    (ej. YM39O: comisión 31.701 sobre invertido 5.028 → -84%).
+
+    Una comisión en ARS mal-guardada es ABSOLUTAMENTE grande (USD_fee × MEP ≈ miles);
+    una comisión USD genuina es chica. Convertimos solo si: (a) supera el invertido,
+    y (b) es de magnitud-pesos (≥100) — así un fee USD chico de un lote dust (que
+    también puede superar un invertido ínfimo) NO se toca. `linked_ids` (si se pasa)
+    limita a posiciones de import (no toca manuales). Idempotente; no toca ARS."""
     if not tc_blue or tc_blue <= 0:
         return 0
     rows = conn.execute(
@@ -203,11 +224,15 @@ def normalize_usd_commissions(conn, uid: int, *, tc_blue: float) -> int:
     ).fetchall()
     n = 0
     for r in rows:
+        if linked_ids is not None and r["id"] not in linked_ids:
+            continue   # posición manual → comisión tipeada a mano → no tocar
         if (r["currency"] or "").upper() not in ("USD", "USDT"):
             continue
         inv = r["invested"] or 0
         com = r["commissions"] or 0
-        if inv > 0 and com > inv:   # comisión > trade entero → está en pesos
+        # >invertido (no puede ser una comisión real sobre el trade) Y de escala-pesos
+        # (≥100 → no es un fee USD chico de un lote dust). Ver guard en el docstring.
+        if inv > 0 and com > inv and com >= 100.0:
             conn.execute("UPDATE positions SET commissions=? WHERE id=? AND user_id=?",
                          (round(com / tc_blue, 6), r["id"], uid))
             n += 1
@@ -250,11 +275,18 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
         _rebuild.rebuild_fifo_after_import(conn, uid, bid, tc_blue=tc_blue)
     _maturity.sweep_matured_letras(conn, uid)
     _maturity.sweep_bond_amortizations(conn, uid)
+    # Solo normalizamos costo de posiciones creadas por imports (las manuales no se
+    # reproducen → no se tocan), igual que el rebuild FIFO.
+    linked = _maturity._import_linked_position_ids(conn, uid)
     if tag_bond_ticker is not None:
         tag_bonds_from_data912(conn, uid, is_bond_ticker=tag_bond_ticker)
+    # Comisiones ANTES que unidades de bono: normalize_bond_units ÷100 el invertido
+    # sin tocar la comisión; si corriera después, compararía la comisión contra un
+    # invertido ya reducido y dividiría una comisión USD genuina (FP de orden).
+    normalize_usd_commissions(conn, uid, tc_blue=tc_blue, linked_ids=linked)
     if bond_price_per1 is not None:
-        normalize_bond_units(conn, uid, bond_price_per1=bond_price_per1)
-    normalize_usd_commissions(conn, uid, tc_blue=tc_blue)
+        normalize_bond_units(conn, uid, bond_price_per1=bond_price_per1,
+                             tc_blue=tc_blue, linked_ids=linked)
     recalc(conn, uid)
 
 
