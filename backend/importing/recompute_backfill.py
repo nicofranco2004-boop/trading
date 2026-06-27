@@ -282,10 +282,10 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
     """Misma secuencia post-persist que import_confirm. Muta en la transacción
     abierta (el caller commitea).
 
-    `cost_only=True` → SOLO normaliza COSTO (unidad de bonos per-100→per-1 + comisiones
-    ARS→USD) y recalc sobre las posiciones ACTUALES; NO re-corre el FIFO ni los sweeps,
-    así NO toca cantidades. Es el camino quirúrgico para arreglar el costo per-100 de
-    bonos sin arrastrar los cambios ambiguos de cantidad del rebuild completo."""
+    `cost_only=True` → SOLO normaliza la unidad de bonos per-100→per-1 + recalc sobre
+    las posiciones ACTUALES; NO re-corre el FIFO/sweeps (no toca cantidades) y NO toca
+    comisiones (la normalización de comisiones ARS→USD es muy amplia y aproximada con
+    el tc_blue actual → se trabaja aparte). Camino quirúrgico para el costo per-100."""
     tc_blue = _persister._read_tc_blue(conn, uid)
     if not cost_only:
         batches = [r["id"] for r in conn.execute(
@@ -300,10 +300,12 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
     linked = _maturity._import_linked_position_ids(conn, uid)
     if tag_bond_ticker is not None:
         tag_bonds_from_data912(conn, uid, is_bond_ticker=tag_bond_ticker)
-    # Comisiones ANTES que unidades de bono: normalize_bond_units ÷100 el invertido
-    # sin tocar la comisión; si corriera después, compararía la comisión contra un
-    # invertido ya reducido y dividiría una comisión USD genuina (FP de orden).
-    normalize_usd_commissions(conn, uid, tc_blue=tc_blue, linked_ids=linked)
+    # Comisiones SOLO en modo completo (en solo-bonos quedan afuera — su normalización
+    # ARS→USD es muy amplia/aproximada, se trabaja aparte). En completo van ANTES que
+    # unidades de bono: normalize_bond_units ÷100 el invertido sin tocar la comisión;
+    # si corriera después, compararía contra un invertido ya reducido (FP de orden).
+    if not cost_only:
+        normalize_usd_commissions(conn, uid, tc_blue=tc_blue, linked_ids=linked)
     if bond_price_per1 is not None:
         normalize_bond_units(conn, uid, bond_price_per1=bond_price_per1,
                              tc_blue=tc_blue, linked_ids=linked)

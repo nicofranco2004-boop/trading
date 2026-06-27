@@ -730,7 +730,7 @@ function BackfillPanel({ toast }) {
   async function apply() {
     if (!preview) return
     const detail = costMode
-      ? `${preview.cost_positions_changed || 0} cambios de COSTO (bonos per-100→per-1 + comisiones), SIN tocar cantidades`
+      ? `${preview.cost_positions_changed || 0} bonos a corregir (per-100→per-1), SIN tocar cantidades ni comisiones`
       : `${preview.positions_changed} cambios seguros de cantidad`
     if (!confirm(`¿Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'} ` +
                  `(${detail})? Hacé un backup antes. Solo es reversible desde backup.`)) return
@@ -751,7 +751,7 @@ function BackfillPanel({ toast }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RotateCcw size={16} className="text-data-violet" />
-          <h2 className="font-semibold text-ink-0">Recomputar posiciones — {costMode ? 'solo costo (bonos per-100 + comisiones)' : 'solo cambios seguros'}</h2>
+          <h2 className="font-semibold text-ink-0">Recomputar posiciones — {costMode ? 'solo bonos (per-100→per-1)' : 'solo cambios seguros'}</h2>
         </div>
         <button
           onClick={simulate}
@@ -771,9 +771,9 @@ function BackfillPanel({ toast }) {
           className="mt-0.5 accent-data-violet"
         />
         <span>
-          <b>Modo solo costo</b> — corrige unidad de bonos <b>per-100→per-1</b> y comisiones ARS→USD sobre las
-          posiciones <b>actuales</b>, <b>sin recomputar cantidades</b> (no re-corre el FIFO, así no arrastra los
-          cambios ambiguos de cantidad). El "Simular" te muestra solo el diff de costo; revisalo y hacé backup antes de aplicar.
+          <b>Modo solo bonos</b> — corrige la unidad de los bonos <b>per-100→per-1</b> sobre las posiciones
+          <b>actuales</b>, <b>sin recomputar cantidades</b> (no re-corre el FIFO) y <b>sin tocar comisiones</b>
+          (esa normalización es muy amplia/aproximada, se trabaja aparte). El "Simular" muestra solo el ÷100 de bonos; revisalo y hacé backup antes de aplicar.
         </span>
       </label>
 
@@ -845,7 +845,7 @@ function BackfillPanel({ toast }) {
 
           {costMode && (preview.cost_changes?.length > 0 ? (
             <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
-              <div className="text-[11px] font-medium text-ink-2 px-2 py-1 bg-bg-2/70 sticky top-0">Cambios de COSTO (bonos per-100→per-1 + comisiones)</div>
+              <div className="text-[11px] font-medium text-ink-2 px-2 py-1 bg-bg-2/70 sticky top-0">Bonos a corregir (per-100→per-1)</div>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-line/40 text-ink-3">
