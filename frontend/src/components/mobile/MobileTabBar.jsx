@@ -18,7 +18,7 @@ import { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Home, Briefcase, Compass, MoreHorizontal, Plus,
-  PlusCircle, Repeat, Star, Search,
+  PlusCircle, Repeat, Star, Search, TrendingDown,
 } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import { track } from '../../utils/track'
@@ -117,17 +117,24 @@ function TabItem({ to, label, icon: Icon }) {
 // formal con drag handle + sticky footer.
 
 const QUICK_ACTIONS = [
-  // OPS-1: se quitó 'new_op' → /operaciones?action=new, que en mobile caía en
-  // una pantalla read-only (dead-end). En el modelo portfolio-first, cargar una
-  // posición ES el alta de la compra; las ventas se hacen desde el menú de cada
-  // posición. La operación manual queda solo en desktop.
+  // Compra y venta separadas, igual que desktop. La compra es el alta de la
+  // posición (?action=new); la venta abre el flow FIFO (?action=sell) — si hay 1
+  // sola tenencia la vende directo, si hay varias lleva a elegir de la lista.
   {
     code: 'new_position',
-    label: 'Nueva posición',
-    sub: 'Agregar tu tenencia o compra',
+    label: 'Registrar compra',
+    sub: 'Agregar una tenencia nueva',
     icon: PlusCircle,
     tone: 'accent',
     to: '/posiciones?action=new',
+  },
+  {
+    code: 'sell_position',
+    label: 'Registrar venta',
+    sub: 'Vender una tenencia',
+    icon: TrendingDown,
+    tone: 'pos',
+    to: '/posiciones?action=sell',
   },
   {
     code: 'watchlist',

@@ -14,7 +14,7 @@
 // Filtro: tap en chip "Cocos" filtra a ese broker. "Todos" muestra todo.
 // Botón "+" violeta abre modal de agregar broker (mismo flow que desktop).
 
-import { useEffect, useMemo, useState, lazy, Suspense, memo } from 'react'
+import { useEffect, useMemo, useState, useRef, lazy, Suspense, memo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Sparkles, Plus, Pencil, Trash2, X, TrendingDown, ArrowUpRight, ArrowDownLeft, Download, Wallet, ChevronDown, ChevronUp, Layers as LayersIcon } from 'lucide-react'
 import AnalysisDrawer from '../components/ai/AnalysisDrawer'
@@ -81,6 +81,10 @@ export default function PositionsMobile() {
   const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue } = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
+  const toast = useToast()
+  // ?action=sell (FAB) que llega antes de que carguen las posiciones → lo dejamos
+  // pendiente y lo disparamos cuando termina de cargar (la venta necesita la lista).
+  const pendingSellRef = useRef(false)
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
@@ -161,6 +165,23 @@ export default function PositionsMobile() {
       entry_date: today(),
     })
     setAddModal('add-flow')
+  }
+
+  // Handler reusable de "Registrar venta". Usado por el FAB (?action=sell) y el
+  // ActionsSheet. 0 tenencias → aviso; 1 → abre el SellModal directo; varias →
+  // la lista de abajo, con un hint para que el user toque la que quiere vender.
+  function openSellFlow(source) {
+    track('position_sell_started', { source: source || 'unknown' })
+    const sellable = positions.filter(p => !p.is_cash)
+    if (sellable.length === 0) {
+      toast.push('No tenés posiciones para vender. Agregá una primero.', { type: 'info' })
+      return
+    }
+    if (sellable.length === 1) {
+      openSell(sellable[0])
+      return
+    }
+    toast.push('Tocá la posición que querés vender en la lista.', { type: 'info' })
   }
 
   // ─── Handlers de acciones por posición ──────────────────────────────────
@@ -305,16 +326,32 @@ export default function PositionsMobile() {
     }
   }
 
-  // ?action=new → abrir el flow automáticamente. Limpiamos el query param
-  // para que un reload posterior no re-abra el modal.
+  // ?action=new / ?action=sell (FAB) → abrir el flow automáticamente. Limpiamos
+  // el query param para que un reload posterior no re-abra el modal.
   useEffect(() => {
     const params = new URLSearchParams(location.search)
-    if (params.get('action') === 'new') {
+    const action = params.get('action')
+    if (action === 'new') {
       openNewPositionFlow('mobile_fab')
       navigate('/posiciones', { replace: true })
+    } else if (action === 'sell') {
+      navigate('/posiciones', { replace: true })
+      // La venta necesita la lista de posiciones (carga async): si ya cargó la
+      // disparamos directo; si no, queda pendiente y la dispara el effect de abajo.
+      if (!loading) openSellFlow('mobile_fab')
+      else pendingSellRef.current = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search, brokers.length])
+
+  // Dispara la venta pendiente del FAB cuando terminan de cargar las posiciones.
+  useEffect(() => {
+    if (!loading && pendingSellRef.current) {
+      pendingSellRef.current = false
+      openSellFlow('mobile_fab')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading])
 
   async function loadAll() {
     try {
@@ -1182,19 +1219,8 @@ export default function PositionsMobile() {
             openNewPositionFlow('mobile_actions_sheet')
           }}
           onSell={() => {
-            const sellable = positions.filter(p => !p.is_cash)
             setActionsSheet(false)
-            if (sellable.length === 0) {
-              toast?.show?.('No tenés posiciones para vender. Agregá una primero.', { variant: 'info' })
-              return
-            }
-            if (sellable.length === 1) {
-              openSell(sellable[0])
-              return
-            }
-            // >1: dejamos al user elegir desde la lista. Hacemos scroll
-            // simple a la lista + toast con el hint.
-            toast?.show?.('Tocá la posición que querés vender en la lista de abajo.', { variant: 'info' })
+            openSellFlow('mobile_actions_sheet')
           }}
           onCash={() => {
             setActionsSheet(false)
