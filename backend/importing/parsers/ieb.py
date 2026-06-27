@@ -26,7 +26,8 @@ point-decimal; los vacíos vienen como '-'):
 ALCANCE MVP (igual criterio que Balanz/Cocos — solo lo que se puede mapear seguro):
   ✅ Trades: CPRA/VTAS (pesos) + CPU$/VTU$ (dólares) → COMPRA/VENTA con su moneda.
   ✅ Renta/dividendos: DIV, RTA, RENTA, AMORTIZA, NCCD → DIVIDENDO (monto>0) / FEE (monto<0).
-  ✅ Fees: ND, NDMP, DECR, PAGW → FEE.
+  ✅ Fees: ND, NDMP, DECR → FEE. Pago (PAGW) → RETIRO (salida de plata).
+  ✅ Wash interno: PAGW↔COBW mismo día/ticker/monto se netean (ni aporte ni fee).
   ✅ Cash/FX: DOLAR COUW/PAUW → DEPOSITO/RETIRO (USD); COBW/NCMP → DEPOSITO.
   ✅ Caución (repo): CCCD → RETIRO (colocás), CCTE → DEPOSITO (vuelve con interés).
   ⚠️ FCI (MM Pesos / Ciclo Nova, LS*/LR*): por ahora como flujo de caja por signo
@@ -126,9 +127,12 @@ def _resolve_op(code: str, amount: Optional[float]) -> Optional[str]:
     if code in _CAUCION_IN:
         return "DEPOSITO"
 
-    # Pago / cargo (PAGW) → siempre FEE.
+    # Pago (PAGW) → salida de plata (RETIRO), NO comisión: en el export real son
+    # pagos grandes (caución/transferencias/liquidaciones), no fees. Los PAGW que
+    # netean con un COBW del mismo día/ticker/monto se saltean antes (wash en
+    # parse); acá sólo llegan los sueltos = cash que efectivamente salió.
     if code == "PAGW":
-        return "FEE"
+        return "RETIRO"
     # Operaciones de dólar (conversión FX, sin tenencia): por signo del importe.
     # COUW (dólares acreditados) = DEPOSITO; PAUW (dólares pagados) = RETIRO;
     # CU$V = otra operación de dólar (ref 'DOLAR') → mismo criterio por signo.
@@ -196,7 +200,33 @@ class IebParser(Parser):
             col = norm_to_orig.get(norm_key)
             return _strip(row.get(col, "")) if col else ""
 
-        for idx, row in enumerate(list(reader), start=1):
+        # Pre-pass: PAGW (pago) + COBW (cobro) del MISMO ticker, día y |monto| son
+        # un movimiento interno que entra y sale (caución/renovación/transferencia)
+        # → netean a 0. Tomarlos como aporte + comisión los infla a ambos; los
+        # marcamos para saltearlos (cash-neutral).
+        all_rows = list(reader)
+
+        def _pc_key(r):
+            _a = _num(G(r, "importedivisas"))
+            _mon = "USD"
+            if _a is None:
+                _a = _num(G(r, "importears"))
+                _mon = "ARS"
+            if _a is None:
+                return None
+            _f = (G(r, "fechaemision") or G(r, "fechaliquidacion"))[:10]
+            return (G(r, "referencia").strip().upper(), _f, round(abs(_a), 2), _mon)
+
+        _pagw_keys, _cobw_keys = set(), set()
+        for _r in all_rows:
+            _c = G(_r, "operacion").upper().replace(" ", "")
+            if _c in ("PAGW", "COBW"):
+                _k = _pc_key(_r)
+                if _k:
+                    (_pagw_keys if _c == "PAGW" else _cobw_keys).add(_k)
+        _wash_keys = _pagw_keys & _cobw_keys
+
+        for idx, row in enumerate(all_rows, start=1):
             ref = G(row, "referencia")
             code = G(row, "operacion").upper().replace(" ", "")
             if not code:
@@ -213,6 +243,11 @@ class IebParser(Parser):
             # El sufijo del código manda sobre la columna para los trades USD.
             if code in _USD_OPS:
                 moneda = "USD"
+
+            # Movimiento interno PAGW↔COBW (pago + cobro del mismo día/ticker/
+            # monto) → netea a 0; no es aporte ni comisión.
+            if code in ("PAGW", "COBW") and _pc_key(row) in _wash_keys:
+                continue
 
             # DETR = transferencia de títulos ENTRANTE (migración desde otro
             # broker). El export trae ticker + cantidad (>0) + un precio de

@@ -131,6 +131,31 @@ class IebParserTest(unittest.TestCase):
         self.assertEqual(float(depo["monto"]), 520750.0)  # compensa la COMPRA → cash neto 0
         self.assertEqual(depo["activo"], "")
 
+    _HDR = (
+        "Referencia,Operación,Fecha emisión,Fecha liquidación,Nro. de operación,"
+        "Cantidad,Precio,Importe ARS,Importe divisas,Divisa\n"
+    )
+
+    def test_pagw_suelto_es_retiro_no_fee(self):
+        # PAGW (pago) suelto = salida de plata → RETIRO, no comisión. En el export
+        # real son pagos grandes (caución/liquidaciones), nunca un fee.
+        res = IebParser().parse(
+            self._HDR +
+            "TO26,PAGW,2026-04-17,2026-04-17,60866,-,-,-3078211.37,-,ARS\n")
+        self.assertEqual(res.parse_errors, [])
+        self.assertEqual([r.data["tipo"] for r in res.raw_rows], ["RETIRO"])
+        self.assertEqual(float(res.raw_rows[0].data["monto"]), 3078211.37)
+
+    def test_pagw_cobw_wash_se_netea(self):
+        # PAGW + COBW del mismo ticker/día/monto = movimiento interno (caución/
+        # transferencia que entra y sale) → no emite nada (ni aporte ni comisión).
+        res = IebParser().parse(
+            self._HDR +
+            "AO27,PAGW,2026-04-01,2026-04-01,1,-,-,-4000000,-,ARS\n"
+            "AO27,COBW,2026-04-01,2026-04-01,2,-,-,4000000,-,ARS\n")
+        self.assertEqual(res.parse_errors, [])
+        self.assertEqual(res.raw_rows, [])
+
 
 if __name__ == "__main__":
     unittest.main()
