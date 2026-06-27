@@ -91,7 +91,9 @@ export default function Cartera() {
   }, [tab])
 
   return (
-    <div className="page-shell-wide">
+    // Posiciones = tabla densa → usa el shell extra-ancho (menos negro al costado,
+    // sin scroll horizontal). Evolución/Objetivos quedan en el ancho normal.
+    <div className={tab === 'posiciones' ? 'page-shell-xwide' : 'page-shell-wide'}>
       {/* Tab strip — filled pills con violet en la activa. Diseño deliberadamente
           prominente: en testing el user no descubría las tabs (tab strip chico
           + dentro de Posiciones con botones de acción competía por atención).
