@@ -181,6 +181,10 @@ export default function HomeMobile() {
         bestAsset = { symbol: p.asset, pct }
       }
     }
+    // "Mejor activo" es el de MAYOR rendimiento: si el mejor está en negativo, ningún
+    // activo está en verde → no tiene sentido rotularlo "mejor" con un % rojo (ej. el
+    // -87,5% absurdo de un bono con costo aún sin recomputar). Mostramos '—'.
+    if (bestAsset && bestPct <= 0) bestAsset = null
     return { pnlMonth, pnlDay, pnlDayMeta: daily, aportado, bestAsset }
   }, [monthly, snapshots, positions, prices, totals, brokers, tcCripto, tcCedear])
 
