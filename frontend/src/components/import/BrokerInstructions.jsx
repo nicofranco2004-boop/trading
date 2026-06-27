@@ -135,14 +135,15 @@ const BROKERS = [
     id: 'bullmarket',
     label: 'Bull Market',
     Logo: BullMarketLogo,
-    summary: 'Usamos el export de Cuenta Corriente. Bull Market lo baja en Excel.',
+    summary: 'Usamos la Cuenta Corriente (Excel) + la Tenencia valorizada (PDF) para reconstruir tu cartera completa.',
     steps: [
       'Entrá a Bull Market → Mi Cuenta → Cuenta Corriente.',
       'En la pestaña Pesos, poné el rango más amplio, Buscar → Exportar (.xlsx).',
       'Si operaste en dólares, repetí con las pestañas Dólares y Dólares cable.',
       'Subí los Excel acá — podés subir varios juntos y los acomodamos solos (pesos y dólares).',
+      'Después, para completar las posiciones que ya tenías de antes: en la WEB de Bull Market andá a Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder, descargá el PDF y subílo con el botón “Completar con Tenencia”.',
     ],
-    parserNote: 'Importamos compras, ventas, depósitos, retiros, el interés de tus cauciones y los dividendos en dólares. Las conversiones internas cable↔MEP se omiten. Si tenés un fondo común (FCI) abierto hoy, cargalo manualmente desde Posiciones.',
+    parserNote: 'De la Cuenta Corriente importamos compras, ventas, depósitos, retiros, el interés de cauciones y los dividendos (las conversiones cable↔MEP se omiten). La Cuenta Corriente solo cubre el período del export, así que la Tenencia valorizada (PDF) completa las posiciones que ya tenías antes — sin duplicar lo que ya está. Si tenés un fondo común (FCI) abierto, cargalo a mano desde Posiciones.',
   },
   {
     id: 'iol',

@@ -837,6 +837,50 @@ def run_preview(
     return preview_payload
 
 
+def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
+                      file_name: str, txs: List[NormalizedTx]) -> str:
+    """Guarda una lista de NormalizedTx YA construidas como un batch en estado
+    'preview' (import_batches + import_raw_rows + import_normalized_tx) — igual que
+    run_preview pero SIN parsear/normalizar/validar. Lo usa el flujo de Tenencia
+    (las seed-txs ya vienen armadas por `tenencia.build_tenencia_seed_txs`). El
+    `load_session_for_confirm` + el confirm EXISTENTE las aplican sin cambios.
+    Devuelve el batch_id (== session_id). Idempotente por hash de fingerprints."""
+    cleanup_stale_previews(conn)
+    batch_id = _new_id()
+    tc_blue = _read_user_tc_blue(conn, uid)
+    fh = _file_hash(("tenencia|" + "|".join(_row_fingerprint(t) for t in txs)).encode("utf-8"))
+    n = len(txs)
+    conn.execute(
+        """INSERT INTO import_batches
+           (id, user_id, broker, parser_format, file_name, file_hash,
+            total_rows, valid_rows, invalid_rows, status, route_by_currency)
+           VALUES (?,?,?,?,?,?,?,?,?, 'preview', 0)""",
+        (batch_id, uid, broker, parser_format, file_name, fh, n, n, 0))
+    for tx in txs:
+        cur = conn.execute(
+            """INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status, errors_json)
+               VALUES (?,?,?, 'valid', NULL)""",
+            (batch_id, tx.row_index, json.dumps(
+                {"asset": tx.asset_symbol, "op": tx.operation_type,
+                 "qty": tx.quantity, "price": tx.unit_price, "notes": tx.notes},
+                ensure_ascii=False)))
+        raw_id = cur.lastrowid
+        gross_usd = _stamp_gross_amount_usd(tx.currency, tx.gross_amount, tc_blue)
+        tx.gross_amount_usd = gross_usd
+        conn.execute(
+            """INSERT INTO import_normalized_tx
+               (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
+                quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
+                fingerprint, gross_amount_usd)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (batch_id, raw_id, tx.date, tx.broker, tx.operation_type,
+             tx.asset_symbol, tx.asset_name, tx.asset_type,
+             tx.quantity, tx.unit_price, tx.gross_amount,
+             tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
+             _row_fingerprint(tx), gross_usd))
+    return batch_id
+
+
 def load_session_for_confirm(conn, *, uid: int, session_id: str
                               ) -> Tuple[List[NormalizedTx], Dict[int, int]]:
     """Reconstruye la lista de NormalizedTx desde la DB para el confirm.

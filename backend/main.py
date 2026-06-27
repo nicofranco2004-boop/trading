@@ -17156,6 +17156,8 @@ from importing import persister as _import_persister
 from importing import rebuild as _import_rebuild
 from importing import maturity as _import_maturity
 from importing import recompute_backfill as _import_recompute
+from importing import tenencia as _import_tenencia
+from importing import excel as _import_excel
 from importing.parsers.registry import get_parser as _get_parser
 
 # Namespace simple con los helpers que el persister consume.
@@ -17229,6 +17231,83 @@ async def import_inspect(
     if payload.get("error"):
         raise HTTPException(400, payload["error"])
     return payload
+
+
+@app.post("/api/imports/tenencia/preview")
+async def import_tenencia_preview(
+    file: UploadFile = File(...),
+    broker: str = Form(...),
+    uid: int = Depends(get_current_user),
+):
+    """Tenencia valorizada (PDF) de Bull Market = la FOTO de posiciones actuales.
+    Reconcilia contra lo que el usuario YA tiene (reconstruido de la Cuenta
+    Corriente): completa SOLO el hueco (lo comprado antes de la ventana de la CC)
+    como lotes de apertura, sin duplicar lo existente. Deja un batch 'preview' que
+    el confirm EXISTENTE (/api/imports/confirm) aplica. Devuelve el detalle del
+    hueco para mostrar 'vamos a completar estas N posiciones'."""
+    cap = _import_pipeline.MAX_FILE_BYTES
+    chunks: List[bytes] = []
+    total = 0
+    while total <= cap:
+        chunk = await file.read(min(64 * 1024, cap - total + 1))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > cap:
+            raise HTTPException(400, f"El archivo excede el límite de {cap // 1_000_000} MB.")
+    data = b"".join(chunks)
+
+    if not _import_excel.is_pdf(data):
+        raise HTTPException(400, "La Tenencia valorizada se baja en PDF — subí ese archivo.")
+    try:
+        text = _import_excel.pdf_to_text(data)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
+    if not _import_tenencia.looks_like_tenencia(text):
+        raise HTTPException(400, "Este PDF no parece la Tenencia valorizada de Bull Market "
+                                 "(Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder).")
+    snap = _import_tenencia.parse_bullmarket_tenencia(text)
+    if not snap.holdings:
+        raise HTTPException(400, "No pudimos leer ninguna tenencia del PDF. Escribinos y lo revisamos.")
+
+    conn = get_db()
+    try:
+        if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
+            raise HTTPException(400, f"No encontramos el broker '{broker}'. Importá primero la Cuenta Corriente.")
+        from importing.persister import broker_pair
+        pair = broker_pair(conn, uid, broker)
+        ph = ",".join("?" * len(pair))
+        current: dict = {}
+        for r in conn.execute(
+            f"SELECT asset, SUM(quantity) q FROM positions "
+            f"WHERE user_id=? AND is_cash=0 AND broker IN ({ph}) GROUP BY asset",
+            (uid, *pair),
+        ):
+            current[r["asset"]] = current.get(r["asset"], 0.0) + (r["q"] or 0)
+
+        rec = _import_tenencia.compute_reconcile(current, snap)
+        seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
+        seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
+        if not seed_txs:
+            return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
+                    "message": "Tu cartera ya coincide con la Tenencia — no hay nada que completar."}
+        with conn:
+            sid = _import_pipeline.store_preview_txs(
+                conn, uid, broker=broker, parser_format="bullmarket_tenencia",
+                file_name=(file.filename or "Tenencia.pdf"), txs=seed_txs)
+        return {
+            "session_id": sid,
+            "date": snap.date,
+            "matched": len(rec.matched),
+            "to_seed": [{"ticker": h.ticker, "type": h.asset_type, "qty": gap,
+                         "price": round(h.price_per1, 4), "value": round(gap * h.price_per1, 2),
+                         "currency": h.currency} for h, gap in rec.to_seed],
+            "over": [{"ticker": t, "rendi": rq, "tenencia": tq} for t, rq, tq in rec.over],
+            "not_in_snapshot": [{"ticker": t, "qty": q} for t, q in rec.not_in_snapshot],
+        }
+    finally:
+        conn.close()
 
 
 @app.post("/api/imports/preview")

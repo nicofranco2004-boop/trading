@@ -34,6 +34,32 @@ def is_xlsx(file_bytes: bytes) -> bool:
     return bool(file_bytes) and file_bytes[:4] == b"PK\x03\x04"
 
 
+def is_pdf(file_bytes: bytes) -> bool:
+    """True si los bytes son un PDF (firma '%PDF-')."""
+    return bool(file_bytes) and file_bytes[:5] == b"%PDF-"
+
+
+def pdf_to_text(file_bytes: bytes) -> str:
+    """Extrae el TEXTO (layout-aware) de un PDF con pdfplumber. Lo usa el flujo de
+    "Tenencia valorizada" de Bull Market — la imprime en PDF, sin export a Excel.
+    Import perezoso para no romper la carga del módulo si pdfplumber faltara en
+    algún entorno (falla recién al intentar leer un PDF)."""
+    try:
+        import pdfplumber
+    except ImportError:
+        raise ValueError(
+            "No pudimos leer el PDF (falta el lector en el servidor). Escribinos "
+            "y lo habilitamos — o subí el reporte en Excel/CSV si lo tenés.")
+    try:
+        parts = []
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page in pdf.pages:
+                parts.append(page.extract_text() or "")
+        return "\n".join(parts)
+    except Exception as ex:
+        raise ValueError(f"No pudimos abrir el PDF: {ex}")
+
+
 def _cell_to_str(v) -> str:
     if v is None:
         return ""
