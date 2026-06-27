@@ -1,11 +1,10 @@
-"""Cripto comprada en un broker ARS (ej. BTC en Cocos) toma el valor actual.
+"""Cripto comprada en un broker ARS (ej. BTC en Cocos) toma el valor actual en
+pesos.
 
-Unificación FX (2026-06): la cripto se valúa SIEMPRE como spot × factor
-cripto/MEP (exchange→spot, broker AR→premium), NUNCA por un '.BA' = spot×blue.
-El frontend ahora pide el símbolo BARE ('<CRIPTO>') = spot; el backend, si igual
-recibe '<CRIPTO>.BA', lo resuelve a spot CRUDO (USD), sin multiplicar por el blue
-— así ningún consumidor puede reconstruir spot×blue. (Antes: '<CRIPTO>.BA' se
-devolvía × tc_blue; obsoleto.)
+Bug: el frontend pide 'BTC.BA' (sufijo ARS, como un CEDEAR) pero la cripto no
+cotiza en BYMA → /api/prices devolvía None → el activo caía a cost basis ("no
+toma el valor actual en pesos"). Fix: el backend resuelve '<CRIPTO>.BA' como
+'<CRIPTO>-USD' y lo devuelve convertido a pesos con el tc_blue del user.
 
 Corre con: cd backend && python3 -m pytest tests/test_crypto_ars_price.py
 """
@@ -67,10 +66,10 @@ class CryptoArsPriceTest(unittest.TestCase):
              patch.object(main, "_fill_last_known_prices"):
             return main.get_prices(symbols, self.uid)
 
-    def test_btc_ba_stays_spot_no_blue(self):
-        # Unificación FX: '<c>.BA' de cripto devuelve el SPOT crudo (USD), NO × blue.
+    def test_btc_ars_converted_to_pesos(self):
         out = self._get("BTC.BA")
-        self.assertAlmostEqual(out["BTC.BA"], 95000.0, places=2)
+        # 95.000 USD × 1435 = 136.325.000 ARS
+        self.assertAlmostEqual(out["BTC.BA"], 95000.0 * self.TC_BLUE, places=2)
 
     def test_btc_usd_broker_stays_usd(self):
         # BTC en broker USD/crypto (sin .BA) → precio USD, sin conversión.
@@ -84,14 +83,15 @@ class CryptoArsPriceTest(unittest.TestCase):
 
     def test_mixed_request(self):
         out = self._get("BTC.BA,GGAL.BA,BTC")
-        self.assertAlmostEqual(out["BTC.BA"], 95000.0, places=2)  # cripto .BA → spot crudo (sin blue)
-        self.assertAlmostEqual(out["GGAL.BA"], 4820.0, places=2)  # CEDEAR ARS → sin tocar
-        self.assertAlmostEqual(out["BTC"], 95000.0, places=2)     # cripto bare → spot
+        self.assertAlmostEqual(out["BTC.BA"], 95000.0 * self.TC_BLUE, places=2)  # cripto ARS → pesos
+        self.assertAlmostEqual(out["GGAL.BA"], 4820.0, places=2)                  # CEDEAR ARS → sin tocar
+        self.assertAlmostEqual(out["BTC"], 95000.0, places=2)                     # cripto USD → USD
 
-    def test_crypto_ba_ignores_blue_entirely(self):
-        # Unificación FX: aunque el blue LIVE esté en caché, '<c>.BA' de cripto NO
-        # se multiplica por el blue — queda en spot crudo. (Antes se convertía a
-        # pesos con el blue live; ahora la cripto se valúa por spot×factor.)
+    def test_uses_live_blue_over_config(self):
+        # Si el blue LIVE está en caché (el mismo que usa el frontend como tcBlue),
+        # la cripto se convierte con ESE, no con el tc_blue del config (1435). Así
+        # sigue los updates automáticos del blue.
+        # forma real de /api/dolar: blue = {compra, venta, ...} (el front usa .venta)
         main._dolar_cache["data"] = {"blue": {"compra": 1480.0, "venta": 1500.0}}
         main._dolar_cache["ts"] = 9e18
         try:
@@ -99,7 +99,7 @@ class CryptoArsPriceTest(unittest.TestCase):
         finally:
             main._dolar_cache["data"] = None
             main._dolar_cache["ts"] = 0.0
-        self.assertAlmostEqual(out["BTC.BA"], 95000.0, places=2)  # spot crudo, el blue NO aplica
+        self.assertAlmostEqual(out["BTC.BA"], 95000.0 * 1500.0, places=2)  # blue live, no config
 
 
 if __name__ == "__main__":

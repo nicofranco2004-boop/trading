@@ -77,15 +77,6 @@ def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     CEDEAR comprado por dólar-MEP → 15-100× inflado)."""
     asset = p.get('asset')
     broker = p.get('broker')
-    # La cripto NUNCA pide '.BA' (no existe 'BTC.BA' en BYMA): pide el símbolo
-    # BARE (= spot USD), aunque viva en un broker AR. Espejo del frontend
-    # priceSymbol(#1) y de _price_is_ars (que para cripto da False).
-    try:
-        from main import CRYPTO_SYMBOLS
-    except Exception:
-        CRYPTO_SYMBOLS = set()
-    if (asset or '').upper() in CRYPTO_SYMBOLS:
-        return asset
     wants_ba = (broker in ars_names or broker in ar_usd_names
                 or (p.get('asset_type') or '').upper() == 'CEDEAR')
     return f"{asset}.BA" if wants_ba else asset
@@ -170,21 +161,6 @@ def compute_broker_value_usd(
                 cash_usd = cash_ars / tc_blue if tc_blue > 0 else 0
                 value += cash_usd
                 invested += cash_usd  # cash ARS: value USD = invested USD (no FX gain)
-            elif (p.get('asset') or '').upper() in _CS:
-                # Cripto en broker AR: se valúa SIEMPRE como spot BARE × qty ×
-                # factor cripto/MEP (premium ~5%), NUNCA por el '.BA'. El COSTO en
-                # pesos va a USD por el MEP SIN factor (asimétrico — el factor SOLO
-                # al valor de mercado). Espejo de behavioral.py / valuation.js (#2).
-                inv_usd = real_cost / cedear_rate if cedear_rate > 0 else 0
-                invested += inv_usd
-                cf = _cb_factor(p['asset'], broker_name, override is not None, _cripto_rate, cedear_rate)
-                price = override if override is not None else prices.get(p['asset'])  # BARE spot
-                if price is not None:
-                    mkt_usd = price * (p.get('quantity') or 0) * cf
-                    trust = override is not None or _trust_mkt_value(mkt_usd, inv_usd, asset_type)
-                    value += mkt_usd if trust else inv_usd
-                else:
-                    value += inv_usd  # sin precio: mostrar cost como value
             else:
                 # Holdings (CEDEARs/acciones AR/bonos) → a USD por el dólar-MEP
                 # (cedear_rate), el dólar al que realmente salís de la inversión y

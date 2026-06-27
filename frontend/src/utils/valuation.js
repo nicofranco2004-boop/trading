@@ -64,9 +64,6 @@ import { isCrypto, cryptoBrokerFactor } from './crypto'
  * @returns {string}
  */
 export function priceSymbol(asset, isARS, assetType) {
-  // La cripto NUNCA recibe sufijo .BA: no existe 'BTC.BA' en BYMA. Se pide al
-  // símbolo BARE (= spot en USD), aunque viva en un broker con nombre AR.
-  if (isCrypto(asset)) return asset
   if ((asset || '').startsWith('FCI:')) return asset
   // CEDEARs son instrumentos de BYMA: se valúan por su precio LOCAL (.BA), nunca
   // por la acción US del mismo ticker — aunque vivan en un broker USD (compra
@@ -225,18 +222,6 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
         valueArs  += cashArs
         value     += cashUsd
         invested  += cashUsd  // cash en pesos: invested USD = value USD (no FX gain)
-      } else if (isCrypto(p.asset)) {
-        // Cripto en un broker AR (currency='ARS'): se valúa SIEMPRE al spot bare
-        // × factor cripto/MEP (premium ~5%), NUNCA por el .BA. El COSTO en pesos
-        // va a USD por el MEP SIN factor (manejo asimétrico — el factor SOLO al
-        // valor de mercado). Espejo de behavioral.py / la rama USD de abajo.
-        const f = cryptoBrokerFactor(p.asset, broker.is_exchange, p.price_override != null, tcCripto, cedearRate)
-        const invUsd = realCost / cedearRate
-        invested += invUsd
-        const price = p.price_override ?? prices[p.asset]  // BARE spot (USD)
-        const mkt = price != null ? price * (p.quantity || 0) * f : null
-        if (mkt != null) { value += mkt; valueArs += mkt * cedearRate }
-        else             { value += invUsd; valueArs += realCost }
       } else {
         // Holdings (CEDEARs / acciones AR / bonos) → a USD por el dólar-MEP
         // (cedearRate), que es el dólar al que REALMENTE salís de la inversión y

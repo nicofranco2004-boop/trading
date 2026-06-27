@@ -903,22 +903,6 @@ function PositionsDesktop() {
     if (p.is_cash) {
       return { valueArs: p.invested, valueUsd: p.invested / tcBlue, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null }
     }
-    // Cripto en broker AR: spot bare × factor cripto/MEP (~+5%), NUNCA por el .BA.
-    // El costo en pesos va a USD por el blue (rate) SIN factor (asimétrico — el
-    // factor SOLO al valor). Espejo de computeBrokerValue (rama cripto-ARS).
-    if (isCrypto(p.asset)) {
-      const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
-      const realCostArs = (p.invested || 0) + (p.commissions || 0)
-      const invUsd = realCostArs / tcBlue
-      const price = p.price_override ?? prices[p.asset]  // BARE spot (USD)
-      const valueUsd = price != null ? price * (p.quantity || 0) * f : null
-      if (valueUsd == null) {
-        return { valueArs: realCostArs, valueUsd: invUsd, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null, invUsd }
-      }
-      const valueArs = valueUsd * tcBlue
-      const pnlUsd = valueUsd - invUsd
-      return { valueArs, valueUsd, pnlArs: valueArs - realCostArs, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0, priceArs: null, invUsd }
-    }
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
     if (priceArs == null) return { valueArs: null, valueUsd: null, pnlArs: null, pnlUsd: null, pnlPct: null, priceArs: null }
     // Cost basis ARS = invested + commissions (ambos en pesos para broker ARS).

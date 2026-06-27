@@ -5398,11 +5398,14 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
             price = _fetch_one(f"{sym}-USD")
         result[sym] = price
 
-    # Cripto-ARS: el precio fetcheado vino en USD (BTC-USD) y se DEVUELVE CRUDO
-    # (spot en USD), NO × blue. La cripto se valúa SIEMPRE como spot × factor
-    # cripto/MEP en el frontend/backend, nunca por un '.BA' = spot×blue/MEP. Dejar
-    # el spot crudo en result['<c>.BA'] garantiza que NINGÚN consumidor pueda
-    # reconstruir spot×blue. (_tc_blue_ars queda sin usar para cripto — intencional.)
+    # Cripto-ARS: el precio recién fetcheado vino en USD (BTC-USD). Convertir a
+    # pesos con el blue del user → prices['BTC.BA'] queda en ARS (coherente con
+    # los demás .BA). Se hace ANTES de persistir/last-known para que el cache y
+    # el asset_last_price también guarden el valor en pesos.
+    if crypto_ars and _tc_blue_ars and _tc_blue_ars > 0:
+        for _csym in crypto_ars:
+            if result.get(_csym) is not None:
+                result[_csym] = round(result[_csym] * _tc_blue_ars, 6)
 
     # CEDEARs USD-cotizados: el precio fetcheado es el subyacente US (USD).
     # Precio en pesos del cedear = US × CCL ÷ ratio. Antes de persistir/last-known.
@@ -5523,10 +5526,11 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
         if pc is not None:
             result[sym] = pc
 
-    # Cripto-ARS: el cierre previo vino en USD y se DEVUELVE CRUDO (spot USD), NO
-    # × blue — espejo de /api/prices. La cripto se valúa por spot × factor, nunca
-    # por spot×blue, así que el prev-close también queda en spot crudo para que la
-    # variación diaria reconcilie con el precio actual (ambos en spot USD).
+    # Cripto-ARS: el cierre previo vino en USD → a pesos con el blue del user.
+    if crypto_ars and _tc_blue_ars and _tc_blue_ars > 0:
+        for _csym in crypto_ars:
+            if result.get(_csym) is not None:
+                result[_csym] = round(result[_csym] * _tc_blue_ars, 6)
 
     # CEDEARs USD-cotizados: cierre previo del subyacente US → pesos (× CCL ÷ ratio).
     if cedear_usd and _ccl_ars and _ccl_ars > 0:
