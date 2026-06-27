@@ -248,7 +248,16 @@ def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
     nominal, cruce de moneda, ≤ventana) con la misma lógica que el rebuild. Es la
     base ORIGINAL estable para amortizar: si no se cancelan los conductos, la base
     queda inflada (genuino + patas-puente) y la amortización no aplica o aplica mal.
-    Idempotente (recalcula desde import_normalized_tx, que los sweeps no tocan)."""
+    Idempotente (recalcula desde import_normalized_tx, que los sweeps no tocan).
+
+    EXCLUYE las VENTAS que SON la amortización (notes ~ 'amortiz'): algunos brokers
+    (Balanz "Renta y Amortización" con cantidad) ya bajan el nominal cerrando la
+    cuota como una VENTA al valor de rescate — eso es CORRECTO para el P&L. Pero la
+    base de este sweep tiene que ser el nominal ORIGINAL (sin descontar esa cuota),
+    porque el factor residual del schedule YA modela la amortización. Si contáramos
+    la VENTA-amort acá, restaríamos la amortización DOS veces: una en la base (Σ−),
+    otra en el factor → doble reducción (ej. AL30 720 → 518 en vez de 720). Las
+    VENTAS genuinas (sin 'amortiz') SÍ entran (reducen tu tenencia de verdad)."""
     from .rebuild import _cancel_conduit_pairs  # lazy: evita ciclo rebuild↔maturity
     _ph = ",".join("?" * len(brokers))
     rows = conn.execute(
@@ -258,8 +267,10 @@ def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
              WHERE b.user_id=? AND b.status='confirmed'
                AND n.broker IN ({_ph}) AND n.asset_symbol=?
                AND n.operation_type IN (?, ?)
+               AND NOT (n.operation_type = ?
+                        AND lower(COALESCE(n.notes,'')) LIKE '%amortiz%')
              ORDER BY n.date ASC, n.id ASC""",
-        (uid, *brokers, asset, OP_BUY, OP_SELL),
+        (uid, *brokers, asset, OP_BUY, OP_SELL, OP_SELL),
     ).fetchall()
     genuine = _cancel_conduit_pairs([dict(r) for r in rows])
     net = 0.0

@@ -180,6 +180,49 @@ class SweepBondAmortTest(unittest.TestCase):
             mat.sweep_bond_amortizations(self.conn, self.uid, ref_date="2026-06-25")
         self.assertAlmostEqual(self._qty("AL30"), 576.0, places=4)
 
+    def test_amort_sell_not_double_reduced(self):
+        # Bug real (Balanz "Renta y Amortización" con cantidad): la amortización
+        # entra como VENTA que cierra la cuota al valor de rescate (P&L correcto,
+        # baja el nominal). El sweep NO debe volver a aplicar el factor del schedule
+        # sobre esa cuota ya cerrada. Compra 1000, la VENTA-amort ya bajó 280 VN
+        # (28% a 2026-06-25) → quedan 720. El sweep debe DEJARLO en 720, no bajarlo
+        # a 518.4 (= 720×0.72) que era la DOBLE reducción.
+        self._import(_csv(
+            "2024-01-15,COMPRA,Balanz,AL30,1000,0.70,700,,,0,ARS,",
+            "2026-06-20,VENTA,Balanz,AL30,280,0.78,218.4,,,0,ARS,Renta y Amortización",
+        ))
+        self.assertAlmostEqual(self._qty("AL30"), 720.0, places=4)  # tras la VENTA-amort
+        with self.conn:
+            res = mat.sweep_bond_amortizations(self.conn, self.uid, ref_date="2026-06-25")
+        self.assertAlmostEqual(self._qty("AL30"), 720.0, places=4)  # NO 518.4
+        self.assertEqual(len(res["adjusted"]), 0)                   # no-op (ya está en residual)
+
+    def test_amort_sell_stale_export_catches_up(self):
+        # Export viejo: la VENTA-amort solo cerró 160 VN (16%), pero a 2026-06-25 ya
+        # amortizó 28% → el sweep debe bajar de 840 a 720 (alcanza la cuota faltante
+        # del calendario), SIN doble-contar la cuota ya cerrada por la VENTA. La base
+        # del sweep es el nominal original (1000), no 1000−160.
+        self._import(_csv(
+            "2024-01-15,COMPRA,Balanz,AL30,1000,0.70,700,,,0,ARS,",
+            "2025-08-01,VENTA,Balanz,AL30,160,0.78,124.8,,,0,ARS,Renta y Amortización",
+        ))
+        self.assertAlmostEqual(self._qty("AL30"), 840.0, places=4)
+        with self.conn:
+            mat.sweep_bond_amortizations(self.conn, self.uid, ref_date="2026-06-25")
+        self.assertAlmostEqual(self._qty("AL30"), 720.0, places=4)
+
+    def test_genuine_sell_still_counts(self):
+        # Una VENTA genuina (sin 'amortiz' en notes) SÍ entra en la base: compra
+        # 1000, vende 200 → base 800, residual 72% → 576 (no debe cambiar con el fix).
+        self._import(_csv(
+            "2024-01-15,COMPRA,Balanz,AL30,1000,0.70,700,,,0,ARS,",
+            "2024-02-15,VENTA,Balanz,AL30,200,0.75,150,,,0,ARS,Venta parcial",
+        ))
+        self.assertAlmostEqual(self._qty("AL30"), 800.0, places=4)
+        with self.conn:
+            mat.sweep_bond_amortizations(self.conn, self.uid, ref_date="2026-06-25")
+        self.assertAlmostEqual(self._qty("AL30"), 576.0, places=4)
+
     def test_manual_position_untouched(self):
         # Una posición de AL30 creada a mano (no import-linked) NO se toca.
         self.conn.execute(
