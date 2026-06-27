@@ -27,6 +27,7 @@ import { priceSymbol, fciLabel, isArUsdBroker, costInPesos } from '../utils/valu
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { inferType } from '../utils/tickers'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Devuelve { valueUsd, investedUsd, pnlUsd, priceLocal } para UN lote.
@@ -82,6 +83,7 @@ export default function AssetDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
   const asset = (ticker || '').toUpperCase()
+  const { valuationDollar } = useCurrency()
 
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -116,8 +118,8 @@ export default function AssetDetail() {
     }
   }
 
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
-  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue
   const tcCripto = dolar?.cripto?.venta
 
   // ── Agregados ──────────────────────────────────────────────────────────

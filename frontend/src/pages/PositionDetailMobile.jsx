@@ -20,10 +20,12 @@ import { usd, pctSigned, colorClass } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
 export default function PositionDetailMobile() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { valuationDollar } = useCurrency()
   const [position, setPosition] = useState(null)
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
@@ -88,8 +90,8 @@ export default function PositionDetailMobile() {
 
   const p = position
   const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
-  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto p/ valuar crypto en broker AR
   const qty = p.quantity || 0
   const invested = p.invested || 0

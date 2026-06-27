@@ -35,6 +35,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
 import { computeBestWorstClosedOp } from '../utils/insightsModel'
 
@@ -141,6 +142,7 @@ function computeDriversForMonth({ monthOps, deltaPct, sp500Map, inflationMap, pe
  * posibles hoy — quedan ocultas (sprint aparte agrega snapshot_per_broker).
  */
 export default function useMonthlyData({ broker = 'global' } = {}) {
+  const { valuationDollar } = useCurrency()
   const [monthly, setMonthly] = useState([])
   const [operations, setOperations] = useState([])
   const [snapshots, setSnapshots] = useState([])
@@ -181,9 +183,9 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         setPositions(pos || [])
         setBrokers(bkrs || [])
         setBench(bnch)
-        const tc = dol?.mep?.venta || dol?.ccl?.venta || dol?.blue?.venta || cfg?.tc_blue || 1415
+        const tc = pickFinancialRate(dol, valuationDollar) || cfg?.tc_blue || 1415
         setTcBlue(tc)
-        setTcCedear(dol?.mep?.venta || dol?.ccl?.venta || tc)
+        setTcCedear(pickFinancialRate(dol, valuationDollar) || tc)
         setTcCripto(dol?.cripto?.venta ?? null)
         // Cargar precios para que el live value por broker sea exacto
         const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
@@ -207,7 +209,9 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
     }
     load()
     return () => { cancelled = true }
-  }, [])
+    // valuationDollar en deps: al cambiar MEP/CCL re-deriva tc/tcCedear (vía
+    // re-fetch; no hay flash de loading porque no reseteamos loading=true acá).
+  }, [valuationDollar])
 
   // Brokers disponibles para el selector (excluye 'global' que es siempre default)
   const availableBrokers = useMemo(() => {

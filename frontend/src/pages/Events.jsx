@@ -28,6 +28,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import { computeBrokerValue, priceSymbol } from '../utils/valuation'
 import { pct } from '../utils/format'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import {
   upcomingBondEvents,
   normalizeBackendEvents,
@@ -69,6 +70,7 @@ function matchesFilter(event, filter) {
 
 // Si `embedded=true`, sin PageHeader y el sub-tab se persiste en URL (?sub=…).
 export default function Events({ embedded = false }) {
+  const { valuationDollar } = useCurrency()
   const [searchParams, setSearchParams] = useSearchParams()
   const urlSub = searchParams.get('sub')
   const initialTab = embedded && TAB_VALUES.includes(urlSub) ? urlSub : 'portfolio'
@@ -139,8 +141,8 @@ export default function Events({ embedded = false }) {
   }
 
   // Valor total del portfolio en USD (para impact %)
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || config.tc_blue || 1415
-  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta
   const portfolioTotalUsd = useMemo(() => {
     return brokers.reduce((sum, broker) => {

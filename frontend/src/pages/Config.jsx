@@ -15,6 +15,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import PageHeader from '../components/PageHeader'
 import CurrencyToggle from '../components/CurrencyToggle'
+import { useCurrency } from '../contexts/CurrencyContext'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
@@ -90,6 +91,7 @@ const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 export default function Config() {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const { valuationDollar, setValuationDollar } = useCurrency()
   const [brokers, setBrokers] = useState([])  // sólo para contador en "Cuenta"
   const [dolar, setDolar] = useState(null)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
@@ -174,6 +176,39 @@ export default function Config() {
             </p>
           </div>
           <CurrencyToggle variant="pill" size="lg" />
+        </div>
+      </section>
+
+      {/* ── Dólar de valuación (MEP / CCL) ───────────────────────────────── */}
+      {/* Qué dólar usa la app para pasar tus tenencias en pesos a USD. MEP =
+          dólar local (default). CCL = el dólar implícito en el precio de los
+          CEDEARs → algunos prefieren medir su rendimiento real con ese. */}
+      <section className="mb-6">
+        <div className="border border-line rounded bg-bg-1 px-4 py-3.5 flex items-center justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <h2 className="text-sm font-medium text-ink-1">Dólar de valuación</h2>
+            <p className="text-xs text-ink-3 mt-0.5">
+              Con qué dólar se valúan tus tenencias en pesos. <b>MEP</b>: dólar local. <b>CCL</b>: el
+              dólar implícito en el precio de los CEDEARs. Se aplica en toda la app.
+            </p>
+          </div>
+          <div className="inline-flex rounded-full border border-line bg-bg-0 p-0.5 shrink-0" role="group" aria-label="Dólar de valuación">
+            {[['mep', 'MEP'], ['ccl', 'CCL']].map(([val, label]) => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => setValuationDollar(val)}
+                aria-pressed={valuationDollar === val}
+                className={`px-4 py-1.5 text-sm font-medium rounded-full transition-colors ${
+                  valuationDollar === val
+                    ? 'bg-brand text-white'
+                    : 'text-ink-2 hover:text-ink-0'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
 

@@ -12,6 +12,7 @@ import { useToast } from '../components/Toast'
 import { usd, fmtUsd } from '../utils/format'
 import { priceSymbol, computeBrokerValue, isArUsdBroker } from '../utils/valuation'
 import { api } from '../utils/api'
+import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
 const PRESETS = [
@@ -34,9 +35,11 @@ export default function Goals() {
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(null) // 'add' | 'edit' | null
   const [form, setForm] = useState({ id: null, target_usd: '', target_date: addYears(1), expected_return_pct: 10, label: '' })
+  const { valuationDollar } = useCurrency()
   const toast = useToast()
 
-  useEffect(() => { loadAll() }, [])
+  // valuationDollar en deps: al cambiar MEP/CCL, recomputar valor actual + proyecciones.
+  useEffect(() => { loadAll() }, [valuationDollar])
 
   async function loadAll() {
     setLoading(true)
@@ -56,9 +59,9 @@ export default function Goals() {
       // fuente de verdad), igual que Positions.jsx / Insights.jsx. Así CEDEARs y
       // sub-brokers "· USD" se valúan por su precio LOCAL .BA ÷ dólar-MEP, no por el
       // ticker US (que estaría órdenes de magnitud mal).
-      const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
+      const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
       // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
-      const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue
+      const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue
       const tcCripto = dolar?.cripto?.venta
       const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
       const usdtBrokers = new Set(brokers.filter(b => b.currency !== 'ARS').map(b => b.name))

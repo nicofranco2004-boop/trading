@@ -20,7 +20,30 @@ import { api } from '../utils/api'
 const CurrencyContext = createContext(null)
 
 const STORAGE_KEY = 'rendi_display_currency'
+const VAL_STORAGE_KEY = 'rendi_valuation_dollar'   // 'mep' | 'ccl'
 const DEFAULT_TC_BLUE = 1415
+
+/**
+ * pickFinancialRate — dólar "financiero" para valuar holdings y convertir ARS↔USD,
+ * según la preferencia del user (Configuración): MEP (default) o CCL.
+ *
+ * Por qué CCL como opción: es el dólar IMPLÍCITO en el precio de un CEDEAR
+ * (precio.BA = precioUS × CCL ÷ ratio). Dividir el valor en pesos por el CCL
+ * recupera el valor real en USD; dividir por el MEP deja un residuo (CCL/MEP) que
+ * hace "temblar" la cartera cuando se mueve la brecha, sin que la empresa cambie.
+ * El MEP es defendible como "dólar local que podés sacar acá" → es el default.
+ *
+ * Cascada: el elegido primero, el otro como fallback, después el blue. NO afecta a
+ * la cripto de exchange (esa usa el dólar cripto / crypto_broker_factor, aparte).
+ *
+ * @param {object} dolar — respuesta de /api/dolar ({blue,mep,ccl,cripto}.venta)
+ * @param {'mep'|'ccl'} pref — preferencia del user
+ * @returns {number|undefined} rate ARS/USD, o undefined si no hay dato (caller pone fallback)
+ */
+export function pickFinancialRate(dolar, pref) {
+  const mep = dolar?.mep?.venta, ccl = dolar?.ccl?.venta, blue = dolar?.blue?.venta
+  return (pref === 'ccl' ? (ccl || mep) : (mep || ccl)) || blue
+}
 
 export function CurrencyProvider({ children }) {
   const [currency, setCurrencyRaw] = useState(() => {
@@ -30,6 +53,17 @@ export function CurrencyProvider({ children }) {
       return v === 'ARS' ? 'ARS' : 'USD'
     } catch {
       return 'USD'
+    }
+  })
+
+  // Dólar de valuación elegido por el user (MEP default / CCL). Persistido en
+  // localStorage como el toggle de moneda — preferencia de display per-device.
+  const [valuationDollar, setValuationDollarRaw] = useState(() => {
+    if (typeof window === 'undefined') return 'mep'
+    try {
+      return localStorage.getItem(VAL_STORAGE_KEY) === 'ccl' ? 'ccl' : 'mep'
+    } catch {
+      return 'mep'
     }
   })
 
@@ -51,20 +85,27 @@ export function CurrencyProvider({ children }) {
     const fetchAndPublish = () => {
       api.get('/dolar').then(d => {
         if (cancelled) return
-        // dólar MEP (cascada mep→ccl→blue) — rate de display unificado.
-        const mep = d?.mep?.venta || d?.ccl?.venta || d?.blue?.venta
-        if (mep > 0) setTcBlueRaw(Number(mep))
+        // dólar financiero según preferencia (MEP default / CCL), cascada con
+        // fallback al otro y al blue. Re-resuelve al cambiar valuationDollar.
+        const rate = pickFinancialRate(d, valuationDollar)
+        if (rate > 0) setTcBlueRaw(Number(rate))
       }).catch(() => { /* silent — usa default + páginas publican lo que tengan */ })
     }
     fetchAndPublish()
     const id = setInterval(fetchAndPublish, 300_000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [])
+  }, [valuationDollar])
 
   function setCurrency(next) {
     const norm = next === 'ARS' ? 'ARS' : 'USD'
     setCurrencyRaw(norm)
     try { localStorage.setItem(STORAGE_KEY, norm) } catch {}
+  }
+
+  function setValuationDollar(next) {
+    const norm = next === 'ccl' ? 'ccl' : 'mep'
+    setValuationDollarRaw(norm)
+    try { localStorage.setItem(VAL_STORAGE_KEY, norm) } catch {}
   }
 
   function toggle() {
@@ -82,8 +123,9 @@ export function CurrencyProvider({ children }) {
       currency, setCurrency, toggle,
       isArs: currency === 'ARS', isUsd: currency === 'USD',
       tcBlue, setTcBlue,
+      valuationDollar, setValuationDollar,
     }),
-    [currency, tcBlue],
+    [currency, tcBlue, valuationDollar],
   )
 
   return <CurrencyContext.Provider value={value}>{children}</CurrencyContext.Provider>
@@ -97,6 +139,7 @@ export const useCurrency = () => {
       currency: 'USD', setCurrency: () => {}, toggle: () => {},
       isArs: false, isUsd: true,
       tcBlue: DEFAULT_TC_BLUE, setTcBlue: () => {},
+      valuationDollar: 'mep', setValuationDollar: () => {},
     }
   }
   return ctx

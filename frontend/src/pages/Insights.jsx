@@ -54,6 +54,7 @@ import { selectDiagnostics } from '../utils/diagnostics'
 import { computeProMetrics } from '../utils/insightsMetrics'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
+import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
 import {
   computeAllocationMatch,
   computeObjectiveCoherence,
@@ -144,6 +145,7 @@ export default function Insights({ _embeddedTab }) {
 function InsightsDesktop({ _embeddedTab }) {
   const isMobile = useIsMobile()
   const { user } = useAuth()
+  const { valuationDollar } = useCurrency()
   const plan = usePlanFeatures()
   // Flags de renderizado condicional cuando se embebe dentro de /analisis.
   // Standalone (sin _embeddedTab) → renderiza TODO.
@@ -257,8 +259,8 @@ function InsightsDesktop({ _embeddedTab }) {
   //                instrumento). Agrega posiciones del mismo asset entre brokers/lotes.
   //                Excluye cash. Esto es lo que un usuario espera ver al preguntarse
   //                "¿qué tan expuesto estoy a un único activo?".
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
-  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ cripto en broker AR
   // Brokers que son exchange (Binance, Ripio…): la cripto se valúa a spot (factor 1).
   // En un broker AR (Cocos, Balanz…) la cripto se valúa al dólar cripto (MEP-like).

@@ -22,7 +22,7 @@ import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
-import { useCurrency } from '../contexts/CurrencyContext'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd } from '../utils/valuation'
@@ -51,7 +51,7 @@ export default function Dashboard() {
   // por página → inconsistencias entre desktop y mobile.
   // Migración soft: si el user tenía 'rendi_dashboard_currency' viejo, lo
   // migra al nuevo storage key al primer load.
-  const { currency, setCurrency, setTcBlue: publishTcBlue } = useCurrency()
+  const { currency, setCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
   useEffect(() => {
     try {
       const legacy = localStorage.getItem('rendi_dashboard_currency')
@@ -143,8 +143,8 @@ export default function Dashboard() {
     } catch {}
   }
 
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || config.tc_blue || 1415
-  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ crypto en broker AR
 
   // Fase B (2026-05-31): publicamos tcBlue al CurrencyContext para que
@@ -299,6 +299,11 @@ export default function Dashboard() {
   // ── Snapshot 1×/day (solo con cobertura de precios alta) ────────────────────
   useEffect(() => {
     if (loading || !lastUpdated || totalValuePositions <= 0) return
+    // La serie histórica de snapshots vive en MEP (decisión de scope: el toggle
+    // MEP/CCL es sólo display LIVE). Si el user está viendo en CCL, NO persistimos
+    // este total (sería CCL-flavored y mezclaría rates en la curva); el cron del
+    // backend igual snapshotea en MEP. Default (MEP) → escribe igual que siempre.
+    if (valuationDollar !== 'mep') return
     // Comparación robusta: NaN/no-finito NO pasa (NaN < x es false → escribiría).
     if (!(priceCoverage >= PRICE_COVERAGE_MIN)) return  // precios a medio cargar → no snapshotear
     const today = new Date().toISOString().slice(0, 10)
@@ -309,7 +314,7 @@ export default function Dashboard() {
     api.post('/snapshots', { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
       .then(() => localStorage.setItem(key, today))
       .catch(() => {})
-  }, [loading, lastUpdated, totalValuePositions, totalCostBasisPositions, netDepositedPositions, priceCoverage])
+  }, [loading, lastUpdated, totalValuePositions, totalCostBasisPositions, netDepositedPositions, priceCoverage, valuationDollar])
 
   // ── Sync pnl_unrealized for current month ───────────────────────────────────
   useEffect(() => {

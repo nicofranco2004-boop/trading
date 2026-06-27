@@ -36,13 +36,13 @@ import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { computeDailyPnl } from '../utils/evolution'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
-import { useCurrency } from '../contexts/CurrencyContext'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
 export default function HomeMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard.
   // Fase B: además publicamos tcBlue al context para que Reports / charts
   // puedan leer sin re-fetchear /dolar.
-  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue } = useCurrency()
+  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
   const [positions, setPositions] = useState([])
   const [monthly, setMonthly] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -93,8 +93,8 @@ export default function HomeMobile() {
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
   }
 
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
-  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
   const pf = pfUsd(usePfRollup(), tcBlue)  // plazos fijos → USD (suma al total mostrado)
 

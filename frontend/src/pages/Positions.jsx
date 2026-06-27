@@ -31,7 +31,7 @@ import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/f
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, costInPesos, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { useCurrency } from '../contexts/CurrencyContext'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import PageHeader from '../components/PageHeader'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import BrokerManager from '../components/BrokerManager'
@@ -90,7 +90,7 @@ export default function Positions() {
 function PositionsDesktop() {
   // Fase A: currency global compartido — Positions desktop respeta el toggle
   // global USD/ARS (mismo state que Dashboard, HomeMobile, PositionsMobile).
-  const { currency: displayCurrency, setTcBlue: publishTcBlue } = useCurrency()
+  const { currency: displayCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
   // Cierre del día anterior por símbolo (mismo keying que `prices`: ASSET para
@@ -185,12 +185,16 @@ function PositionsDesktop() {
   // TC blue/MEP derivados — se declaran ACÁ (arriba de los useMemo que los
   // consumen vía closure/deps) para evitar ReferenceError por temporal dead
   // zone si JS evalúa el array de deps antes de la declaración de `const`.
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || config.tc_blue || 1415
-  const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
-  // Dólar para valuar CEDEARs. Se compran por dólar-MEP (plata local), así que
-  // valuamos al MEP — es lo que muestra el broker (Cocos). Cascada MEP → CCL →
-  // blue. Usar blue o CCL daba un valor más bajo que el real (Cocos al MEP).
-  const tcCedear = tcMep || dolar?.ccl?.venta || tcBlue
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
+  const tcMep = pickFinancialRate(dolar, valuationDollar) || config.tc_mep || 1415
+  // MEP ESTRICTO (no sigue el toggle MEP/CCL): para conversiones rotuladas
+  // literalmente "MEP" (cross-currency de bonos) — así el badge no miente mostrando
+  // un CCL/blue, y queda byte-idéntico al comportamiento previo a la feature.
+  const tcMepStrict = dolar?.mep?.venta || config.tc_mep || 1415
+  // Dólar para valuar CEDEARs (sigue el toggle MEP/CCL del user). Se compran por
+  // dólar financiero (plata local), así que valuamos a ese — es lo que muestra el
+  // broker (Cocos). tcMep ya cascadea mep/ccl/blue vía pickFinancialRate.
+  const tcCedear = tcMep || tcBlue
   // Dólar cripto (~spot + 5%). La cripto en un BROKER (Cocos/Balanz, no exchange)
   // se valúa al cripto-dólar para empatar lo que muestra el broker AR; en un
   // EXCHANGE (Binance/Ripio) queda a spot. cryptoBrokerFactor aplica esto.
@@ -1564,7 +1568,7 @@ function PositionsDesktop() {
                             summary={bondSummary}
                             isARS={true}
                             currentPrice={c.priceArs}
-                            tcMep={tcMep}
+                            tcMep={tcMepStrict}
                             cerSeries={cerSeries}
                             cerStale={cerStale}
                             onAddCoupon={() => openBondCashflow(p, 'coupon')}
@@ -1762,7 +1766,7 @@ function PositionsDesktop() {
                           summary={bondSummary}
                           isARS={false}
                           currentPrice={c.price}
-                          tcMep={tcMep}
+                          tcMep={tcMepStrict}
                           cerSeries={cerSeries}
                           cerStale={cerStale}
                           onAddCoupon={() => openBondCashflow(p, 'coupon')}

@@ -19,10 +19,12 @@ import AssetLogo from '../components/AssetLogo'
 import { track } from '../utils/track'
 import Panel from '../components/Panel'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
 export default function FirstInsight() {
   const navigate = useNavigate()
   const coachDrawer = useCoachDrawer()
+  const { valuationDollar } = useCurrency()
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
@@ -78,8 +80,8 @@ export default function FirstInsight() {
     }).finally(() => setLoading(false))
   }, [])
 
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
-  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta
 
   const stats = useMemo(() => {

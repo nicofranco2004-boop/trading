@@ -11,6 +11,7 @@ import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuati
 import { lookupHistoricalDolar } from '../utils/fx'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
 const RECENT_MONTHS_DEFAULT = 6
 
@@ -46,6 +47,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   const [searchParams] = useSearchParams()
   const initialTab = searchParams.get('broker') || 'global'
 
+  const { valuationDollar } = useCurrency()
+
   const [entries, setEntries] = useState([])
   const [brokers, setBrokers] = useState([])
   const [tab, setTab] = useState(initialTab)
@@ -69,9 +72,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
   useEffect(() => {
     init()
-    // Re-fetch cuando el caller cambia refreshKey (ej.: Dashboard tras un import).
+    // Re-fetch cuando el caller cambia refreshKey (ej.: Dashboard tras un import),
+    // o cuando el user cambia el dólar de valuación (MEP/CCL) → re-deriva el rate
+    // y el total live del banner reacciona al toggle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey])
+  }, [refreshKey, valuationDollar])
 
   async function load() {
     setEntries(await api.get('/monthly'))
@@ -86,9 +91,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       api.get('/benchmarks').catch(() => null),
     ])
     setBrokers(bkrs)
-    const tc = dol?.mep?.venta || dol?.ccl?.venta || dol?.blue?.venta || cfg?.tc_blue || 1415
+    const tc = pickFinancialRate(dol, valuationDollar) || cfg?.tc_blue || 1415
     // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
-    const tcCedear = dol?.mep?.venta || dol?.ccl?.venta || tc
+    const tcCedear = pickFinancialRate(dol, valuationDollar) || tc
     // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
     const tcCripto = dol?.cripto?.venta
     setTcBlue(tc)
@@ -252,9 +257,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         bkrs = r[1]
         const dol = await api.get('/dolar').catch(() => null)
         const cfg = await api.get('/config').catch(() => null)
-        tc = dol?.mep?.venta || dol?.ccl?.venta || dol?.blue?.venta || cfg?.tc_blue || tcBlue
+        tc = pickFinancialRate(dol, valuationDollar) || cfg?.tc_blue || tcBlue
         // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
-        tcCedear = dol?.mep?.venta || dol?.ccl?.venta || tc
+        tcCedear = pickFinancialRate(dol, valuationDollar) || tc
         // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
         tcCripto = dol?.cripto?.venta
       }
@@ -270,6 +275,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       let globalPnlUsd = 0
       let liveTotal = 0
       const syncs = []
+      // El pnl_unrealized_usd que persistimos en monthly_entries vive en MEP (scope:
+      // el toggle MEP/CCL es sólo display LIVE). Si el user está en CCL, computamos el
+      // liveTotal del banner (display) pero NO escribimos pnl CCL-flavored al backend;
+      // se auto-corrige en la próxima sesión MEP. Default (MEP) → escribe igual que siempre.
+      const persistMep = valuationDollar === 'mep'
       for (const b of bkrs) {
         const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear, tcCripto)
         // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcBlue for ARS display);
@@ -278,9 +288,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         // Global aggregate uses pnlUsd ("true USD" P&L: ARS uses tc_compra for cost basis).
         globalPnlUsd += result.pnlUsd
         liveTotal += result.value  // valor total en USD (incluye cash convertido)
-        syncs.push(api.post('/monthly/sync-unrealized', { broker: b.name, pnl_unrealized_usd: +pnlForBroker.toFixed(4) }).catch(() => {}))
+        if (persistMep) syncs.push(api.post('/monthly/sync-unrealized', { broker: b.name, pnl_unrealized_usd: +pnlForBroker.toFixed(4) }).catch(() => {}))
       }
-      syncs.push(api.post('/monthly/sync-unrealized', { broker: 'global', pnl_unrealized_usd: +globalPnlUsd.toFixed(4) }).catch(() => {}))
+      if (persistMep) syncs.push(api.post('/monthly/sync-unrealized', { broker: 'global', pnl_unrealized_usd: +globalPnlUsd.toFixed(4) }).catch(() => {}))
       await Promise.all(syncs)
       setLivePortfolioTotal(liveTotal)
     } catch (e) {

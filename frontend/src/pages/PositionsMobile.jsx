@@ -39,7 +39,7 @@ import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { useCurrency } from '../contexts/CurrencyContext'
+import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
@@ -78,7 +78,7 @@ function brokerColor(name) {
 
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
-  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue } = useCurrency()
+  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
   const toast = useToast()
@@ -211,7 +211,7 @@ export default function PositionsMobile() {
       currency: broker?.currency || 'USDT',
       quantity: '',
       exit_price: suggested ? +(+suggested).toFixed(4) : '',
-      tc_venta: isARS ? +(dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415).toFixed(2) : '',
+      tc_venta: isARS ? +(pickFinancialRate(dolar, valuationDollar) || 1415).toFixed(2) : '',
       date: today(),
       commissions: '',
     })
@@ -461,8 +461,8 @@ export default function PositionsMobile() {
     refreshPlanFeatures()
   }
 
-  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
-  const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
+  const tcBlue = pickFinancialRate(dolar, valuationDollar) || 1415
+  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
 
   // Fase B: publish tcBlue al CurrencyContext (mismo pattern que Dashboard/HomeMobile)
@@ -1108,7 +1108,7 @@ export default function PositionsMobile() {
           setForm={setAddForm}
           brokers={brokers}
           selectedBrokerCurrency={brokers.find(b => b.name === addForm.broker)?.currency ?? 'USDT'}
-          tcBlue={dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415}
+          tcBlue={pickFinancialRate(dolar, valuationDollar) || 1415}
           onClose={() => setAddModal(null)}
           onSave={saveNewPosition}
           onChangeAsset={() => {
@@ -1126,7 +1126,7 @@ export default function PositionsMobile() {
           setForm={setAddForm}
           brokers={brokers}
           selectedBrokerCurrency={brokers.find(b => b.name === addForm.broker)?.currency ?? 'USDT'}
-          tcBlue={dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415}
+          tcBlue={pickFinancialRate(dolar, valuationDollar) || 1415}
           onClose={() => setAddModal(null)}
           onSave={saveEditPosition}
         />
@@ -1138,7 +1138,7 @@ export default function PositionsMobile() {
           form={sellForm}
           setForm={setSellForm}
           positions={positions}
-          tcBlue={dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415}
+          tcBlue={pickFinancialRate(dolar, valuationDollar) || 1415}
           onClose={() => setAddModal(null)}
           onConfirm={confirmSell}
         />
