@@ -57,8 +57,7 @@ def _invested_usd(p: Dict[str, Any], tc_blue: float, tc_cedear: float | None = N
     en pantalla). Fallback a tc_blue si no hay MEP disponible."""
     val = p.get("invested") or 0
     if _native_ccy(p) == "ARS":
-        if p.get("is_cash"):
-            return val / tc_blue if tc_blue > 0 else val
+        # Unificación FX: cash y holdings ARS → USD por el dólar-MEP (no blue).
         rate = tc_cedear if (tc_cedear and tc_cedear > 0) else tc_blue
         return val / rate if rate > 0 else val
     return val

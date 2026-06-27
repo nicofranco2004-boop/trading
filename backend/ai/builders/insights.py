@@ -396,10 +396,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         cost_is_ars = _native_ccy(p) == "ARS"
         price_is_ars = _is_ars_broker(broker_name)
         invested = float(p.get("invested") or 0)
-        # CASH ARS por tc_blue; HOLDINGS AR (cost basis) por tc_mep (dólar-MEP),
-        # como la sección Análisis del frontend.
+        # Unificación FX: TODO lo ARS (cash y holdings) → USD por el dólar-MEP
+        # (tc_cedear), igual que la sección Análisis del frontend. Antes el cash iba al blue.
         if cost_is_ars:
-            cost_usd = invested / tc_blue if p.get("is_cash") else invested / tc_cedear
+            _rate = tc_cedear if (tc_cedear and tc_cedear > 0) else tc_blue
+            cost_usd = invested / _rate if _rate > 0 else invested
         else:
             cost_usd = invested
         if p.get("is_cash"):

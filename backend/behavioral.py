@@ -396,7 +396,9 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
     # Cash — convertir solo si el cash es en pesos
     if p.get("is_cash"):
         if cost_ccy == "ARS":
-            return invested_native / tc_blue if tc_blue > 0 else 0.0
+            # Unificación FX: cash en pesos → USD por el dólar-MEP (rate_holdings),
+            # igual que los holdings — antes usaba el blue.
+            return invested_native / rate_holdings if rate_holdings > 0 else 0.0
         return invested_native
 
     # No-cash: price_override (manual) primero, después precio live × quantity.
