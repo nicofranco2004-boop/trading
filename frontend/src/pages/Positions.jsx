@@ -1435,7 +1435,11 @@ function PositionsDesktop() {
                         <Fragment key={rowKey}>
                         <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''} ${isLot ? 'bg-bg-2/15' : ''}`}>
                           <td className={tdClassSticky}>
-                            <div className={`flex items-center gap-2.5 min-w-0 ${isLot ? 'pl-6 opacity-75' : ''}`}>
+                            <div
+                            className={`flex items-center gap-2.5 min-w-0 ${isLot ? 'pl-6 opacity-75' : ''} ${p.is_cash ? '' : 'cursor-pointer'}`}
+                            onClick={p.is_cash ? undefined : () => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
+                            title={p.is_cash ? undefined : `Ver detalle de ${p.asset} — operaciones, FIFO y gráfico`}
+                          >
                               {isLot && <span className="text-ink-3 font-mono text-sm select-none -ml-3" title="Lote">└</span>}
                               <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                               <div className="min-w-0">
@@ -1473,17 +1477,17 @@ function PositionsDesktop() {
                                   <span>{isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha')}</span>
                                   {isAgg && lotCount > 1 && (
                                     <button
-                                      onClick={() => toggleTicker(`t:${p.asset}`)}
+                                      type="button"
+                                      onClick={() => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
                                       className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
-                                      title={tickerExpanded ? 'Ocultar los lotes individuales' : 'Ver los lotes individuales (cada compra)'}
+                                      title={`Ver los ${lotCount} lotes de ${p.asset} (operaciones, FIFO y gráfico)`}
                                     >
-                                      {tickerExpanded ? <ChevronUp size={10} strokeWidth={1.75} /> : <ChevronDown size={10} strokeWidth={1.75} />}
-                                      {tickerExpanded ? 'Ocultar lotes' : `${lotCount} lotes`}
+                                      <LayersIcon size={10} strokeWidth={1.75} /> {lotCount} lotes
                                     </button>
                                   )}
                                   {isBond && !isLot && (
                                     <button
-                                      onClick={() => toggleBondExpand(p)}
+                                      onClick={(e) => { e.stopPropagation(); toggleBondExpand(p) }}
                                       className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
                                       title={expanded ? 'Ocultar cobranzas y meta del bono' : 'Ver meta + historial de cobranzas'}
                                     >
@@ -1640,7 +1644,11 @@ function PositionsDesktop() {
                       <Fragment key={rowKey}>
                       <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''} ${isLot ? 'bg-bg-2/15' : ''}`}>
                         <td className={tdClassSticky}>
-                          <div className={`flex items-center gap-2.5 min-w-0 ${isLot ? 'pl-6 opacity-75' : ''}`}>
+                          <div
+                            className={`flex items-center gap-2.5 min-w-0 ${isLot ? 'pl-6 opacity-75' : ''} ${p.is_cash ? '' : 'cursor-pointer'}`}
+                            onClick={p.is_cash ? undefined : () => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
+                            title={p.is_cash ? undefined : `Ver detalle de ${p.asset} — operaciones, FIFO y gráfico`}
+                          >
                             {isLot && <span className="text-ink-3 font-mono text-sm select-none -ml-3" title="Lote">└</span>}
                             <AssetLogo asset={p.asset} isCash={p.is_cash} size={isLot ? (compact ? 18 : 22) : (compact ? 26 : 32)} />
                             <div className="min-w-0">
@@ -1670,17 +1678,17 @@ function PositionsDesktop() {
                                 <span>{isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha')}</span>
                                 {isAgg && lotCount > 1 && (
                                   <button
-                                    onClick={() => toggleTicker(`t:${p.asset}`)}
+                                    type="button"
+                                    onClick={() => navigate(`/activo/${encodeURIComponent(p.asset)}`)}
                                     className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
-                                    title={tickerExpanded ? 'Ocultar los lotes individuales' : 'Ver los lotes individuales (cada compra)'}
+                                    title={`Ver los ${lotCount} lotes de ${p.asset} (operaciones, FIFO y gráfico)`}
                                   >
-                                    {tickerExpanded ? <ChevronUp size={10} strokeWidth={1.75} /> : <ChevronDown size={10} strokeWidth={1.75} />}
-                                    {tickerExpanded ? 'Ocultar lotes' : `${lotCount} lotes`}
+                                    <LayersIcon size={10} strokeWidth={1.75} /> {lotCount} lotes
                                   </button>
                                 )}
                                 {isBond && !isLot && (
                                   <button
-                                    onClick={() => toggleBondExpand(p)}
+                                    onClick={(e) => { e.stopPropagation(); toggleBondExpand(p) }}
                                     className="inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 normal-case tracking-normal"
                                     title={expanded ? 'Ocultar cobranzas y meta del bono' : 'Ver meta + historial de cobranzas'}
                                   >
