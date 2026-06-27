@@ -1398,9 +1398,10 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
 
   const actions = p._isAgg
     ? [
-        // Fila agregada (resumen multi-lote, sintética): solo Analizar + Vender.
-        // Editar/Eliminar NO aplican — operan sobre una posición real (lote),
-        // que el user encuentra expandiendo el ticker.
+        // Fila agregada (resumen multi-lote, sintética): Analizar + Vender +
+        // "Editar lotes". Editar/Eliminar son POR LOTE (operan sobre una
+        // posición real); "Editar lotes" despliega los lotes de este ticker
+        // para que cada uno se edite/elimine desde su propio swipe.
         {
           id: 'ai',
           label: 'Analizar',
@@ -1419,6 +1420,16 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
           onClick: () => {
             track('mobile_swipe_action', { code: 'sell', asset: p.asset })
             onSell(p)
+          },
+        },
+        onToggleTicker && {
+          id: 'edit',
+          label: 'Editar lotes',
+          icon: Pencil,
+          tone: 'accent',
+          onClick: () => {
+            track('mobile_swipe_action', { code: 'edit_expand', asset: p.asset })
+            if (!p._expanded) onToggleTicker(`t:${p.broker}:${p.asset}`)
           },
         },
       ].filter(Boolean)

@@ -2380,8 +2380,11 @@ function sortBrokersForDisplay(brokers) {
 }
 
 function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
-  // Fila AGREGADA (varios lotes del mismo ticker): NO editar/eliminar (eso es por
-  // lote, en las filas expandidas). Vender opera FIFO sobre toda la posición.
+  // Fila AGREGADA (varios lotes del mismo ticker): editar/eliminar son POR LOTE
+  // (la posición agregada es sintética, no un registro real — no hay un único id
+  // que editar, y promediar rompería el costo FIFO y las fechas de compra).
+  // "Editar lotes" despliega los lotes; cada lote tiene su propio menú con
+  // Editar/Eliminar. Vender opera FIFO sobre toda la posición.
   if (isAgg) {
     return [
       { label: expanded ? `Ocultar lotes (${lotCount})` : `Ver lotes (${lotCount})`,
@@ -2389,6 +2392,8 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
       { divider: true },
       { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd(p.broker) },
       { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
+      { divider: true },
+      { label: 'Editar lotes', icon: <Pencil size={13} />, onClick: () => { if (!expanded) onToggleLots() } },
     ]
   }
   if (p.is_cash) {
