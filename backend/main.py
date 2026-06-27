@@ -9822,6 +9822,16 @@ def admin_backfill_recompute(apply: bool = False, safe_only: bool = True,
                  apply, safe_only, summary["users_changed"], summary["positions_changed"],
                  summary.get("cash_warnings", 0), len(summary["errors"]))
         return summary
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Un admin endpoint de diagnóstico NUNCA debe tragarse su error como un
+        # 500 opaco: el clon full-DB puede fallar bajo tráfico (lock), o un dato
+        # de un usuario puede romper el recompute. Devolvemos la causa real para
+        # poder fixearla con precisión en vez de adivinar.
+        log.exception("admin_backfill_recompute FAILED apply=%s safe_only=%s offset=%s limit=%s",
+                      apply, safe_only, offset, limit)
+        raise HTTPException(status_code=500, detail=f"backfill falló: {type(e).__name__}: {e}")
     finally:
         conn.close()
 
