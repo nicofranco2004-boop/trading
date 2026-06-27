@@ -53,15 +53,41 @@ from ..schema import ParseResult, RawRow, RowError
 # Headers mínimos para reconocer un export de Cuenta Corriente de Bull Market.
 _REQUIRED_HEADERS = {"liquida", "operado", "comprobante", "especie", "importe"}
 
-# Comprobante (lowercase) → tipo Rendi.
-_OP_MAP = {
-    "compra normal":   "COMPRA",
-    "venta":           "VENTA",
-    "recibo de cobro": "DEPOSITO",
-    "orden de pago":   "RETIRO",
-    "dividendos":      "DIVIDENDO",
-    "dividendo":       "DIVIDENDO",
-}
+# Comprobante (lowercase) → categoría Rendi, por PREFIJO (Bull Market tiene muchas
+# variantes: COMPRA NORMAL/PARIDAD/EXTERIOR, RENTA Y AMORTIZ, DIVIDENDOS DOLARES
+# CABLE, etc.). `Importe` es el efecto en caja → el tipo se elige para que el signo
+# matchee y reconcilie por construcción. Las cauciones, conversiones cable↔MEP y
+# FCI NO pasan por acá (se manejan antes en parse()).
+def _classify_comprobante(comp_lc: str) -> Optional[str]:
+    # FCI (fondos): el RESCATE trae cantidad+precio+especie → VENTA del fondo (su
+    # cash entra y la tenencia baja). La SUSCRIPCION NO trae cantidad → solo el
+    # cash que sale → RETIRO (la tenencia del FCI no se puede reconstruir desde la
+    # cuenta corriente; sigue siendo follow-up). Sin esto, el neto FCI no se
+    # contaba y la caja no cerraba.
+    if comp_lc.startswith("liquidacion rescate fci") or comp_lc.startswith("rescate fci"):
+        return "VENTA"
+    if comp_lc.startswith("suscripcion fci") or comp_lc.startswith("suscripcion fondo"):
+        return "RETIRO"
+    if comp_lc.startswith("compra"):            # normal / paridad / exterior
+        return "COMPRA"
+    if comp_lc.startswith("venta"):             # normal / paridad
+        return "VENTA"
+    if comp_lc.startswith("recibo de cobro") or comp_lc.startswith("rec cobro"):
+        return "DEPOSITO"                       # CREDITO CTA CTE = ingreso de plata
+    if comp_lc.startswith("orden de pago"):     # TRANSFERENCIA = egreso
+        return "RETIRO"
+    # Ingresos por título: cupón + amortización de bono, dividendos (todas las
+    # variantes), pago de dividendos. (La amortización baja nominal → follow-up;
+    # acá solo cuenta como ingreso de caja, que es lo que reconcilia.)
+    if (comp_lc.startswith("renta") or comp_lc.startswith("dividendo")
+            or comp_lc.startswith("pago div") or comp_lc.startswith("amortiz")):
+        return "DIVIDENDO"
+    # Retenciones, gastos y aranceles (notas de débito/crédito): efecto chico de
+    # caja → FEE si sale, ingreso si entra (lo decide el signo en parse()).
+    if (comp_lc.startswith("retencion") or comp_lc.startswith("nd ")
+            or comp_lc.startswith("nc ") or "gasto" in comp_lc or "arancel" in comp_lc):
+        return "FEE_SIGNED"
+    return None
 
 # FCI: descartados (solo aviso al user para cargar el abierto manual). Las
 # cauciones NO van acá — se detectan por substring "caucion" y se netean a
@@ -198,21 +224,35 @@ class BullMarketParser(Parser):
             if "nota de" in comp_lc and "u$s" in comp_lc:
                 continue
 
-            # FCI: descartados. El export no trae las unidades de la suscripción
-            # → no se puede reconstruir ni la ganancia ni la posición. El usuario
-            # carga el FCI que tenga abierto hoy manualmente desde Posiciones
-            # (aviso en las instrucciones del wizard).
-            if comp_lc in _SKIP_FCI:
-                continue
-
-            tipo_rendi = _OP_MAP.get(comp_lc)
+            # FCI: el cash SÍ se cuenta (RESCATE→VENTA con sus datos, SUSCRIPCION→
+            # RETIRO sin cantidad) — ver _classify_comprobante. La SUSCRIPCION no
+            # trae unidades → la TENENCIA del FCI no se reconstruye (sigue siendo
+            # carga manual / export de tenencias); pero la CAJA ahora reconcilia.
+            tipo_rendi = _classify_comprobante(comp_lc)
             if tipo_rendi is None:
-                # Tipo no soportado → lo reportamos pero seguimos.
+                # Tipo no soportado → lo reportamos pero seguimos (lo caza el
+                # Import Guardian, no se mis-importa en silencio).
                 result.parse_errors.append(RowError(
                     idx, "Comprobante", "BULLMARKET_OP_UNKNOWN",
                     f"Tipo de comprobante no soportado: '{comprobante}'.",
                 ))
                 continue
+
+            # Reconciliación por SIGNO: `Importe` manda la dirección del cash.
+            #  • FEE_SIGNED (retención/gasto/arancel) → FEE si sale, ingreso si entra.
+            #  • Un dividendo/depósito/retiro con signo invertido (ej. una fila
+            #    "DIVIDENDOS" con Importe NEGATIVO = retención/reverso) va al tipo
+            #    opuesto, así el cash emitido siempre matchea el Importe (sin esto,
+            #    el abs() contaba esa retención como ingreso → no reconciliaba).
+            imp_sign = _num(G(row, "importe")) or 0.0
+            if tipo_rendi == "FEE_SIGNED":
+                tipo_rendi = "FEE" if imp_sign < 0 else "DIVIDENDO"
+            elif tipo_rendi == "DIVIDENDO" and imp_sign < 0:
+                tipo_rendi = "FEE"
+            elif tipo_rendi == "DEPOSITO" and imp_sign < 0:
+                tipo_rendi = "RETIRO"
+            elif tipo_rendi == "RETIRO" and imp_sign > 0:
+                tipo_rendi = "DEPOSITO"
 
             fecha = G(row, "operado") or G(row, "liquida")
             numero = G(row, "numero")
