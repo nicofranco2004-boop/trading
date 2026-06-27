@@ -220,6 +220,9 @@ export default function Admin() {
       {/* ── Campaña regalo Pro: avisar que les regalamos un mes + cargá historial ── */}
       <GiftPlanPanel toast={toast} />
 
+      {/* ── Backup manual (S3) — hacelo ANTES de cualquier recompute/repair ── */}
+      <BackupPanel toast={toast} />
+
       {/* ── Backfill: recomputar posiciones de cuentas ya importadas (FIFO + amort) ── */}
       <BackfillPanel toast={toast} />
 
@@ -482,6 +485,54 @@ function ReengagementPanel({ toast }) {
             </div>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+// ─── BackupPanel — backup manual de la base a S3 (antes de recompute/repair) ──
+function BackupPanel({ toast }) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+
+  async function backup() {
+    setBusy(true); setResult(null)
+    try {
+      const r = await api.post('/admin/backup-trigger')
+      setResult(r)
+      toast.push(r.ok ? 'Backup subido a S3 ✓' : 'Backup terminó con errores — revisá', { type: r.ok ? 'success' : 'warn' })
+    } catch (e) {
+      toast.push('Error en el backup: ' + (e.message || ''), { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const st = result?.stats || {}
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-start gap-2">
+          <Database size={16} className="text-rendi-accent mt-0.5 flex-shrink-0" />
+          <div>
+            <h2 className="font-semibold text-ink-0">Backup ahora</h2>
+            <p className="text-xs text-ink-3 leading-relaxed mt-0.5">
+              Sube una copia de la base a S3 (el mismo backup que el cron diario). <b>Hacelo antes de
+              Aplicar</b> cualquier Recompute o Reparar snapshots.
+            </p>
+          </div>
+        </div>
+        <button onClick={backup} disabled={busy}
+          className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-md bg-rendi-accent/15 text-rendi-accent hover:bg-rendi-accent/25 disabled:opacity-50 flex-shrink-0">
+          {busy ? <RefreshCw size={14} className="animate-spin" /> : <Database size={14} />}
+          {busy ? 'Haciendo backup…' : 'Hacer backup'}
+        </button>
+      </div>
+      {result && (
+        <div className={`mt-3 text-xs px-3 py-2 rounded-md border ${result.ok ? 'bg-rendi-pos/10 border-rendi-pos/30 text-rendi-pos' : 'bg-rendi-warn/10 border-rendi-warn/30 text-rendi-warn'}`}>
+          {result.ok ? '✅ Backup subido a S3' : '⚠ Backup con errores'}
+          {(st.s3_key || st.key) && <span className="text-ink-2"> · {st.s3_key || st.key}</span>}
+          {st.size_bytes && <span className="text-ink-2"> · {(st.size_bytes / 1e6).toFixed(1)} MB</span>}
+          {st.errors?.length > 0 && <span className="text-ink-2"> · {st.errors.length} error(es)</span>}
+        </div>
       )}
     </div>
   )
