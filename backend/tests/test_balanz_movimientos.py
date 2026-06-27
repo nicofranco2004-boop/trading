@@ -157,6 +157,42 @@ class BalanzMovimientosNuevosTiposTest(unittest.TestCase):
         self.assertEqual(float(venta["precio"]), 0.0)
         self.assertEqual(float(venta["cantidad"]), 427.0)
 
+    def test_amortizacion_total_baja_nominal_a_cero(self):
+        # Caso real (Fede/SXC2O): ON transferida (+4000) que se amortiza TOTAL. La
+        # "Renta y Amortización" viene en 2 patas con cantidad=-4000: el cobro del
+        # principal (USD, entra) y la retención (ARS, sale). Antes el parser ignoraba
+        # la cantidad → quedaban 4000 unidades fantasma (a precio ×100 = +US$385k).
+        # Ahora: el cobro cierra el nominal como VENTA a su valor de rescate (proceeds),
+        # la retención va como FEE, y se cierra UNA sola vez (no oversell).
+        res = self._parse(
+            "Transferencia Externa (Crédito) / ON,SXC2O,Corporativos,2025-11-27,4000,1495.1,2025-11-27,,0",
+            "Renta y Amortización / SXC2O,SXC2O,Corporativos,2026-06-01,-4000,-1,2026-06-01,Pesos,-650.05",
+            "Renta y Amortización / SXC2O,SXC2O,Corporativos,2026-06-01,-4000,-1,2026-06-01,Dólares,4129.43")
+        self.assertEqual(res.parse_errors, [])
+        by = self._by_tipo(res)
+        ventas = [d for d in by.get("VENTA", []) if d["activo"] == "SXC2O"]
+        compras = [d for d in by.get("COMPRA", []) if d["activo"] == "SXC2O"]
+        # 1 sola VENTA (las 2 patas comparten cantidad → dedup), a proceeds USD (no precio 0).
+        self.assertEqual(len(ventas), 1)
+        self.assertEqual(ventas[0]["moneda"], "USD")
+        self.assertEqual(float(ventas[0]["monto"]), 4129.43)
+        self.assertNotIn("precio", ventas[0])  # sin precio → el normalizer deriva monto/cant (no precio 0)
+        # nominal neto = +4000 -4000 = 0 → la posición desaparece (sin fantasma).
+        net = sum(float(d["cantidad"]) for d in compras) - sum(float(d["cantidad"]) for d in ventas)
+        self.assertEqual(net, 0.0)
+        # la retención ARS quedó como FEE, no como segunda VENTA.
+        self.assertTrue(any(float(d["monto"]) == 650.05 for d in by.get("FEE", [])))
+
+    def test_cupon_puro_no_baja_nominal(self):
+        # "Renta" con cantidad=0 (cupón puro, sin amortización) NO debe vender nominal.
+        res = self._parse(
+            "Transferencia Externa (Crédito) / ON,CS48O,Corporativos,2025-11-27,4000,1560,2025-11-27,,0",
+            "Renta / CS48O,CS48O,Corporativos,2026-01-12,0,-1,2026-01-12,Dólares,160.75")
+        self.assertEqual(res.parse_errors, [])
+        by = self._by_tipo(res)
+        self.assertEqual(len([d for d in by.get("VENTA", []) if d["activo"] == "CS48O"]), 0)
+        self.assertTrue(any(float(d["monto"]) == 160.75 for d in by.get("DIVIDENDO", [])))
+
     def test_operacion_diferida_netea_a_cero(self):
         # El par "Operación Diferida" + "Liquidación de Operación Diferida" trae
         # legs opuestos (cantidad y cash) → netea a 0 en posición y caja. Sin

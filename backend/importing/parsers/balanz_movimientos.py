@@ -214,6 +214,10 @@ class BalanzMovimientosParser(Parser):
             return (row.get(col) or "").strip() if col else ""
 
         ridx = 0
+        # Amortizaciones ya cerradas (ticker, fecha, |cantidad|) → evita bajar el
+        # nominal dos veces: "Renta y Amortización" viene en 2 patas (cobro USD +
+        # retención ARS), ambas con la MISMA cantidad. Solo una cierra el nominal.
+        _amort_closed = set()
 
         def _emit(d):
             nonlocal ridx
@@ -379,7 +383,23 @@ class BalanzMovimientosParser(Parser):
                 _emit(base("FEE", monto=str(abs(importe))))
                 continue
             if kind == "renta":
-                # ingreso (cupón/dividendo/amortización) si entra; retención si sale
+                # ── Amortización que DEVUELVE CAPITAL (baja nominal) ──────────────
+                # "Renta y Amortización" con cantidad ≠ 0 = el bono devolvió principal
+                # (parcial o total). La pata del COBRO (entra) cierra ese nominal como
+                # una VENTA a su valor de rescate (proceeds = el cobro) → P&L correcto
+                # (devolución de capital, no pérdida fantasma; un precio=0 bookearía el
+                # costo entero como pérdida). La retención/impuesto (sale) NO toca
+                # nominal → va como FEE. Dedup por (ticker, fecha, |cantidad|): las 2
+                # patas traen la misma cantidad, una sola cierra (si no, oversell).
+                # Sin cantidad (cupón puro) → ingreso/retención de siempre.
+                if has_qty and ticker and "amortizacion" in desc:
+                    sig = (ticker, fecha, round(abs(qty), 3))
+                    if cash_in and sig not in _amort_closed:
+                        _amort_closed.add(sig)
+                        _emit(base("VENTA", activo=ticker, cantidad=str(abs(qty)),
+                                   monto=str(abs(importe))))
+                        continue
+                # cupón puro / retención / pata ya contada → ingreso o retención
                 _emit(base("DIVIDENDO" if cash_in else "FEE", monto=str(abs(importe))))
                 continue
             if kind == "manual":
