@@ -152,6 +152,10 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   // los combina (manteniendo el header del primero) y los procesa como un
   // solo batch. Ideal para subir un año por archivo de Cocos/IOL/etc.
   const [files, setFiles] = useState([])
+  // Bull Market: si entre los archivos viene la Tenencia valorizada (PDF), la
+  // apartamos acá y la aplicamos DESPUÉS de confirmar la Cuenta Corriente (la
+  // reconciliación necesita las posiciones ya creadas). Flujo único para el user.
+  const [tenenciaFile, setTenenciaFile] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [inspect, setInspect] = useState(null)        // {headers, sample_rows, rendi_fields, suggested_mapping}
@@ -231,6 +235,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     setFormat('rendi_generic')
     setImportMode('single')
     setFiles([])
+    setTenenciaFile(null)
     setInspect(null)
     setMapping({ columns: {}, defaults: {} })
     setPreview(null)
@@ -359,8 +364,18 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     try {
       // Para parsers específicos saltamos el Map step y vamos directo al Preview.
       if (isSpecificParser) {
+        // Bull Market: apartamos la Tenencia (PDF) — va al preview de la Cuenta
+        // Corriente solo lo que NO es PDF. La Tenencia se aplica al confirmar.
+        const pdfs = files.filter(f => /\.pdf$/i.test(f.name || ''))
+        const ccFiles = files.filter(f => !/\.pdf$/i.test(f.name || ''))
+        setTenenciaFile(pdfs[0] || null)
+        if (pdfs.length > 0 && ccFiles.length === 0) {
+          setError('Subí también los Excel de la Cuenta Corriente. Si ya los importaste, completá tu cartera con el botón “Completar con Tenencia”.')
+          setBusy(false)
+          return
+        }
         const fd = new FormData()
-        files.forEach(f => fd.append('files', f))
+        ccFiles.forEach(f => fd.append('files', f))
         fd.append('format', format)
         if (importMode === 'single' && singleBroker) {
           fd.append('broker', singleBroker)
@@ -509,7 +524,26 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
         skip_row_indices: Array.from(skippedRowIndices),
         seed_state: seedPayload,
       })
-      setConfirmResult(data)
+      // Cadena Bull Market: si entre los archivos también vino la Tenencia (PDF),
+      // la aplicamos AHORA — recién creadas las posiciones de la Cuenta Corriente
+      // — para completar lo que faltaba sin duplicar. Best-effort: si falla, el
+      // import de la CC ya quedó OK; mostramos el aviso en el resultado.
+      let tenInfo = null
+      if (tenenciaFile) {
+        try {
+          const tfd = new FormData()
+          tfd.append('file', tenenciaFile)
+          tfd.append('broker', singleBroker || 'Bull Market')
+          const tp = await api.upload('/imports/tenencia/preview', tfd)
+          if (tp?.session_id) {
+            await api.post('/imports/confirm', { session_id: tp.session_id, skip_row_indices: [] })
+          }
+          tenInfo = tp
+        } catch (e) {
+          tenInfo = { error: e?.message || 'No pudimos aplicar la Tenencia.' }
+        }
+      }
+      setConfirmResult(tenInfo ? { ...data, tenencia: tenInfo } : data)
       setStep(STEP_DONE)
       // Activación: el import completado es el camino principal a "cargué mi
       // cartera". Antes el wizard no emitía NINGÚN evento → embudo invisible.
@@ -1080,9 +1114,13 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
     const incoming = Array.from(newFiles)
     const errors = []
     const valid = []
+    // Bull Market acepta TAMBIÉN la Tenencia valorizada en PDF (se sube junto con
+    // los Excel de Cuenta Corriente y se aplica después de confirmar).
+    const allowPdf = format === 'bullmarket'
     for (const f of incoming) {
       const name = (f.name || '').toLowerCase()
-      if (!(name.endsWith('.csv') || name.endsWith('.txt') || name.endsWith('.xlsx') || name.endsWith('.xls'))) {
+      const okExt = name.endsWith('.csv') || name.endsWith('.txt') || name.endsWith('.xlsx') || name.endsWith('.xls')
+      if (!(okExt || (allowPdf && name.endsWith('.pdf')))) {
         errors.push(`"${f.name}" no es un CSV ni Excel.`)
         continue
       }
@@ -1188,7 +1226,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
           <input
             ref={inputRef}
             type="file"
-            accept=".csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel"
+            accept={`.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel${format === 'bullmarket' ? ',.pdf,application/pdf' : ''}`}
             multiple
             className="hidden"
             onChange={e => pickFiles(e.target.files)}
@@ -2213,6 +2251,15 @@ function DoneStep({ result }) {
             <span className="text-blue-500"><strong className="tabular">{result.auto_skipped_duplicates}</strong> ya estaban (omitidas)</span>
           )}
         </div>
+        {result.tenencia && (
+          result.tenencia.error ? (
+            <p className="text-xs text-rendi-warn px-4">La Cuenta Corriente se importó bien, pero no pudimos aplicar la Tenencia ({result.tenencia.error}). Probá de nuevo con el botón “Completar con Tenencia”.</p>
+          ) : result.tenencia.nothing_to_do ? (
+            <p className="text-xs text-ink-3">Tu Tenencia ya coincidía con lo importado.</p>
+          ) : (result.tenencia.to_seed?.length > 0) ? (
+            <p className="text-xs text-rendi-pos">+ completamos <strong className="tabular">{result.tenencia.to_seed.length}</strong> posiciones que ya tenías, desde tu Tenencia valorizada.</p>
+          ) : null
+        )}
       </div>
 
       {/* Cash reconcile — main UX */}
