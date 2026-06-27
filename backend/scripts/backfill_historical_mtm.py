@@ -58,6 +58,7 @@ if BACKEND not in sys.path:
 import main                                              # noqa: E402
 import snapshots_job as sj                               # noqa: E402
 from importing.persister import _backfill_snapshots_from_monthly  # noqa: E402
+from importing.recompute_backfill import _clone_db                 # noqa: E402
 
 
 # ─── Fetch de cierre mensual histórico por símbolo de precio ──────────────────
@@ -285,20 +286,8 @@ def backfill_summary(real_conn, users, today, apply: bool) -> dict:
 
     if apply:
         return _loop(real_conn)
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    clone = sqlite3.connect(tmp.name)
-    clone.row_factory = sqlite3.Row
-    try:
-        real_conn.backup(clone)
+    with _clone_db(real_conn) as clone:
         return _loop(clone)
-    finally:
-        clone.close()
-        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
 
 
 # ─── Runner CLI (dry-run sobre copia / --apply commitea por user) ──────────────
@@ -352,17 +341,8 @@ def run(apply: bool, only_uid=None) -> int:
         if apply:
             summaries = _run_on(real, users, today, apply=True)
         else:
-            tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-            tmp.close()
-            clone = sqlite3.connect(tmp.name)
-            clone.row_factory = sqlite3.Row
-            try:
-                real.backup(clone)
+            with _clone_db(real) as clone:
                 summaries = _run_on(clone, users, today, apply=False)
-            finally:
-                clone.close()
-                try: os.unlink(tmp.name)
-                except OSError: pass
         _print(summaries, apply)
     finally:
         real.close()

@@ -9866,6 +9866,14 @@ def admin_backfill_mtm(apply: bool = False, offset: int = 0, limit: int = 0,
         log.info("admin_backfill_mtm apply=%s users_changed=%s errors=%s",
                  apply, summary["users_changed"], len(summary["errors"]))
         return summary
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Mismo criterio que admin_backfill_recompute: un endpoint admin de
+        # diagnóstico NUNCA debe tragarse su error como un 500 opaco. Devolvemos
+        # la causa real (tipo + mensaje) para fixear con precisión.
+        log.exception("admin_backfill_mtm FAILED apply=%s offset=%s limit=%s", apply, offset, limit)
+        raise HTTPException(status_code=500, detail=f"backfill-mtm falló: {type(e).__name__}: {e}")
     finally:
         conn.close()
 

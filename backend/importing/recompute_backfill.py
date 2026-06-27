@@ -19,11 +19,69 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
+import time as _time
+from contextlib import contextmanager as _contextmanager
 from typing import Any, Callable, Dict, List
 
 from . import rebuild as _rebuild
 from . import persister as _persister
 from . import maturity as _maturity
+
+
+def _db_dir_of(real_conn):
+    """Directorio donde vive la DB real, derivado de la PROPIA conexión (sin
+    importar main, para no crear ciclo). El clon temporal del dry-run se escribe
+    AHÍ — en prod el volumen persistente /data, que es escribible y tiene espacio
+    — y NO en el /tmp efímero del contenedor (otro filesystem) que rompía el
+    backup con un 500. Si no se puede resolver, devuelve None → NamedTemporaryFile
+    cae al tmpdir por defecto (comportamiento previo)."""
+    try:
+        for row in real_conn.execute("PRAGMA database_list"):
+            name, file = row[1], row[2]            # (seq, name, file)
+            if name == "main" and file:
+                d = os.path.dirname(file)
+                if d and os.path.isdir(d):
+                    return d
+    except Exception:
+        pass
+    return None
+
+
+@_contextmanager
+def _clone_db(real_conn):
+    """Clona la DB real a una copia temporal (snapshot consistente vía backup API,
+    incluye WAL) y cede una conexión sqlite a esa copia. La copia se crea JUNTO a
+    la DB real (mismo volumen escribible, no el /tmp efímero) y backup() se
+    reintenta ante un lock transitorio. Limpia el .db + sidecars -wal/-shm en el
+    finally, SIEMPRE. Reemplaza el patrón tempfile+backup+try/finally duplicado en
+    cada call-site del dry-run."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=_db_dir_of(real_conn))
+    tmp.close()
+    clone = sqlite3.connect(tmp.name)
+    clone.row_factory = sqlite3.Row
+    try:
+        last_exc = None
+        for attempt in range(5):               # ~0.25+0.5+0.75+1.0s de backoff
+            try:
+                real_conn.backup(clone)
+                last_exc = None
+                break
+            except sqlite3.OperationalError as ex:
+                if "locked" in str(ex).lower() or "busy" in str(ex).lower():
+                    last_exc = ex
+                    _time.sleep(0.25 * (attempt + 1))
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        yield clone
+    finally:
+        clone.close()
+        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def positions_snapshot(conn, uid: int) -> Dict[tuple, float]:
@@ -232,21 +290,9 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
 def _after_state_on_clone(real_conn, uid: int, recalc: Callable) -> Dict[tuple, float]:
     """Clona el DB, corre el recompute completo sobre la copia y devuelve el estado
     'ideal' por (broker, asset). La DB real NUNCA se toca."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    clone = sqlite3.connect(tmp.name)
-    clone.row_factory = sqlite3.Row
-    try:
-        real_conn.backup(clone)
+    with _clone_db(real_conn) as clone:
         recompute_user(clone, uid, recalc=recalc)
         return positions_snapshot(clone, uid)
-    finally:
-        clone.close()
-        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
 
 
 def _classify_safe(real_conn, uid: int, before: Dict[tuple, float],
@@ -368,13 +414,8 @@ def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
 
     # Clonar UNA vez (snapshot consistente). Recomputamos cada usuario sobre la MISMA
     # copia (commit por usuario para aislar fallos) y guardamos su estado 'ideal'.
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    clone = sqlite3.connect(tmp.name)
-    clone.row_factory = sqlite3.Row
     after_by_user: Dict[int, Dict[tuple, float]] = {}
-    try:
-        real_conn.backup(clone)
+    with _clone_db(real_conn) as clone:
         for uid in with_pos:
             try:
                 recompute_user(clone, uid, recalc=recalc, bond_price_per1=bond_price_per1,
@@ -384,13 +425,6 @@ def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
             except Exception as ex:
                 clone.rollback()
                 summary["errors"].append({"uid": uid, "error": str(ex)})
-    finally:
-        clone.close()
-        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
 
     for uid in with_pos:
         after = after_by_user.get(uid)
@@ -432,18 +466,6 @@ def dry_run_summary(real_conn, users: List[int], *, recalc: Callable,
     """Clona el DB (snapshot consistente, incluye WAL) y corre el backfill sobre
     la COPIA → la base real NUNCA se toca. Devuelve el mismo resumen que
     run_backfill, sin haber mutado nada real."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    clone = sqlite3.connect(tmp.name)
-    clone.row_factory = sqlite3.Row
-    try:
-        real_conn.backup(clone)
+    with _clone_db(real_conn) as clone:
         return run_backfill(clone, users, recalc=recalc, bond_price_per1=bond_price_per1,
                             tag_bond_ticker=tag_bond_ticker)
-    finally:
-        clone.close()
-        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
