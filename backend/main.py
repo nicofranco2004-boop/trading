@@ -5329,11 +5329,14 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
     # caía a cost basis y "no tomaba el valor actual en pesos").
     crypto_ars = {s: s[:-3] for s in yf_targets
                   if s.endswith('.BA') and s[:-3] in CRYPTO_SYMBOLS}
-    _tc_blue_ars = None
+    _cripto_ars = None
     if crypto_ars:
         _cdb = get_db()
         try:
-            _tc_blue_ars = _display_blue(_cdb, uid)
+            # Dólar CRIPTO en pesos (no blue): prices['<c>.BA'] = spot×cripto. Al
+            # dividir por el MEP en la valuación queda spot×(cripto/MEP) = el premium
+            # cripto que muestra el broker AR. Fallback: MEP (→ spot, sin premium) → blue.
+            _cripto_ars = _current_cripto_rate() or _current_cedear_rate() or _display_blue(_cdb, uid)
         finally:
             _cdb.close()
 
@@ -5398,14 +5401,15 @@ def get_prices(symbols: str, uid: int = Depends(get_current_user)):
             price = _fetch_one(f"{sym}-USD")
         result[sym] = price
 
-    # Cripto-ARS: el precio recién fetcheado vino en USD (BTC-USD). Convertir a
-    # pesos con el blue del user → prices['BTC.BA'] queda en ARS (coherente con
-    # los demás .BA). Se hace ANTES de persistir/last-known para que el cache y
-    # el asset_last_price también guarden el valor en pesos.
-    if crypto_ars and _tc_blue_ars and _tc_blue_ars > 0:
+    # Cripto-ARS: el precio fetcheado vino en USD (BTC-USD). Lo pasamos a pesos al
+    # DÓLAR CRIPTO → prices['BTC.BA'] = spot×cripto (en ARS, coherente con los demás
+    # .BA). La valuación divide por el MEP → spot×(cripto/MEP) = el premium del broker
+    # AR. (Antes era × blue → daba spot×blue/MEP, premium con el rate equivocado.)
+    # ANTES de persistir/last-known para que el cache/asset_last_price guarden pesos.
+    if crypto_ars and _cripto_ars and _cripto_ars > 0:
         for _csym in crypto_ars:
             if result.get(_csym) is not None:
-                result[_csym] = round(result[_csym] * _tc_blue_ars, 6)
+                result[_csym] = round(result[_csym] * _cripto_ars, 6)
 
     # CEDEARs USD-cotizados: el precio fetcheado es el subyacente US (USD).
     # Precio en pesos del cedear = US × CCL ÷ ratio. Antes de persistir/last-known.
@@ -5459,11 +5463,14 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
     # ARS quedaba en '—'.
     crypto_ars = {s: s[:-3] for s in uncached_symbols
                   if s.endswith('.BA') and s[:-3] in CRYPTO_SYMBOLS}
-    _tc_blue_ars = None
+    _cripto_ars = None
     if crypto_ars:
         _cdb = get_db()
         try:
-            _tc_blue_ars = _display_blue(_cdb, uid)
+            # Dólar CRIPTO en pesos (no blue): prices['<c>.BA'] = spot×cripto. Al
+            # dividir por el MEP en la valuación queda spot×(cripto/MEP) = el premium
+            # cripto que muestra el broker AR. Fallback: MEP (→ spot, sin premium) → blue.
+            _cripto_ars = _current_cripto_rate() or _current_cedear_rate() or _display_blue(_cdb, uid)
         finally:
             _cdb.close()
 
@@ -5526,11 +5533,12 @@ def get_prev_close(symbols: str, uid: int = Depends(get_current_user)):
         if pc is not None:
             result[sym] = pc
 
-    # Cripto-ARS: el cierre previo vino en USD → a pesos con el blue del user.
-    if crypto_ars and _tc_blue_ars and _tc_blue_ars > 0:
+    # Cripto-ARS: el cierre previo vino en USD → a pesos al DÓLAR CRIPTO (spot×cripto),
+    # igual que el precio actual, para que la variación diaria reconcilie.
+    if crypto_ars and _cripto_ars and _cripto_ars > 0:
         for _csym in crypto_ars:
             if result.get(_csym) is not None:
-                result[_csym] = round(result[_csym] * _tc_blue_ars, 6)
+                result[_csym] = round(result[_csym] * _cripto_ars, 6)
 
     # CEDEARs USD-cotizados: cierre previo del subyacente US → pesos (× CCL ÷ ratio).
     if cedear_usd and _ccl_ars and _ccl_ars > 0:

@@ -496,8 +496,14 @@ export default function PositionsMobile() {
       // (~spot+5%), no al spot, para igualar al broker AR. El factor escala valor
       // Y costo por igual ⇒ el P&L% queda intacto. Para todo lo demás (no-cripto,
       // exchanges, override, sin tasa) f=1 y nada cambia.
+      // OJO — broker AR (isAR): la rama .BA de arriba YA trae el premium (el precio
+      // '<c>.BA' viene en spot×cripto y se divide por el MEP ⇒ spot×cripto/MEP).
+      // Aplicar el factor de nuevo acá lo DUPLICARÍA (spot×cripto²/MEP²). El factor
+      // SOLO corre en las ramas que valúan al spot-USD por símbolo bare: cripto en
+      // exchange (f=1) o en sub-broker '· USD' (f=cripto/MEP). Espejo EXACTO de
+      // computeBrokerValue / PositionDetailMobile, que nunca aplican factor en ARS.
       const isExch = exchangeBrokerSet.has(p.broker)
-      const f = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
+      const f = isAR ? 1 : cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
       if (f !== 1) { valueUsd *= f; investedUsd *= f }
       const pnlUsd = valueUsd - investedUsd
       const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
