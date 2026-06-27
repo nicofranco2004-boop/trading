@@ -143,6 +143,31 @@ def find_duplicate_batch(conn, uid: int, file_hash: str) -> Optional[str]:
     return row["id"] if row else None
 
 
+def already_imported_row_indices(conn, uid: int, session_id: str, txs,
+                                 already_skipped=()) -> set:
+    """row_index de las filas cuyo fingerprint YA existe en OTRO batch confirmado
+    del usuario → se omiten en el confirm para no duplicar al re-importar.
+
+    Es cross-batch (no intra-batch): dos ops idénticas en el MISMO archivo se
+    respetan; solo se saltea lo que ya entró en una importación anterior. Así una
+    actualización mensual agrega SOLO lo nuevo y conserva el historial previo."""
+    existing = {
+        r["fingerprint"] for r in conn.execute(
+            """SELECT DISTINCT n.fingerprint
+                 FROM import_normalized_tx n
+                 JOIN import_batches b ON n.batch_id = b.id
+                WHERE b.user_id=? AND b.status='confirmed' AND b.id != ?
+                  AND n.fingerprint IS NOT NULL""",
+            (uid, session_id),
+        ).fetchall()
+    }
+    if not existing:
+        return set()
+    skip = set(already_skipped)
+    return {t.row_index for t in txs
+            if t.row_index not in skip and _row_fingerprint(t) in existing}
+
+
 def inspect(file_bytes: bytes) -> Dict[str, Any]:
     """Lee headers + primeras filas del CSV. Sin auth contra DB. Devuelve
     metadata para que el frontend muestre el wizard de mapeo de columnas."""

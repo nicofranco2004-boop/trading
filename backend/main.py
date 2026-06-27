@@ -17146,6 +17146,12 @@ class ImportConfirmIn(BaseModel):
     # BUYs sintéticos al `seed_date` y re-validamos las filas que antes habían
     # fallado por INSUFFICIENT_STOCK (ahora pasan porque hay stock seed).
     seed_state: Optional[dict] = None
+    # Anti-duplicación: por defecto omitimos las filas cuyo fingerprint ya existe
+    # en otro batch confirmado (re-subir historial que se solapa → solo entran las
+    # filas NUEVAS, sin duplicar ni borrar el historial previo). include_duplicates
+    # fuerza la inclusión (caso raro: el usuario quiere cargar a propósito una op
+    # idéntica a otra ya importada).
+    include_duplicates: Optional[bool] = False
 
 
 @app.post("/api/imports/confirm")
@@ -17167,6 +17173,23 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
 
             # Filtrar filas que el usuario decidió omitir
             skip_set = set(data.skip_row_indices or [])
+
+            # ── Anti-duplicación de re-importación ────────────────────────────
+            # Omitimos automáticamente las filas cuyo fingerprint (fecha+broker+
+            # tipo+activo+cantidad+precio) YA existe en OTRO batch confirmado. Así
+            # re-subir el historial — o subir el mes nuevo que se solapa con lo ya
+            # cargado — agrega SOLO las filas nuevas, sin duplicar las viejas y SIN
+            # borrar el historial previo (a diferencia de un "reemplazar todo"). El
+            # dedup es cross-batch, no intra-batch: dos ops idénticas en el MISMO
+            # archivo se respetan. include_duplicates fuerza la inclusión.
+            auto_skipped = 0
+            if not data.include_duplicates:
+                dup_idx = _import_pipeline.already_imported_row_indices(
+                    conn, uid, data.session_id, txs, already_skipped=skip_set)
+                if dup_idx:
+                    skip_set |= dup_idx
+                    auto_skipped = len(dup_idx)
+
             if skip_set:
                 txs = [t for t in txs if t.row_index not in skip_set]
                 # CRÍTICO: las filas salteadas quedan en import_normalized_tx
@@ -17299,7 +17322,8 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
                 traceback.print_exc()
 
         return {"ok": True, "batch_id": data.session_id,
-                "skipped_by_user": len(skip_set), **summary}
+                "skipped_by_user": len(skip_set), "auto_skipped_duplicates": auto_skipped,
+                **summary}
     except HTTPException:
         raise
     except Exception as ex:

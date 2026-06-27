@@ -1517,18 +1517,17 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
         </div>
       )}
       {(preview.brokers_already_imported || []).length > 0 && !redoBanner && (
-        <div className="px-3 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/50 text-sm">
+        <div className="px-3 py-2.5 rounded-md bg-blue-500/10 border border-blue-500/40 text-sm">
           <div className="flex items-start gap-2">
-            <AlertTriangle size={15} className="mt-0.5 flex-shrink-0 text-amber-500" />
+            <AlertTriangle size={15} className="mt-0.5 flex-shrink-0 text-blue-500" />
             <div className="flex flex-col gap-1">
               <div className="font-semibold text-ink-0">
-                Ojo: ya tenés posiciones de {preview.brokers_already_imported.join(', ')} importadas
+                Ya tenés posiciones de {preview.brokers_already_imported.join(', ')} importadas
               </div>
               <p className="text-xs text-ink-2">
-                Si estás subiendo los <span className="font-medium text-ink-1">mismos datos de nuevo</span> (ej. otro
-                export del mismo broker), confirmar va a <span className="font-medium text-ink-1">duplicar</span> tus
-                posiciones. Si es eso, primero <span className="font-medium text-ink-1">revertí el import anterior</span> desde
-                "Importar CSV". Si son movimientos NUEVOS, seguí tranquilo.
+                Tranqui: las filas que <span className="font-medium text-ink-1">ya estén cargadas se omiten solas</span> al
+                confirmar (no se duplican) — solo entran los movimientos <span className="font-medium text-ink-1">nuevos</span>.
+                Podés subir el historial actualizado o solo el mes nuevo sin problema.
               </p>
             </div>
           </div>
@@ -1687,11 +1686,11 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
       {(preview.duplicate_row_indices || []).length > 0 && (
         <div className="px-3 py-2 rounded-md bg-blue-500/10 border border-blue-500/30 text-xs">
           <div className="font-medium text-ink-1 mb-1">
-            {preview.duplicate_row_indices.length} {preview.duplicate_row_indices.length === 1 ? 'fila ya fue importada antes' : 'filas ya fueron importadas antes'}
+            {preview.duplicate_row_indices.length} {preview.duplicate_row_indices.length === 1 ? 'fila ya estaba importada' : 'filas ya estaban importadas'} — se {preview.duplicate_row_indices.length === 1 ? 'omite' : 'omiten'} automáticamente
           </div>
           <p className="text-ink-2">
-            Detectamos que estas filas coinciden con operaciones de imports anteriores (misma fecha + broker + tipo + activo + cantidad + precio).
-            Si confirmás, se van a duplicar en la cartera. Filas: {' '}
+            Coinciden con operaciones de imports anteriores (misma fecha + broker + tipo + activo + cantidad + precio).
+            Al confirmar las omitimos para no duplicar — solo se importan las filas <b>nuevas</b>, sin tocar tu historial cargado. Filas omitidas: {' '}
             <span className="font-mono text-ink-1">
               {preview.duplicate_row_indices.slice(0, 30).join(', ')}
               {preview.duplicate_row_indices.length > 30 && '…'}
@@ -2209,6 +2208,9 @@ function DoneStep({ result }) {
           )}
           {(result.conversions || 0) > 0 && (
             <span><strong className="text-ink-1 tabular">{result.conversions}</strong> conversiones</span>
+          )}
+          {(result.auto_skipped_duplicates || 0) > 0 && (
+            <span className="text-blue-500"><strong className="tabular">{result.auto_skipped_duplicates}</strong> ya estaban (omitidas)</span>
           )}
         </div>
       </div>
