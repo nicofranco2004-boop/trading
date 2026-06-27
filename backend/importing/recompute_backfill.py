@@ -277,17 +277,24 @@ def tag_bonds_from_data912(conn, uid: int, *, is_bond_ticker: Callable) -> int:
 
 def recompute_user(conn, uid: int, *, recalc: Callable,
                    bond_price_per1: Callable = None,
-                   tag_bond_ticker: Callable = None) -> None:
+                   tag_bond_ticker: Callable = None,
+                   cost_only: bool = False) -> None:
     """Misma secuencia post-persist que import_confirm. Muta en la transacción
-    abierta (el caller commitea)."""
+    abierta (el caller commitea).
+
+    `cost_only=True` → SOLO normaliza COSTO (unidad de bonos per-100→per-1 + comisiones
+    ARS→USD) y recalc sobre las posiciones ACTUALES; NO re-corre el FIFO ni los sweeps,
+    así NO toca cantidades. Es el camino quirúrgico para arreglar el costo per-100 de
+    bonos sin arrastrar los cambios ambiguos de cantidad del rebuild completo."""
     tc_blue = _persister._read_tc_blue(conn, uid)
-    batches = [r["id"] for r in conn.execute(
-        "SELECT id FROM import_batches WHERE user_id=? AND status='confirmed'", (uid,)
-    ).fetchall()]
-    for bid in batches:
-        _rebuild.rebuild_fifo_after_import(conn, uid, bid, tc_blue=tc_blue)
-    _maturity.sweep_matured_letras(conn, uid)
-    _maturity.sweep_bond_amortizations(conn, uid)
+    if not cost_only:
+        batches = [r["id"] for r in conn.execute(
+            "SELECT id FROM import_batches WHERE user_id=? AND status='confirmed'", (uid,)
+        ).fetchall()]
+        for bid in batches:
+            _rebuild.rebuild_fifo_after_import(conn, uid, bid, tc_blue=tc_blue)
+        _maturity.sweep_matured_letras(conn, uid)
+        _maturity.sweep_bond_amortizations(conn, uid)
     # Solo normalizamos costo de posiciones creadas por imports (las manuales no se
     # reproducen → no se tocan), igual que el rebuild FIFO.
     linked = _maturity._import_linked_position_ids(conn, uid)
@@ -305,7 +312,7 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
 
 def run_backfill(conn, users: List[int], *, recalc: Callable,
                  bond_price_per1: Callable = None, tag_bond_ticker: Callable = None,
-                 max_changes: int = 1000) -> Dict[str, Any]:
+                 cost_only: bool = False, max_changes: int = 1000) -> Dict[str, Any]:
     """Recorre `users`, recomputa y COMMITEA por usuario. Devuelve un resumen
     estructurado. Para dry-run, pasar una conn a una COPIA del DB (ver
     dry_run_summary) — ahí el commit es inocuo."""
@@ -320,7 +327,7 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
         cash_before = cash_total(conn, uid)
         try:
             recompute_user(conn, uid, recalc=recalc, bond_price_per1=bond_price_per1,
-                           tag_bond_ticker=tag_bond_ticker)
+                           tag_bond_ticker=tag_bond_ticker, cost_only=cost_only)
         except Exception as ex:
             conn.rollback()
             summary["errors"].append({"uid": uid, "error": str(ex)})
@@ -338,21 +345,14 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
                     "before": round(b, 4), "after": round(a, 4),
                     "tag": "eliminada" if a == 0 else "ajustada",
                 })
-        if user_changes:
-            summary["users_changed"] += 1
-            summary["positions_changed"] += len(user_changes)
-            for ch in user_changes:
-                if len(summary["changes"]) < max_changes:
-                    summary["changes"].append(ch)
-                else:
-                    summary["truncated"] = True
-
-        # Diff de COSTO (invested/comisión): el modo completo recalcula costo y el
-        # diff de cantidad de arriba es ciego a esto. Lo exponemos para revisar.
+        # Diff de COSTO (invested/comisión): el modo completo/solo-costo recalcula
+        # costo y el diff de cantidad de abajo es ciego a esto. Lo exponemos aparte.
+        user_cost_n = 0
         for k in sorted(set(cost_before) | set(cost_after)):
             ib, cb = cost_before.get(k, (0.0, 0.0))
             ia, ca = cost_after.get(k, (0.0, 0.0))
             if abs(ib - ia) > 0.01 or abs(cb - ca) > 0.01:
+                user_cost_n += 1
                 summary["cost_positions_changed"] += 1
                 if len(summary["cost_changes"]) < max_changes:
                     summary["cost_changes"].append({
@@ -360,6 +360,18 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
                         "invested_before": round(ib, 2), "invested_after": round(ia, 2),
                         "comm_before": round(cb, 2), "comm_after": round(ca, 2),
                     })
+                else:
+                    summary["truncated"] = True
+
+        # Una cuenta "cambió" si tuvo cambios de cantidad O de costo (en solo-costo
+        # los de cantidad son 0, pero igual queremos contarla y poder aplicar).
+        if user_changes or user_cost_n:
+            summary["users_changed"] += 1
+        if user_changes:
+            summary["positions_changed"] += len(user_changes)
+            for ch in user_changes:
+                if len(summary["changes"]) < max_changes:
+                    summary["changes"].append(ch)
                 else:
                     summary["truncated"] = True
         # El rebuild NO debe tocar cash → si cambia, lo flageamos fuerte.
@@ -548,10 +560,11 @@ def safe_backfill(real_conn, users: List[int], *, recalc: Callable, apply: bool,
 
 
 def dry_run_summary(real_conn, users: List[int], *, recalc: Callable,
-                    bond_price_per1: Callable = None, tag_bond_ticker: Callable = None) -> Dict[str, Any]:
+                    bond_price_per1: Callable = None, tag_bond_ticker: Callable = None,
+                    cost_only: bool = False) -> Dict[str, Any]:
     """Clona el DB (snapshot consistente, incluye WAL) y corre el backfill sobre
     la COPIA → la base real NUNCA se toca. Devuelve el mismo resumen que
     run_backfill, sin haber mutado nada real."""
     with _clone_db(real_conn) as clone:
         return run_backfill(clone, users, recalc=recalc, bond_price_per1=bond_price_per1,
-                            tag_bond_ticker=tag_bond_ticker)
+                            tag_bond_ticker=tag_bond_ticker, cost_only=cost_only)

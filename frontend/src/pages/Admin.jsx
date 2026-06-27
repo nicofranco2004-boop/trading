@@ -690,16 +690,17 @@ function BackfillPanel({ toast }) {
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)
   const [progress, setProgress] = useState(null)  // {done, total}
-  const [fullMode, setFullMode] = useState(false)  // false = solo seguro (cantidad); true = + costo
+  const [costMode, setCostMode] = useState(false)  // false = solo seguro (cantidad); true = solo costo (sin tocar cantidades)
 
   // Procesa TODOS los usuarios por tandas de CHUNK, acumulando el resultado.
   async function runChunks(doApply) {
     let offset = 0, total = 1
-    const safeOnly = fullMode ? 'false' : 'true'
+    const safeOnly = costMode ? 'false' : 'true'
+    const costOnly = costMode ? 'true' : 'false'
     const agg = { users_changed: 0, positions_changed: 0, cost_positions_changed: 0,
-                  changes: [], cost_changes: [], errors: [], total_users: 0, full_mode: fullMode }
+                  changes: [], cost_changes: [], errors: [], total_users: 0, cost_mode: costMode }
     do {
-      const r = await api.post(`/admin/backfill-recompute?safe_only=${safeOnly}&apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
+      const r = await api.post(`/admin/backfill-recompute?safe_only=${safeOnly}&cost_only=${costOnly}&apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
       total = r.total_all_users || 0
       agg.users_changed += r.users_changed || 0
       agg.positions_changed += r.positions_changed || 0
@@ -726,16 +727,15 @@ function BackfillPanel({ toast }) {
 
   async function apply() {
     if (!preview) return
-    const costMsg = fullMode ? ` + ${preview.cost_positions_changed || 0} de COSTO` : ''
-    const warn = fullMode
-      ? 'MODO COMPLETO: recalcula COSTO (bonos per-100→per-1, comisiones). Hacé un backup SÍ o SÍ antes. '
-      : 'Hacé un backup antes. '
+    const detail = costMode
+      ? `${preview.cost_positions_changed || 0} cambios de COSTO (bonos per-100→per-1 + comisiones), SIN tocar cantidades`
+      : `${preview.positions_changed} cambios seguros de cantidad`
     if (!confirm(`¿Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'} ` +
-                 `(${preview.positions_changed} de cantidad${costMsg})? ${warn}Solo es reversible desde backup.`)) return
+                 `(${detail})? Hacé un backup antes. Solo es reversible desde backup.`)) return
     setApplying(true); setProgress({ done: 0, total: 0 })
     try {
       const r = await runChunks(true)
-      toast.push(`Aplicado: ${r.users_changed} cuentas · ${r.positions_changed} cant.${fullMode ? ` · ${r.cost_positions_changed} costo` : ''}`, { type: 'success' })
+      toast.push(`Aplicado: ${r.users_changed} cuentas · ${costMode ? `${r.cost_positions_changed} de costo` : `${r.positions_changed} seguros`}`, { type: 'success' })
       await simulate()  // re-simular → debería dar 0 cambios (idempotente)
     } catch (e) {
       toast.push('Error al aplicar: ' + e.message, { type: 'error' })
@@ -749,7 +749,7 @@ function BackfillPanel({ toast }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RotateCcw size={16} className="text-data-violet" />
-          <h2 className="font-semibold text-ink-0">Recomputar posiciones — {fullMode ? 'modo completo (incluye costo)' : 'solo cambios seguros'}</h2>
+          <h2 className="font-semibold text-ink-0">Recomputar posiciones — {costMode ? 'solo costo (bonos per-100 + comisiones)' : 'solo cambios seguros'}</h2>
         </div>
         <button
           onClick={simulate}
@@ -763,15 +763,15 @@ function BackfillPanel({ toast }) {
       <label className="flex items-start gap-2 text-xs text-ink-2 cursor-pointer select-none">
         <input
           type="checkbox"
-          checked={fullMode}
-          onChange={e => { setFullMode(e.target.checked); setPreview(null) }}
+          checked={costMode}
+          onChange={e => { setCostMode(e.target.checked); setPreview(null) }}
           disabled={loading || applying}
           className="mt-0.5 accent-data-violet"
         />
         <span>
-          Incluir recálculo de <b>costo</b> (modo completo) — corrige unidad de bonos <b>per-100→per-1</b> y
-          comisiones ARS→USD. Es más sensible: el "Simular" te muestra el diff de costo abajo; revisalo y hacé
-          backup antes de aplicar.
+          <b>Modo solo costo</b> — corrige unidad de bonos <b>per-100→per-1</b> y comisiones ARS→USD sobre las
+          posiciones <b>actuales</b>, <b>sin recomputar cantidades</b> (no re-corre el FIFO, así no arrastra los
+          cambios ambiguos de cantidad). El "Simular" te muestra solo el diff de costo; revisalo y hacé backup antes de aplicar.
         </span>
       </label>
 
@@ -800,13 +800,14 @@ function BackfillPanel({ toast }) {
 
       {preview && (
         <>
-          <div className={`grid ${fullMode ? 'grid-cols-3' : 'grid-cols-2'} gap-3`}>
+          <div className="grid grid-cols-2 gap-3">
             <ConvCell label="Cuentas a corregir" value={preview.users_changed} hint={`de ${preview.total_users}`} />
-            <ConvCell label={fullMode ? 'Cambios de cantidad' : 'Cambios seguros'} value={preview.positions_changed} hint={fullMode ? 'fantasmas/letras/amort' : 'solo lo inequívoco'} />
-            {fullMode && <ConvCell label="Cambios de costo" value={preview.cost_positions_changed || 0} hint="invested / comisión" />}
+            {costMode
+              ? <ConvCell label="Cambios de costo" value={preview.cost_positions_changed || 0} hint="invested / comisión" />
+              : <ConvCell label="Cambios seguros" value={preview.positions_changed} hint="solo lo inequívoco" />}
           </div>
 
-          {changes.length > 0 ? (
+          {!costMode && (changes.length > 0 ? (
             <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
               <table className="w-full text-xs">
                 <thead>
@@ -838,11 +839,11 @@ function BackfillPanel({ toast }) {
             </div>
           ) : (
             <p className="text-xs text-ink-3">No hay cambios pendientes — las cuentas ya están al día. ✅</p>
-          )}
+          ))}
 
-          {fullMode && preview.cost_changes?.length > 0 && (
+          {costMode && (preview.cost_changes?.length > 0 ? (
             <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
-              <div className="text-[11px] font-medium text-ink-2 px-2 py-1 bg-bg-2/70 sticky top-0">Cambios de COSTO (modo completo)</div>
+              <div className="text-[11px] font-medium text-ink-2 px-2 py-1 bg-bg-2/70 sticky top-0">Cambios de COSTO (bonos per-100→per-1 + comisiones)</div>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-line/40 text-ink-3">
@@ -870,7 +871,9 @@ function BackfillPanel({ toast }) {
                 </tbody>
               </table>
             </div>
-          )}
+          ) : (
+            <p className="text-xs text-ink-3">No hay cambios de costo pendientes — los costos ya están al día. ✅</p>
+          ))}
 
           {preview.errors?.length > 0 && (
             <p className="text-xs text-rose-500">{preview.errors.length} cuenta(s) con error (se saltean): {preview.errors.slice(0, 5).map(e => `#${e.uid}`).join(', ')}</p>

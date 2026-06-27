@@ -9925,7 +9925,7 @@ def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_u
 
 
 @app.post("/api/admin/backfill-recompute")
-def admin_backfill_recompute(apply: bool = False, safe_only: bool = True,
+def admin_backfill_recompute(apply: bool = False, safe_only: bool = True, cost_only: bool = False,
                              offset: int = 0, limit: int = 0, uid: int = Depends(get_admin_user)):
     """Recomputa las posiciones de TODOS los usuarios (no solo el admin) para
     aplicar a cuentas YA importadas los fixes de FIFO (currency-aware + neteo
@@ -9958,13 +9958,16 @@ def admin_backfill_recompute(apply: bool = False, safe_only: bool = True,
                                         bond_price_per1=_bond_price_per1, tag_bond_ticker=_is_data912_bond)
         elif apply:
             summary = _rb.run_backfill(conn, users, recalc=_recalc_pnl_realized_from_ops,
-                                       bond_price_per1=_bond_price_per1, tag_bond_ticker=_is_data912_bond)
+                                       bond_price_per1=_bond_price_per1, tag_bond_ticker=_is_data912_bond,
+                                       cost_only=bool(cost_only))
         else:
             summary = _rb.dry_run_summary(conn, users, recalc=_recalc_pnl_realized_from_ops,
-                                          bond_price_per1=_bond_price_per1, tag_bond_ticker=_is_data912_bond)
+                                          bond_price_per1=_bond_price_per1, tag_bond_ticker=_is_data912_bond,
+                                          cost_only=bool(cost_only))
         summary["ok"] = True
         summary["applied"] = bool(apply)
         summary["safe_only"] = bool(safe_only)
+        summary["cost_only"] = bool(cost_only)
         summary["total_all_users"] = total_all
         summary["offset"] = offset
         summary["processed"] = len(users)
