@@ -197,5 +197,50 @@ class BalanzMovimientosNuevosTiposTest(unittest.TestCase):
         self.assertEqual(res.raw_rows[0].data["activo"], "INSTITUA")
 
 
+class BalanzFCITest(unittest.TestCase):
+    """FCI (fondos): Balanz INVIERTE el signo del Importe (Suscripción=compra,
+    Rescate=venta) y el sweep money-market duplica con una pata espejo
+    'desde/a Balanz'. Verifica dirección por nombre + dedup del par."""
+    HDR = "Descripcion,Ticker,Tipo de Instrumento,Concertacion,Cantidad,Precio,Liquidacion,Moneda,Importe"
+    ROWS = [
+        # Suscripción plana, Importe POSITIVO → COMPRA (antes la tomaba VENTA)
+        "Suscripción / 1,BCRFA,Fondos,2025-10-16,13553.17,213.97,2025-10-16,Pesos,2900000",
+        # Sweep apareado (Liquidación + desde Balanz, mismo ticker/fecha/qty) → 1 COMPRA
+        "Liquidación de Suscripción / 2,BCACCA,Fondos,2023-06-16,6777.92,22.13,2023-06-16,Pesos,-150000",
+        "Suscripción desde Balanz / 3,BCACCA,Fondos,2023-06-16,6777.92,22.13,2023-06-16,Pesos,150000",
+        # Sweep SIN par (suscripción directa) → SÍ cuenta como COMPRA
+        "Suscripción desde Balanz / 4,LECAPSA,Fondos,2024-05-30,1484344.71,1.01,2024-05-30,Pesos,1499998.61",
+        # Rescate, Importe NEGATIVO → VENTA
+        "Rescate / 5,LECAPSA,Fondos,2025-10-16,1764974.75,1.64,2025-10-16,Pesos,-2900000",
+    ]
+
+    def setUp(self):
+        res = BalanzMovimientosParser().parse(self.HDR + "\n" + "\n".join(self.ROWS) + "\n")
+        self.assertEqual(res.parse_errors, [])
+        self.ops = [rr.data for rr in res.raw_rows]
+
+    def _for(self, asset):
+        return [d for d in self.ops if d.get("activo") == asset]
+
+    def test_suscripcion_positiva_es_compra(self):
+        # Importe + en una Suscripción de fondo → COMPRA (no VENTA por el signo)
+        bcrfa = self._for("BCRFA")
+        self.assertEqual([d["tipo"] for d in bcrfa], ["COMPRA"])
+        self.assertEqual(float(bcrfa[0]["cantidad"]), 13553.17)
+
+    def test_sweep_apareado_no_duplica(self):
+        # Liquidación + 'desde Balanz' (mismo ticker/fecha/cantidad) → 1 sola COMPRA
+        bcacca = self._for("BCACCA")
+        self.assertEqual([d["tipo"] for d in bcacca], ["COMPRA"])
+        self.assertEqual(float(bcacca[0]["cantidad"]), 6777.92)
+
+    def test_sweep_sin_par_si_cuenta(self):
+        # 'Suscripción desde Balanz' sin Liquidación → COMPRA ; Rescate → VENTA
+        lecapsa = self._for("LECAPSA")
+        self.assertEqual(sorted(d["tipo"] for d in lecapsa), ["COMPRA", "VENTA"])
+        compra = [d for d in lecapsa if d["tipo"] == "COMPRA"][0]
+        self.assertEqual(float(compra["cantidad"]), 1484344.71)
+
+
 if __name__ == "__main__":
     unittest.main()

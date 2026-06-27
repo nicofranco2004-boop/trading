@@ -220,7 +220,23 @@ class BalanzMovimientosParser(Parser):
             ridx += 1
             result.raw_rows.append(RawRow(row_index=ridx, data=d))
 
-        for row in reader:
+        # Pre-pass FCI: una suscripción/rescate de fondo vía sweep money-market
+        # llega en DOS filas espejo — "Liquidación de Suscripción/Rescate" (la real,
+        # con cantidad + caja) y "Suscripción desde/Rescate a Balanz" (el espejo).
+        # Indexamos las Liquidación (ticker, fecha, |cantidad|) para saltear su
+        # espejo en el loop y no duplicar la tenencia.
+        all_rows = list(reader)
+        _fci_liq_keys = set()
+        for _r in all_rows:
+            if _asset_type(_g(_r, "clase")) == "FUND":
+                _d = _norm_header(_g(_r, "descripcion"))
+                if _d.startswith("liquidacion de suscrip") or _d.startswith("liquidacion de rescate"):
+                    _tk = _g(_r, "activo").upper().replace(" ", "")
+                    _q = _num(_g(_r, "cantidad"))
+                    if _tk and _q is not None:
+                        _fci_liq_keys.add((_tk, _g(_r, "fecha"), round(abs(_q), 2)))
+
+        for row in all_rows:
             desc_raw = _g(row, "descripcion")
             desc = _norm_header(desc_raw)
             if not desc:
@@ -302,6 +318,26 @@ class BalanzMovimientosParser(Parser):
                            "moneda": mon, "monto": str(round(cost, 4)),
                            "notas": "Transferencia Externa (entrada de título)"})
                 continue
+
+            # ── FCI (fondos): Suscripción/Rescate. Balanz INVIERTE el signo del
+            # Importe acá (Suscripción=compra → Importe +, Rescate=venta → −), al
+            # revés que un Boleto → la dirección se decide por NOMBRE, no por signo.
+            # El sweep money-market trae una pata espejo "desde/a Balanz" APAREADA
+            # con una "Liquidación" (mismo ticker/fecha/cantidad): esa NO se cuenta
+            # (tenencia y caja las trae la Liquidación). El espejo SIN par
+            # (suscripción/rescate directo, ej. LECAPSA) sí cuenta.
+            if clase == "FUND" and has_price and has_qty and ticker:
+                _sweep = ("desde balanz" in desc) or ("a balanz" in desc)
+                if _sweep and (ticker, fecha, round(abs(qty), 2)) in _fci_liq_keys:
+                    continue
+                if desc.startswith("rescate") or desc.startswith("liquidacion de rescate"):
+                    _emit(base("VENTA", activo=ticker, cantidad=str(abs(qty)),
+                               precio=str(precio), monto=str(abs(importe))))
+                    continue
+                if desc.startswith("suscrip") or desc.startswith("liquidacion de suscrip"):
+                    _emit(base("COMPRA", activo=ticker, cantidad=str(abs(qty)),
+                               precio=str(precio), monto=str(abs(importe))))
+                    continue
 
             # ── Trade / FCI con precio real → crea posición ───────────────────
             # El tipo (COMPRA/VENTA) se decide por el SIGNO de Importe (cash), así
