@@ -884,10 +884,23 @@ def init_db():
         CREATE TABLE IF NOT EXISTS fx_rates_daily (
             date TEXT PRIMARY KEY,         -- YYYY-MM-DD
             blue_venta REAL NOT NULL,
+            mep_venta REAL,                -- Fase B: dólar-MEP (bolsa) histórico; NULL = sin dato → fallback blue
             source TEXT DEFAULT 'unknown', -- 'dolarapi' | 'argentinadatos' | 'snapshot_cron' | 'manual'
             fetched_at TEXT DEFAULT (datetime('now'))
         );
     """)
+    # Fase B (MEP histórico, 2026-06-27): columna mep_venta NULLABLE. Para DBs ya
+    # seedeadas (prod, sólo blue) la agregamos por ALTER; las filas viejas quedan
+    # NULL hasta el backfill desde argentinadatos /bolsa. NINGÚN consumer la lee
+    # todavía (el switch + recompute van junto con el fix de bonos) — esto es sólo
+    # acumular el dato. Mientras sea NULL, los consumers siguen al blue (sin cambio).
+    # (_table_cols tiene allowlist y fx_rates_daily no está → no sirve para el guard;
+    # usamos try/except específico: tragamos sólo "duplicate column", el resto aflora.)
+    try:
+        conn.execute("ALTER TABLE fx_rates_daily ADD COLUMN mep_venta REAL")
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e).lower():
+            raise  # error real (no "ya existe") → no lo escondemos
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS goals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2942,24 +2955,31 @@ def _fetch_dolar(casa: str):
 # históricas se calcularían al blue HOY — distorsionando totalmente la
 # realidad de "cuánto valía mi portfolio en pesos en julio 2024".
 
-def _persist_blue_for_date(date_str: str, blue: float, source: str = 'snapshot_cron') -> bool:
-    """Upsert idempotente del blue en fx_rates_daily. NO falla si ya existe
-    (overwrite con el valor más reciente, asumimos que la última lectura es
-    más confiable). Devuelve True si el insert/update se aplicó.
+def _persist_blue_for_date(date_str: str, blue: float, source: str = 'snapshot_cron',
+                           mep: float = None) -> bool:
+    """Upsert idempotente del blue (y opcionalmente el MEP) en fx_rates_daily. NO
+    falla si ya existe (overwrite con el valor más reciente, asumimos que la última
+    lectura es más confiable). Devuelve True si el insert/update se aplicó.
+
+    `mep`: dólar-MEP del día (Fase B). Si es None o ≤0, NO se toca mep_venta
+    (COALESCE preserva el valor previo o el backfill histórico). Sólo se escribe
+    junto al blue del día corriente — el histórico lo llena _backfill_mep_rates.
     """
     if not blue or blue <= 0 or not date_str:
         return False
+    mep_val = float(mep) if (mep and mep > 0) else None
     conn = None
     try:
         conn = get_db()
         conn.execute(
-            """INSERT INTO fx_rates_daily (date, blue_venta, source)
-               VALUES (?, ?, ?)
+            """INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source)
+               VALUES (?, ?, ?, ?)
                ON CONFLICT(date) DO UPDATE SET
                  blue_venta = excluded.blue_venta,
+                 mep_venta = COALESCE(excluded.mep_venta, fx_rates_daily.mep_venta),
                  source = excluded.source,
                  fetched_at = datetime('now')""",
-            (date_str, float(blue), source),
+            (date_str, float(blue), mep_val, source),
         )
         conn.commit()
         return True
@@ -3010,6 +3030,57 @@ def _backfill_fx_rates_if_empty():
             logging.warning(f"backfill fx_rates_daily failed: {e}")
     except Exception as e:
         logging.warning(f"_backfill_fx_rates_if_empty outer error: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _backfill_mep_rates_if_missing():
+    """Fase B (MEP histórico): rellena mep_venta en fx_rates_daily desde
+    argentinadatos /bolsa (= dólar-MEP, ~7 años) para las filas que todavía no lo
+    tienen. Idempotent: si NO hay filas con mep_venta NULL, no pega a la API.
+    Corre al startup DESPUÉS de _backfill_fx_rates_if_empty (que seedea el blue).
+
+    Sólo UPDATE de filas existentes (no inserta): el universo de fechas lo define el
+    blue (blue_venta NOT NULL); las fechas previas a la cobertura de /bolsa quedan
+    mep_venta=NULL → los consumers caen al blue. NINGÚN consumer lee mep_venta aún
+    (el switch + recompute van con el fix de bonos); esto sólo acumula el dato.
+    """
+    conn = None
+    try:
+        conn = get_db()
+        missing = conn.execute(
+            "SELECT COUNT(*) FROM fx_rates_daily WHERE mep_venta IS NULL").fetchone()[0]
+        if not missing:
+            return  # ya backfilleado (o tabla vacía) → no pegamos a la API
+        logging.info(f"fx_rates_daily: {missing} filas sin mep_venta — backfill desde argentinadatos /bolsa")
+        try:
+            r = requests.get("https://api.argentinadatos.com/v1/cotizaciones/dolares/bolsa", timeout=10)
+            if r.status_code != 200:
+                return
+            updates = []
+            for item in r.json():
+                fecha = item.get("fecha", "")
+                venta = item.get("venta")
+                if fecha and venta is not None and len(fecha) == 10:
+                    try:
+                        updates.append((float(venta), fecha))
+                    except (TypeError, ValueError):
+                        continue
+            if updates:
+                conn.executemany(
+                    "UPDATE fx_rates_daily SET mep_venta = ? WHERE date = ? AND mep_venta IS NULL",
+                    updates,
+                )
+                conn.commit()
+                logging.info(f"fx_rates_daily: mep_venta backfilled desde /bolsa ({len(updates)} fechas)")
+        except Exception as e:
+            logging.warning(f"backfill mep_venta failed: {e}")
+    except Exception as e:
+        logging.warning(f"_backfill_mep_rates_if_missing outer error: {e}")
     finally:
         if conn is not None:
             try:
@@ -3179,14 +3250,18 @@ def post_snapshot(data: SnapshotIn, uid: int = Depends(get_current_user)):
     # diario (o el siguiente GET /api/dolar de cualquier user) hidrata fx_rates_daily.
     # El frontend hace fallback automático al tcBlue actual via useFxHistory.
     blue_now = None
+    mep_now = None
     try:
         if _dolar_cache["data"]:
             blue_now = (_dolar_cache["data"].get("blue") or {}).get("venta")
+            mep_now = (_dolar_cache["data"].get("mep") or {}).get("venta")
     except Exception:
         blue_now = None
+        mep_now = None
     # Si conseguimos el blue desde cache, persistimos en fx_rates_daily también
+    # (junto con el MEP del día, Fase B — mep_venta queda NULL si el cache no lo trae).
     if blue_now and blue_now > 0:
-        _persist_blue_for_date(today, float(blue_now), source='dolarapi')
+        _persist_blue_for_date(today, float(blue_now), source='dolarapi', mep=mep_now)
 
     conn = get_db()
     conn.execute(
@@ -17673,6 +17748,9 @@ def _backfill_fx_rates_on_boot():
     def worker():
         try:
             _backfill_fx_rates_if_empty()
+            # Fase B: tras seedear el blue, rellenar el MEP histórico (idempotent;
+            # no-op si ya está). Mismo thread daemon → no bloquea el boot.
+            _backfill_mep_rates_if_missing()
         except Exception as e:
             log.warning(f"fx_rates backfill background falló: {e}")
     t = threading.Thread(target=worker, daemon=True, name="fx-backfill")

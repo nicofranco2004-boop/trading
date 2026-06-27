@@ -98,6 +98,7 @@ class TestPersistBlueForDate(unittest.TestCase):
             CREATE TABLE fx_rates_daily (
                 date TEXT PRIMARY KEY,
                 blue_venta REAL NOT NULL,
+                mep_venta REAL,
                 source TEXT DEFAULT 'unknown',
                 fetched_at TEXT DEFAULT (datetime('now'))
             );
