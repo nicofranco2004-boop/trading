@@ -191,6 +191,22 @@ class BalanzResultadosParser(Parser):
                 "(Actividad → Resultados). Asegurate de subir el Excel completo."))
             return result
 
+        # ── BLOQUEADO: el export de Resultados NO se importa ──────────────────
+        # No trae el efectivo (depósitos/retiros) → el capital aportado queda
+        # NEGATIVO y, además, infla el P&L realizado (matchea mal las cerradas
+        # cross-currency: visto ~78× en un caso real). Resultado: dashboard roto.
+        # Redirigimos al export de Movimientos, que SÍ reconcilia la caja. Seguimos
+        # DETECTANDO el formato (can_handle) sólo para dar este mensaje útil en vez
+        # de un genérico "formato no reconocido". El parseo de abajo queda inactivo.
+        result.parse_errors.append(RowError(
+            0, None, "BALANZ_RESULTADOS_NO_SOPORTADO",
+            "Subiste el export de «Resultados» de Balanz. Ese no lo importamos: no "
+            "incluye tus depósitos ni retiros, así que tu capital aportado y tu "
+            "rendimiento quedarían mal. Bajá el export de MOVIMIENTOS — en Balanz web "
+            "(no la app) andá a Actividad → Movimientos, descargá todos los años y "
+            "subí ese."))
+        return result
+
         # Variante CSV "sin precios": trae movimientos pero NO las columnas de
         # precio (Precio Compra / PrecioVenta). Sin precio no hay posición ni
         # P&L — solo cupones, que no alcanzan para una cartera. Mejor cortar con

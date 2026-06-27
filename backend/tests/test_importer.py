@@ -272,60 +272,18 @@ class BalanzResultadosParserTest(unittest.TestCase):
         from importing.parsers.balanz_resultados import BalanzResultadosParser
         self.assertTrue(BalanzResultadosParser().can_handle(self._HEADERS.strip().split(",")))
 
-    def test_no_realizado_to_open_buy(self):
-        res = self._parse(
-            "1000,BONO GD30,2026-06-25,2025-05-29,4785,Pesos,,Boleto,,66.0,,GD30,Bonos - Dólar,No Realizado,,,\n"
-        )
-        self.assertEqual(len(res.raw_rows), 1)
-        d = res.raw_rows[0].data
-        self.assertEqual(d["tipo"], "COMPRA")
-        self.assertEqual(d["activo"], "GD30")
-        self.assertEqual(d["precio"], "66.0")
-        self.assertEqual(d["fecha"], "2025-05-29")   # FechaCompra
-        self.assertEqual(d["comisiones"], "4785")
-        self.assertEqual(d["asset_type"], "BOND")
-
-    def test_orden_to_buy_and_sell(self):
+    def test_resultados_blocked_redirige_a_movimientos(self):
+        # El export de Resultados se DETECTA (can_handle) pero se RECHAZA al
+        # parsear: no trae efectivo → capital aportado negativo + P&L realizado
+        # inflado. El mensaje redirige al export de Movimientos.
         res = self._parse(
             "100,BONO AL35,2025-09-18,2025-09-10,150,Dólares,US Dollar (Cable),"
             "Boleto,Boleto,0.46,0.50,AL35,Bonos - Dólar,Orden,,,\n"
         )
-        self.assertEqual(len(res.raw_rows), 2)
-        buy, sell = res.raw_rows[0].data, res.raw_rows[1].data
-        self.assertEqual(buy["tipo"], "COMPRA")
-        self.assertEqual(buy["precio"], "0.46")
-        self.assertEqual(buy["fecha"], "2025-09-10")
-        self.assertEqual(sell["tipo"], "VENTA")
-        self.assertEqual(sell["precio"], "0.5")
-        self.assertEqual(sell["fecha"], "2025-09-18")
-        self.assertEqual(sell["moneda"], "USD")
-
-    def test_cupon_to_interest(self):
-        res = self._parse(
-            "0,BOPREAL BPC7,2025-10-31,,1037,,Dólares,,Renta,,,BPC7,Bonos - Dólar,Cupón,146726,,\n"
-        )
-        self.assertEqual(len(res.raw_rows), 1)
-        d = res.raw_rows[0].data
-        self.assertEqual(d["tipo"], "INTERES")
-        self.assertEqual(d["activo"], "BPC7")
-        self.assertEqual(d["monto"], "146726.0")
-        self.assertEqual(d["moneda"], "USD")
-
-    def test_dividendo(self):
-        res = self._parse(
-            "0,CEDEAR AMZN,2026-06-17,,0,,Dólares,,Dividendo,,,AMZN,Cedears,Dividendo,,0.13,\n"
-        )
-        self.assertEqual(len(res.raw_rows), 1)
-        self.assertEqual(res.raw_rows[0].data["tipo"], "DIVIDENDO")
-        self.assertEqual(res.raw_rows[0].data["monto"], "0.13")
-
-    def test_caucion_to_interest(self):
-        res = self._parse(
-            "0,PESOS,2025-07-22,,237,,Pesos,,Boleto,,,PESOS,Efectivo,Caución - Pase - Cheque,,,2746\n"
-        )
-        self.assertEqual(len(res.raw_rows), 1)
-        self.assertEqual(res.raw_rows[0].data["tipo"], "INTERES")
-        self.assertEqual(res.raw_rows[0].data["monto"], "2746.0")
+        self.assertEqual(len(res.raw_rows), 0)            # no importa NADA
+        self.assertEqual(len(res.parse_errors), 1)
+        self.assertEqual(res.parse_errors[0].code, "BALANZ_RESULTADOS_NO_SOPORTADO")
+        self.assertIn("Movimientos", res.parse_errors[0].message)
 
     def test_asset_type_from_clase(self):
         from importing.parsers.balanz_resultados import _asset_type_from_clase
@@ -337,38 +295,12 @@ class BalanzResultadosParserTest(unittest.TestCase):
         self.assertEqual(_asset_type_from_clase("Fondos"), "FUND")
         self.assertIsNone(_asset_type_from_clase("Efectivo"))
 
-    def test_only_realizado_sheet(self):
-        # Con columna _hoja, solo procesa la hoja por_realizado (ignora lotes).
-        body = (
-            "1000,BONO X,2026-06-25,2025-05-29,10,Pesos,,B,,66.0,,XXX,Bonos - Dólar,No Realizado,,,,resultados_por_lotes_iniciales\n"
-            "1000,BONO Y,2026-06-25,2025-05-29,10,Pesos,,B,,66.0,,YYY,Bonos - Dólar,No Realizado,,,,resultados_por_realizado\n"
-        )
-        from importing.parsers.balanz_resultados import BalanzResultadosParser
-        res = BalanzResultadosParser().parse(self._HEADERS.rstrip("\n") + ",_hoja\n" + body)
-        self.assertEqual(len(res.raw_rows), 1)
-        self.assertEqual(res.raw_rows[0].data["activo"], "YYY")
-
     def test_rejects_wrong_format(self):
+        # Un archivo que NO es Resultados cae antes del bloqueo, con el mismatch.
         from importing.parsers.balanz_resultados import BalanzResultadosParser
         res = BalanzResultadosParser().parse("Date,Pair,Side\n2024-01-01,BTC,BUY\n")
         self.assertEqual(len(res.parse_errors), 1)
         self.assertEqual(res.parse_errors[0].code, "BALANZ_RES_HEADERS_MISMATCH")
-
-    def test_price_less_csv_gives_actionable_error(self):
-        # La variante CSV de Resultados SIN columnas de precio se reconoce pero
-        # se rechaza con un mensaje que manda al Excel (que sí trae precios).
-        from importing.parsers.balanz_resultados import BalanzResultadosParser
-        csv = (
-            "Cantidad,Descripción,Fecha,Gastos,Moneda de venta,Operacion Compra,"
-            "Operación Venta,Ticker,Cupones,Tipo,TipoMovimiento,OperacionVentaDolarCCL,"
-            "OperacionVentaDolarMEP,OperacionVentaDolarOficial\n"
-            "1,BONO AE38,2026-06-24,4.3,,Boleto,,AE38,,Bonos - Dólar,No Realizado,1544,1499,1471\n"
-        )
-        p = BalanzResultadosParser()
-        self.assertTrue(p.can_handle(csv.splitlines()[0].split(",")))  # lo reconoce
-        res = p.parse(csv)
-        self.assertEqual(len(res.raw_rows), 0)
-        self.assertEqual(res.parse_errors[0].code, "BALANZ_RES_NO_PRICES")
 
 
 class BinanceTransactionHistoryTest(unittest.TestCase):

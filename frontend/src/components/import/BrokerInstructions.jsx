@@ -104,7 +104,7 @@ const BROKERS = [
       'Filtrá el período DESDE EL INICIO DE TU CUENTA hasta hoy. ⚠️ Importante: si tomás solo un rango parcial, falta el fondeo y el saldo no cierra.',
       'Descargá el archivo (Excel .xlsx) y subilo acá.',
     ],
-    parserNote: 'Del export de Movimientos reconstruimos tu cartera, tu P&L Y tu efectivo —incluye depósitos, retiros, dólar MEP, cupones, dividendos y comisiones—, así el saldo cierra solo (no hace falta cargarlo a mano). Clasificamos cada activo (bono, CEDEAR, acción, fondo) automáticamente. (También aceptamos el viejo export de Resultados, pero ese no trae los movimientos de caja.)',
+    parserNote: 'Del export de Movimientos reconstruimos tu cartera, tu P&L Y tu efectivo —incluye depósitos, retiros, dólar MEP, cupones, dividendos y comisiones—, así el saldo cierra solo (no hace falta cargarlo a mano). Clasificamos cada activo (bono, CEDEAR, acción, fondo) automáticamente. Ojo: el export de «Resultados» NO sirve —no trae tus depósitos/retiros y los números quedan mal—, así que tiene que ser el de Movimientos.',
   },
   {
     id: 'binance',
