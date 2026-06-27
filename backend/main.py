@@ -9916,18 +9916,29 @@ def _repair_user_snapshots(conn, uid: int) -> dict:
     reimport, SIN destruir los diarios legítimos: recalcula monthly (drift), UPSERTea
     los de fin de mes con el valor correcto, recomputa net_deposited y borra SOLO los
     contaminados (V-shapes + outliers de trayectoria). NO commitea (lo hace el caller).
-    La curva a valor de mercado es aparte (botón MTM)."""
-    before = conn.execute("SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (uid,)).fetchone()["c"]
+    La curva a valor de mercado es aparte (botón MTM).
+
+    IDEMPOTENCIA: el "cambió" se mide comparando el ESTADO de los snapshots ANTES
+    vs DESPUÉS de todo el repair, NO los reportes intermedios. Sin esto, _backfill
+    (que setea net_deposited desde el agregado 'global') y _recompute (que lo setea
+    desde los brokers individuales) se pisan en cada corrida cuando global ≠ Σbroker,
+    y el contador marcaba al usuario como "a reparar" para siempre aunque el estado
+    final fuera estable. Comparar antes/después lo hace idempotente de verdad."""
+    def _state():
+        return {r["date"]: (round(r["total_value"] or 0, 2), round(r["net_deposited"] or 0, 2))
+                for r in conn.execute(
+                    "SELECT date, total_value, net_deposited FROM snapshots WHERE user_id=?", (uid,))}
+    before = _state()
     _recalc_pnl_realized_from_ops(conn, uid)                       # drift de monthly fuera
     _import_persister._backfill_snapshots_from_monthly(conn, uid)  # UPSERT fin de mes correcto
-    netdep = _recompute_snapshots_netdep_for_user(conn, uid)       # net_deposited canónico
+    _recompute_snapshots_netdep_for_user(conn, uid)               # net_deposited canónico
     vshape = _detect_and_remove_corrupt_snapshots(conn, uid)       # V-shapes (cron parcial)
     outliers = _remove_trajectory_outlier_snapshots(conn, uid)     # contaminados sostenidos
-    after = conn.execute("SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (uid,)).fetchone()["c"]
+    after = _state()
     return {
-        "snapshots_before": before, "snapshots_after": after,
+        "snapshots_before": len(before), "snapshots_after": len(after),
         "corrupt_removed": len(vshape) + len(outliers),
-        "netdep_updated": netdep.get("snapshots_updated", 0),
+        "changed": before != after,   # cambio REAL (no oscilación interna de net_deposited)
     }
 
 
@@ -9944,10 +9955,9 @@ def _repair_snapshots_summary(real_conn, users, apply: bool) -> dict:
                 conn.rollback()
                 out["errors"].append({"uid": u, "error": str(ex)})
                 continue
-            removed = r["snapshots_before"] - r["snapshots_after"]
-            if removed != 0 or r["corrupt_removed"] or r["netdep_updated"]:
+            if r["changed"]:
                 out["users_changed"] += 1
-                out["snapshots_removed"] += max(0, removed)
+                out["snapshots_removed"] += r["corrupt_removed"]
                 if len(out["changes"]) < 2000:
                     out["changes"].append({"uid": u, **r})
             if apply:

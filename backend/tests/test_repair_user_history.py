@@ -124,6 +124,29 @@ class RepairUserHistoryTest(unittest.TestCase):
             (self.uid,)).fetchone()["c"]
         self.assertEqual(still, 1)   # dry-run NO tocó la base real
 
+    def test_repair_idempotente_aunque_global_difiera_de_broker(self):
+        # Reproduce los "13 que reaparecían": el agregado 'global' y la suma
+        # per-broker tienen net_deposited DISTINTO (10000 vs 8000). _backfill setea
+        # net_deposited desde 'global' y _recompute desde los brokers → se pisaban
+        # cada corrida y el contador marcaba "a reparar" para siempre. Con la medición
+        # antes/después, la 2da corrida NO debe reportar cambio.
+        for broker, dep in (("global", 10000), ("Balanz", 8000)):
+            self.conn.execute(
+                """INSERT INTO monthly_entries
+                     (user_id, broker, year, month, capital_inicio, deposits, withdrawals,
+                      manual_deposits, manual_withdrawals, pnl_realized, pnl_unrealized, capital_final)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (self.uid, broker, 2026, 6, 0, dep, 0, dep, 0, 0, 0, dep))
+        self.conn.commit()
+        with self.conn:
+            main._repair_user_snapshots(self.conn, self.uid)     # 1ra reparación
+        with self.conn:
+            r2 = main._repair_user_snapshots(self.conn, self.uid)  # 2da
+        self.assertFalse(r2["changed"])   # idempotente: la 2da no marca cambio
+        # y el resumen masivo tampoco la cuenta de nuevo
+        s = main._repair_snapshots_summary(self.conn, [self.uid], apply=True)
+        self.assertEqual(s["users_changed"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
