@@ -75,6 +75,7 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     skip = (
         price_key.startswith("FCI:")
         or base in getattr(main, "AR_BONDS_DATA912", set())
+        or main._is_data912_bond(base)   # cualquier bono/ON de data912 → costo histórico (data912 es live-only)
         or (price_key.endswith(".BA") and base in getattr(main, "CEDEAR_USD_RATIOS", {}))
     )
     if not skip:

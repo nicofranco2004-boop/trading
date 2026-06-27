@@ -363,6 +363,20 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
                 _r = _CED_RATIOS.get(_base) or 1
                 result[_csym] = round(result[_csym] * _ccl / _r, 4) if (_ccl and _ccl > 0) else None
 
+    # Bonos/ONs AR: data912 cotiza per-100 y el sistema usa per-1 (÷100). yfinance da
+    # el '.BA' per-100 SIN dividir → el snapshot inflaba los bonos ×100 (chart "Hoy"
+    # 3× la cartera real). Igual que /api/prices, resolvemos los bonos por
+    # _resolve_ar_bond_price (universo data912, per-1) y pisamos lo de yfinance. Para
+    # no-bonos (CEDEAR/acción) devuelve None → se mantiene el precio de yfinance.
+    try:
+        from main import _resolve_ar_bond_price as _rbp
+        for s in symbols:
+            bp = _rbp(s)
+            if bp is not None:
+                result[s] = bp
+    except Exception:
+        pass
+
     return result
 
 
