@@ -30,11 +30,7 @@ from . import maturity as _maturity
 
 def _db_dir_of(real_conn):
     """Directorio donde vive la DB real, derivado de la PROPIA conexión (sin
-    importar main, para no crear ciclo). El clon temporal del dry-run se escribe
-    AHÍ — en prod el volumen persistente /data, que es escribible y tiene espacio
-    — y NO en el /tmp efímero del contenedor (otro filesystem) que rompía el
-    backup con un 500. Si no se puede resolver, devuelve None → NamedTemporaryFile
-    cae al tmpdir por defecto (comportamiento previo)."""
+    importar main, para no crear ciclo). None si no se puede resolver."""
     try:
         for row in real_conn.execute("PRAGMA database_list"):
             name, file = row[1], row[2]            # (seq, name, file)
@@ -47,15 +43,41 @@ def _db_dir_of(real_conn):
     return None
 
 
+def _clone_target_dir(real_conn):
+    """Dir donde escribir el clon temporal del dry-run: el que tenga MÁS espacio
+    LIBRE entre el tmpdir del SO y el dir de la DB.
+
+    Clave (aprendido en prod): en Railway el tmpdir (/tmp, disco efímero del host)
+    tiene ~TBs libres, pero el VOLUMEN /data es chico (454MB) y la DB ya ocupa
+    ~254MB → un clon de la DB NO entra al lado de la DB (DB + clon > volumen) →
+    SQLITE_FULL 'database or disk is full'. Por eso elegimos por espacio libre, no
+    por "al lado de la DB". Devuelve None = tmpdir por defecto de NamedTemporaryFile."""
+    import shutil
+    candidates = [(None, tempfile.gettempdir())]   # None → tmpdir por defecto
+    db_dir = _db_dir_of(real_conn)
+    if db_dir:
+        candidates.append((db_dir, db_dir))
+    best_ret, best_free = None, -1
+    for ret, path in candidates:
+        try:
+            free = shutil.disk_usage(path).free
+        except Exception:
+            continue
+        if free > best_free:
+            best_ret, best_free = ret, free
+    return best_ret
+
+
 @_contextmanager
 def _clone_db(real_conn):
     """Clona la DB real a una copia temporal (snapshot consistente vía backup API,
-    incluye WAL) y cede una conexión sqlite a esa copia. La copia se crea JUNTO a
-    la DB real (mismo volumen escribible, no el /tmp efímero) y backup() se
+    incluye WAL) y cede una conexión sqlite a esa copia. La copia se crea en el
+    filesystem con MÁS espacio libre (ver _clone_target_dir: el /tmp efímero de
+    Railway tiene TBs, el volumen /data es chico y no entra el clon) y backup() se
     reintenta ante un lock transitorio. Limpia el .db + sidecars -wal/-shm en el
     finally, SIEMPRE. Reemplaza el patrón tempfile+backup+try/finally duplicado en
     cada call-site del dry-run."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=_db_dir_of(real_conn))
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=_clone_target_dir(real_conn))
     tmp.close()
     clone = sqlite3.connect(tmp.name)
     clone.row_factory = sqlite3.Row

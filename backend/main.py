@@ -9925,6 +9925,44 @@ def admin_disk_usage(uid: int = Depends(get_admin_user)):
         items.sort(reverse=True)
         return {"scanned": scanned, "top": [{"mb": round(s / 1e6, 2), "file": p} for s, p in items[:n]]}
 
+    def _db_internals():
+        """Por qué la DB pesa lo que pesa: tamaño del archivo, páginas libres
+        (reclamables con VACUUM), WAL, y las tablas más grandes."""
+        out = {}
+        c = get_db()
+        try:
+            ps = c.execute("PRAGMA page_size").fetchone()[0]
+            pc = c.execute("PRAGMA page_count").fetchone()[0]
+            fl = c.execute("PRAGMA freelist_count").fetchone()[0]
+            out["page_size"] = ps
+            out["file_mb"] = round(ps * pc / 1e6, 1)
+            out["reclaimable_vacuum_mb"] = round(ps * fl / 1e6, 1)  # páginas libres
+            for sidecar, key in ((DB_PATH + "-wal", "wal_mb"), (DB_PATH + "-shm", "shm_mb")):
+                try:
+                    out[key] = round(os.path.getsize(sidecar) / 1e6, 2)
+                except OSError:
+                    out[key] = 0
+            try:  # dbstat: bytes por tabla/índice (requiere SQLITE_ENABLE_DBSTAT_VTAB)
+                rows = c.execute("SELECT name, SUM(pgsize) b FROM dbstat GROUP BY name "
+                                 "ORDER BY b DESC LIMIT 15").fetchall()
+                out["top_tables_mb"] = [{"name": r[0], "mb": round(r[1] / 1e6, 2)} for r in rows]
+            except Exception as ex:
+                out["dbstat_error"] = f"{type(ex).__name__}: {ex}"
+                counts = []
+                for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+                    t = r[0]
+                    try:
+                        counts.append({"table": t, "rows": c.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]})
+                    except Exception:
+                        pass
+                counts.sort(key=lambda x: x["rows"], reverse=True)
+                out["top_tables_rows"] = counts[:15]
+        except Exception as ex:
+            out["error"] = f"{type(ex).__name__}: {ex}"
+        finally:
+            c.close()
+        return out
+
     return {
         "ok": True,
         "DB_PATH": DB_PATH,
@@ -9938,6 +9976,7 @@ def admin_disk_usage(uid: int = Depends(get_admin_user)):
             "cwd": _usage(cwd),
             "backups": _usage(backups_dir),
         },
+        "db_internals": _db_internals(),
         "db_dir_files": _top_files(db_dir),
         "backups_files": _top_files(backups_dir, n=10),
         "tmp_files": _top_files(tmp_dir, n=10),
