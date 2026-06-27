@@ -1,4 +1,4 @@
-import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Calendar, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react'
 import { useRef, useState, useEffect } from 'react'
 
 const MONTHS = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -20,12 +20,39 @@ function isSameDay(a, b) {
   return a && b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
 
+// Auto-máscara mientras se tipea: deja solo dígitos (DDMMAAAA) y los formatea a
+// dd/mm/aaaa. Así el user escribe "15032021" y ve "15/03/2021" sin tocar barras.
+function maskDate(raw) {
+  const g = (raw || '').replace(/\D/g, '').slice(0, 8)
+  let out = g.slice(0, 2)
+  if (g.length > 2) out += '/' + g.slice(2, 4)
+  if (g.length > 4) out += '/' + g.slice(4, 8)
+  return out
+}
+// Parsea "dd/mm/aaaa" → ISO "aaaa-mm-dd", o null si no es una fecha real
+// (rechaza 31/02, mes 13, etc.). Permite d/m de 1 dígito.
+function parseDisplay(text) {
+  const m = (text || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (!m) return null
+  const d = +m[1], mo = +m[2], y = +m[3]
+  const dt = new Date(y, mo - 1, d)
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null
+  return fmtISO(dt)
+}
+
 export default function DateInput({ value, onChange, min, max, className = '', placeholder = 'dd/mm/aaaa' }) {
   const [open, setOpen] = useState(false)
+  // Texto del input (display dd/mm/aaaa). Estado propio para poder tipear libre
+  // sin que cada tecla reformatee/valide de golpe; se commitea cuando es válido.
+  const [text, setText] = useState(fmtDisplay(value))
   const wrapRef = useRef(null)
   const initial = parseISO(value) || new Date()
   const [viewMonth, setViewMonth] = useState(initial.getMonth())
   const [viewYear, setViewYear] = useState(initial.getFullYear())
+
+  // Sincronizar el texto cuando el value cambia desde afuera (elegir en el
+  // calendario, reset del form, edición de otra posición).
+  useEffect(() => { setText(fmtDisplay(value)) }, [value])
 
   useEffect(() => {
     function handleClick(e) {
@@ -48,6 +75,28 @@ export default function DateInput({ value, onChange, min, max, className = '', p
   const selected = parseISO(value)
   const minDate = parseISO(min)
   const maxDate = parseISO(max)
+
+  function inRange(d) {
+    if (minDate && d < minDate) return false
+    if (maxDate && d > maxDate) return false
+    return true
+  }
+
+  // Tipeo: enmascara, y si quedó una fecha válida y en rango, la commitea ya.
+  function handleType(raw) {
+    const masked = maskDate(raw)
+    setText(masked)
+    const iso = parseDisplay(masked)
+    if (iso && inRange(parseISO(iso))) onChange(iso)
+  }
+  // Al salir del input: vacío → limpia; válido en rango → normaliza; si quedó
+  // inválido/fuera de rango → revierte al último value bueno.
+  function handleBlur() {
+    if (text.trim() === '') { onChange(''); return }
+    const iso = parseDisplay(text)
+    if (iso && inRange(parseISO(iso))) setText(fmtDisplay(iso))
+    else setText(fmtDisplay(value))
+  }
 
   // Calcular grid del mes
   const firstDay = new Date(viewYear, viewMonth, 1)
@@ -82,51 +131,61 @@ export default function DateInput({ value, onChange, min, max, className = '', p
     setViewMonth(m)
     setViewYear(y)
   }
+  function navYear(delta) { setViewYear(y => y + delta) }
 
   function pickDay(d) {
-    if (minDate && d < minDate) return
-    if (maxDate && d > maxDate) return
+    if (!inRange(d)) return
     onChange(fmtISO(d))
     setOpen(false)
   }
 
-  function isDisabled(d) {
-    if (minDate && d < minDate) return true
-    if (maxDate && d > maxDate) return true
-    return false
-  }
+  function isDisabled(d) { return !inRange(d) }
 
   return (
     <div ref={wrapRef} className={`relative ${className}`}>
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md pl-9 pr-3 py-2 text-sm text-left text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition cursor-pointer relative hover:border-ink-3"
-      >
-        <Calendar
-          size={14}
-          className={`absolute left-3 top-1/2 -translate-y-1/2 transition ${
-            open ? 'text-rendi-accent' : 'text-ink-3'
-          }`}
+      <div className="relative">
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => setOpen(o => !o)}
+          aria-label="Abrir calendario"
+          className="absolute left-0 top-0 h-full px-3 flex items-center"
+        >
+          <Calendar size={14} className={`transition ${open ? 'text-rendi-accent' : 'text-ink-3'}`} />
+        </button>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={text}
+          onChange={e => handleType(e.target.value)}
+          onBlur={handleBlur}
+          placeholder={placeholder}
+          className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md pl-9 pr-3 py-2 text-sm text-ink-0 font-mono focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition placeholder:text-ink-3 placeholder:font-sans hover:border-ink-3"
         />
-        {value ? (
-          <span className="font-mono">{fmtDisplay(value)}</span>
-        ) : (
-          <span className="text-ink-3">{placeholder}</span>
-        )}
-      </button>
+      </div>
 
       {open && (
         <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-2xl p-3 w-[280px]">
-          {/* Header */}
+          {/* Header — saltos de mes (‹ ›) y de año (« »), para llegar rápido a fechas viejas */}
           <div className="flex items-center justify-between mb-3">
-            <button
-              type="button"
-              onClick={() => navMonth(-1)}
-              className="p-1.5 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0 transition"
-            >
-              <ChevronLeft size={16} />
-            </button>
+            <div className="flex items-center">
+              <button
+                type="button"
+                onClick={() => navYear(-1)}
+                aria-label="Año anterior"
+                className="p-1.5 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0 transition"
+              >
+                <ChevronsLeft size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => navMonth(-1)}
+                aria-label="Mes anterior"
+                className="p-1.5 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0 transition"
+              >
+                <ChevronLeft size={16} />
+              </button>
+            </div>
             <div className="flex items-center gap-2">
               <span className="font-semibold text-sm text-ink-0 dark:text-white">
                 {MONTHS[viewMonth]}
@@ -135,13 +194,24 @@ export default function DateInput({ value, onChange, min, max, className = '', p
                 {viewYear}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => navMonth(1)}
-              className="p-1.5 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0 transition"
-            >
-              <ChevronRight size={16} />
-            </button>
+            <div className="flex items-center">
+              <button
+                type="button"
+                onClick={() => navMonth(1)}
+                aria-label="Mes siguiente"
+                className="p-1.5 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0 transition"
+              >
+                <ChevronRight size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => navYear(1)}
+                aria-label="Año siguiente"
+                className="p-1.5 rounded-md text-ink-3 hover:bg-bg-2 dark:hover:bg-bg-3 hover:text-ink-0 dark:hover:text-ink-0 transition"
+              >
+                <ChevronsRight size={16} />
+              </button>
+            </div>
           </div>
 
           {/* Días de la semana */}
