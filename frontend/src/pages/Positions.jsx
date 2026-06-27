@@ -1413,7 +1413,7 @@ function PositionsDesktop() {
                   </thead>
                   <tbody>
                     {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
-                      const tickerExpanded = showAllLots || expandedTickers.has(`t:${p.asset}`)
+                      const tickerExpanded = showAllLots || expandedTickers.has(rowKey)
                       const c = calcARS(p)
                       // P&L "con cupones": sumamos cobranzas (en ARS, misma moneda
                       // que el broker) al P&L mark-to-market. Es el "total return"
@@ -1553,7 +1553,7 @@ function PositionsDesktop() {
                                   subtitle={`${p.asset} · ${p.broker}`}
                                 />
                               )}
-                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(`t:${p.asset}`) })} />
+                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                             </div>
                           </td>
                         </tr>
@@ -1625,7 +1625,7 @@ function PositionsDesktop() {
                 </thead>
                 <tbody>
                   {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
-                    const tickerExpanded = showAllLots || expandedTickers.has(`t:${p.asset}`)
+                    const tickerExpanded = showAllLots || expandedTickers.has(rowKey)
                     const c = calcUSDT(p)
                     const isBond = isBondTicker(p.asset) && !p.is_cash
                     const bondKey = `${p.broker}:${p.asset}`
@@ -1751,7 +1751,7 @@ function PositionsDesktop() {
                                 subtitle={`${p.asset} · ${p.broker}`}
                               />
                             )}
-                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(`t:${p.asset}`) })} />
+                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                           </div>
                         </td>
                       </tr>
@@ -2391,15 +2391,20 @@ function sortBrokersForDisplay(brokers) {
 }
 
 function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
-  // Fila AGREGADA (varios lotes del mismo ticker): NO editar/eliminar (eso es por
-  // lote, en las filas expandidas). Vender opera FIFO sobre toda la posición.
+  // Fila AGREGADA (varios lotes del mismo ticker): editar/eliminar son POR LOTE
+  // (la posición agregada es sintética, no un registro real — no hay un único id
+  // que editar, y promediar rompería el costo FIFO y las fechas de compra).
+  // "Editar lotes" despliega los lotes; cada lote tiene su propio menú con
+  // Editar/Eliminar. Vender opera FIFO sobre toda la posición.
   if (isAgg) {
     return [
-      { label: expanded ? `Ocultar lotes (${lotCount})` : `Ver lotes (${lotCount})`,
-        icon: expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />, onClick: onToggleLots },
-      { divider: true },
       { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd(p.broker) },
       { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
+      { divider: true },
+      // Un solo control de lotes: expande (donde se edita/elimina cada lote) y,
+      // ya desplegado, colapsa. Sin "Ver lotes" aparte (era redundante).
+      { label: expanded ? `Ocultar lotes (${lotCount})` : `Editar lotes (${lotCount})`,
+        icon: expanded ? <ChevronUp size={13} /> : <Pencil size={13} />, onClick: onToggleLots },
     ]
   }
   if (p.is_cash) {
