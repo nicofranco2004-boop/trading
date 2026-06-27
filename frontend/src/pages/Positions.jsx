@@ -29,7 +29,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, costInPesos } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, costInPesos, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency } from '../contexts/CurrencyContext'
 import PageHeader from '../components/PageHeader'
@@ -889,6 +889,12 @@ function PositionsDesktop() {
     const realCost = ((p.invested || 0) + (p.commissions || 0)) * f
     if (price == null) return { value: null, pnl: null, pnlPct: null, price: null, investedUsd: realCost }
     const value = price * p.quantity * f
+    // Guard anti-distorsión (mismo que el total del broker): si el valor de mercado
+    // se va absurdamente lejos del costo — típico bono/ON con precio manual en
+    // convención per-100 → ×100 — NO lo confiamos y mostramos costo (P&L 0).
+    if (!trustMktValue(value, realCost, p.asset_type, p.price_override != null)) {
+      return { value: realCost, pnl: 0, pnlPct: 0, price: null, investedUsd: realCost }
+    }
     const pnl = value - realCost
     return { value, pnl, pnlPct: realCost > 0 ? pnl / realCost : 0, price, investedUsd: realCost }
   }
@@ -902,6 +908,11 @@ function PositionsDesktop() {
     // Cost basis ARS = invested + commissions (ambos en pesos para broker ARS).
     const realCostArs = (p.invested || 0) + (p.commissions || 0)
     const valueArs = priceArs * p.quantity
+    // Guard anti-distorsión (ver calcUSDT): bono/ON con precio manual per-100 → ×100.
+    if (!trustMktValue(valueArs, realCostArs, p.asset_type, p.price_override != null)) {
+      const invUsd = realCostArs / tcBlue
+      return { valueArs: realCostArs, valueUsd: invUsd, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null, invUsd }
+    }
     const pnlArs = valueArs - realCostArs
     const valueUsd = valueArs / tcBlue
     // FX-phantom fix: cost basis USD usa el blue actual (no tc_compra histórico).

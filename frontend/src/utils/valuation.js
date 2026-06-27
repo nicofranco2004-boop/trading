@@ -164,13 +164,22 @@ export function pesoLotUsd(p, prices, tcCedear) {
 //     (un ×50 casi siempre es bug de pricing, no un 50-bagger).
 // price_override (precio puesto a mano por el usuario) siempre se respeta.
 const _FIXED_INCOME_TYPES = new Set(['BOND', 'BONO', 'ON', 'LETRA', 'LECAP'])
-function _trustMktValue(mktValue, realCost, assetType) {
+export function isFixedIncome(assetType) {
+  return _FIXED_INCOME_TYPES.has((assetType || '').toUpperCase())
+}
+// ¿Confiar en el valor de mercado de una posición, o caer a costo?
+//   • Sin override: banda anti-distorsión — renta fija [0.02×, 4×] (cotiza cerca
+//     de par, no multibaggea), resto [0.002×, 50×] (permite multibaggers reales).
+//   • Con override manual (`hasOverride`): se respeta… SALVO en renta fija, donde
+//     un override absurdo igual se clampea. Caso real: una ON sin precio live con
+//     un precio manual cargado en convención per-100 (97 en vez de 0,97) → valor
+//     ×100 (+9775%). Un bono no puede valer ~100× su costo → no lo confiamos.
+export function trustMktValue(mktValue, realCost, assetType, hasOverride = false) {
   if (!(realCost > 0) || !(mktValue > 0)) return true  // sin costo no hay con qué comparar
+  const fixed = isFixedIncome(assetType)
+  if (hasOverride && !fixed) return true  // override de NO-renta-fija: se respeta
   const mult = mktValue / realCost
-  if (_FIXED_INCOME_TYPES.has((assetType || '').toUpperCase())) {
-    return mult <= 4 && mult >= 0.02
-  }
-  return mult <= 50 && mult >= 0.002
+  return fixed ? (mult <= 4 && mult >= 0.02) : (mult <= 50 && mult >= 0.002)
 }
 
 export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue, tcCripto = null) {
@@ -198,7 +207,7 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
       const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
       const trustArs = mktArs != null &&
-        (p.price_override != null || _trustMktValue(mktArs, realCost, p.asset_type))
+        trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
       if (trustArs) { valueArs += mktArs;   value += mktArs / cedearRate }
       else          { valueArs += realCost; value += invUsd }
       continue
@@ -226,7 +235,7 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
         const trustArs = mktArs != null &&
-          (p.price_override != null || _trustMktValue(mktArs, realCost, p.asset_type))
+          trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
         if (trustArs) {
           valueArs += mktArs
           value    += mktArs / cedearRate
@@ -256,13 +265,13 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
           // ticker US. La cripto NUNCA entra acá (no es .BA) → va a la rama spot.
           const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
           const mktUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / cedearRate : null
-          value += (mktUsd != null && _trustMktValue(mktUsd, realCost, p.asset_type))
+          value += (mktUsd != null && trustMktValue(mktUsd, realCost, p.asset_type))
             ? mktUsd : realCost
         } else {
           const price = p.price_override ?? prices[p.asset]
           const mkt = price != null ? price * (p.quantity || 0) : null
           const trust = mkt != null &&
-            (p.price_override != null || _trustMktValue(mkt, realCost, p.asset_type))
+            trustMktValue(mkt, realCost, p.asset_type, p.price_override != null)
           // Sin precio confiable — mostramos costo; P&L 0 para esta posición.
           // El factor cripto (1 para todo lo no-cripto-de-broker) escala valor.
           value += (trust ? mkt : realCost) * f

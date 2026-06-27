@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue } from './valuation.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
   it('normaliza espacio a guión (forma yfinance) para acción US', () => {
@@ -556,5 +556,40 @@ describe('pesoLotUsd — lote en pesos → USD por MEP (helper compartido)', () 
   it('incluye comisiones en el costo', () => {
     const u = pesoLotUsd({ ...p, commissions: 1486 }, {}, MEP)
     expect(u.investedUsd).toBeCloseTo((48540 + 1486) / MEP)
+  })
+})
+
+// ─── Guard anti-distorsión sobre override de renta fija (caso SXC2O) ──────────
+// Una ON sin precio live con un precio manual cargado en convención per-100 (97
+// en vez de 0,97) inflaba el valor ×100 (+9775%). El guard ahora clampea el
+// override de renta fija (un bono no puede valer ~100× su costo) y cae a costo.
+describe('trustMktValue — guard sobre override de renta fija', () => {
+  it('override per-100 en una ON (×100) NO se confía → cae a costo', () => {
+    expect(trustMktValue(388000, 3900, 'ON', /*hasOverride*/ true)).toBe(false)
+  })
+  it('override razonable en una ON (~1×) SÍ se confía', () => {
+    expect(trustMktValue(3920, 3900, 'ON', true)).toBe(true)
+  })
+  it('override en una ACCIÓN (no renta fija) siempre se respeta, aun ×100', () => {
+    expect(trustMktValue(388000, 3900, 'STOCK', true)).toBe(true)
+  })
+  it('sin override, renta fija ×100 → no se confía (banda [0.02,4])', () => {
+    expect(trustMktValue(388000, 3900, 'BOND', false)).toBe(false)
+  })
+  it('sin costo no hay con qué comparar → se confía', () => {
+    expect(trustMktValue(388000, 0, 'ON', true)).toBe(true)
+  })
+})
+
+describe('computeBrokerValue — ON con override per-100 cae a costo (no infla la cartera)', () => {
+  const balanz = { name: 'Balanz', currency: 'USDT' }
+  const sxc2o = {
+    broker: 'Balanz', asset: 'SXC2O', asset_type: 'ON', quantity: 4000,
+    invested: 3900, commissions: 0, is_cash: false, tc_compra: null,
+    price_override: 97,   // ← per-100 (debería ser 0,97)
+  }
+  const r = computeBrokerValue([sxc2o], {}, balanz, 1200)
+  it('el valor no se va a ~$388k: cae a costo', () => {
+    expect(r.value).toBeCloseTo(3900, 2)
   })
 })
