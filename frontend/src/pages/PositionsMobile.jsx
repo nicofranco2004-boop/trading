@@ -190,7 +190,7 @@ export default function PositionsMobile() {
       currency: broker?.currency || 'USDT',
       quantity: '',
       exit_price: suggested ? +(+suggested).toFixed(4) : '',
-      tc_venta: isARS ? +(dolar?.blue?.venta || 1415).toFixed(2) : '',
+      tc_venta: isARS ? +(dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415).toFixed(2) : '',
       date: today(),
       commissions: '',
     })
@@ -424,7 +424,7 @@ export default function PositionsMobile() {
     refreshPlanFeatures()
   }
 
-  const tcBlue = dolar?.blue?.venta || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
 
@@ -1065,7 +1065,7 @@ export default function PositionsMobile() {
           setForm={setAddForm}
           brokers={brokers}
           selectedBrokerCurrency={brokers.find(b => b.name === addForm.broker)?.currency ?? 'USDT'}
-          tcBlue={dolar?.blue?.venta || 1415}
+          tcBlue={dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415}
           onClose={() => setAddModal(null)}
           onSave={saveNewPosition}
           onChangeAsset={() => {
@@ -1083,7 +1083,7 @@ export default function PositionsMobile() {
           setForm={setAddForm}
           brokers={brokers}
           selectedBrokerCurrency={brokers.find(b => b.name === addForm.broker)?.currency ?? 'USDT'}
-          tcBlue={dolar?.blue?.venta || 1415}
+          tcBlue={dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415}
           onClose={() => setAddModal(null)}
           onSave={saveEditPosition}
         />
@@ -1095,7 +1095,7 @@ export default function PositionsMobile() {
           form={sellForm}
           setForm={setSellForm}
           positions={positions}
-          tcBlue={dolar?.blue?.venta || 1415}
+          tcBlue={dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415}
           onClose={() => setAddModal(null)}
           onConfirm={confirmSell}
         />

@@ -86,7 +86,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       api.get('/benchmarks').catch(() => null),
     ])
     setBrokers(bkrs)
-    const tc = dol?.blue?.venta || cfg?.tc_blue || 1415
+    const tc = dol?.mep?.venta || dol?.ccl?.venta || dol?.blue?.venta || cfg?.tc_blue || 1415
     // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
     const tcCedear = dol?.mep?.venta || dol?.ccl?.venta || tc
     // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
@@ -252,7 +252,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         bkrs = r[1]
         const dol = await api.get('/dolar').catch(() => null)
         const cfg = await api.get('/config').catch(() => null)
-        tc = dol?.blue?.venta || cfg?.tc_blue || tcBlue
+        tc = dol?.mep?.venta || dol?.ccl?.venta || dol?.blue?.venta || cfg?.tc_blue || tcBlue
         // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
         tcCedear = dol?.mep?.venta || dol?.ccl?.venta || tc
         // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).

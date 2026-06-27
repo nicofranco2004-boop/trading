@@ -185,7 +185,7 @@ function PositionsDesktop() {
   // TC blue/MEP derivados — se declaran ACÁ (arriba de los useMemo que los
   // consumen vía closure/deps) para evitar ReferenceError por temporal dead
   // zone si JS evalúa el array de deps antes de la declaración de `const`.
-  const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || config.tc_blue || 1415
   const tcMep = dolar?.mep?.venta || config.tc_mep || 1415
   // Dólar para valuar CEDEARs. Se compran por dólar-MEP (plata local), así que
   // valuamos al MEP — es lo que muestra el broker (Cocos). Cascada MEP → CCL →
@@ -1336,7 +1336,7 @@ function PositionsDesktop() {
                       sub-broker
                     </span>
                   )}
-                  {isARS && <span className="text-ink-3 normal-case tracking-normal">· TC blue {tcBlue}</span>}
+                  {isARS && <span className="text-ink-3 normal-case tracking-normal">· TC MEP {tcBlue}</span>}
                 </p>
                 <h3 className={`text-lg font-semibold leading-tight ${color.text}`}>{broker.name}</h3>
               </div>

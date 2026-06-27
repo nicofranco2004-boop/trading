@@ -78,7 +78,7 @@ export default function FirstInsight() {
     }).finally(() => setLoading(false))
   }, [])
 
-  const tcBlue = dolar?.blue?.venta || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta
 

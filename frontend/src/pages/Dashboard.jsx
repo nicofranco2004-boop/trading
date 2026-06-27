@@ -143,7 +143,7 @@ export default function Dashboard() {
     } catch {}
   }
 
-  const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || config.tc_blue || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ crypto en broker AR
 

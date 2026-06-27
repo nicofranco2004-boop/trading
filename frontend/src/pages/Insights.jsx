@@ -257,7 +257,7 @@ function InsightsDesktop({ _embeddedTab }) {
   //                instrumento). Agrega posiciones del mismo asset entre brokers/lotes.
   //                Excluye cash. Esto es lo que un usuario espera ver al preguntarse
   //                "¿qué tan expuesto estoy a un único activo?".
-  const tcBlue = dolar?.blue?.venta || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ cripto en broker AR
   // Brokers que son exchange (Binance, Ripio…): la cripto se valúa a spot (factor 1).

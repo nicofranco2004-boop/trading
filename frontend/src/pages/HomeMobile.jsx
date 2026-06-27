@@ -93,7 +93,7 @@ export default function HomeMobile() {
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
   }
 
-  const tcBlue = dolar?.blue?.venta || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~spot+5%) p/ cripto en broker AR
   const pf = pfUsd(usePfRollup(), tcBlue)  // plazos fijos → USD (suma al total mostrado)

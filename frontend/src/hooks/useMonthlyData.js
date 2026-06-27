@@ -181,7 +181,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         setPositions(pos || [])
         setBrokers(bkrs || [])
         setBench(bnch)
-        const tc = dol?.blue?.venta || cfg?.tc_blue || 1415
+        const tc = dol?.mep?.venta || dol?.ccl?.venta || dol?.blue?.venta || cfg?.tc_blue || 1415
         setTcBlue(tc)
         setTcCedear(dol?.mep?.venta || dol?.ccl?.venta || tc)
         setTcCripto(dol?.cripto?.venta ?? null)

@@ -56,7 +56,7 @@ export default function Goals() {
       // fuente de verdad), igual que Positions.jsx / Insights.jsx. Así CEDEARs y
       // sub-brokers "· USD" se valúan por su precio LOCAL .BA ÷ dólar-MEP, no por el
       // ticker US (que estaría órdenes de magnitud mal).
-      const tcBlue = dolar?.blue?.venta || 1415
+      const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
       // dólar-MEP (la plata local) para valuar CEDEARs/acciones AR en USD.
       const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue
       const tcCripto = dolar?.cripto?.venta

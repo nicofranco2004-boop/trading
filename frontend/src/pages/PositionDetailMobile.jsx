@@ -88,7 +88,7 @@ export default function PositionDetailMobile() {
 
   const p = position
   const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
-  const tcBlue = dolar?.blue?.venta || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto p/ valuar crypto en broker AR
   const qty = p.quantity || 0

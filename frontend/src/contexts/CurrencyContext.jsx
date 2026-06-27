@@ -3,7 +3,10 @@ import { api } from '../utils/api'
 
 // Fase A — Toggle global ARS/USD (2026-05-31).
 // El user elige en qué moneda ver TODOS los números del Dashboard / Home /
-// Cartera. La conversión usa el `tcBlue` actual (live) — para data histórica
+// Cartera. UNIFICACIÓN FX (2026-06): la conversión USD↔ARS usa el dólar MEP
+// (el mismo de la valuación de holdings), NO el blue. Por compatibilidad la
+// variable se sigue llamando `tcBlue` pero TIENE EL VALOR DEL MEP (cascada
+// mep→ccl→blue). La conversión usa el rate actual (live) — para data histórica
 // (snapshots viejos) eso significa que la línea del chart en ARS view se
 // recalcula al TC actual, no al TC del momento de cada snapshot (limitación
 // conocida del MVP; Fase C agregará TC histórico tracking).
@@ -48,8 +51,9 @@ export function CurrencyProvider({ children }) {
     const fetchAndPublish = () => {
       api.get('/dolar').then(d => {
         if (cancelled) return
-        const blue = d?.blue?.venta
-        if (blue > 0) setTcBlueRaw(Number(blue))
+        // dólar MEP (cascada mep→ccl→blue) — rate de display unificado.
+        const mep = d?.mep?.venta || d?.ccl?.venta || d?.blue?.venta
+        if (mep > 0) setTcBlueRaw(Number(mep))
       }).catch(() => { /* silent — usa default + páginas publican lo que tengan */ })
     }
     fetchAndPublish()

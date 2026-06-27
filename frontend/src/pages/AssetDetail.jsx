@@ -116,7 +116,7 @@ export default function AssetDetail() {
     }
   }
 
-  const tcBlue = dolar?.blue?.venta || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue
   const tcCripto = dolar?.cripto?.venta
 

@@ -139,7 +139,7 @@ export default function Events({ embedded = false }) {
   }
 
   // Valor total del portfolio en USD (para impact %)
-  const tcBlue = dolar?.blue?.venta || config.tc_blue || 1415
+  const tcBlue = dolar?.mep?.venta || dolar?.ccl?.venta || dolar?.blue?.venta || config.tc_blue || 1415
   const tcCedear = dolar?.mep?.venta || dolar?.ccl?.venta || tcBlue  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta
   const portfolioTotalUsd = useMemo(() => {
