@@ -100,7 +100,7 @@ const BROKERS = [
     Logo: BalanzLogo,
     summary: 'Recomendado: el export de Movimientos — el libro de caja completo (operaciones, dividendos, cupones Y depósitos/retiros), que reconstruye tu cartera Y tu efectivo.',
     steps: [
-      'En Balanz (web o app) andá a Actividad → Movimientos.',
+      'En Balanz web (no la app) andá a Actividad → Movimientos.',
       'Filtrá el período DESDE EL INICIO DE TU CUENTA hasta hoy. ⚠️ Importante: si tomás solo un rango parcial, falta el fondeo y el saldo no cierra.',
       'Descargá el archivo (Excel .xlsx) y subilo acá.',
     ],
