@@ -581,20 +581,33 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
 
         chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0
 
-        if currency == "ARS":
+        if getattr(tx, "transfer_out", False):
+            # RETIRO/TRANSFERENCIA del activo fuera de la cuenta (ej. cripto que
+            # sale de un exchange a una wallet, polvo→BNB): NO es una venta →
+            # cerramos el lote A COSTO (P&L 0) y NO generamos cash (no entró plata).
+            # Sin esto, un retiro bookeaba una pérdida fantasma = costo del lote.
+            if currency == "ARS":
+                invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
+            else:
+                invested_usd = entry_invested if entry_invested is not None else ((p["buy_price"] or 0) * take)
+            pnl_usd = 0.0
+            proceeds_native = 0.0
+        elif currency == "ARS":
             # Mismo modelo que el flow manual con FX-phantom-fix:
             # cost basis y venta se valúan al MISMO TC (el de venta).
             pnl_ars_chunk = exit_price * take - (entry_invested or 0) - chunk_commission
             pnl_usd = pnl_ars_chunk / tc_venta if tc_venta else 0
             invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
             total_pnl_ars_native += pnl_ars_chunk
+            proceeds_native = exit_price * take - chunk_commission
         else:
             cost = entry_invested if entry_invested is not None else ((p["buy_price"] or 0) * take)
             pnl_usd = (exit_price * take) - cost - chunk_commission
             invested_usd = cost
+            proceeds_native = exit_price * take - chunk_commission
 
         total_pnl_usd += pnl_usd
-        total_proceeds_native += exit_price * take - chunk_commission
+        total_proceeds_native += proceeds_native
         pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
         cur = conn.execute(

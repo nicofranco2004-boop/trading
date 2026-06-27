@@ -210,7 +210,13 @@ class BinanceTransactionHistoryParser(Parser):
             if sold_qty == 0 or rev_qty == 0:
                 continue
 
-            fee_total = sum(abs(v) for v in fee_by_coin.values())
+            # Fees: las en stablecoin/fiat son cash (van a `comisiones`); las en
+            # un coin cripto (BNB con descuento, o el mismo coin comprado) bajan
+            # ESE coin → se emiten como VENTA aparte (abajo) para que el saldo del
+            # coin reconcilie (sin esto, p.ej. la fee de 32 HBAR no se descontaba).
+            stable_fee = sum(abs(v) for c, v in fee_by_coin.items() if _is_stable_quote(c))
+            crypto_fees = {c: abs(v) for c, v in fee_by_coin.items()
+                           if not _is_stable_quote(c) and abs(v) > 1e-12}
 
             # Reglas de detección BUY vs SELL:
             # 1. Si una moneda es stable quote (USDT/USDC/USD/ARS/...) y la otra no,
@@ -258,10 +264,20 @@ class BinanceTransactionHistoryParser(Parser):
                 "cantidad": str(cantidad),
                 "precio": str(precio),
                 "monto": str(monto),
-                "comisiones": str(fee_total),
+                "comisiones": str(stable_fee),
                 "moneda": _currency_for(quote_for_curr),
                 "notas": f"Spot {time_key} ({sold_asset}/{revenue_asset})",
             }))
+
+            # Fees pagadas en un coin cripto → VENTA de ese coin (baja la tenencia)
+            for fc, fv in crypto_fees.items():
+                out_idx += 1
+                result.raw_rows.append(RawRow(row_index=out_idx, data={
+                    "fecha": _fix_date(time_key), "tipo": "VENTA", "broker": "Binance",
+                    "activo": fc, "cantidad": str(fv), "precio": "0", "monto": "0",
+                    "comisiones": "", "moneda": "USD", "_transfer_out": True,
+                    "notas": f"Fee cripto del trade Spot {time_key}",
+                }))
 
         # ── Futures trades agrupados por TradeID ─────────────
         # Micro-trades de futuros (|net| < $0.5): los emitimos como COMISION
@@ -304,7 +320,19 @@ class BinanceTransactionHistoryParser(Parser):
                 "notas": notas,
             }))
 
-        # ── Single rows: deposits, withdraws, P2P, funding fees ──
+        # ── Single rows: TODO lo que mueva un saldo y no sea trade Spot ni
+        # futuros — Deposit/Withdraw, P2P, Send, Crypto Box (regalos), Small
+        # Assets Exchange BNB (polvo→BNB), Binance Convert, Simple Earn, On-Chain,
+        # Funding Fee, etc. Regla por TIPO DE COIN:
+        #   • STABLE (USDT/USDC/fiat) → es CASH → DEPOSITO/RETIRO por signo.
+        #   • CRIPTO (todo lo demás)  → es TENENCIA → COMPRA/VENTA por signo
+        #     (precio 0: el costo de un coin que ENTRA por depósito/regalo/convert
+        #     es desconocido; el VALOR sale del precio spot — el P&L de esas patas
+        #     es un follow-up). Así NINGUNA fila se traga en silencio (a diferencia
+        #     del viejo `else: continue` que perdía BONK regalado, el polvo, los
+        #     converts y los retiros de cripto) y el saldo de cada coin = Σ Change.
+        # Las transferencias internas entre wallets (Spot↔Funding↔Futures) netean
+        # a 0 entre cuentas → se ignoran (no son flujos externos).
         for r in single_rows:
             op = _g(r, "operation")
             coin = _g(r, "coin")
@@ -312,41 +340,39 @@ class BinanceTransactionHistoryParser(Parser):
             time_val = _g(r, "time")
             remark = _g(r, "remark")
 
-            if op == "Transfer Between Main and Funding Wallet":
+            if op.startswith("Transfer") or abs(change) < 1e-12:
                 continue
 
-            if op == "Deposit":
-                tipo = "DEPOSITO"; monto = abs(change)
-            elif op == "Withdraw":
-                tipo = "RETIRO"; monto = abs(change)
-            elif op == "P2P Trading":
-                tipo = "DEPOSITO" if change > 0 else "RETIRO"
-                monto = abs(change)
-            elif op == "Funding Fee":
+            notas = " · ".join([p for p in (op, remark) if p])
+
+            if op == "Funding Fee":
                 tipo = "INTERES" if change > 0 else "COMISION"
-                monto = abs(change)
+                extra = {"activo": "", "cantidad": "", "precio": "",
+                         "monto": str(abs(change)), "moneda": "USD"}
+            elif _is_stable_quote(coin):
+                # CASH: depósito/retiro de stablecoin o fiat
+                tipo = "DEPOSITO" if change > 0 else "RETIRO"
+                extra = {"activo": "", "cantidad": "", "precio": "",
+                         "monto": str(abs(change)), "moneda": _currency_for(coin)}
+            elif change > 0:
+                # TENENCIA de cripto que ENTRA (depósito/regalo/convert): COMPRA
+                # lote a precio 0 (costo desconocido; valor = spot).
+                tipo = "COMPRA"
+                extra = {"activo": coin, "cantidad": str(abs(change)),
+                         "precio": "0", "monto": "0", "moneda": "USD"}
             else:
-                continue  # Operation no soportada
-
-            if monto == 0:
-                continue
-
-            notes_parts = [op]
-            if remark:
-                notes_parts.append(remark)
+                # TENENCIA de cripto que SALE (retiro a wallet/polvo→BNB/convert-out):
+                # NO es una venta → `_transfer_out` cierra el lote A COSTO (P&L 0) y
+                # no inventa cash. Saltea el guard MISSING_PRICE del validator.
+                tipo = "VENTA"
+                extra = {"activo": coin, "cantidad": str(abs(change)),
+                         "precio": "0", "monto": "0", "moneda": "USD",
+                         "_transfer_out": True}
 
             out_idx += 1
             result.raw_rows.append(RawRow(row_index=out_idx, data={
-                "fecha": _fix_date(time_val),
-                "tipo": tipo,
-                "broker": "Binance",
-                "activo": "",
-                "cantidad": "",
-                "precio": "",
-                "monto": str(monto),
-                "comisiones": "",
-                "moneda": _currency_for(coin),
-                "notas": " · ".join(notes_parts),
+                "fecha": _fix_date(time_val), "tipo": tipo, "broker": "Binance",
+                "comisiones": "", "notas": notas, **extra,
             }))
 
         return result

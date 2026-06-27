@@ -340,6 +340,11 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
         # (que en general rechaza con MISSING_PRICE).
         tx.corporate_close = bool(d.get("_corporate_close"))
 
+        # Transferencia/retiro del activo fuera de la cuenta (retiro de cripto de
+        # un exchange, polvo→BNB): cierre a costo (P&L 0), no una venta. El
+        # validador acepta su precio 0; el persister no bookea pérdida.
+        tx.transfer_out = bool(d.get("_transfer_out"))
+
         # Fallback de monto para filas non-FX en CSVs con columnas separadas
         # por moneda (típico en Argentina: monto_ars + monto_usd). Si la fila
         # tiene monto_usd pero no monto, usamos monto_usd como el monto en

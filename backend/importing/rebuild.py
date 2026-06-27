@@ -179,8 +179,21 @@ def _cancel_conduit_pairs(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [e for e in events if id(e) not in cancelled]
 
 
+def _is_exchange_broker(name) -> bool:
+    """¿El broker es un exchange cripto (Binance, etc.)? Import diferido de la
+    SSoT en main para evitar el import circular (main importa este módulo). Si
+    por algún motivo no está disponible, asumimos que NO es exchange (conserva el
+    comportamiento previo: la venta a 0 bookea pérdida)."""
+    try:
+        from main import is_exchange_broker
+        return is_exchange_broker(name)
+    except Exception:
+        return False
+
+
 def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
-                   tc_blue: float, conn=None) -> Dict[str, List[Dict[str, Any]]]:
+                   tc_blue: float, conn=None,
+                   is_exchange: bool = False) -> Dict[str, List[Dict[str, Any]]]:
     """Replaya los eventos BUY/SELL (ya ordenados cronológicamente, BUY antes
     que SELL el mismo día) de UN (broker, activo) y devuelve:
       {"operations": [...], "open_lots": [...]}
@@ -379,7 +392,21 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             entry_invested = base_invested * ratio if base_invested else None
             chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0
 
-            if currency == "ARS":
+            # EXCHANGE: una VENTA con proceeds 0 (precio 0 y monto 0) NO es una
+            # venta real sino un RETIRO/transferencia del coin a una wallet (o
+            # polvo→BNB) → cerramos el lote A COSTO (P&L 0), no a pérdida. Espeja
+            # el `transfer_out` del persister. En brokers de acciones esto NO
+            # aplica (corporate_close de Balanz sí debe bookear el costo como
+            # pérdida, compensada por su Dividendo).
+            transfer_out = (is_exchange and not exit_price
+                            and not _num(ev["gross_amount"]))
+            if transfer_out:
+                if currency == "ARS":
+                    invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
+                else:
+                    invested_usd = entry_invested if entry_invested is not None else ((lot["buy_price"] or 0) * take)
+                pnl_usd = 0.0
+            elif currency == "ARS":
                 pnl_ars_chunk = exit_price * take - (entry_invested or 0) - chunk_commission
                 pnl_usd = pnl_ars_chunk / tc_venta if tc_venta else 0
                 invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
@@ -707,7 +734,9 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         # conversión de moneda, no tenencia. Si no, inflan/destruyen la tenencia
         # genuina del bono. `events` completo se usa para _clear_old_state (resetea
         # todos los links); el replay corre sobre los eventos sin conductos.
-        replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue, conn=conn)
+        grp_is_exchange = any(_is_exchange_broker(b) for b in pair)
+        replay = _replay_asset(_cancel_conduit_pairs(events), broker_currency, tc_blue,
+                               conn=conn, is_exchange=grp_is_exchange)
         # Los lotes/ops ya cargan su _broker desde el evento (neteo cross-broker):
         # un lote comprado en el sibling se reescribe al sibling, uno del padre al
         # padre. NO sobreescribimos con un broker de grupo.

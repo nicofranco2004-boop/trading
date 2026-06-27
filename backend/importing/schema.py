@@ -234,6 +234,14 @@ class NormalizedTx:
     # capital devuelto ya entró por la fila de Dividendo asociada.
     corporate_close: bool = False
 
+    # Transferencia/retiro del activo FUERA de la cuenta (ej. retiro de cripto de
+    # un exchange a una wallet, conversión de polvo→BNB). NO es una venta: el
+    # persister cierra el lote A COSTO (P&L 0) y no genera cash. El validador
+    # acepta su precio 0 igual que corporate_close, pero el efecto en P&L difiere:
+    # corporate_close bookea el costo como pérdida; transfer_out no (el coin sigue
+    # siendo tuyo, solo se fue del exchange).
+    transfer_out: bool = False
+
     def to_db_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
