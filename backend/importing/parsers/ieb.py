@@ -214,6 +214,40 @@ class IebParser(Parser):
             if code in _USD_OPS:
                 moneda = "USD"
 
+            # DETR = transferencia de títulos ENTRANTE (migración desde otro
+            # broker). El export trae ticker + cantidad (>0) + un precio de
+            # referencia, e Importe = cantidad × precio. NO es una compra con cash
+            # (la plata no salió de la cuenta). Creamos la posición con ese costo
+            # + un DEPOSITO compensatorio → el cash NETEA a 0 y la tenencia queda
+            # con su costo (mismo patrón que Balanz "Transferencia Externa"). Sin
+            # esto los títulos transferidos no se registran y al venderlos quedan
+            # como "venta sin compra" (caen en el wizard de precio faltante).
+            if code == "DETR":
+                _qty = _num(G(row, "cantidad"))
+                _price = _num(G(row, "precio"))
+                _ref_up = ref.strip().upper()
+                _fecha = (G(row, "fechaemision") or G(row, "fechaliquidacion"))[:10]
+                _nro = G(row, "nrodeoperacion")
+                _cost = abs(amount) if amount is not None else None
+                if _ref_up and _qty and _qty > 0 and _cost:
+                    _notas = (f"Op. {_nro} · " if _nro else "") + "IEB:DETR transferencia entrante"
+                    result.raw_rows.append(RawRow(row_index=idx, data={
+                        "fecha": _fecha, "tipo": "COMPRA", "broker": BROKER_NAME,
+                        "activo": _ref_up, "cantidad": str(abs(_qty)),
+                        "precio": "" if _price is None else str(abs(_price)),
+                        "monto": str(round(_cost, 4)), "monto_usd": "", "tc": "",
+                        "comisiones": "0", "moneda": moneda, "asset_type": "",
+                        "asset_name": ref, "notas": _notas,
+                    }))
+                    result.raw_rows.append(RawRow(row_index=idx, data={
+                        "fecha": _fecha, "tipo": "DEPOSITO", "broker": BROKER_NAME,
+                        "activo": "", "cantidad": "", "precio": "",
+                        "monto": str(round(_cost, 4)), "monto_usd": "", "tc": "",
+                        "comisiones": "0", "moneda": moneda, "asset_type": "",
+                        "asset_name": ref, "notas": _notas + " (cash compensatorio)",
+                    }))
+                continue
+
             tipo = _resolve_op(code, amount)
             if tipo is None:
                 result.parse_errors.append(RowError(

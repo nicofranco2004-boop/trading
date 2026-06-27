@@ -110,6 +110,27 @@ class IebParserTest(unittest.TestCase):
         self.assertEqual(self.by_nro["80104"]["activo"], "")
         self.assertEqual(self.by_nro["308302"]["activo"], "")
 
+    def test_detr_transferencia_entrante(self):
+        # DETR = títulos transferidos DESDE otro broker → crea la posición con su
+        # costo (COMPRA) + un DEPOSITO compensatorio (cash netea a 0). Antes se
+        # descartaba como IEB_OP_UNKNOWN → la tenencia no se creaba y al vender
+        # quedaba como "venta sin compra".
+        csv = (
+            "Referencia,Operación,Fecha emisión,Fecha liquidación,Nro. de operación,"
+            "Cantidad,Precio,Importe ARS,Importe divisas,Divisa\n"
+            "SPY,DETR,2026-01-21 03:00:00,2026-01-21 03:00:00,500001,10,52075,520750,-,ARS\n"
+        )
+        res = IebParser().parse(csv)
+        self.assertEqual(res.parse_errors, [])
+        self.assertEqual(sorted(r.data["tipo"] for r in res.raw_rows), ["COMPRA", "DEPOSITO"])
+        compra = [r.data for r in res.raw_rows if r.data["tipo"] == "COMPRA"][0]
+        self.assertEqual(compra["activo"], "SPY")
+        self.assertEqual(float(compra["cantidad"]), 10.0)
+        self.assertEqual(float(compra["monto"]), 520750.0)
+        depo = [r.data for r in res.raw_rows if r.data["tipo"] == "DEPOSITO"][0]
+        self.assertEqual(float(depo["monto"]), 520750.0)  # compensa la COMPRA → cash neto 0
+        self.assertEqual(depo["activo"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
