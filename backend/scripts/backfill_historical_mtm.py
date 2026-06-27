@@ -81,7 +81,10 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
         yf_sym = main.CRYPTO_YF.get(base, price_key) if base in main.CRYPTO_SYMBOLS else price_key
         try:
             import yfinance as yf
-            data = yf.Ticker(yf_sym).history(start=start_iso, interval="1mo", auto_adjust=False)
+            # timeout acotado: una consulta que se cuelga (Yahoo rate-limit) degrada
+            # al costo en vez de colgar todo el request de la tanda. Ver el panel de
+            # Admin (MtmBackfillPanel) que además reintenta las tandas lentas.
+            data = yf.Ticker(yf_sym).history(start=start_iso, interval="1mo", auto_adjust=False, timeout=8)
             if not data.empty:
                 for idx, row in data.iterrows():
                     c = row.get("Close")

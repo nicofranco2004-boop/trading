@@ -839,33 +839,73 @@ function BackfillPanel({ toast }) {
 // de MERCADO histórico → la curva de Evolución deja de estar plana y el CAGR refleja
 // el retorno real. Simular (sobre copia) → revisar → Aplicar.
 function MtmBackfillPanel({ toast }) {
-  const CHUNK = 10  // usuarios por request — el fetch de precios históricos es lento
+  const CHUNK = 6  // usuarios por request — el fetch de precios históricos es lento
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)
   const [progress, setProgress] = useState(null)
 
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+  function absorb(agg, r) {
+    agg.users_changed += r.users_changed || 0
+    agg.skipped += r.skipped || 0
+    agg.total_users = r.total_all_users || agg.total_users
+    if (agg.changes.length < 2000) agg.changes.push(...(r.changes || []))
+    else agg.truncated = true
+    if (r.errors?.length) agg.errors.push(...r.errors)
+  }
+
+  // Corre TODAS las tandas resiliente: si una tanda falla (timeout de Yahoo /
+  // 502 transitorio), NO aborta — la registra y sigue. Después hace una 2da
+  // pasada SOLO sobre las que fallaron: para entonces el cache de precios del
+  // backend ya quedó caliente del primer barrido, así que suelen completar.
   async function runChunks(doApply) {
-    let offset = 0, total = 1
-    const agg = { users_changed: 0, changes: [], errors: [], total_users: 0, skipped: 0 }
+    const agg = { users_changed: 0, changes: [], errors: [], total_users: 0, skipped: 0, failed_chunks: 0 }
+    let offset = 0, total = 1, done = 0
+    const fetchChunk = (off) => api.post(`/admin/backfill-mtm?apply=${doApply}&offset=${off}&limit=${CHUNK}`)
+    const failedOffsets = []
+
+    // 1ra pasada
     do {
-      const r = await api.post(`/admin/backfill-mtm?apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
-      total = r.total_all_users || 0
-      agg.users_changed += r.users_changed || 0
-      agg.skipped += r.skipped || 0
-      agg.total_users = total
-      if (agg.changes.length < 2000) agg.changes.push(...(r.changes || []))
-      else agg.truncated = true
-      if (r.errors?.length) agg.errors.push(...r.errors)
+      try {
+        const r = await fetchChunk(offset)
+        total = r.total_all_users || total
+        absorb(agg, r)
+      } catch (e) {
+        failedOffsets.push(offset)
+        if (total <= 1) throw e  // nunca supimos el total (1ra tanda cayó) → no se puede seguir
+      }
       offset += CHUNK
-      setProgress({ done: Math.min(offset, total), total })
+      done = Math.min(offset, total)
+      setProgress({ done, total, phase: 'run' })
     } while (offset < total)
+
+    // 2da pasada — reintenta las tandas lentas con el cache ya caliente.
+    if (failedOffsets.length) {
+      setProgress({ done, total, phase: 'retry' })
+      await sleep(2500)  // darle aire a Yahoo antes de reintentar
+      const stillFailed = []
+      for (const off of failedOffsets) {
+        try { absorb(agg, await fetchChunk(off)) }
+        catch (e) { stillFailed.push(off) }
+      }
+      agg.failed_chunks = stillFailed.length
+    }
     return agg
   }
 
+  function reportFailures(agg, verb) {
+    if (!agg.failed_chunks) return
+    toast.push(
+      `${verb}, pero ${agg.failed_chunks} tanda${agg.failed_chunks === 1 ? '' : 's'} (~${agg.failed_chunks * CHUNK} cuentas) ` +
+      `no respondieron a tiempo. Volvé a tocar el botón para completarlas — el cache ya quedó caliente.`,
+      { type: 'warn', duration: 9000 })
+  }
+
   async function simulate() {
-    setLoading(true); setPreview(null); setProgress({ done: 0, total: 0 })
-    try { setPreview(await runChunks(false)) }
+    setLoading(true); setPreview(null); setProgress({ done: 0, total: 0, phase: 'run' })
+    try { const agg = await runChunks(false); setPreview(agg); reportFailures(agg, 'Simulado') }
     catch (e) { toast.push('Error al simular: ' + e.message, { type: 'error' }) }
     finally { setLoading(false); setProgress(null) }
   }
@@ -874,10 +914,11 @@ function MtmBackfillPanel({ toast }) {
     if (!preview) return
     if (!confirm(`¿Aplicar la valuación histórica a mercado en ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
                  `Hacé un backup antes. Solo es reversible desde backup.`)) return
-    setApplying(true); setProgress({ done: 0, total: 0 })
+    setApplying(true); setProgress({ done: 0, total: 0, phase: 'run' })
     try {
       const r = await runChunks(true)
-      toast.push(`Aplicado: ${r.users_changed} cuenta${r.users_changed === 1 ? '' : 's'} con historia a mercado`, { type: 'success' })
+      if (r.failed_chunks) reportFailures(r, 'Aplicado parcial')
+      else toast.push(`Aplicado: ${r.users_changed} cuenta${r.users_changed === 1 ? '' : 's'} con historia a mercado`, { type: 'success' })
       await simulate()  // re-simular → debería dar 0 (idempotente)
     } catch (e) { toast.push('Error al aplicar: ' + e.message, { type: 'error' }) }
     finally { setApplying(false); setProgress(null) }
@@ -909,17 +950,23 @@ function MtmBackfillPanel({ toast }) {
       {progress && progress.total > 0 && (loading || applying) && (
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs text-ink-3">
-            <span>{applying ? 'Aplicando…' : 'Simulando…'}</span>
+            <span>{progress.phase === 'retry' ? 'Reintentando tandas lentas…' : (applying ? 'Aplicando…' : 'Simulando…')}</span>
             <span className="tabular">{progress.done} / {progress.total} cuentas</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-bg-2 dark:bg-bg-2/40 overflow-hidden">
-            <div className="h-full bg-data-violet transition-all" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+            <div className={`h-full transition-all ${progress.phase === 'retry' ? 'bg-amber-500 animate-pulse' : 'bg-data-violet'}`} style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
           </div>
         </div>
       )}
 
       {preview && (
         <>
+          {preview.failed_chunks > 0 && (
+            <div className="text-xs px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400">
+              ⚠ {preview.failed_chunks} tanda{preview.failed_chunks === 1 ? '' : 's'} (~{preview.failed_chunks * CHUNK} cuentas) no respondieron a tiempo
+              (Yahoo lento). Volvé a tocar <b>Simular</b> para completarlas — el cache ya quedó caliente y va a andar.
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <ConvCell label="Cuentas con historia a mercado" value={preview.users_changed} hint={`de ${preview.total_users}`} />
             <ConvCell label="Sin import (salteadas)" value={preview.skipped} hint="cuentas manuales" />
