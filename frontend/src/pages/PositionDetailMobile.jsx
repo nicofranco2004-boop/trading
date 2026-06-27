@@ -110,7 +110,7 @@ export default function PositionDetailMobile() {
     priceLocal = u.priceUsd
     pnlUsd = u.valueUsd - u.investedUsd
     pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
-  } else if (isAR) {
+  } else if (isAR && !isCrypto(p.asset)) {
     priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
     valueUsd = priceLocal != null ? (priceLocal * qty) / tcBlue : invested / tcBlue
     const investedUsd = invested / tcBlue

@@ -48,7 +48,7 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
     const valueUsd = priceLocal != null ? priceLocal * qty : investedUsd
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
-  if (isAR) {
+  if (isAR && !isCrypto(p.asset)) {
     const priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
     const valueUsd = priceLocal != null ? (priceLocal * qty) / tcBlue : invested / tcBlue
     const investedUsd = invested / tcBlue

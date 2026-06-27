@@ -467,7 +467,7 @@ export default function PositionsMobile() {
           ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null,
           pnlLocal: null, dayVarLocal: null, dayVarUsd: null, dayVarPct: null, isAR,
         }
-      } else if (isAR) {
+      } else if (isAR && !isCrypto(p.asset)) {
         priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceLocal) valueUsd = (priceLocal * qty) / tcBlue
         else valueUsd = investedUsd
@@ -498,7 +498,11 @@ export default function PositionsMobile() {
       // exchanges, override, sin tasa) f=1 y nada cambia.
       const isExch = exchangeBrokerSet.has(p.broker)
       const f = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
-      if (f !== 1) { valueUsd *= f; investedUsd *= f }
+      // El factor va al VALOR siempre. Al COSTO solo si el costo está en USD
+      // (cripto en broker USD/exchange): ahí escala valor Y costo → P&L% invariante.
+      // Si el costo está en PESOS (cripto en broker ARS), ya pasó a USD por el MEP
+      // y NO se le aplica el factor (asimétrico, igual que desktop/behavioral).
+      if (f !== 1) { valueUsd *= f; if (!isAR && !costInPesos(p)) investedUsd *= f }
       const pnlUsd = valueUsd - investedUsd
       const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
       // P&L en la moneda local del broker (ARS para brokers en pesos, USD resto).
