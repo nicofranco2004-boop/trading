@@ -966,15 +966,15 @@ function PositionsDesktop() {
   // (especialmente en mobile o brokers con muchas posiciones) el header
   // quede pegado arriba — convención fintech standard (Robinhood, Stripe).
   // Densidad: compacto baja padding (y alto de fila) para que entren más columnas.
-  const thBase = `${compact ? 'px-2 py-1.5' : 'px-3 py-2.5'} text-left label-mono whitespace-nowrap sticky top-0 bg-bg-2/95 backdrop-blur-sm`
+  const thBase = `${compact ? 'px-2 py-1.5' : 'px-2.5 py-2.5'} text-left label-mono whitespace-nowrap sticky top-0 bg-bg-2/95 backdrop-blur-sm`
   const thClass = `${thBase} z-10`
   // Columna "Activo" FIJA al scrollear de costado (sticky left): no perdés la
   // referencia de qué activo estás viendo. Fondo sólido (bg-bg-1) para que el
   // contenido scrolleado no se transparente por debajo + divisor/sombra a la
   // derecha que marca que está fija. El header va z-20 (sobre el resto z-10).
   const thClassSticky = `${thBase} left-0 z-20 border-r border-line`
-  const tdClass = `${compact ? 'px-2 py-1.5 text-[13px]' : 'px-3 py-2.5 text-sm'} whitespace-nowrap`
-  const tdClassSticky = `${compact ? 'px-2 py-1.5' : 'px-3 py-2.5'} whitespace-nowrap sticky left-0 z-10 bg-bg-1 border-r border-line shadow-[6px_0_10px_-8px_rgba(0,0,0,0.45)]`
+  const tdClass = `${compact ? 'px-2 py-1.5 text-[13px]' : 'px-2.5 py-2.5 text-sm'} whitespace-nowrap`
+  const tdClassSticky = `${compact ? 'px-2 py-1.5' : 'px-2.5 py-2.5'} whitespace-nowrap sticky left-0 z-10 bg-bg-1 border-r border-line shadow-[6px_0_10px_-8px_rgba(0,0,0,0.45)]`
   const inputClass = 'w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0'
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'

@@ -69,7 +69,7 @@ body {
      (descontado el sidebar) en monitores grandes → menos espacio negro al
      costado y sin scroll horizontal. En pantallas chicas el cap no se alcanza. */
   .page-shell-xwide {
-    @apply pt-6 px-4 sm:px-6 pb-12 max-w-[1760px] mx-auto;
+    @apply pt-6 px-3 sm:px-4 pb-12 max-w-none mx-auto;
   }
 
   /* Tabular numerics utility — usar en montos y data numérica densa */
