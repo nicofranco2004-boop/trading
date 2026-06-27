@@ -31,7 +31,7 @@ import Eyebrow from '../components/Eyebrow'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { computeDailyPnl } from '../utils/evolution'
@@ -154,14 +154,27 @@ export default function HomeMobile() {
     let bestPct = -Infinity
     const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
     for (const p of positions) {
-      if (p.is_cash) continue
-      const px = p.price_override ?? prices[p.asset] ?? prices[priceSymbol(p.asset, true)]
-      if (!px || !p.invested) continue
+      if (p.is_cash || !p.invested) continue
+      // Valuación CONSISTENTE con la Cartera (calcUSDT): un CEDEAR o cualquier
+      // instrumento en un sub-broker '· USD' se valúa por su precio LOCAL .BA ÷ MEP,
+      // NO por el ticker US. Antes usaba prices[p.asset] (Visa US ~$300 vs CEDEAR ~$19)
+      // → valor inflado ~16× y P&L% disparado (V daba +160.658% en vez de +7%).
+      let px
+      if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+        const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+        px = priceArs != null ? priceArs / tcCedear : null
+      } else {
+        px = p.price_override ?? prices[p.asset]
+      }
+      if (px == null) continue
       // Cripto en broker AR (no exchange, sin override) se valúa al dólar cripto:
       // escalamos value e invested por el mismo factor → el % queda invariante.
       const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
       const value = px * (p.quantity || 0) * f
-      const invested = p.invested * f
+      // Cost basis = invested + comisiones (igual que la Cartera). Sin las comisiones
+      // el % se dispara cuando son parte grande del costo.
+      const invested = ((p.invested || 0) + (p.commissions || 0)) * f
+      if (!(invested > 0)) continue
       const pct = (value - invested) / invested
       if (pct > bestPct) {
         bestPct = pct
