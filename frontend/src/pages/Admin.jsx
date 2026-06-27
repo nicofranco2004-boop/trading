@@ -688,19 +688,24 @@ function BackfillPanel({ toast }) {
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)
   const [progress, setProgress] = useState(null)  // {done, total}
+  const [fullMode, setFullMode] = useState(false)  // false = solo seguro (cantidad); true = + costo
 
   // Procesa TODOS los usuarios por tandas de CHUNK, acumulando el resultado.
   async function runChunks(doApply) {
     let offset = 0, total = 1
-    const agg = { users_changed: 0, positions_changed: 0, changes: [], errors: [], total_users: 0, safe_only: true }
+    const safeOnly = fullMode ? 'false' : 'true'
+    const agg = { users_changed: 0, positions_changed: 0, cost_positions_changed: 0,
+                  changes: [], cost_changes: [], errors: [], total_users: 0, full_mode: fullMode }
     do {
-      const r = await api.post(`/admin/backfill-recompute?safe_only=true&apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
+      const r = await api.post(`/admin/backfill-recompute?safe_only=${safeOnly}&apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
       total = r.total_all_users || 0
       agg.users_changed += r.users_changed || 0
       agg.positions_changed += r.positions_changed || 0
+      agg.cost_positions_changed += r.cost_positions_changed || 0
       agg.total_users = total
       if (agg.changes.length < 2000) agg.changes.push(...(r.changes || []))
       else agg.truncated = true
+      if (agg.cost_changes.length < 2000) agg.cost_changes.push(...(r.cost_changes || []))
       if (r.errors?.length) agg.errors.push(...r.errors)
       offset += CHUNK
       setProgress({ done: Math.min(offset, total), total })
@@ -719,12 +724,16 @@ function BackfillPanel({ toast }) {
 
   async function apply() {
     if (!preview) return
-    if (!confirm(`¿Aplicar la corrección a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'} ` +
-                 `(${preview.positions_changed} cambios)? Hacé un backup antes. Solo es reversible desde backup.`)) return
+    const costMsg = fullMode ? ` + ${preview.cost_positions_changed || 0} de COSTO` : ''
+    const warn = fullMode
+      ? 'MODO COMPLETO: recalcula COSTO (bonos per-100→per-1, comisiones). Hacé un backup SÍ o SÍ antes. '
+      : 'Hacé un backup antes. '
+    if (!confirm(`¿Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'} ` +
+                 `(${preview.positions_changed} de cantidad${costMsg})? ${warn}Solo es reversible desde backup.`)) return
     setApplying(true); setProgress({ done: 0, total: 0 })
     try {
       const r = await runChunks(true)
-      toast.push(`Aplicado: ${r.users_changed} cuentas · ${r.positions_changed} cambios seguros`, { type: 'success' })
+      toast.push(`Aplicado: ${r.users_changed} cuentas · ${r.positions_changed} cant.${fullMode ? ` · ${r.cost_positions_changed} costo` : ''}`, { type: 'success' })
       await simulate()  // re-simular → debería dar 0 cambios (idempotente)
     } catch (e) {
       toast.push('Error al aplicar: ' + e.message, { type: 'error' })
@@ -738,7 +747,7 @@ function BackfillPanel({ toast }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RotateCcw size={16} className="text-data-violet" />
-          <h2 className="font-semibold text-ink-0">Recomputar posiciones — solo cambios seguros</h2>
+          <h2 className="font-semibold text-ink-0">Recomputar posiciones — {fullMode ? 'modo completo (incluye costo)' : 'solo cambios seguros'}</h2>
         </div>
         <button
           onClick={simulate}
@@ -748,6 +757,21 @@ function BackfillPanel({ toast }) {
           <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Volver a simular' : 'Simular corrección'}
         </button>
       </div>
+
+      <label className="flex items-start gap-2 text-xs text-ink-2 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={fullMode}
+          onChange={e => { setFullMode(e.target.checked); setPreview(null) }}
+          disabled={loading || applying}
+          className="mt-0.5 accent-data-violet"
+        />
+        <span>
+          Incluir recálculo de <b>costo</b> (modo completo) — corrige unidad de bonos <b>per-100→per-1</b> y
+          comisiones ARS→USD. Es más sensible: el "Simular" te muestra el diff de costo abajo; revisalo y hacé
+          backup antes de aplicar.
+        </span>
+      </label>
 
       <p className="text-xs text-ink-3 leading-relaxed">
         Aplica a las cuentas <b>ya importadas</b> SOLO los cambios <b>inequívocos</b>: fantasmas dólar-MEP de acciones que
@@ -774,9 +798,10 @@ function BackfillPanel({ toast }) {
 
       {preview && (
         <>
-          <div className="grid grid-cols-2 gap-3">
+          <div className={`grid ${fullMode ? 'grid-cols-3' : 'grid-cols-2'} gap-3`}>
             <ConvCell label="Cuentas a corregir" value={preview.users_changed} hint={`de ${preview.total_users}`} />
-            <ConvCell label="Cambios seguros" value={preview.positions_changed} hint="solo lo inequívoco" />
+            <ConvCell label={fullMode ? 'Cambios de cantidad' : 'Cambios seguros'} value={preview.positions_changed} hint={fullMode ? 'fantasmas/letras/amort' : 'solo lo inequívoco'} />
+            {fullMode && <ConvCell label="Cambios de costo" value={preview.cost_positions_changed || 0} hint="invested / comisión" />}
           </div>
 
           {changes.length > 0 ? (
@@ -798,7 +823,7 @@ function BackfillPanel({ toast }) {
                       <td className="px-2 py-1 text-ink-2">#{c.uid}</td>
                       <td className="px-2 py-1 text-ink-2">{c.broker}</td>
                       <td className="px-2 py-1 text-ink-1">{c.asset}</td>
-                      <td className="px-2 py-1 text-ink-3">{c.kind}</td>
+                      <td className="px-2 py-1 text-ink-3">{c.kind || c.tag}</td>
                       <td className="px-2 py-1 text-right tabular text-ink-2">{c.before?.toLocaleString()}</td>
                       <td className={`px-2 py-1 text-right tabular ${c.after === 0 ? 'text-rose-500' : 'text-ink-1'}`}>
                         {c.after?.toLocaleString()} {c.after === 0 && '· eliminada'}
@@ -811,6 +836,38 @@ function BackfillPanel({ toast }) {
             </div>
           ) : (
             <p className="text-xs text-ink-3">No hay cambios pendientes — las cuentas ya están al día. ✅</p>
+          )}
+
+          {fullMode && preview.cost_changes?.length > 0 && (
+            <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+              <div className="text-[11px] font-medium text-ink-2 px-2 py-1 bg-bg-2/70 sticky top-0">Cambios de COSTO (modo completo)</div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-line/40 text-ink-3">
+                    <th className="text-left px-2 py-1">Usuario</th>
+                    <th className="text-left px-2 py-1">Broker</th>
+                    <th className="text-left px-2 py-1">Activo</th>
+                    <th className="text-right px-2 py-1">Invertido antes</th>
+                    <th className="text-right px-2 py-1">Invertido después</th>
+                    <th className="text-right px-2 py-1">Comisión</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.cost_changes.map((c, i) => (
+                    <tr key={i} className="border-b border-line/20">
+                      <td className="px-2 py-1 text-ink-2">#{c.uid}</td>
+                      <td className="px-2 py-1 text-ink-2">{c.broker}</td>
+                      <td className="px-2 py-1 text-ink-1">{c.asset}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-2">{c.invested_before?.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-1">{c.invested_after?.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-3">
+                        {c.comm_before !== c.comm_after ? `${c.comm_before?.toLocaleString()} → ${c.comm_after?.toLocaleString()}` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           {preview.errors?.length > 0 && (

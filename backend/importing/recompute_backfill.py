@@ -123,6 +123,19 @@ def cash_total(conn, uid: int) -> float:
     return round(float(r["c"] or 0), 2)
 
 
+def cost_snapshot(conn, uid: int) -> Dict[tuple, tuple]:
+    """Costo agregado por (broker, asset): (Σ invested, Σ commissions). Lo usa el
+    dry-run del modo COMPLETO para mostrar los cambios de COSTO — el snapshot de
+    cantidad (positions_snapshot) es ciego a invested/comisión, que es justo lo que
+    recalcula el modo completo (per-100→per-1, comisión ARS→USD)."""
+    rows = conn.execute(
+        "SELECT broker, asset, COALESCE(SUM(invested),0) inv, COALESCE(SUM(commissions),0) com "
+        "FROM positions WHERE user_id=? AND is_cash=0 AND quantity>0 GROUP BY broker, asset",
+        (uid,),
+    ).fetchall()
+    return {(r["broker"], r["asset"]): (float(r["inv"] or 0), float(r["com"] or 0)) for r in rows}
+
+
 _FIXED_INCOME_TYPES = {"BOND", "BONO", "ON", "LETRA", "LECAP"}
 
 
@@ -299,9 +312,11 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
     summary: Dict[str, Any] = {
         "total_users": len(users), "users_changed": 0, "positions_changed": 0,
         "cash_warnings": 0, "changes": [], "errors": [], "truncated": False,
+        "cost_changes": [], "cost_positions_changed": 0,
     }
     for uid in users:
         before = positions_snapshot(conn, uid)
+        cost_before = cost_snapshot(conn, uid)
         cash_before = cash_total(conn, uid)
         try:
             recompute_user(conn, uid, recalc=recalc, bond_price_per1=bond_price_per1,
@@ -311,6 +326,7 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
             summary["errors"].append({"uid": uid, "error": str(ex)})
             continue
         after = positions_snapshot(conn, uid)
+        cost_after = cost_snapshot(conn, uid)
         cash_after = cash_total(conn, uid)
 
         user_changes = []
@@ -328,6 +344,22 @@ def run_backfill(conn, users: List[int], *, recalc: Callable,
             for ch in user_changes:
                 if len(summary["changes"]) < max_changes:
                     summary["changes"].append(ch)
+                else:
+                    summary["truncated"] = True
+
+        # Diff de COSTO (invested/comisión): el modo completo recalcula costo y el
+        # diff de cantidad de arriba es ciego a esto. Lo exponemos para revisar.
+        for k in sorted(set(cost_before) | set(cost_after)):
+            ib, cb = cost_before.get(k, (0.0, 0.0))
+            ia, ca = cost_after.get(k, (0.0, 0.0))
+            if abs(ib - ia) > 0.01 or abs(cb - ca) > 0.01:
+                summary["cost_positions_changed"] += 1
+                if len(summary["cost_changes"]) < max_changes:
+                    summary["cost_changes"].append({
+                        "uid": uid, "broker": k[0], "asset": k[1],
+                        "invested_before": round(ib, 2), "invested_after": round(ia, 2),
+                        "comm_before": round(cb, 2), "comm_after": round(ca, 2),
+                    })
                 else:
                     summary["truncated"] = True
         # El rebuild NO debe tocar cash → si cambia, lo flageamos fuerte.
