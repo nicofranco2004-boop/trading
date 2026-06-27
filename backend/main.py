@@ -9878,6 +9878,72 @@ def admin_backfill_mtm(apply: bool = False, offset: int = 0, limit: int = 0,
         conn.close()
 
 
+@app.get("/api/admin/disk-usage")
+def admin_disk_usage(uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY: uso de disco de los filesystems relevantes + los
+    archivos más grandes, para encontrar QUÉ llena el disco (los backfills tiran
+    'OperationalError: database or disk is full' = SQLITE_FULL = disco lleno).
+    GET para poder abrirlo desde el browser logueado (cookie admin). No escribe."""
+    import shutil
+    import tempfile as _tf
+    from importing.recompute_backfill import _db_dir_of
+
+    conn = get_db()
+    try:
+        db_dir = _db_dir_of(conn) or os.path.dirname(DB_PATH)
+    finally:
+        conn.close()
+    tmp_dir = _tf.gettempdir()
+    cwd = os.getcwd()
+    backups_dir = os.environ.get("BACKUP_LOCAL_DIR", os.path.join(cwd, "backups"))
+
+    def _usage(path):
+        try:
+            t, u, f = shutil.disk_usage(path)
+            return {"path": path, "total_mb": round(t / 1e6, 1), "used_mb": round(u / 1e6, 1),
+                    "free_mb": round(f / 1e6, 1), "pct_used": round(100.0 * u / t, 1)}
+        except Exception as ex:
+            return {"path": path, "error": f"{type(ex).__name__}: {ex}"}
+
+    def _top_files(root, n=20, max_scan=20000):
+        items, scanned = [], 0
+        try:
+            for dp, _dn, fns in os.walk(root):
+                for fn in fns:
+                    scanned += 1
+                    if scanned > max_scan:
+                        break
+                    fp = os.path.join(dp, fn)
+                    try:
+                        items.append((os.path.getsize(fp), fp))
+                    except OSError:
+                        pass
+                if scanned > max_scan:
+                    break
+        except Exception:
+            pass
+        items.sort(reverse=True)
+        return {"scanned": scanned, "top": [{"mb": round(s / 1e6, 2), "file": p} for s, p in items[:n]]}
+
+    return {
+        "ok": True,
+        "DB_PATH": DB_PATH,
+        "db_dir_resolved": db_dir,
+        "tmp_dir": tmp_dir,
+        "cwd": cwd,
+        "backups_dir": backups_dir,
+        "disk_usage": {
+            "db_volume": _usage(db_dir),
+            "tmp": _usage(tmp_dir),
+            "cwd": _usage(cwd),
+            "backups": _usage(backups_dir),
+        },
+        "db_dir_files": _top_files(db_dir),
+        "backups_files": _top_files(backups_dir, n=10),
+        "tmp_files": _top_files(tmp_dir, n=10),
+    }
+
+
 @app.post("/api/admin/delete-snapshot")
 def admin_delete_snapshot(date: str, uid: int = Depends(get_admin_user)):
     """Borra un snapshot específico del user admin logueado (no afecta otros).
