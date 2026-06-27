@@ -9874,6 +9874,100 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+def _remove_trajectory_outlier_snapshots(conn, uid: int) -> list:
+    """Borra snapshots cuyo total_value se va absurdamente lejos del capital_final
+    del mes — la firma de un snapshot que el cron tomó mientras la data estaba rota
+    (ej: $370 cuando el capital del mes era $22k → ratio 0.017). Banda CONSERVADORA
+    [0.10×, 20×]: una ganancia/pérdida real no llega a esos extremos en un punto, así
+    que solo cae la contaminación clara. Cubre el caso SOSTENIDO que el detector de
+    V-shape no agarra (no hay caída+recuperación, queda bajo varios días). Devuelve
+    IDs borrados."""
+    monthly = {}
+    for r in conn.execute(
+        "SELECT year, month, capital_final FROM monthly_entries "
+        "WHERE user_id=? AND broker='global'", (uid,)):
+        if r["capital_final"] and r["capital_final"] > 0:
+            monthly[(r["year"], r["month"])] = float(r["capital_final"])
+    if not monthly:
+        return []
+    bad = []
+    for s in conn.execute("SELECT id, date, total_value FROM snapshots WHERE user_id=?", (uid,)):
+        tv = float(s["total_value"] or 0)
+        if tv <= 0:
+            continue
+        try:
+            y, m = int(s["date"][:4]), int(s["date"][5:7])
+        except (ValueError, TypeError):
+            continue
+        capf = monthly.get((y, m))
+        if not capf:
+            continue                       # sin referencia del mes → no tocar
+        ratio = tv / capf
+        if ratio < 0.10 or ratio > 20.0:
+            bad.append(s["id"])
+    if bad:
+        ph = ",".join("?" * len(bad))
+        conn.execute(f"DELETE FROM snapshots WHERE id IN ({ph}) AND user_id=?", (*bad, uid))
+    return bad
+
+
+def _repair_user_snapshots(conn, uid: int) -> dict:
+    """Repara los snapshots de UN usuario contaminados por ciclos import/revert/
+    reimport, SIN destruir los diarios legítimos: recalcula monthly (drift), UPSERTea
+    los de fin de mes con el valor correcto, recomputa net_deposited y borra SOLO los
+    contaminados (V-shapes + outliers de trayectoria). NO commitea (lo hace el caller).
+    La curva a valor de mercado es aparte (botón MTM)."""
+    before = conn.execute("SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (uid,)).fetchone()["c"]
+    _recalc_pnl_realized_from_ops(conn, uid)                       # drift de monthly fuera
+    _import_persister._backfill_snapshots_from_monthly(conn, uid)  # UPSERT fin de mes correcto
+    netdep = _recompute_snapshots_netdep_for_user(conn, uid)       # net_deposited canónico
+    vshape = _detect_and_remove_corrupt_snapshots(conn, uid)       # V-shapes (cron parcial)
+    outliers = _remove_trajectory_outlier_snapshots(conn, uid)     # contaminados sostenidos
+    after = conn.execute("SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (uid,)).fetchone()["c"]
+    return {
+        "snapshots_before": before, "snapshots_after": after,
+        "corrupt_removed": len(vshape) + len(outliers),
+        "netdep_updated": netdep.get("snapshots_updated", 0),
+    }
+
+
+def _repair_snapshots_summary(real_conn, users, apply: bool) -> dict:
+    """Corre _repair_user_snapshots sobre `users` y devuelve un resumen. apply=False
+    → sobre una COPIA del DB (la real NO se toca); apply=True → commitea por user.
+    Espeja backfill_summary (mismo patrón clone-or-real)."""
+    def _loop(conn):
+        out = {"users_changed": 0, "snapshots_removed": 0, "changes": [], "errors": []}
+        for u in users:
+            try:
+                r = _repair_user_snapshots(conn, u)
+            except Exception as ex:
+                conn.rollback()
+                out["errors"].append({"uid": u, "error": str(ex)})
+                continue
+            removed = r["snapshots_before"] - r["snapshots_after"]
+            if removed != 0 or r["corrupt_removed"] or r["netdep_updated"]:
+                out["users_changed"] += 1
+                out["snapshots_removed"] += max(0, removed)
+                if len(out["changes"]) < 2000:
+                    out["changes"].append({"uid": u, **r})
+            if apply:
+                conn.commit()
+        return out
+    if apply:
+        return _loop(real_conn)
+    import tempfile as _tf, sqlite3 as _sq, os as _os
+    tmp = _tf.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    clone = _sq.connect(tmp.name); clone.row_factory = _sq.Row
+    try:
+        real_conn.backup(clone)
+        return _loop(clone)
+    finally:
+        clone.close()
+        for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
+            try: _os.unlink(p)
+            except OSError: pass
+
+
 class RepairUserIn(BaseModel):
     email: str = Field(..., min_length=3, max_length=200)
 
@@ -9887,11 +9981,11 @@ def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_u
     Esos snapshots con total_value anómalo hacen explotar los % de 30d/anual/mes
     (ej: +5941%).
 
-    Para el usuario (por email): recalcula monthly_entries desde operations (mata el
-    drift de deposits/withdrawals/pnl), BORRA todos sus snapshots, y los regenera
-    limpios de fin de mes desde monthly_entries. Rápido (no toca yfinance). Para la
-    curva a valor de MERCADO, correr después el botón de "Valuación histórica" (MTM).
-    La data estructural (posiciones, cash) NO se toca. Solo el admin logueado.
+    Para el usuario (por email): recalcula monthly_entries (mata el drift), UPSERTea
+    los snapshots de fin de mes correctos, recomputa net_deposited y borra SOLO los
+    contaminados (V-shapes + outliers) — los diarios legítimos quedan. Rápido (no toca
+    yfinance). Para la curva a valor de MERCADO, correr después el botón de "Valuación
+    histórica" (MTM). La data estructural (posiciones, cash) NO se toca. Solo admin.
     """
     conn = get_db()
     try:
@@ -9902,24 +9996,37 @@ def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_u
         if not row:
             raise HTTPException(404, f"No hay usuario con email '{data.email}'.")
         tu = row["id"]
-        before = conn.execute(
-            "SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (tu,)).fetchone()["c"]
         with conn:
-            _recalc_pnl_realized_from_ops(conn, tu)              # 1) drift de monthly fuera
-            conn.execute("DELETE FROM snapshots WHERE user_id=?", (tu,))  # 2) limpiar contaminados
-            _import_persister._backfill_snapshots_from_monthly(conn, tu)  # 3) regenerar limpios
-            netdep = _recompute_snapshots_netdep_for_user(conn, tu)       # 4) net_deposited canónico
-            corrupt = _detect_and_remove_corrupt_snapshots(conn, tu)      # 5) barrer V-shapes residuales
-        after = conn.execute(
-            "SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (tu,)).fetchone()["c"]
+            res = _repair_user_snapshots(conn, tu)
         log.info("admin_repair_user_history email=%s uid=%s snaps %s→%s corrupt=%s",
-                 row["email"], tu, before, after, len(corrupt))
-        return {
-            "ok": True, "email": row["email"], "user_id": tu,
-            "snapshots_before": before, "snapshots_after": after,
-            "corrupt_removed": len(corrupt),
-            "netdep_updated": netdep.get("snapshots_updated", 0),
-        }
+                 row["email"], tu, res["snapshots_before"], res["snapshots_after"], res["corrupt_removed"])
+        return {"ok": True, "email": row["email"], "user_id": tu, **res}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/repair-snapshots-all")
+def admin_repair_snapshots_all(apply: bool = False, offset: int = 0, limit: int = 0,
+                               uid: int = Depends(get_admin_user)):
+    """Repara los snapshots contaminados de TODOS los usuarios, en TANDAS — para que
+    los fixes lleguen a todos sin que nadie tenga que escribir. Mismo repair que el
+    per-user (recalc + UPSERT fin de mes + net_deposited + borrar V-shapes/outliers).
+    NO destructivo: los snapshots diarios legítimos quedan; solo cae la contaminación.
+
+    - apply=false (default): DRY-RUN sobre una COPIA del DB → la real NO se toca.
+    - apply=true: aplica y commitea por usuario.
+    Gate: solo el admin logueado.
+    """
+    conn = get_db()
+    try:
+        all_users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
+        users = all_users[offset:offset + limit] if limit > 0 else all_users[offset:]
+        summary = _repair_snapshots_summary(conn, users, apply=bool(apply))
+        summary.update(ok=True, applied=bool(apply), total_all_users=len(all_users),
+                       offset=offset, processed=len(users))
+        log.info("admin_repair_snapshots_all apply=%s processed=%s users_changed=%s errors=%s",
+                 apply, len(users), summary["users_changed"], len(summary["errors"]))
+        return summary
     finally:
         conn.close()
 

@@ -227,6 +227,8 @@ export default function Admin() {
 
       <RepairUserPanel toast={toast} />
 
+      <MassRepairPanel toast={toast} />
+
       {/* ── Alerta de billing: pagaron pero figuran en Free ──────────────── */}
       {affected.length > 0 && (
         <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
@@ -1132,6 +1134,99 @@ function RepairUserPanel({ toast }) {
           {result.corrupt_removed > 0 && ` · ${result.corrupt_removed} corruptos eliminados`}
           {result.netdep_updated > 0 && ` · ${result.netdep_updated} net_deposited corregidos`}
         </div>
+      )}
+    </div>
+  )
+}
+
+// ─── MassRepairPanel — reparar snapshots contaminados de TODOS los usuarios ──
+function MassRepairPanel({ toast }) {
+  const CHUNK = 50
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [progress, setProgress] = useState(null)
+
+  async function runChunks(doApply) {
+    let offset = 0, total = 1
+    const agg = { users_changed: 0, snapshots_removed: 0, errors: [], total_users: 0 }
+    do {
+      const r = await api.post(`/admin/repair-snapshots-all?apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
+      total = r.total_all_users || 0
+      agg.users_changed += r.users_changed || 0
+      agg.snapshots_removed += r.snapshots_removed || 0
+      agg.total_users = total
+      if (r.errors?.length) agg.errors.push(...r.errors)
+      offset += CHUNK
+      setProgress({ done: Math.min(offset, total), total })
+    } while (offset < total)
+    return agg
+  }
+
+  async function simulate() {
+    setLoading(true); setPreview(null); setProgress({ done: 0, total: 0 })
+    try { setPreview(await runChunks(false)) }
+    catch (e) { toast.push('Error al simular: ' + e.message, { type: 'error' }) }
+    finally { setLoading(false); setProgress(null) }
+  }
+
+  async function apply() {
+    if (!preview) return
+    if (!confirm(`¿Reparar snapshots de ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
+                 `Borra solo los contaminados (los diarios legítimos quedan). Hacé un backup antes.`)) return
+    setApplying(true); setProgress({ done: 0, total: 0 })
+    try {
+      const r = await runChunks(true)
+      toast.push(`Reparado: ${r.users_changed} cuentas · ${r.snapshots_removed} snapshots contaminados eliminados`, { type: 'success' })
+      await simulate()  // re-simular → debería dar 0 (idempotente)
+    } catch (e) { toast.push('Error al aplicar: ' + e.message, { type: 'error' }) }
+    finally { setApplying(false); setProgress(null) }
+  }
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <RotateCcw size={16} className="text-rendi-warn" />
+          <h2 className="font-semibold text-ink-0">Reparar snapshots de TODOS los usuarios</h2>
+        </div>
+        <button onClick={simulate} disabled={loading || applying}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Volver a simular' : 'Simular'}
+        </button>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        El mismo repair que el de un usuario pero a <b>escala</b> — para que los % rotos (30d / anual / mes) se
+        arreglen para todos sin que nadie tenga que escribir. Recalcula monthly, regenera los snapshots de fin de
+        mes y borra <b>solo los contaminados</b> (V-shapes + outliers de trayectoria); los diarios legítimos
+        quedan. <b>Simular</b> corre sobre una copia (no toca nada); recién <b>Aplicar</b> modifica. Para la curva
+        a valor de mercado, después corré "Valuación histórica" (MTM). Hacé un backup antes.
+      </p>
+      {progress && progress.total > 0 && (loading || applying) && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-ink-3">
+            <span>{applying ? 'Aplicando…' : 'Simulando…'}</span>
+            <span className="tabular">{progress.done} / {progress.total} cuentas</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-bg-2 dark:bg-bg-2/40 overflow-hidden">
+            <div className="h-full bg-rendi-warn transition-all" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+          </div>
+        </div>
+      )}
+      {preview && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <ConvCell label="Cuentas a reparar" value={preview.users_changed} hint={`de ${preview.total_users}`} />
+            <ConvCell label="Snapshots contaminados" value={preview.snapshots_removed} hint="se eliminan" />
+          </div>
+          {preview.errors?.length > 0 && (
+            <div className="text-xs text-rendi-neg">{preview.errors.length} errores (ver logs del server)</div>
+          )}
+          <button onClick={apply} disabled={applying || loading || !preview.users_changed}
+            className="w-full text-sm px-3 py-2 rounded-md bg-rendi-warn/15 text-rendi-warn hover:bg-rendi-warn/25 disabled:opacity-50">
+            {applying ? 'Aplicando…' : `Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}`}
+          </button>
+        </>
       )}
     </div>
   )

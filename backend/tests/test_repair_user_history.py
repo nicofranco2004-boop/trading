@@ -42,13 +42,14 @@ class RepairUserHistoryTest(unittest.TestCase):
                 (self.uid, broker, y, m, 0, dep, 0, 0, 0, capf))
 
     def _repair(self):
-        # Misma secuencia de snapshots que el endpoint (sin _recalc, que necesita
-        # operations; el recalc es el self-heal canónico ya cubierto aparte).
+        # Secuencia de snapshots NO destructiva del endpoint (sin _recalc, que
+        # necesita operations; el recalc es el self-heal canónico cubierto aparte):
+        # UPSERT fin de mes + net_deposited + borrar V-shapes + outliers de trayectoria.
         with self.conn:
-            self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
             ps._backfill_snapshots_from_monthly(self.conn, self.uid)
             main._recompute_snapshots_netdep_for_user(self.conn, self.uid)
             main._detect_and_remove_corrupt_snapshots(self.conn, self.uid)
+            main._remove_trajectory_outlier_snapshots(self.conn, self.uid)
 
     def test_repair_borra_contaminado_y_regenera_limpio(self):
         # 3 meses: deposita y la cuenta crece (capital_final 10k → 19k → 22k).
@@ -88,6 +89,40 @@ class RepairUserHistoryTest(unittest.TestCase):
         self._repair()
         n2 = self.conn.execute("SELECT COUNT(*) c FROM snapshots WHERE user_id=?", (self.uid,)).fetchone()["c"]
         self.assertEqual(n1, n2)   # re-correr no duplica ni rompe
+
+    def test_outlier_borra_contaminado_pero_no_diario_legitimo(self):
+        # No destructivo: un snapshot diario con valor cerca del capital queda;
+        # solo cae el contaminado (ratio absurdo).
+        self._monthly(2026, 6, 0, 20000)
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) VALUES (?,?,?,?,?)",
+            (self.uid, "2026-06-10", 22000, 20000, 20000))  # ratio 1.1 → legítimo
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) VALUES (?,?,?,?,?)",
+            (self.uid, "2026-06-12", 400, 20000, 20000))     # ratio 0.02 → contaminado
+        self.conn.commit()
+        with self.conn:
+            removed = main._remove_trajectory_outlier_snapshots(self.conn, self.uid)
+        dates = [r["date"] for r in self.conn.execute(
+            "SELECT date FROM snapshots WHERE user_id=?", (self.uid,))]
+        self.assertEqual(len(removed), 1)
+        self.assertIn("2026-06-10", dates)       # diario legítimo: queda
+        self.assertNotIn("2026-06-12", dates)    # contaminado: se fue
+
+    def test_mass_dry_run_no_toca_la_base_real(self):
+        # _repair_snapshots_summary(apply=False) corre sobre una COPIA → la real
+        # queda intacta (el snapshot contaminado SIGUE hasta que se aplique de verdad).
+        self._monthly(2026, 6, 0, 20000)
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id,date,total_value,total_invested,net_deposited) VALUES (?,?,?,?,?)",
+            (self.uid, "2026-06-12", 400, 20000, 20000))
+        self.conn.commit()
+        summary = main._repair_snapshots_summary(self.conn, [self.uid], apply=False)
+        self.assertTrue("users_changed" in summary)
+        still = self.conn.execute(
+            "SELECT COUNT(*) c FROM snapshots WHERE user_id=? AND total_value=400",
+            (self.uid,)).fetchone()["c"]
+        self.assertEqual(still, 1)   # dry-run NO tocó la base real
 
 
 if __name__ == "__main__":
