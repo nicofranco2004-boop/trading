@@ -16,7 +16,6 @@
 //   score     — 0-100 | null
 //   metrics   — array de filas (ver arriba)
 
-import { Sparkles } from 'lucide-react'
 import Panel from '../Panel'
 import Pill from '../Pill'
 import InfoTooltip from '../InfoTooltip'
@@ -131,11 +130,11 @@ export default function CategoryDetail({ icon: Icon, label, question, score, met
             <button
               type="button"
               onClick={onAsk}
-              title="Preguntar al Coach IA sobre esto"
-              aria-label="Preguntar al Coach IA sobre esta categoría"
-              className="text-data-violet/70 hover:text-data-violet p-1 rounded-md hover:bg-data-violet/10 transition-colors"
+              title="Analizar con el Coach IA"
+              aria-label="Analizar esta categoría con el Coach IA"
+              className="text-xs font-semibold text-data-violet hover:text-data-violet/80 px-2 py-1 rounded-md hover:bg-data-violet/10 transition-colors"
             >
-              <Sparkles size={15} strokeWidth={1.75} />
+              Analizar
             </button>
           )}
           <div className="flex items-baseline gap-0.5">
