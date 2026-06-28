@@ -17422,7 +17422,9 @@ async def import_tenencia_preview(
             raise HTTPException(400, f"El archivo excede el límite de {cap // 1_000_000} MB.")
     data = b"".join(chunks)
 
-    is_ppi = (format or "").strip().lower().startswith("ppi")
+    fmt = (format or "").strip().lower()
+    is_ppi = fmt.startswith("ppi")
+    is_cocos = fmt.startswith("cocos")
     if is_ppi:
         # PPI: Estado de Cuenta en Excel (no PDF). Grilla con preámbulo + secciones
         # → filas crudas (xlsx_to_rows), no xlsx_to_csv (que asumiría header).
@@ -17438,6 +17440,17 @@ async def import_tenencia_preview(
         snap = _import_tenencia.parse_ppi_tenencia(rows)
         parser_format, default_name = "ppi_tenencia", "EstadoDeCuenta.xlsx"
         broker_hint = "Importá primero los Movimientos de PPI."
+    elif is_cocos:
+        # Cocos: Estado de Cuenta / portfolio_report en CSV (instrumento;cantidad;
+        # precio;moneda;total). Reconcilia por el path AGREGADO (broker_pair), igual
+        # que Bull Market — las CEDEARs de Cocos cotizan en pesos bajo el broker padre.
+        text = _import_pipeline._decode_csv(data) or ""
+        if not _import_tenencia.looks_like_cocos_tenencia(text):
+            raise HTTPException(400, "Este CSV no parece el Estado de Cuenta de Cocos "
+                                     "(Inversiones → Estado de cuenta → Exportar).")
+        snap = _import_tenencia.parse_cocos_tenencia(text)
+        parser_format, default_name = "cocos_tenencia", "EstadoDeCuenta.csv"
+        broker_hint = "Importá primero los Movimientos de Cocos."
     else:
         if not _import_excel.is_pdf(data):
             raise HTTPException(400, "La Tenencia valorizada se baja en PDF — subí ese archivo.")

@@ -28,6 +28,7 @@ export default function Imports() {
   const [redoPreview, setRedoPreview] = useState(null)     // {preview, original_batch_id} → abre wizard
   const [showWizard, setShowWizard] = useState(false)      // wizard de import nuevo (no redo)
   const [showPpiEstado, setShowPpiEstado] = useState(false)  // modal "completar con Estado de Cuenta" (PPI Excel)
+  const [showCocosEstado, setShowCocosEstado] = useState(false)  // modal "completar con Estado de Cuenta" (Cocos CSV)
   const [importJustConfirmed, setImportJustConfirmed] = useState(false)  // marca interna: el wizard pasó por onConfirmed
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
@@ -204,6 +205,15 @@ export default function Imports() {
                 className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
               >
                 <Upload size={12} strokeWidth={1.75} /> Estado de Cuenta PPI
+              </button>
+            )}
+            {!isFirstUse && (
+              <button
+                onClick={() => setShowCocosEstado(true)}
+                title="Completá tu cartera de Cocos subiendo el Estado de Cuenta (CSV). Agrega las posiciones que los Movimientos no reconstruyen, sin duplicar."
+                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
+              >
+                <Upload size={12} strokeWidth={1.75} /> Estado de Cuenta Cocos
               </button>
             )}
             <button
@@ -396,6 +406,25 @@ export default function Imports() {
             'Elegí Excel (no PDF) y descargá el archivo.',
           ]}
           format="ppi"
+          docLabel="el Estado de Cuenta"
+        />
+      )}
+
+      {showCocosEstado && (
+        <TenenciaUpload
+          onClose={() => setShowCocosEstado(false)}
+          onConfirmed={() => { setInfo('Cartera completada con el Estado de Cuenta de Cocos.'); load() }}
+          title="Completá tu cartera con el Estado de Cuenta (Cocos)"
+          introText="Los Movimientos de Cocos no traen las posiciones que ya tenías antes. Subí el Estado de Cuenta (CSV) y completamos lo que falta — sin tocar lo que ya está."
+          brokerMatch={/cocos/i}
+          accept=".csv,text/csv"
+          fileLabel="Estado de Cuenta (CSV)"
+          fileHint={[
+            'Entrá a tu cuenta de Cocos desde la WEB.',
+            'Andá a Portfolio y arriba tocá “Descargar portfolio”.',
+            'Elegí la fecha más reciente y descargá el CSV.',
+          ]}
+          format="cocos"
           docLabel="el Estado de Cuenta"
         />
       )}

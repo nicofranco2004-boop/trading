@@ -80,6 +80,8 @@ class TenenciaSnapshot:
     holdings: List[Holding] = field(default_factory=list)
     date: Optional[str] = None          # YYYY-MM-DD
     total_ars: Optional[float] = None    # "Tenencias al … ARS X" (incluye cash)
+    cash_ars: Optional[float] = None     # saldo en pesos (Estado de Cuenta Cocos)
+    cash_usd: Optional[float] = None     # saldo en dólares
     warnings: List[str] = field(default_factory=list)
 
 
@@ -429,4 +431,98 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
         snap.holdings.append(Holding(
             ticker=ticker, asset_type=section_type, quantity=qty, value=value,
             currency=ccy, price_per1=value / qty, per100=False, name=name[:60]))
+    return snap
+
+
+# ─── Cocos — "Estado de Cuenta" / portfolio_report (CSV, foto de tenencia) ────
+# Mismo rol que la Tenencia de Bull Market y el Estado de Cuenta de PPI: completa
+# las posiciones de apertura que los Movimientos no reconstruyen. Reusa el
+# _extract_ticker / clasificación asset_type del parser de Movimientos (cocos.py)
+# → ticker y tipo coinciden, así reconcile() no inventa huecos falsos. Estructura
+# del CSV (delimitado por ';'):
+#     instrumento;cantidad;precio;moneda;total
+#     Dólar estadounidense ();0,18;0;0;0           → polvo USD → cash
+#     CEDEAR NVIDIA CORPORATION (NVDA);28;12450;ARS;348600
+#     BANCO MACRO S.A. B  1 V. ESCRIT (BMA);39;14110;ARS;550290   → acción AR → ""
+#     ARS;48763,5;1;ARS;48763,5                    → saldo en pesos → cash
+#     USD;2,03;1;USD;2,03                          → saldo en dólares → cash
+_COCOS_TEN_HEADER = ("instrumento", "cantidad", "precio", "moneda", "total")
+
+
+def looks_like_cocos_tenencia(text: str) -> bool:
+    """Heurística para el Estado de Cuenta de Cocos (CSV ';' con el header
+    instrumento;cantidad;precio;moneda;total)."""
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        cells = [_deaccent(c).strip().lower() for c in line.split(";")]
+        return all(h in cells for h in _COCOS_TEN_HEADER)
+    return False
+
+
+def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
+    """Parsea el Estado de Cuenta de Cocos (CSV) a un TenenciaSnapshot (holdings +
+    cash). asset_type igual que el parser de Movimientos (cocos.py): CEDEAR →
+    CEDEAR; FCI → FUND; bono/ON/letra → BOND; acción AR → "" (se valúa por su .BA)."""
+    from .parsers.cocos import _extract_ticker, _is_bond_instrument, _clean_ar_number
+
+    def num(s: str) -> float:
+        try:
+            return float(_clean_ar_number(s or "0"))
+        except (ValueError, TypeError):
+            return 0.0
+
+    snap = TenenciaSnapshot()
+    cash_ars = 0.0
+    cash_usd = 0.0
+    seen = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        cells = [c.strip() for c in line.split(";")]
+        if len(cells) < 5:
+            continue
+        instr, qty_s, _price_s, moneda, total_s = cells[0], cells[1], cells[2], cells[3], cells[4]
+        iu = instr.upper().strip()
+        if iu == "INSTRUMENTO":            # header
+            continue
+        # Filas de CASH: el instrumento ES la moneda ('ARS' / 'USD'), sin ticker.
+        if iu in ("ARS", "PESOS", "PESO ARGENTINO", "$"):
+            cash_ars += num(qty_s); continue
+        if iu in ("USD", "U$S", "US$", "DOLARES", "DÓLARES"):
+            cash_usd += num(qty_s); continue
+        ticker = _extract_ticker(instr)
+        if not ticker:
+            # 'Dólar estadounidense ()' (paréntesis vacío) = polvo en USD → al cash.
+            if "dolar" in _deaccent(instr).lower():
+                cash_usd += num(qty_s)
+            continue
+        qty = num(qty_s)
+        value = num(total_s)
+        if qty <= 0:
+            continue
+        if iu.startswith("CEDEAR"):
+            at = "CEDEAR"
+        elif "FCI" in iu:
+            at = "FUND"
+        elif _is_bond_instrument(instr):
+            at = "BOND"
+        else:
+            at = ""
+        ccy = "USD" if moneda.strip().upper() in ("USD", "U$S", "US$") else "ARS"
+        key = (ticker, ccy)
+        if key in seen:
+            continue
+        seen.add(key)
+        snap.holdings.append(Holding(
+            ticker=ticker, asset_type=at, quantity=qty, value=value,
+            currency=ccy, price_per1=(value / qty if qty else 0.0),
+            name=instr[:60]))
+    snap.cash_ars = round(cash_ars, 2)
+    snap.cash_usd = round(cash_usd, 2)
+    if snap.holdings:
+        snap.total_ars = round(
+            sum(h.value for h in snap.holdings if h.currency == "ARS") + cash_ars, 2)
     return snap

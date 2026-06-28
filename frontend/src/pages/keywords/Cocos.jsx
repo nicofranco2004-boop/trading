@@ -9,7 +9,7 @@ import KeywordLanding from '../../components/landing/KeywordLanding'
 const FEATURES = [
   {
     title: 'Importá tu CSV de Cocos Capital en 30 segundos',
-    desc: 'Descargá el archivo desde Cocos (Operaciones → Exportar) y subí a Rendi. Reconocemos automáticamente acciones AR, CEDEARs, bonos y FCI.',
+    desc: 'Descargá desde Cocos los Movimientos (Actividad → Descargar Movimientos) y el Estado de Cuenta (Portfolio → Descargar portfolio) y subí ambos a Rendi. Reconocemos automáticamente acciones AR, CEDEARs, bonos y FCI.',
   },
   {
     title: 'P&L real en USD blue, no pesos nominales',
@@ -41,13 +41,13 @@ const HOW_STEPS = [
   },
   {
     n: 2,
-    title: 'Descargá el CSV de Cocos',
-    desc: 'En Cocos: Operaciones → Filtros → Exportar a CSV. Te baja el historial completo de compras, ventas, dividendos y depósitos.',
+    title: 'Descargá tus dos archivos de Cocos',
+    desc: 'En Cocos web: 1) los Movimientos (Actividad → Descargar Movimientos) — compras, ventas, dividendos y depósitos; y 2) el Estado de Cuenta (Portfolio → "Descargar portfolio" → fecha más reciente → CSV) — tu tenencia actual. Subís los dos juntos.',
   },
   {
     n: 3,
-    title: 'Importá el CSV en Rendi',
-    desc: 'En /imports subís el archivo. Rendi mapea automáticamente los campos (asset, fecha, cantidad, precio, comisión, moneda) y crea las posiciones + operaciones.',
+    title: 'Importá los CSV en Rendi',
+    desc: 'En /imports subís los archivos. Rendi mapea automáticamente los campos (asset, fecha, cantidad, precio, comisión, moneda), reconstruye tus operaciones y completa tu tenencia actual con el Estado de Cuenta — sin duplicar.',
   },
   {
     n: 4,
