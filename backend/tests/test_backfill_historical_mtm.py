@@ -161,6 +161,65 @@ class HistMtmTest(unittest.TestCase):
             (self.uid,)).fetchone()["capital_final"]
         self.assertAlmostEqual(cf, 5000.0, places=1)   # mes en curso intacto
 
+    def test_costo_negativo_el_mtm_no_lo_empeora(self):
+        # #791: cuenta con costo YA negativo (corrupción vieja de pnl_realized). El
+        # unrealized del MTM (acá una depreciación legítima, confiada por el guard) lo
+        # haría MÁS negativo. El clamp lo frena: max(costo, resultado) → nos quedamos en
+        # el costo (el menos negativo), nunca peor. Sin esto era -8000 → -9000.
+        self.conn.execute(
+            "UPDATE monthly_entries SET pnl_realized=-10000 WHERE user_id=? AND year=2024 AND month=8",
+            (self.uid,))                                    # cost = 0+2000-0-10000 = -8000
+        self.conn.commit()
+        self._mock_prices({"2024-08": 100.0, "2024-09": 100.0})
+        orig = bf.sj.compute_broker_value_usd
+        bf.sj.compute_broker_value_usd = lambda *a, **k: {"value": 1000.0, "invested": 2000.0}  # u=-1000
+        try:
+            bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        finally:
+            bf.sj.compute_broker_value_usd = orig
+        cf = self.conn.execute(
+            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND broker='global' AND year=2024 AND month=8",
+            (self.uid,)).fetchone()["capital_final"]
+        self.assertAlmostEqual(cf, -8000.0, places=1)       # costo, NO -9000 (no se empeora)
+
+    def test_costo_negativo_pero_mejora_se_respeta(self):
+        # El otro lado del clamp: si el costo es negativo PERO el unrealized lo MEJORA
+        # (lo acerca a 0), respetamos la mejora — no lo forzamos de vuelta al costo.
+        # Esto es lo que el `if cost<0: =cost` plano hubiera roto; el max() lo preserva.
+        self.conn.execute(
+            "UPDATE monthly_entries SET pnl_realized=-10000 WHERE user_id=? AND year=2024 AND month=8",
+            (self.uid,))                                    # cost = -8000
+        self.conn.commit()
+        self._mock_prices({"2024-08": 500.0, "2024-09": 500.0})
+        orig = bf.sj.compute_broker_value_usd
+        bf.sj.compute_broker_value_usd = lambda *a, **k: {"value": 5000.0, "invested": 2000.0}  # u=+3000
+        try:
+            bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        finally:
+            bf.sj.compute_broker_value_usd = orig
+        cf = self.conn.execute(
+            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND broker='global' AND year=2024 AND month=8",
+            (self.uid,)).fetchone()["capital_final"]
+        self.assertAlmostEqual(cf, -5000.0, places=1)       # -8000 + 3000 = -5000 (mejora respetada)
+
+    def test_clamp_costo_positivo_no_flipea_a_negativo(self):
+        # Caso #417 a nivel clamp: aunque el guard CONFÍE un unrealized negativo grande
+        # (val/inv dentro de banda), el clamp no deja que un costo positivo termine
+        # negativo → al costo. cost=2000; val=10/inv=3000 → mult≈0.0033 (confiado) →
+        # u=-2990 → -990 < 0 → max(2000,-990) = 2000.
+        self._mock_prices({"2024-08": 1.0, "2024-09": 1.0})
+        orig = bf.sj.compute_broker_value_usd
+        bf.sj.compute_broker_value_usd = lambda *a, **k: {"value": 10.0, "invested": 3000.0}  # u=-2990
+        try:
+            bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        finally:
+            bf.sj.compute_broker_value_usd = orig
+        cf = self.conn.execute(
+            "SELECT capital_final FROM monthly_entries WHERE user_id=? AND broker='global' AND year=2024 AND month=8",
+            (self.uid,)).fetchone()["capital_final"]
+        self.assertAlmostEqual(cf, 2000.0, places=1)        # costo, NO -990
+        self.assertGreaterEqual(cf, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

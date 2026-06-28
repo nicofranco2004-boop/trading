@@ -262,13 +262,17 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
                     - (row["withdrawals"] or 0) + (row["pnl_realized"] or 0))
             u = total_unreal if b == "global" else unreal_by_broker.get(b, 0.0)
             new_cf = cost + u
-            # Clamp definitivo: el MTM NUNCA debe flipear un costo no-negativo a
-            # negativo. Si pasa, el unrealized está mal valuado (cross-currency, free
-            # lots con valor < 0, etc.) → caemos al costo (ej #417: 485→-592k → 485).
-            # Los que YA tenían costo negativo (corrupción vieja de pnl_realized, ej
-            # #725) no se tocan acá — eso es aparte.
-            if cost >= 0 and new_cf < 0:
-                new_cf = cost
+            # Clamp definitivo: el MTM NUNCA debe DEJAR un capital_final negativo por
+            # culpa de la valuación, ni EMPEORAR uno que ya venía negativo.
+            #   • costo sano (≥0) que el unrealized flipearía a negativo → al costo
+            #     (ej #417: 485 → -592k → 485; cross-currency / free lots mal valuados).
+            #   • costo YA negativo (corrupción vieja de pnl_realized, ej #725/#791): el
+            #     MTM no puede empeorarlo → nos quedamos en el MENOS negativo entre costo
+            #     y resultado (max). Si el unrealized lo MEJORA (lo acerca a 0 o lo cruza
+            #     a positivo), eso sí se respeta.
+            # Los corruptos siguen rotos: el costo en sí está mal → es otro fix.
+            if new_cf < 0:
+                new_cf = max(cost, new_cf)
             conn.execute(
                 "UPDATE monthly_entries SET capital_final=? WHERE user_id=? AND broker=? AND year=? AND month=?",
                 (new_cf, uid, b, y, m))
