@@ -86,7 +86,7 @@ export default function TenenciaUpload({ onClose, onConfirmed }) {
                    className="w-full mb-1 text-sm text-ink-2 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-white/10 file:text-ink-1 file:text-sm" />
             <p className="text-xs text-ink-3 mb-4">
               Bull Market WEB → Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder.
-              No tiene botón de descarga: guardá la página como PDF con Ctrl+P (Windows) o ⌘+P (Mac) → “Guardar como PDF”.
+              No tiene botón de descarga: guardá la página como PDF con Ctrl+P (Windows) o Cmd+P (Mac) → “Guardar como PDF”.
             </p>
 
             {error && <p className="text-sm text-rendi-warn mb-3">{error}</p>}
