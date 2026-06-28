@@ -1,37 +1,27 @@
-// Fundamentals — ficha de fundamentales de acciones (Rendi Score).
+// Calidad de cartera — cartera-first, SIN pestañas (a propósito, para no replicar
+// la navegación de Vesty: Analizar/Comparar/Favoritos + buscador-héroe).
 // ═══════════════════════════════════════════════════════════════════════════
-// Sub-nav "Analizar · Comparar · Favoritos" sincronizada con ?view=
-// (analizar = default). Dentro de Analizar, ?ticker= elige la acción; dentro de
-// Comparar, ?cmp=NVDA,MSFT,… persiste la lista comparada.
+// La página ABRE en tu cartera (CarteraList) + una sección "Que seguís". El
+// buscador es una herramienta (overlay command-palette, botón o ⌘K), no la
+// portada. El estado vive en la URL:
+//   • sin params  → home (tu cartera + seguidas)
+//   • ?ticker=X   → ficha de un activo (AnalyzeView, sin su buscador embebido)
+//   • ?cmp=A,B    → comparación (CompareView), entrada por selección desde la lista
 //
-//   • Analizar  → scorecard de una acción (search + chips + gauge + IA). Wave 1.
-//   • Comparar  → hasta 5 acciones lado a lado: ranking, ganador por categoría,
-//                 detalle métrica por métrica. Wave 2 (lazy).
-//   • Favoritos → grid de las equities en watchlist con su score. Wave 2 (lazy).
-//
-// El patrón de tabs (pill filled, violet en la activa) copia pages/Analisis.jsx.
+// Sigue admin-only (gate de get_admin_user en el backend + filtro adminOnly del nav).
 
 import { lazy, Suspense, useState, useEffect, useCallback } from 'react'
 import { useSearchParams, Navigate } from 'react-router-dom'
-import { Briefcase, Search, Layers, Star } from 'lucide-react'
+import { Search, ChevronLeft } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import PageHeader from '../components/PageHeader'
 import { track } from '../utils/track'
 import CarteraList from '../components/fundamentals/CarteraList'
 import AnalyzeView from '../components/fundamentals/AnalyzeView'
+import SearchOverlay from '../components/fundamentals/SearchOverlay'
 import useWatchlist from '../components/fundamentals/useWatchlist'
 
 const CompareView = lazy(() => import('../components/fundamentals/CompareView'))
-const FavoritesView = lazy(() => import('../components/fundamentals/FavoritesView'))
-
-const TABS = [
-  { id: 'cartera',   label: 'Tu cartera', icon: Briefcase },
-  { id: 'explorar',  label: 'Explorar',   icon: Search },
-  { id: 'comparar',  label: 'Comparar',   icon: Layers },
-  { id: 'favoritos', label: 'Favoritos',  icon: Star },
-]
-const VALID_VIEWS = new Set(TABS.map(t => t.id))
-const DEFAULT_VIEW = 'cartera'
 
 function parseCmp(raw) {
   return (raw || '')
@@ -44,52 +34,52 @@ function parseCmp(raw) {
 export default function Fundamentals() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
+  const [searchOpen, setSearchOpen] = useState(false)
 
-  const urlView = searchParams.get('view')
-  const view = urlView && VALID_VIEWS.has(urlView) ? urlView : DEFAULT_VIEW
   const ticker = (searchParams.get('ticker') || '').toUpperCase()
   const cmpTickers = parseCmp(searchParams.get('cmp'))
+  const mode = ticker ? 'detail' : (cmpTickers.length ? 'compare' : 'home')
 
-  // Watchlist compartida entre las 3 vistas (un solo fetch + sync por eventos).
   const watchlist = useWatchlist()
 
+  useEffect(() => { track('calidad_cartera_view', { mode }) }, [mode])
+
+  // ⌘K / Ctrl+K abre el buscador.
   useEffect(() => {
-    track('fundamentals_view_changed', { view })
-  }, [view])
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
-  // ── Helpers de URL ──────────────────────────────────────────────────────
-  const setView = useCallback((next) => {
-    setSearchParams(prev => {
-      const sp = new URLSearchParams(prev)
-      if (next === DEFAULT_VIEW) sp.delete('view')
-      else sp.set('view', next)
-      return sp
-    })
-  }, [setSearchParams])
-
-  // Selección de ticker dentro de Analizar (mantiene ?view= si está presente).
-  const selectTicker = useCallback((symbol) => {
+  // Abrir la ficha de un activo (desde la lista, seguidas, comparar o el buscador).
+  const openTicker = useCallback((symbol) => {
     const sym = (symbol || '').toUpperCase()
+    if (!sym) return
     setSearchParams(prev => {
       const sp = new URLSearchParams(prev)
-      if (sym) sp.set('ticker', sym)
-      else sp.delete('ticker')
+      sp.set('ticker', sym)
+      sp.delete('cmp')
       return sp
     })
   }, [setSearchParams])
 
-  // Abrir un ticker (desde Tu cartera / Comparar / Favoritos) → Explorar con ?ticker=.
-  const openTickerInExplorar = useCallback((symbol) => {
-    const sym = (symbol || '').toUpperCase()
+  // Ir a comparar una selección de la cartera.
+  const openCompare = useCallback((list) => {
+    const arr = (list || []).map(s => s.toUpperCase()).filter(Boolean).slice(0, 5)
+    if (!arr.length) return
     setSearchParams(prev => {
       const sp = new URLSearchParams(prev)
-      sp.set('view', 'explorar')
-      if (sym) sp.set('ticker', sym)
+      sp.set('cmp', arr.join(','))
+      sp.delete('ticker')
       return sp
     })
   }, [setSearchParams])
 
-  // Cambiar la lista comparada → ?cmp=
   const setCmpTickers = useCallback((list) => {
     setSearchParams(prev => {
       const sp = new URLSearchParams(prev)
@@ -100,11 +90,15 @@ export default function Fundamentals() {
     })
   }, [setSearchParams])
 
-  // Feature oculto para usuarios (demasiado parecido a otra plataforma) hasta
-  // rediferenciarlo. Solo admin entra; el resto se va a Home sin enterarse que
-  // existe (redirect silencioso, no un cartel "restringido"). Los hooks de arriba
-  // corren igual para no romper las reglas de hooks. Espejo del backend
-  // (get_admin_user en /api/fundamentals/*) y del filtro adminOnly del nav.
+  const goHome = useCallback(() => {
+    setSearchParams(prev => {
+      const sp = new URLSearchParams(prev)
+      sp.delete('ticker')
+      sp.delete('cmp')
+      return sp
+    })
+  }, [setSearchParams])
+
   if (!user?.is_admin) return <Navigate to="/" replace />
 
   return (
@@ -112,57 +106,57 @@ export default function Fundamentals() {
       <PageHeader
         eyebrow="INVESTIGACIÓN"
         title="Calidad de cartera"
-        subtitle="Mirá qué tan sólidas son las empresas detrás de tus acciones y CEDEARs, y si el precio de hoy las acompaña. También podés buscar cualquier activo que no tengas."
+        subtitle="Qué tan sólidas son las empresas detrás de tus acciones y CEDEARs, y si el precio de hoy las acompaña."
       />
 
-      {/* Sub-nav — pills filled con violet en la activa (patrón Analisis.jsx) */}
-      <div className="inline-flex flex-wrap gap-2 mb-5">
-        {TABS.map(t => {
-          const Icon = t.icon
-          const active = view === t.id
-          return (
+      {/* Barra de acción: volver (en detalle/compare) + buscar (siempre). Sin pestañas. */}
+      <div className="flex items-center justify-between gap-3 mb-5">
+        <div className="min-w-0">
+          {mode !== 'home' && (
             <button
-              key={t.id}
-              onClick={() => setView(t.id)}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-                active
-                  ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-                  : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-              }`}
-              aria-pressed={active}
+              type="button"
+              onClick={goHome}
+              className="inline-flex items-center gap-1.5 text-sm text-ink-2 hover:text-ink-0 transition-colors"
             >
-              <Icon size={15} strokeWidth={1.75} aria-hidden="true" />
-              {t.label}
+              <ChevronLeft size={16} strokeWidth={2} /> Tu cartera
             </button>
-          )
-        })}
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => setSearchOpen(true)}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-line bg-bg-1 text-sm text-ink-2 hover:text-ink-0 hover:border-line-2 transition-colors flex-shrink-0"
+        >
+          <Search size={15} strokeWidth={1.75} /> Buscar activo
+          <kbd className="hidden sm:inline-block text-[10px] font-mono text-ink-3 border border-line rounded px-1 py-0.5 ml-0.5">⌘K</kbd>
+        </button>
       </div>
 
-      {/* Tu cartera — holding-first. Landing por defecto. */}
-      {view === 'cartera' && (
-        <CarteraList onOpenTicker={openTickerInExplorar} />
+      {mode === 'home' && (
+        <CarteraList onOpenTicker={openTicker} onCompare={openCompare} watchlist={watchlist} />
       )}
 
-      {/* Explorar — buscador de cualquier activo + detalle. Siempre montado
-          (ligero) para conservar el estado del detalle al ir y volver. */}
-      <div className={view === 'explorar' ? '' : 'hidden'}>
-        <AnalyzeView ticker={ticker} onSelect={selectTicker} watchlist={watchlist} />
-      </div>
+      {mode === 'detail' && (
+        <AnalyzeView ticker={ticker} onSelect={openTicker} watchlist={watchlist} hideSearch />
+      )}
 
-      {/* Comparar / Favoritos — lazy, solo se montan al entrar a su tab */}
-      <Suspense fallback={<div className="text-center py-20 text-ink-3 text-sm">Cargando…</div>}>
-        {view === 'comparar' && (
+      {mode === 'compare' && (
+        <Suspense fallback={<div className="text-center py-20 text-ink-3 text-sm">Cargando…</div>}>
           <CompareView
             tickers={cmpTickers}
             onChangeTickers={setCmpTickers}
-            onOpenTicker={openTickerInExplorar}
+            onOpenTicker={openTicker}
             watchlist={watchlist}
           />
-        )}
-        {view === 'favoritos' && (
-          <FavoritesView watchlist={watchlist} onOpenTicker={openTickerInExplorar} />
-        )}
-      </Suspense>
+        </Suspense>
+      )}
+
+      {searchOpen && (
+        <SearchOverlay
+          onSelect={(t) => { setSearchOpen(false); openTicker(t) }}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
     </div>
   )
 }

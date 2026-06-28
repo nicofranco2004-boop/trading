@@ -1,17 +1,15 @@
-// CarteraList — vista "Tu cartera" de Calidad de cartera (holding-first).
+// CarteraList — la HOME de Calidad de cartera (holding-first, sin pestañas).
 // ═══════════════════════════════════════════════════════════════════════════
-// Lo que diferencia a Rendi de un screener genérico: abrimos con TUS acciones y
-// CEDEARs, cada una con dos ejes — el negocio (calidad) y el precio (qué pagás) —
-// + su peso real y tu P&L. No un buscador vacío. El que no tenés se busca en la
-// tab "Explorar". Honestidad: mostramos qué % de la cartera es analizable (cripto,
-// bonos AR, FCI y cash no tienen estados financieros que puntuar).
+// Abre con TUS acciones y CEDEARs valuadas (peso, P&L) y los dos ejes Negocio /
+// Precio por fila. Debajo, "Que seguís" (watchlist que no tenés). Comparar es una
+// ACCIÓN: marcás 2-5 con el checkbox y aparece la barra "Comparar (N)" — no es una
+// pestaña. Honestidad: mostramos qué % de la cartera es analizable.
 //
-// Reusa la matriz de valuación canónica (valueEquityLot/computeBrokerValue) para
-// valuar IGUAL que el resto de la app, y /api/fundamentals/{base} (cacheado) por
-// fila para el split negocio/precio.
+// Reusa la valuación canónica (valueEquityLot/computeBrokerValue) y
+// /api/fundamentals/{base} (cacheado) por fila para el split negocio/precio.
 
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Layers, AlertCircle, ChevronRight } from 'lucide-react'
+import { Layers, AlertCircle, ChevronRight, Check, Scale } from 'lucide-react'
 import Panel from '../Panel'
 import Pill from '../Pill'
 import EmptyState from '../EmptyState'
@@ -32,17 +30,19 @@ function isEquityLike(p) {
   const t = inferType(p.asset)
   return t === 'stock_us' || t === 'cedear'
 }
+const symHasFund = (s) => { const t = inferType(s); return t === 'stock_us' || t === 'cedear' }
 
 const fmtUsd = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('en-US'))
 const fmtPct = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(1) + '%')
 
-export default function CarteraList({ onOpenTicker }) {
+export default function CarteraList({ onOpenTicker, onCompare, watchlist }) {
   const { valuationDollar } = useCurrency()
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [dolar, setDolar] = useState(null)
   const [prices, setPrices] = useState({})
-  const [funda, setFunda] = useState({})   // { [base]: data | false }
+  const [funda, setFunda] = useState({})           // { [base]: data | false }
+  const [selected, setSelected] = useState(() => new Set())
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const requested = useRef(new Set())
@@ -71,7 +71,6 @@ export default function CarteraList({ onOpenTicker }) {
   const tcCedear = tcBlue
   const tcCripto = dolar?.cripto?.venta || null
 
-  // Precios de TODAS las posiciones (para el total) + de los equities (para la fila).
   useEffect(() => {
     if (!positions.length || !brokers.length) return
     let cancelled = false
@@ -91,7 +90,6 @@ export default function CarteraList({ onOpenTicker }) {
     return () => { cancelled = true }
   }, [positions, brokers])
 
-  // Total de cartera (denominador del peso) — incluye cripto/bonos/cash.
   const totalValue = useMemo(() => {
     if (!brokers.length) return 0
     let v = 0
@@ -99,8 +97,7 @@ export default function CarteraList({ onOpenTicker }) {
     return v
   }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto])
 
-  // Holdings equity/CEDEAR agregados por ticker base.
-  const { holdings, analizableValue, excludedCount } = useMemo(() => {
+  const { holdings, heldBases, analizableValue, excludedCount } = useMemo(() => {
     const brokerByName = Object.fromEntries(brokers.map(b => [b.name, b]))
     const map = new Map()
     let excluded = 0
@@ -120,33 +117,97 @@ export default function CarteraList({ onOpenTicker }) {
       analizable += h.valueUsd
       const pnlUsd = h.valueUsd - h.investedUsd
       return {
-        base: h.base,
-        valueUsd: h.valueUsd,
-        investedUsd: h.investedUsd,
-        brokers: [...h.brokers],
-        pnlUsd,
+        base: h.base, valueUsd: h.valueUsd, brokers: [...h.brokers], pnlUsd,
         pnlPct: h.investedUsd > 0 ? (pnlUsd / h.investedUsd) * 100 : null,
         weight: totalValue > 0 ? (h.valueUsd / totalValue) * 100 : null,
       }
     })
     arr.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0))
-    return { holdings: arr, analizableValue: analizable, excludedCount: excluded }
+    return { holdings: arr, heldBases: new Set(arr.map(h => h.base)), analizableValue: analizable, excludedCount: excluded }
   }, [positions, brokers, prices, tcBlue, tcCedear, totalValue])
 
-  // Fundamentals lazy por ticker base (cacheado en backend; 1 request por activo).
-  // NO cancelamos por re-run del effect: `holdings` cambia de identidad cuando
-  // llegan precios/total, y un cleanup por-run cancelaría los fetch en vuelo
-  // (los dropea → loading eterno). Solo frenamos al desmontar; `requested` evita
-  // pedir el mismo ticker dos veces.
+  // "Que seguís" = watchlist equity/CEDEAR que NO tenés (las que tenés ya están arriba).
+  const followed = useMemo(() => {
+    const syms = (watchlist?.symbols || []).filter(symHasFund).map(baseTicker)
+    return [...new Set(syms)].filter(b => !heldBases.has(b))
+  }, [watchlist?.symbols, heldBases])
+
+  // Fundamentals lazy por ticker base (cartera + seguidas). Freno solo al desmontar.
   useEffect(() => {
-    holdings.forEach(h => {
-      if (requested.current.has(h.base)) return
-      requested.current.add(h.base)
-      api.get('/fundamentals/' + encodeURIComponent(h.base))
-        .then(res => { if (mounted.current) setFunda(prev => ({ ...prev, [h.base]: res?.available ? res : false })) })
-        .catch(() => { if (mounted.current) setFunda(prev => ({ ...prev, [h.base]: false })) })
+    const all = [...holdings.map(h => h.base), ...followed]
+    all.forEach(base => {
+      if (requested.current.has(base)) return
+      requested.current.add(base)
+      api.get('/fundamentals/' + encodeURIComponent(base))
+        .then(res => { if (mounted.current) setFunda(prev => ({ ...prev, [base]: res?.available ? res : false })) })
+        .catch(() => { if (mounted.current) setFunda(prev => ({ ...prev, [base]: false })) })
     })
-  }, [holdings])
+  }, [holdings, followed])
+
+  const toggleSelect = (base) => setSelected(prev => {
+    const next = new Set(prev)
+    if (next.has(base)) next.delete(base)
+    else if (next.size < 5) next.add(base)
+    return next
+  })
+
+  // ── Fila reutilizable (cartera + seguidas) ───────────────────────────────
+  const Row = ({ base, brokers: brks, weight, pnlPct }) => {
+    const data = funda[base]
+    const loadingFund = data === undefined
+    const cats = data && data.available ? (data.score?.categories || []) : null
+    const neg = cats ? businessQuality(cats) : null
+    const prc = cats ? priceRead(cats) : null
+    const sel = selected.has(base)
+    const pnlColor = pnlPct == null ? 'text-ink-2' : pnlPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onOpenTicker(base)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenTicker(base) } }}
+        className="grid grid-cols-[auto_1.6fr_auto_auto] sm:grid-cols-[auto_1.7fr_0.7fr_0.9fr_0.9fr_0.8fr] gap-x-3 gap-y-1 px-3 py-3 items-center cursor-pointer hover:bg-bg-2/60 transition-colors"
+      >
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); toggleSelect(base) }}
+          aria-label={sel ? `Quitar ${base} de la comparación` : `Marcar ${base} para comparar`}
+          aria-pressed={sel}
+          className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${
+            sel ? 'bg-data-violet border-data-violet text-white' : 'border-line hover:border-data-violet/60'
+          }`}
+        >
+          {sel && <Check size={11} strokeWidth={3} />}
+        </button>
+
+        <div className="flex items-center gap-2.5 min-w-0">
+          <AssetLogo asset={base} size={28} />
+          <div className="min-w-0">
+            <div className="font-mono text-sm font-medium text-ink-0">{base}</div>
+            <div className="text-[11px] text-ink-3 truncate">{brks?.length ? brks.join(' · ') : 'No la tenés'}</div>
+          </div>
+        </div>
+
+        <div className="hidden sm:block text-sm text-ink-1 tabular">{weight != null ? weight.toFixed(1) + '%' : '—'}</div>
+
+        <div>
+          {loadingFund ? <Skeleton className="h-4 w-16 rounded" />
+            : neg ? <Pill tone={AXIS_PILL[neg.tone]}>{neg.label}</Pill>
+            : <span className="text-[11px] text-ink-3">Sin datos</span>}
+        </div>
+        <div>
+          {loadingFund ? <Skeleton className="h-4 w-16 rounded" />
+            : prc ? <Pill tone={AXIS_PILL[prc.tone]}>{prc.label}</Pill>
+            : <span className="text-[11px] text-ink-3" />}
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <span className={`hidden sm:block text-sm tabular ${pnlColor}`}>{pnlPct == null ? '' : fmtPct(pnlPct)}</span>
+          <ChevronRight size={15} className="text-ink-3 flex-shrink-0" />
+        </div>
+      </div>
+    )
+  }
 
   if (loading) return <CarteraSkeleton />
 
@@ -161,111 +222,79 @@ export default function CarteraList({ onOpenTicker }) {
     )
   }
 
-  if (!holdings.length) {
+  const pctAnalizable = totalValue > 0 ? Math.round((analizableValue / totalValue) * 100) : null
+  const nothing = holdings.length === 0 && followed.length === 0
+
+  if (nothing) {
     return (
       <Panel padding="lg">
         <EmptyState
           icon={<Layers size={20} strokeWidth={1.75} />}
           eyebrow="TU CARTERA"
           title="Todavía no tenés acciones ni CEDEARs para analizar"
-          description="Cuando tengas equities o CEDEARs en tu cartera, los vas a ver acá con su calidad de negocio y su precio. Mientras tanto, podés buscar cualquier activo en la pestaña Explorar."
+          description="Cuando tengas equities o CEDEARs los vas a ver acá con su calidad de negocio y su precio. Mientras tanto, tocá “Buscar activo” para mirar cualquiera."
         />
       </Panel>
     )
   }
 
-  const pctAnalizable = totalValue > 0 ? Math.round((analizableValue / totalValue) * 100) : null
-
   return (
-    <div className="space-y-4">
-      {/* Honestidad de cobertura */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-ink-2">
-          Tus acciones y CEDEARs, ordenadas por peso en la cartera.
-        </p>
-        {pctAnalizable != null && (
-          <p className="text-[11px] text-ink-3">
-            {pctAnalizable}% de tu cartera analizable
-            {excludedCount > 0 && ` · ${excludedCount} ${excludedCount === 1 ? 'tenencia' : 'tenencias'} sin fundamentals (cripto, bonos, FCI)`}
-          </p>
-        )}
-      </div>
-
-      <Panel padding="none">
-        <div role="table" className="divide-y divide-line">
-          {/* header */}
-          <div role="row" className="hidden sm:grid grid-cols-[1.6fr_0.7fr_1fr_1fr_0.9fr] gap-3 px-4 py-2.5">
-            {['Activo', 'Peso', 'Negocio', 'Precio hoy', 'Tu P&L'].map((h, i) => (
-              <span key={h} className={`text-[10px] font-mono uppercase tracking-caps text-ink-3 ${i >= 4 ? 'text-right' : ''}`}>{h}</span>
-            ))}
+    <div className="space-y-5 pb-24">
+      {holdings.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-ink-2">Tus acciones y CEDEARs, ordenadas por peso. Marcá 2 o más para comparar.</p>
+            {pctAnalizable != null && (
+              <p className="text-[11px] text-ink-3">
+                {pctAnalizable}% de tu cartera analizable
+                {excludedCount > 0 && ` · ${excludedCount} ${excludedCount === 1 ? 'tenencia' : 'tenencias'} sin fundamentals (cripto, bonos, FCI)`}
+              </p>
+            )}
           </div>
-
-          {holdings.map(h => {
-            const data = funda[h.base]
-            const loadingFund = data === undefined
-            const cats = data && data.available ? (data.score?.categories || []) : null
-            const neg = cats ? businessQuality(cats) : null
-            const prc = cats ? priceRead(cats) : null
-            const pnlColor = h.pnlPct == null ? 'text-ink-2' : h.pnlPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
-            return (
-              <button
-                key={h.base}
-                type="button"
-                onClick={() => onOpenTicker(h.base)}
-                className="w-full grid grid-cols-[1fr_auto] sm:grid-cols-[1.6fr_0.7fr_1fr_1fr_0.9fr] gap-3 px-4 py-3 items-center text-left hover:bg-bg-2/60 transition-colors"
-              >
-                {/* activo */}
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <AssetLogo asset={h.base} size={28} />
-                  <div className="min-w-0">
-                    <div className="font-mono text-sm font-medium text-ink-0">{h.base}</div>
-                    <div className="text-[11px] text-ink-3 truncate">{h.brokers.join(' · ')}</div>
-                  </div>
-                </div>
-
-                {/* peso (oculto en mobile, se ve en P&L) */}
-                <div className="hidden sm:block text-sm text-ink-1 tabular">
-                  {h.weight != null ? h.weight.toFixed(1) + '%' : '—'}
-                </div>
-
-                {/* negocio */}
-                <div className="hidden sm:block">
-                  {loadingFund ? <Skeleton className="h-4 w-16 rounded" />
-                    : neg ? <Pill tone={AXIS_PILL[neg.tone]}>{neg.label}</Pill>
-                    : <span className="text-[11px] text-ink-3">Sin datos</span>}
-                </div>
-
-                {/* precio */}
-                <div className="hidden sm:block">
-                  {loadingFund ? <Skeleton className="h-4 w-16 rounded" />
-                    : prc ? <Pill tone={AXIS_PILL[prc.tone]}>{prc.label}</Pill>
-                    : <span className="text-[11px] text-ink-3">Sin datos</span>}
-                </div>
-
-                {/* P&L + chevron */}
-                <div className="flex items-center justify-end gap-2">
-                  <div className="text-right">
-                    <div className={`text-sm tabular ${pnlColor}`}>{fmtPct(h.pnlPct)}</div>
-                    <div className="text-[11px] text-ink-3 tabular sm:hidden">{h.weight != null ? h.weight.toFixed(1) + '% · ' : ''}{fmtUsd(h.valueUsd)}</div>
-                  </div>
-                  <ChevronRight size={15} className="text-ink-3 flex-shrink-0" />
-                </div>
-
-                {/* mobile: pills negocio/precio debajo */}
-                <div className="col-span-2 flex gap-2 sm:hidden -mt-1">
-                  {loadingFund ? <Skeleton className="h-4 w-24 rounded" /> : (
-                    <>
-                      {neg && <Pill tone={AXIS_PILL[neg.tone]}>{neg.label}</Pill>}
-                      {prc && <Pill tone={AXIS_PILL[prc.tone]}>{prc.label}</Pill>}
-                      {!neg && !prc && <span className="text-[11px] text-ink-3">Sin fundamentals</span>}
-                    </>
-                  )}
-                </div>
-              </button>
-            )
-          })}
+          <Panel padding="none">
+            <div role="table" className="divide-y divide-line">
+              <div role="row" className="hidden sm:grid grid-cols-[auto_1.7fr_0.7fr_0.9fr_0.9fr_0.8fr] gap-3 px-3 py-2.5">
+                <span />
+                {['Activo', 'Peso', 'Negocio', 'Precio hoy', 'Tu P&L'].map((h, i) => (
+                  <span key={h} className={`text-[10px] font-mono uppercase tracking-caps text-ink-3 ${i === 4 ? 'text-right' : ''}`}>{h}</span>
+                ))}
+              </div>
+              {holdings.map(h => (
+                <Row key={h.base} base={h.base} brokers={h.brokers} weight={h.weight} pnlPct={h.pnlPct} />
+              ))}
+            </div>
+          </Panel>
         </div>
-      </Panel>
+      )}
+
+      {followed.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-[11px] font-mono uppercase tracking-caps text-ink-3">Que seguís</p>
+          <Panel padding="none">
+            <div role="table" className="divide-y divide-line">
+              {followed.map(base => (
+                <Row key={base} base={base} brokers={null} weight={null} pnlPct={null} />
+              ))}
+            </div>
+          </Panel>
+        </div>
+      )}
+
+      {/* Barra flotante de comparación — Comparar es una acción, no una pestaña. */}
+      {selected.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-bg-1 border border-line-2 rounded-full shadow-xl pl-4 pr-2 py-2">
+          <span className="text-xs text-ink-2 tabular">{selected.size} seleccionada{selected.size > 1 ? 's' : ''}</span>
+          <button type="button" onClick={() => setSelected(new Set())} className="text-xs text-ink-3 hover:text-ink-0">Limpiar</button>
+          <button
+            type="button"
+            disabled={selected.size < 2}
+            onClick={() => onCompare?.([...selected])}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold bg-data-violet text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-data-violet/90 transition-colors"
+          >
+            <Scale size={14} strokeWidth={2} /> Comparar ({selected.size})
+          </button>
+        </div>
+      )}
     </div>
   )
 }

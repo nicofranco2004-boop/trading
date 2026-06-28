@@ -107,7 +107,7 @@ function AxisCard({ title, read }) {
   )
 }
 
-export default function AnalyzeView({ ticker, onSelect, watchlist }) {
+export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -162,7 +162,9 @@ export default function AnalyzeView({ ticker, onSelect, watchlist }) {
 
   return (
     <div>
-      {/* Search card + chips de posiciones */}
+      {/* Search card + chips de posiciones — se oculta cuando el buscador vive en
+          el overlay global (modo detalle de "Calidad de cartera"). */}
+      {!hideSearch && (
       <Panel className="mb-6">
         <TickerSearch onSelect={onSelect} autoFocus={!ticker} />
 
@@ -191,6 +193,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist }) {
           </div>
         )}
       </Panel>
+      )}
 
       {/* Empty state — todavía no eligió ticker */}
       {!ticker && !loading && (
