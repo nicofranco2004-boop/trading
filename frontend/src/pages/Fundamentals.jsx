@@ -12,8 +12,9 @@
 // El patrón de tabs (pill filled, violet en la activa) copia pages/Analisis.jsx.
 
 import { lazy, Suspense, useState, useEffect, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, Navigate } from 'react-router-dom'
 import { Gauge, Layers, Star } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 import PageHeader from '../components/PageHeader'
 import { track } from '../utils/track'
 import AnalyzeView from '../components/fundamentals/AnalyzeView'
@@ -39,6 +40,7 @@ function parseCmp(raw) {
 }
 
 export default function Fundamentals() {
+  const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
 
   const urlView = searchParams.get('view')
@@ -95,6 +97,13 @@ export default function Fundamentals() {
       return sp
     })
   }, [setSearchParams])
+
+  // Feature oculto para usuarios (demasiado parecido a otra plataforma) hasta
+  // rediferenciarlo. Solo admin entra; el resto se va a Home sin enterarse que
+  // existe (redirect silencioso, no un cartel "restringido"). Los hooks de arriba
+  // corren igual para no romper las reglas de hooks. Espejo del backend
+  // (get_admin_user en /api/fundamentals/*) y del filtro adminOnly del nav.
+  if (!user?.is_admin) return <Navigate to="/" replace />
 
   return (
     <div className="page-shell">

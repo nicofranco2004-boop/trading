@@ -65,7 +65,9 @@ const GROUPS = [
     label: 'Investigación',
     items: [
       { to: '/analisis',    label: 'Análisis',      icon: Compass },
-      { to: '/fundamentals', label: 'Fundamentals', icon: Gauge },
+      // Fundamentals: oculto para usuarios (solo admin) hasta rediferenciar el
+      // feature/diseño. Ver guard en pages/Fundamentals.jsx + endpoints backend.
+      { to: '/fundamentals', label: 'Fundamentals', icon: Gauge, adminOnly: true },
       { to: '/novedades',   label: 'Novedades',     icon: Bell },
     ],
   },
@@ -89,7 +91,11 @@ export default function Sidebar() {
   }, [collapsed])
 
   const allGroups = [
-    ...GROUPS,
+    // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.
+    ...GROUPS.map(g => ({
+      ...g,
+      items: g.items.filter(it => !it.adminOnly || user?.is_admin),
+    })),
     ...(user?.is_admin
       ? [{ label: 'Admin', items: [{ to: '/admin', label: 'Admin', icon: Shield }] }]
       : []),

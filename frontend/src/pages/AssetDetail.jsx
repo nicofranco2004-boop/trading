@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Calendar, BarChart3, Layers,
 } from 'lucide-react'
@@ -82,6 +83,7 @@ function symbolFor(p, brokers) {
 export default function AssetDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const asset = (ticker || '').toUpperCase()
   const { valuationDollar } = useCurrency()
 
@@ -330,8 +332,8 @@ export default function AssetDetail() {
         </AskAIAbout>
       )}
 
-      {/* Link a Fundamentals */}
-      {hasFundamentals && (
+      {/* Link a Fundamentals — solo admin (feature oculto para usuarios). */}
+      {hasFundamentals && user?.is_admin && (
         <button
           onClick={() => navigate(`/fundamentals?ticker=${encodeURIComponent(asset)}`)}
           className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-bg-1 border border-line hover:border-data-violet/40 hover:bg-data-violet/[0.04] transition-colors group"

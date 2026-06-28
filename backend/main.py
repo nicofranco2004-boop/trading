@@ -14885,10 +14885,13 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
 # ─── Fundamentals endpoints ────────────────────────────────────────────────
 
 @app.get("/api/fundamentals/{ticker}")
-def get_fundamentals(ticker: str, uid: int = Depends(get_current_user)):
+def get_fundamentals(ticker: str, uid: int = Depends(get_admin_user)):
     """Scorecard de fundamentales de una acción (Vesty-style).
 
-    Auth requerida, TODOS los tiers, SIN cupo (data de yfinance cacheada).
+    ADMIN-ONLY (2026-06-28): el feature se ocultó para usuarios (demasiado
+    parecido a otra plataforma) hasta rediferenciarlo. Mientras tanto solo el
+    admin puede consultarlo. El gate de UI vive en pages/Fundamentals.jsx +
+    el filtro adminOnly del nav; este es el candado real del API.
     Orquesta los fetchers existentes (scorecard + analysts + fundamentals/
     profile) y arma el contrato. Para cripto/ETF/bono/CEDEAR-ARS/inválido
     devuelve {available:false, reason} con HTTP 200 (no es un error).
@@ -14906,8 +14909,10 @@ def get_fundamentals(ticker: str, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/fundamentals/ai-summary")
-def fundamentals_ai_summary(data: FundamentalsAISummaryIn, uid: int = Depends(get_current_user)):
+def fundamentals_ai_summary(data: FundamentalsAISummaryIn, uid: int = Depends(get_admin_user)):
     """Resumen IA ("Lo mejor" / "Ojo con esto") de los fundamentales de una acción.
+
+    ADMIN-ONLY (2026-06-28): ver nota en GET /api/fundamentals/{ticker}.
 
     Reusa EXACTAMENTE la infra de /api/ai/analyze: tier (quota.get_tier),
     cache (ai.cache), cupo semanal de analyses (ai.quota) y llm.analyze con

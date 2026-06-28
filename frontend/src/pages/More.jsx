@@ -33,7 +33,8 @@ const GROUPS = [
     label: 'Análisis',
     items: [
       { to: '/analisis',     label: 'Análisis',     icon: Brain, sub: 'Diagnóstico, métricas pro, sesgos' },
-      { to: '/fundamentals', label: 'Fundamentals', icon: Gauge, sub: 'Score + análisis de acciones' },
+      // Fundamentals: oculto para usuarios (solo admin) hasta rediferenciar el feature.
+      { to: '/fundamentals', label: 'Fundamentals', icon: Gauge, sub: 'Score + análisis de acciones', adminOnly: true },
       { to: '/novedades',    label: 'Novedades',    icon: Bell,  sub: 'Noticias + eventos' },
     ],
   },
@@ -51,7 +52,11 @@ export default function More() {
   const [recomOpen, setRecomOpen] = useState(false)
 
   const allGroups = [
-    ...GROUPS,
+    // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.
+    ...GROUPS.map(g => ({
+      ...g,
+      items: g.items.filter(it => !it.adminOnly || user?.is_admin),
+    })),
     ...(user?.is_admin
       ? [{
           label: 'Admin',
