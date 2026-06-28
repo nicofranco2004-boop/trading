@@ -3103,6 +3103,17 @@ def _get_dolar_data():
     mep = _fetch_dolar("bolsa")
     ccl = _fetch_dolar("contadoconliqui")
     cripto = _fetch_dolar("cripto")
+    # Resiliencia per-casa: si un fetch puntual falla (dolarapi tira timeout/500
+    # para UNA casa puntual), conservamos el último valor conocido en vez de
+    # devolver esa casa en null. Sin esto, un /dolar con ccl=null (pero mep ok)
+    # hacía que pickFinancialRate('ccl') del frontend cayera SILENCIOSAMENTE al
+    # MEP → dos pantallas que fetchean /dolar en momentos distintos podían quedar
+    # una valuando al CCL y otra al MEP (split de valuación, reportado por el user).
+    prev = _dolar_cache.get("data") or {}
+    blue = blue or prev.get("blue")
+    mep = mep or prev.get("mep")
+    ccl = ccl or prev.get("ccl")
+    cripto = cripto or prev.get("cripto")
     data = {
         "blue": blue,
         "mep": mep,
