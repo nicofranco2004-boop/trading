@@ -10251,25 +10251,54 @@ def admin_diagnose_negative_capital(min_capital: float = -50000.0, limit_account
                           "exit_price": op["exit_price"], "pnl_usd": round(op["pnl_usd"] or 0, 2),
                           "currency": op["currency"], "fx_to_usd": op["fx_to_usd"]}
 
+            # (e) la fila de CASH (DEPOSIT/WITHDRAW) más grande del mes del salto — el árbitro.
+            # Tesis: es el WITHDRAW SINTÉTICO del seed de estado inicial (seed.py:312-329) →
+            # notes contiene "Estado inicial … sintético". currency='USDT' con monto peso-escala
+            # = el ÷tc_blue se saltea (pipeline.py:55-58 mira la moneda de la FILA).
+            jump_cash = None
+            if jump:
+                _y, _m = jump["ym"].split("-")
+                cr = conn.execute(
+                    """SELECT n.broker, n.operation_type, n.asset_symbol, n.gross_amount,
+                              n.currency, n.gross_amount_usd, n.notes
+                         FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
+                        WHERE b.user_id=? AND b.status='confirmed'
+                          AND n.operation_type IN ('DEPOSIT','WITHDRAW')
+                          AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?
+                        ORDER BY ABS(COALESCE(n.gross_amount,0)) DESC LIMIT 1""",
+                    (au, _y, _m)).fetchone()
+                if cr:
+                    notes = cr["notes"] or ""
+                    nlow = notes.lower()
+                    jump_cash = {"broker": cr["broker"], "op": cr["operation_type"],
+                                 "asset": cr["asset_symbol"],
+                                 "gross_amount": round(cr["gross_amount"] or 0, 2),
+                                 "currency": cr["currency"],
+                                 "gross_amount_usd": cr["gross_amount_usd"], "notes": notes,
+                                 "is_seed_synthetic": ("estado inicial" in nlow or "sintétic" in nlow or "sintetic" in nlow)}
+
             sus = [b["name"] for b in brokers if b["suspect"]]
             summary = (f"#{au}: " +
-                       (f"AR marcado USD → {', '.join(sus)}" if sus else "ningún broker AR-marcado-USD (ver H2)") +
+                       (f"AR marcado USD → {', '.join(sus)}" if sus else "broker bien marcado") +
                        (f" | salta {jump['ym']} por {jump['term_mas_negativo']}" if jump else "") +
-                       (f" | op |pnl|max: {top_op['asset']} {top_op['op_type']} "
-                        f"pnl={top_op['pnl_usd']:,.0f} ccy={top_op['currency']} fx={top_op['fx_to_usd']}"
-                        if top_op else ""))
+                       (f" | cash top: {jump_cash['op']} {jump_cash['gross_amount']:,.0f} "
+                        f"ccy={jump_cash['currency']} "
+                        f"{'★SEED-SINTÉTICO' if jump_cash['is_seed_synthetic'] else ''} "
+                        f"notes='{jump_cash['notes'][:50]}'"
+                        if jump_cash else ""))
             reports.append({"user_id": au,
                             "worst_global_capital_final": round(arow["worst"] or 0, 2),
-                            "brokers": brokers, "jump": jump,
+                            "brokers": brokers, "jump": jump, "jump_cash": jump_cash,
                             "culprit_broker": culprit_broker, "top_op": top_op, "summary": summary})
 
         confirms = sum(1 for r in reports if any(b["suspect"] for b in r["brokers"]))
+        seed_confirmed = sum(1 for r in reports if r.get("jump_cash") and r["jump_cash"]["is_seed_synthetic"])
         return {"ok": True, "min_capital": min_capital, "affected_count": len(reports),
                 "confirms_h1_broker_ar_usd": confirms,
-                "verdict": (f"{confirms}/{len(reports)} cuentas con ≥1 broker AR marcado USD/USDT "
-                            "que tiene tx en ARS → H1 CONFIRMADA"
-                            if confirms else
-                            "ninguna confirma H1 directo — revisar H2 (moneda de fila no reconocida)"),
+                "confirms_seed_synthetic_withdraw": seed_confirmed,
+                "verdict": (f"{seed_confirmed}/{len(reports)} cuentas: el cash más grande del mes del salto "
+                            f"es el WITHDRAW SINTÉTICO del seed (causa raíz dominante) · "
+                            f"{confirms}/{len(reports)} además tienen un broker AR mal marcado USD (H1, subconjunto)"),
                 "reports": reports}
     except HTTPException:
         raise

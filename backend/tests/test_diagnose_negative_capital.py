@@ -43,6 +43,13 @@ class DiagnoseNegCapTest(unittest.TestCase):
                 "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,operation_type,asset_symbol,gross_amount,currency) "
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (bid, rr, "2024-06-15", "Cocos", "SELL", "AL30", 24000000, "ARS"))
+        # WITHDRAW SINTÉTICO del seed en el mes del salto (la causa raíz a confirmar):
+        # currency USDT con monto peso-escala + notes de estado inicial → is_seed_synthetic.
+        self.conn.execute(
+            "INSERT INTO import_normalized_tx (batch_id,raw_row_id,date,broker,operation_type,gross_amount,currency,notes) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (bid, rr, "2024-06-02", "Cocos", "WITHDRAW", 24000000, "USDT",
+             "Estado inicial — retiro sintético (Rendi)"))
         # Operación rota: SELL con pnl_usd peso-escala (no dividido por el MEP), ARS, fx NULL.
         self.conn.execute(
             "INSERT INTO operations (user_id,date,broker,asset,op_type,quantity,exit_price,pnl_usd,currency,fx_to_usd) "
@@ -81,6 +88,12 @@ class DiagnoseNegCapTest(unittest.TestCase):
         self.assertEqual(rep["top_op"]["currency"], "ARS")
         self.assertLess(rep["top_op"]["pnl_usd"], -1000000)
         self.assertIn("AR marcado USD", rep["summary"])
+        # jump_cash: la fila de caja top del mes del salto = el WITHDRAW sintético del seed
+        self.assertIsNotNone(rep["jump_cash"])
+        self.assertEqual(rep["jump_cash"]["op"], "WITHDRAW")
+        self.assertEqual(rep["jump_cash"]["currency"], "USDT")
+        self.assertTrue(rep["jump_cash"]["is_seed_synthetic"])     # notes de estado inicial
+        self.assertEqual(res["confirms_seed_synthetic_withdraw"], 1)
 
     def test_cuenta_sana_no_aparece(self):
         u2 = self.conn.execute(
