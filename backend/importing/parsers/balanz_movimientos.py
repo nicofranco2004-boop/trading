@@ -266,6 +266,17 @@ class BalanzMovimientosParser(Parser):
             clase = _asset_type(_g(row, "clase"))
             kind = _classify_desc(desc)
 
+            # El export de Balanz MAL-ETIQUETA algunos FCI money-market en PESOS como
+            # 'Dólares' (RFPESOS A, DOLINKA — cuotaparte/VCP ~30-200 = pesos), mientras
+            # los FCI USD reales (BAHUSD — VCP ~1.3) vienen bien. Sin esto, los pesos del
+            # fondo se cuentan como dólares (×~tc_blue) → P&L/cash peso-escala → el
+            # capital_final negativo gigante (causa raíz, mitad Balanz de las 78 cuentas).
+            # La ESCALA del VCP discrimina con gap limpio (USD money-market ≈ 1, peso ≥ 6):
+            # un cuotaparte > 5 es en PESOS. Solo corregimos 'Dólares'→ARS (nunca al revés),
+            # y solo FCI (clase FUND) con precio = VCP real (no las filas espejo sin precio).
+            if clase == "FUND" and moneda == "USD" and precio is not None and precio > 5.0:
+                moneda = "ARS"
+
             has_price = precio is not None and precio > 0
             has_qty = qty is not None and abs(qty) > 1e-9
             has_cash = importe is not None and abs(importe) > 0.001
