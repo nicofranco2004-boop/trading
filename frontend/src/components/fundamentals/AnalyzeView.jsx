@@ -20,6 +20,7 @@ import AssetLogo from '../AssetLogo'
 import { api } from '../../utils/api'
 import { inferType } from '../../utils/tickers'
 import { track } from '../../utils/track'
+import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 
 import TickerSearch from './TickerSearch'
 import CategoryDetail from './CategoryDetail'
@@ -108,6 +109,7 @@ function AxisCard({ title, read }) {
 }
 
 export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false, onCompareWith }) {
+  const coachDrawer = useCoachDrawer()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -305,6 +307,10 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
                     question={cat.question}
                     score={cat.score}
                     metrics={cat.metrics}
+                    onAsk={() => coachDrawer.open(
+                      `Sobre ${data.company_name || data.ticker} (${data.ticker}) — ${cat.label}: ${cat.question || ''} `
+                      + `Explicámelo en criollo mirando sus números fundamentales y cómo se compara con el resto del sector.`
+                    )}
                   />
                 ))}
               </div>

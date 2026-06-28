@@ -16,6 +16,7 @@
 //   score     — 0-100 | null
 //   metrics   — array de filas (ver arriba)
 
+import { Sparkles } from 'lucide-react'
 import Panel from '../Panel'
 import Pill from '../Pill'
 import InfoTooltip from '../InfoTooltip'
@@ -106,7 +107,7 @@ function MetricRow({ metric }) {
   )
 }
 
-export default function CategoryDetail({ icon: Icon, label, question, score, metrics = [] }) {
+export default function CategoryDetail({ icon: Icon, label, question, score, metrics = [], onAsk }) {
   const hasScore = typeof score === 'number' && !Number.isNaN(score)
 
   return (
@@ -125,11 +126,24 @@ export default function CategoryDetail({ icon: Icon, label, question, score, met
             )}
           </div>
         </div>
-        <div className="flex items-baseline gap-0.5 flex-shrink-0">
-          <span className={`text-2xl font-semibold tabular leading-none ${scoreColor(score)}`}>
-            {hasScore ? Math.round(score) : '—'}
-          </span>
-          {hasScore && <span className="text-xs text-ink-3">/100</span>}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {onAsk && (
+            <button
+              type="button"
+              onClick={onAsk}
+              title="Preguntar al Coach IA sobre esto"
+              aria-label="Preguntar al Coach IA sobre esta categoría"
+              className="text-data-violet/70 hover:text-data-violet p-1 rounded-md hover:bg-data-violet/10 transition-colors"
+            >
+              <Sparkles size={15} strokeWidth={1.75} />
+            </button>
+          )}
+          <div className="flex items-baseline gap-0.5">
+            <span className={`text-2xl font-semibold tabular leading-none ${scoreColor(score)}`}>
+              {hasScore ? Math.round(score) : '—'}
+            </span>
+            {hasScore && <span className="text-xs text-ink-3">/100</span>}
+          </div>
         </div>
       </div>
 
