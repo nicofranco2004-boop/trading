@@ -303,13 +303,16 @@ function CategorySection({ category, rows, tickers }) {
         <div className="overflow-x-auto border-t border-line/40">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-line/40">
-                <th scope="col" className="text-left font-normal text-[10px] font-mono uppercase tracking-caps text-ink-3 px-4 py-2">
+              <tr className="border-b border-line bg-bg-2/60">
+                <th scope="col" className="text-left font-normal text-[10px] font-mono uppercase tracking-caps text-ink-3 px-4 py-2.5">
                   Métrica
                 </th>
                 {tickers.map(t => (
-                  <th key={t} scope="col" className="text-right font-mono text-xs font-semibold text-ink-1 px-3 py-2 whitespace-nowrap">
-                    {t}
+                  <th key={t} scope="col" className="px-3 py-2.5 whitespace-nowrap">
+                    <span className="flex items-center justify-end gap-1.5">
+                      <AssetLogo asset={t} size={18} />
+                      <span className="font-mono text-sm font-semibold text-ink-0">{t}</span>
+                    </span>
                   </th>
                 ))}
               </tr>
