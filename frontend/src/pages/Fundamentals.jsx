@@ -35,6 +35,9 @@ export default function Fundamentals() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const [searchOpen, setSearchOpen] = useState(false)
+  // Cuando se abre el buscador para COMPARAR desde una ficha, guardamos el ticker
+  // base; al elegir el segundo, vamos directo a la comparación.
+  const [compareFrom, setCompareFrom] = useState(null)
 
   const ticker = (searchParams.get('ticker') || '').toUpperCase()
   const cmpTickers = parseCmp(searchParams.get('cmp'))
@@ -70,7 +73,7 @@ export default function Fundamentals() {
 
   // Ir a comparar una selección de la cartera.
   const openCompare = useCallback((list) => {
-    const arr = (list || []).map(s => s.toUpperCase()).filter(Boolean).slice(0, 5)
+    const arr = [...new Set((list || []).map(s => s.toUpperCase()).filter(Boolean))].slice(0, 5)
     if (!arr.length) return
     setSearchParams(prev => {
       const sp = new URLSearchParams(prev)
@@ -137,7 +140,13 @@ export default function Fundamentals() {
       )}
 
       {mode === 'detail' && (
-        <AnalyzeView ticker={ticker} onSelect={openTicker} watchlist={watchlist} hideSearch />
+        <AnalyzeView
+          ticker={ticker}
+          onSelect={openTicker}
+          watchlist={watchlist}
+          hideSearch
+          onCompareWith={(t) => { setCompareFrom(t); setSearchOpen(true) }}
+        />
       )}
 
       {mode === 'compare' && (
@@ -153,8 +162,13 @@ export default function Fundamentals() {
 
       {searchOpen && (
         <SearchOverlay
-          onSelect={(t) => { setSearchOpen(false); openTicker(t) }}
-          onClose={() => setSearchOpen(false)}
+          compareWith={compareFrom}
+          onSelect={(t) => {
+            setSearchOpen(false)
+            if (compareFrom) { openCompare([compareFrom, t]); setCompareFrom(null) }
+            else openTicker(t)
+          }}
+          onClose={() => { setSearchOpen(false); setCompareFrom(null) }}
         />
       )}
     </div>

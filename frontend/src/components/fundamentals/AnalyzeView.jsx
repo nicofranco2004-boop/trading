@@ -10,7 +10,7 @@
 
 import { useState, useEffect } from 'react'
 import {
-  Search, Tag, TrendingUp, Zap, ShieldCheck, AlertCircle, Gauge, Coins,
+  Search, Tag, TrendingUp, Zap, ShieldCheck, AlertCircle, Gauge, Coins, Scale,
 } from 'lucide-react'
 import Panel from '../Panel'
 import Pill from '../Pill'
@@ -107,7 +107,7 @@ function AxisCard({ title, read }) {
   )
 }
 
-export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false }) {
+export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false, onCompareWith }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -263,6 +263,15 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
                 {data.stale && <Pill tone="warn">Datos diferidos</Pill>}
               </div>
             </div>
+            {onCompareWith && (
+              <button
+                type="button"
+                onClick={() => onCompareWith(data.ticker)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-semibold bg-data-violet text-white hover:bg-data-violet/90 transition-colors flex-shrink-0"
+              >
+                <Scale size={15} strokeWidth={2} /> Comparar
+              </button>
+            )}
           </div>
 
           {/* Dos ejes separados: el negocio y el precio (sin score único, sin gauge) */}

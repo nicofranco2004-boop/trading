@@ -8,7 +8,7 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import TickerSearch from './TickerSearch'
 
-export default function SearchOverlay({ onSelect, onClose }) {
+export default function SearchOverlay({ onSelect, onClose, compareWith = null }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
@@ -30,7 +30,9 @@ export default function SearchOverlay({ onSelect, onClose }) {
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 pt-3.5 pb-2">
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">Buscar activo</span>
+          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+            {compareWith ? `Comparar ${compareWith} con…` : 'Buscar activo'}
+          </span>
           <button onClick={onClose} className="text-ink-3 hover:text-ink-0 p-1 -mr-1" aria-label="Cerrar">
             <X size={16} strokeWidth={2} />
           </button>
@@ -38,7 +40,9 @@ export default function SearchOverlay({ onSelect, onClose }) {
         <div className="px-4 pb-4">
           <TickerSearch onSelect={onSelect} autoFocus />
           <p className="text-[11px] text-ink-3 mt-3">
-            Buscá cualquier acción o CEDEAR (NVDA, Apple, MELI…) para ver su calidad — la tengas o no.
+            {compareWith
+              ? 'Elegí otra acción o CEDEAR —de tu cartera o de afuera— para comparar.'
+              : 'Buscá cualquier acción o CEDEAR (NVDA, Apple, MELI…) para ver su calidad — la tengas o no.'}
           </p>
         </div>
       </div>
