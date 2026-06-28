@@ -33,8 +33,7 @@ const GROUPS = [
     label: 'Análisis',
     items: [
       { to: '/analisis',     label: 'Análisis',     icon: Brain, sub: 'Diagnóstico, métricas pro, sesgos' },
-      // Fundamentals: oculto para usuarios (solo admin) hasta rediferenciar el feature.
-      { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge, sub: 'Calidad de tus tenencias + buscador', adminOnly: true },
+      { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge, sub: 'Calidad de tus tenencias + buscador' },
       { to: '/novedades',    label: 'Novedades',    icon: Bell,  sub: 'Noticias + eventos' },
     ],
   },

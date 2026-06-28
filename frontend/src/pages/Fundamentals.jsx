@@ -7,13 +7,10 @@
 //   • sin params  → home (tu cartera + seguidas)
 //   • ?ticker=X   → ficha de un activo (AnalyzeView, sin su buscador embebido)
 //   • ?cmp=A,B    → comparación (CompareView), entrada por selección desde la lista
-//
-// Sigue admin-only (gate de get_admin_user en el backend + filtro adminOnly del nav).
 
 import { lazy, Suspense, useState, useEffect, useCallback } from 'react'
-import { useSearchParams, Navigate } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { Search, ChevronLeft } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
 import PageHeader from '../components/PageHeader'
 import { track } from '../utils/track'
 import CarteraList from '../components/fundamentals/CarteraList'
@@ -32,7 +29,6 @@ function parseCmp(raw) {
 }
 
 export default function Fundamentals() {
-  const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const [searchOpen, setSearchOpen] = useState(false)
   // Cuando se abre el buscador para COMPARAR desde una ficha, guardamos el ticker
@@ -101,8 +97,6 @@ export default function Fundamentals() {
       return sp
     })
   }, [setSearchParams])
-
-  if (!user?.is_admin) return <Navigate to="/" replace />
 
   return (
     <div className="page-shell">
