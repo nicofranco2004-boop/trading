@@ -149,6 +149,40 @@ export function pesoLotUsd(p, prices, tcCedear) {
   return { investedUsd, valueUsd, priceUsd: priceArs != null ? priceArs / tcCedear : null }
 }
 
+/**
+ * valueEquityLot — valuación USD de UN lote de EQUITY o CEDEAR (no cripto, no cash).
+ * Espeja las patas no-cripto de valueLot (pages/AssetDetail) para que la lista
+ * holding-first de "Calidad de cartera" valúe IGUAL que la ficha del activo.
+ * Usar solo con posiciones equity/CEDEAR (la cripto/cash van por otra matriz).
+ */
+export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue) {
+  const qty = p.quantity || 0
+  const invested = p.invested || 0
+  const isAR = broker?.currency === 'ARS'
+  let valueUsd, investedUsd
+  if (costInPesos(p) && !isAR) {
+    const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
+    investedUsd = invested / cedearRate
+    valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : investedUsd
+  } else if (isAR) {
+    const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
+    investedUsd = invested / tcBlue
+    valueUsd = priceArs != null ? (priceArs * qty) / tcBlue : investedUsd
+  } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null) {
+    const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+    investedUsd = invested
+    valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : invested
+  } else {
+    const priceUsd = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)]
+    investedUsd = invested
+    valueUsd = priceUsd != null ? priceUsd * qty : invested
+  }
+  if (!trustMktValue(valueUsd, investedUsd, p.asset_type, p.price_override != null)) {
+    valueUsd = investedUsd
+  }
+  return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd }
+}
+
 // ─── Guard anti-distorsión ───────────────────────────────────────────────────
 // Un precio de mercado JAMÁS debe inflar una posición muy por encima de su costo.
 // Casos reales: un bono cotizado "per 100 face" multiplicado por el nominal

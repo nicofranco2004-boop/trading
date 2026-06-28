@@ -13,10 +13,11 @@
 
 import { lazy, Suspense, useState, useEffect, useCallback } from 'react'
 import { useSearchParams, Navigate } from 'react-router-dom'
-import { Gauge, Layers, Star } from 'lucide-react'
+import { Briefcase, Search, Layers, Star } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import PageHeader from '../components/PageHeader'
 import { track } from '../utils/track'
+import CarteraList from '../components/fundamentals/CarteraList'
 import AnalyzeView from '../components/fundamentals/AnalyzeView'
 import useWatchlist from '../components/fundamentals/useWatchlist'
 
@@ -24,12 +25,13 @@ const CompareView = lazy(() => import('../components/fundamentals/CompareView'))
 const FavoritesView = lazy(() => import('../components/fundamentals/FavoritesView'))
 
 const TABS = [
-  { id: 'analizar',  label: 'Analizar',  icon: Gauge },
-  { id: 'comparar',  label: 'Comparar',  icon: Layers },
-  { id: 'favoritos', label: 'Favoritos', icon: Star },
+  { id: 'cartera',   label: 'Tu cartera', icon: Briefcase },
+  { id: 'explorar',  label: 'Explorar',   icon: Search },
+  { id: 'comparar',  label: 'Comparar',   icon: Layers },
+  { id: 'favoritos', label: 'Favoritos',  icon: Star },
 ]
 const VALID_VIEWS = new Set(TABS.map(t => t.id))
-const DEFAULT_VIEW = 'analizar'
+const DEFAULT_VIEW = 'cartera'
 
 function parseCmp(raw) {
   return (raw || '')
@@ -76,12 +78,12 @@ export default function Fundamentals() {
     })
   }, [setSearchParams])
 
-  // Abrir un ticker desde Comparar/Favoritos → ir a Analizar con ?ticker=.
-  const openTickerInAnalyze = useCallback((symbol) => {
+  // Abrir un ticker (desde Tu cartera / Comparar / Favoritos) → Explorar con ?ticker=.
+  const openTickerInExplorar = useCallback((symbol) => {
     const sym = (symbol || '').toUpperCase()
     setSearchParams(prev => {
       const sp = new URLSearchParams(prev)
-      sp.delete('view') // analizar = default
+      sp.set('view', 'explorar')
       if (sym) sp.set('ticker', sym)
       return sp
     })
@@ -136,8 +138,14 @@ export default function Fundamentals() {
         })}
       </div>
 
-      {/* Analizar — siempre montado (ligero, conserva estado del scorecard) */}
-      <div className={view === 'analizar' ? '' : 'hidden'}>
+      {/* Tu cartera — holding-first. Landing por defecto. */}
+      {view === 'cartera' && (
+        <CarteraList onOpenTicker={openTickerInExplorar} />
+      )}
+
+      {/* Explorar — buscador de cualquier activo + detalle. Siempre montado
+          (ligero) para conservar el estado del detalle al ir y volver. */}
+      <div className={view === 'explorar' ? '' : 'hidden'}>
         <AnalyzeView ticker={ticker} onSelect={selectTicker} watchlist={watchlist} />
       </div>
 
@@ -147,12 +155,12 @@ export default function Fundamentals() {
           <CompareView
             tickers={cmpTickers}
             onChangeTickers={setCmpTickers}
-            onOpenTicker={openTickerInAnalyze}
+            onOpenTicker={openTickerInExplorar}
             watchlist={watchlist}
           />
         )}
         {view === 'favoritos' && (
-          <FavoritesView watchlist={watchlist} onOpenTicker={openTickerInAnalyze} />
+          <FavoritesView watchlist={watchlist} onOpenTicker={openTickerInExplorar} />
         )}
       </Suspense>
     </div>
