@@ -141,7 +141,7 @@ const BROKERS = [
       'Tenencia valorizada: en la WEB de Bull Market andá a Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder. Como no tiene botón de descarga, guardá la página como PDF: Ctrl+P (Windows) o Cmd+P (Mac) → en Destino elegí “Guardar como PDF”.',
       'Subí los Excel + el PDF de la Tenencia, todos juntos acá — los acomodamos solos.',
     ],
-    parserNote: 'De la Cuenta Corriente importamos compras, ventas, depósitos, retiros, el interés de cauciones y los dividendos (las conversiones cable↔MEP se omiten). Como la Cuenta Corriente solo cubre el período del export, la Tenencia valorizada (PDF) completa las posiciones que ya tenías de antes — sin duplicar lo que ya está. ¿Ya importaste antes y solo querés actualizar la foto? Subí únicamente la Tenencia con el botón “Completar con Tenencia”. Si tenés un fondo común (FCI) abierto, cargalo a mano desde Posiciones.',
+    parserNote: 'De la Cuenta Corriente importamos compras, ventas, depósitos, retiros, el interés de cauciones y los dividendos (las conversiones cable↔MEP se omiten). Como la Cuenta Corriente solo cubre el período del export, la Tenencia valorizada (PDF) completa las posiciones que ya tenías de antes — sin duplicar lo que ya está. ¿Ya importaste antes sin la Tenencia? Volvé a importar incluyendo el PDF: no duplicamos lo que ya estaba. Si tenés un fondo común (FCI) abierto, cargalo a mano desde Posiciones.',
   },
   {
     id: 'iol',

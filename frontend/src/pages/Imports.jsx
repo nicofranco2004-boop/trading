@@ -7,7 +7,6 @@ import Pill from '../components/Pill'
 import EmptyState from '../components/EmptyState'
 import Modal from '../components/Modal'
 import ImportWizard from '../components/import/ImportWizard'
-import TenenciaUpload from '../components/import/TenenciaUpload'
 import { api } from '../utils/api'
 
 // Flag de localStorage: si el user nunca completó un import → al confirmar
@@ -27,7 +26,6 @@ export default function Imports() {
   const [confirmRedo, setConfirmRedo] = useState(null)     // batch object pendiente de "rehacer"
   const [redoPreview, setRedoPreview] = useState(null)     // {preview, original_batch_id} → abre wizard
   const [showWizard, setShowWizard] = useState(false)      // wizard de import nuevo (no redo)
-  const [showTenencia, setShowTenencia] = useState(false)  // modal "completar con Tenencia" (Bull Market PDF)
   const [importJustConfirmed, setImportJustConfirmed] = useState(false)  // marca interna: el wizard pasó por onConfirmed
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
@@ -195,15 +193,6 @@ export default function Imports() {
                   ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
                   : <Trash2 size={12} strokeWidth={1.75} />}
                 Limpiar broker
-              </button>
-            )}
-            {!isFirstUse && (
-              <button
-                onClick={() => setShowTenencia(true)}
-                title="Completá tu cartera de Bull Market subiendo la Tenencia valorizada (PDF). Agrega las posiciones que la Cuenta Corriente no reconstruye, sin duplicar."
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
-              >
-                <Upload size={12} strokeWidth={1.75} /> Completar con Tenencia
               </button>
             )}
             <button
@@ -377,13 +366,6 @@ export default function Imports() {
             setImportJustConfirmed(true)
             load()
           }}
-        />
-      )}
-
-      {showTenencia && (
-        <TenenciaUpload
-          onClose={() => setShowTenencia(false)}
-          onConfirmed={() => { setInfo('Cartera completada con la Tenencia.'); load() }}
         />
       )}
 
