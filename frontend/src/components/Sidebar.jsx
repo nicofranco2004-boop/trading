@@ -62,7 +62,7 @@ const GROUPS = [
     ],
   },
   {
-    label: 'Investigación',
+    label: 'Analytics',
     items: [
       { to: '/analisis',    label: 'Análisis',      icon: Compass },
       { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge },

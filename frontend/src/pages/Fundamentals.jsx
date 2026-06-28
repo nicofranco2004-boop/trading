@@ -101,7 +101,7 @@ export default function Fundamentals() {
   return (
     <div className="page-shell">
       <PageHeader
-        eyebrow="INVESTIGACIÓN"
+        eyebrow="ANALYTICS"
         title="Calidad de cartera"
         subtitle="Qué tan sólidas son las empresas detrás de tus acciones y CEDEARs, y si el precio de hoy las acompaña."
       />
