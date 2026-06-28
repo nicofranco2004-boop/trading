@@ -1,17 +1,22 @@
-"""Parser de Bull Market Brokers — export "Cuenta Corriente".
+"""Parser de Bull Market Brokers — dos layouts del mismo broker.
 
-Bull Market solo exporta este reporte en Excel (.xlsx); el pipeline lo convierte
-a CSV (ver importing/excel.py) antes de llegar acá. También acepta CSV nativo.
+Bull Market expone los movimientos en DOS formatos distintos:
 
-Cómo bajarlo (referencia para el wizard):
-    MI CUENTA → CUENTA CORRIENTE → pestaña Pesos → Buscar → Exportar (Excel)
+  1. "Cuenta Corriente" (Excel): columna `Comprobante` con descripciones
+     ("COMPRA NORMAL", "RECIBO DE COBRO", …) y columnas Cantidad/Precio/Saldo
+     separadas. El pipeline convierte el .xlsx a CSV antes de llegar acá.
 
-Estructura (una hoja por moneda; esta versión asume PESOS = ARS):
+  2. "Movimientos" (CSV compacto): columna `Cpbt.` con CÓDIGOS (COBA, CPRA,
+     VTAS, VTU$, PAGA, DIV, RTA, SFCI, LRFD), cantidad y precio PEGADOS en un
+     solo campo `Referencia/Cantidad/Precio`, y signo de `Importe` INVERTIDO
+     (negativo = ingreso de plata). Es un único archivo con el historial completo.
 
-    Liquida | Operado | Comprobante | Numero | Cantidad | Especie | Precio |
-    Importe | Saldo | Referencia
+`parse()` detecta el layout por el header y despacha al sub-parser correspondiente.
 
-Mapeo de `Comprobante` al modelo Rendi:
+Cómo bajarlos (referencia para el wizard):
+    Cuenta Corriente: MI CUENTA → CUENTA CORRIENTE → pestaña Pesos → Exportar (Excel)
+
+Mapeo al modelo Rendi (Cuenta Corriente):
 
     Bull Market                  → Rendi      Notas
     ─────────────────────────────────────────────────────────────────────
@@ -26,20 +31,37 @@ Cauciones (COMPRA CAUCION CONTADO / VENTA CAUCION TERMINO, especie "VARIAS"):
     como UNA fila de INTERÉS (cuenta como ganancia realizada, no como depósito).
     Así no se pierde esa ganancia ni se crea el activo fantasma "VARIAS".
 
-FCI (SUSCRIPCION FCI / LIQUIDACION RESCATE FCI, especie "PPII"):
-    Se DESCARTAN. El export trae la suscripción sin unidades → no se puede
-    reconstruir ni la ganancia ni la tenencia. Si el usuario tiene un FCI
-    abierto hoy, lo carga manualmente desde Posiciones (aviso en el wizard).
+FCI (SUSCRIPCION FCI / LIQUIDACION RESCATE FCI):
+    El CASH reconcilia (suscripción sin cantidad → RETIRO; rescate con cantidad
+    → VENTA del fondo). La tenencia del FCI sigue siendo follow-up (la suscripción
+    no trae unidades). Si el usuario tiene un FCI abierto hoy, lo carga manual.
+
+Mapeo del layout Movimientos (códigos `Cpbt.`):
+
+    Código   → Rendi                Notas
+    ─────────────────────────────────────────────────────────────────────
+    CPRA     → COMPRA               Importe POSITIVO (egreso)
+    VTAS     → VENTA                Importe NEGATIVO (ingreso)
+    COBA     → DEPOSITO             Recibo de cobro (Importe negativo)
+    PAGA     → RETIRO               Orden de pago / transferencia MEP (positivo)
+    SFCI     → RETIRO               Suscripción FCI (egreso)
+    LRFD     → VENTA                Liquidación rescate FCI (ingreso, con cantidad)
+    VTU$     → (MEP, ver abajo)     Venta paridad = pata dólar; Importe vacío
+    DIV/CDIV/RTA → (omitidos)       El export casi nunca trae el monto del dividendo
+
+    Dólar MEP (VTU$): el usuario compra un bono en pesos (CPRA) y lo vende contra
+    dólar (VTU$, mismo especie, cantidad opuesta, Importe en pesos vacío). El bono
+    NETEA a 0 (no es tenencia). La plata que salió en pesos (la CPRA) la cargamos
+    como RETIRO ("Dólar MEP vía X"): los dólares quedan en la cuenta USD, fuera de
+    este export. Cualquier especie que aparezca en una fila VTU$ se trata así.
 
 Particularidades:
-- Fecha = `Operado` (fecha de la operación, no la de liquidación). Ya viene ISO
-  desde la conversión del xlsx.
-- `Cantidad` e `Importe` vienen con signo (negativo en ventas / egresos);
-  tomamos abs() y el `Comprobante` define la dirección.
-- `Importe` = cantidad × precio (sin comisiones desglosadas) → comisiones = 0.
-- Tickers: Bull Market usa el símbolo BYMA salvo algún caso (YPF → YPFD). Los
-  CEDEARs (AAPL, AMZN) se guardan como vienen; la valuación les agrega .BA.
-- Moneda: ARS (hoja Pesos). El export de Dólares es un follow-up.
+- Fecha = `Operado`. En el Excel ya viene ISO; en el CSV de Movimientos viene
+  dd/mm/aaaa (el normalizer la pasa a ISO después).
+- Importe = cantidad × precio (sin comisiones desglosadas) → comisiones = 0.
+- Tickers: Bull Market usa el símbolo BYMA salvo algún caso (YPF → YPFD).
+- Bonos: pueden venir per-100 (lo detectamos por cantidad×precio ≈ 100×importe).
+- Moneda: el Excel la saca del nombre de la hoja; el CSV de Movimientos es ARS.
 """
 from __future__ import annotations
 import csv
@@ -50,14 +72,15 @@ from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
 
 
-# Headers mínimos para reconocer un export de Cuenta Corriente de Bull Market.
-_REQUIRED_HEADERS = {"liquida", "operado", "comprobante", "especie", "importe"}
+# Headers mínimos para reconocer un export de Bull Market (cualquiera de los dos
+# layouts). `comprobante`/`cpbt` se chequean aparte para elegir el sub-parser.
+_REQUIRED_HEADERS = {"liquida", "operado", "especie", "importe"}
 
 # Comprobante (lowercase) → categoría Rendi, por PREFIJO (Bull Market tiene muchas
 # variantes: COMPRA NORMAL/PARIDAD/EXTERIOR, RENTA Y AMORTIZ, DIVIDENDOS DOLARES
 # CABLE, etc.). `Importe` es el efecto en caja → el tipo se elige para que el signo
 # matchee y reconcilie por construcción. Las cauciones, conversiones cable↔MEP y
-# FCI NO pasan por acá (se manejan antes en parse()).
+# FCI NO pasan por acá (se manejan antes en _parse_cuenta_corriente()).
 def _classify_comprobante(comp_lc: str) -> Optional[str]:
     # FCI (fondos): el RESCATE trae cantidad+precio+especie → VENTA del fondo (su
     # cash entra y la tenencia baja). La SUSCRIPCION NO trae cantidad → solo el
@@ -89,10 +112,19 @@ def _classify_comprobante(comp_lc: str) -> Optional[str]:
         return "FEE_SIGNED"
     return None
 
-# FCI: descartados (solo aviso al user para cargar el abierto manual). Las
-# cauciones NO van acá — se detectan por substring "caucion" y se netean a
-# interés (ver parse()).
-_SKIP_FCI = ("suscripcion fci", "liquidacion rescate fci", "rescate fci", "suscripcion fondo")
+
+# Layout Movimientos: código `Cpbt.` (primeros 4 chars, lowercase) → tipo Rendi.
+# La DIRECCIÓN final del cash (DEPOSITO vs RETIRO) se ajusta por el signo del
+# Importe en _parse_movimientos (en este export negativo = ingreso). VTU$ y
+# DIV/CDIV/RTA NO van acá (se manejan aparte).
+_MOV_CODE_MAP = {
+    "cpra": "COMPRA",
+    "vtas": "VENTA",
+    "coba": "DEPOSITO",   # recibo de cobro (importe negativo); dirección por signo
+    "paga": "RETIRO",     # orden de pago (importe positivo); dirección por signo
+    "sfci": "RETIRO",     # suscripción FCI (egreso de plata)
+    "lrfd": "VENTA",      # liquidación rescate FCI (ingreso, con cantidad)
+}
 
 # Normalización de tickers Bull Market → símbolo BYMA/Rendi. Pass-through si no
 # está en el mapa. Crecé este dict si aparecen precios que no resuelven.
@@ -150,17 +182,83 @@ def _currency_from_sheet(hoja: str) -> str:
     return "USD" if "DOLAR" in (hoja or "").upper() else "ARS"
 
 
+def _col(norm_to_orig: dict, *prefixes: str) -> Optional[str]:
+    """Devuelve el nombre ORIGINAL de la primera columna cuyo header normalizado
+    arranque con alguno de los prefijos dados (p.ej. 'cpbt' matchea 'cpbt.')."""
+    for norm, orig in norm_to_orig.items():
+        if any(norm.startswith(p) for p in prefixes):
+            return orig
+    return None
+
+
+def _iso_date(s: str) -> str:
+    """dd/mm/aa(aa) → yyyy-mm-dd. El export de Movimientos trae el año en 2
+    dígitos (07/08/23), que el normalizer rechaza (exige \\d{4}). Lo pasamos a ISO
+    acá. Si no matchea, devolvemos el string crudo (que el normalizer intente)."""
+    s = (s or "").strip()
+    m = re.match(r"^(\d{1,2})[/\-](\d{1,2})[/\-](\d{2}|\d{4})$", s)
+    if not m:
+        return s
+    d, mo, y = m.groups()
+    if len(y) == 2:
+        y = f"20{y}" if int(y) < 70 else f"19{y}"
+    try:
+        di, moi, yi = int(d), int(mo), int(y)
+        if 1 <= moi <= 12 and 1 <= di <= 31:
+            return f"{yi:04d}-{moi:02d}-{di:02d}"
+    except ValueError:
+        pass
+    return s
+
+
+def _split_ref(s: str):
+    """Campo `Referencia/Cantidad/Precio` del layout Movimientos: si arranca con
+    un número → (cantidad, precio, ''); si no → (None, None, texto). El precio es
+    el segundo token (puede no estar). Maneja formato AR y point-decimal."""
+    s = (s or "").strip()
+    if not s:
+        return (None, None, "")
+    toks = s.split()
+    qty = _num(toks[0])
+    if qty is None:
+        return (None, None, s)          # referencia textual (CREDITO CTA. CTE., …)
+    price = _num(toks[1]) if len(toks) > 1 else None
+    return (qty, price, "")
+
+
+def _mk_row(idx, fecha, tipo, activo, cantidad, precio, monto, moneda, notas) -> RawRow:
+    def fmt(v):
+        return "" if v is None or v == "" else f"{v}"
+    return RawRow(row_index=idx, data={
+        "fecha":      fecha or "",
+        "tipo":       tipo,
+        "broker":     "Bull Market",
+        "activo":     activo or "",
+        "cantidad":   fmt(cantidad),
+        "precio":     fmt(precio),
+        "monto":      fmt(monto),
+        "monto_usd":  "",
+        "tc":         "",
+        "comisiones": "0",
+        "moneda":     moneda,
+        "notas":      notas or "",
+    })
+
+
 class BullMarketParser(Parser):
     format_id = "bullmarket"
     display_name = "Bull Market"
     is_supported = True
     platform = "bullmarket"
     platform_label = "Bull Market"
-    export_label = "Cuenta Corriente (Excel)"
+    export_label = "Cuenta Corriente (Excel) o Movimientos (CSV)"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}
-        return len(_REQUIRED_HEADERS & norm) >= 4
+        if len(_REQUIRED_HEADERS & norm) < len(_REQUIRED_HEADERS):
+            return False
+        # Tiene que ser reconocible como uno de los dos layouts (Comprobante o Cpbt.).
+        return "comprobante" in norm or any(h.startswith("cpbt") for h in norm)
 
     def parse(self, content: str, file_name: Optional[str] = None) -> ParseResult:
         result = ParseResult()
@@ -178,13 +276,30 @@ class BullMarketParser(Parser):
             return result
 
         norm_to_orig = {_norm_header(h): h for h in raw_headers}
-        if len(_REQUIRED_HEADERS & set(norm_to_orig.keys())) < 4:
+        norm_set = set(norm_to_orig.keys())
+        has_comprobante = "comprobante" in norm_set
+        has_cpbt = any(h.startswith("cpbt") for h in norm_set)
+        if (not (has_comprobante or has_cpbt)
+                or len(_REQUIRED_HEADERS & norm_set) < len(_REQUIRED_HEADERS)):
             result.parse_errors.append(RowError(
                 0, None, "BULLMARKET_HEADERS_MISMATCH",
-                "Este archivo no parece un export de Cuenta Corriente de Bull Market. "
-                "Bajalo desde Mi Cuenta → Cuenta Corriente → pestaña Pesos → Exportar.",
+                "Este archivo no parece un export de Bull Market. Bajá la Cuenta "
+                "Corriente (Mi Cuenta → Cuenta Corriente → Exportar) o el resumen "
+                "de Movimientos.",
             ))
             return result
+
+        # Materializamos para poder hacer dos pasadas en el layout Movimientos.
+        rows = list(reader)
+        # Dos layouts del mismo broker: 'Comprobante' (Cuenta Corriente, Excel) vs
+        # 'Cpbt.' con códigos + cantidad/precio pegados (Movimientos, CSV compacto).
+        if has_cpbt and not has_comprobante:
+            return self._parse_movimientos(rows, norm_to_orig)
+        return self._parse_cuenta_corriente(rows, norm_to_orig)
+
+    # ── Layout 1: Cuenta Corriente (Excel) ──────────────────────────────────
+    def _parse_cuenta_corriente(self, rows: list, norm_to_orig: dict) -> ParseResult:
+        result = ParseResult()
 
         def G(row, norm_key: str) -> str:
             col = norm_to_orig.get(norm_key)
@@ -196,7 +311,7 @@ class BullMarketParser(Parser):
         caucion_last_date = {}  # moneda → última fecha
         last_idx = 0
 
-        for idx, row in enumerate(reader, start=1):
+        for idx, row in enumerate(rows, start=1):
             last_idx = idx
             comprobante = G(row, "comprobante")
             comp_lc = comprobante.lower()
@@ -326,5 +441,100 @@ class BullMarketParser(Parser):
                 }))
 
         return result
+
+    # ── Layout 2: Movimientos (CSV compacto, códigos `Cpbt.`) ────────────────
+    def _parse_movimientos(self, rows: list, norm_to_orig: dict) -> ParseResult:
+        result = ParseResult()
+        cpbt_col = _col(norm_to_orig, "cpbt")
+        ref_col = _col(norm_to_orig, "referencia")
+        op_col = norm_to_orig.get("operado")
+        liq_col = norm_to_orig.get("liquida")
+        imp_col = norm_to_orig.get("importe")
+        esp_col = norm_to_orig.get("especie")
+        num_col = norm_to_orig.get("numero")
+
+        def gv(row, col) -> str:
+            return _strip(row.get(col, "")) if col else ""
+
+        # Pass 1: especies que aparecen en VTU$ (venta paridad = pata dólar del
+        # MEP). Sus compras en pesos son "compra de dólares" (ver abajo).
+        mep_especies = set()
+        for row in rows:
+            if gv(row, cpbt_col).upper().startswith("VTU"):
+                esp = _norm_ticker(gv(row, esp_col))
+                if esp:
+                    mep_especies.add(esp)
+
+        for idx, row in enumerate(rows, start=1):
+            operado = gv(row, op_col)
+            liquida = gv(row, liq_col)
+            if not operado and not liquida:
+                continue  # filas de leyenda / totales al pie (sin fecha)
+            code = gv(row, cpbt_col).upper()
+            if not code:
+                continue
+
+            fecha = _iso_date(operado or liquida)
+            numero = gv(row, num_col)
+            notas = f"Op. {numero}" if numero else ""
+            importe = _num(gv(row, imp_col))
+            especie = _norm_ticker(gv(row, esp_col))
+            qty, price, _txt = _split_ref(gv(row, ref_col))
+
+            # VTU$ (venta paridad): pata dólar del MEP. El Importe en pesos viene
+            # vacío → no hay cash acá. Su único efecto es netear el bono comprado
+            # (lo hacemos vía la especie MEP, abajo). Se omite.
+            if code.startswith("VTU"):
+                continue
+
+            # Especie dolarizada vía MEP: la COMPRA en pesos del bono fue para
+            # comprar dólares (que quedan en la cuenta USD, fuera de este export).
+            # La registramos como RETIRO de pesos y NO creamos la posición del bono
+            # (neto 0). Otras filas de esa especie sin monto (RTA, etc.) se omiten.
+            if especie and especie in mep_especies:
+                if code.startswith("CPRA") and importe is not None:
+                    nt = f"Dólar MEP vía {especie}" + (f" · {notas}" if notas else "")
+                    result.raw_rows.append(
+                        _mk_row(idx, fecha, "RETIRO", "", "", "", abs(importe), "ARS", nt))
+                continue
+
+            # Dividendos / renta-amortización: este export casi nunca trae el monto
+            # y los pocos que trae son ambiguos (bruto vs retención) → NO los
+            # importamos como ingreso para no inventar números. El detalle de
+            # dividendos está en el reporte de Resultados.
+            if code.startswith(("DIV", "CDIV", "RTA")):
+                continue
+
+            tipo = _MOV_CODE_MAP.get(code[:4].lower())
+            if tipo is None:
+                result.parse_errors.append(RowError(
+                    idx, "Cpbt.", "BULLMARKET_OP_UNKNOWN",
+                    f"Código de comprobante no soportado: '{code}'.",
+                ))
+                continue
+
+            # Cash (COBA/PAGA y SFCI): la DIRECCIÓN la manda el signo del Importe
+            # (en este export negativo = ingreso, positivo = egreso) → reconcilia
+            # por construcción.
+            if tipo in ("DEPOSITO", "RETIRO") and importe is not None:
+                tipo = "DEPOSITO" if importe < 0 else "RETIRO"
+
+            if tipo in ("COMPRA", "VENTA"):
+                if not especie:
+                    continue
+                monto = abs(importe) if importe is not None else None
+                q = abs(qty) if qty is not None else None
+                p = abs(price) if price is not None else None
+                # Bono per-100: si cantidad×precio ≈ 100×importe → el precio viene
+                # per-100 (lo pasamos a per-1). Para CEDEARs/acciones no dispara.
+                if q and p and monto and abs(q * p - 100 * monto) < abs(q * p - monto):
+                    p = p / 100.0
+                result.raw_rows.append(
+                    _mk_row(idx, fecha, tipo, especie, q, p, monto, "ARS", notas))
+            else:
+                # DEPOSITO / RETIRO / FCI: solo plata.
+                monto = abs(importe) if importe is not None else None
+                result.raw_rows.append(
+                    _mk_row(idx, fecha, tipo, "", "", "", monto, "ARS", notas))
 
         return result

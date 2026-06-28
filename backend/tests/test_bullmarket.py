@@ -293,5 +293,112 @@ class TestBullMarketNewTypes(unittest.TestCase):
         self.assertAlmostEqual(emit, sum(importes), places=2)
 
 
+class TestBullMarketMovimientos(unittest.TestCase):
+    """Layout 'Movimientos' (CSV compacto, distinto a la Cuenta Corriente):
+    columna `Cpbt.` con CÓDIGOS, cantidad+precio PEGADOS en un campo, signo de
+    Importe INVERTIDO (negativo = ingreso) y fechas dd/mm/aa (año 2 dígitos).
+    Datos SINTÉTICOS (no de nadie). Mismo `format_id='bullmarket'`: el parser
+    detecta el layout por el header y despacha solo."""
+
+    MOV = (
+        "Liquida;Operado;Cpbt.;Numero;Importe;Especie;Referencia/Cantidad/Precio\n"
+        "07/08/23;07/08/23;COBA;806694;-100000;;CREDITO CTA. CTE.\n"
+        "08/08/23;08/08/23;CPRA;3677542;7323,04;CRM;1                       7272.0000\n"
+        "13/12/23;11/12/23;VTAS;7635587;-899,65;IRSA;-1                       906.0000\n"
+        "18/09/23;18/09/23;PAGA;489915;3993,23;;TRANSFERENCIA VIA MEP\n"
+        # MEP: compra de AL30 en pesos + venta paridad (VTU$) → bono netea a 0; la
+        # compra en pesos se carga como RETIRO ("Dólar MEP vía AL30").
+        "20/12/23;20/12/23;CPRA;7950889;99025,15;AL30;267                    36903.0000\n"
+        "21/12/23;21/12/23;VTU$;7981867;;AL30;-267                   31068.3596\n"
+        # FCI: suscripción (cash out) → RETIRO ; rescate (con cantidad) → VENTA.
+        "23/08/24;23/08/24;SFCI;355160;10000;CONAAFA;\n"
+        "04/11/24;01/11/24;LRFD;466687;-11857;CONAAFA;-1.1972                    0.0000\n"
+        # Dividendos: este export no trae monto confiable → se omiten.
+        "18/08/23;18/08/23;DIV;763092;;AAPL;\n"
+        "11/06/24;11/06/24;DIV;427507;676,63;NVDA;\n"
+        # Bono RETENIDO (no MEP): precio viene per-100 → se pasa a per-1.
+        "12/07/24;12/07/24;CPRA;5856212;322778,86;TX26;450                    71370.0000\n"
+        # Filas de leyenda/totales al pie (sin fecha) → se saltean.
+        ";;;;-11,35;CDIV;PAGO DIV\n"
+        ";;;;6477189,46;CPRA;COMPRA\n"
+    )
+
+    def setUp(self):
+        self.r = BullMarketParser().parse(self.MOV, file_name="bmb.CSV")
+
+    def _by(self):
+        d = {}
+        for x in self.r.raw_rows:
+            d.setdefault(x.data["tipo"], []).append(x.data)
+        return d
+
+    def test_can_handle_cpbt_layout(self):
+        self.assertTrue(BullMarketParser().can_handle(
+            ["Liquida", "Operado", "Cpbt.", "Numero", "Importe", "Especie",
+             "Referencia/Cantidad/Precio"]))
+
+    def test_not_silently_empty(self):
+        # Regresión: antes el header 'Cpbt.' no matcheaba 'Comprobante' y todas las
+        # filas se salteaban → import VACÍO sin error. Ahora produce filas.
+        self.assertGreater(len(self.r.raw_rows), 0)
+        self.assertEqual(len(self.r.parse_errors), 0)
+
+    def test_row_count_and_types(self):
+        # 1 DEPOSITO + 2 COMPRA (CRM, TX26) + 2 VENTA (IRSA, CONAAFA-rescate)
+        # + 3 RETIRO (PAGA, MEP-AL30, SFCI) = 8. VTU$, DIV×2 y leyenda → 0.
+        self.assertEqual(len(self.r.raw_rows), 8)
+        tipos = sorted(x.data["tipo"] for x in self.r.raw_rows)
+        self.assertEqual(
+            tipos, ["COMPRA", "COMPRA", "DEPOSITO", "RETIRO", "RETIRO", "RETIRO",
+                    "VENTA", "VENTA"])
+
+    def test_inverted_signs_cash(self):
+        by = self._by()
+        dep = by["DEPOSITO"][0]
+        self.assertEqual(dep["activo"], "")
+        self.assertEqual(float(dep["monto"]), 100000.0)   # COBA -100000 → DEPOSITO
+        pagos = [d for d in by["RETIRO"] if "MEP" not in d["notas"]
+                 and float(d["monto"]) == 3993.23]
+        self.assertEqual(len(pagos), 1)                    # PAGA +3993.23 → RETIRO
+
+    def test_merged_qty_price_split_and_iso_date(self):
+        compra_crm = next(d for d in self._by()["COMPRA"] if d["activo"] == "CRM")
+        self.assertEqual(float(compra_crm["cantidad"]), 1.0)
+        self.assertEqual(float(compra_crm["precio"]), 7272.0)
+        self.assertEqual(float(compra_crm["monto"]), 7323.04)
+        self.assertEqual(compra_crm["fecha"], "2023-08-08")  # dd/mm/aa → ISO
+        venta_irsa = next(d for d in self._by()["VENTA"] if d["activo"] == "IRSA")
+        self.assertEqual(float(venta_irsa["cantidad"]), 1.0)  # -1 → abs
+        self.assertEqual(venta_irsa["fecha"], "2023-12-11")   # Operado, no Liquida
+
+    def test_mep_nets_bond_and_records_peso_outflow(self):
+        # AL30 NO queda como tenencia; la compra en pesos es un RETIRO "Dólar MEP".
+        activos = {x.data["activo"] for x in self.r.raw_rows}
+        self.assertNotIn("AL30", activos)
+        mep = [d for d in self._by()["RETIRO"] if "Dólar MEP vía AL30" in d["notas"]]
+        self.assertEqual(len(mep), 1)
+        self.assertEqual(float(mep[0]["monto"]), 99025.15)
+        self.assertEqual(mep[0]["activo"], "")
+
+    def test_dividends_skipped(self):
+        # DIV/CDIV/RTA no se importan (sin monto confiable) → no hay DIVIDENDO/FEE.
+        self.assertNotIn("DIVIDENDO", self._by())
+        self.assertNotIn("FEE", self._by())
+
+    def test_fci_cash_reconciles(self):
+        by = self._by()
+        susc = [d for d in by["RETIRO"] if float(d["monto"]) == 10000.0]
+        self.assertEqual(len(susc), 1)                     # SFCI → RETIRO
+        rescate = next(d for d in by["VENTA"] if d["activo"] == "CONAAFA")
+        self.assertEqual(float(rescate["monto"]), 11857.0)  # LRFD → VENTA
+        self.assertAlmostEqual(float(rescate["cantidad"]), 1.1972, places=4)
+
+    def test_held_bond_per100_to_per1(self):
+        tx26 = next(d for d in self._by()["COMPRA"] if d["activo"] == "TX26")
+        # precio venía per-100 (71370) → per-1 = 713.70
+        self.assertAlmostEqual(float(tx26["precio"]), 713.70, places=2)
+        self.assertEqual(float(tx26["cantidad"]), 450.0)
+
+
 if __name__ == "__main__":
     unittest.main()
