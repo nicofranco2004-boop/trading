@@ -136,9 +136,14 @@ def _classify_desc(desc_norm: str) -> str:
     # va acá (antes que "rescate" abajo). "dividendo en especie" va acá (antes que
     # "dividendo" suelto abajo, que sería renta en efectivo) — trae nominales, no
     # cash; ruteado a renta caía como FEE monto 0 ("comisión aislada necesita monto").
+    # ⭐ "canje s/aviso de suscripción" = CANJE de bono: el viejo SALE (cantidad −) y
+    # el nuevo ENTRA (cantidad +), normalmente con importe 0. Va a `corporate` (no a
+    # renta): la rama corporate maneja la cantidad (VENTA viejo / COMPRA nuevo) Y el
+    # cash cuando lo hay (canje liquidado en efectivo → DIVIDENDO/FEE). Ruteado a
+    # renta perdía la cantidad → dejaba el bono nuevo/viejo como posición fantasma.
     if (d.startswith("dividendo en acciones") or d.startswith("dividendo en especie")
             or d.startswith("split") or d.startswith("acreditacion cambio de ratio")
-            or d.startswith("rescate parcial")):
+            or d.startswith("rescate parcial") or d.startswith("canje s/aviso")):
         return "corporate"
     # Operación a plazo / diferida: trade con cantidad + cash pero sin precio
     # unitario (precio=-1). Se resuelve por el signo de Importe.
@@ -154,14 +159,14 @@ def _classify_desc(desc_norm: str) -> str:
         return "fee"
     # Ingresos por título (entra) o retención (sale): cupón, dividendo en efectivo,
     # amortización, intereses devengados, prima por rescate, rescate (cash de un
-    # bono que se rescata; el "rescate parcial" que baja nominal ya salió arriba),
-    # canje s/aviso de suscripción (cash de un canje de bono, sin cantidad) y baja
-    # de derecho de suscripción (cash por los derechos; la cantidad son DERECHOS, no
-    # acciones → la renta los ignora y solo cuenta el cash).
+    # bono que se rescata; el "rescate parcial" que baja nominal ya salió arriba) y
+    # baja de derecho de suscripción (cash por los derechos; la cantidad son
+    # DERECHOS, no acciones → la renta los ignora y solo cuenta el cash). El "canje
+    # s/aviso" ya salió arriba en `corporate` (puede traer cantidad).
     if (d.startswith("renta") or d.startswith("dividendo") or d.startswith("amortizacion")
             or d.startswith("pago complementario") or d.startswith("prima por rescate")
             or d.startswith("intereses devengados") or d.startswith("rescate")
-            or d.startswith("canje s/aviso") or d.startswith("baja derecho")):
+            or d.startswith("baja derecho")):
         return "renta"
     if d.startswith("movimiento manual"):
         return "manual"

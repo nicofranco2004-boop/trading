@@ -325,6 +325,23 @@ class BalanzMovimientosCanjeArancelesTest(unittest.TestCase):
         self.assertNotIn("cantidad", div)            # NO se emite cantidad (no es venta)
         self.assertAlmostEqual(float(div["monto"]), 849.55, places=2)
 
+    def test_canje_con_cantidad_es_intercambio_de_bono(self):
+        # Canje de bono (debt exchange): el viejo SALE (cantidad −) y el nuevo ENTRA
+        # (cantidad +), con importe 0. Antes caía en renta (cash-only) → la cantidad
+        # se IGNORABA y el bono quedaba como posición fantasma. Ahora → corporate:
+        # VENTA del viejo (_corporate_close) + COMPRA del nuevo.
+        res = self._parse(
+            "Canje s/Aviso Suscripcion 23/10/20 / IRC1O,IRC1O,Corporativos,2020-10-28,-9,0,2020-10-28,,0",
+            "Canje s/Aviso de Suscripción 22/10/20 / 23231,IRC9O,Corporativos,2020-11-12,9,0,2020-11-12,,0",
+        )
+        self.assertEqual(res.parse_errors, [])
+        by = self._by_tipo(res)
+        venta = next(d for d in by["VENTA"] if d["activo"] == "IRC1O")
+        self.assertEqual(float(venta["cantidad"]), 9.0)
+        self.assertTrue(venta.get("_corporate_close"))      # cierra el bono viejo
+        compra = next(d for d in by["COMPRA"] if d["activo"] == "IRC9O")
+        self.assertEqual(float(compra["cantidad"]), 9.0)    # entra el bono nuevo
+
     def test_dividendo_en_especie_positivo_suma_nominales(self):
         # Antes caía como FEE monto 0 ('comisión aislada'). Ahora: nominales gratis.
         res = self._parse(
