@@ -440,6 +440,37 @@ def render_dashboard_prompt(tier: str = "pro") -> str:
     )
 
 
+def render_fundamentals_category_prompt(tier: str = "pro") -> str:
+    view = "Una dimensión fundamental de una acción (precio/valuación, crecimiento, rentabilidad o solidez)"
+    pkt = (
+        "empresa (nombre, sector), la categoría pedida con su score 0-100 y sus "
+        "métricas (valor + status verde/ámbar/rojo + dirección mejor↑/↓), el score "
+        "global, y precio actual vs valor justo de los analistas."
+    )
+    free = _maybe_free("fundamentals.category", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Qué dice esta dimensión sobre la EMPRESA (no sobre la cartera del user), traducida a lenguaje tangible — explicá qué significa el número, no lo repitas crudo.",
+            "Las métricas que más mueven el veredicto de la categoría (las verdes y las rojas), no todas por igual.",
+            "Si aplica, cómo se conecta con el precio que se paga hoy (una empresa sólida puede estar cara, y al revés).",
+        ],
+        insight_examples=[
+            "La rentabilidad es excepcional: de cada 100 dólares que factura se queda con 27 de ganancia neta y exprime el capital de los accionistas a un ROE de 141%, muy por encima de una empresa promedio.",
+            "El crecimiento se enfrió: los ingresos a 3 y 5 años crecen apenas ~2% anual, lejos de lo que un P/E de 34 parece descontar.",
+        ],
+        pitfalls=[
+            "NUNCA prescribir operativa: prohibido comprá, vendé, entrá, conviene, evitá. Describís la foto fundamental, no das órdenes.",
+            "SOLO números del packet. Cero invención de cifras, productos, noticias o eventos.",
+            "Traducí la jerga (P/E, ROE, EV/EBITDA, payout) a algo concreto; no la dejes cruda.",
+            "No predecir el precio futuro de la acción; usá lenguaje probabilístico para los riesgos.",
+        ],
+    )
+
+
 def render_position_prompt(tier: str = "pro") -> str:
     view = "Detalle de posición individual"
     pkt = (

@@ -20,7 +20,7 @@ import AssetLogo from '../AssetLogo'
 import { api } from '../../utils/api'
 import { inferType } from '../../utils/tickers'
 import { track } from '../../utils/track'
-import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
+import AnalysisDrawer from '../ai/AnalysisDrawer'
 
 import TickerSearch from './TickerSearch'
 import CategoryDetail from './CategoryDetail'
@@ -109,7 +109,7 @@ function AxisCard({ title, read }) {
 }
 
 export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false, onCompareWith }) {
-  const coachDrawer = useCoachDrawer()
+  const [analyzeCat, setAnalyzeCat] = useState(null)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -307,10 +307,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
                     question={cat.question}
                     score={cat.score}
                     metrics={cat.metrics}
-                    onAsk={() => coachDrawer.open(
-                      `Sobre ${data.company_name || data.ticker} (${data.ticker}) — ${cat.label}: ${cat.question || ''} `
-                      + `Explicámelo en criollo mirando sus números fundamentales y cómo se compara con el resto del sector.`
-                    )}
+                    onAsk={() => setAnalyzeCat(cat)}
                   />
                 ))}
               </div>
@@ -318,6 +315,19 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
             </section>
           )}
         </div>
+      )}
+
+      {/* Análisis IA por categoría — patrón AnalysisDrawer con prompt curado
+          (topic fundamentals.category), igual que el resto de Rendi. */}
+      {analyzeCat && data?.available && (
+        <AnalysisDrawer
+          open
+          onClose={() => setAnalyzeCat(null)}
+          screen="fundamentals.category"
+          params={{ asset: data.ticker, category: analyzeCat.key }}
+          title="Análisis IA"
+          subtitle={`${data.company_name || data.ticker} — ${analyzeCat.label}`}
+        />
       )}
     </div>
   )

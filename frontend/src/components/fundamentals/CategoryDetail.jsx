@@ -130,8 +130,8 @@ export default function CategoryDetail({ icon: Icon, label, question, score, met
             <button
               type="button"
               onClick={onAsk}
-              title="Analizar con el Coach IA"
-              aria-label="Analizar esta categoría con el Coach IA"
+              title="Analizar esta categoría con IA"
+              aria-label="Analizar esta categoría con IA"
               className="text-xs font-semibold text-data-violet hover:text-data-violet/80 px-2 py-1 rounded-md hover:bg-data-violet/10 transition-colors"
             >
               Analizar
