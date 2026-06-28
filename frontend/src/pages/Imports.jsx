@@ -7,6 +7,7 @@ import Pill from '../components/Pill'
 import EmptyState from '../components/EmptyState'
 import Modal from '../components/Modal'
 import ImportWizard from '../components/import/ImportWizard'
+import TenenciaUpload from '../components/import/TenenciaUpload'
 import { api } from '../utils/api'
 
 // Flag de localStorage: si el user nunca completó un import → al confirmar
@@ -26,6 +27,7 @@ export default function Imports() {
   const [confirmRedo, setConfirmRedo] = useState(null)     // batch object pendiente de "rehacer"
   const [redoPreview, setRedoPreview] = useState(null)     // {preview, original_batch_id} → abre wizard
   const [showWizard, setShowWizard] = useState(false)      // wizard de import nuevo (no redo)
+  const [showPpiEstado, setShowPpiEstado] = useState(false)  // modal "completar con Estado de Cuenta" (PPI Excel)
   const [importJustConfirmed, setImportJustConfirmed] = useState(false)  // marca interna: el wizard pasó por onConfirmed
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
@@ -193,6 +195,15 @@ export default function Imports() {
                   ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
                   : <Trash2 size={12} strokeWidth={1.75} />}
                 Limpiar broker
+              </button>
+            )}
+            {!isFirstUse && (
+              <button
+                onClick={() => setShowPpiEstado(true)}
+                title="Completá tu cartera de PPI subiendo el Estado de Cuenta (Excel). Agrega las posiciones que los Movimientos no reconstruyen, sin duplicar."
+                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
+              >
+                <Upload size={12} strokeWidth={1.75} /> Estado de Cuenta PPI
               </button>
             )}
             <button
@@ -366,6 +377,26 @@ export default function Imports() {
             setImportJustConfirmed(true)
             load()
           }}
+        />
+      )}
+
+      {showPpiEstado && (
+        <TenenciaUpload
+          onClose={() => setShowPpiEstado(false)}
+          onConfirmed={() => { setInfo('Cartera completada con el Estado de Cuenta de PPI.'); load() }}
+          title="Completá tu cartera con el Estado de Cuenta (PPI)"
+          introText="Los Movimientos de PPI no traen las posiciones que ya tenías antes. Subí el Estado de Cuenta (Excel) y completamos lo que falta — sin tocar lo que ya está."
+          brokerMatch={/ppi/i}
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          fileLabel="Estado de Cuenta (Excel)"
+          fileHint={[
+            'Entrá a tu cuenta de PPI desde la web.',
+            'Quedate en la pantalla principal, donde aparece tu cartera.',
+            'Arriba a la derecha, tocá el botón Exportar.',
+            'Elegí Excel (no PDF) y descargá el archivo.',
+          ]}
+          format="ppi"
+          docLabel="el Estado de Cuenta"
         />
       )}
 

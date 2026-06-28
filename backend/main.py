@@ -17403,14 +17403,15 @@ async def import_inspect(
 async def import_tenencia_preview(
     file: UploadFile = File(...),
     broker: str = Form(...),
+    format: Optional[str] = Form(None),
     uid: int = Depends(get_current_user),
 ):
-    """Tenencia valorizada (PDF) de Bull Market = la FOTO de posiciones actuales.
-    Reconcilia contra lo que el usuario YA tiene (reconstruido de la Cuenta
-    Corriente): completa SOLO el hueco (lo comprado antes de la ventana de la CC)
-    como lotes de apertura, sin duplicar lo existente. Deja un batch 'preview' que
-    el confirm EXISTENTE (/api/imports/confirm) aplica. Devuelve el detalle del
-    hueco para mostrar 'vamos a completar estas N posiciones'."""
+    """FOTO de posiciones actuales = Tenencia valorizada (PDF) de Bull Market, o
+    Estado de Cuenta (Excel) de PPI cuando format='ppi'. Reconcilia contra lo que
+    el usuario YA tiene (reconstruido de los movimientos): completa SOLO el hueco
+    (lo comprado antes de la ventana del export) como lotes de apertura, sin
+    duplicar lo existente. Deja un batch 'preview' que el confirm EXISTENTE
+    (/api/imports/confirm) aplica. Devuelve el detalle del hueco."""
     cap = _import_pipeline.MAX_FILE_BYTES
     chunks: List[bytes] = []
     total = 0
@@ -17424,44 +17425,108 @@ async def import_tenencia_preview(
             raise HTTPException(400, f"El archivo excede el límite de {cap // 1_000_000} MB.")
     data = b"".join(chunks)
 
-    if not _import_excel.is_pdf(data):
-        raise HTTPException(400, "La Tenencia valorizada se baja en PDF — subí ese archivo.")
-    try:
-        text = _import_excel.pdf_to_text(data)
-    except ValueError as ex:
-        raise HTTPException(400, str(ex))
-    if not _import_tenencia.looks_like_tenencia(text):
-        raise HTTPException(400, "Este PDF no parece la Tenencia valorizada de Bull Market "
-                                 "(Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder).")
-    snap = _import_tenencia.parse_bullmarket_tenencia(text)
+    is_ppi = (format or "").strip().lower().startswith("ppi")
+    if is_ppi:
+        # PPI: Estado de Cuenta en Excel (no PDF). Grilla con preámbulo + secciones
+        # → filas crudas (xlsx_to_rows), no xlsx_to_csv (que asumiría header).
+        if not _import_excel.is_xlsx(data):
+            raise HTTPException(400, "El Estado de Cuenta de PPI se baja en Excel (.xlsx) — subí ese archivo.")
+        try:
+            rows = _import_excel.xlsx_to_rows(data)
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+        if not _import_tenencia.looks_like_ppi_tenencia(rows):
+            raise HTTPException(400, "Este Excel no parece el Estado de Cuenta de PPI "
+                                     "(Mi cuenta → Estado de cuenta).")
+        snap = _import_tenencia.parse_ppi_tenencia(rows)
+        parser_format, default_name = "ppi_tenencia", "EstadoDeCuenta.xlsx"
+        broker_hint = "Importá primero los Movimientos de PPI."
+    else:
+        if not _import_excel.is_pdf(data):
+            raise HTTPException(400, "La Tenencia valorizada se baja en PDF — subí ese archivo.")
+        try:
+            text = _import_excel.pdf_to_text(data)
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+        if not _import_tenencia.looks_like_tenencia(text):
+            raise HTTPException(400, "Este PDF no parece la Tenencia valorizada de Bull Market "
+                                     "(Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder).")
+        snap = _import_tenencia.parse_bullmarket_tenencia(text)
+        parser_format, default_name = "bullmarket_tenencia", "Tenencia.pdf"
+        broker_hint = "Importá primero la Cuenta Corriente."
+
     if not snap.holdings:
-        raise HTTPException(400, "No pudimos leer ninguna tenencia del PDF. Escribinos y lo revisamos.")
+        raise HTTPException(400, "No pudimos leer ninguna tenencia del archivo. Escribinos y lo revisamos.")
 
     conn = get_db()
     try:
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
-            raise HTTPException(400, f"No encontramos el broker '{broker}'. Importá primero la Cuenta Corriente.")
-        from importing.persister import broker_pair
-        pair = broker_pair(conn, uid, broker)
-        ph = ",".join("?" * len(pair))
-        current: dict = {}
-        for r in conn.execute(
-            f"SELECT asset, SUM(quantity) q FROM positions "
-            f"WHERE user_id=? AND is_cash=0 AND broker IN ({ph}) GROUP BY asset",
-            (uid, *pair),
-        ):
-            current[r["asset"]] = current.get(r["asset"], 0.0) + (r["q"] or 0)
-
-        rec = _import_tenencia.compute_reconcile(current, snap)
+            raise HTTPException(400, f"No encontramos el broker '{broker}'. {broker_hint}")
         seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
-        seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
+
+        if is_ppi:
+            # PPI rutea las posiciones en dólares al sibling '<broker> · USD' (igual
+            # que los Movimientos). Particionamos la foto por moneda y conciliamos
+            # cada partición contra SU sub-broker. Si hay holdings en USD y el
+            # sibling no existe (Estado subido antes que los Movimientos), lo CREAMOS
+            # → las dólar concilian contra un broker USD real (sin falsos "vendidos?"
+            # ni mezclar magnitudes USD en el cash ARS del padre).
+            usd_broker = broker
+            if any(h.currency == "USD" for h in snap.holdings):
+                parent_row = conn.execute(
+                    "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
+                usd_broker = _ensure_usd_sibling(conn, uid, parent_row)["name"]
+
+            def _cur_qty(bname):
+                d = {}
+                for r in conn.execute(
+                    "SELECT asset, SUM(quantity) q FROM positions "
+                    "WHERE user_id=? AND is_cash=0 AND broker=? GROUP BY asset",
+                    (uid, bname),
+                ):
+                    d[r["asset"]] = (r["q"] or 0)
+                return d
+
+            seed_txs = []
+            rec = _import_tenencia.ReconcileResult()
+            for ccy in ("ARS", "USD"):
+                hs = [h for h in snap.holdings if h.currency == ccy]
+                if not hs:
+                    continue
+                sub = broker if ccy == "ARS" else usd_broker
+                snap_ccy = _import_tenencia.TenenciaSnapshot(holdings=hs, date=snap.date)
+                r1 = _import_tenencia.compute_reconcile(_cur_qty(sub), snap_ccy)
+                seed_txs += _import_tenencia.build_tenencia_seed_txs(sub, r1, seed_date, currency=ccy)
+                rec.matched += r1.matched
+                rec.to_seed += r1.to_seed
+                rec.over += r1.over
+                rec.not_in_snapshot += r1.not_in_snapshot
+            # row_index ÚNICO entre particiones: build_tenencia_seed_txs reinicia en
+            # -20000 en cada llamada → ARS y USD colisionarían y load_session_for_confirm
+            # colapsaría el mapa raw_id↔row_index (rompe el revert/audit). Re-numeramos.
+            for i, t in enumerate(seed_txs):
+                t.row_index = -20000 - i
+        else:
+            from importing.persister import broker_pair
+            pair = broker_pair(conn, uid, broker)
+            ph = ",".join("?" * len(pair))
+            current: dict = {}
+            for r in conn.execute(
+                f"SELECT asset, SUM(quantity) q FROM positions "
+                f"WHERE user_id=? AND is_cash=0 AND broker IN ({ph}) GROUP BY asset",
+                (uid, *pair),
+            ):
+                current[r["asset"]] = current.get(r["asset"], 0.0) + (r["q"] or 0)
+            rec = _import_tenencia.compute_reconcile(current, snap)
+            seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
+
         if not seed_txs:
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
-                    "message": "Tu cartera ya coincide con la Tenencia — no hay nada que completar."}
+                    "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
         with conn:
             sid = _import_pipeline.store_preview_txs(
-                conn, uid, broker=broker, parser_format="bullmarket_tenencia",
-                file_name=(file.filename or "Tenencia.pdf"), txs=seed_txs)
+                conn, uid, broker=broker, parser_format=parser_format,
+                file_name=(file.filename or default_name), txs=seed_txs)
         return {
             "session_id": sid,
             "date": snap.date,

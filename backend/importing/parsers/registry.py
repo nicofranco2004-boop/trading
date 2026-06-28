@@ -14,6 +14,7 @@ from .iol import IolParser
 from .schwab import SchwabParser
 from .bullmarket import BullMarketParser
 from .ieb import IebParser
+from .ppi import PpiParser
 
 
 _PARSERS: List[Parser] = [
@@ -22,6 +23,11 @@ _PARSERS: List[Parser] = [
     BinanceFuturesTradeHistoryParser(),
     BinanceTransactionHistoryParser(),
     CocosParser(),
+    # PPI antes de los parsers de Balanz: un export de PPI tiene Descripción +
+    # Moneda + Importe (que BalanzMovimientos también pediría), pero solo PPI trae
+    # `Saldo`. PpiParser.can_handle exige Saldo → no roba archivos de Balanz; y al
+    # ir primero, agarra los de PPI antes de que BalanzMovimientos los matchee.
+    PpiParser(),
     BalanzParser(),
     BalanzMovimientosParser(),
     BalanzResultadosParser(),

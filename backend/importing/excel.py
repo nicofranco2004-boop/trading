@@ -144,6 +144,35 @@ def xlsx_to_csv(file_bytes: bytes) -> str:
         wb.close()
 
 
+def xlsx_to_rows(file_bytes: bytes, sheet_index: int = 0) -> "list[list]":
+    """Filas CRUDAS (valores sin convertir) de UNA hoja del .xlsx.
+
+    A diferencia de `xlsx_to_csv`, NO asume que la fila 0 es el header, NO une
+    hojas y NO stringifica: devuelve los valores tal cual los da openpyxl
+    (None / str / int / float / datetime). Lo usan parsers cuya grilla tiene
+    preámbulo + secciones (ej. el "Estado de Cuenta" de PPI), donde tratar la
+    fila 0 como header rompería la estructura.
+
+    Levanta ValueError con mensaje claro si el archivo no se puede abrir."""
+    try:
+        import openpyxl
+    except ImportError as ex:  # pragma: no cover
+        raise ValueError("Falta la librería openpyxl para leer Excel.") from ex
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    except Exception as ex:
+        raise ValueError(
+            "No pudimos abrir el Excel. Verificá que sea un .xlsx válido."
+        ) from ex
+    try:
+        if not wb.worksheets:
+            raise ValueError("El Excel no tiene hojas.")
+        idx = sheet_index if 0 <= sheet_index < len(wb.worksheets) else 0
+        return [list(r) for r in wb.worksheets[idx].iter_rows(values_only=True)]
+    finally:
+        wb.close()
+
+
 # ─── Tablas HTML (.xls de IOL y similares) ───────────────────────────────────
 
 def _decode_html_bytes(file_bytes: bytes) -> str:

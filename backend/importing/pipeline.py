@@ -388,7 +388,7 @@ def run_preview(
         # también son brokers ARS. Sin esto, fmt_base=None → no ancla la moneda del
         # padre → un broker auto-creado puede inferirse USD/USDT por mayoría de filas
         # dólar-MEP (un export AR trae muchas filas USD por las compras MEP).
-        'balanz_resultados': 'ARS', 'ieb': 'ARS',
+        'balanz_resultados': 'ARS', 'ieb': 'ARS', 'ppi': 'ARS',
         'binance': 'USDT', 'schwab': 'USD', 'ibkr': 'USD',
     }
     fmt_base = FORMAT_BASE_CURRENCY.get(parser.format_id)

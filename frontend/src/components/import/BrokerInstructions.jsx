@@ -78,6 +78,16 @@ function IebLogo({ size = 18 }) {
   )
 }
 
+function PpiLogo({ size = 18 }) {
+  // PPI (Portafolio Personal Inversiones): "ppi" en turquesa sobre fondo oscuro.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect width="24" height="24" rx="4" fill="#0E2A38" />
+      <text x="12" y="16" textAnchor="middle" fontFamily="-apple-system,sans-serif" fontWeight="800" fontSize="10" fill="#2FBFB3">ppi</text>
+    </svg>
+  )
+}
+
 // Diccionario broker → contenido. El user va a actualizar `steps` y `summary`
 // cuando mande los ejemplos reales.
 const BROKERS = [
@@ -168,6 +178,19 @@ const BROKERS = [
       'Descargá el archivo (.xlsx) y subílo acá tal cual, sin abrirlo ni convertirlo.',
     ],
     parserNote: 'Importamos compras y ventas (en pesos y en dólares), dividendos, renta y amortización de bonos, comisiones, compra/venta de dólar (MEP) y el interés de tus cauciones. Detectamos la moneda de cada operación. Si el export no llega hasta el inicio de tu cuenta, te pedimos confirmar tu saldo/tenencia inicial en el paso siguiente. Los fondos comunes (FCI) abiertos hoy, por ahora, cargalos a mano desde Posiciones.',
+  },
+  {
+    id: 'ppi',
+    label: 'PPI',
+    Logo: PpiLogo,
+    summary: 'Subí el export de Movimientos (Excel) y reconstruimos tus operaciones, FCI, dividendos y caja.',
+    steps: [
+      'Entrá a tu cuenta de PPI desde la WEB (Portfolio Personal). ⚠️ Desde la web, no la app.',
+      'Andá a Actividad → Todos los movimientos.',
+      'Filtrá por fecha: desde que abriste la cuenta hasta hoy (cuanto más atrás, mejor).',
+      'Tocá Exportar y descargá el Excel (.xlsx). Subílo acá tal cual, sin abrirlo ni convertirlo.',
+    ],
+    parserNote: 'Importamos compras y ventas (en pesos y en dólares MEP/cable), suscripciones y rescates de FCI, dividendos, renta y amortización de bonos, comisiones y retenciones, depósitos y retiros, y el interés de tus cauciones. Las sub-cuentas en dólares se consolidan en una sola. Si el export no llega hasta el inicio de tu cuenta, te pedimos confirmar tu tenencia inicial. Por ahora, las operaciones de dólar SPOT y las transferencias de títulos entrantes quedan para revisar a mano.',
   },
 ]
 

@@ -216,3 +216,217 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
             currency=cur_ccy, price_per1=value / qty, per100=per100,
             name=rm.group(2).strip()[:60]))
     return snap
+
+
+# ─── PPI — "Estado de Cuenta" (Excel, foto de tenencia) ──────────────────────
+# Mismo rol que la Tenencia de Bull Market: completa las posiciones de apertura
+# que los Movimientos (ventana) no reconstruyen. Reusa Holding/TenenciaSnapshot
+# + compute_reconcile + build_tenencia_seed_txs. Estructura del Excel: preámbulo
+# (TITULAR/COMITENTE/FECHA/TOTAL CARTERA) + "POR TIPO DE ACTIVO" + secciones
+# (MONEDAS, ACCIONES, BONOS, CEDEARS, FCI, ONS), cada una con un row de nombre,
+# un row de headers de columna, filas de tenencia y un SUBTOTAL.
+
+# Encabezado de sección (deaccent+lower) → asset_type. MONEDAS = cash → se saltea.
+_PPI_SECTION_TYPE = {
+    "acciones": "STOCK",
+    "bonos": "BOND",
+    "ons": "BOND",
+    "obligaciones negociables": "BOND",
+    "cedears": "CEDEAR",
+    "fci": "FUND",
+    "fcis": "FUND",
+    "fondos": "FUND",
+    "letras": "BOND",
+    "titulos publicos": "BOND",
+}
+_PPI_SECTION_NAMES = set(_PPI_SECTION_TYPE.keys()) | {"monedas"}
+
+
+def _deaccent(s: str) -> str:
+    return ("" if s is None else str(s)).translate(str.maketrans("áéíóúüÁÉÍÓÚÜ", "aeiouuAEIOUU"))
+
+
+def _cell_s(v) -> str:
+    return "" if v is None else str(v).strip()
+
+
+def _ppi_num(v):
+    """Número de una celda cruda de openpyxl: int/float directo, o string que
+    puede venir point-decimal ('845320.75') o formato AR ('1.234.567,89')."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if not s:
+        return None
+    if "," in s:                      # formato AR: '.' miles, ',' decimal
+        s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _ppi_extract_date(rows) -> Optional[str]:
+    """Fecha de la foto: la celda bajo 'FECHA' (DD/MM/YYYY) o un datetime, en el
+    preámbulo. Más confiable que el título de la hoja o el nombre del archivo."""
+    for r in rows[:8]:
+        for c in r:
+            if hasattr(c, "strftime"):          # datetime/date de openpyxl
+                try:
+                    return c.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+            m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", _cell_s(c))
+            if m:
+                d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if 1 <= mo <= 12 and 1 <= d <= 31:   # ignora fechas imposibles (31/13/…)
+                    return f"{y:04d}-{mo:02d}-{d:02d}"
+    return None
+
+
+def looks_like_ppi_tenencia(rows) -> bool:
+    """Heurística para el Estado de Cuenta de PPI (xlsx → filas crudas)."""
+    flat = " ".join(_deaccent(_cell_s(c)).lower() for r in rows[:30] for c in r)
+    return "estado de cuenta" in flat and "por tipo de activo" in flat
+
+
+def _ppi_currency(section_type: str, ticker: str, name: str,
+                  vmc: Optional[float], vc: Optional[float]) -> str:
+    """Moneda de un holding. FCI: el tag del nombre/especie manda (.DOL./Dólar →
+    USD; .PESOS/Pesos → ARS). El resto: si VALOR MONEDA COTIZACIÓN difiere de
+    VALOR CORRIENTE, la fila está valuada en USD (col6 = equivalente en ARS);
+    si coinciden, está en ARS. (En este export PPI cotiza los bonos en pesos,
+    así que casi todo da ARS salvo ONS y FCI dólar.)"""
+    tag = _deaccent(f"{ticker} {name}").upper()
+    if section_type == "FUND":
+        # El tag del nombre/especie manda. PESOS primero (un FCI "Dólar Linked"
+        # dice "Dólar" pero cotiza en PESOS), después dólar. Sin tag → ARS por
+        # defecto (los FCI dólar de PPI SIEMPRE traen .DOL/USD/Dólar). NO aplicamos
+        # la regla numérica a FCI: ahí la VMC suele venir por-cuotaparte y difiere
+        # de VC aunque el fondo sea en pesos → mal-clasificaría ARS como USD.
+        # PESOS y "Dólar LINKED" (dolar-linked = se suscribe/cotiza en PESOS) van
+        # primero, después el dólar genuino.
+        if "PESO" in tag or "LINKED" in tag:
+            return "ARS"
+        if "DOL" in tag or "USD" in tag:
+            return "USD"
+        return "ARS"
+    # Acciones/CEDEARs/bonos/ONs: USD si VALOR MONEDA COTIZACIÓN difiere de VALOR
+    # CORRIENTE (col6 = equivalente en ARS), o si sólo vino la cotización (sin VC).
+    if vmc is not None and vc:
+        return "USD" if abs(vmc - vc) / max(abs(vc), 1.0) > 0.005 else "ARS"
+    if vmc is not None and not vc:
+        return "USD"
+    return "ARS"
+
+
+def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
+    """Parsea el Estado de Cuenta de PPI (filas crudas de `excel.xlsx_to_rows`)
+    a un TenenciaSnapshot de posiciones. NO seedea la sección MONEDAS (cash) —
+    eso lo reconstruyen los Movimientos. La moneda de cada holding se resuelve
+    por sección + (VALOR MONEDA COTIZACIÓN vs VALOR CORRIENTE) + tag del FCI."""
+    snap = TenenciaSnapshot()
+    snap.date = _ppi_extract_date(rows)
+
+    section_type: Optional[str] = None   # asset_type, "SKIP" (monedas) o None
+    cols: dict = {}                      # clave canónica → índice de columna
+    seen = set()
+
+    for raw in rows:
+        cells = list(raw)
+        svals = [_cell_s(c) for c in cells]
+        nonempty = [v for v in svals if v]
+        if not nonempty:
+            continue
+        c0 = _deaccent(svals[0]).lower() if svals else ""
+        c0u = c0.strip()
+
+        # Total cartera (preámbulo) — para reconciliación/aviso.
+        if c0u.startswith("total cartera"):
+            for v in svals[1:]:
+                n = _ppi_num(v)
+                if n is not None:
+                    snap.total_ars = n
+                    break
+            continue
+
+        # Row de nombre de sección: UNA sola celda no vacía y es una sección conocida.
+        if len(nonempty) == 1 and c0u in _PPI_SECTION_NAMES:
+            section_type = "SKIP" if c0u == "monedas" else _PPI_SECTION_TYPE[c0u]
+            cols = {}
+            continue
+
+        # Row de SUBTOTAL → cierra la sección.
+        if c0u == "subtotal":
+            section_type = None
+            cols = {}
+            continue
+
+        # Row de headers de columna (ESPECIE/MONEDA + DESCRIPCIÓN).
+        if c0u in ("especie", "moneda") and any(_deaccent(v).lower() == "descripcion" for v in svals):
+            cols = {}
+            for i, v in enumerate(svals):
+                h = _deaccent(v).lower().strip().rstrip(".")
+                if h in ("especie", "moneda"):
+                    cols["especie"] = i
+                elif h == "descripcion":
+                    cols["descripcion"] = i
+                elif h == "cant. disponible" or h == "cant disponible":
+                    cols["cant_disp"] = i
+                elif h == "cant. garantia" or h == "cant garantia":
+                    cols["garantia"] = i
+                elif h == "precio":
+                    cols["precio"] = i
+                elif h == "valor moneda cotizacion":
+                    cols["vmc"] = i
+                elif h == "valor corriente":
+                    cols["vc"] = i
+            continue
+
+        # Filas de datos: necesitan sección activa de posiciones + mapa de columnas.
+        if not section_type or section_type == "SKIP" or "especie" not in cols:
+            continue
+        esp_i = cols.get("especie")
+        disp_i = cols.get("cant_disp")
+        if esp_i is None or disp_i is None:
+            continue
+        ticker = (svals[esp_i] if esp_i < len(svals) else "").upper()
+        if not ticker or ticker in ("ESPECIE", "MONEDA", "SUBTOTAL"):
+            continue
+        # Cantidad = DISPONIBLE + GARANTÍA: los valores (VALOR CORRIENTE / MONEDA
+        # COTIZACIÓN) reflejan la tenencia TOTAL, incluida la parte dada en garantía
+        # (caución/margen). Tomar sólo DISPONIBLE subvalúa la qty e infla price_per1.
+        gar_i = cols.get("garantia")
+        disp = _ppi_num(cells[disp_i] if disp_i < len(cells) else None)
+        gar = _ppi_num(cells[gar_i]) if gar_i is not None and gar_i < len(cells) else None
+        qty = (disp or 0) + (gar or 0)
+        if qty <= 0:
+            continue
+        name_i, precio_i = cols.get("descripcion"), cols.get("precio")
+        vmc_i, vc_i = cols.get("vmc"), cols.get("vc")
+        name = (svals[name_i] if name_i is not None and name_i < len(svals) else "")
+        price = _ppi_num(cells[precio_i]) if precio_i is not None and precio_i < len(cells) else None
+        vmc = _ppi_num(cells[vmc_i]) if vmc_i is not None and vmc_i < len(cells) else None
+        vc = _ppi_num(cells[vc_i]) if vc_i is not None and vc_i < len(cells) else None
+
+        ccy = _ppi_currency(section_type, ticker, name, vmc, vc)
+        # Valor en la moneda nativa: USD → VALOR MONEDA COTIZACIÓN; ARS → VALOR
+        # CORRIENTE (== cotización para ARS). Fallback al otro / a qty×precio.
+        value = (vmc if (ccy == "USD" and vmc) else vc)
+        if not value:
+            value = vmc or (qty * price if price else None)
+        if not value:
+            snap.warnings.append(f"{ticker}: sin valor — se omitió")
+            continue
+        key = (ticker, ccy)
+        if key in seen:
+            continue
+        seen.add(key)
+        snap.holdings.append(Holding(
+            ticker=ticker, asset_type=section_type, quantity=qty, value=value,
+            currency=ccy, price_per1=value / qty, per100=False, name=name[:60]))
+    return snap
