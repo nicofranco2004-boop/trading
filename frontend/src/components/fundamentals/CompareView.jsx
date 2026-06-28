@@ -6,18 +6,16 @@
 //      ?cmp=NVDA,MSFT,… (compartible).
 //   2. Fetch GET /fundamentals/{t} en paralelo por ticker. available:false →
 //      aviso chico. Skeletons mientras carga.
-//   3. RANKING: header "X lidera con score N — gana en M de T métricas" + cards
-//      por ticker (ordenadas por overall desc, rank badge, ScoreGauge, label,
-//      "⚡ Gana N métricas", top-3 métricas, star toggle).
-//   4. GANADOR POR CATEGORÍA: 4 pilares.
-//   5. DETALLE MÉTRICA POR MÉTRICA: tablas colapsables por categoría con celda
-//      ganadora resaltada (trofeo + barra relativa + hint de dirección).
+//   3. CARDS: por ticker, los dos ejes Negocio / Precio + top-3 métricas + star.
+//      Sin gauge, sin "ranking por score", sin trofeos (eso era Vesty).
+//   4. DETALLE MÉTRICA POR MÉTRICA: tablas colapsables por categoría con la mejor
+//      celda resaltada (check + barra relativa + hint de dirección).
 //
 // Toda la lógica de "quién gana" es pura → utils/fundamentalsCompare.js.
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
-  X, Plus, Zap, Trophy, ChevronDown, ChevronRight, Layers, AlertCircle,
+  X, Plus, Zap, Check, ChevronDown, ChevronRight, Layers, AlertCircle,
   Tag, TrendingUp, ShieldCheck,
 } from 'lucide-react'
 import Panel from '../Panel'
@@ -28,8 +26,8 @@ import AssetLogo from '../AssetLogo'
 import { api } from '../../utils/api'
 import { track } from '../../utils/track'
 import TickerSearch from './TickerSearch'
-import ScoreGauge from './ScoreGauge'
 import StarToggle from './StarToggle'
+import { businessQuality, priceRead, AXIS_PILL } from './axes'
 import {
   buildComparison, topMetricsFor, relativeFill,
   CATEGORY_ORDER, CATEGORY_LABELS,
@@ -52,9 +50,15 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
 
   const selected = tickers // array de strings upper, controlado por el padre
 
-  // Fetch de los tickers que faltan / sin resolver.
+  const mounted = useRef(true)
+  useEffect(() => () => { mounted.current = false }, [])
+
+  // Fetch de los tickers que faltan / sin resolver. Dep ESTABLE (join) y SIN
+  // cancelar por re-run: `selected` cambia de identidad en cada render (parseCmp
+  // del padre), así que un cleanup por-run cancelaría los fetch en vuelo y dejaría
+  // skeletons eternos (mismo bug que CarteraList). El filtro `missing` evita pedir
+  // dos veces; solo frenamos al desmontar.
   useEffect(() => {
-    let cancelled = false
     const missing = selected.filter(t => !results[t])
     if (missing.length === 0) return
     setResults(prev => {
@@ -64,17 +68,10 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
     })
     for (const t of missing) {
       api.get('/fundamentals/' + encodeURIComponent(t))
-        .then(res => {
-          if (cancelled) return
-          setResults(prev => ({ ...prev, [t]: { loading: false, data: res, error: null } }))
-        })
-        .catch(e => {
-          if (cancelled) return
-          setResults(prev => ({ ...prev, [t]: { loading: false, data: null, error: e?.message || 'Error' } }))
-        })
+        .then(res => { if (mounted.current) setResults(prev => ({ ...prev, [t]: { loading: false, data: res, error: null } })) })
+        .catch(e => { if (mounted.current) setResults(prev => ({ ...prev, [t]: { loading: false, data: null, error: e?.message || 'Error' } })) })
     }
-    return () => { cancelled = true }
-  }, [selected]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected.join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track comparación cuando hay ≥2 con data lista.
   const readyEntries = useMemo(() => selected
@@ -178,7 +175,7 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
             icon={<Layers size={20} strokeWidth={1.75} />}
             eyebrow="COMPARAR"
             title="Agregá al menos 2 acciones para comparar"
-            description="Buscá tickers arriba (NVDA, MSFT, MELI…). Vamos a rankearlas por score, mostrar quién gana cada categoría y el detalle métrica por métrica."
+            description="Buscá tickers arriba (NVDA, MSFT, MELI…). Vas a ver el negocio y el precio de cada una, lado a lado, y el detalle métrica por métrica."
           />
         </Panel>
       )}
@@ -195,8 +192,7 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
       {/* ── Resultados de comparación ──────────────────────────────────────── */}
       {comparison && (
         <>
-          <RankingBlock comparison={comparison} watchlist={watchlist} onOpenTicker={onOpenTicker} />
-          <CategoryWinners comparison={comparison} />
+          <CompareCards entries={readyEntries} watchlist={watchlist} onOpenTicker={onOpenTicker} />
           <MetricDetail comparison={comparison} />
         </>
       )}
@@ -204,81 +200,53 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
   )
 }
 
-// ─── RANKING ──────────────────────────────────────────────────────────────
-function RankingBlock({ comparison, watchlist, onOpenTicker }) {
-  const { leader, comparableCount, ranking, winsByTicker } = comparison
-  const leaderRow = ranking[0]
-
+// ─── Comparación lado a lado: dos ejes (negocio/precio) por acción, sin gauge ──
+// Sin "ranking por score" ni "gana X métricas" ni trofeos (eso era Vesty). Cada
+// acción muestra su negocio y su precio; quién gana cada métrica vive abajo, en
+// la tabla de detalle. Orden = el que las agregaste (sin ranking implícito).
+function CompareCards({ entries, watchlist, onOpenTicker }) {
   return (
     <section>
-      <div className="mb-3">
-        <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1">Ranking</p>
-        {leader && (
-          <p className="text-sm text-ink-1 leading-snug">
-            <span className="font-semibold text-ink-0">{leader.ticker}</span> lidera con un score de{' '}
-            <span className="font-semibold text-rendi-pos tabular">{leader.overall ?? '—'}</span>
-            {' '}— gana en{' '}
-            <span className="font-semibold text-ink-0 tabular">{leader.wins}</span> de{' '}
-            <span className="tabular">{comparableCount}</span> métricas comparables.
-          </p>
-        )}
-      </div>
-
+      <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">Negocio y precio, lado a lado</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {ranking.map((r, idx) => {
-          const isLeader = idx === 0
-          const d = r.data
-          const top3 = topMetricsFor(d, 3)
+        {entries.map(({ ticker, data }) => {
+          const cats = data.score?.categories || []
+          const top3 = topMetricsFor(data, 3)
           return (
-            <Panel
-              key={r.ticker}
-              padding="md"
-              accent={isLeader}
-              className={isLeader ? 'bg-rendi-pos/[0.04]' : ''}
-            >
+            <Panel key={ticker} padding="md">
               <div className="flex items-start justify-between gap-2 mb-3">
                 <button
                   type="button"
-                  onClick={() => onOpenTicker?.(r.ticker)}
+                  onClick={() => onOpenTicker?.(ticker)}
                   className="flex items-center gap-2 min-w-0 text-left group"
-                  title={`Ver ${r.ticker} en Analizar`}
+                  title={`Ver ${ticker} en Explorar`}
                 >
-                  <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-mono font-semibold flex-shrink-0 ${
-                    isLeader ? 'bg-rendi-pos/15 text-rendi-pos' : 'bg-bg-2 text-ink-2'
-                  }`}>
-                    {idx + 1}
-                  </span>
-                  <AssetLogo asset={r.ticker} size={24} />
+                  <AssetLogo asset={ticker} size={26} />
                   <span className="min-w-0">
                     <span className="block font-mono text-sm font-semibold text-ink-0 group-hover:text-data-violet transition-colors truncate">
-                      {r.ticker}
+                      {ticker}
                     </span>
-                    <span className="block text-[11px] text-ink-3 truncate">
-                      {d.company_name || d.sector || ''}
-                    </span>
+                    <span className="block text-[11px] text-ink-3 truncate">{data.company_name || data.sector || ''}</span>
                   </span>
                 </button>
                 {watchlist && (
-                  <StarToggle active={watchlist.has(r.ticker)} onToggle={() => watchlist.toggle(r.ticker)} size={15} />
+                  <StarToggle active={watchlist.has(ticker)} onToggle={() => watchlist.toggle(ticker)} size={15} />
                 )}
               </div>
 
-              <div className="flex items-center gap-4">
-                <ScoreGauge score={r.overall} label={r.label} size={92} />
-                <div className="min-w-0 space-y-2">
-                  <span className="inline-flex items-center gap-1 text-[11px] font-mono text-rendi-pos bg-rendi-pos/10 border border-rendi-pos/25 rounded-sm px-1.5 py-0.5">
-                    <Zap size={11} strokeWidth={2} /> Gana {winsByTicker[r.ticker] || 0} métricas
-                  </span>
-                  <ul className="space-y-1">
-                    {top3.map(m => (
-                      <li key={m.key} className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="text-ink-3 truncate">{m.label}</span>
-                        <span className="font-mono text-ink-1 tabular flex-shrink-0">{m.value_label}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <AxisMini label="Negocio" read={businessQuality(cats)} />
+                <AxisMini label="Precio" read={priceRead(cats)} />
               </div>
+
+              <ul className="space-y-1 border-t border-line/40 pt-2">
+                {top3.map(m => (
+                  <li key={m.key} className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-ink-3 truncate">{m.label}</span>
+                    <span className="font-mono text-ink-1 tabular flex-shrink-0">{m.value_label}</span>
+                  </li>
+                ))}
+              </ul>
             </Panel>
           )
         })}
@@ -287,44 +255,12 @@ function RankingBlock({ comparison, watchlist, onOpenTicker }) {
   )
 }
 
-// ─── GANADOR POR CATEGORÍA ──────────────────────────────────────────────────
-function CategoryWinners({ comparison }) {
-  const { categoryWinner } = comparison
+function AxisMini({ label, read }) {
   return (
-    <section>
-      <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-3">Ganador por categoría</p>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {CATEGORY_ORDER.map(cat => {
-          const Icon = CATEGORY_ICON[cat]
-          const w = categoryWinner[cat]
-          return (
-            <Panel key={cat} padding="md">
-              <div className="flex items-center gap-1.5 text-ink-3 mb-3">
-                {Icon && <Icon size={14} strokeWidth={1.75} />}
-                <span className="text-[11px] font-medium text-ink-2">{CATEGORY_LABELS[cat]}</span>
-              </div>
-              {w ? (
-                <>
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <AssetLogo asset={w.ticker} size={22} />
-                    <span className="font-mono text-sm font-semibold text-ink-0">{w.ticker}</span>
-                    <Trophy size={14} className="text-rendi-pos" strokeWidth={1.75} />
-                  </div>
-                  {w.metricLabel && (
-                    <p className="text-[11px] text-ink-3">
-                      {w.metricLabel}:{' '}
-                      <span className="font-mono text-rendi-pos tabular">{w.metricValueLabel}</span>
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className="text-[11px] text-ink-3">Sin datos suficientes</p>
-              )}
-            </Panel>
-          )
-        })}
-      </div>
-    </section>
+    <div>
+      <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">{label}</p>
+      {read ? <Pill tone={AXIS_PILL[read.tone]}>{read.label}</Pill> : <span className="text-[11px] text-ink-3">—</span>}
+    </div>
   )
 }
 
@@ -412,7 +348,7 @@ function MetricRow({ row, tickers }) {
             } ${isWinner ? 'border-l border-r border-rendi-pos/30' : ''}`}
           >
             <div className="flex items-center justify-end gap-1.5">
-              {isWinner && <Trophy size={12} className="text-rendi-pos flex-shrink-0" strokeWidth={1.75} />}
+              {isWinner && <Check size={12} className="text-rendi-pos flex-shrink-0" strokeWidth={2.5} />}
               <span className={`font-mono tabular text-[13px] ${
                 !hasVal ? 'text-ink-3' : isWinner ? 'text-rendi-pos font-semibold' : 'text-ink-1'
               }`}>
