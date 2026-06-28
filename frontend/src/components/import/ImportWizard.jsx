@@ -370,7 +370,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
         const ccFiles = files.filter(f => !/\.pdf$/i.test(f.name || ''))
         setTenenciaFile(pdfs[0] || null)
         if (pdfs.length > 0 && ccFiles.length === 0) {
-          setError('Subí también los Excel de la Cuenta Corriente. Si ya los importaste, completá tu cartera con el botón “Completar con Tenencia”.')
+          setError('Subí también los Excel de la Cuenta Corriente — la Tenencia (PDF) va junto con ellos. Si ya importaste antes, volvé a importar incluyendo el PDF (no duplicamos lo que ya está).')
           setBusy(false)
           return
         }
@@ -2253,7 +2253,7 @@ function DoneStep({ result }) {
         </div>
         {result.tenencia && (
           result.tenencia.error ? (
-            <p className="text-xs text-rendi-warn px-4">La Cuenta Corriente se importó bien, pero no pudimos aplicar la Tenencia ({result.tenencia.error}). Probá de nuevo con el botón “Completar con Tenencia”.</p>
+            <p className="text-xs text-rendi-warn px-4">La Cuenta Corriente se importó bien, pero no pudimos aplicar la Tenencia ({result.tenencia.error}). Volvé a importar incluyendo el PDF — no duplicamos lo que ya está.</p>
           ) : result.tenencia.nothing_to_do ? (
             <p className="text-xs text-ink-3">Tu Tenencia ya coincidía con lo importado.</p>
           ) : (result.tenencia.to_seed?.length > 0) ? (
