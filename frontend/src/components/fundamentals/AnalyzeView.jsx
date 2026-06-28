@@ -24,7 +24,7 @@ import { track } from '../../utils/track'
 import TickerSearch from './TickerSearch'
 import CategoryDetail from './CategoryDetail'
 import { businessQuality, priceRead, AXIS_TEXT, AXIS_BAR } from './axes'
-import OpportunityBar from './OpportunityBar'
+import DetailPortfolioBlocks from './DetailPortfolioBlocks'
 import AnalystConsensus from './AnalystConsensus'
 import AISummaryCard from './AISummaryCard'
 import StarToggle from './StarToggle'
@@ -268,11 +268,12 @@ export default function AnalyzeView({ ticker, onSelect, watchlist }) {
             <AxisCard title="El precio hoy" read={priceRead(categories)} />
           </div>
 
-          {(data.opportunity?.available || data.analysts?.available) && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <OpportunityBar opportunity={data.opportunity} />
-              <AnalystConsensus analysts={data.analysts} />
-            </div>
+          {/* Lo que diferencia a Rendi: tu posición (costo/P&L + espectro con tu
+              costo) y "¿rinde más que?" vs tus alternativas del inversor AR. */}
+          <DetailPortfolioBlocks ticker={data.ticker} data={data} />
+
+          {data.analysts?.available && (
+            <AnalystConsensus analysts={data.analysts} />
           )}
 
           <AISummaryCard ticker={data.ticker} />
