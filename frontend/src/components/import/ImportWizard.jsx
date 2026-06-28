@@ -86,6 +86,18 @@ const PLATFORM_BASE_CURRENCY = {
   iol: 'ARS',
 }
 
+// Estado de Cuenta de Cocos (foto de tenencia) — header del CSV. Lo detectamos
+// por CONTENIDO para apartarlo de los Movimientos (ambos son CSV) y rutearlo al
+// flujo de tenencia, igual que el PDF de Bull Market. Reconcilia, no duplica.
+// Match EXACTO (set igual, no subconjunto): el header de Movimientos
+// (nroTicket;…;instrumento;…;cantidad;precio;…;total) CONTIENE estos 5 tokens
+// → un chequeo de subconjunto lo confundiría y rutearía mal los Movimientos.
+function looksLikeCocosTenenciaCsv(headerLine) {
+  const cells = new Set(String(headerLine || '').toLowerCase().split(';').map(c => c.trim()).filter(Boolean))
+  const want = ['instrumento', 'cantidad', 'precio', 'moneda', 'total']
+  return cells.size === want.length && want.every(t => cells.has(t))
+}
+
 // Plataformas cuya importación está temporalmente deshabilitada (parser
 // incompleto o todavía inexistente — falta data del CSV). La plataforma
 // aparece en el dropdown de "Plataforma" para que el user la encuentre por
@@ -156,6 +168,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   // apartamos acá y la aplicamos DESPUÉS de confirmar la Cuenta Corriente (la
   // reconciliación necesita las posiciones ya creadas). Flujo único para el user.
   const [tenenciaFile, setTenenciaFile] = useState(null)
+  const [tenenciaFormat, setTenenciaFormat] = useState(null)  // 'cocos' (CSV) o null (Bull Market PDF)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [inspect, setInspect] = useState(null)        // {headers, sample_rows, rendi_fields, suggested_mapping}
@@ -364,13 +377,26 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
     try {
       // Para parsers específicos saltamos el Map step y vamos directo al Preview.
       if (isSpecificParser) {
-        // Bull Market: apartamos la Tenencia (PDF) — va al preview de la Cuenta
-        // Corriente solo lo que NO es PDF. La Tenencia se aplica al confirmar.
-        const pdfs = files.filter(f => /\.pdf$/i.test(f.name || ''))
-        const ccFiles = files.filter(f => !/\.pdf$/i.test(f.name || ''))
-        setTenenciaFile(pdfs[0] || null)
-        if (pdfs.length > 0 && ccFiles.length === 0) {
-          setError('Subí también los Excel de la Cuenta Corriente — la Tenencia (PDF) va junto con ellos. Si ya importaste antes, volvé a importar incluyendo el PDF (no duplicamos lo que ya está).')
+        // Apartamos la FOTO de tenencia y la aplicamos DESPUÉS de los Movimientos
+        // (la reconciliación necesita las posiciones ya creadas). Bull Market = el
+        // PDF; Cocos = el CSV del Estado de Cuenta (otro header → lo detectamos por
+        // contenido). Al preview de Movimientos va solo el resto.
+        let tenFile = null, tenFmt = null
+        const ccFiles = []
+        for (const f of files) {
+          if (/\.pdf$/i.test(f.name || '')) { tenFile = f; tenFmt = null; continue }  // Bull Market
+          if (format === 'cocos' && /\.csv$/i.test(f.name || '')) {
+            let head = ''
+            try { head = await f.slice(0, 4096).text() } catch { head = '' }
+            const firstLine = head.split(/\r?\n/).find(l => l.trim()) || ''
+            if (looksLikeCocosTenenciaCsv(firstLine)) { tenFile = f; tenFmt = 'cocos'; continue }
+          }
+          ccFiles.push(f)
+        }
+        setTenenciaFile(tenFile)
+        setTenenciaFormat(tenFmt)
+        if (tenFile && ccFiles.length === 0) {
+          setError('Subí también el archivo de Movimientos — la foto de tenencia va junto con él. Si ya importaste antes, usá el botón “Estado de Cuenta” (no duplicamos lo que ya está).')
           setBusy(false)
           return
         }
@@ -534,6 +560,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
           const tfd = new FormData()
           tfd.append('file', tenenciaFile)
           tfd.append('broker', singleBroker || 'Bull Market')
+          if (tenenciaFormat) tfd.append('format', tenenciaFormat)
           const tp = await api.upload('/imports/tenencia/preview', tfd)
           if (tp?.session_id) {
             await api.post('/imports/confirm', { session_id: tp.session_id, skip_row_indices: [] })
@@ -2253,11 +2280,11 @@ function DoneStep({ result }) {
         </div>
         {result.tenencia && (
           result.tenencia.error ? (
-            <p className="text-xs text-rendi-warn px-4">La Cuenta Corriente se importó bien, pero no pudimos aplicar la Tenencia ({result.tenencia.error}). Volvé a importar incluyendo el PDF — no duplicamos lo que ya está.</p>
+            <p className="text-xs text-rendi-warn px-4">Los Movimientos se importaron bien, pero no pudimos aplicar la foto de tenencia ({result.tenencia.error}). Volvé a importar incluyéndola — no duplicamos lo que ya está.</p>
           ) : result.tenencia.nothing_to_do ? (
-            <p className="text-xs text-ink-3">Tu Tenencia ya coincidía con lo importado.</p>
+            <p className="text-xs text-ink-3">Tu tenencia ya coincidía con lo importado.</p>
           ) : (result.tenencia.to_seed?.length > 0) ? (
-            <p className="text-xs text-rendi-pos">+ completamos <strong className="tabular">{result.tenencia.to_seed.length}</strong> posiciones que ya tenías, desde tu Tenencia valorizada.</p>
+            <p className="text-xs text-rendi-pos">+ completamos <strong className="tabular">{result.tenencia.to_seed.length}</strong> posiciones que ya tenías, desde tu foto de tenencia (Tenencia / Estado de Cuenta).</p>
           ) : null
         )}
       </div>

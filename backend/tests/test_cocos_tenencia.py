@@ -38,6 +38,13 @@ class CocosTenenciaTest(unittest.TestCase):
         self.assertTrue(looks_like_cocos_tenencia(_CSV))
         self.assertFalse(looks_like_cocos_tenencia("fecha;tipo;broker\n2026-01-01;COMPRA;Cocos"))
         self.assertFalse(looks_like_cocos_tenencia("Tenencias al 26/06/2026 ARS 1.000,00"))
+        # CRÍTICO: el header de Movimientos de Cocos CONTIENE los 5 tokens como
+        # SUBCONJUNTO (instrumento/moneda/cantidad/precio/total) → un match de
+        # subconjunto lo confundiría con la foto y rutearía mal los Movimientos.
+        # Debe ser match EXACTO → False.
+        mov_header = ("nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+                      "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;total")
+        self.assertFalse(looks_like_cocos_tenencia(mov_header))
 
     def test_parses_holdings_and_cash(self):
         snap = parse_cocos_tenencia(_CSV)

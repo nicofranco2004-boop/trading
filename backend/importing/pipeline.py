@@ -260,11 +260,22 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
     parts: List[str] = [decoded[0][0][0]]  # header original del primero
     for lines, name in decoded:
         if _normalize_header_for_match(lines[0]) != first_header_norm:
+            # Hint dirigido: si el que no matchea (o el primero) es una FOTO de
+            # tenencia (Estado de Cuenta de Cocos), no va en este wizard de
+            # Movimientos — va por su propio botón.
+            hint = ""
+            try:
+                from .tenencia import looks_like_cocos_tenencia
+                if looks_like_cocos_tenencia(lines[0]) or looks_like_cocos_tenencia(decoded[0][0][0]):
+                    hint = (' Si subiste el Estado de Cuenta (Portfolio) de Cocos, ese no va acá: '
+                            'subílo aparte con el botón "Estado de Cuenta Cocos".')
+            except Exception:
+                pass
             return (
                 b"", "",
                 f"Los archivos no coinciden en formato. "
                 f"'{name}' tiene un header distinto al primero. "
-                f"Subí archivos del mismo broker/export.",
+                f"Subí archivos del mismo broker/export.{hint}",
             )
         parts.extend(lines[1:])  # skip header de archivos 2..N
 

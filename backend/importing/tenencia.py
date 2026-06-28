@@ -456,8 +456,11 @@ def looks_like_cocos_tenencia(text: str) -> bool:
         line = raw.strip()
         if not line:
             continue
-        cells = [_deaccent(c).strip().lower() for c in line.split(";")]
-        return all(h in cells for h in _COCOS_TEN_HEADER)
+        # Match EXACTO (set igual, no subconjunto): el header de Movimientos de
+        # Cocos (nroTicket;…;instrumento;…;cantidad;precio;…;total) CONTIENE estos
+        # 5 tokens → un chequeo de subconjunto confundiría Movimientos con la foto.
+        cells = set(c for c in (_deaccent(x).strip().lower() for x in line.split(";")) if c)
+        return cells == set(_COCOS_TEN_HEADER)
     return False
 
 
