@@ -109,8 +109,8 @@ export default function Fundamentals() {
     <div className="page-shell">
       <PageHeader
         eyebrow="INVESTIGACIÓN"
-        title="Fundamentals"
-        subtitle="Buscá una acción, mirá qué tan sólidos son sus fundamentals, compará varias y seguí tus favoritas."
+        title="Calidad de cartera"
+        subtitle="Mirá qué tan sólidas son las empresas detrás de tus acciones y CEDEARs, y si el precio de hoy las acompaña. También podés buscar cualquier activo que no tengas."
       />
 
       {/* Sub-nav — pills filled con violet en la activa (patrón Analisis.jsx) */}

@@ -13222,10 +13222,10 @@ _FUND_CATEGORY_WEIGHTS = {
 }
 
 _FUND_CATEGORY_META = {
-    "valuation": ("Valuación", "¿Está a buen precio hoy?"),
-    "growth": ("Crecimiento", "¿Está creciendo?"),
-    "profitability": ("Rentabilidad", "¿Genera ganancias de forma eficiente?"),
-    "health": ("Salud Financiera", "¿Es financieramente sólida?"),
+    "valuation": ("Precio", "¿Pagás caro por lo que genera?"),
+    "growth": ("Crecimiento", "¿Las ventas y ganancias vienen subiendo?"),
+    "profitability": ("Rentabilidad", "¿Convierte las ventas en ganancia real?"),
+    "health": ("Solidez", "¿Tiene espalda para aguantar una mala racha?"),
 }
 
 # Orden de categorías en el output (matchea el contrato/diseño).
@@ -13772,28 +13772,28 @@ def _build_categories_detail(fund: dict, metrics_block: dict, cagr: dict = None,
 
     # (cat_key, cat_label, question, [ (mkey, label, direction, unit, info, status_fn) ... ])
     spec = [
-        ("valuation", "Valuación", "¿Qué tan cara está respecto a sus fundamentos?", [
+        ("valuation", "Precio", "¿Pagás caro por lo que genera?", [
             ("pe", "P/E", _DIR_LOWER, "x", "Precio / ganancias por acción. Menor = más barato.", st_pe),
             ("pe_fwd", "P/E Forward", _DIR_LOWER, "x", "Precio / ganancias esperadas. Menor = más barato.", st_pe_fwd),
             ("pb", "P/B", _DIR_LOWER, "x", "Precio / valor libro. Menor = más barato.", st_pb),
             ("ev_ebitda", "EV/EBITDA", _DIR_LOWER, "x", "Valor empresa / EBITDA. Menor = más barato.", st_ev),
             ("peg", "PEG", _DIR_LOWER, "x", "P/E ajustado por crecimiento. <1 = barato vs su crecimiento.", st_peg),
         ]),
-        ("growth", "Crecimiento", "¿Está creciendo?", [
+        ("growth", "Crecimiento", "¿Las ventas y ganancias vienen subiendo?", [
             ("rev_growth_3y", "CAGR Ingresos 3A", _DIR_HIGHER, "pct", "Crecimiento anual de ingresos en 3 años.", st_growth),
             ("rev_growth_5y", "CAGR Ingresos 5A", _DIR_HIGHER, "pct", "Crecimiento anual de ingresos en 5 años.", st_growth),
             ("eps_growth_3y", "Crecimiento EPS 3A", _DIR_HIGHER, "pct", "Crecimiento anual de ganancias por acción en 3 años.", st_growth),
             ("rev_growth_yoy", "Ingresos vs año anterior", _DIR_HIGHER, "pct", "Crecimiento de ingresos últimos 12 meses.", st_growth),
             ("earnings_yoy", "Ganancias vs año anterior", _DIR_HIGHER, "pct", "Crecimiento de ganancias últimos 12 meses.", st_growth),
         ]),
-        ("profitability", "Rentabilidad", "¿Genera ganancias de forma eficiente?", [
+        ("profitability", "Rentabilidad", "¿Convierte las ventas en ganancia real?", [
             ("roe", "ROE", _DIR_HIGHER, "pct", "Ganancia sobre patrimonio. Mayor = más rentable.", st_roe),
             ("roa", "ROA", _DIR_HIGHER, "pct", "Ganancia sobre activos. Mayor = más eficiente.", st_roa),
             ("net_margin", "Margen Neto", _DIR_HIGHER, "pct", "Ganancia neta / ingresos.", st_net),
             ("oper_margin", "Margen Operativo", _DIR_HIGHER, "pct", "Resultado operativo / ingresos.", st_oper),
             ("gross_margin", "Margen Bruto", _DIR_HIGHER, "pct", "Ganancia bruta / ingresos.", st_gross),
         ]),
-        ("health", "Salud Financiera", "¿Es financieramente sólida?", [
+        ("health", "Solidez", "¿Tiene espalda para aguantar una mala racha?", [
             ("debt_equity", "Deuda/Patrimonio", _DIR_LOWER, "x", "Deuda / patrimonio. Menor = balance más sólido.", st_de),
             ("current_ratio", "Liquidez Corriente", _DIR_HIGHER, "x", "Activo corriente / pasivo corriente. Mayor = más liquidez.", st_current),
             ("quick_ratio", "Prueba Ácida", _DIR_HIGHER, "x", "Liquidez sin inventarios. Mayor = mejor.", st_quick),
@@ -13801,7 +13801,7 @@ def _build_categories_detail(fund: dict, metrics_block: dict, cagr: dict = None,
             ("total_cash", "Caja Total", _DIR_INFO, "usd", "Efectivo y equivalentes.", st_none),
             ("total_debt", "Deuda Total", _DIR_INFO, "usd", "Deuda total (corto + largo plazo).", st_none),
         ]),
-        ("dividends", "Dividendos", "¿Reparte dividendos sostenibles?", [
+        ("dividends", "Dividendos", "¿Reparte, y lo puede sostener?", [
             ("dividend_yield", "Dividend Yield", _DIR_HIGHER, "pct", "Dividendo anual / precio. Mayor = más renta.", st_divyield),
             ("payout", "Payout Ratio", _DIR_LOWER, "pct", "% de ganancias repartido como dividendo. Menor = más sostenible.", st_payout),
             ("avg_yield_5y", "Yield Promedio 5A", _DIR_INFO, "pct", "Dividend yield promedio de los últimos 5 años.", st_none),

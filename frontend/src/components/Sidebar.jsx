@@ -67,7 +67,7 @@ const GROUPS = [
       { to: '/analisis',    label: 'Análisis',      icon: Compass },
       // Fundamentals: oculto para usuarios (solo admin) hasta rediferenciar el
       // feature/diseño. Ver guard en pages/Fundamentals.jsx + endpoints backend.
-      { to: '/fundamentals', label: 'Fundamentals', icon: Gauge, adminOnly: true },
+      { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge, adminOnly: true },
       { to: '/novedades',   label: 'Novedades',     icon: Bell },
     ],
   },

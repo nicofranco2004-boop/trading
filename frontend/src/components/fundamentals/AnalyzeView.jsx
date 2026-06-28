@@ -22,8 +22,6 @@ import { inferType } from '../../utils/tickers'
 import { track } from '../../utils/track'
 
 import TickerSearch from './TickerSearch'
-import ScoreGauge from './ScoreGauge'
-import CategoryScore from './CategoryScore'
 import CategoryDetail from './CategoryDetail'
 import OpportunityBar from './OpportunityBar'
 import AnalystConsensus from './AnalystConsensus'
@@ -88,6 +86,50 @@ function FooterStrip({ metrics }) {
         ))}
       </div>
     </Panel>
+  )
+}
+
+// ── Dos ejes: el NEGOCIO (calidad de la empresa) y el PRECIO (qué pagás hoy) ──
+// Deliberadamente NO los colapsamos en un único score 0-100 (eso esconde que una
+// empresa puede ser sólida y estar cara). El negocio = promedio de rentabilidad,
+// crecimiento y solidez (sin valuación); el precio = la categoría valuación
+// (score alto = barata). Sin gauge circular, sin grilla de pilares.
+function businessQuality(categories) {
+  const keys = ['profitability', 'growth', 'health']
+  const scores = categories.filter(c => keys.includes(c.key) && c.score != null).map(c => c.score)
+  if (!scores.length) return { label: 'Sin datos', tone: 'muted', score: null, sub: '' }
+  const avg = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+  if (avg >= 70) return { label: 'Sólido', tone: 'pos', score: avg, sub: 'Rentable, sólido y/o creciendo.' }
+  if (avg >= 50) return { label: 'Mixto', tone: 'warn', score: avg, sub: 'Algunas luces y algunas sombras.' }
+  return { label: 'Flojo', tone: 'neg', score: avg, sub: 'Los números del negocio flojean.' }
+}
+
+function priceRead(categories) {
+  const val = categories.find(c => c.key === 'valuation')
+  if (!val || val.score == null) return { label: 'Sin datos', tone: 'muted', score: null, sub: '' }
+  const s = val.score  // score alto = barata
+  if (s >= 65) return { label: 'Atractivo', tone: 'pos', score: s, sub: 'Cotiza barata para lo que genera.' }
+  if (s >= 45) return { label: 'En precio', tone: 'warn', score: s, sub: 'Ni cara ni barata hoy.' }
+  return { label: 'Caro', tone: 'neg', score: s, sub: 'Estás pagando caro lo que genera.' }
+}
+
+const AXIS_TEXT = { pos: 'text-rendi-pos', neg: 'text-rendi-neg', warn: 'text-rendi-warn', muted: 'text-ink-3' }
+const AXIS_BAR = { pos: 'bg-rendi-pos', neg: 'bg-rendi-neg', warn: 'bg-rendi-warn', muted: 'bg-ink-3' }
+
+function AxisCard({ title, read }) {
+  return (
+    <div className="rounded-lg border border-line bg-bg-1 p-4">
+      <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5">{title}</p>
+      <p className={`text-2xl font-semibold leading-none ${AXIS_TEXT[read.tone] || 'text-ink-0'}`}>
+        {read.label}
+      </p>
+      {read.sub && <p className="text-xs text-ink-2 mt-2 leading-snug">{read.sub}</p>}
+      {read.score != null && (
+        <div className="mt-3 h-1.5 rounded-full bg-bg-2 overflow-hidden" role="presentation">
+          <div className={`h-full rounded-full ${AXIS_BAR[read.tone] || 'bg-ink-3'}`} style={{ width: `${read.score}%` }} />
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -181,9 +223,9 @@ export default function AnalyzeView({ ticker, onSelect, watchlist }) {
         <Panel padding="lg">
           <EmptyState
             icon={<Gauge size={20} strokeWidth={1.75} />}
-            eyebrow="FUNDAMENTALS"
-            title="Buscá una acción para ver su scorecard"
-            description="Escribí un ticker (NVDA, AAPL, MELI…) o tocá una de tus posiciones. Vas a ver un puntaje global, valuación, crecimiento, rentabilidad y salud financiera, más un resumen en criollo."
+            eyebrow="CALIDAD DE CARTERA"
+            title="Buscá un activo o tocá una de tus posiciones"
+            description="Escribí un ticker (NVDA, AAPL, MELI…) o elegí algo que ya tengas. Vas a ver qué tan sólido es el negocio, si el precio de hoy lo acompaña y un resumen en criollo."
           />
         </Panel>
       )}
@@ -246,24 +288,11 @@ export default function AnalyzeView({ ticker, onSelect, watchlist }) {
             </div>
           </div>
 
-          <Panel padding="lg">
-            <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-6 items-center">
-              <div className="flex justify-center lg:border-r lg:border-line lg:pr-6">
-                <ScoreGauge score={data.score?.overall} label={data.score?.label} />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {categories.map(cat => (
-                  <CategoryScore
-                    key={cat.key}
-                    icon={CATEGORY_ICON[cat.key]}
-                    label={cat.label}
-                    question={cat.question}
-                    score={cat.score}
-                  />
-                ))}
-              </div>
-            </div>
-          </Panel>
+          {/* Dos ejes separados: el negocio y el precio (sin score único, sin gauge) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <AxisCard title="El negocio" read={businessQuality(categories)} />
+            <AxisCard title="El precio hoy" read={priceRead(categories)} />
+          </div>
 
           {(data.opportunity?.available || data.analysts?.available) && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

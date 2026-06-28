@@ -34,7 +34,7 @@ const GROUPS = [
     items: [
       { to: '/analisis',     label: 'Análisis',     icon: Brain, sub: 'Diagnóstico, métricas pro, sesgos' },
       // Fundamentals: oculto para usuarios (solo admin) hasta rediferenciar el feature.
-      { to: '/fundamentals', label: 'Fundamentals', icon: Gauge, sub: 'Score + análisis de acciones', adminOnly: true },
+      { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge, sub: 'Calidad de tus tenencias + buscador', adminOnly: true },
       { to: '/novedades',    label: 'Novedades',    icon: Bell,  sub: 'Noticias + eventos' },
     ],
   },
