@@ -131,10 +131,13 @@ def _classify_desc(desc_norm: str) -> str:
     if d.startswith("transferencia"):
         return "transfer"
     # Acciones societarias que cambian CANTIDAD sin cash (o casi): dividendo en
-    # acciones (lote gratis), split, cambio de ratio de CEDEAR, rescate parcial
-    # de bono (baja nominal). "rescate parcial" va acá (antes que "rescate" abajo).
-    if (d.startswith("dividendo en acciones") or d.startswith("split")
-            or d.startswith("acreditacion cambio de ratio")
+    # acciones / en especie (lote gratis de acciones o nominales), split, cambio
+    # de ratio de CEDEAR, rescate parcial de bono (baja nominal). "rescate parcial"
+    # va acá (antes que "rescate" abajo). "dividendo en especie" va acá (antes que
+    # "dividendo" suelto abajo, que sería renta en efectivo) — trae nominales, no
+    # cash; ruteado a renta caía como FEE monto 0 ("comisión aislada necesita monto").
+    if (d.startswith("dividendo en acciones") or d.startswith("dividendo en especie")
+            or d.startswith("split") or d.startswith("acreditacion cambio de ratio")
             or d.startswith("rescate parcial")):
         return "corporate"
     # Operación a plazo / diferida: trade con cantidad + cash pero sin precio
@@ -145,14 +148,20 @@ def _classify_desc(desc_norm: str) -> str:
         return "deposito"
     if d.startswith("comprobante de pago"):
         return "retiro"
-    if d.startswith("cargo por descubierto"):
+    # Comisiones / aranceles que salen como fila propia (cash que SALE). "Débito de
+    # Aranceles por Acreencias" (arancel por cobrar cupones/dividendos) entra acá.
+    if d.startswith("cargo por descubierto") or d.startswith("debito de aranceles"):
         return "fee"
     # Ingresos por título (entra) o retención (sale): cupón, dividendo en efectivo,
     # amortización, intereses devengados, prima por rescate, rescate (cash de un
-    # bono que se rescata; el "rescate parcial" que baja nominal ya salió arriba).
+    # bono que se rescata; el "rescate parcial" que baja nominal ya salió arriba),
+    # canje s/aviso de suscripción (cash de un canje de bono, sin cantidad) y baja
+    # de derecho de suscripción (cash por los derechos; la cantidad son DERECHOS, no
+    # acciones → la renta los ignora y solo cuenta el cash).
     if (d.startswith("renta") or d.startswith("dividendo") or d.startswith("amortizacion")
             or d.startswith("pago complementario") or d.startswith("prima por rescate")
-            or d.startswith("intereses devengados") or d.startswith("rescate")):
+            or d.startswith("intereses devengados") or d.startswith("rescate")
+            or d.startswith("canje s/aviso") or d.startswith("baja derecho")):
         return "renta"
     if d.startswith("movimiento manual"):
         return "manual"
@@ -267,8 +276,11 @@ class BalanzMovimientosParser(Parser):
                 continue  # ni cash ni cantidad → nada que importar
 
             def base(tipo, **extra):
+                # Moneda vacía → ARS (base del broker). Algunos eventos de título
+                # (canje, baja de derecho) vienen sin moneda y son ARS; los trades
+                # traen Pesos/Dólares explícito, así que no se tocan.
                 d = {"fecha": fecha, "tipo": tipo, "broker": "Balanz",
-                     "moneda": moneda, "notas": notas}
+                     "moneda": moneda or "ARS", "notas": notas}
                 if ticker:
                     d["activo"] = ticker
                 if clase:
@@ -283,8 +295,20 @@ class BalanzMovimientosParser(Parser):
             # retención (importe≠0) → ese efecto de cash va aparte para reconciliar.
             if kind == "corporate":
                 if has_qty and ticker:
-                    _emit(base("COMPRA" if qty > 0 else "VENTA", activo=ticker,
-                               cantidad=str(abs(qty)), precio="0", monto="0"))
+                    if qty > 0:
+                        # Entran nominales gratis (dividendo en acciones/especie,
+                        # split, ratio al alza): COMPRA a costo 0 → baja el promedio.
+                        _emit(base("COMPRA", activo=ticker,
+                                   cantidad=str(abs(qty)), precio="0", monto="0"))
+                    else:
+                        # Salen nominales sin precio (split inverso, ratio a la baja,
+                        # rescate parcial, dividendo en acciones/especie negativo):
+                        # VENTA a precio 0 marcada _corporate_close → el validator la
+                        # acepta (si no, MISSING_PRICE) y cierra la posición. El costo
+                        # se bookea contra la renta/amortización asociada cuando la
+                        # hay (rescate parcial / reducción de capital).
+                        _emit(base("VENTA", activo=ticker, cantidad=str(abs(qty)),
+                                   precio="0", monto="0", _corporate_close=True))
                 if has_cash:
                     _emit(base("DIVIDENDO" if cash_in else "FEE", monto=str(abs(importe))))
                 continue

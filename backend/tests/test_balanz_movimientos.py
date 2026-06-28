@@ -278,5 +278,80 @@ class BalanzFCITest(unittest.TestCase):
         self.assertEqual(float(compra["cantidad"]), 1484344.71)
 
 
+class BalanzMovimientosCanjeArancelesTest(unittest.TestCase):
+    """Tipos de un export real más amplio que antes caían como 'no reconocido' o
+    como FEE con monto 0 ('comisión aislada'): canje de bono por aviso de
+    suscripción, débito de aranceles (fee), baja de derecho de suscripción,
+    dividendo en especie (nominales gratis) y acción societaria que BAJA nominales
+    (qty<0 → cierre a precio 0 con _corporate_close, que el validador acepta)."""
+
+    def _parse(self, *rows):
+        return BalanzMovimientosParser().parse(HDR + "\n" + "\n".join(rows) + "\n")
+
+    def _by_tipo(self, res):
+        by = {}
+        for rr in res.raw_rows:
+            by.setdefault(rr.data["tipo"], []).append(rr.data)
+        return by
+
+    def test_canje_s_aviso_es_ingreso_y_default_ars(self):
+        # Canje s/Aviso de Suscripción de un bono: solo cash (sin cantidad/precio),
+        # moneda vacía → ingreso (DIVIDENDO) en ARS por default.
+        res = self._parse(
+            "Canje s/Aviso de Suscripción 12/16/4 / GN34O,GN34O,Corporativos,2025-10-01,0,0,2025-10-01,,190737.7")
+        self.assertEqual(res.parse_errors, [])
+        div = self._by_tipo(res)["DIVIDENDO"][0]
+        self.assertEqual(div["activo"], "GN34O")
+        self.assertEqual(div["moneda"], "ARS")
+        self.assertAlmostEqual(float(div["monto"]), 190737.7, places=2)
+
+    def test_debito_aranceles_es_fee(self):
+        res = self._parse(
+            "Débito de Aranceles por Acreencias,,,2025-10-02,0,0,2025-10-02,Pesos,-4579.81")
+        self.assertEqual(res.parse_errors, [])
+        fee = self._by_tipo(res)["FEE"][0]
+        self.assertAlmostEqual(float(fee["monto"]), 4579.81, places=2)
+        self.assertNotIn("activo", fee)  # sin ticker
+
+    def test_baja_derecho_es_cash_sin_tocar_posicion(self):
+        # Baja de derecho de suscripción: cash + cantidad (los DERECHOS, no acciones)
+        # → la renta ignora la cantidad y solo cuenta el cash (no vende BBAR).
+        res = self._parse(
+            "Baja Derecho de Suscripción / BBAR,BBAR,Acciones,2025-10-03,360,0,2025-10-03,,849.55")
+        self.assertEqual(res.parse_errors, [])
+        self.assertEqual(len(res.raw_rows), 1)       # una sola fila (cash)
+        div = res.raw_rows[0].data
+        self.assertEqual(div["tipo"], "DIVIDENDO")
+        self.assertNotIn("cantidad", div)            # NO se emite cantidad (no es venta)
+        self.assertAlmostEqual(float(div["monto"]), 849.55, places=2)
+
+    def test_dividendo_en_especie_positivo_suma_nominales(self):
+        # Antes caía como FEE monto 0 ('comisión aislada'). Ahora: nominales gratis.
+        res = self._parse(
+            "Dividendo en especie / AE38,AE38,Bonos,2025-10-04,75,0,2025-10-04,Pesos,0")
+        self.assertEqual(res.parse_errors, [])
+        compra = self._by_tipo(res)["COMPRA"][0]
+        self.assertEqual(compra["activo"], "AE38")
+        self.assertEqual(float(compra["cantidad"]), 75.0)
+        self.assertEqual(float(compra["precio"]), 0.0)
+        # no se emite ninguna fila de cash (importe 0)
+        self.assertNotIn("FEE", self._by_tipo(res))
+
+    def test_societaria_qty_negativa_cierra_a_precio_0(self):
+        # "Dividendo en acciones" / "en especie" con cantidad NEGATIVA (típicamente
+        # cambio de ratio a la baja): VENTA precio 0 marcada _corporate_close → el
+        # validador la acepta (sin esto: MISSING_PRICE) y baja la posición.
+        res = self._parse(
+            "Dividendo en acciones / VIST,VIST,Cedears,2025-10-05,-200,0,2025-10-05,Pesos,0",
+            "Dividendo en especie / AE38,AE38,Bonos,2025-10-06,-25,0,2025-10-06,Pesos,0",
+        )
+        self.assertEqual(res.parse_errors, [])
+        ventas = self._by_tipo(res)["VENTA"]
+        self.assertEqual({v["activo"] for v in ventas}, {"VIST", "AE38"})
+        for v in ventas:
+            self.assertEqual(float(v["precio"]), 0.0)
+            self.assertTrue(v.get("_corporate_close"))
+
+
 if __name__ == "__main__":
     unittest.main()
