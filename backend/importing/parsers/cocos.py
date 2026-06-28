@@ -451,11 +451,18 @@ class CocosParser(Parser):
             fecha = _parse_date_ddmmyyyy(G(row, "fechaejecucion"))
             comprobante = G(row, "nrocomprobante")
 
-            # Currency: Compra/Venta Dolar Mep son siempre USD; el resto desde la columna.
-            if "dolar mep" in tipo_raw:
-                moneda = "USD"
-            elif moneda_raw in ("ARS", "USD"):
+            # Currency: la columna `moneda` es AUTORITATIVA cuando es explícita (ARS/USD).
+            # NO forzamos USD por "dolar mep" si la columna dice ARS: en los CONDUCTOS
+            # dólar-MEP con bono (ej. "Compra bono Operatoria dolar MEP ARS" + "Venta …
+            # USD" del MISMO ticker/cantidad = pasar pesos a dólares), la pata de COMPRA
+            # viene en ARS (pagás pesos) y la de VENTA en USD. Forzar USD contaba esos
+            # pesos como dólares (×~tc_blue) → el FIFO calculaba pnl = proceeds_USD −
+            # costo_PESOS = P&L peso-escala (causa raíz del capital negativo gigante).
+            # Solo forzamos USD si la columna no distingue (vacía/no canónica).
+            if moneda_raw in ("ARS", "USD"):
                 moneda = moneda_raw
+            elif "dolar mep" in tipo_raw:
+                moneda = "USD"
             else:
                 moneda = moneda_raw  # dejamos pasar para que el normalizer lo flagee
 
