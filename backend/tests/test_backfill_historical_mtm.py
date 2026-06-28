@@ -100,6 +100,38 @@ class HistMtmTest(unittest.TestCase):
         s = bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
         self.assertTrue(s["skipped"])
 
+    def test_guard_valor_negativo_cae_a_costo(self):
+        # EL BUG DEL MTM (#417: 485→-592.944): compute_broker_value_usd puede
+        # devolver un valor NEGATIVO (cross-currency mal valuado) y su trustMktValue
+        # NO lo atrapa (trusta value≤0). Nuestro guard sí → cae al costo, no mete
+        # un capital_final negativo gigante. Mockeamos el valor negativo directo.
+        self._mock_prices({"2024-08": 250.0, "2024-09": 250.0})
+        orig = bf.sj.compute_broker_value_usd
+        bf.sj.compute_broker_value_usd = lambda *a, **k: {"value": -50000.0, "invested": 2000.0}
+        try:
+            s = bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        finally:
+            bf.sj.compute_broker_value_usd = orig
+        cf = {m["ym"]: m["after"] for m in s["months"]}
+        self.assertAlmostEqual(cf["2024-08"], 2000.0, places=1)   # costo, NO -50000
+        self.assertAlmostEqual(cf["2024-09"], 2000.0, places=1)
+        self.assertGreaterEqual(s["cost_fallbacks"], 1)
+
+    def test_precio_absurdo_alto_no_infla(self):
+        # Precio per-100 (AAPL ×100) → compute_broker_value_usd ya lo degrada a costo
+        # (su trustMktValue agarra el over-distortion). Verificamos que no infla.
+        self._mock_prices({"2024-08": 25000.0, "2024-09": 25000.0})
+        s = bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        cf = {m["ym"]: m["after"] for m in s["months"]}
+        self.assertAlmostEqual(cf["2024-08"], 2000.0, places=1)   # NO 250.000
+
+    def test_guard_no_toca_ganancias_reales(self):
+        # Una ganancia razonable (250 vs 200 = +25%) SÍ se confía (no la degrada).
+        self._mock_prices({"2024-08": 250.0, "2024-09": 275.0})
+        s = bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        cf = {m["ym"]: m["after"] for m in s["months"]}
+        self.assertAlmostEqual(cf["2024-08"], 2500.0, places=1)   # MTM real, sin degradar
+
     def test_current_month_untouched(self):
         # Un mes = el mes en curso no se debe tocar.
         self.conn.execute(

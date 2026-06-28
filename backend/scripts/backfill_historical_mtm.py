@@ -222,9 +222,31 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
             prices = {pkey: price} if price is not None else {}
             r = sj.compute_broker_value_usd(
                 [h], prices, btype, blue, broker_name=b, cedear_rate=mep)
-            u = (r.get("value", 0) or 0) - (r.get("invested", 0) or 0)
+            val = r.get("value", 0) or 0
+            inv = r.get("invested", 0) or 0
+            u = val - inv
+            # ── Guard anti-distorsión (espejo de trustMktValue del front) ─────────
+            # Si el valor a mercado se va absurdamente lejos del costo, NO lo
+            # confiamos → degradamos a costo (u=0). Atrapa precios per-100 de bonos,
+            # colisiones de ticker, y cross-currency mal valuado que si no metían un
+            # capital_final NEGATIVO gigante (ej: 485 → -592.944). Renta fija cotiza
+            # cerca de par → banda estrecha [0.02×, 4×]; el resto permite multibaggers
+            # reales → [0.002×, 50×]. Un valor ≤ 0 con costo > 0 es siempre bug.
+            trusted = True
+            if inv > 0:
+                if val <= 0:
+                    trusted = False
+                else:
+                    _fixed = (h.get("asset_type") or "").upper() in (
+                        "BOND", "BONO", "ON", "LETRA", "LECAP")
+                    _mult = val / inv
+                    _lo, _hi = (0.02, 4.0) if _fixed else (0.002, 50.0)
+                    if _mult < _lo or _mult > _hi:
+                        trusted = False
+            if not trusted:
+                u = 0.0                         # precio no confiable → costo
             unreal_by_broker[b] = unreal_by_broker.get(b, 0.0) + u
-            if price is None:
+            if price is None or not trusted:
                 res["cost_fallbacks"] += 1
 
         total_unreal = sum(unreal_by_broker.values())
