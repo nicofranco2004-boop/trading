@@ -233,16 +233,16 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
             # cerca de par → banda estrecha [0.02×, 4×]; el resto permite multibaggers
             # reales → [0.002×, 50×]. Un valor ≤ 0 con costo > 0 es siempre bug.
             trusted = True
-            if inv > 0:
-                if val <= 0:
+            if val < 0:
+                trusted = False                 # valor de mercado < 0 = SIEMPRE bug
+                                                # (incluso con costo 0 → free lots)
+            elif inv > 0:
+                _fixed = (h.get("asset_type") or "").upper() in (
+                    "BOND", "BONO", "ON", "LETRA", "LECAP")
+                _mult = val / inv
+                _lo, _hi = (0.02, 4.0) if _fixed else (0.002, 50.0)
+                if _mult < _lo or _mult > _hi:
                     trusted = False
-                else:
-                    _fixed = (h.get("asset_type") or "").upper() in (
-                        "BOND", "BONO", "ON", "LETRA", "LECAP")
-                    _mult = val / inv
-                    _lo, _hi = (0.02, 4.0) if _fixed else (0.002, 50.0)
-                    if _mult < _lo or _mult > _hi:
-                        trusted = False
             if not trusted:
                 u = 0.0                         # precio no confiable → costo
             unreal_by_broker[b] = unreal_by_broker.get(b, 0.0) + u
@@ -262,6 +262,13 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
                     - (row["withdrawals"] or 0) + (row["pnl_realized"] or 0))
             u = total_unreal if b == "global" else unreal_by_broker.get(b, 0.0)
             new_cf = cost + u
+            # Clamp definitivo: el MTM NUNCA debe flipear un costo no-negativo a
+            # negativo. Si pasa, el unrealized está mal valuado (cross-currency, free
+            # lots con valor < 0, etc.) → caemos al costo (ej #417: 485→-592k → 485).
+            # Los que YA tenían costo negativo (corrupción vieja de pnl_realized, ej
+            # #725) no se tocan acá — eso es aparte.
+            if cost >= 0 and new_cf < 0:
+                new_cf = cost
             conn.execute(
                 "UPDATE monthly_entries SET capital_final=? WHERE user_id=? AND broker=? AND year=? AND month=?",
                 (new_cf, uid, b, y, m))

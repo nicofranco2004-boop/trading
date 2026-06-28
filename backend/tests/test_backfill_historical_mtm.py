@@ -117,6 +117,21 @@ class HistMtmTest(unittest.TestCase):
         self.assertAlmostEqual(cf["2024-09"], 2000.0, places=1)
         self.assertGreaterEqual(s["cost_fallbacks"], 1)
 
+    def test_guard_valor_negativo_con_costo_CERO(self):
+        # EL HUECO que dejó pasar #417 en la 1ra versión: un free lot (invested=0)
+        # con valor de mercado negativo. El guard `if inv>0` lo salteaba → el negativo
+        # se colaba. Ahora `val<0` se chequea SIEMPRE → cae al costo.
+        self._mock_prices({"2024-08": 250.0, "2024-09": 250.0})
+        orig = bf.sj.compute_broker_value_usd
+        bf.sj.compute_broker_value_usd = lambda *a, **k: {"value": -90000.0, "invested": 0.0}
+        try:
+            s = bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
+        finally:
+            bf.sj.compute_broker_value_usd = orig
+        cf = {m["ym"]: m["after"] for m in s["months"]}
+        self.assertAlmostEqual(cf["2024-08"], 2000.0, places=1)   # costo, NO -90000
+        self.assertGreaterEqual(cf["2024-08"], 0.0)               # nunca negativo
+
     def test_precio_absurdo_alto_no_infla(self):
         # Precio per-100 (AAPL ×100) → compute_broker_value_usd ya lo degrada a costo
         # (su trustMktValue agarra el over-distortion). Verificamos que no infla.
