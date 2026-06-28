@@ -396,6 +396,16 @@ class BalanzMovimientosParser(Parser):
                 _emit(base(tipo, monto=str(abs(importe))))
                 continue
 
+            # ── Cash-only SIN cash → no es nada importable ───────────────────
+            # Una fila de cobro/pago/fee/renta/manual con importe 0 (pero con
+            # cantidad, que la dejó pasar el guard de arriba) emitía un FEE monto 0
+            # que el validador rechaza ("comisión aislada necesita monto > 0").
+            # Las filas con cantidad pero sin cash que SÍ cambian la tenencia
+            # (acciones societarias) ya se manejaron arriba en `corporate`; las
+            # desconocidas caen al flag de abajo (no las tragamos acá).
+            if kind in ("deposito", "retiro", "fee", "renta", "manual") and not has_cash:
+                continue
+
             # ── Movimientos de efectivo / renta (precio=-1) ──────────────────
             if kind == "deposito":
                 _emit(base("DEPOSITO" if cash_in else "RETIRO", monto=str(abs(importe))))

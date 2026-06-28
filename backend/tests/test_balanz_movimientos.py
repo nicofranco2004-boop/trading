@@ -352,6 +352,30 @@ class BalanzMovimientosCanjeArancelesTest(unittest.TestCase):
             self.assertEqual(float(v["precio"]), 0.0)
             self.assertTrue(v.get("_corporate_close"))
 
+    def test_renta_sin_cash_no_emite_fee_monto_0(self):
+        # Una fila de renta/cobro/fee con importe 0 PERO con cantidad (que dejó
+        # pasar el guard de arriba) NO debe emitir un FEE monto 0 → el validador lo
+        # rechazaba ("comisión aislada necesita monto > 0"). Se omite limpio.
+        res = self._parse(
+            "Pago Complementario / TLC1O,TLC1O,Corporativos,2025-10-01,150,0,2025-10-01,Pesos,0",
+            "Intereses devengados / GD30,GD30,Bonos,2025-10-02,200,0,2025-10-02,Pesos,0",
+            "Renta / AL30,AL30,Bonos,2025-10-03,100,0,2025-10-03,Pesos,0",
+        )
+        self.assertEqual(res.parse_errors, [])
+        self.assertEqual(len(res.raw_rows), 0)       # nada que importar (sin cash)
+        # y NO hay ningún FEE/DIVIDENDO con monto 0
+        self.assertFalse(any(rr.data.get("tipo") in ("FEE", "DIVIDENDO")
+                             and float(rr.data.get("monto") or 0) == 0
+                             for rr in res.raw_rows))
+
+    def test_descripcion_desconocida_sin_cash_sigue_flaggeada(self):
+        # El guard de "cash-only sin cash" NO debe tragarse una descripción
+        # DESCONOCIDA (esa sigue yendo al RowError para el Import Guardian).
+        res = self._parse(
+            "Algo Totalmente Nuevo / 9,XYZ,Acciones,2025-10-01,5,0,2025-10-01,Pesos,0")
+        self.assertEqual(len(res.raw_rows), 0)
+        self.assertTrue(any(e.code == "BALANZ_MOV_DESC_DESCONOCIDA" for e in res.parse_errors))
+
 
 if __name__ == "__main__":
     unittest.main()
