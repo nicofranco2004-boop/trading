@@ -10159,6 +10159,127 @@ def admin_backfill_mtm(apply: bool = False, offset: int = 0, limit: int = 0,
         conn.close()
 
 
+@app.get("/api/admin/diagnose-negative-capital")
+def admin_diagnose_negative_capital(min_capital: float = -50000.0, limit_accounts: int = 80,
+                                    uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY de las cuentas con capital_final negativo GIGANTE.
+
+    Tesis (investigación 2026-06-28): un broker AR quedó con brokers.currency='USD'/
+    'USDT' → toda la conversión ARS→USD se saltea (está gateada por la moneda del
+    broker, ej persister.py:808 y rebuild.py:357) → los pesos se cuentan 1:1 como
+    dólares (×~1415) → pnl_realized / cash en escala de pesos → capital_final
+    negativo de miles de millones que el carryforward arrastra mes a mes.
+
+    Por cada cuenta afectada (global capital_final < min_capital en algún mes) devuelve:
+    brokers + moneda (flag `suspect` si está marcado USD/USDT pero TIENE tx en ARS),
+    el mes del salto + qué término lo domina, el broker culpable, y la operación con
+    mayor |pnl_usd| (el SELL roto, con su currency/fx). GET para abrir en el browser
+    con la cookie admin. NO ESCRIBE NADA.
+    """
+    conn = get_db()
+    try:
+        affected = conn.execute(
+            """SELECT user_id, MIN(capital_final) AS worst
+                 FROM monthly_entries
+                WHERE broker='global' AND capital_final < ?
+                GROUP BY user_id ORDER BY worst ASC LIMIT ?""",
+            (min_capital, limit_accounts)).fetchall()
+
+        reports = []
+        for arow in affected:
+            au = arow["user_id"]
+
+            # (a) brokers + moneda + conteo de tx ARS/USD (la contradicción AR-marcado-USD)
+            brokers = []
+            for b in conn.execute(
+                "SELECT name, currency FROM brokers WHERE user_id=? ORDER BY name", (au,)).fetchall():
+                cnt = conn.execute(
+                    """SELECT
+                         SUM(CASE WHEN UPPER(COALESCE(n.currency,''))='ARS' THEN 1 ELSE 0 END) AS ars,
+                         SUM(CASE WHEN UPPER(COALESCE(n.currency,'')) IN ('USD','USDT') THEN 1 ELSE 0 END) AS usd
+                       FROM import_normalized_tx n JOIN import_batches ib ON ib.id=n.batch_id
+                      WHERE ib.user_id=? AND ib.status='confirmed' AND n.broker=?""",
+                    (au, b["name"])).fetchone()
+                ars_n = cnt["ars"] or 0
+                cur = (b["currency"] or "").upper()
+                brokers.append({"name": b["name"], "currency": b["currency"],
+                                "ars_tx": ars_n, "usd_tx": cnt["usd"] or 0,
+                                "suspect": cur in ("USD", "USDT") and ars_n > 0})
+
+            # (b) cadena global: primer mes bajo el umbral + qué término de flujo lo domina
+            jump = None
+            for r in conn.execute(
+                """SELECT year, month, capital_inicio, deposits, withdrawals, pnl_realized, capital_final
+                     FROM monthly_entries WHERE user_id=? AND broker='global'
+                    ORDER BY year, month""", (au,)).fetchall():
+                if (r["capital_final"] or 0) < min_capital:
+                    terms = {"deposits": r["deposits"] or 0,
+                             "withdrawals": -(r["withdrawals"] or 0),
+                             "pnl_realized": r["pnl_realized"] or 0}
+                    jump = {"ym": f"{r['year']}-{r['month']:02d}",
+                            "capital_inicio": round(r["capital_inicio"] or 0, 2),
+                            "deposits": round(r["deposits"] or 0, 2),
+                            "withdrawals": round(r["withdrawals"] or 0, 2),
+                            "pnl_realized": round(r["pnl_realized"] or 0, 2),
+                            "capital_final": round(r["capital_final"] or 0, 2),
+                            "term_mas_negativo": min(terms, key=lambda k: terms[k])}
+                    break
+
+            # (c) broker culpable: la fila per-broker con el capital_final más negativo + su moneda
+            cb = conn.execute(
+                """SELECT broker, MIN(capital_final) AS worst, SUM(pnl_realized) AS pnl
+                     FROM monthly_entries WHERE user_id=? AND broker<>'global'
+                    GROUP BY broker ORDER BY worst ASC LIMIT 1""", (au,)).fetchone()
+            culprit_broker = None
+            if cb:
+                bc = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=?",
+                                  (au, cb["broker"])).fetchone()
+                culprit_broker = {"broker": cb["broker"],
+                                  "currency": (bc["currency"] if bc else "?"),
+                                  "peor_capital_final": round(cb["worst"] or 0, 2),
+                                  "pnl_realized_total": round(cb["pnl"] or 0, 2)}
+
+            # (d) operación con mayor |pnl_usd| (el SELL roto, con su moneda/fx)
+            op = conn.execute(
+                """SELECT date, broker, asset, op_type, quantity, exit_price, pnl_usd, currency, fx_to_usd
+                     FROM operations WHERE user_id=? ORDER BY ABS(COALESCE(pnl_usd,0)) DESC LIMIT 1""",
+                (au,)).fetchone()
+            top_op = None
+            if op:
+                top_op = {"date": op["date"], "broker": op["broker"], "asset": op["asset"],
+                          "op_type": op["op_type"], "quantity": op["quantity"],
+                          "exit_price": op["exit_price"], "pnl_usd": round(op["pnl_usd"] or 0, 2),
+                          "currency": op["currency"], "fx_to_usd": op["fx_to_usd"]}
+
+            sus = [b["name"] for b in brokers if b["suspect"]]
+            summary = (f"#{au}: " +
+                       (f"AR marcado USD → {', '.join(sus)}" if sus else "ningún broker AR-marcado-USD (ver H2)") +
+                       (f" | salta {jump['ym']} por {jump['term_mas_negativo']}" if jump else "") +
+                       (f" | op |pnl|max: {top_op['asset']} {top_op['op_type']} "
+                        f"pnl={top_op['pnl_usd']:,.0f} ccy={top_op['currency']} fx={top_op['fx_to_usd']}"
+                        if top_op else ""))
+            reports.append({"user_id": au,
+                            "worst_global_capital_final": round(arow["worst"] or 0, 2),
+                            "brokers": brokers, "jump": jump,
+                            "culprit_broker": culprit_broker, "top_op": top_op, "summary": summary})
+
+        confirms = sum(1 for r in reports if any(b["suspect"] for b in r["brokers"]))
+        return {"ok": True, "min_capital": min_capital, "affected_count": len(reports),
+                "confirms_h1_broker_ar_usd": confirms,
+                "verdict": (f"{confirms}/{len(reports)} cuentas con ≥1 broker AR marcado USD/USDT "
+                            "que tiene tx en ARS → H1 CONFIRMADA"
+                            if confirms else
+                            "ninguna confirma H1 directo — revisar H2 (moneda de fila no reconocida)"),
+                "reports": reports}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_diagnose_negative_capital FAILED")
+        raise HTTPException(status_code=500, detail=f"diagnose-negative-capital falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/disk-usage")
 def admin_disk_usage(uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY: uso de disco de los filesystems relevantes + los
