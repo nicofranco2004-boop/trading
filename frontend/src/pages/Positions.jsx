@@ -990,6 +990,11 @@ function PositionsDesktop() {
   const thClassSticky = `${thBase} left-0 z-20 border-r border-line`
   const tdClass = `${compact ? 'px-2 py-1.5 text-[13px]' : 'px-2 py-2.5 text-[13px]'} whitespace-nowrap`
   const tdClassSticky = `${compact ? 'px-2 py-1.5' : 'px-2 py-2.5'} whitespace-nowrap sticky left-0 z-10 bg-bg-1 border-r border-line shadow-[6px_0_10px_-8px_rgba(0,0,0,0.45)]`
+  // Columna de ACCIONES (kebab) FIJA a la derecha: el menú de los tres puntitos
+  // queda SIEMPRE visible aunque la tabla scrollee de costado (antes quedaba
+  // cortado fuera del borde derecho en ventanas angostas). Espejo del sticky-left.
+  const thClassStickyRight = `${thBase} right-0 z-20 border-l border-line`
+  const tdClassStickyRight = `${compact ? 'px-2 py-1.5' : 'px-2 py-2.5'} whitespace-nowrap sticky right-0 z-10 bg-bg-1 border-l border-line shadow-[-6px_0_10px_-8px_rgba(0,0,0,0.45)]`
   const inputClass = 'w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0'
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
@@ -1412,7 +1417,7 @@ function PositionsDesktop() {
                       {showDetail && <th className={thClass}>P&L USD</th>}
                       <th className={thClass}>P&L %</th>
                       <th className={thClass}>Var. día</th>
-                      <th className={thClass}></th>
+                      <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1548,7 +1553,7 @@ function PositionsDesktop() {
                               <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
                             )}
                           </td>
-                          <td className={tdClass}>
+                          <td className={tdClassStickyRight}>
                             <div className="flex items-center gap-1 justify-end">
                               {!p.is_cash && (
                                 <InlineAIButton
@@ -1624,7 +1629,7 @@ function PositionsDesktop() {
                     <th className={thClass}>P&L</th>
                     <th className={thClass}>P&L %</th>
                     <th className={thClass}>Var. día</th>
-                    <th className={thClass}></th>
+                    <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1746,7 +1751,7 @@ function PositionsDesktop() {
                             <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
                           )}
                         </td>
-                        <td className={tdClass}>
+                        <td className={tdClassStickyRight}>
                           <div className="flex items-center gap-1 justify-end">
                             {!p.is_cash && (
                               <InlineAIButton
