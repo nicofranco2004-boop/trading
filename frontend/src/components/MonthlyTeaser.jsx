@@ -9,7 +9,9 @@
 // direccional + amount + porcentaje + CTA. Cero scroll, alta info density.
 //
 // Comportamiento:
-//   • Si hay data del mes actual         → muestra delta + %
+//   • Si hay data del mes actual con rendimiento calculable → delta + %
+//   • Si el mes está en curso pero todavía no hay baseline MtM → estado neutro
+//     "en curso" (sin número fantasma; ver useMonthlyData quick-win C1)
 //   • Si no hay data del mes              → no se renderiza (no agrega ruido)
 //   • Color condicional verde / rojo según signo del delta
 
@@ -48,21 +50,34 @@ export default function MonthlyTeaser() {
   const lastMonth = yr.months[yr.months.length - 1]
   const isLive = lastMonth.month === todayM
   const daysLeft = isLive ? daysLeftInMonth(lastMonth.year, lastMonth.month) : null
-  const isPositive = lastMonth.deltaUsd >= 0
+
+  // El mes en curso puede no tener un rendimiento calculable todavía (sin baseline
+  // MtM en los snapshots) → deltaUsd null. En ese caso mostramos un estado neutro
+  // "en curso" sin un número fantasma. Ver useMonthlyData (quick-win C1).
+  const hasDelta = lastMonth.deltaUsd != null
+  const isPositive = hasDelta && lastMonth.deltaUsd >= 0
+  const showPct = hasDelta && lastMonth.deltaPct != null && lastMonth.source !== 'derived'
+
+  const tone = !hasDelta
+    ? 'bg-bg-2/40 border-line hover:border-line-2'
+    : isPositive
+      ? 'bg-rendi-pos/[0.04] border-rendi-pos/20 hover:border-rendi-pos/40'
+      : 'bg-rendi-neg/[0.04] border-rendi-neg/20 hover:border-rendi-neg/40'
+  const iconTone = !hasDelta
+    ? 'bg-bg-3 text-ink-2'
+    : isPositive ? 'bg-rendi-pos/15 text-rendi-pos' : 'bg-rendi-neg/15 text-rendi-neg'
 
   return (
     <Link
       to="/reportes"
-      className={`group flex items-center gap-3 px-4 py-3 rounded border transition-colors mb-8 ${
-        isPositive
-          ? 'bg-rendi-pos/[0.04] border-rendi-pos/20 hover:border-rendi-pos/40'
-          : 'bg-rendi-neg/[0.04] border-rendi-neg/20 hover:border-rendi-neg/40'
-      }`}
+      className={`group flex items-center gap-3 px-4 py-3 rounded border transition-colors mb-8 ${tone}`}
     >
-      <div className={`flex items-center justify-center w-8 h-8 rounded-sm flex-shrink-0 ${
-        isPositive ? 'bg-rendi-pos/15 text-rendi-pos' : 'bg-rendi-neg/15 text-rendi-neg'
-      }`}>
-        {isPositive ? <TrendingUp size={16} strokeWidth={1.75} aria-hidden="true" /> : <TrendingDown size={16} strokeWidth={1.75} aria-hidden="true" />}
+      <div className={`flex items-center justify-center w-8 h-8 rounded-sm flex-shrink-0 ${iconTone}`}>
+        {!hasDelta
+          ? <Calendar size={16} strokeWidth={1.75} aria-hidden="true" />
+          : isPositive
+            ? <TrendingUp size={16} strokeWidth={1.75} aria-hidden="true" />
+            : <TrendingDown size={16} strokeWidth={1.75} aria-hidden="true" />}
       </div>
 
       <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -70,16 +85,24 @@ export default function MonthlyTeaser() {
           <Calendar size={11} strokeWidth={1.75} aria-hidden="true" />
           {lastMonth.name}{isLive ? ' en curso' : ' (último cierre)'}
         </span>
-        <span className={`text-base font-semibold tabular ${
-          isPositive ? 'text-rendi-pos' : 'text-rendi-neg'
-        }`}>
-          {isPositive ? '+' : '−'}USD {usd(Math.abs(lastMonth.deltaUsd))}
-        </span>
-        {lastMonth.source !== 'derived' && (
-          <span className={`text-sm tabular ${
-            isPositive ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
-          }`}>
-            ({pctSigned(lastMonth.deltaPct / 100)})
+        {hasDelta ? (
+          <>
+            <span className={`text-base font-semibold tabular ${
+              isPositive ? 'text-rendi-pos' : 'text-rendi-neg'
+            }`}>
+              {isPositive ? '+' : '−'}USD {usd(Math.abs(lastMonth.deltaUsd))}
+            </span>
+            {showPct && (
+              <span className={`text-sm tabular ${
+                isPositive ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
+              }`}>
+                ({pctSigned(lastMonth.deltaPct / 100)})
+              </span>
+            )}
+          </>
+        ) : (
+          <span className="text-sm text-ink-2">
+            Calculando el rendimiento del mes…
           </span>
         )}
         {daysLeft != null && daysLeft > 0 && (

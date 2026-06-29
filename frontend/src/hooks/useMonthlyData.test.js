@@ -646,4 +646,38 @@ describe('buildMonthlyReports', () => {
       expect(yr.ytdPctOverContrib).toBeNull()
     })
   })
+
+  // ─── Mes en curso — quick-win C1 (rendimiento sin discontinuidad de base) ───
+  describe('mes en curso — quick-win C1', () => {
+    const now = new Date()
+    const y = now.getFullYear()
+    const mo = now.getMonth() + 1
+    const period = `${y}-${String(mo).padStart(2, '0')}`
+    const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const prevMonthEnd = iso(new Date(new Date(y, mo - 1, 1).getTime() - 86400000))
+    // Entry del mes EN CURSO: capital_inicio (cost-basis del chain) MUY por encima
+    // del valor MtM real → sin re-anclaje daría un rendimiento fantasma muy negativo
+    // (el bug del −64.9% que ve el usuario).
+    const liveEntry = { year: y, month: mo, broker: 'global', capital_inicio: 27000, capital_final: 9500, deposits: 0, withdrawals: 14, pnl_realized: 0, pnl_unrealized: 0 }
+
+    it('re-ancla el delta al MtM de los snapshots (no fantasma)', () => {
+      const snaps = [
+        { date: prevMonthEnd, total_value: 9400 },     // baseline MtM = cierre mes anterior
+        { date: `${period}-05`, total_value: 9500 },    // valor MtM actual
+      ]
+      const out = buildMonthlyReports([liveEntry], [], snaps, 'global')
+      const m = out.years[0].months.find(mm => mm.month === mo)
+      // deltaUsd = mtmEnd − mtmStart − flows = 9500 − 9400 − (−14) = 114
+      expect(m.deltaUsd).toBeCloseTo(114, 0)
+      expect(m.deltaPct).toBeGreaterThan(0)
+      expect(m.deltaPct).toBeLessThan(5)              // NO el −64% fantasma
+    })
+
+    it('sin baseline MtM → no inventa un % (deltaUsd/deltaPct null)', () => {
+      const out = buildMonthlyReports([liveEntry], [], [], 'global')
+      const m = out.years[0].months.find(mm => mm.month === mo)
+      expect(m.deltaUsd).toBeNull()
+      expect(m.deltaPct).toBeNull()
+    })
+  })
 })

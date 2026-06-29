@@ -384,6 +384,46 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
       deltaPct = 0   // sin baseline, no calculamos %
     }
 
+    // ── Quick-win C1: rendimiento del MES EN CURSO sin discontinuidad de base ──
+    // El delta del mes vivo se calculaba como capital_final − capital_inicio, pero
+    // capital_final ya es mark-to-market (el unrealized se sincroniza desde el
+    // frontend) mientras capital_inicio viene del chain cost-basis del mes anterior.
+    // Esa mezcla de bases produce un "rendimiento" fantasma (ej. −64.9%) que en
+    // realidad es la diferencia entre las dos valuaciones, no performance real.
+    // Para el mes en curso recomputamos el delta PURO-MtM desde los snapshots del
+    // portfolio (misma base en ambas puntas). Si no hay baseline MtM, no mostramos
+    // un % fantasma (queda null → el banner muestra "en curso" sin número).
+    // Fix de raíz (backlog): sellar capital_final con MtM en el backend.
+    const _now = new Date()
+    const isLiveMonth = (source === 'manual' || source === 'partial')
+      && selectedBroker === 'global'
+      && year === _now.getFullYear() && month === (_now.getMonth() + 1)
+    if (isLiveMonth) {
+      const monthStart = `${period}-01`
+      // Base = último snapshot ANTES del mes (= valor MtM al cierre del mes
+      // anterior). Si no hay (cuenta recién importada), el primer snapshot DENTRO
+      // del mes como fallback.
+      let baseSnap = null
+      for (const s of (snapshots || [])) {
+        if (s.total_value == null || !s.date || s.date >= monthStart) continue
+        if (!baseSnap || s.date > baseSnap.date) baseSnap = s
+      }
+      if (!baseSnap && monthSnaps.length >= 2) baseSnap = monthSnaps[0]
+      const lastSnap = monthSnaps.length ? monthSnaps[monthSnaps.length - 1] : null
+      if (baseSnap && lastSnap && baseSnap.total_value > 0 && baseSnap.date < lastSnap.date) {
+        const mtmStart = baseSnap.total_value
+        const mtmEnd = lastSnap.total_value
+        const avgMtm = mtmStart + 0.5 * flows
+        deltaUsd = mtmEnd - mtmStart - flows
+        deltaPct = avgMtm > 0 ? (deltaUsd / avgMtm) * 100 : 0
+      } else {
+        // Sin baseline MtM no se puede calcular el rendimiento del mes sin mezclar
+        // bases → no inventamos un número.
+        deltaUsd = null
+        deltaPct = null
+      }
+    }
+
     // Drivers del mes: mejor/peor operación + vs benchmarks
     const monthOps = opsByPeriod.get(period) || []
     const drivers = computeDriversForMonth({
