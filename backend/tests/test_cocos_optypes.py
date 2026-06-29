@@ -64,18 +64,35 @@ class TestEnEspecie(unittest.TestCase):
         norm, _ = normalize_rows(r.raw_rows)
         self.assertAlmostEqual(norm[0].gross_amount, 16135014.05, places=2)
 
-    def test_dividendos_en_especie_usd_se_skipea(self):
-        # Retención de dividendo USD pagado en especie (el cash real entra como
-        # Nota De Credito Conversion) → skip silencioso, sin error.
+    def test_dividendos_en_especie_usd_toma_la_retencion(self):
+        # Dividendo USD en especie: el cash USD real entra después como Nota De
+        # Credito Conversion (NO lo tomamos acá → sin doble conteo), PERO la
+        # retención impositiva EN PESOS (total negativo) SÍ sale de la cuenta →
+        # FEE. Sin esto el cash ARS queda inflado.
         r = _parse("1;;04-02-2025;04-02-2025;DIVIDENDOS EN ESPECIE;"
                    "Dólar estadounidense;ARS;;0,59;0;0;0;-2,2183;-0,4658;0;-2,68")
-        self.assertEqual(len(r.raw_rows), 0)
+        self.assertEqual(_by_tipo(r), ["FEE"])
         self.assertEqual(len(r.parse_errors), 0)
+        norm, _ = normalize_rows(r.raw_rows)
+        self.assertEqual(norm[0].operation_type, "FEE")
+        self.assertAlmostEqual(norm[0].gross_amount, 2.68, places=2)
+        self.assertEqual(norm[0].currency, "ARS")
 
-    def test_dividendos_en_especie_acciones_se_skipea(self):
-        # Dividendo en ACCIONES (instrumento = ticker): no auto-agregamos especie.
+    def test_dividendos_en_especie_acciones_toma_la_retencion(self):
+        # Dividendo en ACCIONES en especie: no auto-agregamos las acciones, pero
+        # la retención en pesos (total negativo) se toma como FEE.
         r = _parse("1;;08-09-2025;08-09-2025;DIVIDENDOS EN ESPECIE;"
                    "MORIXE HNOS. S.A.  ORD. 1 VOTO (MORI);ARS;;1.273;0;0;0;-1,273;-0,2673;0;-1,54")
+        self.assertEqual(_by_tipo(r), ["FEE"])
+        self.assertEqual(len(r.parse_errors), 0)
+        norm, _ = normalize_rows(r.raw_rows)
+        self.assertAlmostEqual(norm[0].gross_amount, 1.54, places=2)
+
+    def test_dividendos_en_especie_usd_sin_retencion_se_skipea(self):
+        # Si NO hay retención en pesos (total 0 o positivo), no hay cash que mover
+        # → skip silencioso (el USD entra por Nota De Credito).
+        r = _parse("1;;04-02-2025;04-02-2025;DIVIDENDOS EN ESPECIE;"
+                   "Dólar estadounidense;ARS;;0,59;0;0;0;0;0;0;0")
         self.assertEqual(len(r.raw_rows), 0)
         self.assertEqual(len(r.parse_errors), 0)
 

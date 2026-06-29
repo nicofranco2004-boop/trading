@@ -429,7 +429,18 @@ class CocosParser(Parser):
                 if "peso argentino" in instr_low or not instrumento.strip():
                     tipo_rendi = "DIVIDENDO"
                 else:
-                    continue
+                    # Dividendo en dólares/acciones EN ESPECIE: el cash USD real
+                    # entra después como "Nota De Credito Conversion" → NO lo
+                    # tomamos acá (evita doble conteo). PERO la fila trae la
+                    # retención impositiva EN PESOS (iva+otros, en `total` negativo)
+                    # que SÍ sale de la cuenta. Sin tomarla, el cash ARS queda
+                    # inflado (ej.: 3 dividendos = +13,23 de más). La tomamos como
+                    # FEE; el importe (abs del total) lo maneja la rama de cash-flow.
+                    tot = _clean_ar_number(G(row, "total"))
+                    if moneda_raw == "ARS" and tot.startswith("-"):
+                        tipo_rendi = "FEE"
+                    else:
+                        continue
             else:
                 tipo_rendi = _resolve_op(tipo_raw)
             if tipo_rendi is None:
