@@ -786,11 +786,15 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               const skipped = skippedRowIndices.size
               const toImport = Math.max(0, valid - skipped)
               const totalSkip = invalid + skipped
-              const hasSeedSug = !!preview?.seed_suggestions?.needed
+              // Si viene una FOTO (Estado de Cuenta / Tenencia), NO pedimos el cash
+              // a mano: la foto es la verdad de HOY y cierra el efectivo + las
+              // posiciones sola al aplicarse (silencioso). El paso manual de cash
+              // queda solo para brokers SIN foto.
+              const hasSeedSug = !!preview?.seed_suggestions?.needed && !tenenciaFile
               const seedHasAssets = (preview?.seed_suggestions?.brokers || []).some(b => (b.assets || []).length > 0)
-              // Si falta el saldo inicial, NO dejamos confirmar acá: el único
-              // camino hacia adelante es ir a resolverlo (paso siguiente). Así
-              // nadie importa con la caja en negativo sin querer.
+              // Si falta el saldo inicial (y no hay foto), NO dejamos confirmar acá:
+              // el único camino hacia adelante es ir a resolverlo (paso siguiente).
+              // Así nadie importa con la caja en negativo sin querer.
               if (hasSeedSug) {
                 return (
                   <button

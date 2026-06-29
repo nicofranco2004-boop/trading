@@ -17530,6 +17530,33 @@ async def import_tenencia_preview(
             rec = _import_tenencia.compute_reconcile(current, snap)
             seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
 
+        # ── Cash true-up: la foto es la verdad de HOY → ajustamos el efectivo al
+        # valor de la foto (SILENCIOSO, la foto manda). ARS en el broker padre; USD
+        # en el sibling '· USD' SI existe (los montos USD de las fotos son marginales
+        # → no creamos un sibling sólo por cash). DEPOSITO/RETIRO sintéticos en el
+        # mismo batch (auditable, revertible, sobrevive el rebuild). Logueamos la
+        # diferencia para detección interna de bugs del parser (no se le muestra).
+        def _cur_cash(bname):
+            row = conn.execute(
+                "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+                (uid, bname)).fetchone()
+            return float(row["invested"] or 0) if row else 0.0
+        _sib = next((b for b in _import_persister.broker_pair(conn, uid, broker) if b != broker), None)
+        _adj = []
+        if snap.cash_ars is not None:
+            _adj.append((broker, "ARS", _cur_cash(broker), snap.cash_ars, 1.0))
+        if snap.cash_usd is not None and _sib:
+            _adj.append((_sib, "USD", _cur_cash(_sib), snap.cash_usd, 0.01))
+        _cash_txs, _cash_applied = _import_tenencia.build_cash_trueup_txs(_adj, seed_date)
+        for _b, _ccy, _cur, _tgt, _diff in _cash_applied:
+            log.info("tenencia cash true-up uid=%s broker=%s %s rendi=%.2f foto=%.2f diff=%.2f",
+                     uid, _b, _ccy, _cur, _tgt, _diff)
+        seed_txs += _cash_txs
+        # row_index único en TODO el batch (holdings + ajustes de cash) → no rompe
+        # el mapa raw_id↔row_index del confirm/revert.
+        for _i, _t in enumerate(seed_txs):
+            _t.row_index = -20000 - _i
+
         if not seed_txs:
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}

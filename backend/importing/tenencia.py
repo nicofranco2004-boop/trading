@@ -155,6 +155,36 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
     return txs
 
 
+def build_cash_trueup_txs(adjustments, seed_date, start_idx: int = -21000):
+    """Ajusta el EFECTIVO al valor de la foto (la foto es la verdad de HOY). Por
+    cada moneda con |target − current| ≥ eps emite un DEPOSITO (si falta plata) o
+    RETIRO (si sobra) sintético — auditable, revertible y sobrevive el rebuild
+    (mismo patrón que el seed de holdings). Silencioso: el usuario no ve la
+    diferencia, la foto manda.
+
+    `adjustments`: lista de (broker, currency, current_cash, target_cash, eps).
+    Devuelve (txs, applied) con applied = [(broker, ccy, current, target, diff)]
+    para que el caller loguee la diferencia (detección interna de bugs del parser)."""
+    from .schema import NormalizedTx, OP_DEPOSIT, OP_WITHDRAW
+    txs, applied = [], []
+    idx = start_idx
+    for broker, ccy, cur, target, eps in adjustments:
+        if target is None:
+            continue
+        cur = cur or 0.0
+        diff = round(target - cur, 2)
+        if abs(diff) < eps:
+            continue
+        txs.append(NormalizedTx(
+            row_index=idx, date=seed_date, broker=broker,
+            operation_type=(OP_DEPOSIT if diff > 0 else OP_WITHDRAW),
+            gross_amount=abs(diff), currency=ccy,
+            notes=f"Ajuste de cash a Estado de Cuenta ({ccy})"))
+        applied.append((broker, ccy, cur, target, diff))
+        idx -= 1
+    return txs, applied
+
+
 def looks_like_tenencia(text: str) -> bool:
     """Heurística para autodetectar este reporte (vs Cuenta Corriente u otro PDF)."""
     t = _norm(text)
