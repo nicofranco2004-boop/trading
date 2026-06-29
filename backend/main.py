@@ -10159,6 +10159,44 @@ def admin_backfill_mtm(apply: bool = False, offset: int = 0, limit: int = 0,
         conn.close()
 
 
+@app.post("/api/admin/backfill-currency")
+def admin_backfill_currency(apply: bool = False, offset: int = 0, limit: int = 0,
+                            uid: int = Depends(get_admin_user)):
+    """Backfill de corrección de MONEDA para las cuentas con capital negativo gigante.
+
+    Corrige in-place las filas envenenadas de import_normalized_tx (pesos contados como
+    dólares ×~tc_blue) y re-rebuildea. Tres correcciones, todas SOLO USD→ARS:
+      (1) FCI money-market peso mal-etiquetado USD (Balanz, VCP>5),
+      (2) retiro/depósito SINTÉTICO del seed peso-escala (re-stamp ÷tc_blue),
+      (3) conducto dólar-MEP con bono (Cocos, par BUY/SELL precio>>).
+
+    - apply=false (default): DRY-RUN sobre una COPIA del DB → la real NO se toca.
+      Devuelve, por cuenta, las correcciones + el peor capital_final antes→después.
+    - apply=true: corrige y commitea por usuario. Idempotente (no re-toca lo ya ARS).
+
+    Verificado E2E: recupera el estado correcto al centavo (corregir el log de eventos
+    + recompute equivale a re-parsear con los parsers fixeados). Gate: admin logueado.
+    """
+    from scripts.backfill_currency_fix import backfill_summary
+    conn = get_db()
+    try:
+        all_users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
+        users = all_users[offset:offset + limit] if limit > 0 else all_users[offset:]
+        summary = backfill_summary(conn, users, apply=bool(apply), recalc=_recalc_pnl_realized_from_ops)
+        summary.update(ok=True, applied=bool(apply), total_all_users=len(all_users),
+                       offset=offset, processed=len(users))
+        log.info("admin_backfill_currency apply=%s users_changed=%s errors=%s",
+                 apply, summary["users_changed"], len(summary["errors"]))
+        return summary
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("admin_backfill_currency FAILED apply=%s offset=%s limit=%s", apply, offset, limit)
+        raise HTTPException(status_code=500, detail=f"backfill-currency falló: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/diagnose-negative-capital")
 def admin_diagnose_negative_capital(min_capital: float = -50000.0, limit_accounts: int = 80,
                                     uid: int = Depends(get_admin_user)):
