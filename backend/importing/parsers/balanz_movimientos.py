@@ -141,9 +141,15 @@ def _classify_desc(desc_norm: str) -> str:
     # renta): la rama corporate maneja la cantidad (VENTA viejo / COMPRA nuevo) Y el
     # cash cuando lo hay (canje liquidado en efectivo → DIVIDENDO/FEE). Ruteado a
     # renta perdía la cantidad → dejaba el bono nuevo/viejo como posición fantasma.
+    # "reducción de capital" (devolución de capital de un bono/ON: baja el nominal,
+    # cantidad −, importe normalmente 0) y "conversión especie" (canje de un título
+    # por otro: el viejo SALE con cantidad −) también cambian la CANTIDAD sin cash →
+    # corporate (VENTA precio 0 que baja la posición). Ruteadas a renta/otro caían
+    # como FEE monto 0 o se descartaban, dejando el bono como posición fantasma.
     if (d.startswith("dividendo en acciones") or d.startswith("dividendo en especie")
             or d.startswith("split") or d.startswith("acreditacion cambio de ratio")
-            or d.startswith("rescate parcial") or d.startswith("canje s/aviso")):
+            or d.startswith("rescate parcial") or d.startswith("canje s/aviso")
+            or d.startswith("reduccion de capital") or d.startswith("conversion especie")):
         return "corporate"
     # Operación a plazo / diferida: trade con cantidad + cash pero sin precio
     # unitario (precio=-1). Se resuelve por el signo de Importe.
