@@ -173,15 +173,36 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
     cur_type: Optional[str] = None
     cur_ccy = "ARS"
     seen_tickers = set()
+    in_cc = False            # dentro de la sección "Cuenta Corriente" (cash)
+    cash_ars = 0.0
+    cash_usd = 0.0
+    has_cash = False
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
         sm = _SECTION_RE.match(line)
         if sm:
+            in_cc = False
             cur_type = _SECTION_TYPE.get(_norm(sm.group(1)))
             ccy = _norm(sm.group(2))
             cur_ccy = "USD" if ("u$s" in ccy or "usd" in ccy or "dolar" in ccy) else "ARS"
+            continue
+        # Sección "Cuenta Corriente ARS …": trae el CASH (Pesos = saldo ARS;
+        # U$S / DOLAR MEP = saldo USD). Lo capturamos para cerrar el cash, no solo
+        # las posiciones. Pesos → último número (importe ARS); USD → primer número
+        # (cantidad en dólares; el resto es su valuación en pesos).
+        if _norm(line).startswith("cuenta corriente"):
+            in_cc = True
+            cur_type = None
+            continue
+        if in_cc:
+            ln = _norm(line)
+            nums = re.findall(_AR_NUM, line)
+            if ln.startswith("pesos") and nums:
+                cash_ars += _num(nums[-1]); has_cash = True
+            elif (ln.startswith("u$s") or ln.startswith("dolar") or ln.startswith("dolares")) and nums:
+                cash_usd += _num(nums[0]); has_cash = True
             continue
         if line.startswith("Ticker") or cur_type is None:
             continue
@@ -217,6 +238,9 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
             ticker=tk, asset_type=cur_type, quantity=qty, value=value,
             currency=cur_ccy, price_per1=value / qty, per100=per100,
             name=rm.group(2).strip()[:60]))
+    if has_cash:
+        snap.cash_ars = round(cash_ars, 2)
+        snap.cash_usd = round(cash_usd, 2)
     return snap
 
 
@@ -337,6 +361,9 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
     section_type: Optional[str] = None   # asset_type, "SKIP" (monedas) o None
     cols: dict = {}                      # clave canónica → índice de columna
     seen = set()
+    cash_ars = 0.0                       # sección MONEDAS: saldo de efectivo por moneda
+    cash_usd = 0.0
+    has_cash = False                     # vimos la sección MONEDAS (para cerrar el cash)
 
     for raw in rows:
         cells = list(raw)
@@ -389,8 +416,22 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
                     cols["vc"] = i
             continue
 
+        # Sección MONEDAS (cash): capturamos el saldo por moneda (CANT. DISPONIBLE
+        # = monto nativo) para que el Estado de Cuenta pueda cerrar el cash, no solo
+        # las posiciones. '$'/Peso → ARS; USD → USD.
+        if section_type == "SKIP":
+            esp_i, disp_i = cols.get("especie"), cols.get("cant_disp")
+            if esp_i is not None and disp_i is not None and esp_i < len(svals):
+                mon = _deaccent(svals[esp_i]).upper().strip()
+                amt = _ppi_num(cells[disp_i]) if disp_i < len(cells) else None
+                if amt is not None:
+                    if mon in ("$", "PESO", "PESOS", "ARS"):
+                        cash_ars += amt; has_cash = True
+                    elif mon.startswith("USD") or mon in ("U$S", "US$", "DOLAR", "DOLARES"):
+                        cash_usd += amt; has_cash = True
+            continue
         # Filas de datos: necesitan sección activa de posiciones + mapa de columnas.
-        if not section_type or section_type == "SKIP" or "especie" not in cols:
+        if not section_type or "especie" not in cols:
             continue
         esp_i = cols.get("especie")
         disp_i = cols.get("cant_disp")
@@ -431,6 +472,9 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
         snap.holdings.append(Holding(
             ticker=ticker, asset_type=section_type, quantity=qty, value=value,
             currency=ccy, price_per1=value / qty, per100=False, name=name[:60]))
+    if has_cash:
+        snap.cash_ars = round(cash_ars, 2)
+        snap.cash_usd = round(cash_usd, 2)
     return snap
 
 
