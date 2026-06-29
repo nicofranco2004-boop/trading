@@ -1820,7 +1820,8 @@ function PositionsDesktop() {
 
       {/* Zona Renta Fija: bonos/letras/FCI agrupados cross-broker, con borrado/restore por sección */}
       <RentaFijaSections positions={positions} valuePos={valuePos} brokers={brokers}
-        displayCurrency={displayCurrency} tcBlue={tcBlue} onChanged={loadAll} />
+        displayCurrency={displayCurrency} tcBlue={tcBlue} onChanged={loadAll}
+        onEdit={openEdit} onDelete={del} />
 
       {/* Grupo Plazos fijos + su form de alta (lo dispara el flujo o el header del grupo) */}
       <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />

@@ -7,12 +7,12 @@
 // es solo agrupación de presentación. Cada fila se valúa con `valuePos` del padre
 // (misma lógica que las tablas por broker → sin divergencia).
 import { useState, useEffect, Fragment } from 'react'
-import { Layers, Trash2, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
+import { Layers, Trash2, RotateCcw, ChevronDown, ChevronRight, Pencil } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from './Toast'
 import { positionSection, sectionKey, sectionLabel, sortSectionKeys } from '../utils/sections'
 
-export default function RentaFijaSections({ positions = [], valuePos, brokers = [], displayCurrency = 'USD', tcBlue = 1, onChanged }) {
+export default function RentaFijaSections({ positions = [], valuePos, brokers = [], displayCurrency = 'USD', tcBlue = 1, onChanged, onEdit, onDelete }) {
   const toast = useToast()
   const [archived, setArchived] = useState([])
   const [busy, setBusy] = useState(null)
@@ -117,7 +117,7 @@ export default function RentaFijaSections({ positions = [], valuePos, brokers = 
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-line/50">
-                      {['Activo', 'Broker', 'Cantidad', 'Valor', 'P&L'].map(h => (
+                      {['Activo', 'Broker', 'Cantidad', 'Valor', 'P&L', ''].map(h => (
                         <th key={h} className="px-3 py-2 text-left text-xs text-ink-3 font-medium whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -131,6 +131,22 @@ export default function RentaFijaSections({ positions = [], valuePos, brokers = 
                         <td className="px-3 py-2 text-ink-0 tabular">{v.valueUsd != null ? fmtMoney(v.valueUsd) : '—'}</td>
                         <td className={`px-3 py-2 tabular text-[12px] ${(v.pnlPct || 0) >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                           {v.valueUsd != null ? pct(v.pnlPct || 0) : '—'}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-2 justify-end">
+                            {onEdit && (
+                              <button onClick={() => onEdit(p)} title="Editar posición"
+                                className="text-ink-3 hover:text-ink-0 transition">
+                                <Pencil size={13} />
+                              </button>
+                            )}
+                            {onDelete && (
+                              <button onClick={() => onDelete(p.id)} title="Eliminar posición"
+                                className="text-ink-3 hover:text-red-500 transition">
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
