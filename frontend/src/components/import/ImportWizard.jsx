@@ -382,7 +382,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
         // PDF; Cocos = el CSV del Estado de Cuenta (otro header → lo detectamos por
         // contenido). Al preview de Movimientos va solo el resto.
         let tenFile = null, tenFmt = null
-        const ccFiles = []
+        let ccFiles = []
         for (const f of files) {
           if (/\.pdf$/i.test(f.name || '')) { tenFile = f; tenFmt = null; continue }  // Bull Market
           if (format === 'cocos' && /\.csv$/i.test(f.name || '')) {
@@ -392,6 +392,25 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
             if (looksLikeCocosTenenciaCsv(firstLine)) { tenFile = f; tenFmt = 'cocos'; continue }
           }
           ccFiles.push(f)
+        }
+        // PPI: la foto (Estado de Cuenta) es xlsx IGUAL que los Movimientos → el
+        // browser no puede mirar adentro para distinguirlas. Si no apartamos foto
+        // client-side y hay ≥2 archivos, le preguntamos al backend cuál es la foto
+        // (looks_like_ppi_tenencia). Best-effort: si falla, sigue sin foto.
+        if (!tenFile && format === 'ppi' && ccFiles.length >= 2) {
+          try {
+            const cfd = new FormData()
+            ccFiles.forEach(f => cfd.append('files', f))
+            const cls = await api.upload('/imports/classify-tenencia', cfd)
+            if (cls?.file_name) {
+              const foto = ccFiles.find(f => (f.name || '') === cls.file_name)
+              if (foto) {
+                tenFile = foto
+                tenFmt = cls.format || 'ppi'
+                ccFiles = ccFiles.filter(f => f !== foto)
+              }
+            }
+          } catch (e) { /* sin foto → importa solo Movimientos, no rompe */ }
         }
         setTenenciaFile(tenFile)
         setTenenciaFormat(tenFmt)

@@ -17396,6 +17396,49 @@ async def import_inspect(
     return payload
 
 
+@app.post("/api/imports/classify-tenencia")
+async def import_classify_tenencia(
+    files: List[UploadFile] = File(...),
+    uid: int = Depends(get_current_user),
+):
+    """Dice cuál de los archivos subidos es la FOTO de tenencia (y su formato),
+    para que el wizard la aparte de los Movimientos en el upload combinado. Pensado
+    sobre todo para PPI, cuya foto (Estado de Cuenta) es xlsx IGUAL que los
+    Movimientos → el browser no puede distinguirla por contenido. Detecta:
+    PDF→bullmarket, CSV con header de Cocos→cocos, xlsx PPI→ppi. Devuelve el PRIMERO
+    que matchee, o {file_name: None}. No persiste nada (solo clasifica)."""
+    cap = _import_pipeline.MAX_FILE_BYTES
+    for f in (files or []):
+        name = f.filename or ""
+        chunks: List[bytes] = []
+        total = 0
+        while total <= cap:
+            chunk = await f.read(min(64 * 1024, cap - total + 1))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > cap:
+                break
+        data = b"".join(chunks)
+        if not data:
+            continue
+        try:
+            if _import_excel.is_pdf(data):
+                if _import_tenencia.looks_like_tenencia(_import_excel.pdf_to_text(data)):
+                    return {"file_name": name, "format": "bullmarket"}
+            elif _import_excel.is_xlsx(data):
+                if _import_tenencia.looks_like_ppi_tenencia(_import_excel.xlsx_to_rows(data)):
+                    return {"file_name": name, "format": "ppi"}
+            else:
+                text = _import_pipeline._decode_csv(data) or ""
+                if _import_tenencia.looks_like_cocos_tenencia(text):
+                    return {"file_name": name, "format": "cocos"}
+        except Exception:
+            continue
+    return {"file_name": None, "format": None}
+
+
 @app.post("/api/imports/tenencia/preview")
 async def import_tenencia_preview(
     file: UploadFile = File(...),

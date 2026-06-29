@@ -182,14 +182,14 @@ const BROKERS = [
     id: 'ppi',
     label: 'PPI',
     Logo: PpiLogo,
-    summary: 'Subí el export de Movimientos (Excel) acá. Para completar las posiciones que ya tenías de antes, sumá también el Estado de Cuenta (Excel) con el botón “Estado de Cuenta PPI”.',
+    summary: 'Subí dos archivos juntos: el export de Movimientos (Excel) + el Estado de Cuenta (Excel) — reconstruimos tu cartera y completamos las posiciones que ya tenías de antes.',
     steps: [
       'Entrá a tu cuenta de PPI desde la WEB (Portfolio Personal). ⚠️ Desde la web, no la app.',
-      'Movimientos (este paso): andá a Actividad → Todos los movimientos, filtrá la fecha desde que abriste la cuenta hasta hoy y tocá Exportar → Excel (.xlsx). Subílo acá tal cual.',
-      'Estado de Cuenta: en la pantalla principal —donde ves tu cartera— tocá Exportar arriba a la derecha y elegí Excel. Completa las posiciones que el historial de Movimientos no alcanza.',
-      'El Estado de Cuenta se sube aparte, con el botón “Estado de Cuenta PPI” en la pantalla de Importaciones.',
+      'Movimientos: andá a Actividad → Todos los movimientos, filtrá desde que abriste la cuenta hasta hoy y tocá Exportar → Excel (.xlsx).',
+      'Estado de Cuenta: en la pantalla principal —donde ves tu cartera— tocá Exportar arriba a la derecha y elegí Excel.',
+      'Subí los dos Excel juntos acá — los acomodamos solos (el Estado de Cuenta completa lo que el historial no alcanza).',
     ],
-    parserNote: 'Importamos compras y ventas (en pesos y en dólares MEP/cable), suscripciones y rescates de FCI, dividendos, renta y amortización de bonos, comisiones y retenciones, depósitos y retiros, y el interés de tus cauciones. Las sub-cuentas en dólares se consolidan en una sola. Si el export no llega hasta el inicio de tu cuenta, te pedimos confirmar tu tenencia inicial. Por ahora, las operaciones de dólar SPOT y las transferencias de títulos entrantes quedan para revisar a mano.',
+    parserNote: 'Importamos compras y ventas (en pesos y en dólares MEP/cable), suscripciones y rescates de FCI, dividendos, renta y amortización de bonos, comisiones y retenciones, depósitos y retiros, y el interés de tus cauciones. Las sub-cuentas en dólares se consolidan en una sola. El Estado de Cuenta completa las posiciones y cierra tu efectivo a la foto. ¿Ya importaste antes? Subí solo el Estado de Cuenta con el botón “Estado de Cuenta PPI”. Por ahora, las operaciones de dólar SPOT y las transferencias de títulos entrantes quedan para revisar a mano.',
   },
 ]
 
