@@ -254,6 +254,9 @@ export const BONDS_AR_SOV_USD = [
   { s: 'GD46', n: 'Argentina 2046 (USD ley extranjera)' },
   // Sub-soberano provincial (precio live en data912):
   { s: 'BA37D', n: 'Buenos Aires 2037 (Prov., USD ley NY)' },
+  // BOPREAL (BCRA, USD). El Serie 3 (BPY26) venció 31/05/26 → no tiene precio
+  // live en data912 (delisteado): se carga y valúa a costo.
+  { s: 'BPY26', n: 'BOPREAL Serie 3 2026 (BCRA, USD)' },
 ]
 
 // === BONOS — Soberanos AR en pesos / CER ====================================
