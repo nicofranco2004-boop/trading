@@ -179,7 +179,7 @@ export default function TenenciaUpload({
             )}
             {(preview.not_in_snapshot?.length > 0) && (
               <p className="text-xs text-rendi-warn mb-2">
-                ⚠ Tenés {preview.not_in_snapshot.length} activo(s) en Rendi que no están en {docLabel} (¿vendidos?). {preview.override && !preview.override.capped ? 'Los ajustamos a la foto.' : 'No los tocamos.'}
+                ⚠ Tenés {preview.not_in_snapshot.length} activo(s) en Rendi que no están en {docLabel} (¿vendidos?). {(preview.override?.removed?.length > 0) ? 'Los que correspondía los sacamos (ver arriba).' : 'No los tocamos.'}
               </p>
             )}
             <p className="text-xs text-ink-3 mb-3">

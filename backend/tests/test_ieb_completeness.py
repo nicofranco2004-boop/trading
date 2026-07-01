@@ -122,6 +122,41 @@ class IebCompletenessTest(unittest.TestCase):
         snap = parse_ieb_portfolio(_wb(saldos=False))
         self.assertTrue(any("saldos" in w.lower() for w in snap.warnings))
 
+    def test_unknown_section_2cell_title_warns(self):
+        """#6: título de sección NO reconocido con una 2da celda (ej. total en col 10)
+        → igual avisa (antes se dropeaba en silencio) y no lee AL30."""
+        wb = _wb(sections=[("Cedears", [_cedear_row("MELI", 52)])])
+        ws = wb["Patrimonio"]
+        ws.append(["Renta Fija", None, None, None, None, None, None, None, None, "999999"])
+        ws.append(list(HDR))
+        ws.append(["AL30 - BONO", "ARS", "1000", "70", "5", "65", "1", "0", "10:00", "70000"])
+        ws.append(["Subtotal", "-", "-", None, "-", "-", "0", "-", "0", None])
+        snap = parse_ieb_portfolio(wb)
+        self.assertTrue(any("no reconocida" in w for w in snap.warnings), snap.warnings)
+        self.assertIn("MELI", [h.ticker for h in snap.holdings])
+        self.assertNotIn("AL30", [h.ticker for h in snap.holdings])
+
+    def test_negative_qty_dropped(self):
+        """#8: una cantidad negativa NO es tenencia → se dropea (no abs)."""
+        snap = parse_ieb_portfolio(_wb(sections=[
+            ("Cedears", [_cedear_row("MELI", 52), _cedear_row("AAPL", -3)])]))
+        tickers = [h.ticker for h in snap.holdings]
+        self.assertIn("MELI", tickers)
+        self.assertNotIn("AAPL", tickers)
+
+    def test_saldos_unknown_block_no_leak(self):
+        """#7: un bloque de moneda desconocido en Saldos no fuga su Total al bloque
+        anterior (cur se resetea a None)."""
+        wb = _wb()
+        sal = wb["Saldos"]
+        sal.append(["Garantías"])                 # bloque desconocido (celda sola)
+        sal.append(["Plazo", "Fecha", "Saldo"])
+        sal.append(["Hoy", "2026-07-01", "500000"])
+        sal.append(["Total", "-", "500000"])       # NO debe sumarse a ARS ni USD
+        snap = parse_ieb_portfolio(wb)
+        self.assertAlmostEqual(snap.cash_ars, 1000.0)   # sin fuga del 500000
+        self.assertAlmostEqual(snap.cash_usd, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

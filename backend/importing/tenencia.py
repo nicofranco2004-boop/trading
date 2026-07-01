@@ -895,10 +895,14 @@ def _ieb_saldos(wb):
     cur = None
     for r in wb["Saldos"].iter_rows(values_only=True):
         c0 = _cell_s(r[0]) if r else ""
-        if c0 in ("ARS", "USD", "USD Ext."):
-            # 'USD Ext.' (dólar exterior/cable) también es efectivo en dólares.
-            cur = "USD" if c0.startswith("USD") else c0
-        elif c0 == "Total" and cur:
+        nonempty = [c for c in (r or ()) if _cell_s(c)]
+        if len(nonempty) == 1:
+            # Marcador de bloque de moneda (celda sola). 'USD Ext.' (cable) = USD;
+            # cualquier marcador DESCONOCIDO resetea cur a None → su 'Total' NO se
+            # fuga a la moneda del bloque anterior.
+            cur = "USD" if c0.startswith("USD") else ("ARS" if c0 == "ARS" else None)
+            continue
+        if c0 == "Total" and cur:
             v = _ieb_num(r[2] if len(r) > 2 else None)
             if cur == "ARS":
                 ars = v
@@ -939,9 +943,15 @@ def parse_ieb_portfolio(wb) -> TenenciaSnapshot:
         if c0h in _IEB_DATA_HEADERS:
             in_data = True
             saw_data_table = True
-            if sect is None and pending_unknown:
+            # Arranca una tabla sin sección reconocida arriba (sect=None). Avisamos
+            # SIEMPRE, no sólo si el título vino como celda sola (pending_unknown): un
+            # título no mapeado con una 2da celda —ej. un total en la col 10— dejaría
+            # sect=None sin pending_unknown y sus filas se dropearían EN SILENCIO
+            # (lectura parcial → habilitaría borrar por 'ausencia' algo todavía tenido).
+            if sect is None:
                 snap.warnings.append(
-                    f"Sección de IEB no reconocida: '{pending_unknown}' — sus tenencias no se leyeron.")
+                    f"Sección de IEB no reconocida: '{pending_unknown or '(sin título)'}' "
+                    f"— sus tenencias no se leyeron.")
             pending_unknown = None
             continue
         if c0 in _IEB_SECTION_TYPE:
@@ -974,7 +984,9 @@ def parse_ieb_portfolio(wb) -> TenenciaSnapshot:
         ppp = _ieb_num(r[5] if len(r) > 5 else None)          # precio promedio = COSTO
         value = _ieb_num(r[9] if len(r) > 9 else None)
         ccy = (_cell_s(r[1]).upper() if (len(r) > 1 and _cell_s(r[1])) else "ARS")
-        if not ticker or qty is None or abs(qty) <= 1e-9:
+        # qty <= 0 se dropea (no abs): una cantidad negativa NO es una tenencia — como
+        # los otros parsers de foto — y en override no debe generar una venta espuria.
+        if not ticker or qty is None or qty <= 1e-9:
             continue
         if sect == "OTROS":
             # DOLARUSA = dólares (cash), no un activo → no se siembra. Pero CUALQUIER

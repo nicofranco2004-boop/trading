@@ -105,6 +105,7 @@ const TENENCIA_BROKER_BY_FORMAT = {
   bullmarket: 'Bull Market',
   cocos: 'Cocos',
   ppi: 'PPI',
+  ieb: 'IEB',
   balanz_movimientos: 'Balanz',
 }
 
