@@ -50,10 +50,14 @@ def correct_currency(conn, uid: int, tc_blue: float) -> Dict[str, int]:
     ph = ",".join("?" * len(batches))
     blue = tc_blue if tc_blue and tc_blue > 0 else 1.0
     counts = {"fci": 0, "seed": 0, "conduit": 0}
+    # Fondos FCI que la regla (1) toca — para EXPONERLOS en el dry-run: el riesgo es
+    # un FCI USD de equity (VCP>5 legítimo) colado. El humano verifica que todos sean
+    # money-market peso (RFPESOS/DOLINKA/…) antes de aplicar. {symbol: {count,vcp_min,vcp_max,max_amt}}
+    fci_funds: Dict[str, Dict[str, float]] = {}
 
     # (1) FCI money-market peso mal-etiquetado USD → ARS + re-stamp ÷blue.
     cur = conn.execute(
-        f"""SELECT id, gross_amount FROM import_normalized_tx
+        f"""SELECT id, asset_symbol, unit_price, gross_amount FROM import_normalized_tx
              WHERE batch_id IN ({ph}) AND asset_type='FUND'
                AND UPPER(COALESCE(currency,''))IN('USD','USDT')
                AND unit_price IS NOT NULL AND unit_price > ?""",
@@ -62,6 +66,14 @@ def correct_currency(conn, uid: int, tc_blue: float) -> Dict[str, int]:
         conn.execute(
             "UPDATE import_normalized_tx SET currency='ARS', gross_amount_usd=? WHERE id=?",
             (round((r["gross_amount"] or 0) / blue, 4), r["id"]))
+        sym = r["asset_symbol"] or "?"
+        vcp = float(r["unit_price"] or 0)
+        amt = abs(float(r["gross_amount"] or 0))
+        f = fci_funds.setdefault(sym, {"count": 0, "vcp_min": vcp, "vcp_max": vcp, "max_amt": 0.0})
+        f["count"] += 1
+        f["vcp_min"] = min(f["vcp_min"], vcp)
+        f["vcp_max"] = max(f["vcp_max"], vcp)
+        f["max_amt"] = max(f["max_amt"], amt)
     counts["fci"] = len(cur)
 
     # (2) Retiro/depósito SINTÉTICO del seed peso-escala → re-stamp gross_amount_usd ÷blue.
@@ -107,23 +119,33 @@ def correct_currency(conn, uid: int, tc_blue: float) -> Dict[str, int]:
                 (round((r["gross_amount"] or 0) / blue, 4), r["id"]))
             counts["conduit"] += 1
 
-    return counts
+    return counts, fci_funds
 
 
-def backfill_user(conn, uid: int, *, recalc: Callable) -> Dict[str, Any]:
+def backfill_user(conn, uid: int, *, recalc: Callable, min_capital: float = -50000.0) -> Dict[str, Any]:
     """Corrige la moneda + recompute. NO commitea. Devuelve resumen con before/after
-    del peor capital_final global."""
+    del peor capital_final global.
+
+    GATE de seguridad: solo toca cuentas con capital_final AFECTADO (peor global <
+    min_capital). Una cuenta SANA (ej con un FCI USD de equity VCP>5 legítimo) NO se
+    toca → limita el blast-radius del falso positivo de la regla FCI a cuentas que ya
+    están rotas por el peso-como-dólar (nunca corrompe una sana)."""
     res = {"uid": uid, "skipped": False, "corrections": {"fci": 0, "seed": 0, "conduit": 0},
-           "worst_before": None, "worst_after": None}
+           "worst_before": None, "worst_after": None, "fci_funds": {}}
     if not _confirmed_batches(conn, uid):
         res["skipped"] = True
         return res
     worst = conn.execute(
         "SELECT MIN(capital_final) m FROM monthly_entries WHERE user_id=? AND broker='global'", (uid,)).fetchone()
     res["worst_before"] = round((worst["m"] or 0), 2) if worst else None
+    # Gate: solo cuentas afectadas (capital negativo gigante). Las sanas se saltean.
+    if res["worst_before"] is None or res["worst_before"] >= min_capital:
+        res["skipped"] = True
+        res["worst_after"] = res["worst_before"]
+        return res
 
     tc_blue = _persister._read_tc_blue(conn, uid)
-    res["corrections"] = correct_currency(conn, uid, tc_blue)
+    res["corrections"], res["fci_funds"] = correct_currency(conn, uid, tc_blue)
     if sum(res["corrections"].values()) == 0:
         res["worst_after"] = res["worst_before"]
         return res
@@ -135,13 +157,16 @@ def backfill_user(conn, uid: int, *, recalc: Callable) -> Dict[str, Any]:
     return res
 
 
-def backfill_summary(real_conn, users, apply: bool, recalc: Callable) -> Dict[str, Any]:
-    """apply=False → sobre COPIA del DB (no toca nada). apply=True → commitea por user."""
+def backfill_summary(real_conn, users, apply: bool, recalc: Callable,
+                     min_capital: float = -50000.0) -> Dict[str, Any]:
+    """apply=False → sobre COPIA del DB (no toca nada). apply=True → commitea por user.
+    Solo toca cuentas con peor capital_final < min_capital (gate anti-falso-positivo)."""
     def _loop(conn):
-        out = {"users_changed": 0, "skipped": 0, "changes": [], "errors": []}
+        out = {"users_changed": 0, "skipped": 0, "changes": [], "errors": [],
+               "fci_funds_touched": {}}
         for uid in users:
             try:
-                s = backfill_user(conn, uid, recalc=recalc)
+                s = backfill_user(conn, uid, recalc=recalc, min_capital=min_capital)
             except Exception as ex:
                 conn.rollback()
                 out["errors"].append({"uid": uid, "error": str(ex)})
@@ -157,6 +182,14 @@ def backfill_summary(real_conn, users, apply: bool, recalc: Callable) -> Dict[st
                     "worst_before": s["worst_before"], "worst_after": s["worst_after"],
                     "delta": round((s["worst_after"] or 0) - (s["worst_before"] or 0), 2),
                 })
+                # Agregar los fondos FCI tocados (para verificación humana: ¿todos money-market?).
+                for sym, f in (s.get("fci_funds") or {}).items():
+                    g = out["fci_funds_touched"].setdefault(
+                        sym, {"count": 0, "vcp_min": f["vcp_min"], "vcp_max": f["vcp_max"], "max_amt": 0.0})
+                    g["count"] += f["count"]
+                    g["vcp_min"] = min(g["vcp_min"], f["vcp_min"])
+                    g["vcp_max"] = max(g["vcp_max"], f["vcp_max"])
+                    g["max_amt"] = max(g["max_amt"], f["max_amt"])
             if apply:
                 conn.commit()
         out["changes"].sort(key=lambda c: c["worst_before"] or 0)

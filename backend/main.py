@@ -10161,6 +10161,7 @@ def admin_backfill_mtm(apply: bool = False, offset: int = 0, limit: int = 0,
 
 @app.post("/api/admin/backfill-currency")
 def admin_backfill_currency(apply: bool = False, offset: int = 0, limit: int = 0,
+                            min_capital: float = -50000.0,
                             uid: int = Depends(get_admin_user)):
     """Backfill de corrección de MONEDA para las cuentas con capital negativo gigante.
 
@@ -10170,8 +10171,13 @@ def admin_backfill_currency(apply: bool = False, offset: int = 0, limit: int = 0
       (2) retiro/depósito SINTÉTICO del seed peso-escala (re-stamp ÷tc_blue),
       (3) conducto dólar-MEP con bono (Cocos, par BUY/SELL precio>>).
 
+    GATE: solo toca cuentas con peor capital_final < min_capital (default -50k) → una
+    cuenta SANA (ej con un FCI USD de equity VCP>5 legítimo) NO se toca. El resumen
+    devuelve `fci_funds_touched` {symbol: {count, vcp_min/max, max_amt}} para
+    VERIFICACIÓN HUMANA en el dry-run: confirmá que todos son money-market peso
+    (RFPESOS/DOLINKA/…) y no hay un fondo de equity colado ANTES de aplicar.
+
     - apply=false (default): DRY-RUN sobre una COPIA del DB → la real NO se toca.
-      Devuelve, por cuenta, las correcciones + el peor capital_final antes→después.
     - apply=true: corrige y commitea por usuario. Idempotente (no re-toca lo ya ARS).
 
     Verificado E2E: recupera el estado correcto al centavo (corregir el log de eventos
@@ -10182,7 +10188,8 @@ def admin_backfill_currency(apply: bool = False, offset: int = 0, limit: int = 0
     try:
         all_users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
         users = all_users[offset:offset + limit] if limit > 0 else all_users[offset:]
-        summary = backfill_summary(conn, users, apply=bool(apply), recalc=_recalc_pnl_realized_from_ops)
+        summary = backfill_summary(conn, users, apply=bool(apply),
+                                   recalc=_recalc_pnl_realized_from_ops, min_capital=min_capital)
         summary.update(ok=True, applied=bool(apply), total_all_users=len(all_users),
                        offset=offset, processed=len(users))
         log.info("admin_backfill_currency apply=%s users_changed=%s errors=%s",

@@ -58,7 +58,7 @@ class CorrectCurrencyTest(unittest.TestCase):
         fci_usd = self._tx(operation_type="BUY", asset_symbol="BAHUSD", asset_type="FUND",
                            quantity=740, unit_price=1.35, gross_amount=1000, gross_amount_usd=1000, currency="USD")
         self.conn.commit()
-        c = correct_currency(self.conn, self.uid, BLUE)
+        c, _funds = correct_currency(self.conn, self.uid, BLUE)
         self.assertEqual(c["fci"], 1)
         self.assertEqual(self._ccy(fci_peso)["currency"], "ARS")            # peso VCP>5 → ARS
         self.assertAlmostEqual(self._ccy(fci_peso)["gross_amount_usd"], 1580000 / BLUE, places=1)
@@ -68,7 +68,7 @@ class CorrectCurrencyTest(unittest.TestCase):
         seed = self._tx(operation_type="WITHDRAW", gross_amount=43000000, gross_amount_usd=43000000,
                         currency="USDT", notes="Estado inicial — retiro sintético (Rendi)")
         self.conn.commit()
-        c = correct_currency(self.conn, self.uid, BLUE)
+        c, _funds = correct_currency(self.conn, self.uid, BLUE)
         self.assertEqual(c["seed"], 1)
         self.assertAlmostEqual(self._ccy(seed)["gross_amount_usd"], 43000000 / BLUE, places=1)  # ÷blue
         self.assertEqual(self._ccy(seed)["currency"], "USDT")             # la moneda no cambia (pata dólar real)
@@ -83,7 +83,7 @@ class CorrectCurrencyTest(unittest.TestCase):
         gd30 = self._tx(operation_type="BUY", asset_symbol="GD30", asset_type="BOND",
                         quantity=100, unit_price=0.72, gross_amount=72, gross_amount_usd=72, currency="USD")
         self.conn.commit()
-        c = correct_currency(self.conn, self.uid, BLUE)
+        c, _funds = correct_currency(self.conn, self.uid, BLUE)
         self.assertEqual(c["conduit"], 1)
         self.assertEqual(self._ccy(buy)["currency"], "ARS")               # pata BUY del conducto → ARS
         self.assertEqual(self._ccy(gd30)["currency"], "USD")              # bono USD suelto intacto
@@ -92,10 +92,44 @@ class CorrectCurrencyTest(unittest.TestCase):
         self._tx(operation_type="BUY", asset_symbol="RFPESOSA", asset_type="FUND",
                  quantity=8000, unit_price=197.5, gross_amount=1580000, gross_amount_usd=1580000, currency="USD")
         self.conn.commit()
-        c1 = correct_currency(self.conn, self.uid, BLUE)
-        c2 = correct_currency(self.conn, self.uid, BLUE)
+        c1, _f1 = correct_currency(self.conn, self.uid, BLUE)
+        c2, _f2 = correct_currency(self.conn, self.uid, BLUE)
         self.assertEqual(c1["fci"], 1)
         self.assertEqual(sum(c2.values()), 0)   # 2da corrida no toca nada
+
+    def test_gate_no_toca_cuenta_sana(self):
+        # ⭐ La protección clave del blocker: una cuenta SANA (capital_final positivo)
+        # con un FCI USD de VCP>5 (que podría ser un fondo de equity legítimo) NO se
+        # toca — el gate min_capital la saltea antes de correr correct_currency.
+        from scripts.backfill_currency_fix import backfill_user
+        fci = self._tx(operation_type="BUY", asset_symbol="EQUITYUSD", asset_type="FUND",
+                       quantity=100, unit_price=87.5, gross_amount=8750, gross_amount_usd=8750, currency="USD")
+        # monthly_entries global SANO (capital_final positivo)
+        self.conn.execute(
+            "INSERT INTO monthly_entries (user_id,broker,year,month,capital_inicio,deposits,"
+            "withdrawals,pnl_realized,pnl_unrealized,capital_final) VALUES (?,?,?,?,0,8750,0,0,0,9000)",
+            (self.uid, "global", 2025, 9))
+        self.conn.commit()
+        r = backfill_user(self.conn, self.uid, recalc=lambda *a, **k: None, min_capital=-50000.0)
+        self.assertTrue(r["skipped"])                              # cuenta sana → saltea
+        self.assertEqual(self._ccy(fci)["currency"], "USD")       # el FCI equity NO se tocó ✅
+        self.assertEqual(self._ccy(fci)["gross_amount_usd"], 8750)  # monto intacto
+
+    def test_gate_si_toca_cuenta_afectada(self):
+        # La misma fila FCI en una cuenta AFECTADA (capital negativo gigante) SÍ se corrige.
+        from scripts.backfill_currency_fix import backfill_user
+        fci = self._tx(operation_type="BUY", asset_symbol="RFPESOSA", asset_type="FUND",
+                       quantity=8000, unit_price=197.5, gross_amount=1580000, gross_amount_usd=1580000, currency="USD")
+        self.conn.execute(
+            "INSERT INTO monthly_entries (user_id,broker,year,month,capital_inicio,deposits,"
+            "withdrawals,pnl_realized,pnl_unrealized,capital_final) VALUES (?,?,?,?,0,0,0,0,0,-3000000)",
+            (self.uid, "global", 2025, 9))
+        self.conn.commit()
+        r = backfill_user(self.conn, self.uid, recalc=lambda *a, **k: None, min_capital=-50000.0)
+        self.assertFalse(r["skipped"])                            # afectada → corrige
+        self.assertEqual(r["corrections"]["fci"], 1)
+        self.assertEqual(self._ccy(fci)["currency"], "ARS")       # corregido a ARS ✅
+        self.assertIn("RFPESOSA", r["fci_funds"])                 # expuesto para inspección
 
 
 if __name__ == "__main__":
