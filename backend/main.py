@@ -17729,9 +17729,9 @@ async def import_tenencia_preview(
             broker_hint = "Importá primero la Cuenta Corriente."
             is_bullmarket = True
         else:
-            raise HTTPException(400, "Este PDF no parece la Tenencia de Bull Market "
-                                     "(Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha) "
-                                     "ni el Resumen de Cuenta de Balanz.")
+            raise HTTPException(400, "Este PDF no parece la Tenencia de Bull Market, "
+                                     "el Resumen de Cuenta de Balanz ni el Resumen de "
+                                     "Cuenta de IOL. Escribinos y lo revisamos.")
 
     if not snap.holdings:
         raise HTTPException(400, "No pudimos leer ninguna tenencia del archivo. Escribinos y lo revisamos.")

@@ -409,7 +409,13 @@ def _iol_asset_type(name: str) -> str:
     n = _deaccent(name).lower()
     if n.startswith("cedear") or "cedear" in n:
         return "CEDEAR"
-    if any(k in n for k in ("bono", "bonos", "letra", "lecap", "obligac", "titulo publico", " on ")):
+    # Bonos/letras/ONs: keywords + nombres AR frecuentes. 'on ' al INICIO (ON YPF …),
+    # no ' on ' (que no matchea un nombre que empieza con ON). El tag por universo
+    # data912 (tag_bonds_from_data912) rescata la mayoría igual; esto cubre el hueco.
+    if (n.startswith("on ") or n.startswith("bono") or
+            any(k in n for k in ("bonos", "letra", "lecap", "obligac", "titulo publico",
+                                 "bopreal", "boncap", "bonte", "bonar", "global 20",
+                                 "cupon", "del tesoro"))):
         return "BOND"
     if any(k in n for k in ("fci", "fondo", "ahorro", "renta ", "portafolio", "potenciado", "cartera", "money market")):
         return "FUND"
@@ -485,12 +491,19 @@ def parse_iol_tenencia(text: str) -> TenenciaSnapshot:
     snap.total_ars = declared_titulos
     # Guard de completitud: la suma de importes (ARS) debe cuadrar con el total
     # declarado. Si no, el PDF se extrajo parcial (OCR se comió filas) → no borramos.
-    if declared_titulos and snap.holdings:
+    if snap.holdings and declared_titulos:
         tol = max(50.0, 0.0005 * abs(declared_titulos))
         if abs(imp_sum - declared_titulos) > tol:
             snap.warnings.append(
                 f"La suma de tus títulos ({imp_sum:,.0f}) no cuadra con el total del "
                 f"Resumen ({declared_titulos:,.0f}) — la lectura del PDF pudo ser parcial.")
+    elif snap.holdings and not declared_titulos:
+        # Sin línea de total ('Títulos Valorizados') no hay ANCLA para verificar que la
+        # lectura fue completa (el OCR pudo comerse esa línea Y filas) → avisamos para
+        # que el override NO borre por 'ausencia' sobre una lectura sin verificar.
+        snap.warnings.append(
+            "No pudimos leer el total del Resumen — no podemos verificar que la "
+            "lectura sea completa, así que no sacamos posiciones esta vez.")
     if not snap.holdings:
         snap.warnings.append("No pudimos leer ninguna tenencia del Resumen de Cuenta de IOL.")
     return snap

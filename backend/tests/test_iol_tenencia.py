@@ -15,7 +15,9 @@ BACKEND = os.path.dirname(HERE)
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
-from importing.tenencia import parse_iol_tenencia, looks_like_iol_tenencia  # noqa: E402
+from importing.tenencia import (  # noqa: E402
+    parse_iol_tenencia, looks_like_iol_tenencia, _iol_asset_type,
+)
 
 # Total declarado = suma de importes: 566000 + 2926,5 + 18000 + 17319,424 + 7810 = 612055,924
 _HEAD = (
@@ -88,6 +90,22 @@ class IolTenenciaTest(unittest.TestCase):
             "Cedear Apple Inc. AAPL BCBA 25,0000 AR$ 22640,000 566000,000\n", "")
         snap = parse_iol_tenencia(truncated)
         self.assertTrue(any("no cuadra" in w for w in snap.warnings), snap.warnings)
+
+    def test_missing_total_line_warns(self):
+        # Sin línea de total (OCR se la comió) NO hay ancla → avisa (no marca completa).
+        # _HEAD sin la línea 'Títulos Valorizados' y sin el 'Saldo Total' (que va en _TXT).
+        no_total = _HEAD.replace("Títulos Valorizados AR$ 612055,92\n", "")
+        snap = parse_iol_tenencia(no_total)
+        self.assertIsNone(snap.total_ars)
+        self.assertTrue(snap.holdings)
+        self.assertTrue(any("verificar" in w for w in snap.warnings), snap.warnings)
+
+    def test_bond_keywords_tag_ON_and_ar_bonds(self):
+        self.assertEqual(_iol_asset_type("ON YPF 2026 Clase XXXIX"), "BOND")
+        self.assertEqual(_iol_asset_type("Bopreal Serie 1"), "BOND")
+        self.assertEqual(_iol_asset_type("Bono Rep. Argentina Usd Step Up 2030"), "BOND")
+        self.assertEqual(_iol_asset_type("Cedear Apple Inc."), "CEDEAR")
+        self.assertEqual(_iol_asset_type("Grupo Financiero Galicia S.A"), "")
 
 
 if __name__ == "__main__":
