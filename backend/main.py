@@ -2848,6 +2848,24 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_current_
                 },
             )
 
+        # ── Ventana afectada para la purga de snapshots (ANTES de borrar las ops).
+        # Los snapshots desde la primera actividad del broker en adelante incluían
+        # su valor y quedan inflados tras el borrado. Guardamos la fecha para
+        # purgarlos después del recalc (los month-ends se re-backfillean; los
+        # diarios intermedios no, por eso hay que borrarlos explícitamente).
+        snap_row = conn.execute(
+            f"SELECT MIN(date) FROM operations WHERE user_id=? AND broker IN ({placeholders})",
+            (uid, *broker_names),
+        ).fetchone()
+        snap_affected_start = snap_row[0] if snap_row else None
+        if not snap_affected_start:
+            m_row = conn.execute(
+                f"""SELECT MIN(printf('%04d-%02d-01', year, month))
+                      FROM monthly_entries WHERE user_id=? AND broker IN ({placeholders})""",
+                (uid, *broker_names),
+            ).fetchone()
+            snap_affected_start = m_row[0] if m_row else None
+
         # ── Force delete (o broker vacío) — incluye sibling para evitar orphans
         with conn:
             conn.execute(
@@ -2878,6 +2896,31 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_current_
                 _recalc_pnl_realized_from_ops(conn, uid)
         except Exception as ex:
             log.error("Recalc tras delete_broker falló: %s", ex)
+
+        # Regenerar snapshots (mismo criterio que revert/wipe). _recalc ya corrigió
+        # monthly_entries, pero la tabla snapshots seguía con el valor del broker
+        # borrado: delete_broker era el ÚNICO de los 3 flujos (vs wipe/revert) que
+        # NO reproyectaba → el chart "Evolución" mostraba plata fantasma
+        # indefinidamente. Purgamos los snapshots desde la primera actividad del
+        # broker (diarios intermedios incluidos, NO solo hoy) y re-backfilleamos los
+        # month-ends desde monthly_entries corregido. ORDEN: borrar antes, backfill
+        # después (si no, un delete en día de cierre borraría el month-end recién
+        # recreado). Si _recalc dejó al user 100% vacío ya borró todo (ver :6631).
+        try:
+            with conn:
+                if snap_affected_start:
+                    conn.execute(
+                        "DELETE FROM snapshots WHERE user_id=? AND date >= ?",
+                        (uid, snap_affected_start),
+                    )
+                else:
+                    # Broker sin ops ni monthly (p.ej. solo posiciones manuales) → no
+                    # podemos acotar la ventana; purga total para no dejar valor
+                    # fantasma (el backfill recrea los month-ends que sobrevivan).
+                    conn.execute("DELETE FROM snapshots WHERE user_id=?", (uid,))
+                _import_persister._backfill_snapshots_from_monthly(conn, uid)
+        except Exception as ex:
+            log.error("Limpieza de snapshots tras delete_broker falló (uid=%s): %s", uid, ex)
 
         _ai_cache_invalidate(uid)
         return {

@@ -1058,6 +1058,192 @@ class PipelineE2ETest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_revert_purges_intermediate_daily_snapshots(self):
+        # Regresión del audit 2026-07-01: al revertir un import, los snapshots
+        # DIARIOS intermedios (los que el cron guardó día a día entre el import y
+        # el revert, que NO son fin de mes ni hoy) quedaban con el valor inflado.
+        # El backfill solo re-escribía los fin-de-mes → esos diarios sobrevivían
+        # mintiendo. Ahora se purgan TODOS los snapshots desde la fecha más vieja
+        # del batch en adelante; los ANTERIORES al import se conservan intactos.
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-01-15,COMPRA,IBKR,AAPL,10,180,,,,2,USD,
+"""
+        conn = main.get_db()
+        try:
+            with conn:
+                payload = pl.run_preview(
+                    conn, uid=self.uid, file_bytes=csv, file_name="x.csv",
+                    broker_hint="IBKR", parser_format="rendi_generic",
+                )
+            session_id = payload["session_id"]
+            with conn:
+                txs, raw_map = pl.load_session_for_confirm(conn, uid=self.uid, session_id=session_id)
+                ps.persist_batch(conn, uid=self.uid, batch_id=session_id, txs=txs,
+                                  raw_row_ids_by_index=raw_map, helpers=_helpers())
+
+            # Simular lo que dejaría el cron: un snapshot ANTES del import (debe
+            # sobrevivir) y uno DIARIO intermedio después (no fin de mes, no hoy →
+            # inflado, debe purgarse).
+            for d, val in (("2023-12-20", 100000.0), ("2024-01-20", 999999.0)):
+                conn.execute(
+                    """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(user_id, date) DO UPDATE SET total_value=excluded.total_value""",
+                    (self.uid, d, val, val, val),
+                )
+            conn.commit()
+
+            with conn:
+                ps.revert_batch(conn, uid=self.uid, batch_id=session_id, helpers=_helpers())
+
+            survived = {r["date"] for r in conn.execute(
+                "SELECT date FROM snapshots WHERE user_id=?", (self.uid,)).fetchall()}
+            self.assertNotIn(
+                "2024-01-20", survived,
+                "El snapshot diario intermedio inflado debió purgarse en el revert")
+            self.assertIn(
+                "2023-12-20", survived,
+                "El snapshot anterior al import no debía tocarse")
+        finally:
+            conn.close()
+
+    def test_reimport_after_revert_does_not_duplicate(self):
+        # Money-critical: tras REVERTIR un import, re-importar el MISMO archivo debe
+        # dejar TODO en 1× (no 2×): posiciones, cantidades Y aportes (deposits /
+        # net_deposited, la base de % y del chart). El batch queda 'reverted' →
+        # excluido del dedup (find_duplicate_batch / already_imported filtran
+        # status='confirmed'); y como el revert borró FÍSICAMENTE ops/positions y
+        # el recalc reconstruye deposits desde fuentes autoritativas, no hay
+        # residuo que duplicar.
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-01-10,DEPOSITO,IBKR,,,,5000,,,,USD,
+2024-01-15,COMPRA,IBKR,AAPL,10,180,,,,2,USD,
+2024-02-01,COMPRA,IBKR,MSFT,5,400,,,,1,USD,
+"""
+        def _snapshot_of_state():
+            pos = conn.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(quantity),0) q FROM positions WHERE user_id=? AND is_cash=0",
+                (self.uid,)).fetchone()
+            dep = conn.execute(
+                "SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries WHERE user_id=? AND broker='global'",
+                (self.uid,)).fetchone()["d"]
+            nd = conn.execute(
+                "SELECT net_deposited FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
+                (self.uid,)).fetchone()
+            return (pos["c"], pos["q"], dep, (nd["net_deposited"] if nd else None))
+
+        conn = main.get_db()
+        try:
+            # Import #1 → confirm
+            with conn:
+                p1 = pl.run_preview(conn, uid=self.uid, file_bytes=csv, file_name="x.csv",
+                                    broker_hint="IBKR", parser_format="rendi_generic")
+            with conn:
+                txs, raw = pl.load_session_for_confirm(conn, uid=self.uid, session_id=p1["session_id"])
+                ps.persist_batch(conn, uid=self.uid, batch_id=p1["session_id"], txs=txs,
+                                 raw_row_ids_by_index=raw, helpers=_helpers())
+            state1 = _snapshot_of_state()
+            self.assertEqual(state1[:3], (2, 15, 5000))  # AAPL 10 + MSFT 5, aportes 5000
+
+            # Revert
+            with conn:
+                ps.revert_batch(conn, uid=self.uid, batch_id=p1["session_id"], helpers=_helpers())
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) c FROM positions WHERE user_id=? AND is_cash=0",
+                             (self.uid,)).fetchone()["c"], 0)
+            # Aportes vuelven a 0 tras el revert (no quedan aportes fantasma)
+            self.assertEqual(
+                conn.execute("SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries WHERE user_id=? AND broker='global'",
+                             (self.uid,)).fetchone()["d"], 0,
+                "El revert no debe dejar aportes fantasma")
+
+            # Re-import el MISMO archivo
+            with conn:
+                p2 = pl.run_preview(conn, uid=self.uid, file_bytes=csv, file_name="x.csv",
+                                    broker_hint="IBKR", parser_format="rendi_generic")
+            self.assertEqual(p2.get("duplicate_row_indices", []), [],
+                             "Un batch reverted no debe marcar falsos duplicados")
+            with conn:
+                txs2, raw2 = pl.load_session_for_confirm(conn, uid=self.uid, session_id=p2["session_id"])
+                ps.persist_batch(conn, uid=self.uid, batch_id=p2["session_id"], txs=txs2,
+                                 raw_row_ids_by_index=raw2, helpers=_helpers())
+
+            # Resultado idéntico al import original: 1× en TODO (posiciones, cantidad,
+            # aportes, net_deposited del chart).
+            state2 = _snapshot_of_state()
+            self.assertEqual(state2[0], 2, "Re-import tras revert NO debe duplicar posiciones")
+            self.assertEqual(state2[1], 15, "Re-import tras revert NO debe duplicar cantidades")
+            self.assertEqual(state2[2], 5000, "Re-import tras revert NO debe duplicar aportes")
+            self.assertEqual(state2[3], 5000, "net_deposited del chart NO debe duplicarse")
+        finally:
+            conn.close()
+
+    def test_reimport_after_delete_broker_does_not_duplicate(self):
+        # Money-critical: tras ELIMINAR el broker, re-importar el mismo archivo debe
+        # dejar TODO en 1× (no 2×): posiciones, cantidades y aportes. delete_broker
+        # borra FÍSICAMENTE ops/positions/monthly_entries y marca los batches
+        # 'reverted' (excluidos del dedup) → el re-import auto-recrea el broker y
+        # persiste una sola copia. Además NO deben quedar snapshots viejos del
+        # broker borrado (el fix de snapshots purga el rango afectado).
+        csv = b"""fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas
+2024-01-10,DEPOSITO,IBKR,,,,5000,,,,USD,
+2024-01-15,COMPRA,IBKR,AAPL,10,180,,,,2,USD,
+"""
+        conn = main.get_db()
+        try:
+            with conn:
+                p1 = pl.run_preview(conn, uid=self.uid, file_bytes=csv, file_name="x.csv",
+                                    broker_hint="IBKR", parser_format="rendi_generic")
+            with conn:
+                txs, raw = pl.load_session_for_confirm(conn, uid=self.uid, session_id=p1["session_id"])
+                ps.persist_batch(conn, uid=self.uid, batch_id=p1["session_id"], txs=txs,
+                                 raw_row_ids_by_index=raw, helpers=_helpers())
+            # Sembrar un snapshot diario intermedio (como el cron) para verificar que
+            # el delete lo purga y no queda "plata fantasma" del broker borrado.
+            conn.execute(
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(user_id, date) DO UPDATE SET total_value=excluded.total_value""",
+                (self.uid, "2024-01-20", 888888.0, 888888.0, 888888.0))
+            conn.commit()
+            bid = conn.execute("SELECT id FROM brokers WHERE user_id=? AND name='IBKR'",
+                               (self.uid,)).fetchone()["id"]
+
+            # Eliminar el broker (force) — abre su propia conn a la misma DB de archivo
+            main.delete_broker(bid=bid, force=True, uid=self.uid)
+
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) c FROM positions WHERE user_id=? AND is_cash=0",
+                             (self.uid,)).fetchone()["c"], 0)
+            # El snapshot inflado del broker borrado se purgó (no queda plata fantasma)
+            self.assertIsNone(
+                conn.execute("SELECT 1 FROM snapshots WHERE user_id=? AND date='2024-01-20'",
+                             (self.uid,)).fetchone(),
+                "El snapshot del período del broker borrado debió purgarse")
+
+            # Re-import el mismo archivo (auto-crea el broker de nuevo)
+            with conn:
+                p2 = pl.run_preview(conn, uid=self.uid, file_bytes=csv, file_name="x.csv",
+                                    broker_hint="IBKR", parser_format="rendi_generic")
+            self.assertEqual(p2.get("duplicate_row_indices", []), [],
+                             "Un batch de un broker borrado no debe marcar falsos duplicados")
+            with conn:
+                txs2, raw2 = pl.load_session_for_confirm(conn, uid=self.uid, session_id=p2["session_id"])
+                ps.persist_batch(conn, uid=self.uid, batch_id=p2["session_id"], txs=txs2,
+                                 raw_row_ids_by_index=raw2, helpers=_helpers())
+
+            pos = conn.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(quantity),0) q FROM positions WHERE user_id=? AND is_cash=0 AND asset='AAPL'",
+                (self.uid,)).fetchone()
+            self.assertEqual(pos["c"], 1, "Re-import tras delete NO debe duplicar posiciones")
+            self.assertEqual(pos["q"], 10, "Re-import tras delete NO debe duplicar cantidades")
+            self.assertEqual(
+                conn.execute("SELECT COALESCE(SUM(deposits),0) d FROM monthly_entries WHERE user_id=? AND broker='global'",
+                             (self.uid,)).fetchone()["d"], 5000,
+                "Re-import tras delete NO debe duplicar aportes")
+        finally:
+            conn.close()
+
     def test_row_dedup_detects_overlap(self):
         # Si dos imports tienen filas idénticas (mismo date+broker+op+activo+qty+precio),
         # el segundo preview debe marcarlas en duplicate_row_indices.

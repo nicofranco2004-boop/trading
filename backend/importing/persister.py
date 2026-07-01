@@ -1369,33 +1369,26 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
 
     # B1: limpiar snapshots que dejó el import. Sin esto, el chart "Evolución del
     # portfolio" seguía mostrando los puntos del import aun después de revertirlo
-    # (queja "quedan datos cargados"). Para los meses que tocó el batch: si el
-    # revert dejó el mes sin monthly_entries global, borramos su snapshot; después
-    # recomputamos el resto desde los monthly_entries ya corregidos (re-backfill,
-    # idéntico a lo que hace el import en confirm → simétrico).
-    import calendar as _cal
-    batch_months = {(int(t["date"][:4]), int(t["date"][5:7])) for t in txs if t["date"]}
-    for (yy, mm) in batch_months:
-        has_entry = conn.execute(
-            "SELECT 1 FROM monthly_entries WHERE user_id=? AND broker='global' AND year=? AND month=? LIMIT 1",
-            (uid, yy, mm),
-        ).fetchone()
-        if not has_entry:
-            last_day = _cal.monthrange(yy, mm)[1]
-            conn.execute(
-                "DELETE FROM snapshots WHERE user_id=? AND date=?",
-                (uid, f"{yy:04d}-{mm:02d}-{last_day:02d}"),
-            )
-    # Descartar el snapshot intradiario de HOY: el dashboard lo auto-guarda con
-    # el valor pre-revert (inflado) y el cleanup de month-ends de arriba no lo
-    # toca (hoy no es fin de mes salvo casualidad). Sin esto, el chart
-    # "Evolución" seguía mostrando el punto de hoy con el valor viejo aun
-    # después de revertir. El dashboard lo recrea con el valor real en el
-    # próximo load (POST /snapshots, que upserta por fecha).
-    conn.execute(
-        "DELETE FROM snapshots WHERE user_id=? AND date=?",
-        (uid, datetime.utcnow().strftime("%Y-%m-%d")),
-    )
+    # (queja "quedan datos cargados"). Los cierres de mes se re-backfillean desde
+    # monthly_entries ya corregido; PERO los snapshots DIARIOS intermedios (los que
+    # el cron guardó día a día entre el import y el revert) no son fin de mes ni hoy
+    # → el backfill no los tocaba y quedaban inflados. Fix: purgar TODOS los
+    # snapshots desde la fecha más vieja del batch en adelante (diarios + month-ends
+    # + hoy), y DESPUÉS re-backfillear los month-ends desde monthly_entries. ORDEN
+    # crítico: borrar primero, backfillear después (si no, un revert en un día de
+    # cierre borraría el month-end recién recreado y dejaría un hueco permanente).
+    batch_dates = [t["date"][:10] for t in txs if t["date"]]
+    if batch_dates:
+        conn.execute(
+            "DELETE FROM snapshots WHERE user_id=? AND date >= ?",
+            (uid, min(batch_dates)),
+        )
+    else:
+        # Batch sin fechas (raro) → al menos descartar el intradiario de hoy.
+        conn.execute(
+            "DELETE FROM snapshots WHERE user_id=? AND date=?",
+            (uid, datetime.utcnow().strftime("%Y-%m-%d")),
+        )
     _backfill_snapshots_from_monthly(conn, uid)
 
     return {"reverted": True, "batch_id": batch_id}
