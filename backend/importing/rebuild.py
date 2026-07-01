@@ -395,11 +395,14 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             # EXCHANGE: una VENTA con proceeds 0 (precio 0 y monto 0) NO es una
             # venta real sino un RETIRO/transferencia del coin a una wallet (o
             # polvo→BNB) → cerramos el lote A COSTO (P&L 0), no a pérdida. Espeja
-            # el `transfer_out` del persister. En brokers de acciones esto NO
-            # aplica (corporate_close de Balanz sí debe bookear el costo como
-            # pérdida, compensada por su Dividendo).
-            transfer_out = (is_exchange and not exit_price
-                            and not _num(ev["gross_amount"]))
+            # el `transfer_out` del persister. En brokers de acciones el heurístico
+            # is_exchange NO aplica (corporate_close de Balanz sí debe bookear el
+            # costo como pérdida, compensada por su Dividendo) — por eso el ajuste
+            # de la foto de tenencia lleva el flag EXPLÍCITO `transfer_out` en la
+            # fila (persistido en import_normalized_tx): así una reducción "a costo"
+            # se distingue de un corporate_close aunque ambas sean VENTA a precio 0.
+            transfer_out = ((is_exchange or bool(ev.get("transfer_out")))
+                            and not exit_price and not _num(ev["gross_amount"]))
             if transfer_out:
                 if currency == "ARS":
                     invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
@@ -484,7 +487,7 @@ def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[st
     rows = conn.execute(
         f"""SELECT n.id, n.batch_id, n.raw_row_id, n.date, n.broker, n.asset_symbol,
                   n.asset_name, n.operation_type, n.quantity, n.unit_price, n.gross_amount,
-                  n.fees, n.currency, n.asset_type, n.created_position_id
+                  n.fees, n.currency, n.asset_type, n.transfer_out, n.created_position_id
              FROM import_normalized_tx n
              JOIN import_batches b ON b.id = n.batch_id
             WHERE b.user_id = ?

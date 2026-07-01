@@ -1474,7 +1474,8 @@ def init_db():
             settlement_currency TEXT,
             notes TEXT,
             created_position_id INTEGER,
-            created_operation_id INTEGER
+            created_operation_id INTEGER,
+            transfer_out INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_import_norm_batch
             ON import_normalized_tx(batch_id);
@@ -1519,6 +1520,17 @@ def init_db():
     norm_cols = _table_cols(conn, 'import_normalized_tx')
     if norm_cols and 'gross_amount_usd' not in norm_cols:
         conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN gross_amount_usd REAL")
+
+    # Migración (2026-07-01): `transfer_out` explícito en import_normalized_tx. El
+    # rebuild antes RE-DERIVABA el cierre-a-costo (P&L 0) sólo del heurístico
+    # is_exchange + precio/monto 0 (retiro de cripto). El ajuste de la FOTO de
+    # tenencia (override Balanz) necesita ese cierre-a-costo en brokers de acciones
+    # sin confundirlo con corporate_close (que sí bookea pérdida) → persistimos el
+    # flag por fila y el rebuild lo respeta. DEFAULT 0 → cero cambio para data vieja
+    # (crypto sigue re-derivándose por is_exchange).
+    norm_cols = _table_cols(conn, 'import_normalized_tx')
+    if norm_cols and 'transfer_out' not in norm_cols:
+        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN transfer_out INTEGER NOT NULL DEFAULT 0")
 
     # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
     # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.
@@ -17556,6 +17568,7 @@ async def import_tenencia_preview(
     fmt = (format or "").strip().lower()
     is_ppi = fmt.startswith("ppi")
     is_cocos = fmt.startswith("cocos")
+    is_balanz = False   # se resuelve por auto-detección del PDF (Balanz vs Bull Market)
     if is_ppi:
         # PPI: Estado de Cuenta en Excel (no PDF). Grilla con preámbulo + secciones
         # → filas crudas (xlsx_to_rows), no xlsx_to_csv (que asumiría header).
@@ -17583,18 +17596,29 @@ async def import_tenencia_preview(
         parser_format, default_name = "cocos_tenencia", "EstadoDeCuenta.csv"
         broker_hint = "Importá primero los Movimientos de Cocos."
     else:
+        # PDF: la foto de Balanz (Resumen de Cuenta) y la de Bull Market (Tenencia
+        # valorizada) son AMBAS PDF y el wizard manda format=null para PDFs → auto-
+        # detectamos cuál es por su contenido. Balanz se aplica en modo OVERRIDE (la
+        # foto PISA el estado); Bull Market queda en gap-fill como hasta ahora.
         if not _import_excel.is_pdf(data):
-            raise HTTPException(400, "La Tenencia valorizada se baja en PDF — subí ese archivo.")
+            raise HTTPException(400, "La foto de tenencia se baja en PDF — subí ese archivo.")
         try:
             text = _import_excel.pdf_to_text(data)
         except ValueError as ex:
             raise HTTPException(400, str(ex))
-        if not _import_tenencia.looks_like_tenencia(text):
-            raise HTTPException(400, "Este PDF no parece la Tenencia valorizada de Bull Market "
-                                     "(Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder).")
-        snap = _import_tenencia.parse_bullmarket_tenencia(text)
-        parser_format, default_name = "bullmarket_tenencia", "Tenencia.pdf"
-        broker_hint = "Importá primero la Cuenta Corriente."
+        if _import_tenencia.looks_like_balanz_tenencia(text):
+            snap = _import_tenencia.parse_balanz_tenencia(text)
+            parser_format, default_name = "balanz_tenencia", "ResumenDeCuenta.pdf"
+            broker_hint = "Importá primero los Movimientos de Balanz."
+            is_balanz = True
+        elif _import_tenencia.looks_like_tenencia(text):
+            snap = _import_tenencia.parse_bullmarket_tenencia(text)
+            parser_format, default_name = "bullmarket_tenencia", "Tenencia.pdf"
+            broker_hint = "Importá primero la Cuenta Corriente."
+        else:
+            raise HTTPException(400, "Este PDF no parece la Tenencia de Bull Market "
+                                     "(Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha) "
+                                     "ni el Resumen de Cuenta de Balanz.")
 
     if not snap.holdings:
         raise HTTPException(400, "No pudimos leer ninguna tenencia del archivo. Escribinos y lo revisamos.")
@@ -17604,6 +17628,7 @@ async def import_tenencia_preview(
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
             raise HTTPException(400, f"No encontramos el broker '{broker}'. {broker_hint}")
         seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
+        override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
 
         if is_ppi:
             # PPI rutea las posiciones en dólares al sibling '<broker> · USD' (igual
@@ -17652,27 +17677,124 @@ async def import_tenencia_preview(
             pair = broker_pair(conn, uid, broker)
             ph = ",".join("?" * len(pair))
             current: dict = {}
+            invested_by_asset: dict = {}
             for r in conn.execute(
-                f"SELECT asset, SUM(quantity) q FROM positions "
+                f"SELECT asset, SUM(quantity) q, SUM(invested) inv FROM positions "
                 f"WHERE user_id=? AND is_cash=0 AND broker IN ({ph}) GROUP BY asset",
                 (uid, *pair),
             ):
                 current[r["asset"]] = current.get(r["asset"], 0.0) + (r["q"] or 0)
+                invested_by_asset[r["asset"]] = invested_by_asset.get(r["asset"], 0.0) + (r["inv"] or 0)
             rec = _import_tenencia.compute_reconcile(current, snap)
-            seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
+
+            if is_balanz:
+                # OVERRIDE: la foto de Balanz PISA el estado. Antes de emitir las
+                # reducciones aplicamos guardas duras (el wizard aplica la foto SIN
+                # checkpoint del usuario → nunca debemos vaciar una cartera):
+                #   1) safe-to-rebuild: no reducir activos con posiciones/ventas
+                #      MANUALES (el rebuild los saltea → una VENTA sintética los
+                #      dejaría inconsistentes). Esos quedan sólo-reporte.
+                #   2) mismo-broker: la reducción es una VENTA en ARS sobre el padre.
+                #      Si el activo tiene lotes en el sibling '· USD' (cross-currency),
+                #      el cierre-a-costo dependería del spill dólar-MEP del rebuild
+                #      (sutil) → en v1 NO lo reducimos por override (sólo-reporte).
+                #   3) cap de sanidad: si reducir+eliminar borraría > 50% del VALOR
+                #      (invested) de las tenencias, es señal de parse roto o foto
+                #      parcial → NO reducimos nada (sólo gap-fill + cash) y avisamos.
+                from importing.rebuild import _is_safe_to_rebuild
+                pair_l = list(pair)
+                sibling_assets = set()
+                sibs = [b for b in pair_l if b != broker]
+                if sibs:
+                    sph = ",".join("?" * len(sibs))
+                    for r in conn.execute(
+                        f"SELECT DISTINCT asset FROM positions "
+                        f"WHERE user_id=? AND is_cash=0 AND broker IN ({sph})",
+                        (uid, *sibs),
+                    ):
+                        sibling_assets.add(r["asset"])
+
+                def _reducible(tk):
+                    return _is_safe_to_rebuild(conn, uid, pair_l, tk) and tk not in sibling_assets
+
+                unsafe = []
+                safe_over = []
+                for tk, rq, sq in rec.over:
+                    if _reducible(tk):
+                        safe_over.append((tk, rq, sq))
+                    else:
+                        unsafe.append(tk)
+                safe_nis = []
+                for tk, rq in rec.not_in_snapshot:
+                    if _reducible(tk):
+                        safe_nis.append((tk, rq))
+                    else:
+                        unsafe.append(tk)
+                # Cap de sanidad, por DOS medidas (basta que dispare una):
+                #   • VALOR: reducir+eliminar > 50% del invested reducible. Denominador
+                #     = SÓLO activos reducibles (padre, misma moneda) — incluir el
+                #     sibling '· USD' mezclaría pesos con dólares e inflaría el total.
+                #   • CANTIDAD: reducir+eliminar > 50% de los activos actuales. Cubre el
+                #     hueco del cap por valor cuando los lotes tienen invested=0
+                #     (seeds history-as-truth / transfer-in) → total_inv=0 no protegería.
+                total_inv = sum(abs(v) for tk, v in invested_by_asset.items()
+                                if tk not in sibling_assets) or 0.0
+                cut_inv = sum(abs(invested_by_asset.get(tk, 0.0)) for tk, _ in safe_nis)
+                cut_inv += sum(abs(invested_by_asset.get(tk, 0.0)) * ((rq - sq) / rq if rq else 0)
+                               for tk, rq, sq in safe_over)
+                n_current = len(current)
+                n_cut = len(safe_over) + len(safe_nis)
+                capped = (total_inv > 0 and cut_inv > 0.5 * total_inv) \
+                    or (n_current > 0 and n_cut > 0.5 * n_current)
+                if capped:
+                    log.warning("tenencia OVERRIDE cap uid=%s broker=%s cut=%.2f/%.2f n=%d/%d → "
+                                "sólo gap-fill+cash", uid, broker, cut_inv, total_inv, n_cut, n_current)
+                    override_reduced, override_removed = [], []
+                    rec.over, rec.not_in_snapshot = [], []
+                else:
+                    override_reduced = [{"ticker": tk, "rendi": rq, "tenencia": sq, "sold": round(rq - sq, 6)}
+                                        for tk, rq, sq in safe_over]
+                    override_removed = [{"ticker": tk, "qty": rq} for tk, rq in safe_nis]
+                    rec.over, rec.not_in_snapshot = safe_over, safe_nis
+                override_info = {"reduced": override_reduced, "removed": override_removed,
+                                 "skipped_manual": sorted(set(unsafe)), "capped": bool(capped)}
+                # Las VENTAS de reducción DEBEN ordenarse después de TODAS las compras
+                # reales en el replay del rebuild. Si la foto es más vieja que algún
+                # movimiento, fecharlas en la fecha de la foto las pondría ANTES → la
+                # reducción fallaría en silencio. Las fechamos en max(fecha_foto, última
+                # fecha de BUY/SELL del par en import_normalized_tx).
+                mx = conn.execute(
+                    f"SELECT MAX(n.date) d FROM import_normalized_tx n "
+                    f"JOIN import_batches b ON b.id=n.batch_id "
+                    f"WHERE b.user_id=? AND b.status='confirmed' AND n.broker IN ({ph}) "
+                    f"AND n.operation_type IN ('BUY','SELL')",
+                    (uid, *pair)).fetchone()
+                red_date = max(seed_date, mx["d"]) if mx and mx["d"] else seed_date
+                seed_txs = _import_tenencia.build_tenencia_seed_txs(
+                    broker, rec, seed_date, override=True, complete=True, override_date=red_date)
+            else:
+                override_info = None
+                seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
 
         # ── Cash true-up: la foto es la verdad de HOY → ajustamos el efectivo al
         # valor de la foto (SILENCIOSO, la foto manda). ARS en el broker padre; USD
-        # en el sibling '· USD' SI existe (los montos USD de las fotos son marginales
-        # → no creamos un sibling sólo por cash). DEPOSITO/RETIRO sintéticos en el
-        # mismo batch (auditable, revertible, sobrevive el rebuild). Logueamos la
-        # diferencia para detección interna de bugs del parser (no se le muestra).
+        # en el sibling '· USD'. DEPOSITO/RETIRO sintéticos en el mismo batch
+        # (auditable, revertible, sobrevive el rebuild). Logueamos la diferencia para
+        # detección interna de bugs del parser (no se le muestra).
         def _cur_cash(bname):
             row = conn.execute(
                 "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, bname)).fetchone()
             return float(row["invested"] or 0) if row else 0.0
         _sib = next((b for b in _import_persister.broker_pair(conn, uid, broker) if b != broker), None)
+        # Balanz OVERRIDE: si la foto trae USD MATERIAL (≥ 1) y no hay sibling '· USD'
+        # (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el saldo
+        # en dólares exacto — la copia promete "pesos y dólares". Para polvo (< 1 USD)
+        # no ensuciamos con un sub-broker (el default histórico: montos marginales).
+        if is_balanz and snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
+            parent_row = conn.execute(
+                "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
+            _sib = _ensure_usd_sibling(conn, uid, parent_row)["name"]
         _adj = []
         if snap.cash_ars is not None:
             _adj.append((broker, "ARS", _cur_cash(broker), snap.cash_ars, 1.0))
@@ -17704,6 +17826,7 @@ async def import_tenencia_preview(
                          "currency": h.currency} for h, gap in rec.to_seed],
             "over": [{"ticker": t, "rendi": rq, "tenencia": tq} for t, rq, tq in rec.over],
             "not_in_snapshot": [{"ticker": t, "qty": q} for t, q in rec.not_in_snapshot],
+            "override": override_info,
         }
     finally:
         conn.close()

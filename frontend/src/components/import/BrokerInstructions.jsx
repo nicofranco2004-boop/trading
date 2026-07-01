@@ -107,13 +107,14 @@ const BROKERS = [
     id: 'balanz',
     label: 'Balanz',
     Logo: BalanzLogo,
-    summary: 'Recomendado: el export de Movimientos — el libro de caja completo (operaciones, dividendos, cupones Y depósitos/retiros), que reconstruye tu cartera Y tu efectivo.',
+    summary: 'Subí dos archivos juntos: el export de Movimientos (reconstruye tu historial, tu P&L y tu efectivo) + el Resumen de Cuenta / Posición consolidada (PDF), que fija tus tenencias y tu saldo de HOY exactos.',
     steps: [
       'En Balanz web (no la app) andá a Actividad → Movimientos.',
-      'Filtrá el período DESDE EL INICIO DE TU CUENTA hasta hoy. ⚠️ Importante: si tomás solo un rango parcial, falta el fondeo y el saldo no cierra.',
-      'Descargá el archivo (Excel .xlsx) y subilo acá.',
+      'Filtrá el período DESDE EL INICIO DE TU CUENTA hasta hoy y descargá el archivo (Excel .xlsx). ⚠️ Si tomás solo un rango parcial, falta el fondeo y el saldo no cierra.',
+      'Resumen de Cuenta: en la WEB de Balanz andá a Actividad → Reportes → Posición consolidada, elegí la fecha de hoy y la moneda, y descargá el PDF.',
+      'Subí el Excel de Movimientos + el PDF del Resumen, todo junto acá — los acomodamos solos.',
     ],
-    parserNote: 'Del export de Movimientos reconstruimos tu cartera, tu P&L Y tu efectivo —incluye depósitos, retiros, dólar MEP, cupones, dividendos y comisiones—, así el saldo cierra solo (no hace falta cargarlo a mano). Clasificamos cada activo (bono, CEDEAR, acción, fondo) automáticamente. Ojo: el export de «Resultados» NO sirve —no trae tus depósitos/retiros y los números quedan mal—, así que tiene que ser el de Movimientos.',
+    parserNote: 'Del export de Movimientos reconstruimos tu cartera, tu P&L Y tu efectivo —incluye depósitos, retiros, dólar MEP, cupones, dividendos y comisiones— y clasificamos cada activo (bono, CEDEAR, acción, fondo) automáticamente. El Resumen de Cuenta (Posición consolidada) es la foto de HOY y MANDA: ajusta tus tenencias y tu saldo (pesos y dólares) para que queden exactos, aunque el historial no llegue hasta el inicio. ¿Ya importaste antes? Volvé a importar incluyendo el PDF del Resumen: no duplicamos lo que ya está. Ojo: el export de «Resultados» NO sirve —no trae tus depósitos/retiros—, tiene que ser el de Movimientos.',
   },
   {
     id: 'binance',

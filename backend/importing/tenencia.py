@@ -126,15 +126,30 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
 
 
 def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
-                            seed_date: str, currency: str = "ARS"):
+                            seed_date: str, currency: str = "ARS",
+                            override: bool = False, complete: bool = False,
+                            override_date: Optional[str] = None):
     """Txs sintéticas (DEPOSITO + COMPRAs) que crean los lotes de APERTURA del
     hueco — lo que la Cuenta Corriente no reconstruyó (comprado antes de su
     ventana). El DEPOSITO financia las compras → net cash 0. Cada COMPRA lleva:
       • el asset_type de la foto (STOCK/BOND/CEDEAR) → se valúa bien (no OTHER);
       • el precio PER-1 (= valor/cantidad) como costo → P&L 0 en la apertura.
     Se persisten como un batch propio (auditable y revertible, como el seed).
-    NO duplica: `reconcile.to_seed` ya trae SOLO la diferencia por activo."""
-    from .schema import NormalizedTx, OP_BUY, OP_DEPOSIT
+    NO duplica: `reconcile.to_seed` ya trae SOLO la diferencia por activo.
+
+    Si `override=True` la foto PISA el estado (no sólo completa): además de las
+    COMPRAs del hueco emite VENTAS sintéticas que llevan cada activo EXACTO a la
+    foto —
+      • over (Rendi > foto)                → VENTA de (rendi − foto);
+      • not_in_snapshot (sólo si complete) → VENTA de todo (la foto no lo lista → se fue).
+    Las ventas van a precio/monto 0 con `transfer_out=True`: el persister y el
+    rebuild cierran el lote A COSTO (P&L 0, sin pérdida fantasma) y NO generan cash
+    (el efectivo lo fija aparte el true-up contra la foto → no se doble-cuenta). El
+    flag `complete` exige que la foto sea TOTAL (todas las clases + monedas); si es
+    parcial, `not_in_snapshot` NO debe borrar posiciones legítimas (queda en gap-fill).
+    El caller (endpoint) ya filtró `over`/`not_in_snapshot` por seguridad
+    (safe-to-rebuild + cap de sanidad) antes de llamar acá."""
+    from .schema import NormalizedTx, OP_BUY, OP_SELL, OP_DEPOSIT
     txs = []
     idx = -20000  # negativo, no colisiona con row_index reales (igual que el seed)
     total = round(sum(gap * h.price_per1 for h, gap in reconcile.to_seed), 4)
@@ -152,6 +167,27 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
             gross_amount=round(gap * h.price_per1, 4), currency=currency,
             notes=f"Tenencia — apertura {h.ticker} a precio de {seed_date} (P&L 0)"))
         idx += 1
+    if override:
+        # Reducciones que llevan el estado EXACTO a la foto. Precio/monto 0 +
+        # transfer_out → cierre a costo (P&L 0), sin cash (el true-up fija el
+        # efectivo con la foto). CRÍTICO: la VENTA debe ordenarse DESPUÉS de TODAS
+        # las compras reales del activo en el replay del rebuild (tie-break: mismo
+        # día = BUY antes que SELL). Si la foto es MÁS VIEJA que algún movimiento,
+        # `seed_date` (= fecha de la foto) sortearía la venta ANTES de esa compra →
+        # consumiría un lote-semilla fantasma y la reducción fallaría en silencio.
+        # Por eso el caller pasa `override_date` = max(fecha_foto, última fecha de
+        # BUY/SELL del par); acá cae a seed_date si no vino.
+        red_date = override_date or seed_date
+        reductions = [(tk, rq - sq) for tk, rq, sq in reconcile.over if rq - sq > 1e-9]
+        if complete:
+            reductions += [(tk, rq) for tk, rq in reconcile.not_in_snapshot if rq > 1e-9]
+        for tk, qty in reductions:
+            txs.append(NormalizedTx(
+                row_index=idx, date=red_date, broker=broker, operation_type=OP_SELL,
+                asset_symbol=tk, quantity=round(qty, 6), unit_price=0.0,
+                gross_amount=0.0, currency=currency, transfer_out=True,
+                notes=f"Tenencia — ajuste a foto de {seed_date}: cierre de {tk} a costo (P&L 0)"))
+            idx += 1
     return txs
 
 
@@ -602,4 +638,138 @@ def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
     if snap.holdings:
         snap.total_ars = round(
             sum(h.value for h in snap.holdings if h.currency == "ARS") + cash_ars, 2)
+    return snap
+
+
+# ─── Balanz — "Resumen de Cuenta" / Posición consolidada (PDF, foto de tenencia) ─
+# Igual rol que las otras fotos: la VERDAD de HOY. Pero para Balanz la aplicamos en
+# modo OVERRIDE (la foto PISA el estado): además de completar huecos, REDUCE lo que
+# Rendi tiene de más y ELIMINA lo que la foto no lista (ver build_tenencia_seed_txs
+# override / el endpoint). El PDF ("Posición consolidada por concertación") lista
+# Acciones/Bonos/Cedears/Fondos — TODO valuado en $ (pesos) → currency ARS para todos
+# los holdings — más un bloque "Monedas" con el cash (Pesos / Dólares / US Dollar Cable).
+# Cada fila:  ESPECIE  <descripción>  CANTIDAD  GARANTÍA  $ PRECIO  $ VALOR ACTUAL
+# El ancla robusta son los DOS últimos '$' (precio, valor) + la Garantía en formato
+# PUNTO ('0.00'), que discrimina de la Cantidad (coma) y evita ambigüedad.
+_BAL_AR = r"-?\d{1,3}(?:\.\d{3})*(?:,\d+)?"   # AR flexible: '1.284,40','287,27','13.930','1,00'
+# Garantía: la usamos SÓLO como separador de columna (ignoramos su valor), así que
+# aceptamos cualquier número (punto '0.00', AR '1.234,00', US '1,234.00'). Antes
+# exigía punto ('0.00') → una tenencia con garantía ≠ 0 en otro formato se caía de
+# la foto y, en modo override, se VENDÍA por error. Requiere ≥1 dígito.
+_BAL_GAR = r"-?\d[\d.,]*"
+_BAL_ROW_RE = re.compile(
+    r"^(\S+)\s+(.+?)\s+(" + _BAL_AR + r")\s+(" + _BAL_GAR + r")\s+\$\s+("
+    + _BAL_AR + r")\s+\$\s+(" + _BAL_AR + r")\s*$")
+_BAL_SECTION_TYPE = {"acciones": "STOCK", "bonos": "BOND", "cedears": "CEDEAR", "fondos": "FUND"}
+_BAL_DATE_RE = re.compile(r"fecha resumen\s+(\d{2})/(\d{2})/(\d{4})")
+_BAL_TOTAL_RE = re.compile(r"^total\s+\$\s+(" + _BAL_AR + r")\s*$")
+# Cash: el bloque "Monedas" viene en 2 columnas → estos tokens caen a mitad de línea
+# (p.ej. "Acciones $ 1.108.291 Pesos $ 837,14") → search, no startswith.
+_BAL_CASH_RE = [
+    (re.compile(r"pesos\s+\$\s+(" + _BAL_AR + r")"), "ARS"),
+    (re.compile(r"dolares\s+usd\s+(" + _BAL_AR + r")"), "USD"),
+    (re.compile(r"us dollar \(cable\)\s+usd\s+(" + _BAL_AR + r")"), "USD"),
+]
+
+
+def _bal_norm(s: str) -> str:
+    return _deaccent("" if s is None else str(s)).lower().strip()
+
+
+def looks_like_balanz_tenencia(text: str) -> bool:
+    """Autodetecta el Resumen de Cuenta de Balanz (vs la Tenencia de Bull Market u
+    otro PDF). Exige varias señales del formato para no robarse otra foto (ni el
+    export de Órdenes/Movimientos de Balanz)."""
+    t = _bal_norm(text)
+    return ("posicion consolidada" in t
+            and "fecha resumen" in t
+            and "especie descripcion cantidad garantia precio valor actual" in t)
+
+
+def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
+    """Parsea el Resumen de Cuenta de Balanz (texto del PDF) a un TenenciaSnapshot.
+    Todo cotiza en $ (pesos) → currency ARS para TODOS los holdings (incluido el FCI
+    'BAHUSDA', cuya cuotaparte viene en pesos: no inferir USD por el nombre). Cash:
+    Pesos → ARS; Dólares + US Dollar (Cable) → USD (mismo criterio que Bull Market
+    junta U$S). value (Valor Actual) es la VERDAD; price_per1 = value/qty."""
+    snap = TenenciaSnapshot()
+    md = _BAL_DATE_RE.search(_bal_norm(text))
+    if md:
+        snap.date = f"{md.group(3)}-{md.group(2)}-{md.group(1)}"
+
+    cur_type: Optional[str] = None
+    seen = set()
+    cash_ars = 0.0
+    cash_usd = 0.0
+    has_cash = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        n = _bal_norm(line)
+        # Cash (bloque Monedas, 2 columnas) — search en cualquier parte de la línea.
+        for rx, ccy in _BAL_CASH_RE:
+            m = rx.search(n)
+            if m:
+                v = _num(m.group(1))
+                if ccy == "ARS":
+                    cash_ars += v
+                else:
+                    cash_usd += v
+                has_cash = True
+        # Total de cartera (preámbulo).
+        mt = _BAL_TOTAL_RE.match(n)
+        if mt:
+            snap.total_ars = _num(mt.group(1))
+            continue
+        # Reset de sección al salir de las tablas de posiciones (footer, header de
+        # página, disclaimer p4, titulares p5) → el parser de filas nunca las toca.
+        if (n.startswith("balanz capital") or "posicion consolidada" in n
+                or n.startswith("informacion de") or n.startswith("distribucion por")
+                or n.startswith("la informacion")):
+            cur_type = None
+            continue
+        # Título de sección = UNA sola palabra (Acciones/Bonos/Cedears/Fondos). La
+        # línea-resumen "Acciones $ 1.108.291 …" es multi-palabra → no matchea.
+        if n in _BAL_SECTION_TYPE and len(line.split()) == 1:
+            cur_type = _BAL_SECTION_TYPE[n]
+            continue
+        if n.startswith("especie"):     # header de columnas
+            continue
+        if cur_type is None:            # sólo parseamos filas dentro de una sección
+            continue
+        rm = _BAL_ROW_RE.match(line)
+        if not rm:
+            continue
+        tk = rm.group(1).upper()
+        if tk in ("ARS", "USD", "ESPECIE", "TICKER"):
+            continue
+        qty = _num(rm.group(3))
+        price = _num(rm.group(5))
+        value = _num(rm.group(6))
+        if qty <= 0:
+            continue
+        # per-1 vs per-100 (bonos), igual que Bull Market. En este export Balanz
+        # cotiza los bonos per-1; la detección queda por robustez.
+        prod = qty * price
+        tol = max(1.0, 0.01 * abs(value))
+        per100 = False
+        if abs(prod - value) <= tol:
+            pass
+        elif abs(prod / 100.0 - value) <= tol:
+            per100 = True
+        else:
+            snap.warnings.append(
+                f"{tk}: importe ({value:,.2f}) no es cantidad×precio ni /100 — revisar")
+        key = (tk, "ARS")
+        if key in seen:
+            continue
+        seen.add(key)
+        snap.holdings.append(Holding(
+            ticker=tk, asset_type=cur_type, quantity=qty, value=value,
+            currency="ARS", price_per1=value / qty, per100=per100,
+            name=rm.group(2).strip()[:60]))
+    if has_cash:
+        snap.cash_ars = round(cash_ars, 2)
+        snap.cash_usd = round(cash_usd, 2)
     return snap

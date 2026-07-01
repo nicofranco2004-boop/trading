@@ -882,13 +882,14 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id, tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
              tx.fees, tx.taxes, tx.currency, tx.settlement_currency, tx.notes,
-             _row_fingerprint(tx), gross_usd))
+             _row_fingerprint(tx), gross_usd,
+             1 if getattr(tx, "transfer_out", False) else 0))
     return batch_id
 
 
@@ -933,6 +934,13 @@ def load_session_for_confirm(conn, *, uid: int, session_id: str
             currency=r["currency"],
             settlement_currency=r["settlement_currency"],
             notes=r["notes"],
+            # transfer_out debe sobrevivir el round-trip a la DB: el persister lo
+            # honra (cierra el lote A COSTO, P&L 0, sin cash) en el confirm ANTES del
+            # rebuild. Sin esto, una VENTA de ajuste de tenencia (precio 0) bookeaba
+            # una pérdida fantasma en el persist, que sólo el rebuild posterior
+            # corregía → si el rebuild fallaba, quedaba la pérdida. Es una columna
+            # de import_normalized_tx (default 0 para filas viejas / no-tenencia).
+            transfer_out=bool(r["transfer_out"]) if "transfer_out" in r.keys() else False,
         )
         txs.append(tx)
         raw_id_by_index[r["r_idx"]] = r["raw_row_id"]

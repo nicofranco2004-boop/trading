@@ -98,6 +98,16 @@ function looksLikeCocosTenenciaCsv(headerLine) {
   return cells.size === want.length && want.every(t => cells.has(t))
 }
 
+// Broker que crea cada parser específico (hardcoded en el registry del backend).
+// La foto de tenencia se aplica sobre ese broker; para parsers específicos el
+// wizard no pide elegir broker (singleBroker queda vacío) → resolvemos por formato.
+const TENENCIA_BROKER_BY_FORMAT = {
+  bullmarket: 'Bull Market',
+  cocos: 'Cocos',
+  ppi: 'PPI',
+  balanz_movimientos: 'Balanz',
+}
+
 // Plataformas cuya importación está temporalmente deshabilitada (parser
 // incompleto o todavía inexistente — falta data del CSV). La plataforma
 // aparece en el dropdown de "Plataforma" para que el user la encuentre por
@@ -578,7 +588,10 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
         try {
           const tfd = new FormData()
           tfd.append('file', tenenciaFile)
-          tfd.append('broker', singleBroker || 'Bull Market')
+          // El broker de la foto = el que el parser específico crea (hardcoded en el
+          // registry). Para parsers específicos singleBroker queda vacío → usamos el
+          // mapa; el fallback 'Bull Market' cubre el caso histórico.
+          tfd.append('broker', TENENCIA_BROKER_BY_FORMAT[format] || singleBroker || 'Bull Market')
           if (tenenciaFormat) tfd.append('format', tenenciaFormat)
           const tp = await api.upload('/imports/tenencia/preview', tfd)
           if (tp?.session_id) {
@@ -1164,9 +1177,10 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
     const incoming = Array.from(newFiles)
     const errors = []
     const valid = []
-    // Bull Market acepta TAMBIÉN la Tenencia valorizada en PDF (se sube junto con
-    // los Excel de Cuenta Corriente y se aplica después de confirmar).
-    const allowPdf = format === 'bullmarket'
+    // Bull Market y Balanz aceptan TAMBIÉN la foto de tenencia en PDF (Tenencia
+    // valorizada / Resumen de Cuenta) — se sube junto con los Movimientos y se
+    // aplica después de confirmar (Balanz la usa en modo override).
+    const allowPdf = format === 'bullmarket' || format === 'balanz_movimientos'
     for (const f of incoming) {
       const name = (f.name || '').toLowerCase()
       const okExt = name.endsWith('.csv') || name.endsWith('.txt') || name.endsWith('.xlsx') || name.endsWith('.xls')
@@ -1276,7 +1290,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
           <input
             ref={inputRef}
             type="file"
-            accept={`.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel${format === 'bullmarket' ? ',.pdf,application/pdf' : ''}`}
+            accept={`.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel${(format === 'bullmarket' || format === 'balanz_movimientos') ? ',.pdf,application/pdf' : ''}`}
             multiple
             className="hidden"
             onChange={e => pickFiles(e.target.files)}
