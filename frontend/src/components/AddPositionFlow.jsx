@@ -16,13 +16,22 @@
 //   • Mobile         → bottom sheet full-width con safe-area
 
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp } from 'lucide-react'
+import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp, FileText, ArrowRight } from 'lucide-react'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
   BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF,
 } from '../utils/tickers'
+import { isLetraTicker } from '../utils/sections'
 import { api } from '../utils/api'
 import AssetLogo from './AssetLogo'
+
+const _MONTH_NAMES = { E:'ene', F:'feb', M:'mar', A:'abr', Y:'may', J:'jun', L:'jul', G:'ago', S:'sep', O:'oct', N:'nov', D:'dic' }
+function decodeLetraDate(sym) {
+  const m = /^([A-Z])(\d{1,2})([EFMAYJLGSOND])(\d)$/.exec((sym || '').toUpperCase())
+  if (!m) return null
+  const [, , dd, mcode, yy] = m
+  return `${dd} ${_MONTH_NAMES[mcode]} ${2020 + parseInt(yy)}`
+}
 
 // ─── Categorías ──────────────────────────────────────────────────────────────
 // El orden refleja prioridad UX: tipos más usados primero.
@@ -42,6 +51,7 @@ const CATEGORIES = [
   { id: 'cedears', label: 'CEDEARs',       icon: Layers,     list: CEDEARS_LIST,  hint: 'Acciones US listadas en BCBA' },
   { id: 'etfs',    label: 'ETFs',          icon: BarChart3,  list: ETFS,          hint: 'SPY, QQQ, VTI…' },
   { id: 'bonds',   label: 'Bonos y ONs',   icon: Landmark,   list: BONDS_COMBINED, hint: 'Soberanos AR, CER, obligaciones negociables, ETFs US' },
+  { id: 'letras',  label: 'Letras',        icon: FileText,   list: null,          hint: 'LECAP, Letes, Boncap — ticker libre', freeText: true },
   { id: 'ar_lider',label: 'Panel Líder',   icon: Building2,  list: ARG_LIDER,     hint: 'Acciones argentinas — panel líder' },
   { id: 'ar_gen',  label: 'Panel General', icon: Building2,  list: ARG_GENERAL,   hint: 'Acciones argentinas — panel general' },
   { id: 'indices', label: 'Índices',       icon: Activity,   list: INDICES,       hint: 'S&P 500, Merval, IBOV…' },
@@ -150,7 +160,9 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
         {current === 'ticker' && (
           category?.id === 'fci'
             ? <StepFciPicker list={category.list} onPick={selectTicker} />
-            : <Step2TickerPicker category={category} onPick={selectTicker} />
+            : category?.id === 'letras'
+              ? <StepLetraPicker onPick={selectTicker} />
+              : <Step2TickerPicker category={category} onPick={selectTicker} />
         )}
       </div>
     </div>
@@ -300,7 +312,7 @@ function Step1AssetType({ categories, onPick }) {
                   <h3 className="font-semibold text-ink-0 text-sm leading-tight">{cat.label}</h3>
                   <p className="text-xs text-ink-2 mt-1 leading-snug">{cat.hint}</p>
                   <p className="text-[10px] font-mono text-ink-3 mt-2 uppercase tracking-[0.12em]">
-                    {cat.list.length} {cat.list.length === 1 ? 'opción' : 'opciones'}
+                    {cat.freeText ? 'Entrada libre' : `${cat.list.length} ${cat.list.length === 1 ? 'opción' : 'opciones'}`}
                   </p>
                 </div>
               </div>
@@ -393,6 +405,63 @@ function Step2TickerPicker({ category, onPick }) {
 
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 2 (FCI) — Picker agrupado por fondo. Cada fondo FIMA tiene varias clases
+// ════════════════════════════════════════════════════════════════════════════
+// STEP 2 (Letras) — entrada libre validada por el patrón del ticker.
+// Las letras cambian constantemente (nueva emisión cada semanas), así que no
+// hay lista estática: el user tipea el ticker y lo validamos contra el regex.
+// ════════════════════════════════════════════════════════════════════════════
+function StepLetraPicker({ onPick }) {
+  const [val, setVal] = useState('')
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  const upper = val.trim().toUpperCase()
+  const valid = isLetraTicker(upper)
+  const maturity = valid ? decodeLetraDate(upper) : null
+
+  function confirm() {
+    if (!valid) return
+    onPick({ s: upper, n: `Letra del Tesoro — vto. ${maturity}` })
+  }
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 p-5 gap-4">
+      <div>
+        <label className="block text-xs text-ink-3 font-mono uppercase tracking-[0.12em] mb-2">Ticker de la letra</label>
+        <input
+          ref={inputRef}
+          type="text"
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && confirm()}
+          placeholder="T30A7, S31O5, X18J5…"
+          autoComplete="off"
+          spellCheck="false"
+          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm font-mono text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition uppercase"
+        />
+        {upper && (
+          <p className={`text-xs mt-2 ${valid ? 'text-rendi-pos' : 'text-rendi-warn'}`}>
+            {valid
+              ? `✓ Letra válida — vencimiento: ${maturity}`
+              : 'Ticker no reconocido. Formato: prefijo (1 letra) + día (1-2 dígitos) + mes (E/F/M/A/Y/J/L/G/S/O/N/D) + año (1 dígito). Ej: T30A7, S31O5'}
+          </p>
+        )}
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Los códigos de mes son: <span className="font-mono">E</span>=ene, <span className="font-mono">F</span>=feb, <span className="font-mono">M</span>=mar, <span className="font-mono">A</span>=abr, <span className="font-mono">Y</span>=may, <span className="font-mono">J</span>=jun, <span className="font-mono">L</span>=jul, <span className="font-mono">G</span>=ago, <span className="font-mono">S</span>=sep, <span className="font-mono">O</span>=oct, <span className="font-mono">N</span>=nov, <span className="font-mono">D</span>=dic.
+      </p>
+      <button
+        onClick={confirm}
+        disabled={!valid}
+        className="inline-flex items-center justify-center gap-2 bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-sm px-4 py-2.5 transition-colors"
+      >
+        Continuar <ArrowRight size={14} />
+      </button>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // de cuotaparte (A/B/C/P); en vez de listarlas sueltas, agrupamos por fondo y
 // la clase se elige en un acordeón con una ayuda ("casi siempre es Clase A").
 // ════════════════════════════════════════════════════════════════════════════

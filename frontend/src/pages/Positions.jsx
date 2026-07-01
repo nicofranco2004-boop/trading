@@ -59,7 +59,7 @@ export const EMPTY_POS = {
 // para acciones US, ETFs y cripto reales).
 const CATEGORY_ASSET_TYPE = {
   cedears: 'CEDEAR', stocks: 'STOCK', etfs: 'ETF', crypto: 'CRYPTO',
-  bonds: 'BOND', ar_lider: 'STOCK', ar_gen: 'STOCK',
+  bonds: 'BOND', letras: 'LETRA', ar_lider: 'STOCK', ar_gen: 'STOCK',
 }
 
 const BROKER_COLORS = [
