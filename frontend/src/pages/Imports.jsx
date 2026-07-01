@@ -480,8 +480,8 @@ export default function Imports() {
           fileLabel="Resumen de Cuenta (PDF)"
           fileHint={[
             'Iniciá sesión en IOL (invertironline.com) desde la WEB.',
-            'Andá a Mi Cuenta → Resumen de Cuenta.',
-            'Descargá el PDF a la fecha de hoy y subílo acá.',
+            'Andá a Mi Cuenta → Estado de Cuenta.',
+            'Bajá hasta el final, a “Detalle de Saldos”, y tocá el botón verde para descargar el PDF.',
           ]}
           format={null}
           docLabel="el Resumen de Cuenta"

@@ -161,7 +161,7 @@ const BROKERS = [
     steps: [
       'Iniciá sesión en IOL (invertironline.com) desde la WEB.',
       'Movimientos: Mi Cuenta → Movimientos → Detalle de Movimientos, elegí desde que abriste la cuenta hasta hoy y abajo tocá “Descargar movimientos históricos” (.xls).',
-      'Resumen de Cuenta: Mi Cuenta → Resumen de Cuenta, y descargá el PDF a la fecha de hoy.',
+      'Resumen de Cuenta: andá a Mi Cuenta → Estado de Cuenta, bajá hasta el final (Detalle de Saldos) y tocá el botón verde para descargar el PDF.',
       'Subí el .xls de Movimientos + el PDF del Resumen, todo junto acá — los acomodamos solos.',
     ],
     parserNote: 'Del Detalle de Movimientos reconstruimos compras, ventas, dividendos, rentas y amortizaciones de bonos, intereses, depósitos/extracciones y suscripciones/rescates de FCI, detectando la moneda y consolidando las patas dólar-MEP/cable (ej. GGALD → GGAL). El Resumen de Cuenta es la foto de HOY y MANDA: completa las posiciones que ya tenías de antes, cierra tu efectivo (pesos y dólares) y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes? Alcanza con volver a subir el Resumen. Las transferencias de títulos entrantes se cargan a mano porque no traen el costo.',
