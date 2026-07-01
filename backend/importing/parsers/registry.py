@@ -28,8 +28,14 @@ _PARSERS: List[Parser] = [
     # `Saldo`. PpiParser.can_handle exige Saldo → no roba archivos de Balanz; y al
     # ir primero, agarra los de PPI antes de que BalanzMovimientos los matchee.
     PpiParser(),
-    BalanzParser(),
+    # Movimientos PRIMERO entre los de Balanz: es el export recomendado (reconstruye
+    # cartera + P&L + caja) y el wizard arranca en el PRIMER export soportado del grupo
+    # → así el default de Balanz es Movimientos, no Órdenes (que rechazaba el archivo
+    # pidiendo la columna `estado`). No pisa a Órdenes/Resultados en autodetect: sus
+    # can_handle no se solapan (Movimientos exige Descripción+Importe; Órdenes exige
+    # Estado; Resultados no trae Importe). PPI sigue antes (exige `Saldo`).
     BalanzMovimientosParser(),
+    BalanzParser(),
     BalanzResultadosParser(),
     IolParser(),
     SchwabParser(),
