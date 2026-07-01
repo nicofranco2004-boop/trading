@@ -106,6 +106,7 @@ const TENENCIA_BROKER_BY_FORMAT = {
   cocos: 'Cocos',
   ppi: 'PPI',
   ieb: 'IEB',
+  iol: 'IOL',
   // La plataforma Balanz tiene 3 exports (balanz=Órdenes, balanz_movimientos,
   // balanz_resultados) y el wizard arranca en el PRIMERO (balanz). Todos crean el
   // broker 'Balanz', así que mapeamos los tres → la foto se aplica bien sin importar

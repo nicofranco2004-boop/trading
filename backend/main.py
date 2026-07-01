@@ -17653,8 +17653,9 @@ async def import_tenencia_preview(
     is_ppi = fmt.startswith("ppi")
     is_cocos = fmt.startswith("cocos")
     is_ieb = fmt.startswith("ieb")
-    is_balanz = False   # se resuelve por auto-detección del PDF (Balanz vs Bull Market)
+    is_balanz = False   # se resuelve por auto-detección del PDF (Balanz vs IOL vs Bull Market)
     is_bullmarket = False
+    is_iol = False
     if is_ieb:
         # IEB: Portafolio en Excel MULTI-hoja (Patrimonio + Saldos). Trae PPP (costo
         # promedio) → sembramos el costo real, no P&L 0. La foto PISA en modo OVERRIDE
@@ -17717,6 +17718,11 @@ async def import_tenencia_preview(
             parser_format, default_name = "balanz_tenencia", "ResumenDeCuenta.pdf"
             broker_hint = "Importá primero los Movimientos de Balanz."
             is_balanz = True
+        elif _import_tenencia.looks_like_iol_tenencia(text):
+            snap = _import_tenencia.parse_iol_tenencia(text)
+            parser_format, default_name = "iol_tenencia", "ResumenDeCuenta.pdf"
+            broker_hint = "Importá primero los Movimientos de IOL."
+            is_iol = True
         elif _import_tenencia.looks_like_tenencia(text):
             snap = _import_tenencia.parse_bullmarket_tenencia(text)
             parser_format, default_name = "bullmarket_tenencia", "Tenencia.pdf"
@@ -17853,7 +17859,7 @@ async def import_tenencia_preview(
             # NUNCA (su CSV plano no da señal de lectura parcial → sólo reduce, no borra).
             _warns = getattr(snap, "warnings", None)
             _complete = True if is_balanz else (False if is_cocos else (not _warns))
-            if is_balanz or is_ieb or is_cocos or is_bullmarket:
+            if is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol:
                 # La foto PISA (Balanz/IEB/Cocos/BMB) — mismo mecanismo (ventas
                 # transfer_out reversibles + guardas + cap 50%).
                 seed_txs, override_info = _tenencia_apply_override(
@@ -17877,7 +17883,7 @@ async def import_tenencia_preview(
         # Balanz / IEB OVERRIDE: si la foto trae USD MATERIAL (≥ 1) y no hay sibling
         # '· USD' (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el
         # saldo en dólares exacto. Para polvo (< 1 USD) no ensuciamos con un sub-broker.
-        if (is_balanz or is_ieb) and snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
+        if (is_balanz or is_ieb or is_iol) and snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
             parent_row = conn.execute(
                 "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
             _sib = _ensure_usd_sibling(conn, uid, parent_row)["name"]

@@ -30,6 +30,7 @@ export default function Imports() {
   const [showPpiEstado, setShowPpiEstado] = useState(false)  // modal "completar con Estado de Cuenta" (PPI Excel)
   const [showCocosEstado, setShowCocosEstado] = useState(false)  // modal "completar con Estado de Cuenta" (Cocos CSV)
   const [showIebPortfolio, setShowIebPortfolio] = useState(false)  // modal "actualizar con Portafolio" (IEB Excel, override)
+  const [showIolResumen, setShowIolResumen] = useState(false)  // modal "actualizar con Resumen de Cuenta" (IOL PDF, override)
   const [importJustConfirmed, setImportJustConfirmed] = useState(false)  // marca interna: el wizard pasó por onConfirmed
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
@@ -224,6 +225,15 @@ export default function Imports() {
                 className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
               >
                 <Upload size={12} strokeWidth={1.75} /> Portafolio IEB
+              </button>
+            )}
+            {!isFirstUse && (
+              <button
+                onClick={() => setShowIolResumen(true)}
+                title="Actualizá tu cartera de IOL subiendo el Resumen de Cuenta (PDF). Completa las posiciones, cierra el efectivo a la foto y ajusta lo que quedó de más/de menos — con un tope de seguridad."
+                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
+              >
+                <Upload size={12} strokeWidth={1.75} /> Resumen IOL
               </button>
             )}
             <button
@@ -456,6 +466,25 @@ export default function Imports() {
           ]}
           format="ieb"
           docLabel="el Portafolio"
+        />
+      )}
+
+      {showIolResumen && (
+        <TenenciaUpload
+          onClose={() => setShowIolResumen(false)}
+          onConfirmed={() => { setInfo('Cartera actualizada con el Resumen de Cuenta de IOL.'); load() }}
+          title="Actualizá tu cartera con el Resumen de Cuenta (IOL)"
+          introText="El Resumen de Cuenta es tu foto de posiciones y saldos de HOY, y MANDA: completamos lo que falta, cerramos tu efectivo (pesos y dólares) a la foto y ajustamos lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos."
+          brokerMatch={/iol/i}
+          accept=".pdf,application/pdf"
+          fileLabel="Resumen de Cuenta (PDF)"
+          fileHint={[
+            'Iniciá sesión en IOL (invertironline.com) desde la WEB.',
+            'Andá a Mi Cuenta → Resumen de Cuenta.',
+            'Descargá el PDF a la fecha de hoy y subílo acá.',
+          ]}
+          format={null}
+          docLabel="el Resumen de Cuenta"
         />
       )}
 

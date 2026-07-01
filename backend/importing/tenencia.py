@@ -366,6 +366,136 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
     return snap
 
 
+# ─── IOL (InvertirOnline) — "Resumen de Cuenta" (PDF, foto de tenencia) ───────
+# Mismo rol/mecanismo que Balanz/BMB: la foto de HOY que PISA lo que los Movimientos
+# (HTML .xls) dejaron. Estructura del PDF (texto vía pdfplumber):
+#   Fecha Estado de Cta: 30/6/2026
+#   Detalle de Saldos … Disponible Pesos * AR$ 13268,40   (Operable ** = duplicado)
+#                       Disponible Dólares US$ 1,58
+#                       Títulos Valorizados AR$ 5821813,27  (= total, para el guard)
+#   Detalle de Títulos Valorizados
+#     <nombre> <SÍMBOLO> BCBA <cantidad> <AR$|US$> <cotización> <importe>
+#     Cedear Apple Inc. AAPL BCBA 25,0000 AR$ 22640,000 566000,000
+#     Saldo Total Títulos Val.: AR$ …   (subtotal acumulado por página; el último = total)
+# Números: coma decimal, sin separador de miles. Bonos = cotización per-100
+# (qty×cotiz/100 = importe). USD: el `importe` viene en ARS (conversión MEP) → el valor
+# NATIVO en USD = qty×cotización. La suma de todos los `importe` (ARS) reconcilia
+# contra "Títulos Valorizados" → guard de completitud (sin FX).
+_IOL_NUM = r"-?\d[\d.]*,\d+"
+_IOL_DATE_RE = re.compile(r"Fecha\s+Estado\s+de\s+Cta\.?:?\s*(\d{1,2})/(\d{1,2})/(\d{4})", re.IGNORECASE)
+_IOL_ROW_RE = re.compile(
+    r"^(.+?)\s+([A-Z0-9][A-Z0-9.]{0,9})\s+BCBA\s+(" + _IOL_NUM + r")\s+(AR\$|US\$)\s+("
+    + _IOL_NUM + r")\s+(" + _IOL_NUM + r")\s*$")
+_IOL_TITULOS_RE = re.compile(
+    r"(?:Saldo\s+Total\s+T[íi]tulos\s+Val|T[íi]tulos\s+Valorizados)\.?:?\s*AR\$\s*(" + _IOL_NUM + r")",
+    re.IGNORECASE)
+
+
+def _iol_num(s: str) -> float:
+    """Número IOL: coma decimal, sin separador de miles ('566000,000'→566000.0).
+    Igual saca un punto de miles si apareciera ('1.305,05')."""
+    return float(s.strip().replace(".", "").replace(",", "."))
+
+
+def looks_like_iol_tenencia(text: str) -> bool:
+    t = _norm(text)
+    return "resumen de cuenta" in t and "detalle de titulos valorizados" in t and "invertironline" in t
+
+
+def _iol_asset_type(name: str) -> str:
+    """CEDEAR / BOND / FUND / "" (acción AR, se valúa por .BA). IOL no trae PPP ni
+    tipo — clasificamos por el nombre. FCI = keywords (los símbolos de FCI de IOL no
+    están en el catálogo). El resto (nombre de empresa AR) → "" (acción argentina)."""
+    n = _deaccent(name).lower()
+    if n.startswith("cedear") or "cedear" in n:
+        return "CEDEAR"
+    if any(k in n for k in ("bono", "bonos", "letra", "lecap", "obligac", "titulo publico", " on ")):
+        return "BOND"
+    if any(k in n for k in ("fci", "fondo", "ahorro", "renta ", "portafolio", "potenciado", "cartera", "money market")):
+        return "FUND"
+    return ""
+
+
+def parse_iol_tenencia(text: str) -> TenenciaSnapshot:
+    snap = TenenciaSnapshot()
+    md = _IOL_DATE_RE.search(text)
+    if md:
+        snap.date = f"{int(md.group(3)):04d}-{int(md.group(2)):02d}-{int(md.group(1)):02d}"
+    # Total declarado de títulos (el mayor de los "Saldo Total …"/"Títulos Valorizados"
+    # = el acumulado final) → guard de completitud.
+    _declared = [_iol_num(m) for m in _IOL_TITULOS_RE.findall(text)]
+    declared_titulos = max(_declared) if _declared else None
+
+    cash_ars = cash_usd = None
+    imp_sum = 0.0
+    seen = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = _deaccent(line).lower()
+        # Cash: "Disponible Pesos * AR$ X" / "Disponible Dólares US$ Y" (NO el
+        # "Operable **", que es el mismo saldo estimado a 72hs → duplicaría).
+        if low.startswith("disponible pesos") and "operable" not in low:
+            nums = re.findall(_IOL_NUM, line)
+            if nums:
+                cash_ars = _iol_num(nums[-1])
+            continue
+        if low.startswith("disponible dolares") and "operable" not in low:
+            nums = re.findall(_IOL_NUM, line)
+            if nums:
+                cash_usd = _iol_num(nums[-1])
+            continue
+        rm = _IOL_ROW_RE.match(line)
+        if not rm:
+            continue
+        name, sym, qty_s, mon, cotiz_s, imp_s = rm.groups()
+        sym = sym.upper().strip(".")
+        qty = _iol_num(qty_s)
+        cotiz = _iol_num(cotiz_s)
+        importe = _iol_num(imp_s)
+        if qty <= 0 or not sym or sym == "BCBA":
+            continue
+        imp_sum += importe                              # ARS, para el guard (todos en ARS)
+        ccy = "USD" if "US$" in mon else "ARS"
+        at = _iol_asset_type(name)
+        # Valor NATIVO + per-100. USD: importe está en ARS → valor nativo = qty×cotiz.
+        # ARS: importe ES el valor nativo; per-100 si qty×cotiz ≈ 100×importe (bonos).
+        if ccy == "USD":
+            value = qty * cotiz
+            per100 = False
+        else:
+            value = importe
+            prod = qty * cotiz
+            tol = max(1.0, 0.01 * abs(importe))
+            per100 = (abs(prod / 100.0 - importe) <= tol and abs(prod - importe) > tol)
+        if value <= 0:
+            continue
+        if at == "FUND":
+            sym = _canon_fund_ticker(sym)
+        key = (sym, ccy)
+        if key in seen:
+            continue
+        seen.add(key)
+        snap.holdings.append(Holding(
+            ticker=sym, asset_type=at, quantity=qty, value=value, currency=ccy,
+            price_per1=value / qty, per100=per100, name=name.strip()[:60]))
+    snap.cash_ars = round(cash_ars, 2) if cash_ars is not None else None
+    snap.cash_usd = round(cash_usd, 2) if cash_usd is not None else None
+    snap.total_ars = declared_titulos
+    # Guard de completitud: la suma de importes (ARS) debe cuadrar con el total
+    # declarado. Si no, el PDF se extrajo parcial (OCR se comió filas) → no borramos.
+    if declared_titulos and snap.holdings:
+        tol = max(50.0, 0.0005 * abs(declared_titulos))
+        if abs(imp_sum - declared_titulos) > tol:
+            snap.warnings.append(
+                f"La suma de tus títulos ({imp_sum:,.0f}) no cuadra con el total del "
+                f"Resumen ({declared_titulos:,.0f}) — la lectura del PDF pudo ser parcial.")
+    if not snap.holdings:
+        snap.warnings.append("No pudimos leer ninguna tenencia del Resumen de Cuenta de IOL.")
+    return snap
+
+
 # ─── PPI — "Estado de Cuenta" (Excel, foto de tenencia) ──────────────────────
 # Mismo rol que la Tenencia de Bull Market: completa las posiciones de apertura
 # que los Movimientos (ventana) no reconstruyen. Reusa Holding/TenenciaSnapshot
