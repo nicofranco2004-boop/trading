@@ -370,8 +370,17 @@ function Step2TickerPicker({ category, onPick }) {
       {/* Lista scrollable */}
       <div className="flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
-          <div className="p-8 text-center text-sm text-ink-2">
-            Sin resultados para <span className="font-mono">"{query}"</span>
+          <div className="p-8 text-center text-sm text-ink-2 flex flex-col items-center gap-3">
+            <span>Sin resultados para <span className="font-mono">"{query}"</span></span>
+            {category.id === 'bonds' && query.trim().length >= 2 && (
+              <button
+                onClick={() => onPick({ s: query.trim().toUpperCase(), n: query.trim().toUpperCase() })}
+                className="inline-flex items-center gap-2 text-sm px-4 py-2 rounded-sm bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 transition mt-1"
+              >
+                <ArrowRight size={13} />
+                Agregar <span className="font-mono mx-1">{query.trim().toUpperCase()}</span> como bono/ON
+              </button>
+            )}
           </div>
         ) : (
           <ul className="divide-y divide-line/50 dark:divide-line/40">
