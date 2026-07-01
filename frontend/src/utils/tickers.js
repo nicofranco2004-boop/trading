@@ -189,7 +189,7 @@ export const CEDEARS_LIST = [
   { s: 'MELI', n: 'MercadoLibre' }, { s: 'PBR', n: 'Petrobras' }, { s: 'VALE', n: 'Vale' },
   { s: 'ITUB', n: 'Itaú Unibanco' }, { s: 'BBD', n: 'Banco Bradesco' }, { s: 'NU', n: 'Nu Holdings' },
   { s: 'ABEV', n: 'Ambev' }, { s: 'AZN', n: 'AstraZeneca' }, { s: 'NVS', n: 'Novartis' }, { s: 'T', n: 'AT&T' },
-  { s: 'BRK-B', n: 'Berkshire Hathaway' },
+  { s: 'BRK-B', n: 'Berkshire Hathaway' }, { s: 'OKLO', n: 'Oklo' },
   // ETFs disponibles como CEDEAR
   { s: 'SPY', n: 'SPDR S&P 500 (CEDEAR)' }, { s: 'QQQ', n: 'Nasdaq 100 (CEDEAR)' },
   { s: 'EEM', n: 'Emerging Markets (CEDEAR)' }, { s: 'EWZ', n: 'Brasil (CEDEAR)' },
