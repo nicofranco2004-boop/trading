@@ -1149,7 +1149,7 @@ function CurrencyBackfillPanel({ toast }) {
   const [progress, setProgress] = useState(null)
 
   function emptyAgg() {
-    return { users_changed: 0, changes: [], errors: [], total_users: 0, skipped: 0, fci_funds: {} }
+    return { users_changed: 0, changes: [], needs_review: [], errors: [], total_users: 0, skipped: 0, fci_funds: {} }
   }
   function absorb(agg, r) {
     agg.users_changed += r.users_changed || 0
@@ -1157,6 +1157,7 @@ function CurrencyBackfillPanel({ toast }) {
     agg.total_users = r.total_all_users || agg.total_users
     if (agg.changes.length < 2000) agg.changes.push(...(r.changes || []))
     else agg.truncated = true
+    if (r.needs_review?.length) agg.needs_review.push(...r.needs_review)
     if (r.errors?.length) agg.errors.push(...r.errors)
     for (const [sym, f] of Object.entries(r.fci_funds_touched || {})) {
       const g = agg.fci_funds[sym] || { count: 0, vcp_min: f.vcp_min, vcp_max: f.vcp_max, max_amt: 0 }
@@ -1241,10 +1242,40 @@ function CurrencyBackfillPanel({ toast }) {
 
       {preview && (
         <>
-          <div className="grid grid-cols-2 gap-3">
-            <ConvCell label="Cuentas a corregir" value={preview.users_changed} hint={`de ${preview.total_users} · resto sano/salteado`} />
-            <ConvCell label="Fondos FCI tocados" value={fciFunds.length} hint="verificar que sean money-market" />
+          <div className="grid grid-cols-3 gap-3">
+            <ConvCell label="Cuentas a corregir" value={preview.users_changed} hint="quedan sanas → se aplican" />
+            <ConvCell label="A revisar (no se aplican)" value={preview.needs_review?.length || 0} hint="siguen en gigante" />
+            <ConvCell label="Fondos FCI tocados" value={fciFunds.length} hint="verificar money-market" />
           </div>
+
+          {/* Cuentas que el guard NO aplica: siguen en gigante tras corregir (over/under) */}
+          {preview.needs_review?.length > 0 && (
+            <div className="border border-rose-500/30 rounded-md bg-rose-500/5 p-3 space-y-1.5">
+              <p className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 uppercase tracking-wide">
+                ⛔ {preview.needs_review.length} cuenta(s) NO se aplican — siguen en gigante tras corregir (revisar aparte)
+              </p>
+              <div className="max-h-40 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-ink-3">
+                    <th className="text-left px-1 py-0.5">Usuario</th><th className="text-left px-1">Correcciones</th>
+                    <th className="text-left px-1">Peor capital (antes→después)</th>
+                  </tr></thead>
+                  <tbody>
+                    {preview.needs_review.map((c, i) => (
+                      <tr key={i} className="border-t border-line/20">
+                        <td className="px-1 py-0.5 text-ink-2">#{c.uid}</td>
+                        <td className="px-1 text-ink-2 tabular">
+                          {[c.corrections.fci && `${c.corrections.fci} FCI`, c.corrections.seed && `${c.corrections.seed} seed`,
+                            c.corrections.conduit && `${c.corrections.conduit} cond.`].filter(Boolean).join(' · ')}
+                        </td>
+                        <td className="px-1 text-ink-1 tabular">{fmt(c.worst_before)} → <span className="text-rose-500">{fmt(c.worst_after)}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* ⭐ verificación humana del blocker: qué fondos toca la regla FCI */}
           {fciFunds.length > 0 && (

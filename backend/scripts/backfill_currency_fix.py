@@ -122,16 +122,23 @@ def correct_currency(conn, uid: int, tc_blue: float) -> Dict[str, int]:
     return counts, fci_funds
 
 
-def backfill_user(conn, uid: int, *, recalc: Callable, min_capital: float = -50000.0) -> Dict[str, Any]:
+def backfill_user(conn, uid: int, *, recalc: Callable, min_capital: float = -50000.0,
+                  review_threshold: float = 100000.0) -> Dict[str, Any]:
     """Corrige la moneda + recompute. NO commitea. Devuelve resumen con before/after
     del peor capital_final global.
 
     GATE de seguridad: solo toca cuentas con capital_final AFECTADO (peor global <
     min_capital). Una cuenta SANA (ej con un FCI USD de equity VCP>5 legítimo) NO se
     toca → limita el blast-radius del falso positivo de la regla FCI a cuentas que ya
-    están rotas por el peso-como-dólar (nunca corrompe una sana)."""
+    están rotas por el peso-como-dólar (nunca corrompe una sana).
+
+    GUARD de sanidad (needs_review): si tras corregir el peor capital_final sigue en
+    GIGANTE (|worst_after| > review_threshold — positivo O negativo), la corrección
+    NO limpió bien (over-corrección de conductos mal-pareados, o un 4º mecanismo peso
+    no capturado). El caller NO la aplica → queda intacta para revisión manual. Así el
+    backfill NUNCA crea un gigante nuevo (ej -21M → +9.5M) ni deja uno mal a medias."""
     res = {"uid": uid, "skipped": False, "corrections": {"fci": 0, "seed": 0, "conduit": 0},
-           "worst_before": None, "worst_after": None, "fci_funds": {}}
+           "worst_before": None, "worst_after": None, "fci_funds": {}, "needs_review": False}
     if not _confirmed_batches(conn, uid):
         res["skipped"] = True
         return res
@@ -154,45 +161,56 @@ def backfill_user(conn, uid: int, *, recalc: Callable, min_capital: float = -500
     worst = conn.execute(
         "SELECT MIN(capital_final) m FROM monthly_entries WHERE user_id=? AND broker='global'", (uid,)).fetchone()
     res["worst_after"] = round((worst["m"] or 0), 2) if worst else None
+    # Guard: quedó todavía en gigante (over o under corregida) → marcar para revisión.
+    if res["worst_after"] is not None and abs(res["worst_after"]) > review_threshold:
+        res["needs_review"] = True
     return res
 
 
 def backfill_summary(real_conn, users, apply: bool, recalc: Callable,
-                     min_capital: float = -50000.0) -> Dict[str, Any]:
-    """apply=False → sobre COPIA del DB (no toca nada). apply=True → commitea por user.
-    Solo toca cuentas con peor capital_final < min_capital (gate anti-falso-positivo)."""
+                     min_capital: float = -50000.0, review_threshold: float = 100000.0) -> Dict[str, Any]:
+    """apply=False → sobre COPIA del DB (no toca nada). apply=True → commitea SOLO las
+    cuentas que quedaron sanas; las `needs_review` (siguen en gigante tras corregir) se
+    ROLLBACKean (quedan intactas) y se listan aparte. Solo toca cuentas con peor
+    capital_final < min_capital (gate anti-falso-positivo)."""
+    def _row(uid, s):
+        return {"uid": uid, "corrections": s["corrections"], "total_rows": sum(s["corrections"].values()),
+                "worst_before": s["worst_before"], "worst_after": s["worst_after"],
+                "delta": round((s["worst_after"] or 0) - (s["worst_before"] or 0), 2)}
+
     def _loop(conn):
-        out = {"users_changed": 0, "skipped": 0, "changes": [], "errors": [],
-               "fci_funds_touched": {}}
+        out = {"users_changed": 0, "skipped": 0, "changes": [], "needs_review": [],
+               "errors": [], "fci_funds_touched": {}}
         for uid in users:
             try:
-                s = backfill_user(conn, uid, recalc=recalc, min_capital=min_capital)
+                s = backfill_user(conn, uid, recalc=recalc, min_capital=min_capital,
+                                  review_threshold=review_threshold)
             except Exception as ex:
                 conn.rollback()
                 out["errors"].append({"uid": uid, "error": str(ex)})
                 continue
-            if s["skipped"]:
+            if s["skipped"] or sum(s["corrections"].values()) == 0:
                 out["skipped"] += 1
                 continue
-            total = sum(s["corrections"].values())
-            if total > 0:
-                out["users_changed"] += 1
-                out["changes"].append({
-                    "uid": uid, "corrections": s["corrections"], "total_rows": total,
-                    "worst_before": s["worst_before"], "worst_after": s["worst_after"],
-                    "delta": round((s["worst_after"] or 0) - (s["worst_before"] or 0), 2),
-                })
-                # Agregar los fondos FCI tocados (para verificación humana: ¿todos money-market?).
-                for sym, f in (s.get("fci_funds") or {}).items():
-                    g = out["fci_funds_touched"].setdefault(
-                        sym, {"count": 0, "vcp_min": f["vcp_min"], "vcp_max": f["vcp_max"], "max_amt": 0.0})
-                    g["count"] += f["count"]
-                    g["vcp_min"] = min(g["vcp_min"], f["vcp_min"])
-                    g["vcp_max"] = max(g["vcp_max"], f["vcp_max"])
-                    g["max_amt"] = max(g["max_amt"], f["max_amt"])
+            if s["needs_review"]:
+                # NO se aplica — quedó en gigante (over/under). Rollback + flag.
+                conn.rollback()
+                out["needs_review"].append(_row(uid, s))
+                continue
+            # Cuenta sana: se aplica.
+            out["users_changed"] += 1
+            out["changes"].append(_row(uid, s))
+            for sym, f in (s.get("fci_funds") or {}).items():  # fondos FCI tocados (verificación humana)
+                g = out["fci_funds_touched"].setdefault(
+                    sym, {"count": 0, "vcp_min": f["vcp_min"], "vcp_max": f["vcp_max"], "max_amt": 0.0})
+                g["count"] += f["count"]
+                g["vcp_min"] = min(g["vcp_min"], f["vcp_min"])
+                g["vcp_max"] = max(g["vcp_max"], f["vcp_max"])
+                g["max_amt"] = max(g["max_amt"], f["max_amt"])
             if apply:
                 conn.commit()
         out["changes"].sort(key=lambda c: c["worst_before"] or 0)
+        out["needs_review"].sort(key=lambda c: c["worst_before"] or 0)
         return out
 
     if apply:
