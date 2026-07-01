@@ -502,10 +502,18 @@ class CocosParser(Parser):
             _instr_up = instrumento.strip().upper()
             if _instr_up.startswith("CEDEAR"):
                 asset_type = "CEDEAR"
-            elif "FCI" in _instr_up or "fci" in tipo_raw:
+            elif "FCI" in _instr_up or (
+                "fci" in tipo_raw and not any(c.isdigit() for c in (ticker or ""))
+            ):
                 # Fondos comunes: clasificar como FUND para que la valuación use
                 # el VCP de la cuotaparte y no intente cotizarlo como acción.
+                # Guard: si el ticker tiene dígitos (OT42, AL30…) es una ON/bono
+                # que Cocos exporta usando el tipo "Suscripcion FCI" — no es FUND.
                 asset_type = "FUND"
+            elif "fci" in tipo_raw:
+                # tipo_raw dice "fci" pero el ticker tiene dígitos → ON/bono
+                # suscrito vía Cocos con el tipo de transacción FCI.
+                asset_type = "BOND"
             else:
                 asset_type = ""
 
