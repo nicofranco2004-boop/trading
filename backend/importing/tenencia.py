@@ -274,22 +274,42 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
     cash_ars = 0.0
     cash_usd = 0.0
     has_cash = False
+    # Reconciliación por-sección (guard de completitud para el modo PISAR): el PDF
+    # declara el total de cada sección en su header (misma moneda que sus filas → sin
+    # FX). Si la suma de las filas leídas NO cuadra con ese total, el PDF se extrajo
+    # PARCIAL (OCR se comió filas) → avisamos y el endpoint NO borra por 'ausencia'.
+    _sec_name = None
+    _sec_total = None
+    _sec_sum = 0.0
+
+    def _reconcile_bmb_section():
+        if _sec_name and _sec_total is not None:
+            tol = max(1.0, 0.01 * abs(_sec_total))
+            if abs(_sec_sum - _sec_total) > tol:
+                snap.warnings.append(
+                    f"Sección '{_sec_name}' no cuadra con su total del PDF "
+                    f"({_sec_sum:,.0f} vs {_sec_total:,.0f}) — la lectura pudo ser parcial.")
+
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
         sm = _SECTION_RE.match(line)
         if sm:
+            _reconcile_bmb_section()        # cierra la sección anterior
             in_cc = False
             cur_type = _SECTION_TYPE.get(_norm(sm.group(1)))
             ccy = _norm(sm.group(2))
             cur_ccy = "USD" if ("u$s" in ccy or "usd" in ccy or "dolar" in ccy) else "ARS"
+            _sec_name = sm.group(1); _sec_total = _num(sm.group(3)); _sec_sum = 0.0
             continue
         # Sección "Cuenta Corriente ARS …": trae el CASH (Pesos = saldo ARS;
         # U$S / DOLAR MEP = saldo USD). Lo capturamos para cerrar el cash, no solo
         # las posiciones. Pesos → último número (importe ARS); USD → primer número
         # (cantidad en dólares; el resto es su valuación en pesos).
         if _norm(line).startswith("cuenta corriente"):
+            _reconcile_bmb_section()        # cierra la sección de holdings anterior
+            _sec_name = None                # CC es cash → no se reconcilia como sección
             in_cc = True
             cur_type = None
             continue
@@ -313,6 +333,7 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
         qty, price, value = _num(rm.group(3)), _num(rm.group(4)), _num(rm.group(5))
         if qty <= 0:
             continue
+        _sec_sum += value               # suma para la reconciliación por-sección (todas las filas)
         # El `importe` (value) es la VERDAD. La columna Precio viene per-1 para
         # acciones/CEDEARs (qty×precio ≈ importe) y per-100 para bonos (qty×precio
         # ≈ 100×importe). Detectamos cuál y derivamos el precio per-1 = importe/qty
@@ -335,6 +356,7 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
             ticker=tk, asset_type=cur_type, quantity=qty, value=value,
             currency=cur_ccy, price_per1=value / qty, per100=per100,
             name=rm.group(2).strip()[:60]))
+    _reconcile_bmb_section()            # cierra la última sección
     if has_cash:
         snap.cash_ars = round(cash_ars, 2)
         snap.cash_usd = round(cash_usd, 2)
@@ -461,6 +483,16 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
     cash_ars = 0.0                       # sección MONEDAS: saldo de efectivo por moneda
     cash_usd = 0.0
     has_cash = False                     # vimos la sección MONEDAS (para cerrar el cash)
+    # Guards de completitud (gatean el modo PISAR): igual que IEB, avisamos si una
+    # sección no se reconoció o cerró sin filas → foto parcial → el endpoint NO borra.
+    pending_unknown = None
+    sect_hold_count = 0
+
+    def _warn_empty_ppi():
+        if section_type and section_type != "SKIP" and sect_hold_count == 0:
+            snap.warnings.append(
+                f"Una sección del Estado de Cuenta cerró sin tenencias legibles "
+                f"— el formato pudo cambiar; no la usamos para sacar posiciones.")
 
     for raw in rows:
         cells = list(raw)
@@ -482,18 +514,33 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
 
         # Row de nombre de sección: UNA sola celda no vacía y es una sección conocida.
         if len(nonempty) == 1 and c0u in _PPI_SECTION_NAMES:
+            _warn_empty_ppi()
             section_type = "SKIP" if c0u == "monedas" else _PPI_SECTION_TYPE[c0u]
-            cols = {}
+            cols = {}; pending_unknown = None; sect_hold_count = 0
             continue
 
         # Row de SUBTOTAL → cierra la sección.
         if c0u == "subtotal":
+            _warn_empty_ppi()
             section_type = None
-            cols = {}
+            cols = {}; sect_hold_count = 0
+            continue
+
+        # Fila-label sola que NO es una sección conocida: título de sección no mapeado
+        # (o preámbulo). Resetea la sección y la marca sospechosa; si le sigue una tabla
+        # (header ESPECIE/DESCRIPCIÓN) con sección None, avisamos (lectura parcial). El
+        # preámbulo real (TITULAR/COMITENTE/…) lo limpia la primera sección conocida.
+        if len(nonempty) == 1 and c0u not in ("subtotal",) and not c0u.startswith("total"):
+            section_type = None; cols = {}; pending_unknown = c0u
             continue
 
         # Row de headers de columna (ESPECIE/MONEDA + DESCRIPCIÓN).
         if c0u in ("especie", "moneda") and any(_deaccent(v).lower() == "descripcion" for v in svals):
+            if section_type is None and pending_unknown:
+                snap.warnings.append(
+                    f"Sección del Estado de Cuenta no reconocida: '{pending_unknown}' "
+                    f"— sus tenencias no se leyeron.")
+            pending_unknown = None
             cols = {}
             for i, v in enumerate(svals):
                 h = _deaccent(v).lower().strip().rstrip(".")
@@ -571,6 +618,12 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
         snap.holdings.append(Holding(
             ticker=ticker, asset_type=section_type, quantity=qty, value=value,
             currency=ccy, price_per1=value / qty, per100=False, name=name[:60]))
+        sect_hold_count += 1
+    _warn_empty_ppi()   # última sección si el Excel no cerró con SUBTOTAL
+    if snap.total_ars and not snap.holdings:
+        snap.warnings.append(
+            "Leímos el Estado de Cuenta pero no interpretamos ninguna tenencia "
+            "— el formato pudo haber cambiado.")
     if has_cash:
         snap.cash_ars = round(cash_ars, 2)
         snap.cash_usd = round(cash_usd, 2)

@@ -405,7 +405,7 @@ export default function Imports() {
           onClose={() => setShowPpiEstado(false)}
           onConfirmed={() => { setInfo('Cartera completada con el Estado de Cuenta de PPI.'); load() }}
           title="Completá tu cartera con el Estado de Cuenta (PPI)"
-          introText="Los Movimientos de PPI no traen las posiciones que ya tenías antes. Subí el Estado de Cuenta (Excel) y completamos lo que falta — sin tocar lo que ya está."
+          introText="El Estado de Cuenta es tu foto de HOY y MANDA: completamos lo que falta con su costo real y ajustamos lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos."
           brokerMatch={/ppi/i}
           accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           fileLabel="Estado de Cuenta (Excel)"
@@ -425,7 +425,7 @@ export default function Imports() {
           onClose={() => setShowCocosEstado(false)}
           onConfirmed={() => { setInfo('Cartera completada con el Estado de Cuenta de Cocos.'); load() }}
           title="Completá tu cartera con el Estado de Cuenta (Cocos)"
-          introText="Los Movimientos de Cocos no traen las posiciones que ya tenías antes. Subí el Estado de Cuenta (CSV) y completamos lo que falta — sin tocar lo que ya está."
+          introText="El Estado de Cuenta completa las posiciones que ya tenías de antes y ajusta lo que quedó de más (cerrando a costo, sin inventar ganancias). Por ahora, si algo figura de menos no lo sacamos solos."
           brokerMatch={/cocos/i}
           accept=".csv,text/csv"
           fileLabel="Estado de Cuenta (CSV)"

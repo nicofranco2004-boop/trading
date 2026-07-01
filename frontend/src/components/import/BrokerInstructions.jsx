@@ -101,7 +101,7 @@ const BROKERS = [
       'Estado de Cuenta: en la WEB de Cocos andá a Portfolio, arriba tocá “Descargar portfolio”, elegí la fecha más reciente y descargá el CSV.',
       'Subí los Movimientos + el Estado de Cuenta, todo junto acá — los acomodamos solos.',
     ],
-    parserNote: 'Con tus Movimientos reconstruimos tus posiciones activas, tu P&L y tu efectivo. Como los Movimientos solo cubren el período del export, el Estado de Cuenta (Portfolio) completa las posiciones que ya tenías de antes — sin duplicar lo que ya está. ¿Ya importaste antes? Subí solo el Estado de Cuenta con el botón “Estado de Cuenta Cocos”.',
+    parserNote: 'Con tus Movimientos reconstruimos tus posiciones activas, tu P&L y tu efectivo. Como los Movimientos solo cubren el período del export, el Estado de Cuenta (Portfolio) completa las posiciones que ya tenías de antes y ajusta lo que quedó de más (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes? Subí solo el Estado de Cuenta con el botón “Estado de Cuenta Cocos”.',
   },
   {
     id: 'balanz',
@@ -151,7 +151,7 @@ const BROKERS = [
       'Tenencia valorizada: en la WEB de Bull Market andá a Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder. Como no tiene botón de descarga, guardá la página como PDF: Ctrl+P (Windows) o Cmd+P (Mac) → en Destino elegí “Guardar como PDF”.',
       'Subí los Excel + el PDF de la Tenencia, todos juntos acá — los acomodamos solos.',
     ],
-    parserNote: 'De la Cuenta Corriente importamos compras, ventas, depósitos, retiros, el interés de cauciones y los dividendos (las conversiones cable↔MEP se omiten). Como la Cuenta Corriente solo cubre el período del export, la Tenencia valorizada (PDF) completa las posiciones que ya tenías de antes — sin duplicar lo que ya está. ¿Ya importaste antes sin la Tenencia? Volvé a importar incluyendo el PDF: no duplicamos lo que ya estaba. Si tenés un fondo común (FCI) abierto, cargalo a mano desde Posiciones.',
+    parserNote: 'De la Cuenta Corriente importamos compras, ventas, depósitos, retiros, el interés de cauciones y los dividendos (las conversiones cable↔MEP se omiten). Como la Cuenta Corriente solo cubre el período del export, la Tenencia valorizada (PDF) es tu foto de HOY y MANDA: completa las posiciones que ya tenías de antes y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes sin la Tenencia? Volvé a importar incluyendo el PDF. Si tenés un fondo común (FCI) abierto, cargalo a mano desde Posiciones.',
   },
   {
     id: 'iol',
@@ -190,7 +190,7 @@ const BROKERS = [
       'Estado de Cuenta: en la pantalla principal —donde ves tu cartera— tocá Exportar arriba a la derecha y elegí Excel.',
       'Subí los dos Excel juntos acá — los acomodamos solos (el Estado de Cuenta completa lo que el historial no alcanza).',
     ],
-    parserNote: 'Importamos compras y ventas (en pesos y en dólares MEP/cable), suscripciones y rescates de FCI, dividendos, renta y amortización de bonos, comisiones y retenciones, depósitos y retiros, y el interés de tus cauciones. Las sub-cuentas en dólares se consolidan en una sola. El Estado de Cuenta completa las posiciones y cierra tu efectivo a la foto. ¿Ya importaste antes? Subí solo el Estado de Cuenta con el botón “Estado de Cuenta PPI”. Por ahora, las operaciones de dólar SPOT y las transferencias de títulos entrantes quedan para revisar a mano.',
+    parserNote: 'Importamos compras y ventas (en pesos y en dólares MEP/cable), suscripciones y rescates de FCI, dividendos, renta y amortización de bonos, comisiones y retenciones, depósitos y retiros, y el interés de tus cauciones. Las sub-cuentas en dólares se consolidan en una sola. El Estado de Cuenta es tu foto de HOY y MANDA: completa las posiciones con su costo real, cierra tu efectivo a la foto y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes? Subí solo el Estado de Cuenta con el botón “Estado de Cuenta PPI”. Por ahora, las operaciones de dólar SPOT y las transferencias de títulos entrantes quedan para revisar a mano.',
   },
 ]
 
