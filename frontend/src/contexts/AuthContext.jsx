@@ -112,6 +112,14 @@ export function AuthProvider({ children }) {
       .finally(() => setBootstrapped(true))
   }, [])
 
+  // Keep-alive: pinga /api/health cada 4 min para que Railway no duerma el servicio.
+  // Se activa solo cuando hay un usuario logueado (no en demo ni sin sesión).
+  useEffect(() => {
+    if (!user || isDemoMode()) return
+    const id = setInterval(() => { fetch('/api/health').catch(() => {}) }, 4 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [user])
+
   // El primer arg (`_legacyToken`) se ignora — la cookie ya fue seteada por
   // el backend en la respuesta de login/register/verify/reset. Lo dejamos
   // en la firma para no tener que tocar todos los call-sites.
