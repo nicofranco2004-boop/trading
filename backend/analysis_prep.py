@@ -14,7 +14,7 @@ Uso típico:
 """
 from typing import Dict, List, Any, Optional, Tuple
 
-from behavioral import stamp_positions_currency, _is_ars_broker, _price_is_ars
+from behavioral import stamp_positions_currency, stamp_byma, _is_ars_broker, _price_is_ars
 
 
 def _config_float(conn, user_id: int, key: str, default: float) -> float:
@@ -86,13 +86,15 @@ def currency_context(conn, user_id: int,
     Llamar ANTES de valuar o de build_behavioral_insights. operations comparte
     las claves 'broker'/'currency' con positions, así que el mismo estampado
     resuelve la moneda nativa de las ops (que _position_size_usd necesita)."""
-    broker_ccy = {
-        r["name"]: (r["currency"] or "")
-        for r in conn.execute(
-            "SELECT name, currency FROM brokers WHERE user_id=?", (user_id,)
-        ).fetchall()
-    }
+    brokers = [dict(r) for r in conn.execute(
+        "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?",
+        (user_id,)
+    ).fetchall()]
+    broker_ccy = {b["name"]: (b["currency"] or "") for b in brokers}
     stamp_positions_currency(positions, broker_ccy)
+    # Flag PARENT-AWARE de valuación .BA (currency del broker + su padre, no el
+    # nombre) → _price_is_ars lo lee y no se rompe si renombran el broker.
+    stamp_byma(positions, brokers)
     if ops:
         stamp_positions_currency(ops, broker_ccy)
     tc_blue, tc_cedear = user_fx(conn, user_id)

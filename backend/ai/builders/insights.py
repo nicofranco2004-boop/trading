@@ -312,12 +312,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Estampar moneda autoritativa del broker (brokers.currency) en posiciones
     # con currency NULL — _native_ccy infiere por nombre y no cubre brokers AR
     # fuera de la lista de hints (Santander/Galicia/PPI…) → ARS contado USD 1415×.
-    from behavioral import stamp_positions_currency, _is_ars_broker
-    _bccy = {
-        r["name"]: (r["currency"] or "")
-        for r in conn.execute("SELECT name, currency FROM brokers WHERE user_id=?", (user_id,)).fetchall()
-    }
+    from behavioral import stamp_positions_currency, stamp_byma, _is_ars_broker
+    _brokers = [dict(r) for r in conn.execute(
+        "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (user_id,)
+    ).fetchall()]
+    _bccy = {b["name"]: (b["currency"] or "") for b in _brokers}
     stamp_positions_currency(positions, _bccy)
+    stamp_byma(positions, _brokers)   # flag .BA parent-aware (broker + su padre)
 
     # Precios + tc_blue para market value real
     tc_row = conn.execute(

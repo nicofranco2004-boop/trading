@@ -104,15 +104,37 @@ export function fciLabel(asset) {
   return cls ? `${titled} · ${cls}` : titled
 }
 
+// Registro de brokers (id/name → broker), poblado por setBrokersRegistry cuando
+// la app carga /brokers. Permite decidir "sub-broker USD de padre AR" por
+// parent_broker_id (ROBUSTO al rename) y no solo por el sufijo del nombre.
+let _brokersByName = new Map()
+let _brokersById = new Map()
+export function setBrokersRegistry(brokers) {
+  _brokersByName = new Map((brokers || []).filter(b => b && b.name).map(b => [b.name, b]))
+  _brokersById = new Map((brokers || []).filter(b => b && b.id != null).map(b => [b.id, b]))
+}
+
 /**
- * isArUsdBroker — ¿es un sub-broker USD de un broker AR (ej. "Cocos · USD")?
- * Todo lo que vive ahí es un instrumento de BYMA (CEDEAR o acción argentina)
- * comprado por dólar-MEP, así que se valúa por su precio LOCAL .BA ÷ MEP, NO por
- * el ticker US (PAMP/YPFD no tienen acción US; un CEDEAR vale 15-100× menos que
- * la acción). Convención de nombre del sibling: "<Padre> · USD" (· = U+00B7).
+ * isArUsdBroker — ¿es un sub-broker en dólares de un broker ARGENTINO (ej.
+ * "Cocos · USD")? Todo lo que vive ahí es un instrumento de BYMA (CEDEAR o acción
+ * argentina) comprado por dólar-MEP, así que se valúa por su precio LOCAL .BA ÷
+ * MEP, NO por el ticker US (un CEDEAR vale 15-100× menos que la acción).
+ *
+ * PARENT-AWARE: si el broker está en el registro, se decide por parent_broker_id
+ * (su padre es ARS y él no) → robusto aunque el usuario renombre el sub-broker y
+ * pierda el sufijo "· USD". Fallback al sufijo del nombre si el registro no está
+ * poblado o el broker es desconocido (datos viejos / carga temprana).
  */
 export function isArUsdBroker(brokerName) {
-  return /·\s*USD$/.test(brokerName || '')
+  const b = _brokersByName.get(brokerName)
+  if (b) {
+    if ((b.currency || '').toUpperCase() !== 'ARS') {
+      const parent = _brokersById.get(b.parent_broker_id)
+      if (parent && (parent.currency || '').toUpperCase() === 'ARS') return true
+    }
+    return false   // en el registro y NO es sub de un padre AR
+  }
+  return /·\s*USD$/.test(brokerName || '')   // fallback por nombre
 }
 
 /**

@@ -129,10 +129,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Estampar la moneda autoritativa del broker en las posiciones con currency
     # NULL — sin esto, _native_ccy infiere por nombre y no cubre brokers AR fuera
     # de la lista de hints (Santander/Galicia/PPI…) → ARS contado como USD (1415×).
-    from behavioral import stamp_positions_currency
+    from behavioral import stamp_positions_currency, stamp_byma
     stamp_positions_currency(
         positions, {b.get("name"): (b.get("currency") or "") for b in brokers}
     )
+    stamp_byma(positions, brokers)   # flag .BA parent-aware (broker + su padre)
     operations = [dict(r) for r in conn.execute(
         "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (user_id,)
     ).fetchall()]

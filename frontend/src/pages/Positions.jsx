@@ -29,7 +29,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, costInPesos, trustMktValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import PageHeader from '../components/PageHeader'
@@ -338,6 +338,7 @@ function PositionsDesktop() {
       setPositions(pos)
       setConfig(cfg)
       setBrokers(bkrs)
+      setBrokersRegistry(bkrs)   // parent-aware isArUsdBroker (robusto al rename)
       setDolar(dol)
       setSnapshots(snaps || [])
       setBondOps((ops || []).filter(o => o.op_type === 'Cupón' || o.op_type === 'Amortización'))

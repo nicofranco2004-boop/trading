@@ -36,7 +36,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, setBrokersRegistry } from '../utils/valuation'
 import { computeBestWorstClosedOp } from '../utils/insightsModel'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -182,6 +182,7 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         setSnapshots(snaps || [])
         setPositions(pos || [])
         setBrokers(bkrs || [])
+        setBrokersRegistry(bkrs || [])   // parent-aware isArUsdBroker (robusto al rename)
         setBench(bnch)
         const tc = pickFinancialRate(dol, valuationDollar) || cfg?.tc_blue || 1415
         setTcBlue(tc)

@@ -62,9 +62,21 @@ def _is_ar_usd_subbroker(broker_name) -> bool:
 
 
 def _broker_name_sets(brokers: list):
-    """(ars_names, ar_usd_names) — para decidir si una posición se valúa por .BA."""
-    ars_names = {b['name'] for b in brokers if b.get('currency') == 'ARS'}
-    ar_usd_names = {b['name'] for b in brokers if _is_ar_usd_subbroker(b.get('name'))}
+    """(ars_names, ar_usd_names) — para decidir si una posición se valúa por .BA.
+    ar_usd_names = sub-brokers en dólares cuyo PADRE es argentino (parent_broker_id
+    → currency ARS): un CEDEAR comprado por dólar-MEP en 'Balanz · USD' cotiza en
+    pesos → .BA. PARENT-AWARE (no por nombre): si el user renombra el sub-broker,
+    el sufijo '· USD' se pierde pero el parent_broker_id no. Fallback al sufijo
+    para datos viejos sin parent_broker_id."""
+    ars_names = {b['name'] for b in brokers if (b.get('currency') or '').upper() == 'ARS'}
+    by_id = {b.get('id'): b for b in brokers if b.get('id') is not None}
+    ar_usd_names = set()
+    for b in brokers:
+        parent = by_id.get(b.get('parent_broker_id'))
+        if parent and (parent.get('currency') or '').upper() == 'ARS':
+            ar_usd_names.add(b['name'])
+        elif _is_ar_usd_subbroker(b.get('name')):
+            ar_usd_names.add(b['name'])
     return ars_names, ar_usd_names
 
 
@@ -470,7 +482,7 @@ def take_snapshot_for_user(
 
     # 1. Cargar brokers, positions y monthly del user
     brokers = [dict(r) for r in conn.execute(
-        "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
+        "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (uid,)
     ).fetchall()]
     positions = [dict(r) for r in conn.execute(
         "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override "
@@ -613,7 +625,7 @@ def compute_live_portfolio_value(
         if _time.time() - cached_at < _LIVE_VALUE_TTL_SEC:
             return cached_val
     brokers = [dict(r) for r in conn.execute(
-        "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
+        "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (uid,)
     ).fetchall()]
     positions = [dict(r) for r in conn.execute(
         "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override "

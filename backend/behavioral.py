@@ -179,6 +179,11 @@ def _price_is_ars(p: Dict[str, Any]) -> bool:
         pass
     if (p.get("asset_type") or "").upper() == "CEDEAR":
         return True
+    # Fuente de verdad PARENT-AWARE (stamp_byma): resuelto por currency del broker
+    # + su padre, no por el nombre. Si está estampado, manda. Sin él, fallback
+    # legacy (sub-broker '· USD' / hints de nombre / currency ARS estampada).
+    if "_byma" in p:
+        return bool(p["_byma"])
     broker = p.get("broker") or ""
     if _is_ar_usd_subbroker(broker) or _is_ars_broker(broker):
         return True
@@ -235,6 +240,44 @@ def stamp_positions_currency(positions: List[Dict[str, Any]],
         if bc:
             p["currency"] = "ARS" if bc == "ARS" else "USD"
     return positions
+
+
+def byma_broker_names(brokers: List[Dict[str, Any]]) -> set:
+    """Nombres de brokers cuyos holdings se valúan por su precio LOCAL `.BA`
+    (BYMA): los que cotizan en pesos (currency ARS) Y los sub-brokers en dólares
+    cuyo PADRE es argentino — un CEDEAR comprado por dólar-MEP en 'Balanz · USD'
+    sigue siendo un CEDEAR y cotiza en pesos → `.BA`.
+
+    ROBUSTO: se decide por `currency` + `parent_broker_id`, NO por el NOMBRE del
+    broker (que el usuario puede renombrar: 'Balanz' → 'Balanz cuenta 1' rompía la
+    detección por nombre). Un broker USD de nivel raíz (Schwab, sin padre AR) NO
+    entra → su acción se valúa por el ticker US."""
+    by_id = {b.get("id"): b for b in brokers if b.get("id") is not None}
+    out = set()
+    for b in brokers:
+        name = b.get("name")
+        if not name:
+            continue
+        if (b.get("currency") or "").strip().upper() == "ARS":
+            out.add(name)
+            continue
+        parent = by_id.get(b.get("parent_broker_id"))
+        if parent and (parent.get("currency") or "").strip().upper() == "ARS":
+            out.add(name)
+    return out
+
+
+def stamp_byma(positions: List[Dict[str, Any]], brokers: List[Dict[str, Any]]) -> None:
+    """Estampa p['_byma'] = ¿la posición se valúa por su precio LOCAL `.BA`?
+    Parent-aware (byma_broker_names) + CEDEAR siempre `.BA`. Al estamparlo en la
+    fila, _price_is_ars / la valuación no dependen del NOMBRE del broker. Todo path
+    que valúe posiciones debería llamarlo con la lista completa de brokers (con
+    parent_broker_id)."""
+    byma = byma_broker_names(brokers)
+    for p in positions:
+        if "_byma" in p:
+            continue
+        p["_byma"] = ((p.get("asset_type") or "").upper() == "CEDEAR") or (p.get("broker") in byma)
 
 
 def _is_ar_bond(asset: str) -> bool:
