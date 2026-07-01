@@ -1187,10 +1187,11 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
     const valid = []
     // Bull Market y Balanz aceptan TAMBIÉN la foto de tenencia en PDF (Tenencia
     // valorizada / Resumen de Cuenta) — se sube junto con los Movimientos y se
-    // aplica después de confirmar (Balanz la usa en modo override). Ojo: en Balanz
-    // el wizard arranca en el export 'balanz' (Órdenes), no 'balanz_movimientos'
-    // → gateamos por PLATAFORMA, no por el format id, para no bloquear el PDF.
-    const allowPdf = format === 'bullmarket' || platform === 'balanz'
+    // aplica después de confirmar (Balanz/IOL la usan en modo override). Ojo: en
+    // Balanz el wizard arranca en el export 'balanz' (Órdenes), no
+    // 'balanz_movimientos' → gateamos por PLATAFORMA, no por el format id. IOL sube
+    // el Resumen de Cuenta (PDF) junto con los Movimientos (.xls).
+    const allowPdf = format === 'bullmarket' || platform === 'balanz' || platform === 'iol'
     for (const f of incoming) {
       const name = (f.name || '').toLowerCase()
       const okExt = name.endsWith('.csv') || name.endsWith('.txt') || name.endsWith('.xlsx') || name.endsWith('.xls')
@@ -1300,7 +1301,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
           <input
             ref={inputRef}
             type="file"
-            accept={`.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel${(format === 'bullmarket' || platform === 'balanz') ? ',.pdf,application/pdf' : ''}`}
+            accept={`.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel${(format === 'bullmarket' || platform === 'balanz' || platform === 'iol') ? ',.pdf,application/pdf' : ''}`}
             multiple
             className="hidden"
             onChange={e => pickFiles(e.target.files)}
