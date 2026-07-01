@@ -111,7 +111,7 @@ const BROKERS = [
     steps: [
       'En Balanz web (no la app) andá a Actividad → Movimientos.',
       'Filtrá el período DESDE EL INICIO DE TU CUENTA hasta hoy y descargá el archivo (Excel .xlsx). ⚠️ Si tomás solo un rango parcial, falta el fondeo y el saldo no cierra.',
-      'Resumen de Cuenta: en la WEB de Balanz andá a Actividad → Reportes → Posición consolidada, elegí la fecha de hoy y la moneda, y descargá el PDF.',
+      'Resumen de Cuenta: en la WEB de Balanz andá a Actividad → Reportes → Posición consolidada, elegí la fecha de hoy y la moneda PESOS (no dólares — en pesos ya viene también tu saldo en dólares, así lo leemos bien), y descargá el PDF.',
       'Subí el Excel de Movimientos + el PDF del Resumen, todo junto acá — los acomodamos solos.',
     ],
     parserNote: 'Del export de Movimientos reconstruimos tu cartera, tu P&L Y tu efectivo —incluye depósitos, retiros, dólar MEP, cupones, dividendos y comisiones— y clasificamos cada activo (bono, CEDEAR, acción, fondo) automáticamente. El Resumen de Cuenta (Posición consolidada) es la foto de HOY y MANDA: ajusta tus tenencias y tu saldo (pesos y dólares) para que queden exactos, aunque el historial no llegue hasta el inicio. ¿Ya importaste antes? Volvé a importar incluyendo el PDF del Resumen: no duplicamos lo que ya está. Ojo: el export de «Resultados» NO sirve —no trae tus depósitos/retiros—, tiene que ser el de Movimientos.',
