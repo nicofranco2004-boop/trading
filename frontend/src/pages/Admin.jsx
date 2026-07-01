@@ -228,6 +228,8 @@ export default function Admin() {
 
       <MtmBackfillPanel toast={toast} />
 
+      <CurrencyBackfillPanel toast={toast} />
+
       <RepairUserPanel toast={toast} />
 
       <MassRepairPanel toast={toast} />
@@ -1124,6 +1126,191 @@ function MtmBackfillPanel({ toast }) {
           {preview.users_changed > 0 && (
             <button onClick={apply} disabled={applying || loading}
               className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-md bg-data-violet text-white hover:bg-data-violet/90 disabled:opacity-50">
+              <Check size={14} className={applying ? 'animate-pulse' : ''} />
+              {applying ? 'Aplicando…' : `Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}`}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── CurrencyBackfillPanel — corregir moneda de cuentas con capital negativo gigante ──
+// Corrige in-place las filas de import_normalized_tx envenenadas (pesos contados como
+// dólares ×~tc_blue: FCI money-market, seed sintético, conductos dólar-MEP) y re-rebuildea.
+// Solo toca cuentas con capital negativo < -50k (gate anti-falso-positivo). Simular → revisar
+// (¡mirar los fondos FCI tocados!) → Aplicar.
+function CurrencyBackfillPanel({ toast }) {
+  const CHUNK = 12  // re-rebuild FIFO por cuenta; tanda moderada
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [progress, setProgress] = useState(null)
+
+  function emptyAgg() {
+    return { users_changed: 0, changes: [], errors: [], total_users: 0, skipped: 0, fci_funds: {} }
+  }
+  function absorb(agg, r) {
+    agg.users_changed += r.users_changed || 0
+    agg.skipped += r.skipped || 0
+    agg.total_users = r.total_all_users || agg.total_users
+    if (agg.changes.length < 2000) agg.changes.push(...(r.changes || []))
+    else agg.truncated = true
+    if (r.errors?.length) agg.errors.push(...r.errors)
+    for (const [sym, f] of Object.entries(r.fci_funds_touched || {})) {
+      const g = agg.fci_funds[sym] || { count: 0, vcp_min: f.vcp_min, vcp_max: f.vcp_max, max_amt: 0 }
+      g.count += f.count || 0
+      g.vcp_min = Math.min(g.vcp_min, f.vcp_min)
+      g.vcp_max = Math.max(g.vcp_max, f.vcp_max)
+      g.max_amt = Math.max(g.max_amt, f.max_amt || 0)
+      agg.fci_funds[sym] = g
+    }
+  }
+
+  async function runChunks(doApply) {
+    const agg = emptyAgg()
+    let offset = 0, total = 1
+    do {
+      const r = await api.post(`/admin/backfill-currency?apply=${doApply}&offset=${offset}&limit=${CHUNK}`)
+      total = r.total_all_users || total
+      absorb(agg, r)
+      offset += CHUNK
+      setProgress({ done: Math.min(offset, total), total })
+    } while (offset < total)
+    return agg
+  }
+
+  async function simulate() {
+    setLoading(true); setPreview(null); setProgress({ done: 0, total: 0 })
+    try { setPreview(await runChunks(false)) }
+    catch (e) { toast.push('Error al simular: ' + e.message, { type: 'error' }) }
+    finally { setLoading(false); setProgress(null) }
+  }
+
+  async function apply() {
+    if (!preview) return
+    if (!confirm(`¿Aplicar la corrección de moneda en ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
+                 `Antes: (1) revisá que los fondos FCI tocados sean todos money-market, (2) hacé un backup. ` +
+                 `Solo reversible desde backup.`)) return
+    setApplying(true); setProgress({ done: 0, total: 0 })
+    try {
+      const r = await runChunks(true)
+      toast.push(`Aplicado: ${r.users_changed} cuenta${r.users_changed === 1 ? '' : 's'} corregidas`, { type: 'success' })
+      await simulate()  // re-simular → debería dar 0 (idempotente)
+    } catch (e) { toast.push('Error al aplicar: ' + e.message, { type: 'error' }) }
+    finally { setApplying(false); setProgress(null) }
+  }
+
+  const changes = preview?.changes || []
+  const fciFunds = Object.entries(preview?.fci_funds || {}).sort((a, b) => b[1].max_amt - a[1].max_amt)
+  const fmt = (n) => Math.round(n || 0).toLocaleString()
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={16} className="text-amber-500" />
+          <h2 className="font-semibold text-ink-0">Corregir moneda — capital negativo gigante</h2>
+        </div>
+        <button onClick={simulate} disabled={loading || applying}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Volver a simular' : 'Simular'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Corrige las cuentas con <b>capital negativo de millones</b>: pesos que se contaron como dólares (×~1400)
+        por FCI money-market mal-etiquetados, retiros sintéticos del seed, y conductos dólar-MEP con bono. Corrige
+        las filas guardadas + re-rebuildea. <b>Solo toca cuentas con capital &lt; −50k</b> (una cuenta sana no se
+        toca). <b>Simular</b> corre sobre una copia (no toca nada). ⚠️ <b>Antes de aplicar</b>: revisá abajo que los
+        <b> fondos FCI tocados</b> sean todos money-market (RFPESOS/DOLINKA/…) — si hay un fondo raro, avisá. Hacé un backup.
+      </p>
+
+      {progress && progress.total > 0 && (loading || applying) && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-ink-3">
+            <span>{applying ? 'Aplicando…' : 'Simulando…'}</span>
+            <span className="tabular">{progress.done} / {progress.total} cuentas</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-bg-2 dark:bg-bg-2/40 overflow-hidden">
+            <div className="h-full transition-all bg-amber-500" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+          </div>
+        </div>
+      )}
+
+      {preview && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <ConvCell label="Cuentas a corregir" value={preview.users_changed} hint={`de ${preview.total_users} · resto sano/salteado`} />
+            <ConvCell label="Fondos FCI tocados" value={fciFunds.length} hint="verificar que sean money-market" />
+          </div>
+
+          {/* ⭐ verificación humana del blocker: qué fondos toca la regla FCI */}
+          {fciFunds.length > 0 && (
+            <div className="border border-amber-500/30 rounded-md bg-amber-500/5 p-3 space-y-1.5">
+              <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wide">
+                ⚠️ Fondos FCI convertidos a ARS — ¿son TODOS money-market peso?
+              </p>
+              <div className="max-h-40 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-ink-3">
+                    <th className="text-left px-1 py-0.5">Fondo</th><th className="text-right px-1">Filas</th>
+                    <th className="text-right px-1">VCP</th><th className="text-right px-1">Monto máx</th>
+                  </tr></thead>
+                  <tbody>
+                    {fciFunds.map(([sym, f], i) => (
+                      <tr key={i} className="border-t border-line/20">
+                        <td className="px-1 py-0.5 text-ink-1 font-medium">{sym}</td>
+                        <td className="px-1 text-right tabular text-ink-2">{f.count}</td>
+                        <td className="px-1 text-right tabular text-ink-2">{fmt(f.vcp_min)}–{fmt(f.vcp_max)}</td>
+                        <td className="px-1 text-right tabular text-ink-2">{fmt(f.max_amt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {changes.length > 0 ? (
+            <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+                    <th className="text-left px-2 py-1">Usuario</th>
+                    <th className="text-left px-2 py-1">Correcciones</th>
+                    <th className="text-left px-2 py-1">Peor capital (antes→después)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {changes.map((c, i) => (
+                    <tr key={i} className="border-b border-line/20">
+                      <td className="px-2 py-1 text-ink-2">#{c.uid}</td>
+                      <td className="px-2 py-1 text-ink-2 tabular">
+                        {[c.corrections.fci && `${c.corrections.fci} FCI`, c.corrections.seed && `${c.corrections.seed} seed`,
+                          c.corrections.conduit && `${c.corrections.conduit} cond.`].filter(Boolean).join(' · ')}
+                      </td>
+                      <td className="px-2 py-1 text-ink-1 tabular">
+                        {fmt(c.worst_before)} → <span className="text-emerald-600 dark:text-emerald-400">{fmt(c.worst_after)}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {preview.truncated && <p className="text-[11px] text-ink-3 px-2 py-1">… lista truncada; los totales de arriba son completos.</p>}
+            </div>
+          ) : (
+            <p className="text-xs text-ink-3">No hay cuentas para corregir — ninguna con capital negativo gigante afectada. ✅</p>
+          )}
+
+          {preview.errors?.length > 0 && (
+            <p className="text-xs text-rose-500">{preview.errors.length} cuenta(s) con error (se saltean): {preview.errors.slice(0, 5).map(e => `#${e.uid}`).join(', ')}</p>
+          )}
+
+          {preview.users_changed > 0 && (
+            <button onClick={apply} disabled={applying || loading}
+              className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-md bg-amber-500 text-white hover:bg-amber-500/90 disabled:opacity-50">
               <Check size={14} className={applying ? 'animate-pulse' : ''} />
               {applying ? 'Aplicando…' : `Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}`}
             </button>
