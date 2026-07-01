@@ -17759,6 +17759,17 @@ async def import_tenencia_preview(
             _warns_ppi = getattr(snap, "warnings", None)
             _complete_ppi = not _warns_ppi
             _all_snap_tk = {h.ticker for h in snap.holdings}   # todas las monedas
+            # Qty AGREGADA de Rendi sobre TODO el par (ambas monedas) — para no SEEDEAR
+            # de más un activo cross-currency: si la foto lo clasifica en la moneda X
+            # pero Rendi lo tiene en la Y, la partición X vería gap=qty y sembraría un
+            # BUY duplicado (padre + sibling = ×2). Descontamos lo ya tenido en el par.
+            _pair_qty = {}
+            _pph = ",".join("?" * len(pair))
+            for r in conn.execute(
+                f"SELECT asset, SUM(quantity) q FROM positions "
+                f"WHERE user_id=? AND is_cash=0 AND broker IN ({_pph}) GROUP BY asset",
+                (uid, *pair)):
+                _pair_qty[r["asset"]] = (r["q"] or 0)
 
             def _cur_inv(bname):
                 d = {}
@@ -17783,6 +17794,14 @@ async def import_tenencia_preview(
                 # moneda (mismo ticker cross-currency) — lo sacamos del not_in_snapshot.
                 r1.not_in_snapshot = [(a, q) for (a, q) in r1.not_in_snapshot
                                       if a not in _all_snap_tk]
+                # No SEEDEAR de más: el hueco real es vs lo tenido en TODO el par, no
+                # sólo en este sub-broker (un activo cross-currency ya está en el otro).
+                _seed = []
+                for h, _g in r1.to_seed:
+                    net = round(h.quantity - _pair_qty.get(h.ticker, 0), 6)
+                    if net > 1e-6:
+                        _seed.append((h, net))
+                r1.to_seed = _seed
                 p_seed, p_ov = _tenencia_apply_override(
                     conn, uid, sub, pair, r1, _cur_inv(sub), cur_q, seed_date,
                     complete=_complete_ppi, currency=ccy)

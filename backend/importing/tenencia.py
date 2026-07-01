@@ -284,7 +284,9 @@ def parse_bullmarket_tenencia(text: str) -> TenenciaSnapshot:
 
     def _reconcile_bmb_section():
         if _sec_name and _sec_total is not None:
-            tol = max(1.0, 0.01 * abs(_sec_total))
+            # 0.1% (los importes reconcilian EXACTO; sólo tolera redondeo de 2 decimales).
+            # Con 1% un holding chico caído del OCR no disparaba warning → se borraba.
+            tol = max(1.0, 0.001 * abs(_sec_total))
             if abs(_sec_sum - _sec_total) > tol:
                 snap.warnings.append(
                     f"Sección '{_sec_name}' no cuadra con su total del PDF "
@@ -526,11 +528,18 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
             cols = {}; sect_hold_count = 0
             continue
 
-        # Fila-label sola que NO es una sección conocida: título de sección no mapeado
-        # (o preámbulo). Resetea la sección y la marca sospechosa; si le sigue una tabla
-        # (header ESPECIE/DESCRIPCIÓN) con sección None, avisamos (lectura parcial). El
-        # preámbulo real (TITULAR/COMITENTE/…) lo limpia la primera sección conocida.
+        # Fila-label sola que NO es una sección conocida.
         if len(nonempty) == 1 and c0u not in ("subtotal",) and not c0u.startswith("total"):
+            # Si estamos DENTRO de una tabla de datos activa (sección + header ya
+            # vistos), es RUIDO intra-sección (page-header/footer/nota de un export
+            # paginado) → lo IGNORAMOS sin cerrar la sección. Cerrar acá dropearía en
+            # SILENCIO el resto de las filas (falso negativo → complete=True → el
+            # override borraría un holding tenido). Igual que Balanz/IEB.
+            if section_type and "especie" in cols:
+                continue
+            # Entre secciones (sin tabla activa): título no mapeado o preámbulo →
+            # resetea y marca sospechoso; si le sigue un header con sección None,
+            # avisamos. El preámbulo real lo limpia la primera sección conocida.
             section_type = None; cols = {}; pending_unknown = c0u
             continue
 

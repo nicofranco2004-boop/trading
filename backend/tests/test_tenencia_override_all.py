@@ -53,6 +53,12 @@ class BmbSectionReconcileTest(unittest.TestCase):
         snap = tn.parse_bullmarket_tenencia(self._pdf("500.000,00"))
         self.assertTrue(any("no cuadra" in w for w in snap.warnings), snap.warnings)
 
+    def test_small_drop_below_1pct_warns(self):
+        # Un desvío del 0.5% (864.702 vs 860.400) — antes (tol 1%) NO avisaba y el
+        # holding chico caído se borraba; ahora (0.1%) SÍ avisa.
+        snap = tn.parse_bullmarket_tenencia(self._pdf("864.702,00"))
+        self.assertTrue(any("no cuadra" in w for w in snap.warnings), snap.warnings)
+
 
 class PpiSectionGuardTest(unittest.TestCase):
     HDR = ["Especie", "Descripcion", "Cant. Disponible", "Precio",
@@ -76,6 +82,24 @@ class PpiSectionGuardTest(unittest.TestCase):
         snap = tn.parse_ppi_tenencia(self._rows("RENTA FIJA X"))
         self.assertTrue(any("no reconocida" in w for w in snap.warnings), snap.warnings)
         self.assertNotIn("GGAL", [h.ticker for h in snap.holdings])
+
+    def test_stray_lone_cell_midsection_is_noise(self):
+        # Un page-header/footer mono-celda a MITAD de la tabla (después del header) es
+        # RUIDO → NO cierra la sección: las filas que siguen se siguen leyendo y NO hay
+        # warning (antes: dropeaba YPFD en silencio → complete=True → lo borraba).
+        rows = [
+            ["ESTADO DE CUENTA"], ["POR TIPO DE ACTIVO"], ["Total cartera", "1050000"],
+            ["ACCIONES"], list(self.HDR),
+            ["GGAL", "GALICIA", "100", "7000", "700000", "700000"],
+            ["Pagina 2 de 3"],   # ruido mono-celda intra-sección
+            ["YPFD", "YPF S.A.", "50", "7000", "350000", "350000"],
+            ["SUBTOTAL", "", "", "", "1050000", ""],
+        ]
+        snap = tn.parse_ppi_tenencia(rows)
+        tickers = [h.ticker for h in snap.holdings]
+        self.assertIn("GGAL", tickers)
+        self.assertIn("YPFD", tickers)          # NO se perdió
+        self.assertEqual(snap.warnings, [])     # sin falso 'sección no reconocida'
 
 
 # ─── E2E: override vía endpoint ───────────────────────────────────────────────
@@ -213,6 +237,24 @@ class PpiOverrideE2E(_OverrideE2EBase):
         self._confirm(body["session_id"])
         self.assertAlmostEqual(self._held("MELI"), 100, places=3)   # reducido a la foto
         self.assertAlmostEqual(self._held("GGAL"), 50, places=3)    # match, intacto
+
+    def test_cross_currency_no_duplicate_seed(self):
+        # Rendi tiene AL30 100 en el PADRE (ARS). La foto lo clasifica USD (VMC≠VC) →
+        # la partición USD ve gap=100. SIN el fix sembraría 100 en el sibling (total
+        # 200); con el fix descuenta lo ya tenido en el par → held=100 (no duplica).
+        self._import_mov([self._buy("AL30", 100, 700, at="BOND")])
+        wb = openpyxl.Workbook(); ws = wb.active
+        for r in [["ESTADO DE CUENTA"], ["POR TIPO DE ACTIVO"], ["Total cartera", "70000"],
+                  ["BONOS"], list(self.HDR),
+                  ["AL30", "BONO 2030", "100", "70", "700000", "70000"],  # VC≠VMC → USD
+                  ["SUBTOTAL", "", "", "", "700000", ""]]:
+            ws.append(r)
+        buf = io.BytesIO(); wb.save(buf)
+        pv = self._preview("ppi", "foto.xlsx", buf.getvalue(),
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        self.assertEqual(pv.status_code, 200, pv.text)
+        self._confirm(pv.json()["session_id"])
+        self.assertAlmostEqual(self._held("AL30"), 100, places=3)   # NO duplicado (×2)
 
 
 if __name__ == "__main__":
