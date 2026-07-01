@@ -1538,6 +1538,15 @@ def init_db():
     if batch_cols and 'route_by_currency' not in batch_cols:
         conn.execute("ALTER TABLE import_batches ADD COLUMN route_by_currency INTEGER NOT NULL DEFAULT 0")
 
+    # Migración (2026-07-01): fund_price_overrides en import_batches. JSON con el
+    # precio-por-cuotaparte de la foto de tenencia para los FCI que Rendi NO cotiza
+    # en vivo (fondos propios de Balanz sin fuente pública). El confirm lo aplica a
+    # positions.price_override DESPUÉS del rebuild → la foto FIJA el valor mostrado de
+    # esos FCI (que si no quedaban a costo). Sólo lo puebla el path de Balanz.
+    batch_cols = _table_cols(conn, 'import_batches')
+    if batch_cols and 'fund_price_overrides' not in batch_cols:
+        conn.execute("ALTER TABLE import_batches ADD COLUMN fund_price_overrides TEXT")
+
     # Mapping templates guardados por usuario. Sirve para reusar el mapeo
     # de columnas entre imports recurrentes (ej.: usuario que importa export
     # de IBKR mensualmente, mapea una vez y reusa).
@@ -17887,12 +17896,54 @@ async def import_tenencia_preview(
         for _i, _t in enumerate(seed_txs):
             _t.row_index = -20000 - _i
 
+        # ── FCI valuation override (Balanz): para los FCI que Rendi NO cotiza en vivo
+        # (fondos propios de Balanz, sin fuente pública) la foto es la ÚNICA verdad del
+        # valor — hoy caen a COSTO y difieren del Resumen. Guardamos el precio-por-
+        # cuotaparte de la foto en la MONEDA NATIVA de la posición del usuario para
+        # estampar positions.price_override en el confirm (DESPUÉS del rebuild, que si no
+        # lo pisaría con None). NO tocamos CEDEARs/acciones/bonos (que sí cotizan y deben
+        # seguir el precio en vivo) ni los FCI ya mapeados a 'FCI:%' (esos tienen precio).
+        _fund_overrides = []
+        if is_balanz:
+            _pair_fpo = _import_persister.broker_pair(conn, uid, broker)
+            _php_fpo = ",".join("?" * len(_pair_fpo))
+            _mep = snap.fx_mep or None
+            for _h in snap.holdings:
+                if (_h.asset_type or "").upper() != "FUND" or not _h.price_per1:
+                    continue
+                for _prow in conn.execute(
+                    f"SELECT DISTINCT broker, currency FROM positions "
+                    f"WHERE user_id=? AND is_cash=0 AND broker IN ({_php_fpo}) AND asset=? "
+                    f"AND UPPER(asset_type)='FUND' AND asset NOT LIKE 'FCI:%'",
+                    (uid, *_pair_fpo, _h.ticker),
+                ):
+                    # Moneda de la posición por el BROKER (igual que la valuación: el
+                    # sibling '· USD' es USD sí o sí), NO por positions.currency que podría
+                    # venir NULL en data vieja → evita estampar un precio en pesos sobre una
+                    # posición que el motor lee en USD (×MEP inflado, el bug que esto arregla).
+                    _is_usd = (_prow["broker"] != broker) or (_prow["currency"] or "").upper() in ("USD", "USDT")
+                    # La foto trae la cuotaparte en PESOS. Si el FCI del usuario vive en
+                    # la cuenta dólar (sibling '· USD'), convertimos a USD por el MEP de
+                    # la foto; si no hay MEP, lo dejamos a costo (no arriesgamos el FX).
+                    if _is_usd:
+                        if not _mep:
+                            snap.warnings.append(
+                                f"{_h.ticker}: FCI en dólares sin MEP en la foto — queda a costo")
+                            continue
+                        _po = round(_h.price_per1 / _mep, 8)
+                    else:
+                        _po = round(_h.price_per1, 6)
+                    _fund_overrides.append({"asset": _h.ticker, "broker": _prow["broker"], "po": _po})
+
         # Completitud de la lectura (sólo la puebla el parser de IEB por ahora): si
         # hay warnings, la foto es PARCIAL → el override NO borró not_in_snapshot
         # (complete=False arriba). El frontend lo muestra.
         _warnings = list(getattr(snap, "warnings", []) or [])
         _foto_completa = not _warnings
-        if not seed_txs:
+        # Si no hay txs PERO sí hay FCI para fijar el valor, igual creamos el batch:
+        # el precio de la foto de esos fondos hay que estamparlo aunque las cantidades
+        # y el cash ya coincidan (el valor mostrado seguiría a costo si no).
+        if not seed_txs and not _fund_overrides:
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
                     "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
@@ -17900,6 +17951,9 @@ async def import_tenencia_preview(
             sid = _import_pipeline.store_preview_txs(
                 conn, uid, broker=broker, parser_format=parser_format,
                 file_name=(file.filename or default_name), txs=seed_txs)
+            if _fund_overrides:
+                conn.execute("UPDATE import_batches SET fund_price_overrides=? WHERE id=?",
+                             (json.dumps(_fund_overrides), sid))
         return {
             "session_id": sid,
             "date": snap.date,
@@ -18194,6 +18248,27 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
                 import traceback
                 traceback.print_exc()
 
+            # ── FCI valuation override de la foto de tenencia (Balanz): estampamos el
+            # precio-por-cuotaparte del Resumen en positions.price_override de los FCI que
+            # Rendi NO cotiza en vivo, así muestran el valor de la foto en vez de caer a
+            # costo. VA AL FINAL: el rebuild reescribe positions con price_override=None,
+            # así que cualquier paso previo lo perdería. Gate a asset_type='FUND'; sólo lo
+            # puebla el path de Balanz (fund_price_overrides NULL en el resto → no-op).
+            try:
+                _brow = conn.execute(
+                    "SELECT broker, fund_price_overrides FROM import_batches WHERE id=?",
+                    (data.session_id,)).fetchone()
+                if _brow and _brow["fund_price_overrides"]:
+                    for _o in json.loads(_brow["fund_price_overrides"]):
+                        conn.execute(
+                            "UPDATE positions SET price_override=? "
+                            "WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 "
+                            "AND UPPER(asset_type)='FUND'",
+                            (_o["po"], uid, _o["broker"], _o["asset"]))
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
         return {"ok": True, "batch_id": data.session_id,
                 "skipped_by_user": len(skip_set), "auto_skipped_duplicates": auto_skipped,
                 **summary}
@@ -18477,6 +18552,20 @@ def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_curren
                 )
             except _import_persister.PersistError as ex:
                 raise HTTPException(400, ex.message)
+            # Si el batch revertido era una foto que fijó price_override en FCI, esos
+            # fondos (creados por OTRO batch de Movimientos) conservan el override → los
+            # limpiamos y re-aplicamos las fotos que SIGAN confirmadas (foto anterior gana,
+            # o queda a costo/live si no hay ninguna).
+            _fpo_row = conn.execute(
+                "SELECT fund_price_overrides FROM import_batches WHERE id=? AND user_id=?",
+                (batch_id, uid)).fetchone()
+            if _fpo_row and _fpo_row["fund_price_overrides"]:
+                for _o in json.loads(_fpo_row["fund_price_overrides"]):
+                    conn.execute(
+                        "UPDATE positions SET price_override=NULL WHERE user_id=? AND broker=? "
+                        "AND asset=? AND is_cash=0 AND UPPER(asset_type)='FUND'",
+                        (uid, _o["broker"], _o["asset"]))
+                _import_recompute._reapply_fund_overrides(conn, uid)
         return result
     except HTTPException:
         raise

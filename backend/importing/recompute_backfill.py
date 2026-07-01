@@ -310,6 +310,31 @@ def recompute_user(conn, uid: int, *, recalc: Callable,
         normalize_bond_units(conn, uid, bond_price_per1=bond_price_per1,
                              tc_blue=tc_blue, linked_ids=linked)
     recalc(conn, uid)
+    # Re-estampar el price_override de los FCI desde la foto de tenencia: el rebuild de
+    # arriba reescribió las posiciones con price_override=None, así que los fondos que
+    # Rendi no cotiza volverían a valuarse a COSTO. Va al FINAL (después de rebuild+recalc),
+    # igual que en import_confirm.
+    if not cost_only:
+        _reapply_fund_overrides(conn, uid)
+
+
+def _reapply_fund_overrides(conn, uid: int) -> None:
+    """Re-aplica positions.price_override de los FCI desde fund_price_overrides de los
+    batches de tenencia CONFIRMADOS (los reverted quedan afuera por status). El más
+    reciente gana (ORDER BY confirmed_at ASC → la última foto pisa a las anteriores)."""
+    import json as _json
+    for r in conn.execute(
+        "SELECT broker, fund_price_overrides FROM import_batches "
+        "WHERE user_id=? AND status='confirmed' AND fund_price_overrides IS NOT NULL "
+        "ORDER BY COALESCE(confirmed_at, created_at) ASC", (uid,)):
+        try:
+            for o in _json.loads(r["fund_price_overrides"]):
+                conn.execute(
+                    "UPDATE positions SET price_override=? WHERE user_id=? AND broker=? "
+                    "AND asset=? AND is_cash=0 AND UPPER(asset_type)='FUND'",
+                    (o["po"], uid, o["broker"], o["asset"]))
+        except Exception:
+            pass
 
 
 def run_backfill(conn, users: List[int], *, recalc: Callable,

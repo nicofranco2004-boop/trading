@@ -176,14 +176,47 @@ class BalanzFotoOverrideE2E(unittest.TestCase):
                 t.row_index = -20000 - i
             if not seed_txs:
                 return None
+            # fund_price_overrides (espejo del /preview): FCI que Rendi no cotiza →
+            # guardamos el precio de la foto en moneda nativa para price_override.
+            import json as _json
+            pair = ps.broker_pair(self.conn, self.uid, self.BROKER)
+            php = ",".join("?" * len(pair))
+            fpo = []
+            for h in snap.holdings:
+                if (h.asset_type or "").upper() != "FUND" or not h.price_per1:
+                    continue
+                for prow in self.conn.execute(
+                    f"SELECT DISTINCT broker,currency FROM positions WHERE user_id=? AND is_cash=0 "
+                    f"AND broker IN ({php}) AND asset=? AND UPPER(asset_type)='FUND' AND asset NOT LIKE 'FCI:%'",
+                    (self.uid, *pair, h.ticker)):
+                    is_usd = (prow["broker"] != self.BROKER) or (prow["currency"] or "").upper() in ("USD", "USDT")
+                    if is_usd:
+                        if not snap.fx_mep:
+                            continue
+                        po = round(h.price_per1 / snap.fx_mep, 8)
+                    else:
+                        po = round(h.price_per1, 6)
+                    fpo.append({"asset": h.ticker, "broker": prow["broker"], "po": po})
             sid = pl.store_preview_txs(
                 self.conn, self.uid, broker=self.BROKER, parser_format="balanz_tenencia",
                 file_name="resumen.pdf", txs=seed_txs)
+            if fpo:
+                self.conn.execute("UPDATE import_batches SET fund_price_overrides=? WHERE id=?",
+                                  (_json.dumps(fpo), sid))
             txs2, raw = pl.load_session_for_confirm(self.conn, uid=self.uid, session_id=sid)
             ps.persist_batch(self.conn, uid=self.uid, batch_id=sid, txs=txs2,
                              raw_row_ids_by_index=raw, helpers=_helpers())
             tc = ps._read_tc_blue(self.conn, uid=self.uid)
             rb.rebuild_fifo_after_import(self.conn, self.uid, sid, tc_blue=tc)
+            # aplicar (espejo de import_confirm, DESPUÉS del rebuild)
+            brow = self.conn.execute(
+                "SELECT fund_price_overrides FROM import_batches WHERE id=?", (sid,)).fetchone()
+            if brow and brow["fund_price_overrides"]:
+                for o in _json.loads(brow["fund_price_overrides"]):
+                    self.conn.execute(
+                        "UPDATE positions SET price_override=? WHERE user_id=? AND broker=? "
+                        "AND asset=? AND is_cash=0 AND UPPER(asset_type)='FUND'",
+                        (o["po"], self.uid, o["broker"], o["asset"]))
         return sid
 
     def _held(self, asset):
@@ -237,7 +270,78 @@ class BalanzFotoOverrideE2E(unittest.TestCase):
         snap.cash_usd = 0.65
         return snap
 
+    def _po(self, asset):
+        return [r["price_override"] for r in self.conn.execute(
+            "SELECT DISTINCT price_override FROM positions WHERE user_id=? AND asset=? AND is_cash=0",
+            (self.uid, asset))]
+
     # ── Tests ────────────────────────────────────────────────────────────────
+    def test_fci_override_fija_valor_de_foto(self):
+        # Los FCI que Rendi NO cotiza en vivo se valuaban a COSTO y diferían del
+        # Resumen. La foto ahora estampa price_override con el precio-por-cuotaparte
+        # (en moneda nativa) → muestran el valor de Balanz. CEDEARs/acciones intactos.
+        from importing.schema import NormalizedTx, OP_BUY, OP_DEPOSIT
+        _parent = self.conn.execute("SELECT * FROM brokers WHERE user_id=? AND name=?",
+                                    (self.uid, self.BROKER)).fetchone()
+        main._ensure_usd_sibling(self.conn, self.uid, _parent)   # 'Balanz · USD' con parent_broker_id
+        self.conn.commit()
+        mov = [
+            NormalizedTx(row_index=0, date="2026-06-01", broker=self.BROKER,
+                         operation_type=OP_DEPOSIT, gross_amount=5_000_000, currency="ARS"),
+            # FCI ARS money-market: costo 200/cp, la foto lo valúa 210/cp
+            NormalizedTx(row_index=0, date="2026-06-02", broker=self.BROKER, operation_type=OP_BUY,
+                         asset_symbol="BMMA", asset_type="FUND", quantity=1000, unit_price=200,
+                         gross_amount=200000, currency="ARS"),
+            NormalizedTx(row_index=0, date="2026-06-03", broker=self.BROKER, operation_type=OP_BUY,
+                         asset_symbol="AAPL", asset_type="CEDEAR", quantity=1, unit_price=23000,
+                         gross_amount=23000, currency="ARS"),
+            # FCI USD (sibling): costo 5 USD/cp, la foto lo valúa 0.5 pesos/cp (casi cero)
+            NormalizedTx(row_index=0, date="2026-06-04", broker="Balanz · USD",
+                         operation_type=OP_DEPOSIT, gross_amount=1000, currency="USD"),
+            NormalizedTx(row_index=0, date="2026-06-05", broker="Balanz · USD", operation_type=OP_BUY,
+                         asset_symbol="BDOLA", asset_type="FUND", quantity=100, unit_price=5,
+                         gross_amount=500, currency="USD"),
+        ]
+        self._import_mov(mov)
+        snap = tn.TenenciaSnapshot(date="2026-07-01")
+        snap.fx_mep = 1000.0
+        snap.holdings = [
+            _H("BMMA", "FUND", 1000, 210),     # ARS → override = 210
+            _H("AAPL", "CEDEAR", 1, 23000),    # control → sin override
+            _H("BDOLA", "FUND", 100, 0.5),     # USD → override = 0.5/mep = 0.0005
+        ]
+        snap.cash_ars = 837.14
+        self._import_foto(snap)
+        self.assertAlmostEqual(self._po("BMMA")[0], 210.0, places=4)
+        self.assertAlmostEqual(self._po("BDOLA")[0], 0.0005, places=8)   # 0.5 / 1000 (MEP)
+        self.assertEqual(self._po("AAPL"), [None])   # CEDEAR sigue el precio en vivo
+
+    def test_backfill_reaplica_y_revert_limpia_fci_override(self):
+        # El rebuild pone price_override=None; el backfill (que re-rebuildea) debe
+        # RE-APLICAR el precio de la foto. Y el revert de la foto debe LIMPIARLO.
+        from importing import recompute_backfill as rcb
+        import json as _json
+        self.conn.execute(
+            "INSERT INTO positions (user_id,broker,asset,is_cash,buy_price,quantity,invested,currency,asset_type) "
+            "VALUES (?,?,?,0,?,?,?,?,?)", (self.uid, "Balanz", "BMMA", 200, 1000, 200000, "ARS", "FUND"))
+        self.conn.execute(
+            "INSERT INTO import_batches (id,user_id,broker,parser_format,file_hash,status,fund_price_overrides) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("b1", self.uid, "Balanz", "balanz_tenencia", "h1", "confirmed",
+             _json.dumps([{"asset": "BMMA", "broker": "Balanz", "po": 210.0}])))
+        self.conn.commit()
+        # post-rebuild deja override=None → el re-apply del backfill lo restaura
+        self.conn.execute("UPDATE positions SET price_override=NULL WHERE user_id=? AND asset='BMMA'", (self.uid,))
+        with self.conn:
+            rcb._reapply_fund_overrides(self.conn, self.uid)
+        self.assertAlmostEqual(self._po("BMMA")[0], 210.0, places=4)
+        # revert: batch a 'reverted' + limpiar + re-aplicar los que sigan confirmados (ninguno) → None
+        self.conn.execute("UPDATE import_batches SET status='reverted' WHERE id='b1'")
+        self.conn.execute("UPDATE positions SET price_override=NULL WHERE user_id=? AND asset='BMMA'", (self.uid,))
+        with self.conn:
+            rcb._reapply_fund_overrides(self.conn, self.uid)
+        self.assertEqual(self._po("BMMA"), [None])   # la foto revertida ya no aplica
+
     def test_override_pisa_estado_exacto(self):
         self._import_mov(self._mk_mov())
         self.assertAlmostEqual(self._held("SPY"), 70.0, places=6)
@@ -282,8 +386,9 @@ class BalanzFotoOverrideE2E(unittest.TestCase):
         # reducido/eliminado por el override (guarda mismo-broker), aunque la foto
         # ARS no lo liste. Las reducciones same-currency del padre SÍ se aplican.
         from importing.schema import NormalizedTx, OP_BUY, OP_DEPOSIT
-        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
-                          (self.uid, "Balanz · USD", "USDT"))
+        _parent = self.conn.execute("SELECT * FROM brokers WHERE user_id=? AND name=?",
+                                    (self.uid, self.BROKER)).fetchone()
+        main._ensure_usd_sibling(self.conn, self.uid, _parent)   # linkeado por parent_broker_id
         self.conn.commit()
         mov = self._mk_mov() + [
             NormalizedTx(row_index=0, date="2026-06-06", broker="Balanz · USD",

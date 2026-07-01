@@ -82,6 +82,7 @@ class TenenciaSnapshot:
     total_ars: Optional[float] = None    # "Tenencias al … ARS X" (incluye cash)
     cash_ars: Optional[float] = None     # saldo en pesos (Estado de Cuenta Cocos)
     cash_usd: Optional[float] = None     # saldo en dólares
+    fx_mep: Optional[float] = None       # dólar MEP de la foto (Balanz: "Tipo de cambio para esa fecha")
     warnings: List[str] = field(default_factory=list)
 
 
@@ -765,6 +766,12 @@ _BAL_ROW_RE = re.compile(
 _BAL_SECTION_TYPE = {"acciones": "STOCK", "bonos": "BOND", "cedears": "CEDEAR", "fondos": "FUND"}
 _BAL_DATE_RE = re.compile(r"fecha resumen\s+(\d{2})/(\d{2})/(\d{4})")
 _BAL_TOTAL_RE = re.compile(r"^total\s+\$\s+(" + _BAL_AR + r")\s*$")
+# "Tipo de cambio para esa fecha: MEP $ 1.518,52 | US Dollar $ 1.570,60" → dólar MEP
+# de la foto. Lo usamos para convertir el precio-por-cuotaparte (que la foto trae en
+# pesos) a USD cuando el FCI vive en la cuenta dólar del usuario (ver el override FCI).
+# Anclamos a "tipo de cambio" para no capturar un "MEP $" que aparezca antes en el
+# texto (ej. el nombre de un fondo) → el número correcto es el de la línea de cambio.
+_BAL_MEP_RE = re.compile(r"tipo de cambio.*?mep\s+\$\s+(" + _BAL_AR + r")")
 # Cash: el bloque "Monedas" viene en 2 columnas → estos tokens caen a mitad de línea
 # (p.ej. "Acciones $ 1.108.291 Pesos $ 837,14") → search, no startswith.
 _BAL_CASH_RE = [
@@ -795,9 +802,13 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
     Pesos → ARS; Dólares + US Dollar (Cable) → USD (mismo criterio que Bull Market
     junta U$S). value (Valor Actual) es la VERDAD; price_per1 = value/qty."""
     snap = TenenciaSnapshot()
-    md = _BAL_DATE_RE.search(_bal_norm(text))
+    _tnorm = _bal_norm(text)
+    md = _BAL_DATE_RE.search(_tnorm)
     if md:
         snap.date = f"{md.group(3)}-{md.group(2)}-{md.group(1)}"
+    mm = _BAL_MEP_RE.search(_tnorm)
+    if mm:
+        snap.fx_mep = _num(mm.group(1))
 
     cur_type: Optional[str] = None
     seen = set()
