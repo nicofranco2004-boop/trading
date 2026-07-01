@@ -338,6 +338,12 @@ export function isBondTicker(s) {
   return BOND_TICKERS.has((s || '').toUpperCase())
 }
 
+// Igual que isBondTicker pero también cubre bonos/ONs importados con asset_type='BOND'
+// que no estén en el catálogo estático (p.ej. OT42 cargado vía Cocos o entrada libre).
+export function isBondPosition(p) {
+  return isBondTicker(p?.asset) || p?.asset_type === 'BOND'
+}
+
 // ─── Universo curado para autocomplete (tipo TradingView) ────────────────────
 // `type` ∈ stock_us | stock_ar | cedear | bond | crypto | etf.
 // Antes vivía en components/home/SearchBar.jsx; centralizado acá para que

@@ -16,7 +16,7 @@ import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import SplitRatioBanner from '../components/SplitRatioBanner'
-import { isBondTicker } from '../utils/tickers'
+import { isBondPosition } from '../utils/tickers'
 import { detectPendingCashflows } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponFreq, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
@@ -734,7 +734,7 @@ function PositionsDesktop() {
   function _rowSortKeys(p, isARS) {
     const c = isARS ? calcARS(p) : calcUSDT(p)
     const dv = dvFor(p, isARS)
-    const isBond = isBondTicker(p.asset) && !p.is_cash
+    const isBond = isBondPosition(p) && !p.is_cash
     const pnlContrib = isBond
       ? (bondCashflowsByKey.get(`${p.broker}:${p.asset}`)?.pnlContribution || 0)
       : 0
@@ -1429,7 +1429,7 @@ function PositionsDesktop() {
                       // que el broker) al P&L mark-to-market. Es el "total return"
                       // del bono — captura tanto la variación de precio como los
                       // flujos cobrados durante la tenencia.
-                      const isBond = isBondTicker(p.asset) && !p.is_cash
+                      const isBond = isBondPosition(p) && !p.is_cash
                       const bondKey = `${p.broker}:${p.asset}`
                       const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
                       // Phase 3D sub-fix: P&L augmentado usa pnlContribution
@@ -1637,7 +1637,7 @@ function PositionsDesktop() {
                   {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
                     const tickerExpanded = showAllLots || expandedTickers.has(rowKey)
                     const c = calcUSDT(p)
-                    const isBond = isBondTicker(p.asset) && !p.is_cash
+                    const isBond = isBondPosition(p) && !p.is_cash
                     const bondKey = `${p.broker}:${p.asset}`
                     const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
                     // Phase 3D sub-fix: ver comentario equivalente en tabla ARS.
@@ -2441,7 +2441,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
   // Para bonos agregamos entries específicas — cupón y amortización son
   // los eventos que generan cash recibido del bono. Van arriba porque son
   // las acciones más frecuentes en una posición de renta fija.
-  const isBond = isBondTicker(p.asset)
+  const isBond = isBondPosition(p)
   if (isBond) {
     return [
       { label: 'Registrar cupón',         icon: <Coins size={13} className="text-rendi-pos" />,       onClick: () => openBondCashflow(p, 'coupon') },
