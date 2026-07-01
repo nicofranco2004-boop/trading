@@ -106,7 +106,13 @@ const TENENCIA_BROKER_BY_FORMAT = {
   cocos: 'Cocos',
   ppi: 'PPI',
   ieb: 'IEB',
+  // La plataforma Balanz tiene 3 exports (balanz=Órdenes, balanz_movimientos,
+  // balanz_resultados) y el wizard arranca en el PRIMERO (balanz). Todos crean el
+  // broker 'Balanz', así que mapeamos los tres → la foto se aplica bien sin importar
+  // cuál export quedó seleccionado.
+  balanz: 'Balanz',
   balanz_movimientos: 'Balanz',
+  balanz_resultados: 'Balanz',
 }
 
 // Plataformas cuya importación está temporalmente deshabilitada (parser
@@ -1180,8 +1186,10 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
     const valid = []
     // Bull Market y Balanz aceptan TAMBIÉN la foto de tenencia en PDF (Tenencia
     // valorizada / Resumen de Cuenta) — se sube junto con los Movimientos y se
-    // aplica después de confirmar (Balanz la usa en modo override).
-    const allowPdf = format === 'bullmarket' || format === 'balanz_movimientos'
+    // aplica después de confirmar (Balanz la usa en modo override). Ojo: en Balanz
+    // el wizard arranca en el export 'balanz' (Órdenes), no 'balanz_movimientos'
+    // → gateamos por PLATAFORMA, no por el format id, para no bloquear el PDF.
+    const allowPdf = format === 'bullmarket' || platform === 'balanz'
     for (const f of incoming) {
       const name = (f.name || '').toLowerCase()
       const okExt = name.endsWith('.csv') || name.endsWith('.txt') || name.endsWith('.xlsx') || name.endsWith('.xls')
@@ -1291,7 +1299,7 @@ function UploadStep({ sourceType, platform, format, parserGroups = [], files, se
           <input
             ref={inputRef}
             type="file"
-            accept={`.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel${(format === 'bullmarket' || format === 'balanz_movimientos') ? ',.pdf,application/pdf' : ''}`}
+            accept={`.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,application/vnd.ms-excel${(format === 'bullmarket' || platform === 'balanz') ? ',.pdf,application/pdf' : ''}`}
             multiple
             className="hidden"
             onChange={e => pickFiles(e.target.files)}
