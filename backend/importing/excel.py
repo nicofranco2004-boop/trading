@@ -144,6 +144,23 @@ def xlsx_to_csv(file_bytes: bytes) -> str:
         wb.close()
 
 
+def load_xlsx_workbook(file_bytes: bytes):
+    """Workbook openpyxl (data_only, MULTI-hoja) desde bytes. El caller DEBE
+    cerrarlo (wb.close()). Lo usa el parser del Portafolio de IEB, que necesita
+    varias hojas a la vez (Patrimonio + Saldos) — xlsx_to_rows devuelve sólo una.
+    Levanta ValueError con mensaje claro si no se puede abrir."""
+    try:
+        import openpyxl
+    except ImportError as ex:  # pragma: no cover
+        raise ValueError("Falta la librería openpyxl para leer Excel.") from ex
+    try:
+        return openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    except Exception as ex:
+        raise ValueError(
+            "No pudimos abrir el Excel. Verificá que sea un .xlsx válido."
+        ) from ex
+
+
 def xlsx_to_rows(file_bytes: bytes, sheet_index: int = 0) -> "list[list]":
     """Filas CRUDAS (valores sin convertir) de UNA hoja del .xlsx.
 

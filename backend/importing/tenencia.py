@@ -90,6 +90,37 @@ def _to_iso(d: str) -> Optional[str]:
     return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
 
 
+def _canon_fund_ticker(ticker: str) -> str:
+    """FCI: mapea el ticker del broker al símbolo del catálogo (`FCI:<slug>`) para
+    que matchee lo que el normalizer escribió desde los Movimientos (normalizer
+    canonicaliza TODO FUND a FCI:<slug>). Si el ticker no está en el mapa curado,
+    deja el crudo (mismo criterio que el normalizer). Sin esto, la foto siembra el
+    fondo con el ticker crudo ('COCOA') mientras Rendi lo tiene como
+    'FCI:COCOS-AHORRO-A' → mismatch de string → duplicado en to_seed + falso
+    'vendido?' en not_in_snapshot."""
+    try:
+        from .fci_map import resolve_fci_symbol
+        return resolve_fci_symbol(ticker) or ticker
+    except Exception:
+        return ticker
+
+
+def _synth_letra_ticker(name: str) -> Optional[str]:
+    """Letra/LECAP que el broker exporta SIN ticker entre paréntesis: sintetiza el
+    mismo ticker decodable desde el vencimiento que usa el parser de Movimientos
+    (cocos.py) → ambos lados matchean. Devuelve None si el nombre no es de bono/letra
+    o no tiene fecha parseable."""
+    try:
+        from .maturity import is_bond_like_name, maturity_from_name, synth_letra_ticker
+        if not is_bond_like_name(name):
+            return None
+        mat = maturity_from_name(name)
+        return synth_letra_ticker(mat) if mat else None
+    except Exception:
+        return None
+
+
+
 @dataclass
 class ReconcileResult:
     matched: List[str] = field(default_factory=list)              # ya en la cantidad correcta → no se toca (no duplica)
@@ -531,6 +562,8 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
         if not value:
             snap.warnings.append(f"{ticker}: sin valor — se omitió")
             continue
+        if section_type == "FUND":
+            ticker = _canon_fund_ticker(ticker)   # FCI:<slug> → matchea Movimientos
         key = (ticker, ccy)
         if key in seen:
             continue
@@ -608,6 +641,11 @@ def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
             cash_usd += num(qty_s); continue
         ticker = _extract_ticker(instr)
         if not ticker:
+            # Letra/LECAP que Cocos exporta SIN ticker entre paréntesis: sintetizamos
+            # el mismo ticker que el parser de Movimientos (así matchea, no cae en
+            # not_in_snapshot como falso 'vendido?').
+            ticker = _synth_letra_ticker(instr)
+        if not ticker:
             # 'Dólar estadounidense ()' (paréntesis vacío) = polvo en USD → al cash.
             if "dolar" in _deaccent(instr).lower():
                 cash_usd += num(qty_s)
@@ -624,6 +662,8 @@ def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
             at = "BOND"
         else:
             at = ""
+        if at == "FUND":
+            ticker = _canon_fund_ticker(ticker)   # FCI:<slug> → matchea Movimientos
         ccy = "USD" if moneda.strip().upper() in ("USD", "U$S", "US$") else "ARS"
         key = (ticker, ccy)
         if key in seen:
@@ -772,4 +812,210 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
     if has_cash:
         snap.cash_ars = round(cash_ars, 2)
         snap.cash_usd = round(cash_usd, 2)
+    return snap
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# IEB — Portafolio (Excel). La FOTO de tenencia de IEB (export "Portafolio ARS" /
+# "Portafolio USD"). Mismo rol que PPI/Cocos/BullMarket, con un PLUS: trae PPP
+# (precio promedio ponderado = COSTO) → sembramos el costo real, no P&L 0. La
+# tenencia es la VERDAD de posiciones/cash de HOY y PISA lo que el historial
+# (Movimientos) dejó: si el historial duplicó, la foto lo corrige (ver `over`).
+#
+# Excel con hojas: Patrimonio (tenencias), Saldos (cash ARS/USD), Cauciones,
+# Títulos de crédito. Patrimonio: secciones (Cedears, Acciones, Bonos, Títulos
+# públicos, ONs, Otros, FCI); cada una con row de nombre, row de headers
+# (Especie|Moneda de emisión|Cantidad|Precio|%|PPP|Var%|Resultado|Actualizado|
+# Posición total), filas de tenencia, "Disponible", "Subtotal". Números en
+# formato US ('22,680.00' = coma miles, punto decimal). "DOLARUSA" (sección
+# Otros) = dólares (cash), no un activo.
+#
+# Hay DOS archivos (ARS/USD) = la MISMA cartera en dos monedas (mismas especies y
+# cantidades). Con UNO alcanza: el que matchea la moneda nativa de la mayoría
+# (ARS para carteras de CEDEARs) da precio y PPP en esa moneda.
+
+_IEB_SECTION_TYPE = {
+    "cedears": "CEDEAR", "acciones": "STOCK", "bonos": "BOND",
+    "titulos publicos": "BOND", "obligaciones negociables": "BOND", "ons": "BOND",
+    "letras": "BOND", "fci": "FUND", "fcis": "FUND", "fondos": "FUND",
+}
+
+# Encabezados que arrancan la tabla de datos de una sección (prende in_data).
+# Tolerante a sinónimos y ':' final: si un 2do bloque de la MISMA clase trae el
+# header como 'Ticker'/'Símbolo'/'Papel' en vez del literal 'Especie', igual se lee
+# (si no, ese bloque se perdía en SILENCIO y su activo — todavía tenido — quedaba
+# como falso 'ausente', candidato a borrado destructivo).
+_IEB_DATA_HEADERS = {"especie", "especies", "ticker", "simbolo", "papel", "activo"}
+
+
+def _ieb_num(v):
+    """Número IEB: float directo, o string en formato US ('22,680.00' → 22680.0)."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if not s or s == "-":
+        return None
+    s = s.replace(",", "")   # coma = miles (formato US); punto = decimal
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def looks_like_ieb_portfolio(wb) -> bool:
+    """El Portafolio de IEB: workbook openpyxl con hojas 'Patrimonio' + 'Saldos'."""
+    try:
+        return {"Patrimonio", "Saldos"} <= set(wb.sheetnames)
+    except Exception:
+        return False
+
+
+def _ieb_sheet_has_holdings(ws) -> bool:
+    """True si una hoja del workbook (ej. 'Cauciones' / 'Títulos de crédito') trae
+    filas de tenencia (≥3 celdas no vacías + algún número), no sólo encabezados.
+    Sirve para AVISAR que hay activos en hojas que el parser todavía no lee → la
+    foto no está completa y NO se debe ofrecer borrado sobre esa lectura parcial."""
+    try:
+        for r in ws.iter_rows(values_only=True):
+            cells = [c for c in (r or ()) if _cell_s(c)]
+            if len(cells) >= 3 and any(_ieb_num(c) is not None for c in (r[1:] if r else ())):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _ieb_saldos(wb):
+    """Cash de la hoja Saldos → (ars, usd). Cada moneda es un bloque con su 'Total'."""
+    if "Saldos" not in wb.sheetnames:
+        return None, None
+    ars = usd = None
+    cur = None
+    for r in wb["Saldos"].iter_rows(values_only=True):
+        c0 = _cell_s(r[0]) if r else ""
+        if c0 in ("ARS", "USD", "USD Ext."):
+            # 'USD Ext.' (dólar exterior/cable) también es efectivo en dólares.
+            cur = "USD" if c0.startswith("USD") else c0
+        elif c0 == "Total" and cur:
+            v = _ieb_num(r[2] if len(r) > 2 else None)
+            if cur == "ARS":
+                ars = v
+            elif cur == "USD" and v is not None:
+                usd = (usd or 0.0) + v   # acumula USD + USD Ext. si vienen ambos
+    return ars, usd
+
+
+def parse_ieb_portfolio(wb) -> TenenciaSnapshot:
+    """Portafolio de IEB (workbook openpyxl) → TenenciaSnapshot con COSTO (PPP)."""
+    snap = TenenciaSnapshot()
+    if "Patrimonio" not in wb.sheetnames:
+        snap.warnings.append("El Excel no tiene la hoja 'Patrimonio' — ¿es el Portafolio de IEB?")
+        return snap
+    rows = list(wb["Patrimonio"].iter_rows(values_only=True))
+    snap.date = _ppi_extract_date(rows)   # DD/MM/YYYY o datetime en el preámbulo
+    sect = None
+    in_data = False
+    pending_unknown = None   # label de una sección lone NO reconocida (para avisar)
+    saw_data_table = False   # vimos al menos una tabla (encabezado de datos)
+    sect_hold_count = 0      # tenencias leídas desde que abrió la sección actual
+
+    def _warn_empty_section():
+        # Una sección REAL (no 'Otros') que cerró sin ninguna tenencia legible =
+        # lectura PARCIAL (header no reconocido, filas movidas): degrada foto_completa
+        # → el caller deja de ofrecer borrado sobre esa lectura dudosa.
+        if sect and sect != "OTROS" and sect_hold_count == 0:
+            snap.warnings.append(
+                f"Una sección de tenencias ({sect}) cerró sin filas legibles — el "
+                f"formato del export pudo cambiar; no la usamos para sacar posiciones.")
+
+    for r in rows:
+        c0 = _deaccent(_cell_s(r[0])).lower() if (r and r[0] is not None) else ""
+        c0h = c0.rstrip(": ").strip()
+        nonempty = [c for c in (r or ()) if _cell_s(c)]
+        # Encabezado de la tabla de datos (tolerante a sinónimos y ':' final). Si
+        # arranca una tabla sin sección reconocida arriba, avisamos (foto incompleta).
+        if c0h in _IEB_DATA_HEADERS:
+            in_data = True
+            saw_data_table = True
+            if sect is None and pending_unknown:
+                snap.warnings.append(
+                    f"Sección de IEB no reconocida: '{pending_unknown}' — sus tenencias no se leyeron.")
+            pending_unknown = None
+            continue
+        if c0 in _IEB_SECTION_TYPE:
+            _warn_empty_section()
+            sect = _IEB_SECTION_TYPE[c0]; in_data = False; pending_unknown = None
+            sect_hold_count = 0; continue
+        if c0 == "otros":
+            _warn_empty_section()
+            sect = "OTROS"; in_data = False; pending_unknown = None
+            sect_hold_count = 0; continue
+        if c0 == "subtotal":
+            # Cierra la sección: si era real y no leyó nada, avisá; después resetea.
+            _warn_empty_section()
+            sect = None; in_data = False; sect_hold_count = 0; continue
+        if c0 == "disponible":
+            continue
+        # Fila-label sola (una única celda no vacía) que NO es una sección conocida:
+        # resetea sect (evita contaminar el asset_type de la sección previa — un
+        # header renombrado dejaría sus filas parseadas con el tipo anterior) y la
+        # marca como sospechosa. El preámbulo (Patrimonio total / Tenencia … ) también
+        # cae acá pero lo limpia la primera sección real antes de su header.
+        if len(nonempty) == 1 and c0:
+            sect = None; in_data = False; pending_unknown = _cell_s(r[0]); continue
+        if c0 == "" or not sect:
+            continue
+        if not in_data or not r or r[0] is None:
+            continue
+        ticker = _cell_s(r[0]).split(" - ")[0].strip().upper()
+        qty = _ieb_num(r[2] if len(r) > 2 else None)
+        ppp = _ieb_num(r[5] if len(r) > 5 else None)          # precio promedio = COSTO
+        value = _ieb_num(r[9] if len(r) > 9 else None)
+        ccy = (_cell_s(r[1]).upper() if (len(r) > 1 and _cell_s(r[1])) else "ARS")
+        if not ticker or qty is None or abs(qty) <= 1e-9:
+            continue
+        if sect == "OTROS":
+            # DOLARUSA = dólares (cash), no un activo → no se siembra. Pero CUALQUIER
+            # otra especie bajo 'Otros' NO la leemos → lectura parcial: avisamos (así
+            # foto_completa=False y no se ofrece borrar por 'ausencia' algo real).
+            _nm = _cell_s(r[0]).upper()
+            if ticker.startswith("DOLARUSA") or "DOLAR" in _nm:
+                continue
+            snap.warnings.append(
+                f"Sección 'Otros' con un activo que no reconocimos como efectivo "
+                f"('{ticker}') — la foto puede estar incompleta, no la usamos para sacar posiciones.")
+            continue
+        cost_per1 = ppp if (ppp and ppp > 0) else ((value / qty) if value else 0.0)
+        if sect == "FUND":
+            ticker = _canon_fund_ticker(ticker)   # FCI:<slug> → matchea Movimientos
+        snap.holdings.append(Holding(
+            ticker=ticker, asset_type=sect, quantity=qty,
+            value=value or 0.0, currency=ccy or "ARS",
+            price_per1=cost_per1,             # COSTO real (PPP) → P&L correcto
+            name=_cell_s(r[0])))
+        sect_hold_count += 1
+    _warn_empty_section()   # última sección si el archivo no cerró con 'Subtotal'
+    # ── Chequeos de completitud (gatean el borrado opt-in en el caller) ──────────
+    # Leímos tablas pero 0 tenencias → el layout cambió (hoja renombrada, columnas
+    # movidas): la foto es una lectura ROTA, no una cartera vacía real.
+    if saw_data_table and not snap.holdings:
+        snap.warnings.append(
+            "Leímos la hoja 'Patrimonio' pero no pudimos interpretar ninguna tenencia "
+            "— el formato del export pudo haber cambiado.")
+    # Activos en hojas que el parser todavía NO lee: por EXCLUSIÓN (cualquier hoja que
+    # no sea Patrimonio/Saldos con filas de tenencia), no por una lista fija de nombres
+    # — así una hoja renombrada o nueva (Cauciones, Títulos de crédito, Opciones, …)
+    # igual fuerza foto_completa=False y no se ofrece borrar por 'ausencia'.
+    _known_sheets = {"Patrimonio", "Saldos"}
+    for _sheet in wb.sheetnames:
+        if _sheet not in _known_sheets and _ieb_sheet_has_holdings(wb[_sheet]):
+            snap.warnings.append(
+                f"El Portafolio trae la hoja '{_sheet}' con tenencias que todavía no "
+                f"importamos — no las tocamos.")
+    cash_ars, cash_usd = _ieb_saldos(wb)
+    if cash_ars is None and cash_usd is None:
+        snap.warnings.append("No encontramos los saldos de efectivo en la hoja 'Saldos'.")
+    snap.cash_ars, snap.cash_usd = cash_ars, cash_usd
     return snap

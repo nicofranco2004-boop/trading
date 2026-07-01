@@ -148,13 +148,42 @@ export default function TenenciaUpload({
                 </tbody>
               </table>
             </div>
+            {/* Foto en modo OVERRIDE (Balanz / IEB): la foto PISA — ajusta lo que
+                quedó de más/de menos (cierra a costo, sin P&L). Lo mostramos. */}
+            {preview.override && (preview.override.reduced?.length > 0 || preview.override.removed?.length > 0) && (
+              <div className="rounded-md border border-white/10 bg-rendi-bg p-2.5 mb-2 text-xs text-ink-2">
+                <p className="mb-1">La foto ajusta tu cartera (se cierra a costo, sin ganancia/pérdida):</p>
+                <ul className="list-disc pl-4 space-y-0.5">
+                  {(preview.override.reduced || []).map(r => (
+                    <li key={`red-${r.ticker}`}>{r.ticker}: bajamos de {fmt(r.rendi)} a {fmt(r.tenencia)}</li>
+                  ))}
+                  {(preview.override.removed || []).map(r => (
+                    <li key={`rm-${r.ticker}`}>{r.ticker}: lo sacamos ({fmt(r.qty)}) — no está en {docLabel}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {preview.override?.capped && (
+              <p className="text-xs text-rendi-warn mb-2">
+                ⚠ El ajuste tocaría más de la mitad de tu cartera → lo frenamos por seguridad: sólo completamos lo que falta. Revisá el archivo o escribinos.
+              </p>
+            )}
+            {(preview.warnings?.length > 0) && (
+              <div className="rounded-md border border-rendi-warn/40 bg-rendi-warn/10 p-2.5 mb-2 text-xs text-rendi-warn">
+                <p className="font-medium mb-1">Leímos {docLabel} pero puede estar incompleto:</p>
+                <ul className="list-disc pl-4 space-y-0.5">
+                  {preview.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+                <p className="mt-1 text-ink-3">Por eso no sacamos posiciones por ‘ausencia’ esta vez.</p>
+              </div>
+            )}
             {(preview.not_in_snapshot?.length > 0) && (
               <p className="text-xs text-rendi-warn mb-2">
-                ⚠ Tenés {preview.not_in_snapshot.length} activo(s) en Rendi que no están en {docLabel} (¿vendidos?). No los tocamos.
+                ⚠ Tenés {preview.not_in_snapshot.length} activo(s) en Rendi que no están en {docLabel} (¿vendidos?). {preview.override && !preview.override.capped ? 'Los ajustamos a la foto.' : 'No los tocamos.'}
               </p>
             )}
             <p className="text-xs text-ink-3 mb-3">
-              Las posiciones que completamos arrancan en 0% (precio de la foto), porque {docLabel} no trae el costo histórico.
+              Las posiciones que completamos arrancan al costo de {docLabel} (PPP si lo trae).
             </p>
             {error && <p className="text-sm text-rendi-warn mb-3">{error}</p>}
             <div className="flex justify-end gap-2">

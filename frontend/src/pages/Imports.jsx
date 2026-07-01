@@ -29,6 +29,7 @@ export default function Imports() {
   const [showWizard, setShowWizard] = useState(false)      // wizard de import nuevo (no redo)
   const [showPpiEstado, setShowPpiEstado] = useState(false)  // modal "completar con Estado de Cuenta" (PPI Excel)
   const [showCocosEstado, setShowCocosEstado] = useState(false)  // modal "completar con Estado de Cuenta" (Cocos CSV)
+  const [showIebPortfolio, setShowIebPortfolio] = useState(false)  // modal "actualizar con Portafolio" (IEB Excel, override)
   const [importJustConfirmed, setImportJustConfirmed] = useState(false)  // marca interna: el wizard pasó por onConfirmed
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
@@ -214,6 +215,15 @@ export default function Imports() {
                 className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
               >
                 <Upload size={12} strokeWidth={1.75} /> Estado de Cuenta Cocos
+              </button>
+            )}
+            {!isFirstUse && (
+              <button
+                onClick={() => setShowIebPortfolio(true)}
+                title="Actualizá tu cartera de IEB subiendo el Portafolio (Excel). Completa las posiciones con su costo real, cierra el efectivo a la foto y ajusta lo que quedó de más/de menos — con un tope de seguridad."
+                className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors"
+              >
+                <Upload size={12} strokeWidth={1.75} /> Portafolio IEB
               </button>
             )}
             <button
@@ -426,6 +436,26 @@ export default function Imports() {
           ]}
           format="cocos"
           docLabel="el Estado de Cuenta"
+        />
+      )}
+
+      {showIebPortfolio && (
+        <TenenciaUpload
+          onClose={() => setShowIebPortfolio(false)}
+          onConfirmed={() => { setInfo('Cartera actualizada con el Portafolio de IEB.'); load() }}
+          title="Actualizá tu cartera con el Portafolio (IEB)"
+          introText="El Portafolio es tu foto de posiciones y saldos de HOY, y MANDA: completamos lo que falta con su costo real, cerramos tu efectivo a la foto y ajustamos lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos."
+          brokerMatch={/ieb/i}
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          fileLabel="Portafolio (Excel)"
+          fileHint={[
+            'Entrá al homebanking web de IEB (hb.iebmas.com.ar). ⚠️ Desde la WEB, no la app.',
+            'Andá a Portafolio.',
+            'Seleccioná la moneda Pesos.',
+            'Descargá el Excel y subílo acá tal cual, sin abrirlo ni convertirlo.',
+          ]}
+          format="ieb"
+          docLabel="el Portafolio"
         />
       )}
 

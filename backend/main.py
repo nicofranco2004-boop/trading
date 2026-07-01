@@ -17528,6 +17528,15 @@ async def import_classify_tenencia(
                 if _import_tenencia.looks_like_tenencia(_import_excel.pdf_to_text(data)):
                     return {"file_name": name, "format": "bullmarket"}
             elif _import_excel.is_xlsx(data):
+                # IEB primero: es MULTI-hoja (Patrimonio+Saldos) y se distingue del
+                # PPI (que trae 'estado de cuenta'/'por tipo de activo' en la grilla).
+                wb = _import_excel.load_xlsx_workbook(data)
+                try:
+                    is_ieb_file = _import_tenencia.looks_like_ieb_portfolio(wb)
+                finally:
+                    wb.close()
+                if is_ieb_file:
+                    return {"file_name": name, "format": "ieb"}
                 if _import_tenencia.looks_like_ppi_tenencia(_import_excel.xlsx_to_rows(data)):
                     return {"file_name": name, "format": "ppi"}
             else:
@@ -17568,8 +17577,29 @@ async def import_tenencia_preview(
     fmt = (format or "").strip().lower()
     is_ppi = fmt.startswith("ppi")
     is_cocos = fmt.startswith("cocos")
+    is_ieb = fmt.startswith("ieb")
     is_balanz = False   # se resuelve por auto-detección del PDF (Balanz vs Bull Market)
-    if is_ppi:
+    if is_ieb:
+        # IEB: Portafolio en Excel MULTI-hoja (Patrimonio + Saldos). Trae PPP (costo
+        # promedio) → sembramos el costo real, no P&L 0. La foto PISA en modo OVERRIDE
+        # (mismo mecanismo que Balanz: ventas transfer_out reversibles + guardas), con
+        # `complete` gateado por los warnings de completitud del parser.
+        if not _import_excel.is_xlsx(data):
+            raise HTTPException(400, "El Portafolio de IEB se baja en Excel (.xlsx) — subí ese archivo.")
+        try:
+            wb = _import_excel.load_xlsx_workbook(data)
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+        try:
+            if not _import_tenencia.looks_like_ieb_portfolio(wb):
+                raise HTTPException(400, "Este Excel no parece el Portafolio de IEB "
+                                         "(tiene que tener las hojas Patrimonio y Saldos).")
+            snap = _import_tenencia.parse_ieb_portfolio(wb)
+        finally:
+            wb.close()
+        parser_format, default_name = "ieb_tenencia", "Portafolio.xlsx"
+        broker_hint = "Importá primero los Movimientos de IEB."
+    elif is_ppi:
         # PPI: Estado de Cuenta en Excel (no PDF). Grilla con preámbulo + secciones
         # → filas crudas (xlsx_to_rows), no xlsx_to_csv (que asumiría header).
         if not _import_excel.is_xlsx(data):
@@ -17687,8 +17717,13 @@ async def import_tenencia_preview(
                 invested_by_asset[r["asset"]] = invested_by_asset.get(r["asset"], 0.0) + (r["inv"] or 0)
             rec = _import_tenencia.compute_reconcile(current, snap)
 
-            if is_balanz:
-                # OVERRIDE: la foto de Balanz PISA el estado. Antes de emitir las
+            # `complete` = la foto es TOTAL (todas las clases + monedas) → habilita
+            # BORRAR not_in_snapshot. Balanz siempre; IEB sólo si el parser NO dejó
+            # warnings de completitud (lectura parcial → sólo reduce over + gap-fill,
+            # nunca borra por 'ausencia' algo que quizá no leímos).
+            _complete = True if is_balanz else (not getattr(snap, "warnings", None))
+            if is_balanz or is_ieb:
+                # OVERRIDE: la foto (Balanz / IEB) PISA el estado. Antes de emitir las
                 # reducciones aplicamos guardas duras (el wizard aplica la foto SIN
                 # checkpoint del usuario → nunca debemos vaciar una cartera):
                 #   1) safe-to-rebuild: no reducir activos con posiciones/ventas
@@ -17754,7 +17789,10 @@ async def import_tenencia_preview(
                 else:
                     override_reduced = [{"ticker": tk, "rendi": rq, "tenencia": sq, "sold": round(rq - sq, 6)}
                                         for tk, rq, sq in safe_over]
-                    override_removed = [{"ticker": tk, "qty": rq} for tk, rq in safe_nis]
+                    # `removed` refleja lo que se BORRA de verdad → sólo si complete
+                    # (con foto parcial no se emite la venta; ver build más abajo).
+                    override_removed = ([{"ticker": tk, "qty": rq} for tk, rq in safe_nis]
+                                        if _complete else [])
                     rec.over, rec.not_in_snapshot = safe_over, safe_nis
                 override_info = {"reduced": override_reduced, "removed": override_removed,
                                  "skipped_manual": sorted(set(unsafe)), "capped": bool(capped)}
@@ -17771,7 +17809,7 @@ async def import_tenencia_preview(
                     (uid, *pair)).fetchone()
                 red_date = max(seed_date, mx["d"]) if mx and mx["d"] else seed_date
                 seed_txs = _import_tenencia.build_tenencia_seed_txs(
-                    broker, rec, seed_date, override=True, complete=True, override_date=red_date)
+                    broker, rec, seed_date, override=True, complete=_complete, override_date=red_date)
             else:
                 override_info = None
                 seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
@@ -17787,11 +17825,10 @@ async def import_tenencia_preview(
                 (uid, bname)).fetchone()
             return float(row["invested"] or 0) if row else 0.0
         _sib = next((b for b in _import_persister.broker_pair(conn, uid, broker) if b != broker), None)
-        # Balanz OVERRIDE: si la foto trae USD MATERIAL (≥ 1) y no hay sibling '· USD'
-        # (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el saldo
-        # en dólares exacto — la copia promete "pesos y dólares". Para polvo (< 1 USD)
-        # no ensuciamos con un sub-broker (el default histórico: montos marginales).
-        if is_balanz and snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
+        # Balanz / IEB OVERRIDE: si la foto trae USD MATERIAL (≥ 1) y no hay sibling
+        # '· USD' (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el
+        # saldo en dólares exacto. Para polvo (< 1 USD) no ensuciamos con un sub-broker.
+        if (is_balanz or is_ieb) and snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
             parent_row = conn.execute(
                 "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
             _sib = _ensure_usd_sibling(conn, uid, parent_row)["name"]
@@ -17810,8 +17847,14 @@ async def import_tenencia_preview(
         for _i, _t in enumerate(seed_txs):
             _t.row_index = -20000 - _i
 
+        # Completitud de la lectura (sólo la puebla el parser de IEB por ahora): si
+        # hay warnings, la foto es PARCIAL → el override NO borró not_in_snapshot
+        # (complete=False arriba). El frontend lo muestra.
+        _warnings = list(getattr(snap, "warnings", []) or [])
+        _foto_completa = not _warnings
         if not seed_txs:
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
+                    "foto_completa": _foto_completa, "warnings": _warnings,
                     "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
         with conn:
             sid = _import_pipeline.store_preview_txs(
@@ -17821,6 +17864,8 @@ async def import_tenencia_preview(
             "session_id": sid,
             "date": snap.date,
             "matched": len(rec.matched),
+            "foto_completa": _foto_completa,
+            "warnings": _warnings,
             "to_seed": [{"ticker": h.ticker, "type": h.asset_type, "qty": gap,
                          "price": round(h.price_per1, 4), "value": round(gap * h.price_per1, 2),
                          "currency": h.currency} for h, gap in rec.to_seed],

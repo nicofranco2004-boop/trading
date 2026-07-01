@@ -46,10 +46,15 @@ class CocosTenenciaTest(unittest.TestCase):
                       "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;total")
         self.assertFalse(looks_like_cocos_tenencia(mov_header))
 
+    # El FCI se canonicaliza al símbolo del catálogo (resolve_fci_symbol) para que
+    # matchee lo que los Movimientos escriben ('FCI:<slug>'); antes la foto lo dejaba
+    # crudo ('COCORMA') → mismatch → duplicado en to_seed + falso 'vendido?'.
+    _FCI = "FCI:COCOS-RENDIMIENTO-A"
+
     def test_parses_holdings_and_cash(self):
         snap = parse_cocos_tenencia(_CSV)
         by = {h.ticker: h for h in snap.holdings}
-        self.assertEqual(set(by), {"NVDA", "BMA", "GGAL", "COCORMA"})
+        self.assertEqual(set(by), {"NVDA", "BMA", "GGAL", self._FCI})
         # cantidades + valuación
         self.assertAlmostEqual(by["NVDA"].quantity, 28)
         self.assertAlmostEqual(by["NVDA"].value, 348600)
@@ -58,16 +63,17 @@ class CocosTenenciaTest(unittest.TestCase):
         self.assertEqual(by["NVDA"].asset_type, "CEDEAR")
         self.assertEqual(by["BMA"].asset_type, "")     # acción argentina → .BA
         self.assertEqual(by["GGAL"].asset_type, "")
-        self.assertEqual(by["COCORMA"].asset_type, "FUND")
+        self.assertEqual(by[self._FCI].asset_type, "FUND")
         # cash: ARS + USD (el 'Dólar estadounidense ()' de 0,18 va al cash USD)
         self.assertAlmostEqual(snap.cash_ars, 48763.5)
         self.assertAlmostEqual(snap.cash_usd, 2.03 + 0.18, places=2)
 
     def test_reconcile_matched(self):
         snap = parse_cocos_tenencia(_CSV)
-        current = {"NVDA": 28, "BMA": 39, "GGAL": 86, "COCORMA": 1000.5}
+        # 'current' usa el símbolo canónico (así lo guarda el normalizer de Movimientos).
+        current = {"NVDA": 28, "BMA": 39, "GGAL": 86, self._FCI: 1000.5}
         rec = compute_reconcile(current, snap)
-        self.assertEqual(set(rec.matched), {"NVDA", "BMA", "GGAL", "COCORMA"})
+        self.assertEqual(set(rec.matched), {"NVDA", "BMA", "GGAL", self._FCI})
         self.assertEqual(rec.to_seed, [])
         self.assertEqual(rec.over, [])
         self.assertEqual(rec.not_in_snapshot, [])
@@ -76,7 +82,7 @@ class CocosTenenciaTest(unittest.TestCase):
         snap = parse_cocos_tenencia(_CSV)
         # Rendi tiene NVDA DUPLICADO (56 vs 28 en la foto) → over (anti-duplicación);
         # le falta BMA (la foto tiene 39, Rendi 0) → to_seed; y tiene un AAPL fantasma.
-        current = {"NVDA": 56, "GGAL": 86, "COCORMA": 1000.5, "AAPL": 10}
+        current = {"NVDA": 56, "GGAL": 86, self._FCI: 1000.5, "AAPL": 10}
         rec = compute_reconcile(current, snap)
         over = {t: (rq, tq) for t, rq, tq in rec.over}
         self.assertIn("NVDA", over)                      # Rendi 56 > foto 28 → flag
