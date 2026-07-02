@@ -75,6 +75,7 @@ BROKER_FCI_ALLOWLIST = [
     "Cocos Acciones",          # rentaVariable ARS
     "SBS Acciones Argentina",  # rentaVariable ARS (vía plataforma Cocos)
     "IEB Renta Fija Dólar",    # rentaFija USD (IEB) — reportado por user 2026-06-25
+    "Balanz Capital Ahorro",   # rentaFija ARS (Balanz) — ticker BCAHA, confirmado 2026-07-02
 ]
 
 

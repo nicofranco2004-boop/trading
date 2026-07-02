@@ -1017,6 +1017,8 @@ def parse_balanz_tenencia(text: str) -> TenenciaSnapshot:
         else:
             snap.warnings.append(
                 f"{tk}: importe ({value:,.2f}) no es cantidad×precio ni /100 — revisar")
+        if cur_type == "FUND":
+            tk = _canon_fund_ticker(tk)   # FCI:<slug> si está mapeado → matchea Movimientos
         key = (tk, "ARS")
         if key in seen:
             continue

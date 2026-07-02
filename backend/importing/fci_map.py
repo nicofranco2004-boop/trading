@@ -45,6 +45,13 @@ BROKER_FCI_AD_NAME = {
     "COCORMA":   "Cocos Rendimiento - Clase A",        # rentaMixta ARS
     "COCOACCA":  "Cocos Acciones - Clase A",           # rentaVariable ARS
     "SBSACAR":   "SBS Acciones Argentina - Clase A",   # rentaVariable ARS (vía Cocos)
+    # Balanz — confirmado 2026-07-02 vs ArgentinaDatos: el ticker BCAHA (Balanz Capital
+    # AHorro clase A, descripción "Ahorro corto plazo Clase A" en el Resumen) matchea
+    # "Balanz Capital Ahorro - Clase A" por PRECIO (237,27/cp = el 237,04 del PDF + 1
+    # día de devengamiento) y magnitud sana. ARS. Otros fondos Balanz (BBALANCED
+    # "LSeries DAC" = offshore, no cotiza; BAHUSDA = ambiguo) quedan SIN mapear → al
+    # costo/override (snapshot de la foto), sin riesgo de mapear a la clase equivocada.
+    "BCAHA":     "Balanz Capital Ahorro - Clase A",    # rentaFija ARS (ahorro/money-market)
 }
 
 
