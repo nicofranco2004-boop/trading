@@ -46,6 +46,20 @@ const DEFAULT_SUGGESTED = [
   '¿Qué activo es el que más riesgo me agrega?',
 ]
 
+// Red de seguridad client-side: el path de streaming no pasa por el
+// _strip_markdown del servidor, así que limpiamos el markdown acá sobre el
+// texto acumulado. El modelo está instruido a NO usar markdown, así que esto
+// casi nunca hace nada — pero evita que se cuele un **bold** o un "- " suelto.
+// Idempotente: se aplica sobre el buffer completo en cada delta.
+function stripMarkdown(t) {
+  if (!t) return t
+  let s = t.replace(/\*\*(.+?)\*\*/g, '$1')   // bold
+  s = s.replace(/\*(.+?)\*/g, '$1')           // italic
+  s = s.replace(/^\s{0,3}[-*+]\s+/gm, '')     // list markers
+  s = s.replace(/^\s{0,3}#{1,6}\s+/gm, '')    // headers
+  return s
+}
+
 export default function AICoach({ snapshot, suggested, autoAsk }) {
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const canChatFree = isPro || isAdmin  // chat libre = solo Pro/Admin
@@ -101,6 +115,28 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
     setLoading(true)
     setError(null)
 
+    // Streaming: los puntitos se muestran hasta que llega el PRIMER token; a
+    // partir de ahí ocultamos el loader y vamos rellenando la burbuja del
+    // asistente en vivo (typewriter). `acc` acumula el texto crudo; renderizamos
+    // stripMarkdown(acc) para limpiar cualquier markdown que se cuele.
+    let acc = ''
+    let assistantAdded = false
+    const onDelta = (chunk) => {
+      acc += chunk
+      const clean = stripMarkdown(acc)
+      if (!assistantAdded) {
+        assistantAdded = true
+        setLoading(false)  // ocultar puntitos: ya hay texto que mostrar
+        setMessages(m => [...m, { role: 'assistant', content: clean }])
+      } else {
+        setMessages(m => {
+          const copy = m.slice()
+          copy[copy.length - 1] = { role: 'assistant', content: clean }
+          return copy
+        })
+      }
+    }
+
     try {
       // GA4: engagement metric. No mandamos el content del mensaje (PII potential).
       trackEvent('ai_chat_sent', {
@@ -110,11 +146,11 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       // Marcar Coach IA como "descubierto" — usado por OnboardingChecklist
       // en Home para detectar que el user ya probó el chat.
       markAIDiscovered()
-      const res = await api.post('/ai/chat', {
-        messages: newMessages,
-        snapshot,
-      })
-      setMessages(m => [...m, { role: 'assistant', content: res.reply }])
+      await api.chatStream({ messages: newMessages, snapshot }, { onDelta })
+      // Edge: el stream cerró sin emitir texto → mostrar algo en vez de nada.
+      if (!assistantAdded) {
+        setMessages(m => [...m, { role: 'assistant', content: stripMarkdown(acc) || '…' }])
+      }
       // Refrescar cuota tras success — no es crítico, best-effort.
       api.get('/ai/usage').then(u => setUsage(u)).catch(() => {})
     } catch (e) {
@@ -167,8 +203,13 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
         msg = detail
       }
       setError(msg)
-      // Sacar el último user msg si falló — el user puede reintentar con otro chip
-      setMessages(m => m.slice(0, -1))
+      // Sacar del historial lo que falló para que el user pueda reintentar:
+      // si el stream alcanzó a agregar la burbuja del asistente (texto parcial),
+      // la sacamos también; siempre sacamos el user msg.
+      setMessages(m => {
+        const mm = assistantAdded ? m.slice(0, -1) : m
+        return mm.slice(0, -1)
+      })
     } finally {
       setLoading(false)
     }

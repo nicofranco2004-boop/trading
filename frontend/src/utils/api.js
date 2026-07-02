@@ -140,6 +140,80 @@ async function getBlob(path) {
   return res.blob()
 }
 
+// Chat IA con streaming (SSE). Emite cada pedacito de texto vía onDelta(text)
+// para que la UI lo muestre token por token. Los errores PRE-stream (429 cuota,
+// 403 gate) llegan como HTTP non-200 y se parsean con buildHttpError → mismo
+// shape que api.post (err.status/err.payload) para conservar la UX de errores
+// (UpgradePromoCard, etc). Un error del LLM a mitad del stream llega como frame
+// `error` y se lanza con el mismo shape. En demo mode no hay streaming real:
+// usamos el mock y emitimos todo de una.
+async function chatStream(body, { onDelta, signal } = {}) {
+  if (isDemoMode()) {
+    const res = await req('POST', '/ai/chat', { ...body, stream: false })
+    if (onDelta && res?.reply) onDelta(res.reply)
+    return { tier: res?.tier }
+  }
+
+  const res = await fetch('/api/ai/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ ...body, stream: true }),
+    signal,
+  })
+
+  if (res.status === 401) {
+    const hadUser = !!localStorage.getItem('rendi_user')
+    localStorage.removeItem('rendi_user')
+    if (hadUser) window.location.href = '/'
+    throw new Error('Unauthorized')
+  }
+  if (!res.ok || !res.body) {
+    throw await buildHttpError(res)   // 429/403/500 → mismo shape que api.post
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let tier = null
+  let streamErr = null
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let sep
+    // Frames SSE separados por línea en blanco (\n\n).
+    while ((sep = buf.indexOf('\n\n')) !== -1) {
+      const frame = buf.slice(0, sep)
+      buf = buf.slice(sep + 2)
+      for (const line of frame.split('\n')) {
+        if (!line.startsWith('data:')) continue   // ignora comentarios (`: ok`)
+        const payload = line.slice(5).trim()
+        if (!payload) continue
+        let evt
+        try { evt = JSON.parse(payload) } catch { continue }
+        if (evt.t === 'delta') {
+          if (onDelta && evt.d) onDelta(evt.d)
+        } else if (evt.t === 'done') {
+          tier = evt.tier ?? tier
+        } else if (evt.t === 'error') {
+          // Error del LLM a mitad de stream: lo guardamos y cortamos la lectura.
+          const err = new Error(evt.message || 'Error en el chat')
+          err.status = 503
+          err.payload = { detail: { error: evt.code, message: evt.message } }
+          streamErr = err
+        }
+      }
+      if (streamErr) break
+    }
+    if (streamErr) break
+  }
+  try { reader.cancel() } catch {}
+  if (streamErr) throw streamErr
+  return { tier }
+}
+
 export const api = {
   get: (path, opts) => req('GET', path, undefined, opts),
   post: (path, body) => req('POST', path, body),
@@ -147,4 +221,5 @@ export const api = {
   delete: (path, body) => req('DELETE', path, body),
   upload,
   getBlob,
+  chatStream,
 }

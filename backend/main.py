@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
@@ -12330,6 +12330,10 @@ class AIChatIn(BaseModel):
     messages: list[ChatMsg] = Field(..., min_length=1, max_length=30)
     # snapshot es un dict abierto para incluir posiciones, operaciones, mensuales, etc.
     snapshot: dict = Field(default_factory=dict)
+    # stream=True → el endpoint devuelve SSE (text/event-stream) y el texto se
+    # emite token por token (typewriter). Opt-in: default False conserva el
+    # path JSON histórico intacto para cualquier caller que no lo pida.
+    stream: bool = False
 
     @field_validator('snapshot')
     @classmethod
@@ -16665,6 +16669,53 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> i
         return 0
 
 
+def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total: int, max_calls: int):
+    """Ejecuta los tool_use blocks de una respuesta y arma los tool_result.
+    Mismo hard-cap por turno que el path JSON (Audit Pack A v2 #5). Devuelve
+    (tool_results, tool_calls_total_actualizado). Compartido stream/no-stream."""
+    tool_results = []
+    for block in response_content:
+        if block.type == "tool_use":
+            if tool_calls_total >= max_calls:
+                log.warning(
+                    "ai_chat tool_cap_exceeded tier=%s uid=%s tool=%s total=%d",
+                    tier, uid, block.name, tool_calls_total,
+                )
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps({
+                        "error": (
+                            f"cap de {max_calls} tools por turno alcanzado. "
+                            "Sintetizá una respuesta con lo que ya tenés."
+                        ),
+                    }, ensure_ascii=False),
+                })
+                continue
+            tool_calls_total += 1
+            result = _execute_ai_tool(block.name, block.input, uid)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": json.dumps(result, ensure_ascii=False, default=str),
+            })
+    return tool_results, tool_calls_total
+
+
+def _record_chat_quota(uid: int, cost_cents: int) -> None:
+    """Descuenta 1 consulta de la cuota semanal (solo en éxito). Best-effort:
+    un fallo de escritura no debe romper la respuesta que ya se está enviando."""
+    from ai import quota
+    try:
+        conn2 = get_db()
+        try:
+            quota.record_chat(conn2, uid, cost_usd_cents=cost_cents)
+        finally:
+            conn2.close()
+    except Exception as ex:
+        log.warning("record_chat failed for uid=%s: %s", uid, ex)
+
+
 @app.post("/api/ai/chat")
 def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_user)):
     """Chat con el coach IA — tier-aware.
@@ -16907,6 +16958,83 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
     MAX_TOOL_CALLS_PER_TURN = 4
     tool_calls_total = 0
     last_response = None  # capturamos el response final para record_chat con tokens
+
+    # ── STREAMING (opt-in vía data.stream) ────────────────────────────────────
+    # Devuelve SSE: el texto de la respuesta FINAL se emite token por token
+    # (typewriter) para que el user lea desde el primer segundo. El loop de
+    # tools funciona igual (las vueltas de tool_use suelen no emitir texto). Las
+    # validaciones caras (cuota 429 / gating 403) ya corrieron ARRIBA como
+    # HTTPException — acá ya estamos en el happy-path, así que un fallo del LLM
+    # se reporta como frame `error` dentro del stream (no podemos cambiar el
+    # status HTTP una vez que empezó el body).
+    if data.stream:
+        def _sse():
+            # Flush inicial (comentario SSE): abre el pipe a través de proxies
+            # que bufferean por content-length.
+            yield ": ok\n\n"
+            tcalls = 0
+            try:
+                for _turn in range(MAX_TOOL_LOOPS + 1):
+                    with client.messages.stream(
+                        model="claude-haiku-4-5",
+                        max_tokens=max_tokens,
+                        system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+                        tools=_AI_TOOLS,
+                        messages=messages_loop,
+                    ) as stream:
+                        for chunk in stream.text_stream:
+                            if chunk:
+                                yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                        resp = stream.get_final_message()
+                    if resp.stop_reason != "tool_use":
+                        cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
+                        _record_chat_quota(uid, cost_cents)
+                        yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
+                        return
+                    # tool_use: ejecutar y seguir. El preámbulo (raro) ya se streameó.
+                    tool_results, tcalls = _ai_chat_exec_tools(resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN)
+                    messages_loop.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
+                    messages_loop.append({"role": "user", "content": tool_results})
+                # Fallback: forzar síntesis sin tools (mismo criterio que el path JSON).
+                with client.messages.stream(
+                    model="claude-haiku-4-5",
+                    max_tokens=max_tokens_fallback,
+                    system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+                    tools=_AI_TOOLS,
+                    tool_choice={"type": "none"},
+                    messages=messages_loop,
+                ) as stream:
+                    for chunk in stream.text_stream:
+                        if chunk:
+                            yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                    resp = stream.get_final_message()
+                cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
+                _record_chat_quota(uid, cost_cents)
+                yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
+            except Exception as ex:
+                ex_name = type(ex).__name__
+                log.warning("ai_chat stream exception tier=%s uid=%s type=%s msg=%s", tier, uid, ex_name, str(ex)[:200])
+                if ex_name in ("APITimeoutError", "APIConnectionError"):
+                    code, msg = "ai_timeout", "El coach IA está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
+                elif ex_name in ("RateLimitError",):
+                    code, msg = "ai_rate_limit", "El coach IA está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
+                else:
+                    if ex_name in ("BadRequestError",):
+                        log.error("ai_chat stream BadRequest uid=%s detail=%s", uid, str(ex)[:500])
+                    code, msg = "ai_internal", "Hubo un problema procesando tu consulta. Tocá \"Nuevo\" e intentá de nuevo."
+                yield "data: " + json.dumps({"t": "error", "code": code, "message": msg}, ensure_ascii=False) + "\n\n"
+
+        return StreamingResponse(
+            _sse(),
+            media_type="text/event-stream",
+            headers={
+                # Anti-buffering: sin esto el proxy (Railway/Vercel/nginx) puede
+                # acumular todo el body antes de reenviarlo y el typewriter no se ve.
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     try:
         for _ in range(MAX_TOOL_LOOPS + 1):
