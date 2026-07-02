@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
+import { RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
@@ -90,7 +90,8 @@ const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 
 export default function Config() {
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, logout } = useAuth()
+  const [delState, setDelState] = useState({ loading: false, error: '' })
   const { valuationDollar, setValuationDollar } = useCurrency()
   const [brokers, setBrokers] = useState([])  // sólo para contador en "Cuenta"
   const [dolar, setDolar] = useState(null)
@@ -145,6 +146,22 @@ export default function Config() {
       setPwState({ loading: false, error: '', success: 'Contraseña actualizada correctamente.' })
     } catch (err) {
       setPwState({ loading: false, error: err.message, success: '' })
+    }
+  }
+
+  async function deleteAccount() {
+    const ok = window.confirm(
+      'Vas a ELIMINAR tu cuenta de Rendi de forma permanente.\n\n' +
+      'Se borran todos tus datos (brokers, posiciones, operaciones, imports, historial) y ' +
+      'se cancela tu suscripción. Esta acción NO se puede deshacer.\n\n¿Confirmás?')
+    if (!ok) return
+    setDelState({ loading: true, error: '' })
+    try {
+      await api.delete('/me')
+      logout()               // limpia sesión + storage
+      navigate('/login', { replace: true })
+    } catch (err) {
+      setDelState({ loading: false, error: err.message || 'No se pudo eliminar la cuenta.' })
     }
   }
 
@@ -427,6 +444,31 @@ export default function Config() {
             <WhatsAppIcon size={13} />
             Hablanos por WhatsApp
           </a>
+        </div>
+      </Panel>
+
+      {/* ── Zona de peligro — eliminar cuenta ───────────────────────────── */}
+      <Panel padding="none" className="mt-4 border-rendi-neg/30">
+        <div className="px-4 py-3 border-b border-rendi-neg/20 flex items-center gap-2">
+          <AlertCircle size={14} className="text-rendi-neg" strokeWidth={1.75} />
+          <h2 className="text-sm font-medium text-rendi-neg">Eliminar cuenta</h2>
+        </div>
+        <div className="px-4 py-4 flex items-center justify-between gap-4 flex-wrap">
+          <p className="text-xs text-ink-3 leading-relaxed max-w-md">
+            Elimina tu cuenta y todos tus datos de forma permanente (brokers, posiciones, operaciones,
+            historial) y cancela tu suscripción. Esta acción <b>no se puede deshacer</b>.
+          </p>
+          <div className="flex flex-col items-end gap-1">
+            <button
+              onClick={deleteAccount}
+              disabled={delState.loading}
+              className="inline-flex items-center gap-1.5 text-xs bg-rendi-neg/10 hover:bg-rendi-neg/15 text-rendi-neg border border-rendi-neg/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
+            >
+              <Trash2 size={12} strokeWidth={1.75} />
+              {delState.loading ? 'Eliminando…' : 'Eliminar mi cuenta'}
+            </button>
+            {delState.error && <span className="text-[11px] text-rendi-neg">{delState.error}</span>}
+          </div>
         </div>
       </Panel>
 

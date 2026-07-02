@@ -2385,6 +2385,58 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
     return {"ok": True, "token": token}
 
 
+@app.delete("/api/me")
+def delete_my_account(response: Response, uid: int = Depends(get_current_user)):
+    """Cierre de cuenta self-service (irreversible). Cancela la suscripción externa
+    (best-effort, para que no lo sigan cobrando) y BORRA al usuario + TODOS sus datos
+    de la DB: brokers, posiciones, operaciones, imports, snapshots, config, monthly,
+    suscripción/billing, watchlist, etc. Después de esto el usuario desaparece de
+    todos lados de Rendi — incluidos los paneles de admin de reengagement/regalo, que
+    leen de `users`. Dinámico (borra de toda tabla con columna user_id → cubre tablas
+    futuras) + las hijas de import (por batch_id). Gate: el propio usuario logueado."""
+    conn = get_db()
+    try:
+        # 1) Cancelar la suscripción externa (Rebill) — best-effort, no bloquea el borrado.
+        try:
+            from billing import rebill
+            sub = conn.execute(
+                "SELECT mp_subscription_id FROM subscriptions WHERE user_id=? AND status='authorized' "
+                "ORDER BY created_at DESC LIMIT 1", (uid,)).fetchone()
+            if sub and sub["mp_subscription_id"]:
+                rebill.cancel_subscription(sub["mp_subscription_id"])
+        except Exception as ex:
+            log.warning("delete_my_account: cancel Rebill falló uid=%s: %s (sigo con el borrado)", uid, ex)
+
+        # 2) Borrar TODOS los datos del usuario, atómico.
+        with conn:
+            batch_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+            if batch_ids:
+                ph = ",".join("?" * len(batch_ids))
+                for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+                    conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({ph})", tuple(batch_ids))
+            tables = [r["name"] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+            deleted = {}
+            for t in tables:
+                cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
+                if "user_id" in cols:
+                    n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (uid,)).rowcount
+                    if n:
+                        deleted[t] = n
+            deleted["users"] = conn.execute("DELETE FROM users WHERE id=?", (uid,)).rowcount
+        log.info("delete_my_account uid=%s deleted=%s", uid, deleted)
+        clear_auth_cookie(response)   # invalida la sesión server-side
+        return {"ok": True, "deleted": deleted}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("delete_my_account FAILED uid=%s", uid)
+        raise HTTPException(status_code=500, detail=f"Error al eliminar la cuenta: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+
 # ─── Investor profile (test de 7 preguntas para enriquecer el Coach IA) ─────
 
 # Valores aceptados por cada pregunta. Si el frontend manda algo distinto, lo
