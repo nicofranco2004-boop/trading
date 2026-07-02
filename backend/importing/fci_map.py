@@ -52,6 +52,11 @@ BROKER_FCI_AD_NAME = {
     # "LSeries DAC" = offshore, no cotiza; BAHUSDA = ambiguo) quedan SIN mapear → al
     # costo/override (snapshot de la foto), sin riesgo de mapear a la clase equivocada.
     "BCAHA":     "Balanz Capital Ahorro - Clase A",    # rentaFija ARS (ahorro/money-market)
+    # IOL — confirmado 2026-07-02 vs ArgentinaDatos: el ticker CONIOLA ("Adcap Acciones"
+    # en IOL/BCBA) matchea "Adcap Acciones - Clase A" (rentaVariable ARS) por PRECIO
+    # EXACTO (VCP 193.077,218 = los $193.077 de IOL) y magnitud sana. Clase B daría
+    # 227.176 (×1.18 mal). Otras clases (D/E/F) sin VCP en la fuente → no candidatas.
+    "CONIOLA":   "Adcap Acciones - Clase A",           # rentaVariable ARS (IOL)
 }
 
 

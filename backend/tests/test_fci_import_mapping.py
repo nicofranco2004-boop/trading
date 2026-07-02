@@ -43,6 +43,7 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(resolve_fci_symbol("COCOA"), "FCI:COCOS-AHORRO-A")
         self.assertEqual(resolve_fci_symbol("COCOUSDPA"), "FCI:COCOS-DOLARES-PLUS-A")
         self.assertEqual(resolve_fci_symbol("SBSACAR"), "FCI:SBS-ACCIONES-ARGENTINA-A")
+        self.assertEqual(resolve_fci_symbol("CONIOLA"), "FCI:ADCAP-ACCIONES-A")  # IOL, VCP 193.077
 
     def test_case_insensitive_and_whitespace(self):
         self.assertEqual(resolve_fci_symbol("  cocoa "), "FCI:COCOS-AHORRO-A")
