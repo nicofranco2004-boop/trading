@@ -6081,20 +6081,27 @@ def _dedup_splits(splits):
     return out
 
 
-def _applicable_splits(base_symbol: str, entry: str, wm: str):
-    """Splits del .BA aplicables a un lote: posteriores a la compra (entry) Y al
-    watermark (wm). SSoT compartida por /split-check y /adjust-ratio para que
-    detección y escritura nunca diverjan. Trata como YA-aplicado cualquier split
-    dentro de la ventana de dedup del watermark — cubre el caso en que yfinance
-    re-loguea el MISMO evento con una fecha posterior después de que el user ya
-    ajustó (sin esto, el dedup —que guarda la fecha más reciente— se correría
-    pasando el watermark y re-aplicaría → 9×/100×)."""
+def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = ""):
+    """Splits del .BA aplicables a un lote: posteriores a la compra (entry), al
+    watermark de ajuste (wm) Y a la fecha de la foto de tenencia (foto_wm). SSoT
+    compartida por /split-check y /adjust-ratio para que detección y escritura nunca
+    diverjan.
+
+    - wm (split_adjusted_through): un split dentro de la VENTANA de dedup del wm se
+      trata como YA-aplicado — cubre que yfinance re-loguee el MISMO evento con una
+      fecha posterior después de que el user ajustó (sin esto el dedup correría el
+      watermark y re-aplicaría → 9×/100×).
+    - foto_wm (fecha del Resumen): la foto ya trae el ratio actual → filtra los splits
+      HASTA su fecha, pero SIN ventana de dedup: la fecha de la foto no es un evento de
+      split, así que un split legítimo 1-7 días DESPUÉS de la foto NO se debe tragar."""
     out = []
     for d, f in _dedup_splits(_fetch_ba_splits(f"{base_symbol}.BA")):
         if entry and d <= entry:           # comprado el día del split o después → ya al ratio nuevo
             continue
+        if foto_wm and d <= foto_wm:        # la foto ya lo refleja (sin ventana de dedup)
+            continue
         if wm:
-            if d <= wm:                     # ya cubierto por el watermark
+            if d <= wm:                     # ya cubierto por el watermark de ajuste
                 continue
             try:
                 if (date.fromisoformat(d) - date.fromisoformat(wm)).days <= _SPLIT_DEDUP_DAYS:
@@ -6103,6 +6110,45 @@ def _applicable_splits(base_symbol: str, entry: str, wm: str):
                 pass
         out.append((d, f))
     return out
+
+
+def _foto_split_watermarks(conn, uid: int) -> dict:
+    """Fecha de la FOTO de tenencia (Resumen) por (broker, activo), de las tx seed
+    'Tenencia — apertura' (fechadas a la fecha REAL de la foto = seed_date; NO las
+    VENTAS de ajuste, que van a red_date ≥ seed_date). La foto trae la cantidad ACTUAL
+    del broker, que ya refleja TODOS los splits hasta esa fecha → sirve de watermark de
+    splits, SIN pisar positions.split_adjusted_through (que consume el backfill MTM y
+    significaría 'este activo tuvo split'). Read-time: sobrevive a un re-import (el
+    rebuild borra columnas de la posición, no import_normalized_tx). Un split POSTERIOR
+    a la foto (d > esta fecha) se sigue detectando."""
+    out = {}
+    for r in conn.execute(
+        "SELECT n.broker b, UPPER(n.asset_symbol) a, MAX(n.date) d "
+        "FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id "
+        "WHERE ib.user_id=? AND ib.status='confirmed' "
+        f"  AND n.notes LIKE '{_import_tenencia.TENENCIA_APERTURA_NOTE_PREFIX}%' AND COALESCE(n.asset_symbol,'') <> '' "
+        "GROUP BY n.broker, UPPER(n.asset_symbol)",
+        (uid,),
+    ):
+        out[(r["b"], r["a"])] = (r["d"] or "")[:10]
+    return out
+
+
+def _foto_wm_for(broker: str, base: str, foto_map: dict, pair_cache: dict, conn, uid: int) -> str:
+    """Fecha de la foto de tenencia que concilió `base` en el PAR de brokers (padre↔
+    '· USD'), o '' si ninguna. Se pasa como `foto_wm` a _applicable_splits para que el
+    split-check/adjust-ratio no ofrezcan 'Ajustar' sobre lo que el Resumen ya trajo al
+    ratio actual — SIN mezclarla con el watermark de ajuste (que sí lleva ventana de
+    dedup)."""
+    if not foto_map:
+        return ""
+    if broker not in pair_cache:
+        from importing.persister import broker_pair as _bp
+        try:
+            pair_cache[broker] = tuple(_bp(conn, uid, broker))
+        except Exception:
+            pair_cache[broker] = (broker,)
+    return max((foto_map.get((pb, base), "") for pb in pair_cache[broker]), default="")
 
 
 @app.post("/api/positions/{pid}/adjust-ratio")
@@ -6153,8 +6199,13 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
         base = asset[:-3] if asset.endswith(".BA") else asset
         entry = (row["entry_date"] or "")[:10]
         wm = ((row["split_adjusted_through"] if "split_adjusted_through" in row.keys() else "") or "")[:10]
+        # La foto de tenencia también cuenta como watermark: si el Resumen ya concilió
+        # este activo (cantidad ACTUAL, post-split), NO re-aplicamos el split (sino,
+        # multiplica un lote pre-split que la foto ya compensó → doble-conteo). Se pasa
+        # como foto_wm aparte (sin ventana de dedup). Mismo criterio read-time que /split-check.
+        foto_wm = _foto_wm_for(row["broker"], base, _foto_split_watermarks(conn, uid), {}, conn, uid)
         # Re-derivar los splits aplicables EN EL SERVER (no confiar en el cliente).
-        applicable = _applicable_splits(base, entry, wm)
+        applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)
         if not applicable:
             return {**dict(row), "already_applied": True}
         combined = 1.0
@@ -6213,34 +6264,39 @@ def positions_split_check(uid: int = Depends(get_current_user)):
                       )""",
             (uid,),
         ).fetchall()
+        # Foto de tenencia como watermark: un activo que el Resumen ya concilió está al
+        # ratio ACTUAL (post-split) → no hay que ofrecer "Ajustar". Se deriva read-time.
+        _foto_map = _foto_split_watermarks(conn, uid)
+        _pair_cache = {}
+        suggestions = []
+        for r in rows:
+            asset = (r["asset"] or "").upper()
+            base = asset[:-3] if asset.endswith(".BA") else asset
+            if not base:
+                continue
+            entry = (r["entry_date"] or "")[:10]
+            wm = ((r["split_adjusted_through"] if "split_adjusted_through" in r.keys() else "") or "")[:10]
+            foto_wm = _foto_wm_for(r["broker"], base, _foto_map, _pair_cache, conn, uid)
+            applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)  # SSoT con /adjust-ratio
+            if not applicable:
+                continue
+            combined = 1.0
+            for _, f in applicable:
+                combined *= f
+            cur_qty = float(r["quantity"] or 0)
+            suggestions.append({
+                "pid": r["id"],
+                "asset": asset,
+                "broker": r["broker"],
+                "factor": round(combined, 6),
+                "ex_date": max(d for d, _ in applicable),
+                "current_qty": cur_qty,
+                "suggested_qty": round(cur_qty * combined, 6),
+                "raw_splits": [{"ex_date": d, "factor": f} for d, f in applicable],
+            })
+        return {"suggestions": suggestions}
     finally:
         conn.close()
-    suggestions = []
-    for r in rows:
-        asset = (r["asset"] or "").upper()
-        base = asset[:-3] if asset.endswith(".BA") else asset
-        if not base:
-            continue
-        entry = (r["entry_date"] or "")[:10]
-        wm = ((r["split_adjusted_through"] if "split_adjusted_through" in r.keys() else "") or "")[:10]
-        applicable = _applicable_splits(base, entry, wm)  # SSoT con /adjust-ratio
-        if not applicable:
-            continue
-        combined = 1.0
-        for _, f in applicable:
-            combined *= f
-        cur_qty = float(r["quantity"] or 0)
-        suggestions.append({
-            "pid": r["id"],
-            "asset": asset,
-            "broker": r["broker"],
-            "factor": round(combined, 6),
-            "ex_date": max(d for d, _ in applicable),
-            "current_qty": cur_qty,
-            "suggested_qty": round(cur_qty * combined, 6),
-            "raw_splits": [{"ex_date": d, "factor": f} for d, f in applicable],
-        })
-    return {"suggestions": suggestions}
 
 
 # ─── Plazos fijos ─────────────────────────────────────────────────────────────

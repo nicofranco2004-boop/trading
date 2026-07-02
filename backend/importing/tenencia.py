@@ -30,6 +30,13 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+# Prefijo de la nota del seed BUY sintético de la foto (una fila por activo). Es un
+# CONTRATO entre el productor (build_tenencia_seed_txs, abajo) y varios consumidores
+# que la matchean por LIKE: el sweep de amortización (maturity.py) que exime estos
+# lotes, y el watermark de splits (main._foto_split_watermarks) que usa su fecha =
+# fecha de la foto. Si cambia el texto, todos deben leer de acá (no hardcodear).
+TENENCIA_APERTURA_NOTE_PREFIX = "Tenencia — apertura"
+
 
 # Encabezado de sección (lowercase, sin tildes) → asset_type Rendi.
 _SECTION_TYPE = {
@@ -197,7 +204,7 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
             asset_symbol=h.ticker, asset_type=h.asset_type,
             quantity=gap, unit_price=h.price_per1,
             gross_amount=round(gap * h.price_per1, 4), currency=currency,
-            notes=f"Tenencia — apertura {h.ticker} a precio de {seed_date} (P&L 0)"))
+            notes=f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker} a precio de {seed_date} (P&L 0)"))
         idx += 1
     if override:
         # Reducciones que llevan el estado EXACTO a la foto. Precio/monto 0 +

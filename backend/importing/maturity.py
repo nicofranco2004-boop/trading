@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Optional
 
 from .schema import OP_BUY, OP_SELL
 from .persister import broker_pair
+from .tenencia import TENENCIA_APERTURA_NOTE_PREFIX
 from pricing.bond_amortization import is_amortizing_bond, residual_factor
 
 log = logging.getLogger(__name__)
@@ -270,7 +271,7 @@ def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
                AND NOT (n.operation_type = ?
                         AND lower(COALESCE(n.notes,'')) LIKE '%amortiz%')
                AND NOT (n.operation_type = ?
-                        AND COALESCE(n.notes,'') LIKE 'Tenencia — apertura%')
+                        AND COALESCE(n.notes,'') LIKE '{TENENCIA_APERTURA_NOTE_PREFIX}%')
              ORDER BY n.date ASC, n.id ASC""",
         (uid, *brokers, asset, OP_BUY, OP_SELL, OP_SELL, OP_BUY),
     ).fetchall()
@@ -309,10 +310,10 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
     # (el rebuild pierde el `notes` en la posición pero la tx normalizada lo conserva).
     seed_pids = {
         r["cpid"] for r in conn.execute(
-            """SELECT DISTINCT n.created_position_id AS cpid
+            f"""SELECT DISTINCT n.created_position_id AS cpid
                  FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
                 WHERE b.user_id=? AND n.created_position_id IS NOT NULL
-                  AND n.notes LIKE 'Tenencia — apertura%'""",
+                  AND n.notes LIKE '{TENENCIA_APERTURA_NOTE_PREFIX}%'""",
             (uid,),
         ).fetchall()
     }
