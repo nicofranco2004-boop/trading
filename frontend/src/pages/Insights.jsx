@@ -286,7 +286,16 @@ function InsightsDesktop({ _embeddedTab }) {
       return (mktArs != null && trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null))
         ? mktArs / tcBlue : realCost / tcBlue
     }
-    if (costInPesos(p)) return pesoLotUsd(p, prices, tcCedear).valueUsd
+    if (costInPesos(p)) {
+      // Mismo clamp anti-distorsión que el resto de las ramas: un bono/activo en
+      // pesos con precio .BA absurdo (convención per-100 tomada como per-1 → ×100)
+      // no se confía → cae a costo (P&L 0). Sin esto, un dual en pesos alojado en
+      // un broker USD se inflaba ×100 SOLO acá (el total lo salvaba por otra vía),
+      // apareciendo como "689% de la cartera" y una atribución P&L fantasma.
+      const { investedUsd, valueUsd } = pesoLotUsd(p, prices, tcCedear)
+      return trustMktValue(valueUsd, investedUsd, p.asset_type, p.price_override != null)
+        ? valueUsd : investedUsd
+    }
     if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
       const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
       const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
