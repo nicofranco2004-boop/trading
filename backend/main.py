@@ -19078,6 +19078,55 @@ def _migrate_snapshots_netdep():
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _remap_fci_broker_tickers(conn) -> int:
+    """Remapea los tickers CRUDOS de FCI de broker (COCOA, CONIOLA, BCAHA…) al símbolo
+    de catálogo (FCI:<slug>) en positions/operations/import_normalized_tx. Devuelve las
+    filas tocadas. Idempotente (tras remap el ticker crudo ya no existe). NO commitea."""
+    from importing.fci_map import BROKER_FCI_AD_NAME, resolve_fci_symbol
+    raws = [t for t in BROKER_FCI_AD_NAME if resolve_fci_symbol(t)]
+    if not raws:
+        return 0
+    ph = ",".join("?" * len(raws))
+    # Guard barato: ¿queda alguna posición con ticker crudo por remapear?
+    if not conn.execute(f"SELECT 1 FROM positions WHERE asset IN ({ph}) LIMIT 1", raws).fetchone():
+        return 0
+    total = 0
+    for raw in raws:
+        sym = resolve_fci_symbol(raw)
+        for tbl, col in (("positions", "asset"), ("operations", "asset"),
+                         ("import_normalized_tx", "asset_symbol")):
+            total += conn.execute(f"UPDATE {tbl} SET {col}=? WHERE {col}=?", (sym, raw)).rowcount
+    return total
+
+
+@app.on_event("startup")
+def _migrate_fci_ticker_remap():
+    """Migración automática al deploy: aplica _remap_fci_broker_tickers. Sirve para que
+    un FCI agregado al mapa DESPUÉS de que el usuario importó tome precio live SIN
+    re-importar (el mapeo ticker→símbolo corre en el normalizer al importar; los imports
+    viejos quedaron con el ticker crudo → al costo). Genérico → cubre cualquier FCI que
+    agreguemos a BROKER_FCI_AD_NAME. Idempotente. Background al startup."""
+    import threading
+
+    def worker():
+        try:
+            import time as _time
+            _time.sleep(6)
+            conn = get_db()
+            try:
+                total = _remap_fci_broker_tickers(conn)
+                if total:
+                    conn.commit()
+                    logging.getLogger(__name__).info(
+                        "FCI ticker remap: %d filas remapeadas al símbolo de catálogo.", total)
+            finally:
+                conn.close()
+        except Exception as ex:
+            logging.getLogger(__name__).warning("_migrate_fci_ticker_remap falló: %s", ex)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def _run_fci_refresh_job():
     """Cron diario: refresca precios de cuotaparte de FCI desde ArgentinaDatos."""
     conn = get_db()
