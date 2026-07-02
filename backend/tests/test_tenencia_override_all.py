@@ -159,9 +159,36 @@ class _OverrideE2EBase(unittest.TestCase):
             tc = ps._read_tc_blue(self.conn, uid=self.uid)
             rb.rebuild_fifo_after_import(self.conn, self.uid, sid, tc_blue=tc)
 
+    def _import_mov_broker(self, broker, ccy, txs):
+        dep = NormalizedTx(row_index=0, date="2026-01-09", broker=broker,
+                           operation_type=OP_DEPOSIT,
+                           gross_amount=sum(t.gross_amount for t in txs) + 1000, currency=ccy)
+        allt = [dep] + txs
+        with self.conn:
+            for i, t in enumerate(allt):
+                t.row_index = -300 - i
+            sid = pl.store_preview_txs(self.conn, self.uid, broker=broker,
+                                       parser_format="x", file_name="movu", txs=allt)
+            txs2, raw = pl.load_session_for_confirm(self.conn, uid=self.uid, session_id=sid)
+            ps.persist_batch(self.conn, uid=self.uid, batch_id=sid, txs=txs2,
+                             raw_row_ids_by_index=raw, helpers=_helpers())
+            rb.rebuild_fifo_after_import(self.conn, self.uid, sid,
+                                         tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+
+    def _usd_buy(self, broker, tkr, qty, price):
+        return NormalizedTx(row_index=0, date="2026-01-10", broker=broker, operation_type=OP_BUY,
+                            asset_symbol=tkr, asset_type="CEDEAR", quantity=qty, unit_price=price,
+                            gross_amount=qty * price, currency="USD")
+
     def _held(self, asset):
         r = self.conn.execute("SELECT COALESCE(SUM(quantity),0) q FROM positions "
                              "WHERE user_id=? AND asset=? AND is_cash=0", (self.uid, asset)).fetchone()
+        return float(r["q"] or 0)
+
+    def _held_in(self, broker, asset):
+        r = self.conn.execute("SELECT COALESCE(SUM(quantity),0) q FROM positions "
+                             "WHERE user_id=? AND broker=? AND asset=? AND is_cash=0",
+                             (self.uid, broker, asset)).fetchone()
         return float(r["q"] or 0)
 
     def _preview(self, fmt, fname, data, ctype):
@@ -197,6 +224,30 @@ class CocosOverrideE2E(_OverrideE2EBase):
         self._confirm(body["session_id"])
         self.assertAlmostEqual(self._held("MELI"), 60, places=3)   # reducido
         self.assertAlmostEqual(self._held("NVDA"), 15, places=3)   # NO borrado
+
+    def test_reduces_usd_holding_in_sibling(self):
+        """Cocos también pisa los holdings en DÓLARES (sibling USD): GLOB 100→60 en el
+        sibling contra la foto USD (con AAPL/NVDA match). Reduce-only (no borra)."""
+        SIB = "Cocos · USD"
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, SIB, "USDT")); self.conn.commit()
+        self._import_mov([self._buy("MELI", 52, 21000)])            # ARS en el padre
+        self._import_mov_broker(SIB, "USD", [                       # USD en el sibling
+            self._usd_buy(SIB, "GLOB", 100, 50), self._usd_buy(SIB, "AAPL", 10, 200),
+            self._usd_buy(SIB, "NVDA", 5, 120)])
+        self.assertAlmostEqual(self._held_in(SIB, "GLOB"), 100)
+        csv = ("instrumento;cantidad;precio;moneda;total\n"
+               "CEDEAR MERCADOLIBRE INC. (MELI);52;21000;ARS;1092000\n"
+               "CEDEAR GLOBANT (GLOB);60;50;USD;3000\n"
+               "CEDEAR APPLE INC. (AAPL);10;200;USD;2000\n"
+               "CEDEAR NVIDIA (NVDA);5;120;USD;600\n"
+               "ARS;1000;1;ARS;1000\nUSD;10;1;USD;10\n")
+        body = self._preview("cocos", "foto.csv", csv, "text/csv").json()
+        self.assertIn("GLOB", {r["ticker"] for r in body["override"]["reduced"]})
+        self.assertEqual(body["override"]["removed"], [])          # Cocos NUNCA borra
+        self._confirm(body["session_id"])
+        self.assertAlmostEqual(self._held_in(SIB, "GLOB"), 60, places=3)   # reducido en USD
+        self.assertAlmostEqual(self._held_in(SIB, "AAPL"), 10, places=3)   # match, intacto
 
 
 class PpiOverrideE2E(_OverrideE2EBase):

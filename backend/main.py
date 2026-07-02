@@ -17883,10 +17883,12 @@ async def import_tenencia_preview(
                 (uid, bname)).fetchone()
             return float(row["invested"] or 0) if row else 0.0
         _sib = next((b for b in _import_persister.broker_pair(conn, uid, broker) if b != broker), None)
-        # Balanz / IEB OVERRIDE: si la foto trae USD MATERIAL (≥ 1) y no hay sibling
-        # '· USD' (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el
-        # saldo en dólares exacto. Para polvo (< 1 USD) no ensuciamos con un sub-broker.
-        if (is_balanz or is_ieb or is_iol) and snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
+        # Cualquier foto que PISA: si trae USD MATERIAL (≥ 1) y no hay sibling '· USD'
+        # (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el saldo en
+        # dólares exacto (antes sólo Balanz/IEB/IOL → Cocos/PPI/BMB con cash USD pero
+        # SIN holdings USD lo descartaban en silencio). Para polvo (< 1 USD) no
+        # ensuciamos con un sub-broker.
+        if snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
             parent_row = conn.execute(
                 "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
             _sib = _ensure_usd_sibling(conn, uid, parent_row)["name"]
