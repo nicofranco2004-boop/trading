@@ -12,7 +12,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, isArUsdBroker } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
@@ -120,6 +120,15 @@ export default function FirstInsight() {
         const trust = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null)
         valueUsd = trust ? u.valueUsd : u.investedUsd
         pnlUsd = valueUsd - u.investedUsd
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+        // Instrumento de BYMA en cuenta USD (CEDEAR o acción AR de un sub-broker
+        // "· USD"): se valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por el ticker
+        // US (un CEDEAR vale 15-100× menos que la acción → antes se inflaba 3-29×).
+        // Espeja computeBrokerValue (rama USD). Broker USD → cost YA está en USD.
+        const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+        const mktUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : null
+        valueUsd = (mktUsd != null && trustMktValue(mktUsd, cost, p.asset_type)) ? mktUsd : cost
+        pnlUsd = valueUsd - cost
       } else {
         const price = p.price_override ?? prices[p.asset]
         if (price != null) {

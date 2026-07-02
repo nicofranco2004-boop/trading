@@ -13,7 +13,7 @@ import { useState, useEffect } from 'react'
 import { Wallet, Scale } from 'lucide-react'
 import Panel from '../Panel'
 import { api } from '../../utils/api'
-import { costInPesos, trustMktValue } from '../../utils/valuation'
+import { costInPesos, trustMktValue, isArUsdBroker } from '../../utils/valuation'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
@@ -94,7 +94,7 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
   if (positions) {
     const brokerByName = Object.fromEntries(brokers.map(b => [b.name, b]))
     let qty = 0, costUsd = 0; const brk = new Set()
-    let assetType = null, hasOverride = false
+    let assetType = null, hasOverride = false, isLocalByma = false
     for (const p of positions) {
       if (p.is_cash || baseOf(p.asset) !== base) continue
       const isAR = brokerByName[p.broker]?.currency === 'ARS'
@@ -103,12 +103,19 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
       brk.add(p.broker)
       if (assetType == null && p.asset_type) assetType = p.asset_type
       if (p.price_override != null) hasOverride = true
+      // ¿Es un instrumento de BYMA que se valúa por su precio LOCAL .BA ÷ MEP y NO
+      // por el ticker US? (CEDEAR, broker AR, o sub-broker AR "· USD" con acciones
+      // argentinas). price.current_usd es la ACCIÓN US → para estos infla ~ratio×.
+      if (p.asset_type === 'CEDEAR' || isAR || isArUsdBroker(p.broker)) isLocalByma = true
     }
     if (qty > 1e-9) {
       const cur = price.current_usd
       // Clamp anti-distorsión: si el mkt (cur·qty) se despega absurdamente del costo
       // (p.ej. un bono per-100 leído como per-1 → valor ×100), caemos a costo.
-      const mkt = cur != null ? cur * qty : costUsd
+      // Además, para un instrumento de BYMA (CEDEAR / acción AR) NO usamos el precio
+      // de la acción US (price.current_usd la infla ~ratio×) — sin acceso al precio
+      // .BA en este componente, caemos a costo (P&L 0) igual que "sin precio".
+      const mkt = (cur != null && !isLocalByma) ? cur * qty : costUsd
       const valueUsd = trustMktValue(mkt, costUsd, assetType, hasOverride) ? mkt : costUsd
       owned = {
         qty, costUsd, brokers: [...brk],

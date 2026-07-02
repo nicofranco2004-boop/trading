@@ -312,7 +312,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Estampar moneda autoritativa del broker (brokers.currency) en posiciones
     # con currency NULL — _native_ccy infiere por nombre y no cubre brokers AR
     # fuera de la lista de hints (Santander/Galicia/PPI…) → ARS contado USD 1415×.
-    from behavioral import stamp_positions_currency, stamp_byma, _is_ars_broker
+    from behavioral import stamp_positions_currency, stamp_byma, _price_is_ars
     _brokers = [dict(r) for r in conn.execute(
         "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (user_id,)
     ).fetchall()]
@@ -357,11 +357,15 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
                 continue
             # EJE DEL PRECIO: el precio live de un broker AR-residente cotiza en
             # ARS (.BA) — incluido el sub-broker '· USD', cuyo CEDEAR igual
-            # cotiza en pesos en BYMA. Por eso el .BA se decide por _is_ars_broker
-            # (residencia), NO por _native_ccy (que es el eje del COST BASIS).
+            # cotiza en pesos en BYMA. El .BA se decide por _price_is_ars
+            # (PARENT-AWARE: lee p["_byma"] estampado por stamp_byma, por
+            # currency+padre estructural), NO por _is_ars_broker (nombre, que
+            # falla con brokers AR renombrados o fuera de _AR_BROKER_HINTS como
+            # Santander/Galicia → CEDEAR priceado por el ticker US ~20×).
+            # Tampoco por _native_ccy (que es el eje del COST BASIS).
             # Sin esto, un CEDEAR en 'Cocos · USD' se valuaba con el precio de la
             # acción US completa × cantidad de CEDEARs (error por el ratio).
-            if _is_ars_broker(p.get("broker")):
+            if _price_is_ars(p):
                 symbols.add(f"{asset}.BA")
             else:
                 symbols.add(asset)
@@ -392,10 +396,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # DOS ejes de moneda (como behavioral._position_value_usd):
         #  - cost_is_ars (_native_ccy): moneda del cost basis (invested/cash).
         #    Un sub-broker '· USD' tiene cost en USD aunque cotice en BYMA.
-        #  - price_is_ars (_is_ars_broker): el precio live viene en ARS (.BA)
+        #  - price_is_ars (_price_is_ars): el precio live viene en ARS (.BA)
         #    para todo broker AR-residente. Decide el lookup y la conversión.
+        #    PARENT-AWARE (lee p["_byma"] estampado), no por nombre de broker.
         cost_is_ars = _native_ccy(p) == "ARS"
-        price_is_ars = _is_ars_broker(broker_name)
+        price_is_ars = _price_is_ars(p)
         invested = float(p.get("invested") or 0)
         # Unificación FX: TODO lo ARS (cash y holdings) → USD por el dólar-MEP
         # (tc_cedear), igual que la sección Análisis del frontend. Antes el cash iba al blue.

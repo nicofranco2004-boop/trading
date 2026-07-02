@@ -45,41 +45,31 @@ def _safe_round(v, decimals: int = 4):
         return None
 
 
-def _compute_pnl_pct_for_position(p: dict, prices: dict, is_ar: bool,
+def _compute_pnl_pct_for_position(p: dict, prices: dict,
                                   tc_blue: float, tc_cedear: Optional[float] = None) -> Optional[float]:
     """% de P/L de una posición individual. Returns decimal (0.32 = 32%).
 
-    Holdings AR (.BA) se valúan al dólar-MEP (tc_cedear); cae a tc_blue si no
-    hay MEP. Como value e invested se convierten al MISMO tipo de cambio, el
-    porcentaje es invariante al dólar elegido — pero usamos MEP para mantener
-    coherencia con la valuación del patrimonio."""
-    from behavioral import _trust_mkt_value_usd
+    Delega 100% en el valuador canónico behavioral._position_value_usd para no
+    re-implementar la lógica de moneda por NOMBRE de broker (CLASE C: un CEDEAR
+    o acción AR en cuenta USD sin hint en el nombre —Santander/Galicia— se
+    valuaba por el ticker US, inflado 3-29×). El canónico rutea el eje del precio
+    por la moneda NATIVA estructural (_price_is_ars / p['_byma'] estampado) y ya
+    clampea con trustMktValue (cae a costo si el múltiplo es absurdo).
+
+    value e invested salen ambos en USD del mismo helper → el % es coherente con
+    la valuación del patrimonio. invested_usd usa honor_override=False para el
+    cost basis puro (prices={} → nunca toma precio live)."""
+    from behavioral import _position_value_usd
     if p.get("is_cash"):
         return None
     qty = p.get("quantity") or 0
     invested = p.get("invested") or 0
     if invested <= 0 or qty <= 0:
         return None
-    rate_ar = tc_cedear if (tc_cedear and tc_cedear > 0) else tc_blue
-    if is_ar:
-        price = p.get("price_override") or prices.get(f"{p.get('asset')}.BA")
-        if not price:
-            return None
-        value_usd = (price * qty) / rate_ar
-        invested_usd = invested / rate_ar
-    else:
-        price = p.get("price_override") or prices.get(p.get("asset"))
-        if not price:
-            return None
-        value_usd = price * qty
-        invested_usd = invested
+    value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
+    invested_usd = _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False)
     if invested_usd <= 0:
         return None
-    # Cinturón anti-distorsión: si el múltiplo mkt/costo es absurdo (bono per-100,
-    # colisión de ticker, CEDEAR priceado como la acción US), NO confiamos en el
-    # precio y caemos a costo → pnl_pct=0 en vez de +171778%. AMBOS montos en USD.
-    if not _trust_mkt_value_usd(value_usd, invested_usd, p.get("asset_type")):
-        value_usd = invested_usd
     return (value_usd - invested_usd) / invested_usd
 
 
@@ -117,7 +107,7 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
     # tc_blue (cash en pesos) y tc_cedear (dólar-MEP, holdings AR/.BA). Reusamos
     # esto tanto para la valuación propia del patrimonio como para behavioral.
     from analysis_prep import currency_context
-    from behavioral import _position_value_usd, _is_ars_broker
+    from behavioral import _position_value_usd
     prices, tc_blue, tc_cedear = currency_context(conn, user_id, positions)
     if tc_blue <= 0:
         tc_blue = 1
@@ -131,7 +121,6 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
     position_pnls: List[Dict[str, Any]] = []
 
     for p in positions:
-        is_ar = _is_ars_broker(p.get("broker"))
         if p.get("is_cash"):
             value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
             cash_usd += value_usd
@@ -140,7 +129,7 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
         value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         total_value_usd += value_usd
 
-        pnl_pct = _compute_pnl_pct_for_position(p, prices, is_ar, tc_blue, tc_cedear)
+        pnl_pct = _compute_pnl_pct_for_position(p, prices, tc_blue, tc_cedear)
         if pnl_pct is not None:
             position_pnls.append({"asset": p["asset"], "pnl_pct": pnl_pct, "weight": value_usd})
 
