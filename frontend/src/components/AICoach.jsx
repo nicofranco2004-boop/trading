@@ -74,6 +74,8 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
   // Si está seteado, mostramos UpgradePromoCard en lugar del banner rojo.
   const [upgradeInfo, setUpgradeInfo] = useState(null)
   const scrollRef = useRef(null)
+  // ¿el user está pegado al fondo? Solo auto-scrolleamos si sí (ver useEffect).
+  const stickToBottomRef = useRef(true)
 
   // Cargar cuota inicial — solo lectura, sin gating front (el server tiene la
   // verdad). Si falla, no rompemos UX — el server devolverá 429 si excede.
@@ -85,9 +87,12 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
     return () => { cancelled = true }
   }, [])
 
-  // Auto-scroll al final cuando llegan mensajes nuevos
+  // Auto-scroll al final SOLO si el user está pegado al fondo. Durante el
+  // streaming los mensajes cambian en cada token; si el user scrolleó para
+  // arriba a leer el principio, NO lo forzamos abajo (antes cada token lo
+  // tiraba al final y no podía leer hasta que terminaba de escribir).
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && stickToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages, loading])
@@ -114,6 +119,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
     setMessages(newMessages)
     setLoading(true)
     setError(null)
+    stickToBottomRef.current = true  // pregunta nueva → arrancamos pegados al fondo
 
     // Streaming: los puntitos se muestran hasta que llega el PRIMER token; a
     // partir de ahí ocultamos el loader y vamos rellenando la burbuja del
@@ -285,7 +291,15 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       </div>
 
       {/* Mensajes */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 max-h-[420px] min-h-[180px]">
+      <div
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget
+          // pegado al fondo si está a menos de 80px del final
+          stickToBottomRef.current = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80
+        }}
+        className="flex-1 overflow-y-auto px-4 py-3 space-y-3 max-h-[420px] min-h-[180px]"
+      >
         {messages.length === 0 && !loading && (
           <div className="text-center py-2">
             <p className="text-sm text-ink-2 mb-3">
