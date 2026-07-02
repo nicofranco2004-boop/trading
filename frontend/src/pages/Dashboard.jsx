@@ -1219,14 +1219,21 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcBlue = 1 }) {
     const byAsset = new Map()
     for (const p of positions) {
       if (!p.value_usd || p.value_usd <= 0) continue
-      const cur = byAsset.get(p.asset) || { asset: p.asset, value_usd: 0, pnl_usd: 0, pnl_pct: null }
+      const cur = byAsset.get(p.asset) || { asset: p.asset, value_usd: 0, pnl_usd: 0 }
       cur.value_usd += p.value_usd
       cur.pnl_usd += (p.pnl_usd || 0)
-      // Mantener el primer pnl_pct disponible (no se puede sumar pct con sentido)
-      if (cur.pnl_pct == null && p.pnl_pct != null) cur.pnl_pct = p.pnl_pct
       byAsset.set(p.asset, cur)
     }
     return Array.from(byAsset.values())
+      // pnl_pct AGREGADO de toda la posición: NO quedarse con el % del PRIMER lote
+      // (un lote viejo con +157% hacía ver TODA la posición así aunque el P&L$ real
+      // fuera +28%). El costo agregado = value − pnl (la identidad vale en todas las
+      // ramas de positionsForInsight), así el % refleja la posición entera. Mismo
+      // formato ratio que pnl_pct de origen (pctSigned lo lleva a %).
+      .map(a => {
+        const invested = a.value_usd - a.pnl_usd
+        return { ...a, pnl_pct: invested > 0 ? a.pnl_usd / invested : null }
+      })
       .sort((a, b) => b.value_usd - a.value_usd)
       .slice(0, 5)
   }, [positions])
