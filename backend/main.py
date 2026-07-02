@@ -17932,12 +17932,6 @@ async def import_tenencia_preview(
             # mezclar magnitudes USD en el cash ARS del padre) y —clave— el override
             # SÍ toca los holdings en dólares (antes el path agregado los saltaba por
             # la guarda same-broker → la foto no pisaba nada en USD).
-            usd_broker = broker
-            if any(h.currency == "USD" for h in snap.holdings):
-                parent_row = conn.execute(
-                    "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
-                usd_broker = _ensure_usd_sibling(conn, uid, parent_row)["name"]
-
             def _cur_qty(bname):
                 d = {}
                 for r in conn.execute(
@@ -17950,6 +17944,77 @@ async def import_tenencia_preview(
 
             from importing.persister import broker_pair as _broker_pair
             pair = _broker_pair(conn, uid, broker)
+
+            # Bono amortizante cross-currency: la foto puede reportar el bono en AR$
+            # (valor en pesos) aunque el usuario lo OPERE en USD (p.ej. AL30D, que el
+            # parser consolida al sibling '· USD'). Si respetáramos la moneda de la foto,
+            # el loop per-partición sembraría el bono en la partición ARS (padre) y
+            # quedaría DUPLICADO (padre ARS + sibling USD, sumando ≠ foto). Re-taggeamos
+            # la moneda del holding a la partición donde YA viven sus lotes → concilia y
+            # siembra en la correcta. Espejo del guard cross-currency de not_in_snapshot,
+            # scopeado a bonos amortizantes (donde el sweep y la foto chocan); NO tocamos
+            # acciones/CEDEARs (que sí pueden vivir en dos monedas). CLAVE: corre ANTES de
+            # resolver usd_broker → el re-tag hace que la foto "tenga USD" y el sibling se
+            # resuelva aunque la foto no traiga OTROS holdings dólar. La partición
+            # (padre/sibling) sale del PAR de brokers, no de la moneda de la foto.
+            _sib_usd = next((b for b in pair if b != broker), None)
+            if _sib_usd:
+                from pricing.bond_amortization import is_amortizing_bond as _is_amort
+
+                # qty + costo por partición del par (para ubicar el bono Y darle al seed
+                # el costo unitario correcto en la moneda destino).
+                def _qty_inv(bname):
+                    d = {}
+                    for r in conn.execute(
+                        "SELECT asset, SUM(quantity) q, SUM(invested) inv FROM positions "
+                        "WHERE user_id=? AND is_cash=0 AND broker=? GROUP BY asset", (uid, bname)):
+                        d[r["asset"]] = ((r["q"] or 0), (r["inv"] or 0))
+                    return d
+                _pt = {"ARS": _qty_inv(broker), "USD": _qty_inv(_sib_usd)}
+                # MEP (holdings→MEP) sólo como FALLBACK: si por algún motivo los lotes
+                # existentes no dan un costo unitario usable, convertimos el precio de la
+                # foto en vez de grabar pesos como dólares. Fallback al blue si no hay MEP.
+                _mep_row = conn.execute(
+                    "SELECT value FROM config WHERE user_id=? AND key='tc_mep'", (uid,)).fetchone()
+                try:
+                    _mep = float(_mep_row["value"]) if _mep_row and _mep_row["value"] else 0.0
+                except (TypeError, ValueError):
+                    _mep = 0.0
+                if _mep <= 0:
+                    _mep = _user_tc_blue(conn, uid)
+
+                for h in snap.holdings:
+                    if not _is_amort(h.ticker):
+                        continue
+                    other = "USD" if h.currency == "ARS" else "ARS"
+                    own_q = _pt.get(h.currency, {}).get(h.ticker, (0, 0))[0]
+                    oth_q, oth_inv = _pt[other].get(h.ticker, (0, 0))
+                    if own_q > 1e-9 or oth_q <= 1e-9:
+                        continue  # el bono NO vive sólo en la partición hermana → no tocar
+                    # El seed hereda el COSTO UNITARIO de los lotes que el bono YA tiene en
+                    # la partición destino (mismo bono, misma moneda) → costo consistente,
+                    # sin P&L fantasma y sin depender de una tasa MEP posiblemente stale. Si
+                    # el costo existente es degenerado (0), caemos a convertir el precio de
+                    # la foto por MEP (ARS→USD divide / USD→ARS multiplica) para NO grabar
+                    # pesos como dólares (el footgun 'peso contado como USD').
+                    unit = (oth_inv / oth_q) if oth_q > 1e-9 else 0.0
+                    if unit > 0:
+                        h.price_per1 = unit
+                        h.value = round(h.quantity * unit, 6)
+                    elif other == "USD":
+                        h.price_per1 /= _mep
+                        h.value /= _mep
+                    else:
+                        h.price_per1 *= _mep
+                        h.value *= _mep
+                    h.currency = other
+
+            usd_broker = broker
+            if any(h.currency == "USD" for h in snap.holdings):
+                parent_row = conn.execute(
+                    "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
+                usd_broker = _ensure_usd_sibling(conn, uid, parent_row)["name"]
+
             # `complete` (habilita BORRAR not_in_snapshot) por broker: Balanz siempre;
             # Cocos nunca (CSV plano sin señal → sólo reduce); el resto (IEB/BMB/IOL/PPI)
             # sólo si el parser NO dejó warnings de completitud. Se aplica a AMBAS

@@ -269,8 +269,10 @@ def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
                AND n.operation_type IN (?, ?)
                AND NOT (n.operation_type = ?
                         AND lower(COALESCE(n.notes,'')) LIKE '%amortiz%')
+               AND NOT (n.operation_type = ?
+                        AND COALESCE(n.notes,'') LIKE 'Tenencia — apertura%')
              ORDER BY n.date ASC, n.id ASC""",
-        (uid, *brokers, asset, OP_BUY, OP_SELL, OP_SELL),
+        (uid, *brokers, asset, OP_BUY, OP_SELL, OP_SELL, OP_BUY),
     ).fetchall()
     genuine = _cancel_conduit_pairs([dict(r) for r in rows])
     net = 0.0
@@ -301,6 +303,19 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
         ref_date = date.today().isoformat()
 
     linked = _import_linked_position_ids(conn, uid)
+    # Posiciones sembradas por la foto de tenencia ('Tenencia — apertura'): las
+    # EXIMIMOS de la amortización — su cantidad YA es el nominal residual real de HOY
+    # (la foto es la tenencia del broker). Las identificamos por created_position_id
+    # (el rebuild pierde el `notes` en la posición pero la tx normalizada lo conserva).
+    seed_pids = {
+        r["cpid"] for r in conn.execute(
+            """SELECT DISTINCT n.created_position_id AS cpid
+                 FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND n.created_position_id IS NOT NULL
+                  AND n.notes LIKE 'Tenencia — apertura%'""",
+            (uid,),
+        ).fetchall()
+    }
     adjusted: List[Dict[str, Any]] = []
 
     # nombre por (broker, activo): fallback para resolver el schedule por nombre si
@@ -347,8 +362,14 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
         if original <= 1e-9:
             continue
         target = original * r
-        # Solo los lotes import-linked se amortizan (los manuales se respetan).
-        linked_lots = [l for l in lots if l["id"] in linked]
+        # Solo los lotes import-linked se amortizan (los manuales se respetan). Además
+        # EXIMIMOS los lotes sembrados por la foto de tenencia (seed_pids): la foto es
+        # la tenencia REAL de HOY → su cantidad YA es el nominal residual (post-
+        # amortización). Re-amortizarla sería doble-conteo (y con el genuine-net que
+        # también los excluye, el factor cae a 1 = no-op sobre lo genuino). Sin esto un
+        # bono conciliado por la foto (ej. AL30) se reduce por debajo de la foto y
+        # encima queda partido entre particiones.
+        linked_lots = [l for l in lots if l["id"] in linked and l["id"] not in seed_pids]
         current = sum((l["quantity"] or 0) for l in linked_lots)
         if current <= 1e-9:
             continue

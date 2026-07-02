@@ -233,6 +233,26 @@ class SweepBondAmortTest(unittest.TestCase):
             mat.sweep_bond_amortizations(self.conn, self.uid, ref_date="2026-06-25")
         self.assertEqual(self._qty("AL30"), 1000.0)  # intacta (manual)
 
+    def test_foto_seed_exempt_from_amort(self):
+        # La foto de tenencia siembra el nominal RESIDUAL real de HOY (lo que el broker
+        # reporta), NO el original. Esos lotes ('Tenencia — apertura') NO se re-amortizan
+        # (sería doble-conteo) y tampoco cuentan en la BASE del sweep. Movimientos AL30
+        # 1000 (se amortiza a 720 = 1000×0.72) + seed de foto 300 (intacto) → 1020.
+        # Los números distinguen la regresión: 1236 = falló Change 2a (base infló con el
+        # seed); 720 = falló Change 2b (se re-amortizó el seed).
+        self._import(_csv(
+            "2024-01-15,COMPRA,Balanz,AL30,1000,0.70,700,,,0,ARS,",
+            "2026-06-30,COMPRA,Balanz,AL30,300,0.75,225,,,0,ARS,"
+            "Tenencia — apertura AL30 a precio de 2026-06-30 (P&L 0)",
+        ))
+        self.assertAlmostEqual(self._qty("AL30"), 1300.0, places=4)   # 1000 + 300 seed
+        with self.conn:
+            mat.sweep_bond_amortizations(self.conn, self.uid, ref_date="2026-06-25")
+        self.assertAlmostEqual(self._qty("AL30"), 1020.0, places=4)   # 720 (amort) + 300 (seed intacto)
+        with self.conn:  # idempotente: re-correr no cambia nada
+            mat.sweep_bond_amortizations(self.conn, self.uid, ref_date="2026-06-25")
+        self.assertAlmostEqual(self._qty("AL30"), 1020.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

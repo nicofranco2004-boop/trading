@@ -225,6 +225,45 @@ class CocosOverrideE2E(_OverrideE2EBase):
         self.assertAlmostEqual(self._held("MELI"), 60, places=3)   # reducido
         self.assertAlmostEqual(self._held("NVDA"), 15, places=3)   # NO borrado
 
+    def test_amortizing_bond_seeds_in_sibling_partition(self):
+        """Change 1 (AL30): un bono amortizante que la foto reporta en AR$ pero que el
+        usuario OPERA en USD (AL30D consolidado en el sibling) se re-taggea a la moneda
+        donde YA viven sus lotes → se siembra en la partición USD, no en la ARS (evita
+        duplicar el bono en dos monedas). Verificamos la MONEDA del to_seed."""
+        SIB = "Cocos · USD"
+        self.conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?,?,?)",
+                          (self.uid, "tc_mep", "1415"))   # holdings→MEP
+        _pid = self.conn.execute("SELECT id FROM brokers WHERE user_id=? AND name=?",
+                                 (self.uid, self.BROKER)).fetchone()["id"]
+        self.conn.execute(  # sibling linkeado al padre (como lo deja _ensure_usd_sibling)
+            "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
+            (self.uid, SIB, "USDT", _pid)); self.conn.commit()
+        self._import_mov([self._buy("MELI", 52, 21000)])           # algo en ARS (padre)
+        self._import_mov_broker(SIB, "USD", [                      # AL30 en el sibling USD
+            NormalizedTx(row_index=0, date="2026-01-10", broker=SIB, operation_type=OP_BUY,
+                         asset_symbol="AL30", asset_type="BOND", quantity=100, unit_price=0.7,
+                         gross_amount=70, currency="USD")])
+        self.assertAlmostEqual(self._held_in(SIB, "AL30"), 100)
+        csv = ("instrumento;cantidad;precio;moneda;total\n"
+               "CEDEAR MERCADOLIBRE INC. (MELI);52;21000;ARS;1092000\n"
+               "BONO AR 2030 (AL30);150;700;ARS;105000\n"         # la foto lo trae en AR$…
+               "ARS;1000;1;ARS;1000\n")
+        body = self._preview("cocos", "foto.csv", csv, "text/csv").json()
+        al = [s for s in body["to_seed"] if s["ticker"] == "AL30"]
+        self.assertEqual(len(al), 1)
+        self.assertEqual(al[0]["currency"], "USD")   # …pero se siembra en USD (donde vive)
+        # CLAVE (blocker del review): el costo NO es el precio en pesos grabado como USD.
+        # El seed HEREDA el costo unitario del lote existente (70/100 = 0.7 USD/u), no la
+        # foto en ARS (700) → costo en escala USD, consistente con la posición.
+        self.assertAlmostEqual(al[0]["price"], 0.7, places=4)
+        self.assertLess(al[0]["value"], 100)         # 50×0.7 = 35 USD, NO 35000 (peso-como-USD)
+        self._confirm(body["session_id"])
+        inv = self.conn.execute(  # el lote sembrado queda con costo en USD (no inflado)
+            "SELECT COALESCE(SUM(invested),0) i FROM positions WHERE user_id=? AND broker=? "
+            "AND asset='AL30' AND is_cash=0 AND notes LIKE 'Tenencia — apertura%'",
+            (self.uid, SIB)).fetchone()["i"]
+        self.assertAlmostEqual(float(inv), 35.0, places=2)   # 50×0.7, costo USD consistente
+
     def test_reduces_usd_holding_in_sibling(self):
         """Cocos también pisa los holdings en DÓLARES (sibling USD): GLOB 100→60 en el
         sibling contra la foto USD (con AAPL/NVDA match). Reduce-only (no borra)."""
