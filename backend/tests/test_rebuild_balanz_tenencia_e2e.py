@@ -189,13 +189,9 @@ class BalanzFotoOverrideE2E(unittest.TestCase):
                     f"SELECT DISTINCT broker,currency FROM positions WHERE user_id=? AND is_cash=0 "
                     f"AND broker IN ({php}) AND asset=? AND UPPER(asset_type)='FUND' AND asset NOT LIKE 'FCI:%'",
                     (self.uid, *pair, h.ticker)):
-                    is_usd = (prow["broker"] != self.BROKER) or (prow["currency"] or "").upper() in ("USD", "USDT")
-                    if is_usd:
-                        if not snap.fx_mep:
-                            continue
-                        po = round(h.price_per1 / snap.fx_mep, 8)
-                    else:
-                        po = round(h.price_per1, 6)
+                    # price_per1 ya está en la moneda nativa del fondo = la de la posición
+                    # → directo, sin MEP (Balanz muestra los fondos USD con "$" pero el número es USD).
+                    po = round(h.price_per1, 6)
                     fpo.append({"asset": h.ticker, "broker": prow["broker"], "po": po})
             sid = pl.store_preview_txs(
                 self.conn, self.uid, broker=self.BROKER, parser_format="balanz_tenencia",
@@ -306,14 +302,16 @@ class BalanzFotoOverrideE2E(unittest.TestCase):
         snap = tn.TenenciaSnapshot(date="2026-07-01")
         snap.fx_mep = 1000.0
         snap.holdings = [
-            _H("BMMA", "FUND", 1000, 210),     # ARS → override = 210
+            _H("BMMA", "FUND", 1000, 210),     # ARS → override = 210 (pesos)
             _H("AAPL", "CEDEAR", 1, 23000),    # control → sin override
-            _H("BDOLA", "FUND", 100, 0.5),     # USD → override = 0.5/mep = 0.0005
+            # USD: Balanz muestra "$ 6" pero es u$s 6 → override = 6 DIRECTO (no /mep);
+            # la valuación lo multiplica por MEP porque la posición vive en el sibling USD.
+            _H("BDOLA", "FUND", 100, 6),
         ]
         snap.cash_ars = 837.14
         self._import_foto(snap)
         self.assertAlmostEqual(self._po("BMMA")[0], 210.0, places=4)
-        self.assertAlmostEqual(self._po("BDOLA")[0], 0.0005, places=8)   # 0.5 / 1000 (MEP)
+        self.assertAlmostEqual(self._po("BDOLA")[0], 6.0, places=6)   # price_per1 directo (USD)
         self.assertEqual(self._po("AAPL"), [None])   # CEDEAR sigue el precio en vivo
 
     def test_backfill_reaplica_y_revert_limpia_fci_override(self):

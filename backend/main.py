@@ -17909,11 +17909,18 @@ async def import_tenencia_preview(
         # estampar positions.price_override en el confirm (DESPUÉS del rebuild, que si no
         # lo pisaría con None). NO tocamos CEDEARs/acciones/bonos (que sí cotizan y deben
         # seguir el precio en vivo) ni los FCI ya mapeados a 'FCI:%' (esos tienen precio).
+        # CLAVE: Balanz muestra el Precio/Valor de CADA fondo en su MONEDA NATIVA, pero
+        # SIEMPRE con signo "$" — para un FCI en dólares (ej. BBALANCED "…DAC", BAHUSDA)
+        # el "$ 1,28" es en realidad u$s 1,28. price_per1 (= valor/cantidad del PDF) ya
+        # viene en esa moneda nativa, que COINCIDE con la moneda de la posición del user
+        # (el sibling '· USD' para los fondos dólar). Por eso el override es price_per1
+        # DIRECTO, SIN convertir por MEP: la valuación ya multiplica por MEP si la
+        # posición es USD. (Dividir por MEP —lo que hacía antes— hundía el fondo dólar a
+        # ~1/1500 de su valor: ese era el "hueco" que el user veía vs Balanz.)
         _fund_overrides = []
         if is_balanz:
             _pair_fpo = _import_persister.broker_pair(conn, uid, broker)
             _php_fpo = ",".join("?" * len(_pair_fpo))
-            _mep = snap.fx_mep or None
             for _h in snap.holdings:
                 if (_h.asset_type or "").upper() != "FUND" or not _h.price_per1:
                     continue
@@ -17923,22 +17930,7 @@ async def import_tenencia_preview(
                     f"AND UPPER(asset_type)='FUND' AND asset NOT LIKE 'FCI:%'",
                     (uid, *_pair_fpo, _h.ticker),
                 ):
-                    # Moneda de la posición por el BROKER (igual que la valuación: el
-                    # sibling '· USD' es USD sí o sí), NO por positions.currency que podría
-                    # venir NULL en data vieja → evita estampar un precio en pesos sobre una
-                    # posición que el motor lee en USD (×MEP inflado, el bug que esto arregla).
-                    _is_usd = (_prow["broker"] != broker) or (_prow["currency"] or "").upper() in ("USD", "USDT")
-                    # La foto trae la cuotaparte en PESOS. Si el FCI del usuario vive en
-                    # la cuenta dólar (sibling '· USD'), convertimos a USD por el MEP de
-                    # la foto; si no hay MEP, lo dejamos a costo (no arriesgamos el FX).
-                    if _is_usd:
-                        if not _mep:
-                            snap.warnings.append(
-                                f"{_h.ticker}: FCI en dólares sin MEP en la foto — queda a costo")
-                            continue
-                        _po = round(_h.price_per1 / _mep, 8)
-                    else:
-                        _po = round(_h.price_per1, 6)
+                    _po = round(_h.price_per1, 6)   # moneda nativa del PDF = la de la posición
                     _fund_overrides.append({"asset": _h.ticker, "broker": _prow["broker"], "po": _po})
 
         # Completitud de la lectura (sólo la puebla el parser de IEB por ahora): si
