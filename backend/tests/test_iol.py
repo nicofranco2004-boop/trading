@@ -206,17 +206,26 @@ class TestTicker(unittest.TestCase):
         self.assertEqual(self._ticker("Compra(INTC)"), "INTC")
         self.assertEqual(self._ticker("Compra(YPFD)"), "YPFD")
 
+    def test_dotted_ticker_not_truncated(self):
+        # Ticker con punto (BA.C = Bank of America CEDEAR): la letra final es parte del
+        # símbolo (clase), NO un sufijo dólar/cable → no se trunca (matchea la foto).
+        self.assertEqual(self._ticker("Compra(BA.C)"), "BA.C")
+        # Un dólar-MEP genuino sí se consolida (no tiene punto ni es FCI).
+        self.assertEqual(self._ticker("Compra(GGALD)"), "GGAL")
+
     def test_strips_usd_suffix(self):
         res = _parse([_row("Pago de Dividendos(EDN US$)", monto="100",
                             cuenta="Inversion Argentina Dolares")])
         self.assertEqual(res.raw_rows[0].data["activo"], "EDN")
 
-    def test_fci_underscore_suffix(self):
-        # FCI_C / FCI_D → FCI_ ; FCI_A / FCI_B se mantienen.
-        self.assertEqual(self._ticker("Rescate FCI(FCI_C)"), "FCI_")
-        self.assertEqual(self._ticker("Rescate FCI(FCI_D)"), "FCI_")
+    def test_fci_ticker_not_truncated(self):
+        # Los FCI NO se truncan: la D/C final no es sufijo dólar-MEP sino parte del
+        # ticker (IOL DÓLAR = IOLDOLD) → matchean la foto de tenencia (Resumen), que
+        # usa el símbolo tal cual. Antes 'FCI_C'/'FCI_D'→'FCI_' desalineaba mov vs foto.
+        self.assertEqual(self._ticker("Rescate FCI(IOLDOLD)"), "IOLDOLD")
+        self.assertEqual(self._ticker("Suscripción FCI(ADCGLOA)"), "ADCGLOA")
+        self.assertEqual(self._ticker("Rescate FCI(FCI_C)"), "FCI_C")
         self.assertEqual(self._ticker("Rescate FCI(FCI_A)"), "FCI_A")
-        self.assertEqual(self._ticker("Rescate FCI(FCI_B)"), "FCI_B")
 
     def test_cash_ops_have_no_ticker(self):
         res = _parse([

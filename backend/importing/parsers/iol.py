@@ -189,15 +189,22 @@ def _has_usd_suffix(raw_ticker: str) -> bool:
     return t.endswith("US$") or t.endswith("U$S")
 
 
-def _clean_ticker(raw_ticker: str) -> str:
+def _clean_ticker(raw_ticker: str, is_fci: bool = False) -> str:
     """Normaliza el ticker del Tipo Mov. al símbolo base de Rendi:
        - quita el sufijo de moneda 'US$' / 'U$S'
        - quita el sufijo dólar/cable 'D'/'C' (consolida la pata dólar con el
          subyacente), salvo que sea un ticker conocido que legítimamente termina
          en C/D (AMD, GOLD, INTC, …).
+    NO quita la D/C cuando:
+       • es un FCI (`is_fci`): su ticker no es una pata dólar-MEP y suele terminar
+         en D/C legítimamente (IOLDOLD, …) → truncarlo lo desalinea de la foto;
+       • el ticker tiene un punto (BA.C, BR.K…): el punto ya marca la clase y la
+         letra final es parte del símbolo, no un sufijo dólar/cable.
     """
     t = raw_ticker.strip().upper()
     t = re.sub(r"\s*(US\$|U\$S)$", "", t).strip()
+    if is_fci or "." in t:
+        return t
     if len(t) >= 3 and t[-1] in ("D", "C") and t not in _KNOWN_CD_TICKERS:
         t = t[:-1]
     return t
@@ -309,8 +316,10 @@ def _detect_iol_conduits(rows: List[dict], G) -> tuple:
         if qty <= 0:
             continue
         cuenta = _deaccent(G(row, "tipocuenta").lower())
+        _head = _deaccent(_PAREN_RX.split(tipo_mov, 1)[0].strip().lower())
+        _is_fci = "suscripcion" in _head or "rescate" in _head
         legs.append({
-            "idx": i, "base": _clean_ticker(raw), "qty": qty,
+            "idx": i, "base": _clean_ticker(raw, is_fci=_is_fci), "qty": qty,
             "dir": "C" if op == "COMPRA" else "V",
             "date": _parse_date(G(row, "concert")),
             "usd": _has_usd_suffix(raw) or any(h in cuenta for h in _CUENTA_USD_HINTS),
@@ -513,8 +522,9 @@ class IolParser(Parser):
             head = _deaccent(_PAREN_RX.split(tipo_mov, 1)[0].strip().lower())
             asset_type = "FUND" if ("suscripcion" in head or "rescate" in head) else ""
 
-            # Ticker (solo para operaciones con activo).
-            ticker = _clean_ticker(raw_ticker) if raw_ticker else ""
+            # Ticker (solo para operaciones con activo). Los FCI (asset_type FUND) no
+            # se truncan (IOLDOLD ≠ IOLDOL) para que matcheen la foto de tenencia.
+            ticker = _clean_ticker(raw_ticker, is_fci=(asset_type == "FUND")) if raw_ticker else ""
             if tipo_rendi in ("DEPOSITO", "RETIRO", "INTERES"):
                 ticker = ""   # cash flows sin activo (incluye patas del conducto)
 
