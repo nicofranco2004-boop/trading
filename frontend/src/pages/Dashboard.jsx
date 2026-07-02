@@ -26,6 +26,7 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, isArUsdBroker } from '../utils/valuation'
+import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
@@ -228,7 +229,7 @@ export default function Dashboard() {
   // broker NO-exchange (Cocos, Balanz…), crypto va al dólar cripto (~5% sobre spot).
   const exchangeBrokers = useMemo(() => new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name)), [brokers])
   const positionsForInsight = useMemo(() => {
-    return positions.filter(p => !p.is_cash).map(p => {
+    const rows = positions.filter(p => !p.is_cash).map(p => {
       const isARS = arsBrokerNames.has(p.broker)
       // Cost basis económico = invested + buy commissions (igual que valuation.js).
       const realCost = (p.invested || 0) + (p.commissions || 0)
@@ -287,6 +288,10 @@ export default function Dashboard() {
       const pnlPct = pnlUsd != null && invForPct > 0 ? pnlUsd / invForPct : null
       return { asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct }
     })
+    // Cinturón anti-inconsistencia (dev-only): alerta si alguna fila no cierra
+    // (value/pnl vs %) o huele a inflado — caza la clase GOOGL/bono automáticamente.
+    auditPositions(rows, 'Dashboard.positionsForInsight')
+    return rows
   }, [positions, prices, tcBlue, arsBrokerNames, exchangeBrokers, tcCripto, tcCedear])
 
   const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, positions: positionsForInsight }), [totalValue, netDeposited, positionsForInsight])

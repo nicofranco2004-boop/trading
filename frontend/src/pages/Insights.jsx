@@ -22,6 +22,7 @@ import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
+import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
@@ -1389,6 +1390,9 @@ function InsightsDesktop({ _embeddedTab }) {
       pct_of_portfolio: totalPortfolio > 0 ? +((valueUsd / totalPortfolio) * 100).toFixed(2) : null,
     }
   }).sort((a, b) => (b.value_usd || 0) - (a.value_usd || 0))
+  // Cinturón anti-inconsistencia (dev-only): alerta si alguna posición del snapshot
+  // no cierra (value/pnl vs %) o huele a inflado — sin cambiar ningún valor.
+  auditPositions(aiPositions, 'Insights.aiPositions')
 
   const aiCash = positions.filter(p => p.is_cash).map(p => ({
     broker: p.broker,
