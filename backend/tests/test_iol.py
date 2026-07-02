@@ -218,6 +218,43 @@ class TestTicker(unittest.TestCase):
                             cuenta="Inversion Argentina Dolares")])
         self.assertEqual(res.raw_rows[0].data["activo"], "EDN")
 
+    def test_usd_fci_not_double_booked(self):
+        # IOL exporta una Suscripción de FCI en dólares como DOS filas (mismo boleto):
+        # 'Dolares' con el monto real + 'Pesos' con monto 0. Sólo debe quedar UNA
+        # posición (la de dólares) — la de monto 0 es phantom (sino: padre ARS + USD).
+        res = _parse([
+            _row("Suscripción FCI(ADCGLOA)", cant="8", precio="1,1888", monto="-10,27",
+                 cuenta="Inversion Argentina Dolares"),
+            _row("Suscripción FCI(ADCGLOA)", cant="8", precio="1,1888", monto="0,00",
+                 cuenta="Inversion Argentina Pesos"),
+        ])
+        adc = [r.data for r in res.raw_rows if r.data.get("activo") == "ADCGLOA"]
+        self.assertEqual(len(adc), 1)                 # NO doble-booking
+        self.assertEqual(adc[0]["moneda"], "USD")     # queda la pata real (dólares)
+
+    def test_usd_fci_phantom_needs_matching_qty(self):
+        # Guarda defensiva: la pata de Monto 0 se descarta SÓLO si su cantidad coincide
+        # con la de una hermana real. Dos patas del mismo boleto con cantidades
+        # DISTINTAS no son el espejo del doble-booking → se conservan ambas.
+        res = _parse([
+            _row("Suscripción FCI(ADCGLOA)", cant="8", precio="1,1888", monto="-10,27",
+                 cuenta="Inversion Argentina Dolares"),
+            _row("Suscripción FCI(ADCGLOA)", cant="5", precio="1,1888", monto="0,00",
+                 cuenta="Inversion Argentina Pesos"),
+        ])
+        adc = [r.data for r in res.raw_rows if r.data.get("activo") == "ADCGLOA"]
+        self.assertEqual(len(adc), 2)                 # cantidades distintas → NO se dropea
+
+    def test_ars_fci_still_imported(self):
+        # Un FCI en PESOS (una sola fila con monto real) NO se saltea.
+        res = _parse([
+            _row("Suscripción FCI(IOLPORA)", cant="3848", precio="1,549", monto="-5961,86",
+                 cuenta="Inversion Argentina Pesos"),
+        ])
+        adc = [r.data for r in res.raw_rows if r.data.get("activo") == "IOLPORA"]
+        self.assertEqual(len(adc), 1)
+        self.assertEqual(adc[0]["moneda"], "ARS")
+
     def test_fci_ticker_not_truncated(self):
         # Los FCI NO se truncan: la D/C final no es sufijo dólar-MEP sino parte del
         # ticker (IOL DÓLAR = IOLDOLD) → matchean la foto de tenencia (Resumen), que

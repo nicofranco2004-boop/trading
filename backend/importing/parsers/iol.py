@@ -385,6 +385,52 @@ def _detect_iol_conduits(rows: List[dict], G) -> tuple:
     return fx, fee, drop
 
 
+def _detect_iol_fci_phantoms(rows: List[dict], G) -> set:
+    """Doble-booking de FCI en dólares: IOL exporta UNA Suscripción/Rescate de FCI en
+    dólares como DOS filas del mismo Boleto+activo (misma cantidad) — la pata de la
+    moneda real trae el Monto y la otra viene en 0. La pata de Monto 0 es un DUPLICADO:
+    contarla crea una posición phantom en la moneda contraria (padre ARS + sibling USD).
+
+    Devolvemos el set de índices de filas a DESCARTAR: la(s) pata(s) de Monto 0 de un
+    grupo (Boleto, activo) que tenga una hermana con Monto real Y LA MISMA CANTIDAD. Un
+    FCI de una sola fila —aunque venga sin Monto— nunca entra a un grupo de ≥2, así que
+    jamás se pierde. La guarda de cantidad ancla la firma exacta del doble-booking
+    ("mismo Boleto + mismo activo + MISMA cantidad, una con Monto y otra en 0"): si por
+    lo que fuera dos órdenes distintas colisionaran en un Boleto con cantidades
+    distintas, NO borramos la de Monto 0. Sólo aplica a Suscripción/Rescate de FCI (un
+    trade normal con Monto 0 cae al fallback cantidad×precio, que sí conservamos)."""
+    groups: dict = {}   # (boleto, base) → [(idx, monto_abs, qty_abs), ...]
+    for i, row in enumerate(rows, start=1):
+        tipo_mov = _strip(G(row, "tipomov"))
+        if _resolve_op(tipo_mov) not in ("COMPRA", "VENTA"):
+            continue
+        head = _deaccent(_PAREN_RX.split(tipo_mov, 1)[0].strip().lower())
+        if "suscripcion" not in head and "rescate" not in head:
+            continue  # sólo FCI
+        raw = _extract_raw_ticker(tipo_mov)
+        if not raw:
+            continue
+        boleto = _strip(G(row, "nrodeboleto"))
+        if not boleto or boleto == "0":
+            continue  # sin boleto no podemos parear con confianza
+        key = (boleto, _clean_ticker(raw, is_fci=True))
+        groups.setdefault(key, []).append(
+            (i, abs(_num(G(row, "monto"))), abs(_num(G(row, "canttitulos")))))
+
+    drop = set()
+    for legs in groups.values():
+        if len(legs) < 2:
+            continue  # fila suelta: nunca se descarta
+        real_qtys = [q for _, m, q in legs if m > 0]   # cantidades de las patas reales
+        if not real_qtys:
+            continue
+        for i, m, q in legs:
+            # Espejo phantom: Monto 0 y cantidad que coincide con una pata real.
+            if m == 0 and any(abs(q - rq) <= 1e-6 * max(1.0, rq) for rq in real_qtys):
+                drop.add(i)
+    return drop
+
+
 class IolParser(Parser):
     format_id = "iol"
     display_name = "IOL (InvertirOnline)"
@@ -449,9 +495,18 @@ class IolParser(Parser):
         # fantasma del bono + P&L basura + cash fabricado. Ver _detect_iol_conduits.
         conduit_fx, conduit_fee, conduit_drop = _detect_iol_conduits(rows, G)
 
+        # Doble-booking de FCI en dólares: IOL exporta UNA Suscripción/Rescate de FCI
+        # en dólares como DOS filas (mismo Boleto + mismo activo, misma cantidad) — la
+        # pata de la moneda real trae el Monto y la otra viene en 0. Si contamos las
+        # dos, se crea una posición phantom en la moneda de la pata-0 (padre ARS +
+        # sibling USD = el FCI booqueado doble). Marcamos como drop la pata de Monto 0
+        # SÓLO cuando existe una hermana (mismo Boleto+activo) con Monto real — así una
+        # suscripción legítima de una sola fila (aunque venga sin Monto) nunca se pierde.
+        fci_phantom_drop = _detect_iol_fci_phantoms(rows, G)
+
         for idx, row in enumerate(rows, start=1):
-            if idx in conduit_drop:
-                continue  # pata dólar USD ya fundida en un FX
+            if idx in conduit_drop or idx in fci_phantom_drop:
+                continue  # pata dólar USD fundida en un FX / pata-0 de doble-booking FCI
             tipo_mov = G(row, "tipomov")
             if not tipo_mov:
                 continue  # fila vacía / sin tipo
