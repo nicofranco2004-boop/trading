@@ -63,7 +63,11 @@ export const DIAGNOSTIC_GENERATORS = [
       if (!pieData || !pieData.length || !totalPortfolio) return null
       const top = [...pieData].sort((a, b) => b.value - a.value)[0]
       const sharePct = (top.value / totalPortfolio) * 100
-      if (sharePct < 50) return null
+      // Un solo activo no puede ser >100% de la cartera: si sale así, el total está
+      // distorsionado (cash muy negativo, o una valuación que no cierra) → no mostramos
+      // un número absurdo (ej. 689%). El clamp de holdingValueUsd ya evita el caso más
+      // común (bono con precio per-100/no reconocido), esto es el cinturón de seguridad.
+      if (!isFinite(sharePct) || sharePct < 50 || sharePct > 100.5) return null
       const impact = sharePct * 0.2
       return `**${top.name}** representa el **${sharePct.toFixed(0)}%** de tu cartera. Una caída del 20% en ese activo se traduce en **−${impact.toFixed(1)}%** sobre el total.`
     },
