@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search } from 'lucide-react'
 import { api } from '../utils/api'
 import StatCard from '../components/StatCard'
 import { PageSkeleton } from '../components/Skeleton'
@@ -13,9 +13,33 @@ export default function Admin() {
   const [conversion, setConversion] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState(null)   // null = sin búsqueda activa
+  const [searching, setSearching] = useState(false)
+  const searchSeq = useRef(0)   // guard anti-carrera: sólo la última búsqueda pisa el estado
   const toast = useToast()
 
   useEffect(() => { load() }, [])
+
+  // Búsqueda server-side (debounced) — encontrar a alguien entre miles sin scrollear.
+  // Query vacío = null → la tabla vuelve a mostrar la lista completa.
+  useEffect(() => {
+    const q = query.trim()
+    if (!q) { setSearchResults(null); setSearching(false); return }
+    setSearching(true)
+    const t = setTimeout(async () => {
+      const seq = ++searchSeq.current    // esta corrida gana sobre las anteriores en vuelo
+      try {
+        const res = await runSearch(q) || []
+        if (seq === searchSeq.current) setSearchResults(res)   // ignorá si ya hay una más nueva
+      } catch (e) {
+        if (seq === searchSeq.current) { setSearchResults([]); toast.push('Error buscando: ' + e.message, { type: 'error' }) }
+      } finally {
+        if (seq === searchSeq.current) setSearching(false)
+      }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [query])
 
   async function load() {
     setLoading(true)
@@ -36,11 +60,27 @@ export default function Admin() {
     }
   }
 
+  const SEARCH_LIMIT = 100   // tope del backend; si vienen 100 avisamos que refine
+  function runSearch(q) {
+    return api.get(`/admin/users/search?q=${encodeURIComponent(q)}&limit=${SEARCH_LIMIT}`)
+  }
+
+  // Tras una acción (regalar/aprobar/borrar/restaurar): recargar la lista y, si hay
+  // una búsqueda activa, re-correrla para reflejar el cambio en los resultados.
+  async function refresh() {
+    await load()
+    const q = query.trim()
+    if (q) {
+      const seq = ++searchSeq.current
+      try { const res = await runSearch(q) || []; if (seq === searchSeq.current) setSearchResults(res) } catch { /* noop */ }
+    }
+  }
+
   async function approveUser(u) {
     if (!confirm(`¿Aprobar a ${u.email}? Una vez aprobado podrá iniciar sesión.`)) return
     try {
       await api.post(`/admin/users/${u.id}/approve`)
-      load()
+      refresh()
     } catch (e) {
       toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
@@ -51,7 +91,7 @@ export default function Admin() {
     if (!confirm(`¿Eliminar la cuenta de ${u.email} junto a todos sus datos? Esta acción no se puede deshacer.`)) return
     try {
       await api.delete(`/admin/users/${u.id}`)
-      load()
+      refresh()
     } catch (e) {
       toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
@@ -73,7 +113,7 @@ export default function Admin() {
       } else {
         toast.push(res?.detail || 'No se pudo otorgar el plan.', { type: 'warn' })
       }
-      load()
+      refresh()
     } catch (e) {
       toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
@@ -90,7 +130,7 @@ export default function Admin() {
       } else {
         toast.push(res?.detail || 'No se pudo restaurar el plan.', { type: 'warn' })
       }
-      load()
+      refresh()
     } catch (e) {
       toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
     }
@@ -111,6 +151,8 @@ export default function Admin() {
   if (loading) return <PageSkeleton />
 
   const affected = users.filter(u => u.billing_affected)
+  const searchActive = query.trim().length > 0
+  const displayed = searchActive ? (searchResults || []) : users
 
   return (
     <div className="page-shell space-y-6">
@@ -251,14 +293,28 @@ export default function Admin() {
       )}
 
       <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-line/50 flex items-center gap-2">
+        <div className="px-5 py-3 border-b border-line/50 flex items-center gap-2 flex-wrap">
           <Users size={16} className="text-ink-3" />
-          <h2 className="font-semibold text-ink-0">Usuarios ({users.length})</h2>
-          {affected.length > 0 && (
+          <h2 className="font-semibold text-ink-0">
+            Usuarios ({searchActive ? `${displayed.length} resultado${displayed.length === 1 ? '' : 's'}` : users.length})
+          </h2>
+          {affected.length > 0 && !searchActive && (
             <span className="ml-1 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide">
               <AlertTriangle size={10} /> {affected.length} a restaurar
             </span>
           )}
+          <div className="relative ml-auto">
+            <input
+              type="search"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Buscar por email, nombre o id…"
+              className="w-64 max-w-full text-sm pl-3 pr-8 py-1.5 rounded-md bg-bg-2 dark:bg-bg-2/40 border border-line/60 focus:border-rendi-accent/60 outline-none text-ink-1 placeholder:text-ink-3"
+            />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-3">
+              {searching ? <RefreshCw size={13} className="animate-spin" /> : <Search size={13} />}
+            </span>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -270,7 +326,14 @@ export default function Admin() {
               </tr>
             </thead>
             <tbody>
-              {users.map(u => (
+              {searchActive && displayed.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="px-3 py-6 text-center text-ink-3 text-xs">
+                    {searching ? 'Buscando…' : `Sin resultados para "${query.trim()}".`}
+                  </td>
+                </tr>
+              )}
+              {displayed.map(u => (
                 <tr key={u.id} className="border-b border-line/50 dark:border-line/30 hover:bg-bg-2 dark:hover:bg-bg-2/20">
                   <td className="px-3 py-2 text-ink-3 font-mono text-xs">{u.id}</td>
                   <td className="px-3 py-2 font-medium text-ink-0">
@@ -327,6 +390,13 @@ export default function Admin() {
                   </td>
                 </tr>
               ))}
+              {searchActive && displayed.length >= SEARCH_LIMIT && (
+                <tr>
+                  <td colSpan={10} className="px-3 py-2 text-center text-ink-3 text-[11px]">
+                    Mostrando los primeros {SEARCH_LIMIT}. Si no aparece, refiná la búsqueda (probá el email completo).
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

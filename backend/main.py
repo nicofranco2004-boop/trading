@@ -10843,6 +10843,63 @@ def admin_plan_conversion(uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+# SELECT base de la lista de usuarios del panel admin (mismas columnas + métricas
+# por user). Lo comparten /api/admin/users y /api/admin/users/search para que ambos
+# devuelvan EXACTAMENTE el mismo shape (el frontend reusa la misma fila). El WHERE /
+# ORDER BY / LIMIT los agrega cada endpoint.
+_ADMIN_USERS_SELECT = """
+    SELECT
+        u.id, u.email, u.name, u.is_admin, u.approved, u.created_at, u.last_login_at,
+        u.tier, u.credit_active_until, u.credit_anchor_plan,
+        (SELECT COUNT(*) FROM positions p WHERE p.user_id = u.id) AS positions_count,
+        (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS operations_count,
+        (SELECT COUNT(*) FROM brokers b WHERE b.user_id = u.id) AS brokers_count,
+        (SELECT COUNT(*) FROM monthly_entries m WHERE m.user_id = u.id) AS monthly_count,
+        (SELECT COUNT(*) FROM subscriptions s
+          WHERE s.user_id = u.id AND s.status = 'authorized') AS authorized_subs
+    FROM users u
+"""
+
+
+def _shape_admin_user_row(r, now_iso: str) -> dict:
+    """Da forma a una fila del panel admin: deriva plan efectivo, estado de crédito,
+    días restantes y billing_affected. Compartido por la lista y la búsqueda."""
+    from datetime import datetime as _dt
+    d = dict(r)
+    d["is_admin"] = bool(d["is_admin"])
+    d["approved"] = bool(d["approved"])
+    cau = d.get("credit_active_until")
+    credit_active = cau is not None and str(cau) > now_iso
+    raw_tier = (d.get("tier") or "").strip().lower()
+    anchor = (d.get("credit_anchor_plan") or "").strip().lower()
+    if d["is_admin"]:
+        d["plan"] = "admin"
+    elif raw_tier in ("plus", "pro"):
+        d["plan"] = raw_tier
+    else:
+        d["plan"] = "free"
+    d["credit_active"] = credit_active
+    # Días que faltan para que venza el crédito (regalo o pago). None si no hay crédito
+    # vigente. Redondeo hacia arriba la fracción de día para que un regalo recién dado
+    # de 30 días muestre "30", no "29".
+    days_remaining = None
+    if credit_active and cau:
+        try:
+            _exp = _dt.fromisoformat(str(cau).replace("Z", ""))
+            _delta_days = (_exp - _dt.utcnow()).total_seconds() / 86400.0
+            days_remaining = max(0, int(_delta_days) + (1 if _delta_days > int(_delta_days) else 0))
+        except (ValueError, TypeError):
+            days_remaining = None
+    d["days_remaining"] = days_remaining
+    d["authorized_subs"] = int(d.get("authorized_subs") or 0)
+    # Afectado por el bug: crédito vigente + anchor de plan pago, pero el tier quedó en
+    # free → restaurable sin recobrar.
+    d["billing_affected"] = bool(
+        credit_active and anchor in ("plus", "pro") and d["plan"] == "free"
+    )
+    return d
+
+
 @app.get("/api/admin/users")
 def admin_users(uid: int = Depends(get_admin_user)):
     """Lista de usuarios con métricas básicas + estado de billing. NO devuelve
@@ -10857,57 +10914,55 @@ def admin_users(uid: int = Depends(get_admin_user)):
         /api/admin/billing/restore-tier (no recobra, solo realinea tier)."""
     from datetime import datetime as _dt
     conn = get_db()
-    rows = conn.execute("""
-        SELECT
-            u.id, u.email, u.name, u.is_admin, u.approved, u.created_at, u.last_login_at,
-            u.tier, u.credit_active_until, u.credit_anchor_plan,
-            (SELECT COUNT(*) FROM positions p WHERE p.user_id = u.id) AS positions_count,
-            (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS operations_count,
-            (SELECT COUNT(*) FROM brokers b WHERE b.user_id = u.id) AS brokers_count,
-            (SELECT COUNT(*) FROM monthly_entries m WHERE m.user_id = u.id) AS monthly_count,
-            (SELECT COUNT(*) FROM subscriptions s
-              WHERE s.user_id = u.id AND s.status = 'authorized') AS authorized_subs
-        FROM users u
-        ORDER BY u.created_at DESC
-    """).fetchall()
+    rows = conn.execute(_ADMIN_USERS_SELECT + " ORDER BY u.created_at DESC").fetchall()
     conn.close()
     now_iso = _dt.utcnow().isoformat()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["is_admin"] = bool(d["is_admin"])
-        d["approved"] = bool(d["approved"])
-        cau = d.get("credit_active_until")
-        credit_active = cau is not None and str(cau) > now_iso
-        raw_tier = (d.get("tier") or "").strip().lower()
-        anchor = (d.get("credit_anchor_plan") or "").strip().lower()
-        if d["is_admin"]:
-            d["plan"] = "admin"
-        elif raw_tier in ("plus", "pro"):
-            d["plan"] = raw_tier
-        else:
-            d["plan"] = "free"
-        d["credit_active"] = credit_active
-        # Días que faltan para que venza el crédito (regalo o pago). None si no
-        # hay crédito vigente. Redondeo hacia arriba la fracción de día para que
-        # un regalo recién dado de 30 días muestre "30", no "29".
-        days_remaining = None
-        if credit_active and cau:
-            try:
-                _exp = _dt.fromisoformat(str(cau).replace("Z", ""))
-                _delta_days = (_exp - _dt.utcnow()).total_seconds() / 86400.0
-                days_remaining = max(0, int(_delta_days) + (1 if _delta_days > int(_delta_days) else 0))
-            except (ValueError, TypeError):
-                days_remaining = None
-        d["days_remaining"] = days_remaining
-        d["authorized_subs"] = int(d.get("authorized_subs") or 0)
-        # Afectado por el bug: crédito vigente + anchor de plan pago, pero el
-        # tier quedó en free → restaurable sin recobrar.
-        d["billing_affected"] = bool(
-            credit_active and anchor in ("plus", "pro") and d["plan"] == "free"
-        )
-        out.append(d)
-    return out
+    return [_shape_admin_user_row(r, now_iso) for r in rows]
+
+
+@app.get("/api/admin/users/search")
+def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admin_user)):
+    """Busca usuarios por email, nombre o id (para regalar Pro sin scrollear 1000
+    filas). Devuelve el MISMO shape que /api/admin/users (el panel reusa la fila).
+
+    - q numérico → match EXACTO por id (cualquier largo, es específico).
+    - q de texto → substring de email o nombre (case-insensitive), MÍNIMO 2 chars
+      (evita traer toda la base por un match trivial de 1 caracter).
+    - LIMIT acotado (1..100) — barato aun con miles de usuarios.
+    """
+    from datetime import datetime as _dt
+    q = (q or "").strip()
+    if not q:
+        return []
+    limit = max(1, min(int(limit or 30), 100))
+    conds, params = [], []
+    as_id = -1
+    if q.isascii() and q.isdigit():        # id exacto (específico → sin mínimo de largo)
+        # isascii(): str.isdigit() acepta dígitos Unicode ('²', '٥') que int() rechaza
+        # → sin el guard, buscar '²' tiraba ValueError → 500.
+        as_id = int(q)
+        conds.append("u.id = ?")
+        params.append(as_id)
+    if len(q) >= 2:                        # substring de email/nombre (mín. 2 chars)
+        # Escapamos los comodines de LIKE para que un email con '_' (todos) no matchee
+        # cualquier caracter. ESCAPE '\' → '\_' y '\%' se toman literales.
+        esc = q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{esc}%"
+        conds.append("lower(u.email) LIKE ? ESCAPE '\\'")
+        conds.append("lower(COALESCE(u.name,'')) LIKE ? ESCAPE '\\'")
+        params += [like, like]
+    if not conds:                          # 1 char no-numérico → nada (evita traer todo)
+        return []
+    conn = get_db()
+    rows = conn.execute(
+        _ADMIN_USERS_SELECT +
+        " WHERE " + " OR ".join(conds) +
+        " ORDER BY (u.id = ?) DESC, u.created_at DESC LIMIT ?",
+        (*params, as_id, limit),
+    ).fetchall()
+    conn.close()
+    now_iso = _dt.utcnow().isoformat()
+    return [_shape_admin_user_row(r, now_iso) for r in rows]
 
 
 class ReengagementEmailIn(BaseModel):
