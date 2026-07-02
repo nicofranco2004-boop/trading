@@ -25,7 +25,7 @@ import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/f
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, isArUsdBroker } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
@@ -255,6 +255,17 @@ export default function Dashboard() {
         // caemos a costo → value==invested → pnl 0.
         valueUsd = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null) ? u.valueUsd : u.investedUsd
         pnlUsd = valueUsd - u.investedUsd
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+        // Instrumento BYMA en broker USD (CEDEAR o acción AR en sub-broker '·USD'):
+        // se valúa por su precio LOCAL .BA (ARS) ÷ MEP, igual que computeBrokerValue /
+        // la Cartera. Sin esta rama caía al else y usaba prices[US] → GOOGL daba ~3× /
+        // +157% en vez de su valor real. mkt y costo comparados en USD (misma unidad).
+        const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+        if (priceArs != null) {
+          const mktUsd = (priceArs * (p.quantity || 0)) / tcCedear
+          valueUsd = trustMktValue(mktUsd, realCost, p.asset_type, false) ? mktUsd : realCost
+          pnlUsd = valueUsd - realCost
+        }
       } else {
         const price = p.price_override ?? prices[p.asset]
         // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
@@ -368,6 +379,19 @@ export default function Dashboard() {
             // confiamos, cae a costo → P&L 0.
             const v = trustMktValue(valueUsd, investedUsd, p.asset_type, p.price_override != null) ? valueUsd : investedUsd
             pnlForBroker += v - investedUsd
+            continue
+          }
+          if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+            // CEDEAR/·USD en broker USD → valor por .BA ÷ MEP (como la Cartera), NO
+            // por prices[US]. Sin esta rama el pnl_unrealized (y el capital_final del
+            // mes → el punto de la curva) se inflaba con el CEDEAR a precio US (~3×).
+            const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
+            const costUsd = (p.invested || 0) + (p.commissions || 0)
+            if (priceArs != null) {
+              const mktUsd = (priceArs * (p.quantity || 0)) / tcCedear
+              const v = trustMktValue(mktUsd, costUsd, p.asset_type, false) ? mktUsd : costUsd
+              pnlForBroker += v - costUsd
+            }
             continue
           }
           const price = p.price_override ?? prices[p.asset]
