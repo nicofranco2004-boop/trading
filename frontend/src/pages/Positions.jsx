@@ -440,9 +440,12 @@ function PositionsDesktop() {
     // En un sub-broker AR "· USD" todo es de BYMA (CEDEARs + acciones AR como
     // PAMP/YPFD): se pide el símbolo local .BA. En un broker USD real (Schwab)
     // se pide el ticker US pelado. priceSymbol(asset, true, …) fuerza el .BA.
+    // costInPesos: posición cuyo costo está en ARS en un broker USD sin parent ARS
+    // configurado (ej. IOL sin sibling). calcUSDT la busca con .BA, así que hay
+    // que pedirla con .BA también para que las keys coincidan.
     const usdtSyms = [...new Set(
       pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT')
-         .map(p => isArUsdBroker(p.broker)
+         .map(p => (isArUsdBroker(p.broker) || costInPesos(p))
            ? priceSymbol(p.asset, true, p.asset_type)
            : priceSymbol(p.asset, false, p.asset_type))
     )]
