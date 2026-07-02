@@ -37,7 +37,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
@@ -204,7 +204,12 @@ export default function PositionsMobile() {
     } else {
       price = prices[priceSymbol(p.asset, isARS, p.asset_type)]
     }
-    const suggested = price ?? p.buy_price ?? ''
+    // Guard anti-distorsión: si el precio de mercado es absurdo (bono per-100
+    // leído per-1 → ×100) no lo sugerimos como precio de venta — caemos al costo
+    // (buy_price). price y buy_price están en la MISMA moneda (per-unidad) → el
+    // ratio que compara trustMktValue es válido.
+    const priceOk = price != null && trustMktValue(price, p.buy_price, p.asset_type, false)
+    const suggested = (priceOk ? price : p.buy_price) ?? p.buy_price ?? ''
     setSellForm({
       broker: p.broker,
       asset: p.asset,
@@ -498,6 +503,10 @@ export default function PositionsMobile() {
         : invested
       let valueUsd = 0
       let priceLocal = null
+      // ¿confiamos en el precio de mercado? false cuando el guard anti-distorsión
+      // (trustMktValue) lo rechaza (bono per-100 leído per-1 → ×100) o no hay precio.
+      // Gatea la Var.día de abajo: si el valor cayó a costo, no emitimos variación.
+      let priceTrusted = false
       if (p.is_cash) {
         valueUsd = isAR ? invested / tcBlue : invested
         return {
@@ -506,7 +515,13 @@ export default function PositionsMobile() {
         }
       } else if (isAR) {
         priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
-        if (priceLocal) valueUsd = (priceLocal * qty) / tcBlue
+        // Guard anti-distorsión: un precio absurdo (p.ej. bono per-100 leído per-1
+        // → ×100) cae a costo. mkt y cost comparados en las MISMAS unidades (USD).
+        if (priceLocal) {
+          const mkt = (priceLocal * qty) / tcBlue
+          priceTrusted = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null)
+          valueUsd = priceTrusted ? mkt : investedUsd
+        }
         else valueUsd = investedUsd
       } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
         // Instrumento BYMA en broker USD (CEDEAR o acción AR como PAMP/YPFD en un
@@ -514,7 +529,12 @@ export default function PositionsMobile() {
         // US. priceLocal queda en USD.
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         priceLocal = priceArs != null ? priceArs / tcCedear : null
-        valueUsd = priceLocal != null ? priceLocal * qty : investedUsd
+        if (priceLocal != null) {
+          const mkt = priceLocal * qty
+          priceTrusted = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null)
+          valueUsd = priceTrusted ? mkt : investedUsd
+        }
+        else valueUsd = investedUsd
       } else if (costInPesos(p)) {
         // Lote en PESOS (currency='ARS') NO-CEDEAR en cuenta USD (acción AR/bono
         // comprado en pesos): el VALOR va por su precio LOCAL .BA ÷ tcCedear, NO
@@ -523,10 +543,17 @@ export default function PositionsMobile() {
         priceLocal = u.priceUsd
         // Sin precio → fallback al investedUsd local (sin commissions, igual que las
         // demás ramas de este archivo) para que el P&L quede exactamente 0.
-        valueUsd = u.priceUsd != null ? u.valueUsd : investedUsd
+        // Guard: pesoLotUsd no clampea; envolvemos su salida acá (mkt vs invested USD).
+        priceTrusted = u.priceUsd != null
+          && trustMktValue(u.valueUsd, investedUsd, p.asset_type, p.price_override != null)
+        valueUsd = priceTrusted ? u.valueUsd : investedUsd
       } else {
         priceLocal = p.price_override ?? prices[p.asset]
-        if (priceLocal) valueUsd = priceLocal * qty
+        if (priceLocal) {
+          const mkt = priceLocal * qty
+          priceTrusted = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null)
+          valueUsd = priceTrusted ? mkt : investedUsd
+        }
         else valueUsd = investedUsd
       }
       // Cripto en un broker NO-exchange (Cocos/Balanz…) se valúa al dólar cripto
@@ -552,7 +579,9 @@ export default function PositionsMobile() {
       // Saltamos precios manuales (price_override no comparte fuente con el
       // cierre de mercado → comparación inválida). Cash ya retornó arriba.
       let dayVarLocal = null, dayVarUsd = null, dayVarPct = null
-      if (!p.price_override && priceLocal != null) {
+      // priceTrusted: si el guard rechazó el precio (valor cayó a costo), no
+      // emitimos Var.día — sería una variación sobre un precio no confiable.
+      if (!p.price_override && priceLocal != null && priceTrusted) {
         const cedearUsd = !isAR && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker))
         const prevRaw = prevClose[(isAR || cedearUsd) ? priceSymbol(p.asset, true, p.asset_type) : p.asset]
         // priceLocal del CEDEAR-USD ya está en USD (÷CCL); el cierre previo viene

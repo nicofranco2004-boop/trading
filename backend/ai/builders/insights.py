@@ -93,7 +93,7 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 from datetime import date, datetime
 
-from behavioral import _native_ccy
+from behavioral import _native_ccy, _trust_mkt_value_usd
 
 
 _CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOGE", "ADA", "XRP", "LINK", "BNB"}
@@ -418,6 +418,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         else:
             price = prices.get(asset)
             mv = price * qty if price else cost_usd
+        # Guard anti-distorsión (mismo espíritu que computeBrokerValue/valuation.js):
+        # si el mv por-activo (bono cotizado ×100 "por lámina", colisión de ticker,
+        # CEDEAR priceado como la acción US) diverge absurdamente del costo → caer a
+        # costo. AMBOS montos en USD. Alimenta geo_value / holdings_agg /
+        # unrealized_pnl_total / total_equity del snapshot del chat IA.
+        if not _trust_mkt_value_usd(mv, cost_usd, p.get("asset_type")):
+            mv = cost_usd
         # Premium dólar-cripto (broker no-exchange): al VALOR (spot-USD) siempre; al
         # COSTO solo si está en USD (cost_is_ars=False). Un costo en pesos ya pasó a
         # dólar-MEP con /tc_cedear → no se multiplica de nuevo (compondría /MEP²).

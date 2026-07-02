@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -108,14 +108,19 @@ export default function PositionDetailMobile() {
     // dólar-MEP (.BA ÷ tcCedear), igual que un CEDEAR. NO contar los pesos como
     // dólares (inflaba invertido/P&L). pesoLotUsd suma commissions al costo.
     const u = pesoLotUsd(p, prices, tcCedear)
-    valueUsd = u.valueUsd
+    // Guard anti-distorsión: un ×100 (bono per-100) o colisión de ticker cae a costo.
+    valueUsd = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null) ? u.valueUsd : u.investedUsd
     priceLocal = u.priceUsd
-    pnlUsd = u.valueUsd - u.investedUsd
+    pnlUsd = valueUsd - u.investedUsd
     pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
   } else if (isAR) {
     priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    valueUsd = priceLocal != null ? (priceLocal * qty) / tcBlue : invested / tcBlue
     const investedUsd = invested / tcBlue
+    // mkt y cost comparados en la MISMA moneda (ARS): un bono per-100 (×100) o
+    // colisión de ticker cae a costo (P&L 0 para esta posición).
+    const mktArs = priceLocal != null ? priceLocal * qty : null
+    const trustArs = mktArs != null && trustMktValue(mktArs, invested, p.asset_type, p.price_override != null)
+    valueUsd = trustArs ? mktArs / tcBlue : investedUsd
     pnlUsd = valueUsd - investedUsd
     pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
   } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
@@ -124,7 +129,9 @@ export default function PositionDetailMobile() {
     // y las acciones AR ni existen como acción US → quedaban en "—").
     const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
     priceLocal = priceArs != null ? priceArs / tcCedear : null
-    valueUsd = priceLocal != null ? priceLocal * qty : invested
+    // mkt y cost en la MISMA moneda (USD): un bono per-100 (×100) cae a costo.
+    const mktUsd = priceLocal != null ? priceLocal * qty : null
+    valueUsd = (mktUsd != null && trustMktValue(mktUsd, invested, p.asset_type, p.price_override != null)) ? mktUsd : invested
     pnlUsd = valueUsd - invested
     pnlPct = invested > 0 ? pnlUsd / invested : 0
   } else {
@@ -132,7 +139,10 @@ export default function PositionDetailMobile() {
     // Crypto en broker AR (no exchange) → factor ~MEP sobre value y costo (P/L% invariante).
     if (cryptoF !== 1 && priceLocal != null) priceLocal = priceLocal * cryptoF
     const investedF = invested * cryptoF
-    valueUsd = priceLocal != null ? priceLocal * qty : investedF
+    // mkt y cost en la MISMA moneda (USD, ambos con el factor cripto aplicado):
+    // un bono per-100 (×100) o colisión de ticker cae a costo (P&L 0).
+    const mkt = priceLocal != null ? priceLocal * qty : null
+    valueUsd = (mkt != null && trustMktValue(mkt, investedF, p.asset_type, p.price_override != null)) ? mkt : investedF
     pnlUsd = valueUsd - investedF
     pnlPct = investedF > 0 ? pnlUsd / investedF : 0
   }

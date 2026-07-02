@@ -25,7 +25,7 @@ import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/f
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta } from '../utils/evolution'
@@ -237,7 +237,11 @@ export default function Dashboard() {
       if (isARS) {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceArs != null) {
-          valueUsd = (priceArs * (p.quantity || 0)) / tcBlue
+          // Guard anti-distorsión: compará mkt vs costo en la MISMA moneda (ARS).
+          // Un bono per-100 leído per-1 → ×100 → cae a costo (value==invested, pnl 0).
+          const mktArs = priceArs * (p.quantity || 0)
+          const trust = trustMktValue(mktArs, realCost, p.asset_type, p.price_override != null)
+          valueUsd = (trust ? mktArs : realCost) / tcBlue
           // FX-phantom fix: cost basis USD al blue actual (no al tc_compra)
           const invUsd = realCost / tcBlue
           pnlUsd = valueUsd - invUsd
@@ -247,8 +251,10 @@ export default function Dashboard() {
         // (.BA ÷ tcCedear), igual que un CEDEAR en broker AR. NO contar pesos
         // como dólares (inflaba invertido/P&L). Sin precio, value=invested → pnl 0.
         const u = pesoLotUsd(p, prices, tcCedear)
-        valueUsd = u.valueUsd
-        pnlUsd = u.valueUsd - u.investedUsd
+        // Guard anti-distorsión: mkt vs costo en USD (misma unidad); si no confiamos,
+        // caemos a costo → value==invested → pnl 0.
+        valueUsd = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null) ? u.valueUsd : u.investedUsd
+        pnlUsd = valueUsd - u.investedUsd
       } else {
         const price = p.price_override ?? prices[p.asset]
         // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
@@ -256,8 +262,12 @@ export default function Dashboard() {
         const isExch = exchangeBrokers.has(p.broker)
         const f = cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
         if (price != null) {
-          valueUsd = price * (p.quantity || 0) * f
-          pnlUsd = valueUsd - realCost * f
+          // Guard anti-distorsión: mkt y costo escalados por el MISMO factor f
+          // (misma unidad) → el ratio es invariante; ×100 cae a costo, pnl 0.
+          const mkt = price * (p.quantity || 0) * f
+          const cost = realCost * f
+          valueUsd = trustMktValue(mkt, cost, p.asset_type, p.price_override != null) ? mkt : cost
+          pnlUsd = valueUsd - cost
         }
       }
       const isExchForPct = exchangeBrokers.has(p.broker)
@@ -335,7 +345,11 @@ export default function Dashboard() {
           if (priceArs == null) continue
           // Cost basis ARS = invested + commissions (ambos en pesos para broker ARS)
           const costArs = (p.invested || 0) + (p.commissions || 0)
-          pnlArs += priceArs * (p.quantity || 0) - costArs
+          // Guard anti-distorsión: mkt vs costo en la MISMA moneda (ARS). Un bono
+          // per-100 leído per-1 (×100) cae a costo → P&L de esa posición = 0.
+          const mktArs = priceArs * (p.quantity || 0)
+          const valArs = trustMktValue(mktArs, costArs, p.asset_type, p.price_override != null) ? mktArs : costArs
+          pnlArs += valArs - costArs
           // FX-phantom fix: ambos lados al blue actual → P&L USD == P&L ARS / tcBlue
           // Sin esto, los pesos quietos generaban "ganancia/pérdida fantasma" por
           // movimientos del blue aunque el activo no se hubiera movido.
@@ -350,7 +364,10 @@ export default function Dashboard() {
           // pesoLotUsd da valueUsd=investedUsd → pnl 0 (igual que el continue US).
           if (costInPesos(p)) {
             const { investedUsd, valueUsd } = pesoLotUsd(p, prices, tcCedear)
-            pnlForBroker += valueUsd - investedUsd
+            // Guard anti-distorsión: mkt vs costo en USD (misma unidad); si no
+            // confiamos, cae a costo → P&L 0.
+            const v = trustMktValue(valueUsd, investedUsd, p.asset_type, p.price_override != null) ? valueUsd : investedUsd
+            pnlForBroker += v - investedUsd
             continue
           }
           const price = p.price_override ?? prices[p.asset]
@@ -361,7 +378,12 @@ export default function Dashboard() {
           const f = cryptoBrokerFactor(p.asset, b.is_exchange, p.price_override != null, tcCripto, tcCedear)
           // Cost basis USD = invested + commissions
           const costUsd = (p.invested || 0) + (p.commissions || 0)
-          pnlForBroker += price * (p.quantity || 0) * f - costUsd * f
+          // Guard anti-distorsión: mkt y costo escalados por el MISMO factor f
+          // (ratio invariante). ×100 cae a costo → P&L 0.
+          const mkt = price * (p.quantity || 0) * f
+          const cost = costUsd * f
+          const val = trustMktValue(mkt, cost, p.asset_type, p.price_override != null) ? mkt : cost
+          pnlForBroker += val - cost
         }
         pnlForGlobal = pnlForBroker
       }

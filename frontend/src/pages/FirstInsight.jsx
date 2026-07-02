@@ -12,7 +12,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
@@ -107,21 +107,30 @@ export default function FirstInsight() {
       if (isARS) {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceArs != null) {
-          valueUsd = (priceArs * (p.quantity || 0)) / tcBlue
+          // Guard anti-distorsión: mkt y costo comparados en ARS (mismas unidades).
+          // Un ×100 (bono per-100 leído per-1) → cae a costo, P&L 0.
+          const mktArs = priceArs * (p.quantity || 0)
+          const trust = trustMktValue(mktArs, cost, p.asset_type, p.price_override != null)
+          valueUsd = (trust ? mktArs : cost) / tcBlue
           pnlUsd = valueUsd - cost / tcBlue
         }
       } else if (costInPesos(p)) {
         // Lote en PESOS en cuenta USD → costo Y valor por el MEP (no peso como dólar).
         const u = pesoLotUsd(p, prices, tcCedear)
-        valueUsd = u.valueUsd
-        pnlUsd = u.valueUsd - u.investedUsd
+        const trust = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null)
+        valueUsd = trust ? u.valueUsd : u.investedUsd
+        pnlUsd = valueUsd - u.investedUsd
       } else {
         const price = p.price_override ?? prices[p.asset]
         if (price != null) {
           // Premium dólar-cripto (broker no-exchange) a valor Y costo → ranking
           // best/worst consistente con el resto de la app. f=1 para todo lo demás.
           const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
-          valueUsd = price * (p.quantity || 0) * f
+          // Guard anti-distorsión: mkt vs costo en USD sin factor (mismas unidades),
+          // luego escala por f (igual que computeBrokerValue). Un ×100/colisión → costo.
+          const mkt = price * (p.quantity || 0)
+          const trust = trustMktValue(mkt, cost, p.asset_type, p.price_override != null)
+          valueUsd = (trust ? mkt : cost) * f
           pnlUsd = valueUsd - cost * f
         }
       }

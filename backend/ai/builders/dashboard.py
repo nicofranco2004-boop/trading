@@ -53,6 +53,7 @@ def _compute_pnl_pct_for_position(p: dict, prices: dict, is_ar: bool,
     hay MEP. Como value e invested se convierten al MISMO tipo de cambio, el
     porcentaje es invariante al dólar elegido — pero usamos MEP para mantener
     coherencia con la valuación del patrimonio."""
+    from behavioral import _trust_mkt_value_usd
     if p.get("is_cash"):
         return None
     qty = p.get("quantity") or 0
@@ -74,6 +75,11 @@ def _compute_pnl_pct_for_position(p: dict, prices: dict, is_ar: bool,
         invested_usd = invested
     if invested_usd <= 0:
         return None
+    # Cinturón anti-distorsión: si el múltiplo mkt/costo es absurdo (bono per-100,
+    # colisión de ticker, CEDEAR priceado como la acción US), NO confiamos en el
+    # precio y caemos a costo → pnl_pct=0 en vez de +171778%. AMBOS montos en USD.
+    if not _trust_mkt_value_usd(value_usd, invested_usd, p.get("asset_type")):
+        value_usd = invested_usd
     return (value_usd - invested_usd) / invested_usd
 
 

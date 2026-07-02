@@ -31,7 +31,7 @@ import Eyebrow from '../components/Eyebrow'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { computeDailyPnl } from '../utils/evolution'
@@ -170,11 +170,21 @@ export default function HomeMobile() {
       // Cripto en broker AR (no exchange, sin override) se valúa al dólar cripto:
       // escalamos value e invested por el mismo factor → el % queda invariante.
       const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
-      const value = px * (p.quantity || 0) * f
+      const mkt = px * (p.quantity || 0) * f
       // Cost basis = invested + comisiones (igual que la Cartera). Sin las comisiones
       // el % se dispara cuando son parte grande del costo.
-      const invested = ((p.invested || 0) + (p.commissions || 0)) * f
+      const realCost = (p.invested || 0) + (p.commissions || 0)
+      // costInPesos (CEDEAR/activo comprado en pesos en cuenta USD): el costo está en
+      // ARS → a USD por el MEP, igual que px. El resto ya está en USD → escala por el
+      // factor cripto. Sin esto, mkt(USD) vs invested(ARS) rompía el ratio del guard
+      // y clampeaba de más los CEDEARs en pesos (mostraba 0% en vez de su ganancia).
+      const invested = costInPesos(p) ? realCost / tcCedear : realCost * f
       if (!(invested > 0)) continue
+      // Clamp anti-distorsión (igual que computeBrokerValue): un bono per-100 leído
+      // como per-1 infla el valor ×100 → pct fantasma. mkt e invested quedan en las
+      // MISMAS unidades (USD), así que trustMktValue compara el ratio. Si no se
+      // confía, cae a costo → P&L 0 para esta posición.
+      const value = trustMktValue(mkt, invested, p.asset_type, p.price_override != null) ? mkt : invested
       const pct = (value - invested) / invested
       if (pct > bestPct) {
         bestPct = pct

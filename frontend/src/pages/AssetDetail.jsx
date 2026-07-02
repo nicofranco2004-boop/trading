@@ -23,7 +23,7 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { inferType } from '../utils/tickers'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -46,27 +46,31 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
     const investedUsd = invested / tcCedear
     const priceLocal = priceArs != null ? priceArs / tcCedear : null
-    const valueUsd = priceLocal != null ? priceLocal * qty : investedUsd
+    const mkt = priceLocal != null ? priceLocal * qty : investedUsd
+    const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
   if (isAR) {
     const priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    const valueUsd = priceLocal != null ? (priceLocal * qty) / tcBlue : invested / tcBlue
     const investedUsd = invested / tcBlue
+    const mkt = priceLocal != null ? (priceLocal * qty) / tcBlue : investedUsd
+    const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
   if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
     const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
     const priceLocal = priceArs != null ? priceArs / tcCedear : null
-    const valueUsd = priceLocal != null ? priceLocal * qty : invested
+    const mkt = priceLocal != null ? priceLocal * qty : invested
+    const valueUsd = trustMktValue(mkt, invested, p.asset_type, p.price_override != null) ? mkt : invested
     return { valueUsd, investedUsd: invested, pnlUsd: valueUsd - invested, priceLocal }
   }
   // Cripto en broker AR (no exchange) se valúa al dólar MEP; en exchange queda a spot.
   // El factor multiplica valor Y costo por igual → el P&L% no cambia.
   const f = cryptoBrokerFactor(p.asset, !!broker?.is_exchange, p.price_override != null, tcCripto, tcCedear)
   const priceLocal = p.price_override ?? prices[p.asset]
-  const valueUsd = (priceLocal != null ? priceLocal * qty : invested) * f
   const investedUsd = invested * f
+  const mkt = (priceLocal != null ? priceLocal * qty : invested) * f
+  const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
   return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
 }
 

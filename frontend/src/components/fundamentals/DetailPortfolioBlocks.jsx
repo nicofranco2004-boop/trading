@@ -13,7 +13,7 @@ import { useState, useEffect } from 'react'
 import { Wallet, Scale } from 'lucide-react'
 import Panel from '../Panel'
 import { api } from '../../utils/api'
-import { costInPesos } from '../../utils/valuation'
+import { costInPesos, trustMktValue } from '../../utils/valuation'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
@@ -94,16 +94,22 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
   if (positions) {
     const brokerByName = Object.fromEntries(brokers.map(b => [b.name, b]))
     let qty = 0, costUsd = 0; const brk = new Set()
+    let assetType = null, hasOverride = false
     for (const p of positions) {
       if (p.is_cash || baseOf(p.asset) !== base) continue
       const isAR = brokerByName[p.broker]?.currency === 'ARS'
       qty += p.quantity || 0
       costUsd += lotCostUsd(p, isAR, tc)
       brk.add(p.broker)
+      if (assetType == null && p.asset_type) assetType = p.asset_type
+      if (p.price_override != null) hasOverride = true
     }
     if (qty > 1e-9) {
       const cur = price.current_usd
-      const valueUsd = cur != null ? cur * qty : costUsd
+      // Clamp anti-distorsión: si el mkt (cur·qty) se despega absurdamente del costo
+      // (p.ej. un bono per-100 leído como per-1 → valor ×100), caemos a costo.
+      const mkt = cur != null ? cur * qty : costUsd
+      const valueUsd = trustMktValue(mkt, costUsd, assetType, hasOverride) ? mkt : costUsd
       owned = {
         qty, costUsd, brokers: [...brk],
         avgCostUsd: costUsd / qty,
