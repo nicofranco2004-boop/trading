@@ -242,8 +242,9 @@ def _skip_reason(tipo_mov: str) -> Optional[tuple]:
     p = _deaccent((tipo_mov or "").lower())
     if "transferencia de titulos" in p:
         return ("IOL_TITLE_TRANSFER",
-                "Transferencia de títulos — no se importa automáticamente porque no "
-                "trae el cost basis. Cargá la posición a mano desde Cartera.")
+                "Transferencia de títulos — no trae el precio de compra. Se completa "
+                "sola si subís también el Resumen de Cuenta (la foto de tu tenencia); "
+                "si no, cargá la posición a mano desde Cartera.")
     return None
 
 
@@ -504,12 +505,40 @@ class IolParser(Parser):
         # suscripción legítima de una sola fila (aunque venga sin Monto) nunca se pierde.
         fci_phantom_drop = _detect_iol_fci_phantoms(rows, G)
 
+        # Cauciones: manejo de CAJA, no inversión. IOL exporta cada caución en dos
+        # filas — la colocación ("Caución(Caución en Pesos Arg.)", Monto sale) y su
+        # liquidación ("Liquidación de Caución", Monto entra = principal + interés).
+        # Acumulamos el NETO por moneda = interés ganado → UNA fila de INTERÉS al final
+        # (igual que Bull Market). No booqueamos el principal (las patas se cancelan):
+        # así no inflamos el capital aportado ni creamos un activo fantasma. Un neto
+        # ≤ 0 = caución todavía abierta al cierre (principal colocado) → se omite.
+        caucion_net: dict = {}        # moneda → neto acumulado
+        caucion_last_date: dict = {}  # moneda → última fecha (para la fila sintética)
+
         for idx, row in enumerate(rows, start=1):
             if idx in conduit_drop or idx in fci_phantom_drop:
                 continue  # pata dólar USD fundida en un FX / pata-0 de doble-booking FCI
             tipo_mov = G(row, "tipomov")
             if not tipo_mov:
                 continue  # fila vacía / sin tipo
+
+            # Caución (colocación o liquidación): acumular NETO por moneda; no emite
+            # fila acá (el interés neto sale al final). Ver comentario arriba.
+            # Moneda por Tipo Cuenta ÚNICAMENTE: ambas patas comparten la sub-cuenta,
+            # pero sólo la COLOCACIÓN trae la moneda en el tipo ("Caución en Dólares");
+            # la LIQUIDACIÓN es genérica ("Liquidación de Caución"). Si mezcláramos el
+            # token del tipo con el hint de cuenta, las patas caerían en buckets
+            # distintos (colocación USD por el token, liquidación ARS por default) y el
+            # PRINCIPAL entero se booquearía como interés fantasma. El Tipo Cuenta es la
+            # señal común y estable de las dos patas → nunca se parten.
+            if "caucion" in _deaccent(tipo_mov.lower()):
+                _cta = _deaccent(G(row, "tipocuenta").lower())
+                _m = "USD" if any(h in _cta for h in _CUENTA_USD_HINTS) else "ARS"
+                caucion_net[_m] = caucion_net.get(_m, 0.0) + _num(G(row, "monto"))
+                _d = _parse_date(G(row, "concert")) or ""
+                if _d > caucion_last_date.get(_m, ""):
+                    caucion_last_date[_m] = _d
+                continue
 
             # Residual en pesos de una pata dólar (impuesto/comisión del dólar-MEP):
             # es un costo REAL en pesos → FEE. Si lo descartáramos, el cash en ARS
@@ -653,5 +682,26 @@ class IolParser(Parser):
             if ticker:
                 data["asset_name"] = raw_ticker
             result.raw_rows.append(RawRow(row_index=idx, data=data))
+
+        # Interés neto de cauciones (una fila sintética por moneda). Sólo neto > 0:
+        # un neto ≤ 0 implica una caución abierta al cierre → no inventamos pérdida.
+        _synth = len(rows)
+        for moneda_c, net in caucion_net.items():
+            if net > 1e-9:
+                _synth += 1
+                result.raw_rows.append(RawRow(row_index=_synth, data={
+                    "fecha":      caucion_last_date.get(moneda_c, "") or "",
+                    "tipo":       "INTERES",
+                    "broker":     "IOL",
+                    "activo":     "",
+                    "cantidad":   "",
+                    "precio":     "",
+                    "monto":      f"{net:.2f}",
+                    "monto_usd":  "",
+                    "tc":         "",
+                    "comisiones": "0",
+                    "moneda":     moneda_c,
+                    "notas":      "Interés de cauciones",
+                }))
 
         return result

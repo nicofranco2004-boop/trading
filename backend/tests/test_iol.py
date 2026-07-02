@@ -657,5 +657,67 @@ class TestIolFci(unittest.TestCase):
         self.assertEqual(res.raw_rows[0].data.get("asset_name"), "GGAL")
 
 
+class TestCaucion(unittest.TestCase):
+    def _interes(self, rows):
+        res = _parse(rows)
+        inter = [r.data for r in res.raw_rows if r.data.get("tipo") == "INTERES"]
+        errs = [e for e in res.parse_errors]
+        return inter, errs
+
+    def test_caucion_roundtrip_nets_to_interes(self):
+        # Colocación (sale) + liquidación (entra = principal + interés) → UNA fila de
+        # INTERÉS por el neto, sin errores ni posición fantasma.
+        inter, errs = self._interes([
+            _row("Caución(Caución en Pesos Arg.)", concert="03/04/2024", monto="-311,24",
+                 cuenta="Inversion Argentina Pesos"),
+            _row("Liquidación de Caución", concert="10/04/2024", monto="315,39",
+                 cuenta="Inversion Argentina Pesos"),
+        ])
+        self.assertEqual(len(errs), 0)                       # ya no es OP_UNKNOWN
+        self.assertEqual(len(inter), 1)
+        self.assertEqual(inter[0]["moneda"], "ARS")
+        self.assertAlmostEqual(float(inter[0]["monto"]), 4.15, places=2)
+        self.assertEqual(inter[0]["fecha"], "2024-04-10")    # fecha de la liquidación
+        self.assertEqual(inter[0]["activo"], "")             # sin activo fantasma
+
+    def test_caucion_usd_partition(self):
+        inter, errs = self._interes([
+            _row("Caución(Caución en Dólares)", concert="03/04/2024", monto="-100,00",
+                 cuenta="Inversion Argentina Dolares"),
+            _row("Liquidación de Caución", concert="10/04/2024", monto="101,50",
+                 cuenta="Inversion Argentina Dolares"),
+        ])
+        self.assertEqual(len(errs), 0)
+        self.assertEqual(len(inter), 1)
+        self.assertEqual(inter[0]["moneda"], "USD")
+        self.assertAlmostEqual(float(inter[0]["monto"]), 1.50, places=2)
+
+    def test_caucion_unhinted_account_no_split(self):
+        # Regresión (review adversarial): la colocación trae "Dólares" en el tipo pero
+        # la liquidación es genérica ("Liquidación de Caución", sin moneda). Si el Tipo
+        # Cuenta no tiene hint, ambas patas deben caer en el MISMO bucket (por Tipo
+        # Cuenta) → UN solo neto = interés. Nunca partirse en ARS/USD y booquear el
+        # principal entero como interés fantasma en la moneda equivocada.
+        inter, errs = self._interes([
+            _row("Caución(Caución en Dólares)", concert="03/04/2024", monto="-100,00",
+                 cuenta="Cuenta Anonimizada"),
+            _row("Liquidación de Caución", concert="10/04/2024", monto="101,50",
+                 cuenta="Cuenta Anonimizada"),
+        ])
+        self.assertEqual(len(errs), 0)
+        self.assertEqual(len(inter), 1)                      # NO se parte en 2 buckets
+        self.assertAlmostEqual(float(inter[0]["monto"]), 1.50, places=2)  # interés, no principal
+
+    def test_open_caucion_emits_no_interes(self):
+        # Sólo la colocación (neto ≤ 0 = caución abierta al cierre) → NO inventamos
+        # una pérdida/fila fantasma, pero tampoco tiramos error.
+        inter, errs = self._interes([
+            _row("Caución(Caución en Pesos Arg.)", concert="03/04/2024", monto="-311,24",
+                 cuenta="Inversion Argentina Pesos"),
+        ])
+        self.assertEqual(len(errs), 0)
+        self.assertEqual(len(inter), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
