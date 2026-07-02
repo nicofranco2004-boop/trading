@@ -124,10 +124,73 @@ class IebOverrideE2E(unittest.TestCase):
             tc = ps._read_tc_blue(self.conn, uid=self.uid)
             rb.rebuild_fifo_after_import(self.conn, self.uid, sid, tc_blue=tc)
 
+    def _import_mov_broker(self, broker, ccy, txs):
+        # Importa BUYs (import-linked) en un broker específico (ej. el sibling USD).
+        dep = NormalizedTx(row_index=0, date="2026-01-09", broker=broker,
+                           operation_type=OP_DEPOSIT,
+                           gross_amount=sum(t.gross_amount for t in txs) + 1000, currency=ccy)
+        allt = [dep] + txs
+        with self.conn:
+            for i, t in enumerate(allt):
+                t.row_index = -300 - i
+            sid = pl.store_preview_txs(self.conn, self.uid, broker=broker,
+                                       parser_format="ieb", file_name="movu.xlsx", txs=allt)
+            txs2, raw = pl.load_session_for_confirm(self.conn, uid=self.uid, session_id=sid)
+            ps.persist_batch(self.conn, uid=self.uid, batch_id=sid, txs=txs2,
+                             raw_row_ids_by_index=raw, helpers=_helpers())
+            rb.rebuild_fifo_after_import(self.conn, self.uid, sid,
+                                         tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+
     def _held(self, asset):
         r = self.conn.execute("SELECT COALESCE(SUM(quantity),0) q FROM positions "
                              "WHERE user_id=? AND asset=? AND is_cash=0", (self.uid, asset)).fetchone()
         return float(r["q"] or 0)
+
+    def _held_in(self, broker, asset):
+        r = self.conn.execute("SELECT COALESCE(SUM(quantity),0) q FROM positions "
+                             "WHERE user_id=? AND broker=? AND asset=? AND is_cash=0",
+                             (self.uid, broker, asset)).fetchone()
+        return float(r["q"] or 0)
+
+    def test_override_reduces_usd_sibling_holding(self):
+        """La foto PISA los holdings en DÓLARES (sibling USD), no sólo el padre ARS:
+        GLOB 100→60 en el sibling contra la foto USD (con AAPL/NVDA match para no
+        capear). Antes el path agregado saltaba el sibling (same-broker guard)."""
+        SIB = self.BROKER + " · USD"
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, SIB, "USDT"))
+        self.conn.commit()
+        self._import_mov([self._buy("MELI", 52, 21112)])          # ARS en el padre
+        self._import_mov_broker(SIB, "USD", [                      # USD en el sibling
+            self._usd_buy(SIB, "GLOB", 100, 50), self._usd_buy(SIB, "AAPL", 10, 200),
+            self._usd_buy(SIB, "NVDA", 5, 120)])
+        self.assertAlmostEqual(self._held_in(SIB, "GLOB"), 100)
+
+        wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Patrimonio"
+        ws.append(["Fecha:", datetime(2026, 7, 1, 3, 0, 0)]); ws.append(["Patrimonio total"])
+        ws.append(["Cedears"]); ws.append(list(HDR))
+        ws.append(_row("MELI", 52, 21112, "Cedears"))
+        for tkr, qty, ppp in (("GLOB", 60, 50), ("AAPL", 10, 200), ("NVDA", 5, 120)):
+            ws.append([f"{tkr} - {tkr}", "USD", str(qty), str(ppp), "5.0",
+                       str(ppp), "1.0", "0", "10:00", str(qty * ppp)])
+        ws.append(["Subtotal", "-", "-", None, "-", "-", "0", "-", "0", None])
+        sal = wb.create_sheet("Saldos")
+        for m, t in (("ARS", "1000"), ("USD", "0")):
+            sal.append([m]); sal.append(["Plazo", "Fecha", "Saldo"])
+            sal.append(["Hoy", "2026-07-01", t]); sal.append(["Total", "-", t]); sal.append([])
+        buf = io.BytesIO(); wb.save(buf)
+        body = self._preview(buf.getvalue()).json()
+        self.assertTrue(body["foto_completa"], body.get("warnings"))
+        self.assertFalse(body["override"]["capped"])
+        self.assertIn("GLOB", {r["ticker"] for r in body["override"]["reduced"]})
+        self.assertEqual(self._confirm(body["session_id"]).status_code, 200)
+        self.assertAlmostEqual(self._held_in(SIB, "GLOB"), 60, places=3)   # reducido en el sibling
+        self.assertAlmostEqual(self._held_in(SIB, "AAPL"), 10, places=3)   # match, intacto
+
+    def _usd_buy(self, broker, tkr, qty, price):
+        return NormalizedTx(row_index=0, date="2026-01-10", broker=broker, operation_type=OP_BUY,
+                            asset_symbol=tkr, asset_type="CEDEAR", quantity=qty, unit_price=price,
+                            gross_amount=qty * price, currency="USD")
 
     def _preview(self, wb_bytes):
         return self.client.post(

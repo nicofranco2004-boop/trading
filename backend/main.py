@@ -17743,13 +17743,15 @@ async def import_tenencia_preview(
         seed_date = snap.date or _import_excel.datetime.now().strftime("%Y-%m-%d")
         override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
 
-        if is_ppi:
-            # PPI rutea las posiciones en dólares al sibling '<broker> · USD' (igual
-            # que los Movimientos). Particionamos la foto por moneda y conciliamos
-            # cada partición contra SU sub-broker. Si hay holdings en USD y el
-            # sibling no existe (Estado subido antes que los Movimientos), lo CREAMOS
-            # → las dólar concilian contra un broker USD real (sin falsos "vendidos?"
-            # ni mezclar magnitudes USD en el cash ARS del padre).
+        if is_ppi or is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol:
+            # TODA foto rutea las posiciones en dólares al sibling '<broker> · USD'
+            # (igual que los Movimientos) y PISA POR PARTICIÓN de moneda: concilia +
+            # override en el padre (ARS) Y en el sibling (USD) contra la foto de esa
+            # moneda. Si hay holdings USD y el sibling no existe, lo CREAMOS → las
+            # dólar concilian contra un broker USD real (sin falsos "vendidos?" ni
+            # mezclar magnitudes USD en el cash ARS del padre) y —clave— el override
+            # SÍ toca los holdings en dólares (antes el path agregado los saltaba por
+            # la guarda same-broker → la foto no pisaba nada en USD).
             usd_broker = broker
             if any(h.currency == "USD" for h in snap.holdings):
                 parent_row = conn.execute(
@@ -17768,11 +17770,12 @@ async def import_tenencia_preview(
 
             from importing.persister import broker_pair as _broker_pair
             pair = _broker_pair(conn, uid, broker)
-            # PPI PISA (override), gateado por completitud (los guards del parser bajan
-            # complete=False ante lectura parcial). Se aplica POR PARTICIÓN de moneda
-            # (cada sub-broker), reusando el mismo helper/guardas que Balanz/IEB.
-            _warns_ppi = getattr(snap, "warnings", None)
-            _complete_ppi = not _warns_ppi
+            # `complete` (habilita BORRAR not_in_snapshot) por broker: Balanz siempre;
+            # Cocos nunca (CSV plano sin señal → sólo reduce); el resto (IEB/BMB/IOL/PPI)
+            # sólo si el parser NO dejó warnings de completitud. Se aplica a AMBAS
+            # particiones (misma foto, misma completitud).
+            _warns_all = getattr(snap, "warnings", None)
+            _complete = True if is_balanz else (False if is_cocos else (not _warns_all))
             _all_snap_tk = {h.ticker for h in snap.holdings}   # todas las monedas
             # Qty AGREGADA de Rendi sobre TODO el par (ambas monedas) — para no SEEDEAR
             # de más un activo cross-currency: si la foto lo clasifica en la moneda X
@@ -17819,7 +17822,7 @@ async def import_tenencia_preview(
                 r1.to_seed = _seed
                 p_seed, p_ov = _tenencia_apply_override(
                     conn, uid, sub, pair, r1, _cur_inv(sub), cur_q, seed_date,
-                    complete=_complete_ppi, currency=ccy)
+                    complete=_complete, currency=ccy)
                 seed_txs += p_seed
                 rec.matched += r1.matched
                 rec.to_seed += r1.to_seed
