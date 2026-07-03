@@ -1124,9 +1124,6 @@ function PositionsDesktop() {
         meta={meta}
         action={
           <div className="flex items-center gap-2 flex-wrap">
-            <button onClick={togglePrivacy} className="flex items-center gap-1 text-xs text-ink-3 hover:text-ink-0 px-2 py-1.5 rounded-md hover:bg-bg-2 dark:hover:bg-bg-2/40 transition" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
-              {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
             {/* 3 CTAs principales: Compra (primary violet) + Venta + Cash.
                 Sin estos botones, el user tenía que buscar la posición en
                 la grilla y usar los 3-puntitos. Atajos rápidos desde el
@@ -1183,7 +1180,14 @@ function PositionsDesktop() {
         <StatCard
           tone="hero"
           label="Tu cartera hoy"
-          value={<PrivacyMask><FlashValue value={heroValue}><AnimatedNumber value={heroValue} format={(n) => displayCurrency === 'ARS' ? fmtArs(n * tcBlue) : fmtUsd(n)} /></FlashValue></PrivacyMask>}
+          value={
+            <span className="inline-flex items-end gap-3">
+              <PrivacyMask><FlashValue value={heroValue}><AnimatedNumber value={heroValue} format={(n) => displayCurrency === 'ARS' ? fmtArs(n * tcBlue) : fmtUsd(n)} /></FlashValue></PrivacyMask>
+              <button onClick={togglePrivacy} className="mb-2 text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
+                {hidden ? <EyeOff size={22} strokeWidth={1.5} /> : <Eye size={22} strokeWidth={1.5} />}
+              </button>
+            </span>
+          }
           sub={
             <span className="inline-flex items-center gap-3 flex-wrap">
               <span className="text-ink-2">P&L no realizado</span>
