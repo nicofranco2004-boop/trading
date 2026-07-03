@@ -407,8 +407,22 @@ class BalanzMovimientosParser(Parser):
             # esto salvo en los fondos-sweep "desde/a Balanz" (limitación conocida).
             if has_price and ticker:
                 tipo = "VENTA" if cash_in else "COMPRA"
-                _emit(base(tipo, activo=ticker, cantidad=str(abs(qty or 0)),
-                           precio=str(precio), monto=str(abs(importe))))
+                # Comisión EMBEBIDA: Balanz NO la trae como columna; vive en la
+                # diferencia entre el bruto (Precio×Cantidad) y el Importe neto.
+                #   COMPRA: pagás bruto + comisión → |Importe| = bruto + comisión
+                #   VENTA:  cobrás bruto − comisión → |Importe| = bruto − comisión
+                # Emitimos monto=BRUTO + comisiones=|bruto−|Importe|| → el pipeline
+                # queda: COMPRA cost = invested(bruto)+comisión = |Importe| (cash y
+                # costo idénticos, pero la comisión ya es visible); VENTA proceeds =
+                # bruto − comisión = |Importe| (antes la venta NO descontaba la
+                # comisión → P&L y cash de venta sobreestimados). El cash total NO
+                # cambia (sigue = |Importe|); solo se separa la comisión.
+                q = abs(qty or 0)
+                gross = precio * q
+                comision = abs(gross - abs(importe))
+                _emit(base(tipo, activo=ticker, cantidad=str(q),
+                           precio=str(precio), monto=str(round(gross, 4)),
+                           comisiones=str(round(comision, 4))))
                 continue
 
             # ── Boleto sin precio (precio=-1) ─────────────────────────────────

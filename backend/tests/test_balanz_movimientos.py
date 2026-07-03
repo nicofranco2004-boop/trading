@@ -431,5 +431,43 @@ class BalanzFeeTaxClassificationTest(unittest.TestCase):
         self.assertEqual(len(self.res.raw_rows), 5)  # 7 filas − 2 conversiones
 
 
+class BalanzEmbeddedCommissionTest(unittest.TestCase):
+    """Comisión EMBEBIDA en el Importe del trade (Balanz no la trae como columna).
+    comisión = |Precio×Cantidad − Importe|; monto = bruto (Precio×Cantidad).
+    Cash-neutral: COMPRA paga bruto+comisión = |Importe|; VENTA cobra
+    bruto−comisión = |Importe|."""
+
+    ROWS_C = [
+        # COMPRA NU: bruto 46×10270=472420, paga 475563.95 → comisión 3143.95
+        "Boleto / 1 / COMPRA / 0 / NU / $,NU,Cedears,2026-01-01,46,10270,2026-01-01,Pesos,-475563.95",
+        # VENTA BKNG: bruto 546×396=216216, cobra 214777.08 → comisión 1438.92
+        "Boleto / 2 / VENTA / 0 / BKNG / $,BKNG,Cedears,2026-01-01,546,396,2026-01-01,Pesos,214777.08",
+    ]
+
+    def setUp(self):
+        csv = HDR + "\n" + "\n".join(self.ROWS_C) + "\n"
+        self.by = {}
+        res = BalanzMovimientosParser().parse(csv)
+        self.assertEqual(res.parse_errors, [])
+        for rr in res.raw_rows:
+            self.by[rr.data["activo"]] = rr.data
+
+    def test_commission_extracted(self):
+        self.assertAlmostEqual(float(self.by["NU"]["comisiones"]), 3143.95, places=2)
+        self.assertAlmostEqual(float(self.by["BKNG"]["comisiones"]), 1438.92, places=2)
+
+    def test_monto_is_gross(self):
+        self.assertAlmostEqual(float(self.by["NU"]["monto"]), 472420.0, places=2)
+        self.assertAlmostEqual(float(self.by["BKNG"]["monto"]), 216216.0, places=2)
+
+    def test_cash_neutral(self):
+        # COMPRA: monto + comisión = |Importe|
+        nu = self.by["NU"]
+        self.assertAlmostEqual(float(nu["monto"]) + float(nu["comisiones"]), 475563.95, places=2)
+        # VENTA: monto − comisión = |Importe|
+        bk = self.by["BKNG"]
+        self.assertAlmostEqual(float(bk["monto"]) - float(bk["comisiones"]), 214777.08, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

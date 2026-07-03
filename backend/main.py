@@ -8978,16 +8978,21 @@ def get_commissions_total(uid: int = Depends(get_current_user)):
         except (TypeError, ValueError):
             tc_blue = 1415.0
 
-        # FEE = comisiones/gastos reales; IMPUESTO = retenciones (Ganancias/IIBB/
-        # BBPP). Se separan: los impuestos NO son comisión (antes se contaban todos
-        # como FEE → la card inflada con impuestos + ajustes de cambio).
+        # Comisiones = (a) FEE ops (fees sueltos: "gastos por operación", boleto
+        # sin precio, aranceles) por su gross_amount + (b) la comisión EMBEBIDA en
+        # cada trade (campo n.fees de BUY/SELL — Balanz la trae dentro del Importe;
+        # el parser la extrae como fees). IMPUESTO = retenciones (Ganancias/IIBB/
+        # BBPP), NO son comisión → total aparte. (Se usa n.fees del import normalizado,
+        # NO operations.commissions, que tenía basura de parsers viejos.)
         rows = conn.execute(
-            """SELECT n.gross_amount AS amt, n.currency AS cur, n.operation_type AS op
+            """SELECT n.gross_amount AS amt, n.currency AS cur,
+                      n.operation_type AS op, n.fees AS fees
                  FROM import_normalized_tx n
                  JOIN import_batches b ON b.id = n.batch_id
                 WHERE b.user_id=?
                   AND b.status='confirmed'
-                  AND n.operation_type IN ('FEE','IMPUESTO')""",
+                  AND (n.operation_type IN ('FEE','IMPUESTO')
+                       OR (n.fees IS NOT NULL AND n.fees > 0))""",
             (uid,),
         ).fetchall()
 
@@ -8996,16 +9001,26 @@ def get_commissions_total(uid: int = Depends(get_current_user)):
         taxes_usd = 0.0
         taxes_count = 0
         for r in rows:
-            amt = float(r["amt"] or 0)
-            if amt <= 0:
-                continue
             cur = (r["cur"] or "").upper()
-            amt_usd = amt / tc_blue if cur == "ARS" else amt
-            if (r["op"] or "") == "IMPUESTO":
-                taxes_usd += amt_usd
+            op = (r["op"] or "")
+            if op == "IMPUESTO":
+                amt = float(r["amt"] or 0)
+                if amt <= 0:
+                    continue
+                taxes_usd += amt / tc_blue if cur == "ARS" else amt
                 taxes_count += 1
+            elif op == "FEE":
+                amt = float(r["amt"] or 0)
+                if amt <= 0:
+                    continue
+                total_usd += amt / tc_blue if cur == "ARS" else amt
+                count += 1
             else:
-                total_usd += amt_usd
+                # Trade (BUY/SELL) con comisión embebida en n.fees.
+                fee = float(r["fees"] or 0)
+                if fee <= 0:
+                    continue
+                total_usd += fee / tc_blue if cur == "ARS" else fee
                 count += 1
 
         return {
