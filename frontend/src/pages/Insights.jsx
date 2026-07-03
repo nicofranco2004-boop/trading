@@ -22,7 +22,7 @@ import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
-import { auditPositions } from '../utils/valuationGuards'
+import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
@@ -1392,7 +1392,28 @@ function InsightsDesktop({ _embeddedTab }) {
   }).sort((a, b) => (b.value_usd || 0) - (a.value_usd || 0))
   // Cinturón anti-inconsistencia (dev-only): alerta si alguna posición del snapshot
   // no cierra (value/pnl vs %) o huele a inflado — sin cambiar ningún valor.
-  auditPositions(aiPositions, 'Insights.aiPositions')
+  // aiPositions.pnl_pct viene en percent (×100) → se lo declaramos al guard.
+  auditPositions(aiPositions, 'Insights.aiPositions', { pct: 'percent' })
+
+  // Agregado POR ACTIVO: varios lotes/brokers del mismo activo → una sola fila. El %
+  // se DERIVA del agregado con positionPct (NUNCA el del primer lote — ese era el bug
+  // GOOGL). Lo usan las alertas de concentración/pérdida y el best/worst por activo,
+  // que antes tomaban el % de un lote suelto como si fuera el del activo entero.
+  const aiByAsset = Object.values(aiPositions.reduce((acc, p) => {
+    const k = (p.asset || '').toUpperCase()
+    if (!k) return acc
+    const cur = acc[k] || { asset: p.asset, value_usd: 0, invested_usd: 0, pnl_usd: 0, pct_of_portfolio: 0, is_cash: false }
+    cur.value_usd += p.value_usd || 0
+    cur.invested_usd += p.invested_usd || 0
+    cur.pnl_usd += p.pnl_usd || 0
+    cur.pct_of_portfolio += p.pct_of_portfolio || 0
+    acc[k] = cur
+    return acc
+  }, {})).map(a => {
+    const r = positionPct(a.value_usd, a.pnl_usd)                        // ratio agregado
+    return { ...a, pnl_pct: r != null ? +(r * 100).toFixed(2) : null }   // percent (×100), como aiPositions
+  }).sort((a, b) => (b.value_usd || 0) - (a.value_usd || 0))
+  auditPositions(aiByAsset, 'Insights.aiByAsset', { pct: 'percent' })
 
   const aiCash = positions.filter(p => p.is_cash).map(p => ({
     broker: p.broker,
@@ -1429,7 +1450,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
   // ── Phase 3: nuevas métricas de portfolio ─────────────────────────────────
   // Mejor / peor posición abierta — pnl_usd live de aiPositions.
-  const openExtremes = computeOpenPositionExtremes(aiPositions)
+  const openExtremes = computeOpenPositionExtremes(aiByAsset)
   // Consistencia mensual — % meses positivos + std dev del retorno mensual.
   const consistency = computeMonthlyConsistency(returnSeries)
   // Drawdown como serie temporal (para chart underwater).
@@ -1616,8 +1637,8 @@ function InsightsDesktop({ _embeddedTab }) {
   const alerts = []
 
   // D1: activo individual con alta concentración
-  if (aiPositions.length > 0) {
-    const top = aiPositions[0]
+  if (aiByAsset.length > 0) {
+    const top = aiByAsset[0]
     if (top?.pct_of_portfolio > 40) {
       alerts.push({
         level: 'warning',
@@ -1639,7 +1660,7 @@ function InsightsDesktop({ _embeddedTab }) {
   }
 
   // D3: posición con pérdida > 25%
-  const bigLosers = aiPositions.filter(p => p.pnl_pct != null && p.pnl_pct < -25)
+  const bigLosers = aiByAsset.filter(p => p.pnl_pct != null && p.pnl_pct < -25)
   if (bigLosers.length > 0) {
     const worst = bigLosers.reduce((a, b) => a.pnl_pct < b.pnl_pct ? a : b)
     alerts.push({

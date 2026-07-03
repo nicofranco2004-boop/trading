@@ -48,6 +48,22 @@ describe('checkPositionRow — detecta filas que no cierran', () => {
   })
 })
 
+describe('checkPositionRow — convención percent (Insights usa ×100)', () => {
+  it('percent consistente (28.27) → ok con {pct:"percent"}', () => {
+    const r = checkPositionRow({ asset: 'MELI', value_usd: 2117.89, pnl_usd: 466.81, pnl_pct: 28.27 }, { pct: 'percent' })
+    expect(r.ok).toBe(true)
+  })
+  it('bug GOOGL en percent (157.3) NO cierra → falla con {pct:"percent"}', () => {
+    const r = checkPositionRow({ asset: 'GOOGL', value_usd: 2117.89, pnl_usd: 466.81, pnl_pct: 157.3 }, { pct: 'percent' })
+    expect(r.ok).toBe(false)
+    expect(r.issues.join(' ')).toMatch(/no cierra/)
+  })
+  it('un percent (28.27) sin la opción se leería como ratio y FALLARÍA (por eso el param)', () => {
+    const r = checkPositionRow({ asset: 'MELI', value_usd: 2117.89, pnl_usd: 466.81, pnl_pct: 28.27 })
+    expect(r.ok).toBe(false)  // 28.27 vs 0.28 → falso positivo si no se declara la convención
+  })
+})
+
 describe('auditPositions — corre sobre un array y devuelve las fallas', () => {
   it('devuelve solo las filas problemáticas', () => {
     const rows = [

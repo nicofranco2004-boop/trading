@@ -43,23 +43,28 @@ export function positionPct(valueUsd, pnlUsd) {
  *   1) reconcile — el pnl_pct reportado ≈ pnl/(value−pnl). Caza el bug GOOGL.
  *   2) magnitud — value ≫ costo (>50×, la banda no-renta-fija de trustMktValue):
  *      olor a inflado (bono ×100, CEDEAR priceado por el ticker US).
- * Acepta {value_usd|value, pnl_usd|pnl, pnl_pct|pnlPct}. pnl_pct es ratio.
+ * Acepta {value_usd|value, pnl_usd|pnl, pnl_pct|pnlPct}. `opts.pct` = convención
+ * del pnl_pct reportado: 'ratio' (0.28, default) o 'percent' (28). La app mezcla
+ * ambas (Dashboard usa ratio; Insights usa percent) → hay que decirle cuál.
  */
-export function checkPositionRow(row) {
+export function checkPositionRow(row, { pct = 'ratio' } = {}) {
   const issues = []
   const value = Number(row?.value_usd ?? row?.value)
   const pnl = Number(row?.pnl_usd ?? row?.pnl)
   const reported = row?.pnl_pct ?? row?.pnlPct
 
   if (Number.isFinite(value) && Number.isFinite(pnl)) {
-    const derived = positionPct(value, pnl)
+    const derivedRatio = positionPct(value, pnl)
+    const scale = pct === 'percent' ? 100 : 1
+    const derived = derivedRatio != null ? derivedRatio * scale : null
     if (derived != null && reported != null && Number.isFinite(Number(reported))) {
       const drift = Math.abs(Number(reported) - derived)
       // Tolerancia: 1 punto porcentual absoluto o 3% relativo (value/pnl vienen
-      // redondeados a 2 decimales → un poco de drift legítimo).
-      if (drift > Math.max(0.01, 0.03 * Math.abs(derived))) {
+      // redondeados a 2 decimales → drift legítimo). Escalada a la convención.
+      if (drift > Math.max(0.01 * scale, 0.03 * Math.abs(derived))) {
+        const toPct = (x) => (pct === 'percent' ? x : x * 100).toFixed(1)
         issues.push(
-          `pnl_pct ${(Number(reported) * 100).toFixed(1)}% no cierra con value/pnl (derivado ${(derived * 100).toFixed(1)}%)`
+          `pnl_pct ${toPct(Number(reported))}% no cierra con value/pnl (derivado ${toPct(derived)}%)`
         )
       }
     }
@@ -78,8 +83,8 @@ export function checkPositionRow(row) {
  * Uso: al armar el array por-activo que alimenta una pantalla, pasalo por acá:
  *   auditPositions(positionsForInsight, 'Dashboard.positionsForInsight')
  */
-export function auditPositions(rows, label = 'positions') {
-  const problems = (Array.isArray(rows) ? rows : []).map(checkPositionRow).filter((r) => !r.ok)
+export function auditPositions(rows, label = 'positions', opts = {}) {
+  const problems = (Array.isArray(rows) ? rows : []).map((r) => checkPositionRow(r, opts)).filter((r) => !r.ok)
   if (problems.length && isDev()) {
     // eslint-disable-next-line no-console
     console.warn(
