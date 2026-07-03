@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -32,6 +32,7 @@ import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
 import PageHeader from '../components/PageHeader'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import BrokerManager from '../components/BrokerManager'
@@ -91,6 +92,7 @@ function PositionsDesktop() {
   // Fase A: currency global compartido — Positions desktop respeta el toggle
   // global USD/ARS (mismo state que Dashboard, HomeMobile, PositionsMobile).
   const { currency: displayCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
+  const { hidden, toggle: togglePrivacy } = usePrivacy()
   const [positions, setPositions] = useState([])
   const [prices, setPrices] = useState({})
   // Cierre del día anterior por símbolo (mismo keying que `prices`: ASSET para
@@ -1122,6 +1124,9 @@ function PositionsDesktop() {
         meta={meta}
         action={
           <div className="flex items-center gap-2 flex-wrap">
+            <button onClick={togglePrivacy} className="flex items-center gap-1 text-xs text-ink-3 hover:text-ink-0 px-2 py-1.5 rounded-md hover:bg-bg-2 dark:hover:bg-bg-2/40 transition" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
+              {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
             {/* 3 CTAs principales: Compra (primary violet) + Venta + Cash.
                 Sin estos botones, el user tenía que buscar la posición en
                 la grilla y usar los 3-puntitos. Atajos rápidos desde el
@@ -1178,26 +1183,26 @@ function PositionsDesktop() {
         <StatCard
           tone="hero"
           label="Tu cartera hoy"
-          value={<FlashValue value={heroValue}><AnimatedNumber value={heroValue} format={(n) => displayCurrency === 'ARS' ? fmtArs(n * tcBlue) : fmtUsd(n)} /></FlashValue>}
+          value={<PrivacyMask><FlashValue value={heroValue}><AnimatedNumber value={heroValue} format={(n) => displayCurrency === 'ARS' ? fmtArs(n * tcBlue) : fmtUsd(n)} /></FlashValue></PrivacyMask>}
           sub={
             <span className="inline-flex items-center gap-3 flex-wrap">
               <span className="text-ink-2">P&L no realizado</span>
               <span className={`inline-flex items-center gap-1 font-semibold ${heroPnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                 {heroPnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
-                {displayCurrency === 'ARS'
+                {hidden ? '••••••' : (displayCurrency === 'ARS'
                   ? `ARS ${ars(Math.abs(heroPnl * tcBlue))}`
-                  : `USD ${usd(Math.abs(heroPnl))}`}
+                  : `USD ${usd(Math.abs(heroPnl))}`)}
               </span>
               <span className={`tabular ${heroPnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                 ({pctSigned(heroPct)})
               </span>
             </span>
           }
-          hint={
+          hint={hidden ? undefined : (
             displayCurrency === 'ARS'
               ? `Invertido ARS ${ars(heroInvested * tcBlue)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
               : `Invertido USD ${usd(heroInvested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
-          }
+          )}
         />
       </div>
 
@@ -1383,16 +1388,16 @@ function PositionsDesktop() {
               <span>
                 <span className="label-mono mr-1.5">Valor</span>
                 <span className="font-semibold text-ink-0">
-                  {isARS ? fmtArs(r.valueArs) : fmtUsd(r.value)}
+                  {hidden ? '••••••' : (isARS ? fmtArs(r.valueArs) : fmtUsd(r.value))}
                 </span>
               </span>
               <span className="text-ink-2">
                 <span className="label-mono mr-1.5">Inv</span>
-                {isARS ? fmtArs(r.invArs) : fmtUsd(r.invested)}
+                {hidden ? '••••••' : (isARS ? fmtArs(r.invArs) : fmtUsd(r.invested))}
               </span>
               <span className={`${colorClass(headerPnlUsd)} font-medium`}>
                 <span className="label-mono mr-1.5 text-ink-2">P&L</span>
-                {headerPnlUsd >= 0 ? '+' : '−'}{isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(headerPnlUsd))}`}
+                {hidden ? '••••••' : `${headerPnlUsd >= 0 ? '+' : '−'}${isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(headerPnlUsd))}`}`}
                 <span className="ml-1 opacity-80">({pctSigned(headerPnlPct)})</span>
               </span>
             </div>
@@ -1535,17 +1540,17 @@ function PositionsDesktop() {
                           <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—'}</td>
                           <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{`ARS ${ars(c.priceArs)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
-                          <td className={`${tdClass} text-ink-1 tabular`}>{fmtArs(p.invested)}</td>
+                          <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : fmtArs(p.invested)}</td>
                           {showDetail && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
-                          {showDetail && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? fmtUsd(c.invUsd) : '—'}</td>}
-                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.valueArs != null ? <FlashValue value={c.value}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                          {showDetail && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : fmtUsd(c.invUsd)) : '—'}</td>}
+                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.valueArs != null ? <FlashValue value={c.value}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
                           <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlArs)} ${pnlBg}`} title={pnlTooltip}>
-                            {adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—'}
-                            {isBond && pnlContrib !== 0 && (
+                            {hidden ? '••••••' : (adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—')}
+                            {!hidden && isBond && pnlContrib !== 0 && (
                               <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
                             )}
                           </td>
-                          {showDetail && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—'}</td>}
+                          {showDetail && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{hidden ? '••••••' : (c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—')}</td>}
                           <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
                           <td className={`${tdClass} tabular`}>
                             {dvArs ? (
@@ -1592,18 +1597,18 @@ function PositionsDesktop() {
                     <tr className="border-t-2 border-line-2 bg-bg-2/40">
                       {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
                       <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2 uppercase tracking-wider">TOTAL</td>
-                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtArs(r.invArs)}</td>
+                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtArs(r.invArs)}</td>
                       {showDetail && <td className="px-3 py-2.5 text-xs text-ink-3">—</td>}
-                      {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtUsd(r.invested)}</td>}
-                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtArs(r.valueArs)}</td>
-                      <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlArs)}`}>{r.pnlArs >= 0 ? '+' : '-'}ARS {ars(Math.abs(r.pnlArs))}</td>
-                      {showDetail && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{r.pnlUsd >= 0 ? '+' : '-'}USD {usd(Math.abs(r.pnlUsd))}</td>}
+                      {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>}
+                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtArs(r.valueArs)}</td>
+                      <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlArs)}`}>{hidden ? '••••••' : `${r.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlArs))}`}</td>
+                      {showDetail && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>}
                       <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
                         {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-xs font-bold tabular">
                         {brokerHasDay
-                          ? <span className={colorClass(brokerDay)}>{brokerDay >= 0 ? '+' : '-'}ARS {ars(Math.abs(brokerDay))}</span>
+                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}`}</span>
                           : <span className="text-ink-3">—</span>}
                       </td>
                       <td />
@@ -1736,11 +1741,11 @@ function PositionsDesktop() {
                         <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? fmtUsd(avgPrice) : '—'}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
-                        <td className={`${tdClass} text-ink-1 tabular`}>{fmtUsd(c.investedUsd ?? p.invested)}</td>
-                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{c.value != null ? <FlashValue value={c.value}>{fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                        <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : fmtUsd(c.investedUsd ?? p.invested)}</td>
+                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(adjPnl)} ${pnlBg}`} title={pnlTooltip}>
-                          {adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—'}
-                          {isBond && pnlContrib !== 0 && (
+                          {hidden ? '••••••' : (adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—')}
+                          {!hidden && isBond && pnlContrib !== 0 && (
                             <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
                           )}
                         </td>
@@ -1790,15 +1795,15 @@ function PositionsDesktop() {
                   <tr className="border-t-2 border-line-2 bg-bg-2/30">
                     {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
                     <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2 uppercase tracking-wider">TOTAL</td>
-                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtUsd(r.invested)}</td>
-                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{fmtUsd(r.value)}</td>
-                    <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{r.pnlUsd >= 0 ? '+' : '-'}USD {usd(Math.abs(r.pnlUsd))}</td>
+                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>
+                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.value)}</td>
+                    <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>
                     <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
                       {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
                     </td>
                     <td className="px-3 py-2.5 text-xs font-bold tabular">
                       {brokerHasDay
-                        ? <span className={colorClass(brokerDay)}>{brokerDay >= 0 ? '+' : '-'}USD {usd(Math.abs(brokerDay))}</span>
+                        ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`}</span>
                         : <span className="text-ink-3">—</span>}
                     </td>
                     <td />
