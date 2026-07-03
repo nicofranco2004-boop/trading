@@ -60,6 +60,8 @@ export default function Admin() {
     }
   }
 
+  const [giftPickerFor, setGiftPickerFor] = useState(null)   // userId con el picker de plan abierto
+
   const SEARCH_LIMIT = 100   // tope del backend; si vienen 100 avisamos que refine
   function runSearch(q) {
     return api.get(`/admin/users/search?q=${encodeURIComponent(q)}&limit=${SEARCH_LIMIT}`)
@@ -97,10 +99,12 @@ export default function Admin() {
     }
   }
 
-  async function grantPro(u) {
+  async function grantComp(u, plan) {
+    setGiftPickerFor(null)
     const days = 30
-    if (!confirm(`¿Dar Pro por ${days} días a ${u.email}? Es de cortesía (gratis) y se vence solo — vuelve a Free en ${days} días.`)) return
-    const url = `/admin/billing/grant-comp?email=${encodeURIComponent(u.email)}&plan=pro&days=${days}`
+    const planLabel = plan === 'pro' ? 'Pro' : 'Plus'
+    if (!confirm(`¿Dar ${planLabel} por ${days} días a ${u.email}? Es de cortesía (gratis) y se vence solo.`)) return
+    const url = `/admin/billing/grant-comp?email=${encodeURIComponent(u.email)}&plan=${plan}&days=${days}`
     try {
       let res = await api.post(url)
       if (res?.ok === false && res?.reason === 'credit_already_active') {
@@ -109,7 +113,7 @@ export default function Admin() {
         res = await api.post(url + '&force=true')
       }
       if (res?.ok) {
-        toast.push(res.detail || `Pro otorgado a ${u.email}.`, { type: 'success' })
+        toast.push(res.detail || `${planLabel} otorgado a ${u.email}.`, { type: 'success' })
       } else {
         toast.push(res?.detail || 'No se pudo otorgar el plan.', { type: 'warn' })
       }
@@ -351,13 +355,30 @@ export default function Admin() {
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
                       {!u.is_admin && (
-                        <button
-                          onClick={() => grantPro(u)}
-                          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-data-violet/15 text-data-violet hover:bg-data-violet/25"
-                          title="Dar Pro gratis por 30 días (cortesía, se vence solo)"
-                        >
-                          <Gift size={12} /> Pro 1 mes
-                        </button>
+                        giftPickerFor === u.id ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => grantComp(u, 'plus')}
+                              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-data-violet/20 text-data-violet hover:bg-data-violet/35"
+                            >Plus</button>
+                            <button
+                              onClick={() => grantComp(u, 'pro')}
+                              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-data-violet/20 text-data-violet hover:bg-data-violet/35"
+                            >Pro</button>
+                            <button
+                              onClick={() => setGiftPickerFor(null)}
+                              className="text-xs text-ink-3 hover:text-ink-0 px-1"
+                            >✕</button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setGiftPickerFor(u.id)}
+                            className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-data-violet/15 text-data-violet hover:bg-data-violet/25"
+                            title="Dar plan de regalo por 30 días (cortesía, se vence solo)"
+                          >
+                            <Gift size={12} /> Regalar
+                          </button>
+                        )
                       )}
                       {u.billing_affected && (
                         <button
