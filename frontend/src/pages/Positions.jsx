@@ -502,7 +502,11 @@ function PositionsDesktop() {
       buy_price: form.buy_price !== '' ? +form.buy_price : null,
       quantity: form.quantity !== '' ? +form.quantity : null,
       invested: form.invested !== '' ? +form.invested : null,
-      tc_compra: form.tc_compra !== '' ? +form.tc_compra : null,
+      // TC de compra: 0 o vacío → null. El backend exige tc_compra > 0 (un TC=0 es
+      // inválido: div-by-zero). Antes mandábamos tc_compra:0 → el PUT daba 422 y,
+      // sin manejo de error, el modal fallaba EN SILENCIO ("el botón no guarda").
+      // Muchas posiciones importadas vienen con TC=0 → no se podían editar.
+      tc_compra: form.tc_compra !== '' && +form.tc_compra > 0 ? +form.tc_compra : null,
       commissions: form.commissions !== '' ? +form.commissions : 0,
       entry_date: form.entry_date || null,
       // Moneda del lote (mismo ticker en ARS vs USD). Vacío → el backend la
@@ -522,15 +526,26 @@ function PositionsDesktop() {
         return toast.push('Ingresá el precio de compra o el monto invertido.', { type: 'warn' })
       }
     }
-    if (modal === 'edit') {
-      await api.put(`/positions/${form.id}`, body)
-    } else {
-      await api.post('/positions', body)
-      // Activación: milestone "cargó su primera posición" (GA4 lo dedup por user).
-      track('position_add_completed', { source: 'desktop', asset: body.asset, broker: body.broker })
+    // try/catch: si el backend rechaza (422/400/red), mostramos un toast y NO
+    // cerramos el modal (así el usuario puede corregir). Antes el error se tragaba
+    // → el botón "no hacía nada".
+    try {
+      if (modal === 'edit') {
+        await api.put(`/positions/${form.id}`, body)
+      } else {
+        await api.post('/positions', body)
+        // Activación: milestone "cargó su primera posición" (GA4 lo dedup por user).
+        track('position_add_completed', { source: 'desktop', asset: body.asset, broker: body.broker })
+      }
+      setModal(null)
+      loadAll()
+    } catch (e) {
+      const detail = e?.response?.data?.detail
+      toast.push(
+        typeof detail === 'string' ? detail : 'No se pudo guardar la posición. Revisá los datos e intentá de nuevo.',
+        { type: 'error' },
+      )
     }
-    setModal(null)
-    loadAll()
   }
 
   async function del(id) {
