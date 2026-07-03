@@ -18,7 +18,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Calendar, Filter, AlertCircle, Eye } from 'lucide-react'
+import { Calendar, Filter, AlertCircle, Eye, Sparkles } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
@@ -205,11 +205,6 @@ export default function Events({ embedded = false }) {
           action={<AnalyzeButton screen="events" subtitle="Tu calendario completo" />}
         />
       )}
-      {embedded && (
-        <div className="flex justify-end mb-3">
-          <AnalyzeButton screen="events" subtitle="Tu calendario completo" />
-        </div>
-      )}
 
       {/* Sub-tabs Para ti / Popular — pills. */}
       <div
@@ -236,6 +231,23 @@ export default function Events({ embedded = false }) {
           )
         })}
       </div>
+
+      {/* Briefing de eventos — CTA on-demand. Reusa el topic `events`
+          (una sola llamada IA). NO se auto-genera: dispara solo al click. */}
+      {embedded && (
+        <div className="flex items-center gap-3 bg-bg-1 border border-data-violet/30 rounded-lg p-3.5 mb-4">
+          <div className="w-9 h-9 rounded-lg bg-data-violet/15 flex items-center justify-center shrink-0">
+            <Sparkles size={18} strokeWidth={1.75} className="text-data-violet" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-ink-0">Briefing de eventos con IA</p>
+            <p className="text-xs text-ink-2 mt-0.5">
+              Qué se viene en tu cartera y cuáles te pegan más, resumido.
+            </p>
+          </div>
+          <AnalyzeButton screen="events" subtitle="Briefing de eventos" label="Generar briefing" />
+        </div>
+      )}
 
       {/* KPI Strip — 3 celdas con divisores. Padding más chico en mobile. */}
       <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-3 divide-x divide-line">
@@ -563,7 +575,7 @@ function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd }) {
   return (
     <div className="bg-bg-1 border border-line rounded overflow-hidden">
       {/* Header — pinned, label-mono columns */}
-      <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px_40px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
+      <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px_96px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
         <div className="label-mono">Fecha</div>
         <div className="label-mono">Activo</div>
         <div className="label-mono">Tipo</div>
@@ -614,7 +626,7 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
   const detailNode = renderDetail(event)
 
   return (
-    <li className="grid grid-cols-[64px_1fr_auto] md:grid-cols-[80px_180px_100px_1fr_140px_80px_40px] gap-3 px-4 py-3 items-center hover:bg-bg-2/40 transition-colors">
+    <li className="grid grid-cols-[64px_1fr_auto] md:grid-cols-[80px_180px_100px_1fr_140px_80px_96px] gap-3 px-4 py-3 items-center hover:bg-bg-2/40 transition-colors">
       {/* Fecha — countdown + fecha corta abajo */}
       <div className="flex flex-col">
         <span className={`text-xs font-mono font-semibold uppercase tracking-wider ${dateTone}`}>
@@ -701,6 +713,7 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
               details: typeof details === 'string' ? details : (details?.title || ''),
             }}
             subtitle={`${ticker} · ${eventType}`}
+            label="Analizar"
           />
         )}
       </div>

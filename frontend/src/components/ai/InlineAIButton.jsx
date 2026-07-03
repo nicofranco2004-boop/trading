@@ -10,7 +10,10 @@
 //   />
 //
 // UX:
-//   - Botón compacto (16x16) con el icono Sparkles violeta.
+//   - Sin `label`: botón compacto (icono Sparkles violeta) para celdas densas.
+//   - Con `label`: pill "✦ Analizar" con el mismo tratamiento que AnalyzeButton
+//     (bg-data-violet/10, texto data-violet, borde /30) para que el usuario vea
+//     que puede pedir el análisis on-demand. Reutilizado en Novedades.
 //   - Click → abre AnalysisDrawer.
 //   - Trackea ai_analyze_opened con source='inline_button'.
 
@@ -25,6 +28,7 @@ export default function InlineAIButton({
   subtitle,
   title = 'Análisis',
   ariaLabel = 'Analizar con IA',
+  label,
   size = 13,
   className = '',
 }) {
@@ -37,6 +41,23 @@ export default function InlineAIButton({
     setOpen(true)
   }
 
+  // Con label → pill con texto (mismo look que AnalyzeButton default).
+  // Sin label → botón-icono compacto (comportamiento histórico en tablas).
+  const buttonClass = label
+    ? [
+        'inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-sm',
+        'bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30',
+        'transition-colors press',
+        className,
+      ].join(' ')
+    : [
+        'inline-flex items-center justify-center w-6 h-6 rounded-sm',
+        'text-data-violet/70 hover:text-data-violet',
+        'hover:bg-data-violet/10 border border-transparent hover:border-data-violet/30',
+        'transition-colors',
+        className,
+      ].join(' ')
+
   return (
     <>
       <button
@@ -44,15 +65,10 @@ export default function InlineAIButton({
         onClick={handleClick}
         aria-label={ariaLabel}
         title={ariaLabel}
-        className={[
-          'inline-flex items-center justify-center w-6 h-6 rounded-sm',
-          'text-data-violet/70 hover:text-data-violet',
-          'hover:bg-data-violet/10 border border-transparent hover:border-data-violet/30',
-          'transition-colors',
-          className,
-        ].join(' ')}
+        className={buttonClass}
       >
-        <Sparkles size={size} strokeWidth={1.75} />
+        <Sparkles size={label ? 12 : size} strokeWidth={1.75} />
+        {label}
       </button>
       {open && (
         <AnalysisDrawer

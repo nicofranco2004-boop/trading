@@ -13,7 +13,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Newspaper, ExternalLink, AlertCircle, Tag } from 'lucide-react'
+import { Newspaper, ExternalLink, AlertCircle, Tag, Sparkles } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
@@ -158,12 +158,25 @@ export default function News({ embedded = false }) {
             )
           })}
         </div>
-        {/* Botón Analizar visible siempre — tanto en /noticias standalone
-            como en /novedades?tab=noticias (embedded). */}
-        {embedded && (
-          <AnalyzeButton screen="news" subtitle="Tu radar de noticias" />
-        )}
       </div>
+
+      {/* Briefing del día — CTA on-demand. Reusa el topic `news` (screen-level):
+          una sola llamada IA que sintetiza las noticias pesadas por tu cartera.
+          NO se auto-genera — el AnalysisDrawer solo dispara al hacer click. */}
+      {embedded && (
+        <div className="flex items-center gap-3 bg-bg-1 border border-data-violet/30 rounded-lg p-3.5 mb-4">
+          <div className="w-9 h-9 rounded-lg bg-data-violet/15 flex items-center justify-center shrink-0">
+            <Sparkles size={18} strokeWidth={1.75} className="text-data-violet" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-ink-0">Briefing del día con IA</p>
+            <p className="text-xs text-ink-2 mt-0.5">
+              Resumí {kpi.total > 0 ? `las ${kpi.total} noticias` : 'las noticias'} de tu cartera en pocas líneas.
+            </p>
+          </div>
+          <AnalyzeButton screen="news" subtitle="Briefing del día" label="Generar briefing" />
+        </div>
+      )}
 
       {/* KPI strip */}
       <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
@@ -279,22 +292,6 @@ function NewsFeatured({ news, tab, onTagClick }) {
   const { cleanTitle, sourceName } = splitTitleSource(title)
   return (
     <div className="group relative bg-bg-1 border border-line rounded hover:border-rendi-accent/40 transition">
-      {ticker && (
-        <div className="absolute top-3 right-3 z-10">
-          <InlineAIButton
-            topic="news.item"
-            params={{
-              ticker,
-              title: cleanTitle || title,
-              source: sourceName,
-              published_at,
-              summary,
-              tags,
-            }}
-            subtitle={`${ticker} · ${sourceName || 'noticia destacada'}`}
-          />
-        </div>
-      )}
     <a
       href={safeExternalUrl(url)}
       target="_blank"
@@ -345,6 +342,18 @@ function NewsFeatured({ news, tab, onTagClick }) {
         <ExternalLink size={14} strokeWidth={1.5} className="text-ink-3 shrink-0 mt-1 self-start hidden sm:block" />
       </div>
     </a>
+    {/* Pie: "Analizar" on-demand (reemplaza el ✦ flotante). Fuera del <a>
+        para no disparar la navegación al pedir el análisis. */}
+    {ticker && (
+      <div className="px-4 sm:px-5 pb-4 -mt-2 flex justify-end">
+        <InlineAIButton
+          topic="news.item"
+          params={{ ticker, title: cleanTitle || title, source: sourceName, published_at, summary, tags }}
+          subtitle={`${ticker} · ${sourceName || 'noticia destacada'}`}
+          label="Analizar"
+        />
+      </div>
+    )}
     </div>
   )
 }
@@ -354,25 +363,7 @@ function NewsTile({ news, tab, onTagClick }) {
   const { cleanTitle, sourceName } = splitTitleSource(title)
 
   return (
-    <div className="group bg-bg-1 border border-line rounded hover:border-rendi-accent/40 transition relative">
-      {/* Botón ✦ absoluto en top-right — sobre el anchor, NO consume el click
-          principal porque tiene stopPropagation interno. */}
-      {ticker && (
-        <div className="absolute top-2 right-2 z-10">
-          <InlineAIButton
-            topic="news.item"
-            params={{
-              ticker,
-              title: cleanTitle || title,
-              source: sourceName,
-              published_at,
-              summary,
-              tags,
-            }}
-            subtitle={`${ticker} · ${sourceName || 'noticia'}`}
-          />
-        </div>
-      )}
+    <div className="group bg-bg-1 border border-line rounded hover:border-rendi-accent/40 transition relative flex flex-col">
       <a
         href={safeExternalUrl(url)}
         target="_blank"
@@ -411,9 +402,20 @@ function NewsTile({ news, tab, onTagClick }) {
       <ExternalLink
         size={11}
         strokeWidth={1.5}
-        className="text-ink-3 absolute top-3 right-9 opacity-0 group-hover:opacity-100 transition-opacity"
+        className="text-ink-3 absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity"
       />
       </a>
+      {/* Pie: "Analizar" on-demand (reemplaza el ✦ flotante). Fuera del <a>. */}
+      {ticker && (
+        <div className="px-3.5 pb-3 mt-auto flex justify-end">
+          <InlineAIButton
+            topic="news.item"
+            params={{ ticker, title: cleanTitle || title, source: sourceName, published_at, summary, tags }}
+            subtitle={`${ticker} · ${sourceName || 'noticia'}`}
+            label="Analizar"
+          />
+        </div>
+      )}
     </div>
   )
 }
