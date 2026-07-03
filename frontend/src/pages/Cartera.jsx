@@ -27,7 +27,7 @@ import { useSearchParams, useLocation } from 'react-router-dom'
 import { Briefcase, TrendingUp, Target } from 'lucide-react'
 import { track } from '../utils/track'
 import Skeleton from '../components/Skeleton'
-import CurrencyToggle from '../components/CurrencyToggle'
+import CurrencyRail from '../components/CurrencyRail'
 import { markPositionsDiscovered } from '../utils/positionsDiscovered'
 
 const Positions = lazy(() => import('./Positions'))
@@ -103,7 +103,7 @@ export default function Cartera() {
           Cartera para que esté disponible en las 3 tabs (Posiciones / Evolución
           / Objetivos) y no solo en una. Es global —cambiarlo acá lo cambia en
           toda la app— pero la opción tiene que estar donde el user está. */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+      <div className="flex flex-wrap items-center gap-3 mb-3">
         <div className="inline-flex flex-wrap gap-2">
           {TABS.map(t => {
             const Icon = t.icon
@@ -125,7 +125,13 @@ export default function Cartera() {
             )
           })}
         </div>
-        <CurrencyToggle variant="pill" size="lg" label="Ver en" />
+      </div>
+      {/* Riel de moneda de valuación — barra ancha (USD MEP / USD CCL / Pesos).
+          Global: cambiarlo acá lo cambia en toda la app. Vive a nivel Cartera
+          para estar disponible en las 3 tabs (Posiciones / Evolución / Objetivos). */}
+      <div className="mb-5 max-w-2xl mx-auto">
+        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5 select-none text-center">Ver en</div>
+        <CurrencyRail />
       </div>
 
       <Suspense fallback={

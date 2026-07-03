@@ -73,6 +73,11 @@ export function CurrencyProvider({ children }) {
   // Default 1415 evita división-por-cero y NaN durante el primer render.
   const [tcBlue, setTcBlueRaw] = useState(DEFAULT_TC_BLUE)
 
+  // Cotizaciones crudas del último /dolar ({mep,ccl,blue,cripto}.venta), para que
+  // el selector de moneda (CurrencyRail) muestre la tasa de cada dólar debajo de
+  // cada opción sin tener que re-fetchear. Se publican en el mismo effect que tcBlue.
+  const [dolar, setDolar] = useState(null)
+
   // Audit fix H2 (2026-05-31): el Provider fetcha /dolar al mount para que
   // el tcBlue real esté disponible desde el primer render — antes había una
   // ventana de ~500ms donde Reports cards / Operations renderizaban ARS con
@@ -85,6 +90,7 @@ export function CurrencyProvider({ children }) {
     const fetchAndPublish = () => {
       api.get('/dolar').then(d => {
         if (cancelled) return
+        setDolar(d)   // exponer tasas crudas para el selector (mep/ccl .venta)
         // dólar financiero según preferencia (MEP default / CCL), cascada con
         // fallback al otro y al blue. Re-resuelve al cambiar valuationDollar.
         const rate = pickFinancialRate(d, valuationDollar)
@@ -124,8 +130,9 @@ export function CurrencyProvider({ children }) {
       isArs: currency === 'ARS', isUsd: currency === 'USD',
       tcBlue, setTcBlue,
       valuationDollar, setValuationDollar,
+      dolar,
     }),
-    [currency, tcBlue, valuationDollar],
+    [currency, tcBlue, valuationDollar, dolar],
   )
 
   return <CurrencyContext.Provider value={value}>{children}</CurrencyContext.Provider>
@@ -140,6 +147,7 @@ export const useCurrency = () => {
       isArs: false, isUsd: true,
       tcBlue: DEFAULT_TC_BLUE, setTcBlue: () => {},
       valuationDollar: 'mep', setValuationDollar: () => {},
+      dolar: null,
     }
   }
   return ctx

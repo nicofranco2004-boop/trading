@@ -14,8 +14,7 @@ import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
 import PageHeader from '../components/PageHeader'
-import CurrencyToggle from '../components/CurrencyToggle'
-import { useCurrency } from '../contexts/CurrencyContext'
+import CurrencyRail from '../components/CurrencyRail'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
@@ -92,7 +91,6 @@ export default function Config() {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const [delState, setDelState] = useState({ loading: false, error: '' })
-  const { valuationDollar, setValuationDollar } = useCurrency()
   const [brokers, setBrokers] = useState([])  // sólo para contador en "Cuenta"
   const [dolar, setDolar] = useState(null)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
@@ -180,52 +178,21 @@ export default function Config() {
       {/* ── Plan actual ──────────────────────────────────────────────────── */}
       <PlanHero tier={user?.tier || 'free'} usage={aiUsage} />
 
-      {/* ── Moneda de visualización ──────────────────────────────────────── */}
-      {/* Mismo state global que el toggle de Cartera/Análisis. Acá vive como
-          preferencia persistente y descubrible, para el user que prefiere
-          fijarla una vez en vez de cambiarla pantalla por pantalla. */}
+      {/* ── Moneda de valuación (riel unificado: USD MEP / USD CCL / Pesos) ── */}
+      {/* Un solo control que combina los dos ejes: en qué moneda ver la app
+          (USD/ARS) + con qué dólar valuar tenencias en pesos (MEP/CCL). Mismo
+          state global que el riel de Cartera/Análisis: cambiarlo acá lo cambia
+          en toda la app. Acá vive como preferencia persistente y descubrible. */}
       <section className="mb-6">
-        <div className="border border-line rounded bg-bg-1 px-4 py-3.5 flex items-center justify-between gap-4 flex-wrap">
-          <div className="min-w-0">
-            <h2 className="text-sm font-medium text-ink-1">Moneda de visualización</h2>
+        <div className="border border-line rounded bg-bg-1 px-4 py-3.5">
+          <div className="min-w-0 mb-3">
+            <h2 className="text-sm font-medium text-ink-1">Moneda de valuación</h2>
             <p className="text-xs text-ink-3 mt-0.5">
-              Elegí ver tus valores en dólares (USD) o pesos (ARS). Se aplica en toda la app.
+              En qué moneda ves toda la app. <b>USD MEP</b>: dólar local (default). <b>USD CCL</b>: el
+              dólar implícito en el precio de los CEDEARs. <b>Pesos</b>: todos tus valores en ARS.
             </p>
           </div>
-          <CurrencyToggle variant="pill" size="lg" />
-        </div>
-      </section>
-
-      {/* ── Dólar de valuación (MEP / CCL) ───────────────────────────────── */}
-      {/* Qué dólar usa la app para pasar tus tenencias en pesos a USD. MEP =
-          dólar local (default). CCL = el dólar implícito en el precio de los
-          CEDEARs → algunos prefieren medir su rendimiento real con ese. */}
-      <section className="mb-6">
-        <div className="border border-line rounded bg-bg-1 px-4 py-3.5 flex items-center justify-between gap-4 flex-wrap">
-          <div className="min-w-0">
-            <h2 className="text-sm font-medium text-ink-1">Dólar de valuación</h2>
-            <p className="text-xs text-ink-3 mt-0.5">
-              Con qué dólar se valúan tus tenencias en pesos. <b>MEP</b>: dólar local. <b>CCL</b>: el
-              dólar implícito en el precio de los CEDEARs. Se aplica en toda la app.
-            </p>
-          </div>
-          <div className="inline-flex rounded-full border border-line bg-bg-0 p-0.5 shrink-0" role="group" aria-label="Dólar de valuación">
-            {[['mep', 'MEP'], ['ccl', 'CCL']].map(([val, label]) => (
-              <button
-                key={val}
-                type="button"
-                onClick={() => setValuationDollar(val)}
-                aria-pressed={valuationDollar === val}
-                className={`px-4 py-1.5 text-sm font-medium rounded-full transition-colors ${
-                  valuationDollar === val
-                    ? 'bg-brand text-white'
-                    : 'text-ink-2 hover:text-ink-0'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <CurrencyRail />
         </div>
       </section>
 

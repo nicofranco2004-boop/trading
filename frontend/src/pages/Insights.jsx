@@ -146,7 +146,7 @@ export default function Insights({ _embeddedTab }) {
 function InsightsDesktop({ _embeddedTab }) {
   const isMobile = useIsMobile()
   const { user } = useAuth()
-  const { valuationDollar } = useCurrency()
+  const { valuationDollar, currency } = useCurrency()
   const plan = usePlanFeatures()
   // Flags de renderizado condicional cuando se embebe dentro de /analisis.
   // Standalone (sin _embeddedTab) → renderiza TODO.
@@ -171,7 +171,9 @@ function InsightsDesktop({ _embeddedTab }) {
   const [snapshots, setSnapshots] = useState([])
   const [operations, setOperations] = useState([])
   const [dolar, setDolar] = useState(null)
-  const [currency, setCurrency] = useState('USD')
+  // Moneda de visualización: viene del RIEL global (CurrencyContext), no de un
+  // toggle local. USD (MEP/CCL) → vista USD / S&P 500; ARS (Pesos) → vista ARS /
+  // Inflación. Antes era un useState local con su propio toggle (unificado 2026-07).
   const [chartRange, setChartRange] = useState(12) // months; null = MAX
 
   // Selector de benchmark del chart — uno por moneda, persisted en localStorage.
@@ -1851,21 +1853,6 @@ function InsightsDesktop({ _embeddedTab }) {
               params={{ window_days: 365 }}
               subtitle="Tu performance del último año"
             />
-            <div className="inline-flex bg-bg-2 border border-line p-0.5 rounded-sm" title="Cambiar moneda de visualización">
-              {['USD', 'ARS'].map(c => (
-                <button
-                  key={c}
-                  onClick={() => setCurrency(c)}
-                  className={`px-3 py-1 text-xs rounded-sm font-mono uppercase tracking-label transition-colors ${
-                    currency === c
-                      ? 'bg-bg-3 text-ink-0'
-                      : 'text-ink-2 hover:text-ink-0'
-                  }`}
-                >
-                  {c}
-                </button>
-              ))}
-            </div>
           </div>
         }
       />
