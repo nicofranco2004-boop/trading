@@ -253,10 +253,12 @@ def get_db():
     # WAL: lectores no bloquean al writer (multi-user OK)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    # busy_timeout: si otra conexión está escribiendo, esperar 5s antes de
-    # tirar "database is locked". Sin esto, requests concurrentes fallan
-    # inmediatamente bajo carga (FastAPI corre handlers en threadpool).
-    conn.execute("PRAGMA busy_timeout=5000")
+    # busy_timeout: si otra conexión está escribiendo, esperar antes de tirar
+    # "database is locked". Sin esto, requests concurrentes fallan inmediatamente
+    # bajo carga (FastAPI corre handlers en threadpool). 15s da headroom para
+    # operaciones de escritura pesadas (wipe-broker + rebackfill de snapshots,
+    # import + rebuild) que pueden tener el lock varios segundos.
+    conn.execute("PRAGMA busy_timeout=15000")
     # synchronous=NORMAL: con WAL es seguro y 2-3× más rápido que FULL
     # (no fsync después de cada commit; el WAL checkpoint sí).
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -267,6 +269,24 @@ def get_db():
     # mmap_size: 256MB de memory-mapped I/O acelera lecturas grandes.
     conn.execute("PRAGMA mmap_size=268435456")
     return conn
+
+
+def _run_with_lock_retry(fn, *, attempts: int = 4, base_delay: float = 0.3):
+    """Reintenta `fn` ante 'database is locked' de SQLite (contención de escritura),
+    con backoff exponencial. Sólo para operaciones de escritura IDEMPOTENTES (wipe,
+    revert, recalc): si fallan a mitad, el `with conn:` ya hizo rollback y re-correr
+    no duplica. El busy_timeout ya hace esperar dentro de cada intento; el retry cubre
+    el caso en que el lock lo tiene una operación larga (otro import/snapshot) que
+    tarda más que el timeout en soltar."""
+    import time as _t
+    for i in range(attempts):
+        try:
+            return fn()
+        except sqlite3.OperationalError as ex:
+            if "locked" in str(ex).lower() and i < attempts - 1:
+                _t.sleep(base_delay * (2 ** i))
+                continue
+            raise
 
 
 def _table_cols(conn, table: str) -> set:
@@ -18797,10 +18817,18 @@ def import_wipe_broker(broker: str, uid: int = Depends(get_current_user)):
         ).fetchone()
         if not b:
             raise HTTPException(404, f"No tenés un broker llamado '{broker}'.")
-        counts = _wipe_broker_data(conn, uid, broker)
+        # Retry ante 'database is locked': el wipe es una escritura pesada
+        # (deletes + rebackfill de snapshots) que puede chocar con otro import/
+        # snapshot concurrente. Idempotente → seguro reintentar.
+        counts = _run_with_lock_retry(lambda: _wipe_broker_data(conn, uid, broker))
         return {"ok": True, "broker": broker, **counts}
     except HTTPException:
         raise
+    except sqlite3.OperationalError as ex:
+        if "locked" in str(ex).lower():
+            raise HTTPException(503, "La base está ocupada procesando otra operación. "
+                                     "Esperá unos segundos y probá de nuevo.")
+        raise HTTPException(500, f"No se pudo limpiar el broker: {ex}")
     except Exception as ex:
         raise HTTPException(500, f"No se pudo limpiar el broker: {ex}")
     finally:
