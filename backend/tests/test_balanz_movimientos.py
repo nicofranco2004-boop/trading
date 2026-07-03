@@ -469,5 +469,32 @@ class BalanzEmbeddedCommissionTest(unittest.TestCase):
         self.assertAlmostEqual(float(bk["monto"]) - float(bk["comisiones"]), 214777.08, places=2)
 
 
+class BalanzEmbeddedGateTest(unittest.TestCase):
+    """La comisión embebida se extrae SOLO en pesos y con tasa sana (≤3%).
+    En dólares la comisión viene como fila ARS aparte → extraerla duplicaría."""
+
+    def _parse(self, row):
+        res = BalanzMovimientosParser().parse(HDR + "\n" + row + "\n")
+        self.assertEqual(res.parse_errors, [])
+        return res.raw_rows[0].data
+
+    def test_usd_trade_no_extrae_embebida(self):
+        # Trade en dólares con gap (ruido FX) → NO extrae, monto=|Importe|.
+        d = self._parse("Boleto / 9 / COMPRA / 0 / AAPL / U$S,AAPL,Cedears,2026-01-01,10,18.5,2026-01-01,Dólares,-185.30")
+        self.assertEqual(float(d.get("comisiones") or 0), 0.0)
+        self.assertAlmostEqual(float(d["monto"]), 185.30, places=2)
+
+    def test_peso_trade_si_extrae(self):
+        d = self._parse("Boleto / 10 / COMPRA / 0 / NU / $,NU,Cedears,2026-01-01,46,10270,2026-01-01,Pesos,-475563.95")
+        self.assertAlmostEqual(float(d["comisiones"]), 3143.95, places=2)
+
+    def test_clamp_gap_absurdo_no_es_comision(self):
+        # Bono per-100 leído per-1: gross 100× el Importe → gap absurdo (>3%) →
+        # NO se inventa comisión gigante; cae a monto=|Importe|, comisiones=0.
+        d = self._parse("Boleto / 11 / COMPRA / 1 / AL30 / $,AL30,Bonos,2026-01-01,1000,100,2026-01-01,Pesos,-1000")
+        self.assertEqual(float(d.get("comisiones") or 0), 0.0)
+        self.assertAlmostEqual(float(d["monto"]), 1000.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

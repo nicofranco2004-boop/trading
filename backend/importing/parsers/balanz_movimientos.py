@@ -407,22 +407,35 @@ class BalanzMovimientosParser(Parser):
             # esto salvo en los fondos-sweep "desde/a Balanz" (limitación conocida).
             if has_price and ticker:
                 tipo = "VENTA" if cash_in else "COMPRA"
-                # Comisión EMBEBIDA: Balanz NO la trae como columna; vive en la
-                # diferencia entre el bruto (Precio×Cantidad) y el Importe neto.
-                #   COMPRA: pagás bruto + comisión → |Importe| = bruto + comisión
-                #   VENTA:  cobrás bruto − comisión → |Importe| = bruto − comisión
-                # Emitimos monto=BRUTO + comisiones=|bruto−|Importe|| → el pipeline
-                # queda: COMPRA cost = invested(bruto)+comisión = |Importe| (cash y
-                # costo idénticos, pero la comisión ya es visible); VENTA proceeds =
-                # bruto − comisión = |Importe| (antes la venta NO descontaba la
-                # comisión → P&L y cash de venta sobreestimados). El cash total NO
-                # cambia (sigue = |Importe|); solo se separa la comisión.
+                # Comisión EMBEBIDA: en los trades en PESOS Balanz NO la trae como
+                # columna; vive en la diferencia entre el bruto (Precio×Cantidad) y
+                # el Importe neto (COMPRA |Importe|=bruto+comisión; VENTA |Importe|=
+                # bruto−comisión; ~0,5-0,7%). La extraemos como `comisiones` y
+                # emitimos monto=BRUTO → COMPRA cost=invested(bruto)+comisión,
+                # VENTA proceeds=bruto−comisión (antes la venta no la descontaba).
+                # Cash NEUTRAL (bruto±comisión=|Importe|); solo se separa la comisión.
+                #
+                # ⚠️ SOLO en PESOS. En trades en DÓLARES la comisión viene como una
+                # fila ARS APARTE (mismo boleto) que YA se cuenta como FEE, y el
+                # |bruto−|Importe|| del leg USD es RUIDO FX (redondeo) → extraerla
+                # duplicaría (~11%) e inflaría con ruido. Guard de tasa (≤3%): si el
+                # "gap" es absurdo (bono per-100 leído per-1, precio raro) NO es
+                # comisión → caemos al comportamiento viejo (monto=|Importe|, sin
+                # extraer), sin inventar una comisión gigante.
                 q = abs(qty or 0)
                 gross = precio * q
                 comision = abs(gross - abs(importe))
-                _emit(base(tipo, activo=ticker, cantidad=str(q),
-                           precio=str(precio), monto=str(round(gross, 4)),
-                           comisiones=str(round(comision, 4))))
+                embebida_ok = (
+                    (moneda or "ARS").upper() == "ARS"
+                    and gross > 0 and 0 < comision <= 0.03 * gross
+                )
+                if embebida_ok:
+                    _emit(base(tipo, activo=ticker, cantidad=str(q),
+                               precio=str(precio), monto=str(round(gross, 4)),
+                               comisiones=str(round(comision, 4))))
+                else:
+                    _emit(base(tipo, activo=ticker, cantidad=str(q),
+                               precio=str(precio), monto=str(abs(importe))))
                 continue
 
             # ── Boleto sin precio (precio=-1) ─────────────────────────────────
