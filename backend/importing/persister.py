@@ -33,7 +33,7 @@ from typing import List, Tuple, Dict, Any, Optional
 from .schema import (
     NormalizedTx,
     OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND, OP_INTEREST,
-    OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_FUTURES_PNL,
+    OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
 )
 from . import seed as _seed
 
@@ -311,7 +311,9 @@ def persist_batch(
                                                     helpers, tc_blue=tc_blue)
                     counts["operations"] += 1
 
-                elif op in (OP_WITHDRAW, OP_FEE):
+                elif op in (OP_WITHDRAW, OP_FEE, OP_TAX):
+                    # IMPUESTO (retención) se comporta igual que FEE en el cash:
+                    # debita, sin crear posición. Solo cambia la CATEGORÍA (métrica).
                     _persist_cash_out(conn, uid, batch_id, raw_row_id, tx, helpers, tc_blue=tc_blue)
                     counts["cash_movements"] += 1
 
@@ -1203,7 +1205,7 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
             helpers._update_monthly_pnl_realized(conn, uid, tx["broker"], y, m, -amount_usd)
             helpers._update_monthly_pnl_realized(conn, uid, "global", y, m, -amount_usd)
 
-        elif op in ("WITHDRAW", "FEE"):
+        elif op in ("WITHDRAW", "FEE", "IMPUESTO"):
             amount = float(tx["gross_amount"] or 0)
             row_currency = (tx["currency"] or "").upper() if "currency" in tx.keys() else ""
             # Fase 4: prefer stamped USD (idem DEPOSIT revert).

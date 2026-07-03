@@ -8978,30 +8978,41 @@ def get_commissions_total(uid: int = Depends(get_current_user)):
         except (TypeError, ValueError):
             tc_blue = 1415.0
 
+        # FEE = comisiones/gastos reales; IMPUESTO = retenciones (Ganancias/IIBB/
+        # BBPP). Se separan: los impuestos NO son comisión (antes se contaban todos
+        # como FEE → la card inflada con impuestos + ajustes de cambio).
         rows = conn.execute(
-            """SELECT n.gross_amount AS amt, n.currency AS cur
+            """SELECT n.gross_amount AS amt, n.currency AS cur, n.operation_type AS op
                  FROM import_normalized_tx n
                  JOIN import_batches b ON b.id = n.batch_id
                 WHERE b.user_id=?
                   AND b.status='confirmed'
-                  AND n.operation_type='FEE'""",
+                  AND n.operation_type IN ('FEE','IMPUESTO')""",
             (uid,),
         ).fetchall()
 
         total_usd = 0.0
         count = 0
+        taxes_usd = 0.0
+        taxes_count = 0
         for r in rows:
             amt = float(r["amt"] or 0)
             if amt <= 0:
                 continue
             cur = (r["cur"] or "").upper()
             amt_usd = amt / tc_blue if cur == "ARS" else amt
-            total_usd += amt_usd
-            count += 1
+            if (r["op"] or "") == "IMPUESTO":
+                taxes_usd += amt_usd
+                taxes_count += 1
+            else:
+                total_usd += amt_usd
+                count += 1
 
         return {
             "total_usd": round(total_usd, 4),
             "count": count,
+            "taxes_usd": round(taxes_usd, 4),
+            "taxes_count": taxes_count,
         }
     finally:
         conn.close()

@@ -24,11 +24,12 @@ OP_TRANSFER = "TRANSFER"
 OP_FX_ARS_TO_USD = "FX_ARS_TO_USD"
 OP_FX_USD_TO_ARS = "FX_USD_TO_ARS"
 OP_FEE = "FEE"
+OP_TAX = "IMPUESTO"   # retención de impuesto (Ganancias/IIBB/Bienes Personales) — NO es comisión
 OP_FUTURES_PNL = "FUTURES_PNL"   # PnL realizado de un cierre de posición de futuros
 
 OPERATION_TYPES = {
     OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND, OP_INTEREST,
-    OP_TRANSFER, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_FUTURES_PNL,
+    OP_TRANSFER, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
 }
 
 # Aliases que aceptamos en el CSV — castellano + inglés + variantes comunes de brokers
@@ -138,10 +139,11 @@ OP_TYPE_ALIASES = {
     "ADR_FEE": OP_FEE, "ADR_MGMT_FEE": OP_FEE, "ADR_MAINT_FEE": OP_FEE,
     "ADR_MAINTENANCE_FEE": OP_FEE, "ADR_MANAGEMENT_FEE": OP_FEE,
     "MARGIN_INTEREST": OP_FEE, "BORROW_FEE": OP_FEE, "STOCK_BORROW_FEE": OP_FEE,
-    "TAX": OP_FEE, "WITHHOLDING_TAX": OP_FEE, "IIBB": OP_FEE,
-    "WHTAX": OP_FEE, "WH_TAX": OP_FEE, "WITHHOLDING": OP_FEE,
-    "FOREIGN_TAX_PAID": OP_FEE, "FOREIGN_TAX": OP_FEE,
-    "IMPUESTO": OP_FEE, "IMPUESTOS": OP_FEE, "RETENCION": OP_FEE, "RETENCIÓN": OP_FEE,
+    # Impuestos / retenciones → OP_TAX (NO son comisiones; van a métrica aparte).
+    "TAX": OP_TAX, "WITHHOLDING_TAX": OP_TAX, "IIBB": OP_TAX,
+    "WHTAX": OP_TAX, "WH_TAX": OP_TAX, "WITHHOLDING": OP_TAX,
+    "FOREIGN_TAX_PAID": OP_TAX, "FOREIGN_TAX": OP_TAX,
+    "IMPUESTO": OP_TAX, "IMPUESTOS": OP_TAX, "RETENCION": OP_TAX, "RETENCIÓN": OP_TAX,
     "ARANCEL": OP_FEE, "DERECHO_DE_MERCADO": OP_FEE,
     # Futures PnL (cierre de posición — afecta cash y se registra como operación)
     "FUTURES_PNL": OP_FUTURES_PNL, "FUTURES PNL": OP_FUTURES_PNL,

@@ -181,6 +181,17 @@ def _classify_desc(desc_norm: str) -> str:
     return "otro"
 
 
+def _is_tax(desc_norm: str) -> bool:
+    """¿Esta salida de cash es una RETENCIÓN DE IMPUESTO (Ganancias/IIGG/IIBB/
+    Bienes Personales) y NO una comisión? Balanz las descuenta de dividendos,
+    cupones y ventas ("N/D Ret IIGG - IRSA"). Van a op_type IMPUESTO (métrica
+    aparte), no a FEE — así "comisiones" queda limpio de impuestos."""
+    d = desc_norm
+    return (("ret" in d and ("iigg" in d or "ganancia" in d or "gcia" in d))
+            or "retencion" in d or "impuesto" in d or "iibb" in d
+            or "ingresos brutos" in d or "bienes personales" in d)
+
+
 class BalanzMovimientosParser(Parser):
     format_id = "balanz_movimientos"
     display_name = "Balanz — Movimientos"
@@ -332,7 +343,8 @@ class BalanzMovimientosParser(Parser):
                         _emit(base("VENTA", activo=ticker, cantidad=str(abs(qty)),
                                    precio="0", monto="0", _corporate_close=True))
                 if has_cash:
-                    _emit(base("DIVIDENDO" if cash_in else "FEE", monto=str(abs(importe))))
+                    # cash-out en una acción societaria = retención de impuesto → IMPUESTO
+                    _emit(base("DIVIDENDO" if cash_in else "IMPUESTO", monto=str(abs(importe))))
                 continue
 
             # ── Operación a plazo / diferida: trade con cantidad + cash pero SIN
@@ -455,11 +467,24 @@ class BalanzMovimientosParser(Parser):
                         _emit(base("VENTA", activo=ticker, cantidad=str(abs(qty)),
                                    monto=str(abs(importe))))
                         continue
-                # cupón puro / retención / pata ya contada → ingreso o retención
-                _emit(base("DIVIDENDO" if cash_in else "FEE", monto=str(abs(importe))))
+                # cupón puro / retención / pata ya contada → ingreso o RETENCIÓN de impuesto
+                _emit(base("DIVIDENDO" if cash_in else "IMPUESTO", monto=str(abs(importe))))
                 continue
             if kind == "manual":
-                _emit(base("INTERES" if cash_in else "FEE", monto=str(abs(importe))))
+                # "Conversión CV X a CV Y" = transferencia entre buckets de dólar
+                # (netea a 0: sale de 'Dólares C.V.' y entra a 'Dólares') → NO es fee
+                # ni ingreso; se omite (sin efecto en el USD total, evita $ fantasma
+                # de comisión + interés).
+                if "conversion" in desc:
+                    continue
+                if cash_in:
+                    _emit(base("INTERES", monto=str(abs(importe))))
+                elif _is_tax(desc):
+                    # "N/D Ret IIGG - IRSA/BYMA" y similares = impuesto, no comisión.
+                    _emit(base("IMPUESTO", monto=str(abs(importe))))
+                else:
+                    # "Gastos por operación de Fondos" y cargos varios → fee real.
+                    _emit(base("FEE", monto=str(abs(importe))))
                 continue
 
             # ── Descripción NO reconocida → la MARCAMOS (no la tragamos en

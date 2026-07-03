@@ -1315,7 +1315,14 @@ function InsightsDesktop({ _embeddedTab }) {
     const count = commissionsApi.count
     const grossWin = profitFactor?.grossWin ?? null
     const pctOfGrossWin = grossWin && grossWin > 0 ? (total / grossWin) * 100 : null
-    commissionsStats = { total, count, avgPerTrade: total / count, pctOfGrossWin }
+    // Impuestos/retenciones (Ganancias/IIBB/BBPP) — separados de comisiones: el
+    // backend los devuelve aparte (operation_type='IMPUESTO'). Antes se contaban
+    // como comisión → la card inflada con impuestos + ajustes de cambio.
+    commissionsStats = {
+      total, count, avgPerTrade: total / count, pctOfGrossWin,
+      taxes: commissionsApi.taxes_usd ?? 0,
+      taxesCount: commissionsApi.taxes_count ?? 0,
+    }
   }
 
   // ── Insight 6: Concentración (top 3 activos sobre portfolio total) ──
@@ -2391,6 +2398,11 @@ function InsightsDesktop({ _embeddedTab }) {
               <p className="text-xs text-ink-3 mt-1">
                 Sobre {commissionsStats.count} {commissionsStats.count === 1 ? 'operación' : 'operaciones'} · prom. {amt(commissionsStats.avgPerTrade)}
               </p>
+              {commissionsStats.taxes > 0 && (
+                <p className="text-xs text-ink-3 mt-1">
+                  + <span className="font-semibold text-ink-1 dark:text-white">{amt(commissionsStats.taxes)}</span> en impuestos/retenciones <span className="text-ink-3">(aparte — no son comisión)</span>
+                </p>
+              )}
               <p className="text-xs text-ink-2 mt-3 leading-snug">
                 {commissionsStats.pctOfGrossWin != null && commissionsStats.pctOfGrossWin >= 1
                   ? <>Equivalen al <span className="font-semibold text-ink-0 dark:text-white">{commissionsStats.pctOfGrossWin.toFixed(1)}%</span> de tus ganancias brutas. {commissionsStats.pctOfGrossWin >= 20 ? 'Peso alto sobre el resultado — revisá si conviene operar menos o cambiar de broker.' : commissionsStats.pctOfGrossWin >= 10 ? 'Peso moderado: vale la pena monitorear que no crezca.' : 'Costo razonable en relación a lo generado.'}</>

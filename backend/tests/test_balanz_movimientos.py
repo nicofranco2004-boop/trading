@@ -29,7 +29,7 @@ def _csv():
     return (HDR + "\n" + "\n".join(ROWS) + "\n")
 
 
-OUT = {"COMPRA", "RETIRO", "FEE"}
+OUT = {"COMPRA", "RETIRO", "FEE", "IMPUESTO"}   # IMPUESTO = retención (debita cash, como FEE)
 IN = {"VENTA", "DEPOSITO", "DIVIDENDO", "INTERES"}
 
 
@@ -180,8 +180,8 @@ class BalanzMovimientosNuevosTiposTest(unittest.TestCase):
         # nominal neto = +4000 -4000 = 0 → la posición desaparece (sin fantasma).
         net = sum(float(d["cantidad"]) for d in compras) - sum(float(d["cantidad"]) for d in ventas)
         self.assertEqual(net, 0.0)
-        # la retención ARS quedó como FEE, no como segunda VENTA.
-        self.assertTrue(any(float(d["monto"]) == 650.05 for d in by.get("FEE", [])))
+        # la retención ARS quedó como IMPUESTO (no comisión, no segunda VENTA).
+        self.assertTrue(any(float(d["monto"]) == 650.05 for d in by.get("IMPUESTO", [])))
 
     def test_cupon_puro_no_baja_nominal(self):
         # "Renta" con cantidad=0 (cupón puro, sin amortización) NO debe vender nominal.
@@ -392,6 +392,43 @@ class BalanzMovimientosCanjeArancelesTest(unittest.TestCase):
             "Algo Totalmente Nuevo / 9,XYZ,Acciones,2025-10-01,5,0,2025-10-01,Pesos,0")
         self.assertEqual(len(res.raw_rows), 0)
         self.assertTrue(any(e.code == "BALANZ_MOV_DESC_DESCONOCIDA" for e in res.parse_errors))
+
+
+class BalanzFeeTaxClassificationTest(unittest.TestCase):
+    """Comisiones vs impuestos vs ajuste de cambio (fix del metric inflado)."""
+
+    HDR2 = HDR
+    ROWS2 = [
+        "Movimiento Manual / N/D Ret IIGG - IRSA,,,2026-01-01,0,-1,2026-01-01,Pesos,-1000",           # retención impuesto → IMPUESTO
+        "Movimiento Manual / Ret IIGG y BBPP - BYMA,,,2026-01-01,0,-1,2026-01-01,Pesos,-500",          # retención impuesto → IMPUESTO
+        "Movimiento Manual / Gastos por operación de Fondos,,,2026-01-01,0,-1,2026-01-01,Dólares,-5",   # gasto real → FEE
+        "Movimiento Manual / Conversión CV 7.000 a CV 10.000,,,2026-01-01,0,-1,2026-01-01,Dólares C.V. 7000,-9.88",  # transferencia → SKIP
+        "Movimiento Manual / Conversión CV 7.000 a CV 10.000,,,2026-01-01,0,-1,2026-01-01,Dólares,9.88",             # transferencia → SKIP
+        "Boleto / 500 / COMPRA / 0 / GGAL / $,GGAL,Cedears,2026-01-01,10,-1,2026-01-01,Pesos,-30",      # comisión de boleto → FEE
+        "Dividendo en efectivo / SPY,SPY,Cedears,2026-01-01,0,-1,2026-01-01,Dólares,-2",                # retención dividendo → IMPUESTO
+    ]
+
+    def setUp(self):
+        csv = self.HDR2 + "\n" + "\n".join(self.ROWS2) + "\n"
+        self.res = BalanzMovimientosParser().parse(csv)
+        self.tipos = [rr.data["tipo"] for rr in self.res.raw_rows]
+
+    def test_no_parse_errors(self):
+        self.assertEqual(self.res.parse_errors, [])
+
+    def test_taxes_are_impuesto_not_fee(self):
+        # Ret IIGG (x2) + retención de dividendo = 3 IMPUESTO; NINGUNO como FEE.
+        self.assertEqual(self.tipos.count("IMPUESTO"), 3)
+
+    def test_real_fees_are_fee(self):
+        # "Gastos por operación" + comisión de boleto = 2 FEE (sin impuestos ni conversión).
+        self.assertEqual(self.tipos.count("FEE"), 2)
+
+    def test_conversion_cv_is_skipped(self):
+        # La conversión entre buckets de dólar netea a 0 → NO emite fee ni interés.
+        self.assertNotIn("INTERES", self.tipos)
+        # las 2 filas de conversión no generan ninguna operación
+        self.assertEqual(len(self.res.raw_rows), 5)  # 7 filas − 2 conversiones
 
 
 if __name__ == "__main__":
