@@ -10572,6 +10572,102 @@ def admin_diagnose_negative_capital(min_capital: float = -50000.0, limit_account
         conn.close()
 
 
+@app.get("/api/admin/commissions-debug")
+def admin_commissions_debug(email: str = "", user_id: int = 0,
+                            uid: int = Depends(get_admin_user)):
+    """Diagnóstico READ-ONLY del metric de comisiones de UN usuario. Muestra sus
+    batches confirmados + el desglose de fees por batch, para ver si el número
+    bajo ($24 en vez de ~$527) es por: (a) un batch VIEJO confirmado (parser sin
+    comisión embebida → trades con fees=0), (b) el import fresco no quedó
+    confirmado, o (c) el parser deployado no extrae la embebida. GET → abrir en
+    el browser con la cookie admin. NO ESCRIBE NADA."""
+    conn = get_db()
+    try:
+        if user_id:
+            au = int(user_id)
+        elif email:
+            r = conn.execute("SELECT id FROM users WHERE lower(email)=lower(?)",
+                             (email.strip(),)).fetchone()
+            if not r:
+                raise HTTPException(404, "usuario no encontrado")
+            au = r["id"]
+        else:
+            raise HTTPException(400, "pasá ?email= o ?user_id=")
+
+        tcb = conn.execute("SELECT value FROM config WHERE user_id=? AND key='tc_blue'",
+                           (au,)).fetchone()
+        try:
+            tc_blue = float(tcb["value"]) if tcb else 1415.0
+            if tc_blue <= 0:
+                tc_blue = 1415.0
+        except (TypeError, ValueError):
+            tc_blue = 1415.0
+
+        # Por batch confirmado: cuántos trades traen comisión embebida y cuánto.
+        batches = []
+        for b in conn.execute(
+            """SELECT id, broker, parser_format, status, created_at
+                 FROM import_batches WHERE user_id=? AND status='confirmed'
+                ORDER BY created_at""", (au,)).fetchall():
+            agg = conn.execute(
+                """SELECT
+                     COUNT(*) AS n_tx,
+                     SUM(CASE WHEN operation_type IN ('BUY','SELL') AND COALESCE(fees,0)>0
+                              THEN 1 ELSE 0 END) AS trades_con_fee,
+                     SUM(CASE WHEN operation_type IN ('BUY','SELL')
+                              THEN COALESCE(fees,0) ELSE 0 END) AS trade_fees,
+                     SUM(CASE WHEN operation_type='FEE'
+                              THEN COALESCE(gross_amount,0) ELSE 0 END) AS fee_ops,
+                     SUM(CASE WHEN operation_type='IMPUESTO'
+                              THEN COALESCE(gross_amount,0) ELSE 0 END) AS impuestos
+                   FROM import_normalized_tx WHERE batch_id=?""", (b["id"],)).fetchone()
+            batches.append({
+                "id": b["id"], "broker": b["broker"], "parser": b["parser_format"],
+                "created_at": b["created_at"], "n_tx": agg["n_tx"] or 0,
+                "trades_con_comision_embebida": agg["trades_con_fee"] or 0,
+                "suma_comision_embebida_native": round(agg["trade_fees"] or 0, 2),
+                "suma_fee_sueltos_native": round(agg["fee_ops"] or 0, 2),
+                "suma_impuestos_native": round(agg["impuestos"] or 0, 2),
+            })
+
+        # Total EXACTO como get_commissions_total (comisiones = FEE.gross + trade.fees).
+        total_com = 0.0
+        total_tax = 0.0
+        for r in conn.execute(
+            """SELECT n.operation_type AS op, n.gross_amount AS g, n.fees AS f, n.currency AS c
+                 FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id=? AND b.status='confirmed'""", (au,)).fetchall():
+            fac = (1.0 / tc_blue) if (r["c"] or "").upper() == "ARS" else 1.0
+            op = r["op"] or ""
+            if op == "IMPUESTO":
+                v = float(r["g"] or 0)
+                if v > 0:
+                    total_tax += v * fac
+            elif op == "FEE":
+                v = float(r["g"] or 0)
+                if v > 0:
+                    total_com += v * fac
+            else:
+                v = float(r["f"] or 0)
+                if v > 0:
+                    total_com += v * fac
+
+        return {
+            "user_id": au,
+            "tc_blue": tc_blue,
+            "comisiones_usd": round(total_com, 2),
+            "impuestos_usd": round(total_tax, 2),
+            "n_batches_confirmados": len(batches),
+            "batches": batches,
+            "pista": "Si hay un batch con parser 'balanz_movimientos' y trades_con_comision_embebida=0 → "
+                     "es un batch VIEJO (import previo a FIX 2) que quedó confirmado; el metric lo lee. "
+                     "Si NO hay ningún batch con trades_con_comision_embebida>0 → el import fresco no "
+                     "extrajo la embebida (parser backend viejo o import no confirmado).",
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/disk-usage")
 def admin_disk_usage(uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY: uso de disco de los filesystems relevantes + los
