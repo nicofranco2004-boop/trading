@@ -17,6 +17,7 @@
 //   • Popular: eventos del MERCADO. Earnings populares + macro.
 
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useSearchParams } from 'react-router-dom'
 import { Calendar, Filter, AlertCircle, Eye, Sparkles } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
@@ -102,6 +103,7 @@ export default function Events({ embedded = false }) {
   const [popularEvents, setPopularEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     loadAll()
@@ -167,6 +169,16 @@ export default function Events({ embedded = false }) {
     return map
   }, [positions, brokers, prices, tcBlue])
 
+  // Acciones (cantidad) por ticker — para "tenés N acc → cobrás $X".
+  const tickerShares = useMemo(() => {
+    const map = new Map()
+    for (const p of positions) {
+      if (p.is_cash || !p.quantity) continue
+      map.set(p.asset, (map.get(p.asset) || 0) + p.quantity)
+    }
+    return map
+  }, [positions])
+
   // Tickers que el user tiene (para flag en tab Popular)
   const userTickerSet = useMemo(() => {
     return new Set(positions.filter(p => !p.is_cash).map(p => p.asset))
@@ -194,6 +206,15 @@ export default function Events({ embedded = false }) {
     return normalizeBackendEvents(popularEvents)
       .map(e => ({ ...e, inPortfolio: userTickerSet.has(e.ticker) }))
   }, [tab, positions, portfolioEvents, popularEvents, windowDays, userTickerSet])
+
+  // Spotlight — el próximo evento del portfolio (el más cercano, ya no pasado).
+  const nextEvent = useMemo(() => {
+    if (tab !== 'portfolio') return null
+    const upcoming = visibleEvents
+      .filter(e => { const d = daysUntil(e.eventDate); return d != null && d >= 0 })
+      .sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || ''))
+    return upcoming[0] || null
+  }, [tab, visibleEvents])
 
   const containerClass = embedded ? '' : 'page-shell-wide'
   return (
@@ -249,6 +270,19 @@ export default function Events({ embedded = false }) {
         </div>
       )}
 
+      {/* Spotlight — el próximo evento que más te toca, con tu cobro/impacto
+          ya calculado. Solo en "Para ti" (portfolio) y si hay evento próximo. */}
+      {!loading && nextEvent && (
+        <SpotlightHero
+          event={nextEvent}
+          impactPct={(tickerValueUsd && portfolioTotalUsd > 0)
+            ? (tickerValueUsd.get(nextEvent.ticker) || 0) / portfolioTotalUsd
+            : null}
+          cobro={eventCobro(nextEvent, tickerShares)}
+          onView={() => navigate(`/activo/${encodeURIComponent(nextEvent.ticker)}`)}
+        />
+      )}
+
       {/* KPI Strip — 3 celdas con divisores. Padding más chico en mobile. */}
       <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-3 divide-x divide-line">
         <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} />
@@ -276,9 +310,16 @@ export default function Events({ embedded = false }) {
         </ControlGroup>
       </div>
 
-      {/* Timeline strip — mini-viz de eventos por día en la ventana. */}
+      {/* Timeline strip — mini-viz de eventos por día. En "Para ti" la altura
+          de cada barra pondera el impacto en tu cartera, no solo el conteo. */}
       {!loading && kpiEvents.length > 0 && (
-        <TimelineStrip events={visibleEvents} windowDays={windowDays} />
+        <TimelineStrip
+          events={visibleEvents}
+          windowDays={windowDays}
+          tab={tab}
+          tickerValueUsd={tickerValueUsd}
+          portfolioTotalUsd={portfolioTotalUsd}
+        />
       )}
 
       {loading && <EventTableSkeleton />}
@@ -304,6 +345,7 @@ export default function Events({ embedded = false }) {
           tab={tab}
           tickerValueUsd={tickerValueUsd}
           portfolioTotalUsd={portfolioTotalUsd}
+          tickerShares={tickerShares}
         />
       )}
 
@@ -426,15 +468,23 @@ function ControlPill({ active, onClick, children }) {
 // a #eventos. Color: rendi-accent (bonos/portfolio), purple (earnings),
 // blue (dividendos), green/warn (macro). Hover muestra detalle.
 
-function TimelineStrip({ events, windowDays }) {
-  const buckets = useMemo(() => buildDayBuckets(events, windowDays), [events, windowDays])
-  const maxCount = Math.max(1, ...buckets.map(b => b.total))
+function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotalUsd }) {
+  const buckets = useMemo(
+    () => buildDayBuckets(events, windowDays, tickerValueUsd, portfolioTotalUsd),
+    [events, windowDays, tickerValueUsd, portfolioTotalUsd]
+  )
   if (buckets.every(b => b.total === 0)) return null
+
+  // En "Para ti" la altura pondera el impacto en tu cartera; si no hay impacto
+  // (tab popular o tickers sin posición) caemos al conteo de eventos.
+  const useImpact = tab === 'portfolio' && buckets.some(b => b.impact > 0)
+  const metric = (b) => (useImpact ? b.impact : b.total)
+  const maxMetric = Math.max(1e-9, ...buckets.map(metric))
 
   return (
     <div className="bg-bg-1 border border-line rounded mb-4 p-3 sm:p-4">
       <div className="flex items-center justify-between mb-2">
-        <p className="label-mono">Distribución</p>
+        <p className="label-mono">{useImpact ? 'Distribución · por impacto' : 'Distribución'}</p>
         <p className="text-[10px] font-mono text-ink-3 tracking-wider uppercase">
           {windowDays} días · {events.length} {events.length === 1 ? 'evento' : 'eventos'}
         </p>
@@ -442,7 +492,7 @@ function TimelineStrip({ events, windowDays }) {
       <div className="relative">
         <div className="flex items-end gap-[2px] h-12 sm:h-14">
           {buckets.map(b => {
-            const h = b.total > 0 ? Math.max(8, (b.total / maxCount) * 100) : 4
+            const h = b.total > 0 ? Math.max(8, (metric(b) / maxMetric) * 100) : 4
             // Color del segmento más dominante de ese día
             const tone = b.total === 0
               ? 'bg-line/40'
@@ -472,7 +522,7 @@ function TimelineStrip({ events, windowDays }) {
   )
 }
 
-function buildDayBuckets(events, windowDays) {
+function buildDayBuckets(events, windowDays, tickerValueUsd, portfolioTotalUsd) {
   // Resolución adaptativa — si windowDays > 90, agrupamos por semanas para
   // que la barra no se vea como una línea uniforme.
   const bucketSize = windowDays <= 30 ? 1 : windowDays <= 90 ? 2 : 7
@@ -486,6 +536,7 @@ function buildDayBuckets(events, windowDays) {
       iso: start.toISOString().slice(0, 10),
       label: formatBucketLabel(start, bucketSize),
       total: 0,
+      impact: 0,
       bonds: 0,
       earnings: 0,
       dividends: 0,
@@ -493,6 +544,7 @@ function buildDayBuckets(events, windowDays) {
     }
   })
 
+  const hasImpact = tickerValueUsd && portfolioTotalUsd > 0
   for (const ev of events) {
     if (!ev.eventDate) continue
     const d = new Date(ev.eventDate + 'T00:00:00')
@@ -502,6 +554,7 @@ function buildDayBuckets(events, windowDays) {
     if (idx >= numBuckets) continue
     const b = buckets[idx]
     b.total += 1
+    if (hasImpact) b.impact += (tickerValueUsd.get(ev.ticker) || 0) / portfolioTotalUsd
     if (ev.eventType?.startsWith('bond_')) b.bonds += 1
     else if (ev.eventType === 'earnings') b.earnings += 1
     else if (ev.eventType === 'ex_dividend' || ev.eventType === 'payment_date') b.dividends += 1
@@ -565,12 +618,10 @@ function EventTableSkeleton() {
 }
 
 
-function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd }) {
-  // Pre-ordenamos por fecha
-  const sorted = useMemo(
-    () => [...events].sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || '')),
-    [events]
-  )
+function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd, tickerShares }) {
+  // Agrupamos por cercanía (Esta semana / 2 semanas / Más adelante) para dar
+  // ritmo a la lista en vez de un muro plano ordenado por fecha.
+  const groups = useMemo(() => groupByRecency(events), [events])
 
   return (
     <div className="bg-bg-1 border border-line rounded overflow-hidden">
@@ -584,24 +635,50 @@ function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd }) {
         <div className="label-mono text-right">{tab === 'portfolio' ? 'Impact' : 'Cartera'}</div>
         <div className="label-mono text-right" title="Analizar"></div>
       </div>
-      <ul className="divide-y divide-line/40">
-        {sorted.map((ev, i) => (
-          <EventRow
-            key={`${ev.ticker}:${ev.eventType}:${ev.eventDate}:${i}`}
-            event={ev}
-            tab={tab}
-            tickerValueUsd={tickerValueUsd}
-            portfolioTotalUsd={portfolioTotalUsd}
-          />
-        ))}
-      </ul>
+      {groups.map(g => (
+        <div key={g.label}>
+          <div className="px-4 py-1.5 bg-bg-2/30 border-b border-line/50 flex items-center gap-2">
+            <span className="text-[11px] font-mono uppercase tracking-wider text-ink-3">{g.label}</span>
+            <span className="text-[11px] font-mono text-ink-3/70">· {g.events.length}</span>
+          </div>
+          <ul className="divide-y divide-line/40">
+            {g.events.map((ev, i) => (
+              <EventRow
+                key={`${ev.ticker}:${ev.eventType}:${ev.eventDate}:${i}`}
+                event={ev}
+                tab={tab}
+                tickerValueUsd={tickerValueUsd}
+                portfolioTotalUsd={portfolioTotalUsd}
+                tickerShares={tickerShares}
+              />
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   )
 }
 
-function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
+function groupByRecency(events) {
+  const sorted = [...events].sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || ''))
+  const week = [], twoWeek = [], later = []
+  for (const ev of sorted) {
+    const d = daysUntil(ev.eventDate)
+    if (d != null && d <= 7) week.push(ev)
+    else if (d != null && d <= 14) twoWeek.push(ev)
+    else later.push(ev)
+  }
+  return [
+    { label: 'Esta semana', events: week },
+    { label: 'Próximas 2 semanas', events: twoWeek },
+    { label: 'Más adelante', events: later },
+  ].filter(g => g.events.length > 0)
+}
+
+function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd, tickerShares }) {
   const { ticker, eventType, eventDate, confirmed, inPortfolio, details } = event
   const isMacro = isMacroEvent(event)
+  const cobro = tab === 'portfolio' ? eventCobro(event, tickerShares) : null
   const country = details?.country
   const macroTitle = details?.title
 
@@ -676,9 +753,17 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
         {!confirmed && <span className="ml-1 text-ink-3 opacity-70">· est.</span>}
       </div>
 
-      {/* Monto — siempre, alineado derecha en desktop */}
+      {/* Monto — cobro estimado total si sabemos tus acciones; si no, el
+          monto por acción / teórico. */}
       <div className="hidden md:block text-right text-sm font-mono tabular">
-        {amountNode}
+        {cobro?.amount != null ? (
+          <div className="leading-tight">
+            <span className="text-rendi-pos">+{cobro.currency === 'USD' ? '$' : `${cobro.currency} `}{formatCompact(cobro.amount)}</span>
+            {cobro.shares ? (
+              <div className="text-[10px] text-ink-3">{formatCompact(cobro.shares)} acc</div>
+            ) : null}
+          </div>
+        ) : amountNode}
       </div>
 
       {/* Impact / Cartera — sólo desktop, sólo si aplica */}
@@ -694,7 +779,9 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd }) {
 
       {/* Mobile: monto + impact en una fila pegada al ticker */}
       <div className="md:hidden col-start-2 -mt-1 flex items-center justify-end gap-2 text-xs font-mono tabular">
-        {amountNode}
+        {cobro?.amount != null
+          ? <span className="text-rendi-pos">+{cobro.currency === 'USD' ? '$' : `${cobro.currency} `}{formatCompact(cobro.amount)}</span>
+          : amountNode}
         {tab === 'portfolio' && impactPct != null && impactPct > 0.0001 && (
           <span className="text-rendi-accent">· {pct(impactPct)}</span>
         )}
@@ -769,6 +856,83 @@ function renderAmount(event) {
     return <span className="text-ink-3">—</span>
   }
   return <span className="text-ink-3">—</span>
+}
+
+// Cobro estimado del evento según tus acciones.
+//   • Bono: details.total ya es el total (coupon×qty, calculado en upcomingBondEvents).
+//   • Dividendo: dividend_per_share × acciones que tenés.
+//   • Otros (earnings, macro): sin cobro.
+function eventCobro(event, sharesMap) {
+  const { eventType, details, ticker } = event
+  if (eventType?.startsWith('bond_') && typeof details?.total === 'number') {
+    return { amount: details.total, currency: details.currency || 'USD', shares: sharesMap?.get(ticker) || null }
+  }
+  if (eventType === 'ex_dividend' && details?.dividend_per_share != null) {
+    const shares = sharesMap?.get(ticker) || 0
+    if (shares > 0) {
+      return { amount: details.dividend_per_share * shares, currency: 'USD', shares, perShare: details.dividend_per_share }
+    }
+    return { amount: null, currency: 'USD', shares: null, perShare: details.dividend_per_share }
+  }
+  return null
+}
+
+// ─── Spotlight hero ─────────────────────────────────────────────────────────
+// El próximo evento que más te toca, arriba de todo, con tu cobro/impacto ya
+// calculado. Solo se muestra en "Para ti".
+function SpotlightHero({ event, impactPct, cobro, onView }) {
+  const days = daysUntil(event.eventDate)
+  const countdown = days == null ? '—' : days === 0 ? 'HOY' : days === 1 ? 'MAÑANA' : days
+  const detail = renderDetail(event)
+  const contextParts = []
+  if (detail) contextParts.push(detail)
+  if (cobro?.shares) contextParts.push(`tenés ${formatCompact(cobro.shares)} acc`)
+  if (impactPct != null && impactPct > 0.0001) contextParts.push(`${pct(impactPct)} de tu cartera`)
+
+  return (
+    <div className="bg-bg-1 border border-data-violet/40 rounded-lg p-4 mb-4 flex flex-wrap items-center gap-4">
+      {/* Countdown */}
+      <div className="text-center shrink-0 pr-4 border-r border-line">
+        <p className="label-mono text-data-violet mb-1">Próximo</p>
+        <p className="text-2xl font-semibold text-ink-0 leading-none">
+          {typeof countdown === 'number'
+            ? <>{countdown}<span className="text-sm text-ink-2">d</span></>
+            : countdown}
+        </p>
+        <p className="label-mono mt-1">{shortDate(event.eventDate)}</p>
+      </div>
+      {/* Activo + contexto */}
+      <div className="flex-1 min-w-[160px]">
+        <div className="flex items-center gap-2 flex-wrap mb-1">
+          {isMacroEvent(event)
+            ? <span className="text-lg">{countryFlag(event.details?.country)}</span>
+            : <AssetLogo asset={event.ticker} size={26} />}
+          <span className="text-base font-semibold text-ink-0">{event.ticker}</span>
+          <EventBadge eventType={event.eventType} />
+        </div>
+        {contextParts.length > 0 && (
+          <p className="text-xs text-ink-2 leading-relaxed">{contextParts.join(' · ')}</p>
+        )}
+      </div>
+      {/* Cobro + CTA */}
+      <div className="text-right shrink-0">
+        {cobro?.amount != null && (
+          <>
+            <p className="label-mono mb-0.5">Tu cobro est.</p>
+            <p className="text-xl font-semibold text-rendi-pos leading-none">
+              +{cobro.currency === 'USD' ? '$' : `${cobro.currency} `}{formatCompact(cobro.amount)}
+            </p>
+          </>
+        )}
+        <button
+          onClick={onView}
+          className="mt-2 inline-flex items-center gap-1.5 bg-data-violet hover:bg-rendi-violet-hover text-white text-xs font-medium px-3 py-1.5 rounded-sm transition-colors"
+        >
+          Ver posición
+        </button>
+      </div>
+    </div>
+  )
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

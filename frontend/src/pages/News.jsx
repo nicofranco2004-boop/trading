@@ -270,21 +270,50 @@ export default function News({ embedded = false }) {
 
 function NewsGrid({ news, tab, onTagClick }) {
   if (news.length === 0) return null
-  // Primera noticia = "featured" (más prominente). Las demás van en grid.
+  // Primera noticia = "featured" (más prominente). El resto se agrupa por
+  // frescura (Hoy / Ayer / Esta semana / Antes) para dar ritmo al feed.
   const [featured, ...rest] = news
+  const groups = groupByFreshness(rest)
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <NewsFeatured news={featured} tab={tab} onTagClick={onTagClick} />
-      {rest.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {rest.map(n => (
-            <NewsTile key={n.url} news={n} tab={tab} onTagClick={onTagClick} />
-          ))}
+      {groups.map(g => (
+        <div key={g.label} className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-mono uppercase tracking-wider text-ink-3">{g.label}</span>
+            <span className="h-px flex-1 bg-line" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {g.news.map(n => (
+              <NewsTile key={n.url} news={n} tab={tab} onTagClick={onTagClick} />
+            ))}
+          </div>
         </div>
-      )}
+      ))}
     </div>
   )
+}
+
+// Bucket de frescura según published_at (mismo huso que el usuario).
+function freshnessBucket(iso) {
+  if (!iso) return 'Antes'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return 'Antes'
+  const now = new Date()
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const t = d.getTime()
+  if (t >= startToday) return 'Hoy'
+  if (t >= startToday - 86400000) return 'Ayer'
+  if (t >= startToday - 7 * 86400000) return 'Esta semana'
+  return 'Antes'
+}
+
+function groupByFreshness(items) {
+  const order = ['Hoy', 'Ayer', 'Esta semana', 'Antes']
+  const map = new Map(order.map(k => [k, []]))
+  for (const n of items) map.get(freshnessBucket(n.published_at)).push(n)
+  return order.map(k => ({ label: k, news: map.get(k) })).filter(g => g.news.length > 0)
 }
 
 function NewsFeatured({ news, tab, onTagClick }) {
