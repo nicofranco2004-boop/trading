@@ -20,6 +20,10 @@ describe('priceSymbol — clases de acción US (BRK B)', () => {
   it('CEDEAR va por .BA y no se normaliza como US', () => {
     expect(priceSymbol('MELI', false, 'CEDEAR')).toBe('MELI.BA')
   })
+  it('acción argentina (YPFD/PAMP) toma .BA aunque no sea CEDEAR ni broker ARS', () => {
+    expect(priceSymbol('YPFD', false)).toBe('YPFD.BA')   // YPF (BYMA), broker USD
+    expect(priceSymbol('PAMP', false)).toBe('PAMP.BA')   // Pampa (BYMA)
+  })
   it('FCI se pide tal cual', () => {
     expect(priceSymbol('FCI:COCOS-AHORRO-A', false)).toBe('FCI:COCOS-AHORRO-A')
   })
@@ -75,6 +79,20 @@ describe('USD broker — single equity, no live price (fallback to cost)', () =>
   it('value falls back to invested',  () => expect(r.value).toBeCloseTo(40_000))
   it('invested unchanged',            () => expect(r.invested).toBeCloseTo(40_000))
   it('pnlUsd = 0 (no price data)',    () => expect(r.pnlUsd).toBeCloseTo(0))
+})
+
+describe('USD broker — acción argentina (YPFD) se valúa por .BA ÷ MEP', () => {
+  // "Cocos Capital" en USD (NO es sub-broker "· USD"): YPFD es acción AR = BYMA →
+  // se valúa por su precio local .BA ÷ MEP, no por el ticker US (que no existe).
+  const positions = [pos({ broker: 'Cocos Capital', asset: 'YPFD', quantity: 10, invested: 500 })]
+  const prices    = { 'YPFD.BA': 72_000 }   // ARS · con TCB=1200 → 60 USD/acción → 600
+  const r         = computeBrokerValue(positions, prices, usdBroker('Cocos Capital'), TCB)
+
+  it('value = YPFD.BA ÷ MEP × qty (no cae al costo)', () => expect(r.value).toBeCloseTo(600))
+  it('NO se valúa como el ticker US "YPFD" (sin .BA)', () => {
+    const rUsPrice = computeBrokerValue(positions, { YPFD: 45 }, usdBroker('Cocos Capital'), TCB)
+    expect(rUsPrice.value).toBeCloseTo(500)   // no encuentra 'YPFD' (pide .BA) → costo
+  })
 })
 
 describe('USD broker — price_override takes precedence over prices map', () => {

@@ -323,6 +323,12 @@ export const BOND_TICKERS = new Set([
   ...sym(BONDS_AR_ONS), ...sym(BONDS_US_ETF),
 ])
 
+// Acciones argentinas (panel líder + general): son instrumentos de BYMA que se
+// valúan SIEMPRE por su precio LOCAL .BA (no tienen ticker US propio — la ADR
+// usa otro símbolo, ej YPF vs YPFD). Set para que priceSymbol les ponga el sufijo
+// .BA aunque vivan en un broker USD (compra dólar-MEP) que no se reconoce como AR.
+export const ARG_STOCK_TICKERS = new Set([...sym(ARG_LIDER), ...sym(ARG_GENERAL)])
+
 // Helper para encontrar nombre de un ticker (incluye bonos)
 export function tickerName(s) {
   const all = [
