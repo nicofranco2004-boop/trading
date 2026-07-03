@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
+import { PrivacyProvider } from './contexts/PrivacyContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import Sidebar from './components/Sidebar'
 import { PageSkeleton } from './components/Skeleton'
@@ -305,6 +306,7 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <CurrencyProvider>
+          <PrivacyProvider>
           <CoachDrawerProvider>
             <div className="min-h-screen bg-bg-0 text-ink-0">
               {/* RouteTracker vive ACÁ (no dentro de los shells autenticados)
@@ -319,6 +321,7 @@ export default function App() {
               <AICoachDrawer />
             </div>
           </CoachDrawerProvider>
+          </PrivacyProvider>
         </CurrencyProvider>
       </AuthProvider>
     </ThemeProvider>

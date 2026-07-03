@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, TrendingUp, TrendingDown } from 'lucide-react'
+import { ArrowRight, TrendingUp, TrendingDown, Eye, EyeOff } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
 import FlashValue from '../components/FlashValue'
 import Skeleton from '../components/Skeleton'
@@ -31,6 +31,7 @@ import Eyebrow from '../components/Eyebrow'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
+import { usePrivacy } from '../contexts/PrivacyContext'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -43,6 +44,7 @@ export default function HomeMobile() {
   // Fase B: además publicamos tcBlue al context para que Reports / charts
   // puedan leer sin re-fetchear /dolar.
   const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
+  const { hidden, toggle: togglePrivacy } = usePrivacy()
   const [positions, setPositions] = useState([])
   const [monthly, setMonthly] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -226,8 +228,17 @@ export default function HomeMobile() {
       {/* ── 1. Hero balance ─────────────────────────────────────────── */}
       <section className="px-4 pt-5 pb-4">
         <div className="flex items-center justify-between mb-3">
-          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
-            Tu cartera
+          <div className="flex items-center gap-2">
+            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+              Tu cartera
+            </div>
+            <button
+              onClick={togglePrivacy}
+              className="text-ink-3 hover:text-ink-0 active:text-ink-0 transition-colors"
+              title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}
+            >
+              {hidden ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
           </div>
           {/* Botón primario de análisis del portfolio — siempre visible
               y prominente (no es hover-reveal porque mobile). */}
@@ -246,11 +257,13 @@ export default function HomeMobile() {
         {/* Balance grande — toggle USD/ARS al tap del badge.
             Fase A: sincronizado con Dashboard via CurrencyContext. */}
         <div className="text-5xl font-medium tabular tracking-tight text-ink-0 leading-none mb-3">
-          <FlashValue value={totals.totalValue + pf.valueUsd}>
-            {currency === 'ARS'
-              ? `$${fmtNumber((totals.totalValue + pf.valueUsd) * tcBlue)}`
-              : `$${fmtNumber(totals.totalValue + pf.valueUsd)}`}
-          </FlashValue>
+          {hidden
+            ? <span className="opacity-40 tracking-[0.2em] select-none">••••••</span>
+            : <FlashValue value={totals.totalValue + pf.valueUsd}>
+                {currency === 'ARS'
+                  ? `$${fmtNumber((totals.totalValue + pf.valueUsd) * tcBlue)}`
+                  : `$${fmtNumber(totals.totalValue + pf.valueUsd)}`}
+              </FlashValue>}
           <button
             onClick={toggleCurrency}
             className="text-base text-ink-3 ml-1.5 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"
@@ -276,7 +289,7 @@ export default function HomeMobile() {
                 </span>
               </div>
               <span className={`text-xs font-mono tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {series30d.positive ? '+' : '−'}${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcBlue : series30d.deltaUsd))}
+                {hidden ? '••••••' : `${series30d.positive ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcBlue : series30d.deltaUsd))}`}
               </span>
             </div>
             <div className="h-12 -mx-1">
@@ -288,8 +301,8 @@ export default function HomeMobile() {
               />
             </div>
             <div className="flex items-baseline justify-between mt-1.5 text-[10px] font-mono text-ink-3">
-              <span className="tabular">Hace 30d · ${fmtNumber(currency === 'ARS' ? series30d.first * tcBlue : series30d.first)}</span>
-              <span className="tabular">Hoy · ${fmtNumber(currency === 'ARS' ? series30d.last * tcBlue : series30d.last)}</span>
+              <span className="tabular">Hace 30d · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.first * tcBlue : series30d.first)}`}</span>
+              <span className="tabular">Hoy · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.last * tcBlue : series30d.last)}`}</span>
             </div>
           </div>
         ) : (
@@ -304,7 +317,7 @@ export default function HomeMobile() {
         <div className="grid grid-cols-2 border border-line/60 rounded-lg overflow-hidden bg-bg-1">
           <KpiCell
             label={kpis.pnlDayMeta && kpis.pnlDayMeta.dayDiff > 1 ? `P&L ${kpis.pnlDayMeta.dayDiff}d` : 'P&L Día'}
-            value={kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlDay * tcBlue : kpis.pnlDay))}` : '—'}
+            value={hidden ? '••••••' : (kpis.pnlDay != null ? `${kpis.pnlDay >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlDay * tcBlue : kpis.pnlDay))}` : '—')}
             sub={kpis.pnlDay != null && kpis.pnlDayMeta ? pctSigned(kpis.pnlDayMeta.pct) : null}
             subTone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
             tone={kpis.pnlDay != null ? (kpis.pnlDay >= 0 ? 'pos' : 'neg') : null}
@@ -312,14 +325,14 @@ export default function HomeMobile() {
           />
           <KpiCell
             label="P&L Mes"
-            value={kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlMonth * tcBlue : kpis.pnlMonth))}` : '—'}
+            value={hidden ? '••••••' : (kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlMonth * tcBlue : kpis.pnlMonth))}` : '—')}
             tone={kpis.pnlMonth != null ? (kpis.pnlMonth >= 0 ? 'pos' : 'neg') : null}
             bordered
             leftBorder
           />
           <KpiCell
             label="Capital aportado"
-            value={kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? kpis.aportado * tcBlue : kpis.aportado)}` : '—'}
+            value={hidden ? '••••••' : (kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? kpis.aportado * tcBlue : kpis.aportado)}` : '—')}
             sub={`${currency} neto`}
             topBorder
           />

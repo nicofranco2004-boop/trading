@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Activity, CircleDollarSign, Upload, ArrowRight } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Activity, CircleDollarSign, Upload, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import StatCard from '../components/StatCard'
 import MonthlyTeaser from '../components/MonthlyTeaser'
 import UpcomingEventsCard from '../components/UpcomingEventsCard'
@@ -23,6 +23,7 @@ import FlashValue from '../components/FlashValue'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, isArUsdBroker } from '../utils/valuation'
@@ -53,6 +54,7 @@ export default function Dashboard() {
   // Migración soft: si el user tenía 'rendi_dashboard_currency' viejo, lo
   // migra al nuevo storage key al primer load.
   const { currency, setCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
+  const { hidden, toggle: togglePrivacy } = usePrivacy()
   useEffect(() => {
     try {
       const legacy = localStorage.getItem('rendi_dashboard_currency')
@@ -536,6 +538,13 @@ export default function Dashboard() {
         meta={meta}
         action={
           <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={togglePrivacy}
+              className="flex items-center gap-1 text-xs text-ink-3 hover:text-ink-0 px-2 py-1.5 rounded-md hover:bg-bg-2 dark:hover:bg-bg-2/40 transition"
+              title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}
+            >
+              {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
             {/* Analizar — abre el drawer con análisis IA contextual */}
             <AnalyzeButton
               screen="dashboard"
@@ -600,7 +609,7 @@ export default function Dashboard() {
         <StatCard
           tone="hero"
           label={currency === 'ARS' ? 'Valor actual · ARS' : 'Valor actual · USD'}
-          value={<FlashValue value={portfolioTotal}><AnimatedNumber value={portfolioTotal} format={fmt} /></FlashValue>}
+          value={<PrivacyMask><FlashValue value={portfolioTotal}><AnimatedNumber value={portfolioTotal} format={fmt} /></FlashValue></PrivacyMask>}
           tooltip={
             <>
               <p className="font-semibold text-ink-0">Valor de mercado de tu cartera</p>
@@ -619,16 +628,16 @@ export default function Dashboard() {
               </span>
               <span className={`inline-flex items-center gap-1 font-semibold ${totalReturnUsd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                 {totalReturnUsd >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
-                {fmtSigned(totalReturnUsd).replace(/^[+−]/, '')}
+                {hidden ? '••••••' : fmtSigned(totalReturnUsd).replace(/^[+−]/, '')}
               </span>
               <span className={`tabular ${totalReturnUsd >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
                 ({pctSigned(totalReturnPct)})
               </span>
             </span>
           }
-          hint={currency === 'ARS'
+          hint={hidden ? undefined : (currency === 'ARS'
             ? `≈ ${fmtUsd(portfolioTotal)} al blue ${tcBlue} · sobre ${fmtArs(netDeposited * tcBlue)} de capital aportado`
-            : `≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre ${fmtUsd(netDeposited)} de capital aportado`}
+            : `≈ ${fmtArs(portfolioTotal * tcBlue)} al blue ${tcBlue} · sobre ${fmtUsd(netDeposited)} de capital aportado`)}
         />
       </div>
 
@@ -1034,8 +1043,10 @@ export default function Dashboard() {
                   <StatCard
                     key={b.id}
                     label={`${b.name} · ARS`}
-                    value={fmtArs(b.valueArs)}
-                    sub={`Inv ${fmtArs(b.invArs)} · P&L: ${pnlArs >= 0 ? '+' : '−'}ARS ${ars(Math.abs(pnlArs))} (${pctSigned(pnlPctArs)})`}
+                    value={hidden ? '••••••' : fmtArs(b.valueArs)}
+                    sub={hidden
+                      ? `Inv •••••• · P&L: ${pnlArs >= 0 ? '+' : '−'}ARS •••••• (${pctSigned(pnlPctArs)})`
+                      : `Inv ${fmtArs(b.invArs)} · P&L: ${pnlArs >= 0 ? '+' : '−'}ARS ${ars(Math.abs(pnlArs))} (${pctSigned(pnlPctArs)})`}
                     pnlPositive={pnlArs >= 0}
                   />
                 )
@@ -1046,8 +1057,10 @@ export default function Dashboard() {
                 <StatCard
                   key={b.id}
                   label={`${b.name} · USD`}
-                  value={fmtUsd(b.value)}
-                  sub={`Inv ${fmtUsd(b.invested)} · P&L: ${pnlUsd >= 0 ? '+' : '−'}USD ${usd(Math.abs(pnlUsd))} (${pctSigned(pnlPctUsd)})`}
+                  value={hidden ? '••••••' : fmtUsd(b.value)}
+                  sub={hidden
+                    ? `Inv •••••• · P&L: ${pnlUsd >= 0 ? '+' : '−'}USD •••••• (${pctSigned(pnlPctUsd)})`
+                    : `Inv ${fmtUsd(b.invested)} · P&L: ${pnlUsd >= 0 ? '+' : '−'}USD ${usd(Math.abs(pnlUsd))} (${pctSigned(pnlPctUsd)})`}
                   pnlPositive={pnlUsd >= 0}
                 />
               )
