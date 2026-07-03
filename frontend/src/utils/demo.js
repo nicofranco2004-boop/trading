@@ -2669,22 +2669,35 @@ export function handleDemoRequest(method, path, body) {
     // el grid de "elegí tu broker" quedaría vacío.
     if (basePath === '/imports/parsers/grouped') {
       return [
+        { platform: 'generic', platform_label: 'Genérico (cualquier broker)', exports: [
+          { id: 'rendi_generic', label: 'Template Rendi', supported: true },
+        ] },
         { platform: 'binance', platform_label: 'Binance', exports: [
           { id: 'binance', label: 'Spot → Trade History', supported: true },
-          { id: 'binance_transaction_history', label: 'Transaction History (completo)', supported: true },
-          { id: 'binance_futures_trade_history', label: 'Futures → Trade History', supported: false },
+          { id: 'binance_transaction_history', label: 'Asset History → Transaction History (completo)', supported: true },
+        ] },
+        { platform: 'balanz', platform_label: 'Balanz', exports: [
+          { id: 'balanz_movimientos', label: 'Actividad → Movimientos (recomendado)', supported: true },
+          { id: 'balanz', label: 'Operaciones → Órdenes → Exportar', supported: true },
+          { id: 'balanz_resultados', label: 'Actividad → Resultados', supported: true },
         ] },
         { platform: 'cocos', platform_label: 'Cocos Capital', exports: [
-          { id: 'cocos', label: 'Cocos Capital', supported: true },
+          { id: 'cocos', label: 'Actividad → Movimientos', supported: true },
+        ] },
+        { platform: 'ppi', platform_label: 'PPI (Portafolio Personal)', exports: [
+          { id: 'ppi', label: 'Movimientos (Excel)', supported: true },
+        ] },
+        { platform: 'iol', platform_label: 'IOL (InvertirOnline)', exports: [
+          { id: 'iol', label: 'Mi Cuenta → Movimientos → Detalle de Movimientos', supported: true },
         ] },
         { platform: 'schwab', platform_label: 'Charles Schwab', exports: [
-          { id: 'schwab', label: 'Charles Schwab', supported: true },
+          { id: 'schwab', label: 'History → Export CSV', supported: true },
         ] },
         { platform: 'bullmarket', platform_label: 'Bull Market', exports: [
-          { id: 'bullmarket', label: 'Cuenta Corriente (Excel)', supported: true },
+          { id: 'bullmarket', label: 'Cuenta Corriente (Excel) o Movimientos (CSV)', supported: true },
         ] },
-        { platform: 'generic', platform_label: 'Genérico (cualquier broker)', exports: [
-          { id: 'rendi_generic', label: 'Template Rendi (genérico)', supported: true },
+        { platform: 'ieb', platform_label: 'IEB · Invertir en Bolsa', exports: [
+          { id: 'ieb', label: 'Movimientos', supported: true },
         ] },
       ]
     }
