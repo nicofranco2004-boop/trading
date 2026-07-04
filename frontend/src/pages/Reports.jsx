@@ -216,19 +216,20 @@ export default function Reports() {
                   <span>{itemsError}</span>
                 </div>
               )}
-              {tab === 'day' || tab === 'week' || tab === 'year' ? (
+              {tab === 'month' ? (
+                <MonthDisclosure
+                  items={items}
+                  loading={loadingItems}
+                  broker={broker}
+                  expandedKey={expandedKey}
+                  onToggle={(key) => setExpandedKey(prev => prev === key ? null : key)}
+                />
+              ) : (
                 <CurrentPeriodView
                   period={items[0]}
                   loading={loadingItems}
                   tab={tab}
                   broker={broker}
-                />
-              ) : (
-                <PeriodList
-                  items={items}
-                  loading={loadingItems}
-                  expandedKey={expandedKey}
-                  onToggle={(key) => setExpandedKey(prev => prev === key ? null : key)}
                 />
               )}
             </>
@@ -347,6 +348,51 @@ function PeriodList({ items, loading, expandedKey, onToggle }) {
   )
 }
 
+// MonthDisclosure — mes en curso con la vista rica + "Ver más meses" que revela
+// los meses anteriores del MISMO año (enero → 1, diciembre → 12). No salta al
+// año anterior (eso es el tab Año). Reemplaza el muro de todos los meses.
+function MonthDisclosure({ items, loading, broker, expandedKey, onToggle }) {
+  const [showMore, setShowMore] = useState(false)
+  if (loading && (!items || items.length === 0)) {
+    return (
+      <div className="p-10 text-center text-ink-3">
+        <Loader2 size={18} className="animate-spin mx-auto mb-2" aria-hidden="true" />
+        <p className="text-sm">Cargando…</p>
+      </div>
+    )
+  }
+  if (!items || items.length === 0) {
+    return (
+      <div className="p-10 text-center text-ink-3 border border-line/40 rounded bg-bg-1/40">
+        <p className="text-sm">No hay datos para este período todavía.</p>
+      </div>
+    )
+  }
+  const currentYear = String(new Date().getFullYear())
+  const current = items.find(x => x.is_current) || items.find(x => x.is_relevant) || items[0]
+  const priors = items.filter(x =>
+    x !== current && x.is_relevant && (x.period_key || '').startsWith(currentYear))
+
+  return (
+    <div className="space-y-4">
+      <CurrentPeriodView period={current} loading={false} tab="month" broker={broker} />
+      {priors.length > 0 && (
+        <div className="space-y-2">
+          <button
+            onClick={() => setShowMore(v => !v)}
+            className="w-full text-center text-[11px] font-mono uppercase tracking-label text-data-violet bg-data-violet/5 border border-dashed border-data-violet/30 rounded-md py-2 transition-colors hover:bg-data-violet/10"
+          >
+            {showMore ? '▴ Ocultar meses anteriores' : `▾ Ver más meses · ${priors.length} de ${currentYear}`}
+          </button>
+          {showMore && (
+            <PeriodList items={priors} loading={false} expandedKey={expandedKey} onToggle={onToggle} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function PeriodRow({ period, expanded, onToggle }) {
   const empty = !period.is_relevant && !period.is_current
   const pct = period?.metrics?.delta_pct
@@ -432,6 +478,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     )
   }
 
+  const [showTech, setShowTech] = useState(false)
   const m = period.metrics || {}
   const snap = period.portfolio_snapshot || {}
   const pct = m.delta_pct
@@ -620,6 +667,34 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     })
   }
 
+  // ── Reparto en grupos: hero (3-4) + Trading + Cartera + detalle técnico ──
+  // En vez de un strip plano de ~16 chips iguales, separamos las dos narrativas.
+  const pick = (pred) => kpis.find(pred)
+  const isPnlPeriodo = (k) => k.label.startsWith('P&L ') && !/realizado/i.test(k.label)
+  const heroList = [
+    pick(k => k.label === 'Capital actual'),
+    pick(isPnlPeriodo),
+    pick(k => k.label === 'P&L realizado'),
+    pick(k => k.label.startsWith('YTD') || k.label.startsWith('Desde '))
+      || pick(k => k.label === 'Capital aportado')
+      || pick(k => k.label === 'P&L no realizado')
+      || pick(k => k.label === 'Flujos netos'),
+  ].filter(Boolean)
+  const heroLabels = new Set(heroList.map(k => k.label))
+  const tradingList = kpis.filter(k => ['Win rate', 'Última op cerrada'].includes(k.label))
+  const carteraList = kpis.filter(k =>
+    ['P&L no realizado', 'Posiciones', 'Top holding', 'vs S&P 500', 'Flujos netos', 'Capital aportado'].includes(k.label)
+    && !heroLabels.has(k.label))
+  const tecnicoList = kpis.filter(k => k.label.startsWith('Δ ') || ['Valor inicio', 'Valor cierre'].includes(k.label))
+
+  // Movers MtM (mejor/peor holding) + mejor/peor operación (highlights realizados)
+  const movers = period.movers || []
+  const bestMover = movers.find(x => x.kind === 'best')
+  const worstMover = movers.find(x => x.kind === 'worst')
+  const bestOp = (period.highlights || []).find(h => h.kind === 'best_op')
+  const worstOp = (period.highlights || []).find(h => h.kind === 'worst_op')
+  const narrativeText = period.narrative || period.subheadline || null
+
   return (
     <div className="space-y-4">
       {/* Header del período */}
@@ -666,29 +741,111 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
         </div>
       )}
 
-      {/* KPI strip */}
-      <div className="border border-line rounded bg-bg-1 overflow-hidden">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 divide-x divide-y md:divide-y-0 divide-line/40">
-          {kpis.map((k, i) => (
-            <div key={i} className="px-4 py-3 min-w-0">
+      {/* Narrativa — qué pasó, arriba de los números */}
+      {!isFlat && (period.headline || narrativeText) && (
+        <div className="border border-rendi-accent/25 rounded-lg bg-bg-1 p-4">
+          {period.headline && <p className="text-sm font-medium text-ink-0 leading-snug">{period.headline}</p>}
+          {narrativeText && <p className="text-xs text-ink-2 leading-relaxed mt-1.5">{narrativeText}</p>}
+        </div>
+      )}
+
+      {/* Hero — 3-4 números que responden las preguntas reales */}
+      {heroList.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {heroList.map((k, i) => (
+            <div key={i} className="border border-line rounded-lg bg-bg-1 px-4 py-3">
               <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1.5">{k.label}</div>
-              <div className={`text-base font-medium tabular truncate ${
+              <div className={`text-xl font-semibold tabular ${
                 k.tone === 'pos' ? 'text-rendi-pos' : k.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
-              }`}>
-                {k.value}
-              </div>
-              {k.sub && (
-                <div className="text-[10px] font-mono text-ink-3 mt-1 truncate" title={k.sub}>{k.sub}</div>
-              )}
+              }`}>{k.value}</div>
+              {k.sub && <div className="text-[10px] font-mono text-ink-3 mt-1 truncate" title={k.sub}>{k.sub}</div>}
             </div>
           ))}
         </div>
+      )}
+
+      {/* Segundo nivel — dos narrativas separadas: Trading vs Cartera */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <div className="border border-line rounded-lg bg-bg-1 p-4">
+          <div className="text-[11px] font-mono uppercase tracking-label text-data-violet mb-2">Trading · cómo operaste</div>
+          {(bestOp || worstOp || tradingList.length > 0) ? (
+            <div>
+              {tradingList.filter(k => k.label === 'Win rate').map((k, i) => (
+                <KVRow key={`wr${i}`} label="Win rate" value={k.value} sub={k.sub} tone={k.tone} />
+              ))}
+              <KVRow label="Ops cerradas" value={String(m.trades_count ?? 0)} />
+              {bestOp && <KVRow label="Mejor op" value={bestOp.value_label} sub={bestOp.context ? formatDateShort(bestOp.context) : null} tone="pos" />}
+              {worstOp && <KVRow label="Peor op" value={worstOp.value_label} sub={worstOp.context ? formatDateShort(worstOp.context) : null} tone="neg" />}
+              {tradingList.filter(k => k.label === 'Última op cerrada').map((k, i) => (
+                <KVRow key={`uo${i}`} label="Última cerrada" value={k.value} sub={k.sub} tone={k.tone} />
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs text-ink-3 py-3">Sin operaciones cerradas en el período.</div>
+          )}
+        </div>
+        <div className="border border-line rounded-lg bg-bg-1 p-4">
+          <div className="text-[11px] font-mono uppercase tracking-label text-rendi-accent mb-2">Cartera · qué movió tu plata</div>
+          <div>
+            {bestMover && (
+              <KVRow label="Mejor activo"
+                value={`${bestMover.asset} ${bestMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(bestMover.delta_usd))}`}
+                sub={bestMover.delta_pct != null ? `${bestMover.delta_pct >= 0 ? '+' : ''}${bestMover.delta_pct.toFixed(1)}%` : null} tone="pos" />
+            )}
+            {worstMover && (
+              <KVRow label="Peor pérdida"
+                value={`${worstMover.asset} ${worstMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(worstMover.delta_usd))}`}
+                sub={worstMover.delta_pct != null ? `${worstMover.delta_pct >= 0 ? '+' : ''}${worstMover.delta_pct.toFixed(1)}%` : null} tone="neg" />
+            )}
+            {!bestMover && !worstMover && !period.movers_available && (
+              <div className="text-[11px] text-ink-3 py-2 leading-relaxed">
+                Mejor/peor activo por variación: <span className="text-ink-2">se empieza a medir desde hoy</span> (necesita la foto diaria por activo).
+              </div>
+            )}
+            {carteraList.map((k, i) => <KVRow key={`c${i}`} label={k.label} value={k.value} sub={k.sub} tone={k.tone} />)}
+          </div>
+        </div>
       </div>
 
-      {/* Card completo con narrativa, drivers, highlights, insights */}
-      <div className="border border-line rounded bg-bg-1 overflow-hidden">
-        <MonthCard period={period} defaultExpanded={true} />
+      {/* Detalle técnico — colapsado (deltas, valores, insights, breakdown) */}
+      <div className="border border-line rounded-lg bg-bg-1 overflow-hidden">
+        <button onClick={() => setShowTech(v => !v)} className="w-full px-4 py-2.5 flex items-center justify-between text-left">
+          <span className="text-[11px] font-mono uppercase tracking-label text-ink-2">Ver detalle técnico</span>
+          {showTech ? <ChevronUp size={14} strokeWidth={1.75} className="text-ink-3" /> : <ChevronDown size={14} strokeWidth={1.75} className="text-ink-3" />}
+        </button>
+        {showTech && (
+          <div className="border-t border-line/40">
+            {tecnicoList.length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-3 divide-x divide-y md:divide-y-0 divide-line/40">
+                {tecnicoList.map((k, i) => (
+                  <div key={i} className="px-4 py-3 min-w-0">
+                    <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1.5">{k.label}</div>
+                    <div className={`text-sm font-medium tabular truncate ${
+                      k.tone === 'pos' ? 'text-rendi-pos' : k.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
+                    }`}>{k.value}</div>
+                    {k.sub && <div className="text-[10px] font-mono text-ink-3 mt-1 truncate">{k.sub}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <MonthCard period={period} defaultExpanded={true} />
+          </div>
+        )}
       </div>
+    </div>
+  )
+}
+
+// KVRow — fila etiqueta/valor para las columnas Trading / Cartera.
+function KVRow({ label, value, sub, tone }) {
+  const c = tone === 'pos' ? 'text-rendi-pos' : tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-2 border-b border-line/30 last:border-b-0">
+      <span className="text-xs text-ink-2 flex-shrink-0">{label}</span>
+      <span className="text-right min-w-0">
+        <span className={`text-xs font-mono tabular ${c}`}>{value}</span>
+        {sub && <span className="block text-[10px] font-mono text-ink-3">{sub}</span>}
+      </span>
     </div>
   )
 }

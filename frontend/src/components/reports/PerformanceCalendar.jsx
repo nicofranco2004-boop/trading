@@ -112,25 +112,13 @@ export default function PerformanceCalendar({ yearGroups }) {
           sub={`${kpis.totalCount} ${kpis.totalCount === 1 ? 'mes activo' : 'meses activos'}`}
         />
         <KpiCell
-          label="Win rate mensual"
+          label="Meses positivos"
           value={`${kpis.positiveCount}/${kpis.totalCount}`}
           sub={
             kpis.totalCount > 0
-              ? `${Math.round((kpis.positiveCount / kpis.totalCount) * 100)}% positivos`
+              ? `${Math.round((kpis.positiveCount / kpis.totalCount) * 100)}% en verde`
               : '—'
           }
-        />
-        <KpiCell
-          label="Mejor mes"
-          value={kpis.best ? `${fmtPctValue(kpis.best.metrics.delta_pct)}%` : '—'}
-          tone="pos"
-          sub={kpis.best ? kpis.best.period_label : ''}
-        />
-        <KpiCell
-          label="Peor mes"
-          value={kpis.worst ? `${fmtPctValue(kpis.worst.metrics.delta_pct)}%` : '—'}
-          tone={kpis.worst && kpis.worst.metrics.delta_pct < 0 ? 'neg' : undefined}
-          sub={kpis.worst ? kpis.worst.period_label : ''}
         />
         <KpiCell
           label="Trades · 12M"
