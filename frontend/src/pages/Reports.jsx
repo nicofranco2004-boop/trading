@@ -368,10 +368,15 @@ function MonthDisclosure({ items, loading, broker, expandedKey, onToggle }) {
       </div>
     )
   }
-  const currentYear = String(new Date().getFullYear())
   const current = items.find(x => x.is_current) || items.find(x => x.is_relevant) || items[0]
-  const priors = items.filter(x =>
-    x !== current && x.is_relevant && (x.period_key || '').startsWith(currentYear))
+  const currentYear = (current?.period_key || '').slice(0, 4)
+  // Todos los meses TRANSCURRIDOS del año en curso (relevantes o no) — enero → 1,
+  // diciembre → 12. Los flat se ven como "sin actividad". Excluye futuros y actual.
+  const priors = items
+    .filter(x => x !== current
+      && (x.period_key || '').startsWith(currentYear)
+      && (x.period_key || '') < (current?.period_key || ''))
+    .sort((a, b) => (a.period_key < b.period_key ? 1 : -1))
 
   return (
     <div className="space-y-4">
