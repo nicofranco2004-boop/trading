@@ -788,6 +788,7 @@ def init_db():
             category TEXT,                   -- 'market' | 'portfolio' | 'macro'
             query_source TEXT,               -- el query que la trajo (para debug + dedup soft)
             tags TEXT,                       -- CSV: 'earnings,m_and_a,regulatory,…'
+            sentiment TEXT,                  -- 'positive' | 'negative' | 'neutral' (heurística al ingerir, compartida cross-user)
             fetched_at TEXT NOT NULL,
             UNIQUE(source, external_id)
         );
@@ -802,6 +803,9 @@ def init_db():
     news_cols = _table_cols(conn, 'news')
     if news_cols and 'tags' not in news_cols:
         conn.execute("ALTER TABLE news ADD COLUMN tags TEXT")
+        conn.commit()
+    if news_cols and 'sentiment' not in news_cols:
+        conn.execute("ALTER TABLE news ADD COLUMN sentiment TEXT")
         conn.commit()
 
     # ─── financial_events (Eventos financieros) ────────────────────────────
@@ -4629,6 +4633,50 @@ def _tag_news_item(item):
     return tags
 
 
+# Léxico de sentimiento financiero (EN + ES). Prioriza precisión sobre recall:
+# palabras que casi siempre marcan dirección. Padding con espacios para no
+# matchear dentro de otras palabras.
+_SENTIMENT_POS = [
+    'surge', 'surges', 'soar', 'soars', 'jump', 'jumps', 'rally', 'rallies',
+    'gain', 'gains', 'rise', 'rises', 'rose', 'climb', 'climbs', 'beat', 'beats',
+    'record', 'upgrade', 'upgraded', 'outperform', 'tops', 'boost', 'strong',
+    'bullish', 'profit', 'growth', 'wins', 'win',
+    'sube', 'suben', 'gana', 'ganan', 'supera', 'avanza', 'dispara', 'repunta',
+    'alcista', 'fuerte', 'mejora', 'crece', 'maximo', 'máximo',
+]
+_SENTIMENT_NEG = [
+    'fall', 'falls', 'fell', 'drop', 'drops', 'plunge', 'plunges', 'slump',
+    'tumble', 'tumbles', 'sink', 'sinks', 'slide', 'slides', 'loss', 'losses',
+    'miss', 'misses', 'cut', 'cuts', 'downgrade', 'downgraded', 'weak', 'bearish',
+    'warn', 'warns', 'crash', 'decline', 'declines', 'lawsuit', 'probe', 'fraud',
+    'layoff', 'layoffs', 'plummet', 'plummets',
+    'cae', 'caen', 'baja', 'bajan', 'pierde', 'pierden', 'desploma', 'hunde',
+    'recorta', 'debil', 'débil', 'bajista', 'alerta', 'advierte', 'derrumbe',
+    'caida', 'caída', 'despidos', 'multa', 'minimo', 'mínimo',
+]
+
+
+def _sentiment_news_item(item):
+    """Sentimiento heurístico ('positive'|'negative'|'neutral') por léxico EN+ES.
+
+    Barato y determinístico — se computa UNA vez al ingerir (compartido cross-user,
+    NO consume cuota de IA per-user). Normaliza puntuación a espacios y matchea
+    con padding para evitar falsos positivos dentro de otras palabras.
+    """
+    title = (item.get('title') or '').lower()
+    if not title:
+        return 'neutral'
+    text = title + ' ' + (item.get('summary') or '').lower()
+    hay = ' ' + _re_news.sub(r'[^a-záéíóúñ0-9]+', ' ', text) + ' '
+    pos = sum(1 for w in _SENTIMENT_POS if f' {w} ' in hay)
+    neg = sum(1 for w in _SENTIMENT_NEG if f' {w} ' in hay)
+    if pos > neg:
+        return 'positive'
+    if neg > pos:
+        return 'negative'
+    return 'neutral'
+
+
 def _fetch_google_news_rss(query: str, lang: str = "en", limit: int = 15):
     """Trae items del Google News RSS para un query dado.
 
@@ -4764,14 +4812,15 @@ def _persist_news_items(conn, items, source_id: str, category: str, query_source
             try:
                 tags = _tag_news_item(it)
                 tags_csv = ','.join(tags) if tags else None
+                sentiment = _sentiment_news_item(it)
                 cur = conn.execute(
                     """INSERT OR IGNORE INTO news
                        (source, external_id, title, summary, url, image_url,
-                        published_at, tickers, category, query_source, tags, fetched_at)
-                       VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)""",
+                        published_at, tickers, category, query_source, tags, sentiment, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?)""",
                     (source_id, it['external_id'], it['title'], it['summary'],
                      it['url'], it['published_at'], category, query_source,
-                     tags_csv, iso_now),
+                     tags_csv, sentiment, iso_now),
                 )
                 # rowcount es el delta del execute (0 si IGNORE saltó por dedup).
                 inserted += cur.rowcount if cur.rowcount > 0 else 0
@@ -5033,7 +5082,7 @@ def get_market_news(
         # Overhead aceptable: ~5x rows fetchadas, filter in-mem es O(n) chico.
         rows = conn.execute(
             """SELECT title, summary, url, published_at, query_source,
-                      category, source, tags
+                      category, source, tags, sentiment
                FROM news
                WHERE category IN ('market', 'macro')
                ORDER BY published_at DESC
@@ -5113,7 +5162,7 @@ def get_portfolio_news(
         like_params = [f'{t} %' for t in tickers]
         rows = conn.execute(
             f"""SELECT title, summary, url, published_at, query_source,
-                       category, source, tags
+                       category, source, tags, sentiment
                 FROM news
                 WHERE category = 'portfolio'
                   AND ({like_clauses})
@@ -5122,12 +5171,21 @@ def get_portfolio_news(
             (*like_params, limit),
         ).fetchall()
 
+        # Weight de cada ticker — para "afecta X% de tu cartera". Mapa completo
+        # (sin cap de top-N) reusando la valuación canónica. Cero costo IA.
+        try:
+            from ai.builders.dashboard_top_holdings import holding_weights as _hw
+            weights = _hw(conn, uid)
+        except Exception:
+            weights = {}
+
         # Extraer el ticker del query_source y parsear tags.
         result = []
         for r in rows:
             d = _news_row_to_dict(r)
             # query_source es "AAPL stock" o "GGAL acciones"
             d['ticker'] = d.get('query_source', '').split(' ', 1)[0] if d.get('query_source') else None
+            d['weight_pct'] = weights.get(d['ticker']) if d['ticker'] else None
             result.append(d)
         return {'news': result, 'count': len(result)}
     finally:

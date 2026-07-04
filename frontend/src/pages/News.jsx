@@ -13,7 +13,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Newspaper, ExternalLink, AlertCircle, Tag, Sparkles } from 'lucide-react'
+import { Newspaper, ExternalLink, AlertCircle, Tag, Sparkles, Target } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
@@ -30,6 +30,21 @@ const TABS = [
 
 const LIMIT = 25
 const TAB_VALUES = TABS.map(t => t.value)
+
+// Sentimiento (heurística del backend). Clases literales completas para que el
+// purge de Tailwind no las borre.
+const SENTIMENT_META = {
+  positive: { label: 'POS', dot: 'bg-rendi-pos', text: 'text-rendi-pos', stripe: 'border-l-rendi-pos' },
+  negative: { label: 'NEG', dot: 'bg-rendi-neg', text: 'text-rendi-neg', stripe: 'border-l-rendi-neg' },
+  neutral:  { label: 'NEU', dot: 'bg-ink-3',     text: 'text-ink-3',     stripe: 'border-l-line-3' },
+}
+function sentimentMeta(s) { return SENTIMENT_META[s] || SENTIMENT_META.neutral }
+
+// "afecta X% de tu cartera" cuando el backend adjunta weight_pct (top holdings).
+function weightLabel(weightPct) {
+  if (weightPct == null || weightPct < 0.05) return null
+  return `afecta ${weightPct.toFixed(1)}% de tu cartera`
+}
 
 export default function News({ embedded = false }) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -58,6 +73,7 @@ export default function News({ embedded = false }) {
   const [error, setError] = useState(null)
   const [tickerFilter, setTickerFilter] = useState(null)  // null = sin filtro
   const [tagFilter, setTagFilter] = useState(null)        // null = sin filtro
+  const [sentimentFilter, setSentimentFilter] = useState(null)  // null | 'positive' | 'negative'
 
   useEffect(() => {
     loadAll()
@@ -95,8 +111,11 @@ export default function News({ embedded = false }) {
     if (tagFilter) {
       list = list.filter(n => Array.isArray(n.tags) && n.tags.includes(tagFilter))
     }
+    if (sentimentFilter) {
+      list = list.filter(n => (n.sentiment || 'neutral') === sentimentFilter)
+    }
     return list
-  }, [rawNews, tab, tickerFilter, tagFilter])
+  }, [rawNews, tab, tickerFilter, tagFilter, sentimentFilter])
 
   // Tags presentes en el feed actual con conteo (para el filtro de chips)
   const availableTags = useMemo(() => {
@@ -146,7 +165,7 @@ export default function News({ embedded = false }) {
                 key={t.value}
                 role="tab"
                 aria-selected={active}
-                onClick={() => { setTab(t.value); setTickerFilter(null); setTagFilter(null) }}
+                onClick={() => { setTab(t.value); setTickerFilter(null); setTagFilter(null); setSentimentFilter(null) }}
                 className={`text-xs px-3 py-1.5 rounded-full border transition ${
                   active
                     ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
@@ -235,6 +254,29 @@ export default function News({ embedded = false }) {
         </div>
       )}
 
+      {/* Filtro por sentimiento — POS/NEG detectado al ingerir (heurística). */}
+      <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+        <span className="label-mono shrink-0 pr-1">Ánimo</span>
+        {[
+          { v: null, l: 'Todos' },
+          { v: 'positive', l: 'Positivo', d: 'bg-rendi-pos' },
+          { v: 'negative', l: 'Negativo', d: 'bg-rendi-neg' },
+        ].map(o => (
+          <button
+            key={o.l}
+            onClick={() => setSentimentFilter(o.v)}
+            className={`inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-1 rounded-sm border transition ${
+              sentimentFilter === o.v
+                ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40'
+                : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3 hover:text-ink-1'
+            }`}
+          >
+            {o.d && <span className={`w-1.5 h-1.5 rounded-full ${o.d}`} />}
+            {o.l}
+          </button>
+        ))}
+      </div>
+
       {loading && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {[1,2,3,4,5,6].map(i => <NewsTileSkeleton key={i} />)}
@@ -317,8 +359,10 @@ function groupByFreshness(items) {
 }
 
 function NewsFeatured({ news, tab, onTagClick }) {
-  const { title, summary, url, published_at, ticker, tags } = news
+  const { title, summary, url, published_at, ticker, tags, sentiment, weight_pct } = news
   const { cleanTitle, sourceName } = splitTitleSource(title)
+  const sm = sentimentMeta(sentiment)
+  const wLabel = weightLabel(weight_pct)
   return (
     <div className="group relative bg-bg-1 border border-line rounded hover:border-rendi-accent/40 transition">
     <a
@@ -328,9 +372,9 @@ function NewsFeatured({ news, tab, onTagClick }) {
       className="block p-4 sm:p-5"
     >
       <div className="flex flex-col sm:flex-row gap-4 sm:gap-5">
-        {/* Side accent — un panel vertical color rendi-accent que distingue la featured */}
+        {/* Side accent — color por sentimiento (verde/rojo/gris). */}
         <div className="hidden sm:flex flex-col items-center w-1 self-stretch">
-          <span className="block w-[2px] flex-1 bg-rendi-accent/60 rounded-full" />
+          <span className={`block w-[2px] flex-1 ${sm.dot} rounded-full opacity-70`} />
         </div>
 
         <div className="flex-1 min-w-0">
@@ -350,6 +394,11 @@ function NewsFeatured({ news, tab, onTagClick }) {
             <span className="text-[10px] font-mono text-ink-3">
               · {formatNewsDate(published_at)}
             </span>
+            {sentiment && sentiment !== 'neutral' && (
+              <span className={`inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider ${sm.text}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${sm.dot}`} />{sm.label}
+              </span>
+            )}
           </div>
           <h3 className="text-base sm:text-lg text-ink-0 font-medium leading-snug group-hover:text-rendi-accent transition-colors">
             {cleanTitle}
@@ -374,7 +423,10 @@ function NewsFeatured({ news, tab, onTagClick }) {
     {/* Pie: "Analizar" on-demand (reemplaza el ✦ flotante). Fuera del <a>
         para no disparar la navegación al pedir el análisis. */}
     {ticker && (
-      <div className="px-4 sm:px-5 pb-4 -mt-2 flex justify-end">
+      <div className="px-4 sm:px-5 pb-4 -mt-2 flex items-center justify-between gap-2">
+        {wLabel
+          ? <span className="inline-flex items-center gap-1 text-[10px] font-mono text-ink-3"><Target size={11} strokeWidth={1.75} />{wLabel}</span>
+          : <span />}
         <InlineAIButton
           topic="news.item"
           params={{ ticker, title: cleanTitle || title, source: sourceName, published_at, summary, tags }}
@@ -388,11 +440,13 @@ function NewsFeatured({ news, tab, onTagClick }) {
 }
 
 function NewsTile({ news, tab, onTagClick }) {
-  const { title, summary, url, published_at, ticker, tags } = news
+  const { title, summary, url, published_at, ticker, tags, sentiment, weight_pct } = news
   const { cleanTitle, sourceName } = splitTitleSource(title)
+  const sm = sentimentMeta(sentiment)
+  const wLabel = weightLabel(weight_pct)
 
   return (
-    <div className="group bg-bg-1 border border-line rounded hover:border-rendi-accent/40 transition relative flex flex-col">
+    <div className={`group bg-bg-1 border border-line border-l-2 ${sm.stripe} rounded hover:border-rendi-accent/40 transition relative flex flex-col`}>
       <a
         href={safeExternalUrl(url)}
         target="_blank"
@@ -409,8 +463,15 @@ function NewsTile({ news, tab, onTagClick }) {
         {sourceName && (
           <span className="text-[9px] font-mono text-ink-3 truncate">{sourceName}</span>
         )}
-        <span className="ml-auto text-[9px] font-mono text-ink-3 tracking-wider uppercase">
-          {formatNewsDate(published_at)}
+        <span className="ml-auto flex items-center gap-1.5">
+          {sentiment && sentiment !== 'neutral' && (
+            <span className={`inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider ${sm.text}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${sm.dot}`} />{sm.label}
+            </span>
+          )}
+          <span className="text-[9px] font-mono text-ink-3 tracking-wider uppercase">
+            {formatNewsDate(published_at)}
+          </span>
         </span>
       </div>
       <p className="text-sm text-ink-0 leading-snug font-medium line-clamp-3 group-hover:text-rendi-accent transition-colors min-h-[60px]">
@@ -434,9 +495,12 @@ function NewsTile({ news, tab, onTagClick }) {
         className="text-ink-3 absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity"
       />
       </a>
-      {/* Pie: "Analizar" on-demand (reemplaza el ✦ flotante). Fuera del <a>. */}
+      {/* Pie: "afecta X% de tu cartera" + "Analizar" on-demand. Fuera del <a>. */}
       {ticker && (
-        <div className="px-3.5 pb-3 mt-auto flex justify-end">
+        <div className="px-3.5 pb-3 mt-auto flex items-center justify-between gap-2">
+          {wLabel
+            ? <span className="inline-flex items-center gap-1 text-[10px] font-mono text-ink-3 truncate"><Target size={11} strokeWidth={1.75} className="shrink-0" />{wLabel}</span>
+            : <span />}
           <InlineAIButton
             topic="news.item"
             params={{ ticker, title: cleanTitle || title, source: sourceName, published_at, summary, tags }}

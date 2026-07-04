@@ -501,7 +501,7 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
               <div
                 key={b.iso}
                 title={`${b.label} · ${b.total} ${b.total === 1 ? 'evento' : 'eventos'}`}
-                className="flex-1 min-w-[3px] relative group"
+                className="flex-1 min-w-[3px] relative group flex flex-col justify-end h-full"
               >
                 <div
                   className={`w-full rounded-sm ${tone} transition-opacity opacity-80 group-hover:opacity-100`}

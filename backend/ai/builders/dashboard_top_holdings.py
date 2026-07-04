@@ -32,6 +32,39 @@ from typing import Dict, Any, List
 from datetime import datetime
 
 
+def holding_weights(conn, user_id: int) -> Dict[str, float]:
+    """Mapa ticker → % de la cartera (por valor USD-MEP), SIN cap de top-N.
+
+    Agrega por ticker (suma brokers) y reusa la MISMA valuación canónica que
+    build(). Sirve para anclar noticias/eventos a "afecta X% de tu cartera" en
+    cualquier posición, no solo el top 8. Cero costo IA (sólo valuación).
+    """
+    positions = [dict(r) for r in conn.execute(
+        "SELECT * FROM positions WHERE user_id=?", (user_id,)
+    ).fetchall()]
+    from analysis_prep import currency_context
+    from behavioral import _position_value_usd
+    prices, tc_blue, tc_cedear = currency_context(conn, user_id, positions)
+
+    by_ticker: Dict[str, float] = {}
+    grand = 0.0
+    for p in positions:
+        if p.get("is_cash"):
+            continue
+        qty = p.get("quantity") or 0
+        invested = p.get("invested") or 0
+        if invested <= 0 or qty <= 0:
+            continue
+        v = _position_value_usd(p, prices, tc_blue, tc_cedear)
+        grand += v
+        t = p.get("asset")
+        if t:
+            by_ticker[t] = by_ticker.get(t, 0.0) + v
+    if grand <= 0:
+        return {}
+    return {t: round(v / grand * 100, 2) for t, v in by_ticker.items()}
+
+
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     positions = [dict(r) for r in conn.execute(
         "SELECT * FROM positions WHERE user_id=?", (user_id,)
