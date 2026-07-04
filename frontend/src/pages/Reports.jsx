@@ -793,14 +793,16 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
           <div className="text-[11px] font-mono uppercase tracking-label text-rendi-accent mb-2">Cartera · qué movió tu plata</div>
           <div>
             {bestMover && (
-              <KVRow label="Mejor activo"
+              <KVRow label={bestMover.delta_usd >= 0 ? 'Mejor activo' : 'Menor caída'}
                 value={`${bestMover.asset} ${bestMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(bestMover.delta_usd))}`}
-                sub={bestMover.delta_pct != null ? `${bestMover.delta_pct >= 0 ? '+' : ''}${bestMover.delta_pct.toFixed(1)}%` : null} tone="pos" />
+                sub={bestMover.delta_pct != null ? `${bestMover.delta_pct >= 0 ? '+' : ''}${bestMover.delta_pct.toFixed(1)}%` : null}
+                tone={bestMover.delta_usd >= 0 ? 'pos' : 'neg'} />
             )}
             {worstMover && (
-              <KVRow label="Peor pérdida"
+              <KVRow label={worstMover.delta_usd < 0 ? 'Peor pérdida' : 'Menor suba'}
                 value={`${worstMover.asset} ${worstMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(worstMover.delta_usd))}`}
-                sub={worstMover.delta_pct != null ? `${worstMover.delta_pct >= 0 ? '+' : ''}${worstMover.delta_pct.toFixed(1)}%` : null} tone="neg" />
+                sub={worstMover.delta_pct != null ? `${worstMover.delta_pct >= 0 ? '+' : ''}${worstMover.delta_pct.toFixed(1)}%` : null}
+                tone={worstMover.delta_usd < 0 ? 'neg' : 'pos'} />
             )}
             {!bestMover && !worstMover && !period.movers_available && (
               <div className="text-[11px] text-ink-3 py-2 leading-relaxed">
