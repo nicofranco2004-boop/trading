@@ -43,6 +43,20 @@ class AssetContribution:
 
 
 @dataclass
+class HoldingMover:
+    """Contribución MtM de un holding al período (incluye NO realizado).
+
+    Sale de diferenciar la foto por activo (snapshots.holdings_json) entre los
+    bordes del período. A diferencia de AssetContribution (solo ops cerradas),
+    esto captura qué holding movió tu cartera aunque no lo hayas tradeado.
+    """
+    asset: str
+    delta_usd: float                   # cambio de valor del holding en el período (USD)
+    delta_pct: Optional[float]         # % de variación del holding (null si sin valor inicial)
+    kind: str                          # 'best' | 'worst'
+
+
+@dataclass
 class PeriodMetrics:
     """Métricas core del período. Se renderizan en la cara "técnica" del card."""
     start_value: float
@@ -78,6 +92,8 @@ class PeriodReport:
     insights: List[Insight] = field(default_factory=list)
     highlights: List[Highlight] = field(default_factory=list)
     drivers: List[AssetContribution] = field(default_factory=list)
+    movers: List[HoldingMover] = field(default_factory=list)  # mejor/peor holding por MtM
+    movers_available: bool = False     # true = había foto por activo en los bordes
     children: List["PeriodReport"] = field(default_factory=list)  # weeks dentro de month, etc.
     narrative: Optional[str] = None    # descripción narrativa larga (qué pasó)
 

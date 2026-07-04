@@ -14,10 +14,12 @@ Módulo separado de main.py para que la lógica del snapshot sea testeable
 sin levantar la app entera.
 """
 
+import json
 import logging
 import math
 import re
 import sqlite3
+from collections import defaultdict
 from datetime import date as date_cls, datetime
 from pathlib import Path
 from typing import Optional
@@ -563,12 +565,23 @@ def take_snapshot_for_user(
     tc_cedear = _user_tc_cedear(conn, uid, tc_blue)
     total_value = 0.0
     total_invested = 0.0
+    by_asset = defaultdict(float)  # foto por activo (USD) para atribución MtM
     for b in brokers:
         bpos = [p for p in positions if p['broker'] == b['name']]
         r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue,
                                      broker_name=b['name'], cedear_rate=tc_cedear)
         total_value += r['value']
         total_invested += r['invested']
+        # Valor por activo — reusa la MISMA valuación canónica, posición por
+        # posición (mismo patrón que el frontend computeBrokerValue([p])).
+        for p in bpos:
+            if p.get('is_cash'):
+                continue
+            rp = compute_broker_value_usd([p], prices, b['currency'], tc_blue,
+                                          broker_name=b['name'], cedear_rate=tc_cedear)
+            by_asset[p['asset']] += rp['value']
+    holdings = [{'asset': a, 'value_usd': round(v, 2)} for a, v in by_asset.items()]
+    holdings_json = json.dumps(holdings) if holdings else None
 
     # 4. Calcular net_deposited desde monthly_entries
     net_deposited = compute_net_deposited(monthly)
@@ -578,14 +591,15 @@ def take_snapshot_for_user(
     # Phase C: stampamos fx_to_usd_blue (= tc_blue del día) para que cuando
     # el user mire la curva en ARS, cada punto use SU PROPIO blue (no el de hoy).
     conn.execute("""
-        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, fx_to_usd_blue, holdings_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id, date) DO UPDATE SET
             total_value = excluded.total_value,
             total_invested = excluded.total_invested,
             net_deposited = excluded.net_deposited,
-            fx_to_usd_blue = COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue)
-    """, (uid, target_date, total_value, total_invested, net_deposited, tc_blue))
+            fx_to_usd_blue = COALESCE(excluded.fx_to_usd_blue, snapshots.fx_to_usd_blue),
+            holdings_json = COALESCE(excluded.holdings_json, snapshots.holdings_json)
+    """, (uid, target_date, total_value, total_invested, net_deposited, tc_blue, holdings_json))
 
     return {
         'ok': True,

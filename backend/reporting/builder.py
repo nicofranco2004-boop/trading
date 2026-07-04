@@ -10,12 +10,14 @@ Reusa lógica existente del backend:
 """
 from __future__ import annotations
 
+import json
 import math
 from datetime import date as date_cls, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
 from .schema import (
     PeriodReport, PeriodMetrics, Insight, Highlight, AssetContribution,
+    HoldingMover,
 )
 
 
@@ -394,6 +396,72 @@ def compute_drivers(ops: List[Dict[str, Any]], top_n: int = 5) -> List[AssetCont
     ]
 
 
+# ─── Movers (mejor/peor holding por MtM, incluye no realizado) ────────────────
+
+def fetch_holdings_snapshot_at_or_before(conn, uid: int, when: str) -> Optional[Dict[str, Any]]:
+    """Último snapshot con foto por activo (holdings_json) y date <= when."""
+    row = conn.execute(
+        """SELECT date, holdings_json
+             FROM snapshots
+            WHERE user_id = ? AND date <= ? AND holdings_json IS NOT NULL
+            ORDER BY date DESC LIMIT 1""",
+        (uid, when),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def compute_movers(conn, uid: int, start: str, end: str) -> Tuple[List[HoldingMover], bool]:
+    """Mejor/peor holding por variación MtM en el período (incluye NO realizado).
+
+    Diferencia la foto por activo (snapshots.holdings_json) entre los bordes.
+    Devuelve (movers, available). available=False si falta la foto en algún
+    borde (todavía no acumuló historia). Solo cuenta activos presentes en AMBOS
+    bordes → una compra del período no cuenta como "ganancia" (ideal buy-and-hold).
+    """
+    try:
+        open_prev = (datetime.strptime(start, "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
+    except (ValueError, TypeError):
+        return [], False
+    snap_open = fetch_holdings_snapshot_at_or_before(conn, uid, open_prev)
+    snap_close = fetch_holdings_snapshot_at_or_before(conn, uid, end)
+    if not snap_open or not snap_close:
+        return [], False
+    if snap_open["date"] == snap_close["date"]:
+        return [], False  # sin ventana (foto única) → sin movers
+    try:
+        open_map = {h["asset"]: float(h["value_usd"]) for h in json.loads(snap_open["holdings_json"] or "[]")}
+        close_map = {h["asset"]: float(h["value_usd"]) for h in json.loads(snap_close["holdings_json"] or "[]")}
+    except (ValueError, KeyError, TypeError):
+        return [], False
+
+    deltas: List[Tuple[str, float, Optional[float]]] = []
+    for asset, v_end in close_map.items():
+        v_start = open_map.get(asset)
+        if v_start is None:
+            continue  # posición nueva en el período — no es movimiento MtM
+        d = v_end - v_start
+        if abs(d) < 0.5:
+            continue
+        pct = (d / v_start) if v_start > 0 else None
+        deltas.append((asset, d, pct))
+    if not deltas:
+        return [], True  # había foto en ambos bordes, pero nada se movió material
+
+    deltas.sort(key=lambda x: x[1], reverse=True)
+    best = deltas[0]
+    movers = [HoldingMover(
+        asset=best[0], delta_usd=round(best[1], 2),
+        delta_pct=(round(best[2] * 100, 2) if best[2] is not None else None), kind="best",
+    )]
+    worst = deltas[-1]
+    if worst[0] != best[0]:
+        movers.append(HoldingMover(
+            asset=worst[0], delta_usd=round(worst[1], 2),
+            delta_pct=(round(worst[2] * 100, 2) if worst[2] is not None else None), kind="worst",
+        ))
+    return movers, True
+
+
 # ─── Highlights (mejor op, peor op, etc.) ────────────────────────────────────
 
 def compute_highlights(ops: List[Dict[str, Any]]) -> List[Highlight]:
@@ -622,6 +690,7 @@ def build_period_report(
     )
     drivers = compute_drivers(ops)
     highlights = compute_highlights(ops)
+    movers, movers_available = compute_movers(conn, uid, start, end)
     headline, subheadline = generate_headline(metrics, drivers, period_type)
     narrative = generate_narrative(metrics, drivers, highlights, period_type, label)
 
@@ -647,6 +716,8 @@ def build_period_report(
         insights=[],  # se llena en otro pase (detectors.py)
         highlights=highlights,
         drivers=drivers,
+        movers=movers,
+        movers_available=movers_available,
         children=[],
         narrative=narrative,
     )

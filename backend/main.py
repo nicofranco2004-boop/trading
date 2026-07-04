@@ -900,6 +900,12 @@ def init_db():
     # NULL en filas legacy → frontend hace fallback al tcBlue actual.
     if 'fx_to_usd_blue' not in snap_cols:
         conn.execute("ALTER TABLE snapshots ADD COLUMN fx_to_usd_blue REAL")
+    # Rediseño Reportes (2026-07) — foto por activo del snapshot: JSON
+    # [{asset, value_usd}]. Habilita la atribución MtM por período (mejor/peor
+    # holding, incluyendo NO realizado y bonos AR). NULL en filas legacy →
+    # los movers de un período aparecen recién cuando sus bordes tienen la foto.
+    if 'holdings_json' not in snap_cols:
+        conn.execute("ALTER TABLE snapshots ADD COLUMN holdings_json TEXT")
     # Phase C — tabla global de FX rates diarios. NO está particionada por
     # user (el dólar blue es público y único). Se rellena con backfill desde
     # argentinadatos.com al startup si está vacía, y se actualiza cada día
