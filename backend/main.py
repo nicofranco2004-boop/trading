@@ -8073,6 +8073,13 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_current_user)):
                                              op_year, op_month, pnl_usd_realized)
                 _update_monthly_pnl_realized(conn, uid, 'global',
                                              op_year, op_month, pnl_usd_realized)
+                # AUDIT B3: reparar la cadena mensual (igual que sell()). Sin esto,
+                # si el mes afectado está cerrado con pnl_unrealized viejo, ese
+                # unrealized stale queda sin zerar y contamina capital_final y el
+                # P&L del mes/año hasta que otra cosa dispare el repair.
+                _repair_monthly_chain(conn, uid, ars_broker['name'])
+                _repair_monthly_chain(conn, uid, 'global')
+                conn.commit()
 
         conn.close()
         return {
@@ -19987,9 +19994,24 @@ def _ytd_delta(conn, uid: int, latest_value: Optional[float],
     if start <= 0:
         return None
     first_month = int(row["month"])
+    # AUDIT B2 (2026-07): descontar los flujos netos del año (aportes − retiros)
+    # → retorno REAL, no inflado por depósitos. Antes: (latest − start)/start,
+    # que con un aporte de $10k a mitad de año mostraba +80% cuando el retorno
+    # real era ~24%. Ahora Modified Dietz sobre el capital promedio del año.
+    frow = conn.execute(
+        """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
+             FROM monthly_entries
+            WHERE user_id = ? AND broker = ? AND year = ?""",
+        (uid, broker_filter, year),
+    ).fetchone()
+    net_flows = float(frow["net"] or 0) if frow else 0.0
+    pnl = latest_value - start - net_flows
+    avg = start + 0.5 * net_flows
+    if avg <= 0:
+        return None
     return {
-        "usd": round(latest_value - start, 2),
-        "pct": round(((latest_value - start) / start) * 100, 2),
+        "usd": round(pnl, 2),
+        "pct": round((pnl / avg) * 100, 2),
         "since_year": year,
         "since_month": first_month,
         "since_date": f"{year:04d}-{first_month:02d}-01",

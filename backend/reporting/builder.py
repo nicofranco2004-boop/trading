@@ -261,6 +261,8 @@ def compute_metrics_for_period(
     start_value = 0.0
     end_value = 0.0
     unrealized = 0.0
+    year_twr_pct = None  # AUDIT B1: TWR anual por composición geométrica de meses
+    dw_incomplete = False  # AUDIT B4/B10: día/semana sin base confiable → % None
 
     if period_type == "month":
         y, m = (int(x) for x in period_start[:7].split("-"))
@@ -292,49 +294,78 @@ def compute_metrics_for_period(
             deposits = sum(float(r["deposits"] or 0) for r in rows)
             withdrawals = sum(float(r["withdrawals"] or 0) for r in rows)
             unrealized = float(rows[-1]["pnl_unrealized"] or 0)
-        if live_value is not None and is_period_current(period_type, period_start, period_end):
+        year_is_current = live_value is not None and is_period_current(period_type, period_start, period_end)
+        if year_is_current:
             end_value = float(live_value)
+        # AUDIT B1: el retorno del año = composición GEOMÉTRICA de los retornos
+        # mensuales (TWR encadenado), no un Modified Dietz único anual. Así el
+        # anual coincide con lo que sugieren los meses y no depende del timing
+        # de los aportes. El último mes del año en curso usa live como cierre.
+        if rows:
+            comp = 1.0
+            have_comp = False
+            for i, r in enumerate(rows):
+                ci = float(r["capital_inicio"] or 0)
+                cf = float(r["capital_final"] or 0)
+                if i == len(rows) - 1 and year_is_current:
+                    cf = float(live_value)
+                mp = _modified_dietz_pct(ci, cf, float(r["deposits"] or 0) - float(r["withdrawals"] or 0))
+                if mp is not None:
+                    comp *= (1 + mp / 100.0)
+                    have_comp = True
+            if have_comp:
+                year_twr_pct = round((comp - 1) * 100, 2)
     else:
         # week / day: snapshots para start/end
         snap_start = fetch_snapshot_at_or_before(conn, uid, period_start)
         snap_end = fetch_snapshot_at_or_before(conn, uid, period_end)
         start_value = float(snap_start["total_value"]) if snap_start else 0.0
-        if live_value is not None and is_period_current(period_type, period_start, period_end):
+        _dw_current = live_value is not None and is_period_current(period_type, period_start, period_end)
+        if _dw_current:
             end_value = float(live_value)
         else:
             end_value = float(snap_end["total_value"]) if snap_end else start_value
-        # Audit follow-up (2026-05-31): usar net_deposited de los snapshots
-        # como proxy de flows sub-mensuales. Antes asumíamos flows=0 → si el
-        # user depositaba/retiraba entre el inicio del período y hoy, el
-        # delta_usd raw lo contaba como ganancia/pérdida → "P&L semana"
-        # divergía del Dashboard chart "1S" (que sí descontaba flujos).
-        # Con net_deposited podemos calcular flows = end_netdep - start_netdep.
+        # flows sub-mensuales vía net_deposited de los snapshots (descuenta
+        # aportes/retiros para que no se cuenten como P&L del período).
         start_netdep = float(snap_start["net_deposited"] or 0) if snap_start else 0.0
-        if live_value is not None and is_period_current(period_type, period_start, period_end):
-            # Live: usamos cum_aportado (calculado más abajo, pero acá usamos
-            # SUM monthly_entries directamente para evitar referencia circular).
-            row = conn.execute(
-                """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
-                     FROM monthly_entries
-                    WHERE user_id=? AND broker=? AND broker <> 'global'""",
-                (uid, broker_filter),
-            ).fetchone() if broker_filter != "global" else conn.execute(
-                """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
-                     FROM monthly_entries
-                    WHERE user_id=? AND broker='global'""",
-                (uid,),
-            ).fetchone()
-            end_netdep = float(row["net"] or 0) if row else 0.0
+        if _dw_current:
+            # AUDIT B5/B7: net_deposited CANÓNICO con baseline, misma convención
+            # que el snapshot de inicio (compute_net_deposited). Antes: SUM sin
+            # baseline → flows desfasados por capital_inicio → delta_usd inflado.
+            # Snapshots son globales → usamos 'global' para que start y end matcheen.
+            from snapshots_job import compute_net_deposited_db
+            end_netdep = compute_net_deposited_db(conn, uid, broker_filter='global', include_baseline=True)
         else:
-            end_netdep = float(snap_end["net_deposited"] or 0) if snap_end else start_netdep
-        # flows sub-mensuales derivados de los snapshots
+            # AUDIT B12: net_deposited NULL → usar start_netdep (no 0, que daría
+            # flows negativos falsos → ganancia fantasma).
+            end_netdep = float(snap_end["net_deposited"]) if (snap_end and snap_end["net_deposited"] is not None) else start_netdep
         deposits = max(0.0, end_netdep - start_netdep)
         withdrawals = max(0.0, start_netdep - end_netdep)
+        # AUDIT B4/B10: sin snapshot de inicio (start_value=0 con cartera real) el
+        # retorno es inmedible → marcamos incompleto (delta_pct=None) en vez de un
+        # % disparatado. Igual si la ventana entre bordes es demasiado grande.
+        if start_value <= 0 and end_value > 0:
+            dw_incomplete = True
+        if snap_start and snap_end:
+            try:
+                _gap = (datetime.strptime(snap_end["date"], "%Y-%m-%d")
+                        - datetime.strptime(snap_start["date"], "%Y-%m-%d")).days
+                if (period_type == "day" and _gap > 4) or (period_type == "week" and _gap > 10):
+                    dw_incomplete = True
+            except (ValueError, TypeError, KeyError):
+                pass
 
     flows = deposits - withdrawals
     delta_usd = end_value - start_value - flows
     delta_pct_val = _modified_dietz_pct(start_value, end_value, flows)
     delta_pct = round(delta_pct_val, 2) if delta_pct_val is not None else None
+    # AUDIT B1: el año usa la composición geométrica de meses (si está disponible),
+    # no el Modified Dietz único anual (que diverge cuando hay aportes).
+    if period_type == "year" and year_twr_pct is not None:
+        delta_pct = year_twr_pct
+    # AUDIT B4/B10: día/semana sin base confiable → no mostramos un % engañoso.
+    if period_type in ("day", "week") and dw_incomplete:
+        delta_pct = None
 
     # Para day/week, el unrealized del período = todo el delta que no es
     # realized (las posiciones abiertas se movieron en su mark-to-market).

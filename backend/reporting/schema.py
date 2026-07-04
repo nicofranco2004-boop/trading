@@ -62,7 +62,7 @@ class PeriodMetrics:
     start_value: float
     end_value: float
     delta_usd: float
-    delta_pct: float                   # TWRR (Modified Dietz)
+    delta_pct: Optional[float]         # TWRR (Modified Dietz); None si base incompleta (AUDIT B16)
     delta_pct_over_contrib: Optional[float]  # alternativa conservadora
     realized_pnl: float
     unrealized_pnl: float
