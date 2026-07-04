@@ -1090,6 +1090,20 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_ai_tool_usage_tool
             ON ai_tool_usage(tool_name, date DESC);
 
+        -- ─── broadcast_send_log: idempotencia del broadcast de email admin ──
+        -- Registra (hash-del-contenido, email) por cada envío exitoso para que
+        -- un retry del broadcast (doble click, timeout de gateway que reintenta,
+        -- re-corrida manual del MISMO contenido) NO re-mailee a quien ya recibió.
+        -- El content_hash = sha256(subject + body + branded), así el mismo mail
+        -- dedupea y uno distinto arranca de cero. Se commitea por envío → el
+        -- progreso sobrevive a un corte a mitad del loop.
+        CREATE TABLE IF NOT EXISTS broadcast_send_log (
+            content_hash TEXT NOT NULL,
+            email        TEXT NOT NULL,
+            sent_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (content_hash, email)
+        );
+
         -- ─── yfinance_cache: cache de calls a yfinance (Pack A v2) ──────────
         -- yfinance tarda 1-3s por call. Cuando el chat IA llama tools de
         -- fundamentales/earnings/analysts, esta tabla cachea el payload
@@ -11234,6 +11248,17 @@ class GiftPlanEmailIn(ReengagementEmailIn):
     plan_label: str = "Pro"      # etiqueta del plan regalado que aparece en el mail
 
 
+class BroadcastEmailIn(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=20000)   # texto plano; {nombre} se reemplaza
+    confirm: bool = False        # False = DRY RUN (lista de destinatarios, no envía)
+    only_verified: bool = True   # solo usuarios con email verificado
+    plan: Optional[str] = None   # None=todos · 'free' · 'plus' · 'pro'
+    limit: int = 0               # cap de destinatarios (0 = sin límite; sirve para tandas)
+    branded: bool = True         # envolver en el template Rendi (header+footer)
+    test_to: Optional[str] = Field(None, max_length=200)  # manda UN mail de prueba acá y NO toca users
+
+
 @app.post("/api/admin/email/re-engagement")
 def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_admin_user)):
     """Re-engagement a usuarios que se registraron pero casi no cargaron nada
@@ -11473,6 +11498,135 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
         "failed": failed,
         "skipped": skipped,
     }
+
+
+@app.post("/api/admin/email/broadcast")
+def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_user)):
+    """Manda un email CUSTOM (que el admin escribe) a los usuarios de Rendi.
+
+    Flujo (mismo patrón que re-engagement, con salvaguardas para un broadcast):
+      • test_to → manda UN mail de prueba a esa dirección (tu propio mail) y NO toca a
+        nadie más. Usalo SIEMPRE antes del envío real para ver cómo queda.
+      • confirm=False (DEFAULT) → DRY RUN: devuelve la lista de destinatarios sin enviar.
+      • confirm=True → envía a TODOS los targeteados vía Resend (emails.send_custom).
+    Targeting: only_verified (default True), plan (None/free/plus/pro), limit (tandas).
+    `{nombre}` en el asunto/cuerpo se reemplaza por el nombre de cada user.
+    NO hay stamp de idempotencia (cada broadcast es contenido distinto) → no aprietes
+    "Enviar" dos veces o se manda dos veces. En dev sin RESEND_API_KEY sólo loguea."""
+    import re
+    from billing import emails
+    from ai import quota
+
+    subject = (data.subject or "").strip()
+    body = (data.body or "").strip()
+    if not subject or not body:
+        raise HTTPException(400, "Asunto y cuerpo son obligatorios.")
+
+    # ── TEST: un solo mail a la dirección dada (no toca users) ──
+    if data.test_to:
+        addr = data.test_to.strip()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", addr):
+            raise HTTPException(400, "test_to no parece un email válido.")
+        try:
+            ok = emails.send_custom(to=addr, user_name="(vos)", subject=subject,
+                                    body=body, branded=data.branded)
+        except Exception as ex:
+            log.error("broadcast test send error for %s: %s", addr, ex)
+            ok = False
+        return {"test": True, "to": addr, "sent": bool(ok),
+                "note": ("Enviado — revisá tu inbox." if ok else
+                         "No se envió (en dev sin RESEND_API_KEY sólo loguea).")}
+
+    # ── Targeting ──
+    plan = (data.plan or "").strip().lower() or None
+    if plan and plan not in ("free", "plus", "pro"):
+        raise HTTPException(400, "plan inválido (usá free/plus/pro o vacío para todos).")
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, email, name, email_verified, tier "
+        "FROM users WHERE COALESCE(is_admin,0)=0 ORDER BY created_at ASC"
+    ).fetchall()
+    targets = []
+    for r in rows:
+        d = dict(r)
+        if not (d.get("email") or "").strip():
+            continue
+        if data.only_verified and not d.get("email_verified"):
+            continue
+        # Tier EFECTIVO (mismo resolver que el resto de la app): un user stampeado
+        # 'pro'/'plus' con el crédito ya vencido cuenta como 'free' hasta que el cron
+        # reescriba la columna. Leer users.tier crudo mal-targetearía esa ventana.
+        # Los admins ya están excluidos en el SQL → get_tier acá es plus/pro/free.
+        eff = quota.get_tier(conn, d["id"])
+        eff = eff if eff in ("plus", "pro") else "free"
+        if plan and eff != plan:
+            continue
+        d["plan"] = eff
+        targets.append(d)
+    if data.limit and data.limit > 0:
+        targets = targets[: data.limit]
+
+    # ── DRY RUN: mostrar a quién le caería, sin enviar ──
+    if not data.confirm:
+        conn.close()
+        return {
+            "dry_run": True,
+            "subject": subject,
+            "only_verified": data.only_verified,
+            "plan": plan,
+            "total_recipients": len(targets),
+            "recipients": [
+                {"id": t["id"], "email": t["email"], "name": t.get("name"), "plan": t["plan"]}
+                for t in targets[:500]
+            ],
+            "truncated": len(targets) > 500,
+        }
+
+    # ── ENVÍO REAL (idempotente por contenido) ──
+    # content_hash identifica ESTE mail (asunto+cuerpo+branded). Antes de mandar a
+    # cada uno miramos broadcast_send_log: si ya recibió este mismo contenido, se
+    # saltea. Commiteamos por envío → si el request muere a mitad (timeout de
+    # gateway, cold-start), re-correr el MISMO broadcast retoma donde quedó en vez
+    # de re-mailear a todos. Un mail con distinto texto tiene otro hash y arranca
+    # de cero, como se espera.
+    content_hash = hashlib.sha256(
+        f"{subject}\x1f{body}\x1f{int(bool(data.branded))}".encode("utf-8")
+    ).hexdigest()
+    sent, failed, skipped = [], [], []
+    for t in targets:
+        email_addr = t["email"]
+        already = conn.execute(
+            "SELECT 1 FROM broadcast_send_log WHERE content_hash=? AND email=?",
+            (content_hash, email_addr),
+        ).fetchone()
+        if already:
+            skipped.append({"id": t["id"], "email": email_addr})
+            continue
+        ok = False
+        try:
+            ok = emails.send_custom(to=email_addr, user_name=(t.get("name") or ""),
+                                    subject=subject, body=body, branded=data.branded)
+        except Exception as ex:
+            log.error("broadcast send error for %s: %s", email_addr, ex)
+            ok = False
+        if ok:
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO broadcast_send_log (content_hash, email) VALUES (?, ?)",
+                    (content_hash, email_addr),
+                )
+                conn.commit()
+            except Exception as ex:
+                log.error("broadcast send-log write failed for %s: %s", email_addr, ex)
+            sent.append({"id": t["id"], "email": email_addr})
+        else:
+            failed.append({"id": t["id"], "email": email_addr})
+    conn.close()
+    log.info("Admin %s broadcast: %d enviados, %d fallidos, %d ya-enviados (subject=%r)",
+             uid, len(sent), len(failed), len(skipped), subject)
+    return {"dry_run": False, "sent_count": len(sent), "failed_count": len(failed),
+            "skipped_count": len(skipped), "sent": sent, "failed": failed,
+            "skipped": skipped}
 
 
 @app.get("/api/admin/billing/inspect")

@@ -260,6 +260,9 @@ export default function Admin() {
       {/* ── Conversión Pro (paywall analytics) ─────────────────────────── */}
       <ConversionPanel data={conversion} />
 
+      {/* ── Broadcast: mail custom que vos escribís a los usuarios ── */}
+      <BroadcastPanel toast={toast} />
+
       {/* ── Re-engagement: mail a usuarios que no importaron su historial ── */}
       <ReengagementPanel toast={toast} />
 
@@ -437,6 +440,162 @@ function Row({ label, children }) {
     </div>
   )
 }
+
+// ─── BroadcastPanel — mail CUSTOM que el admin escribe, a los usuarios ────────
+// Escribís asunto + cuerpo (texto plano; {nombre} se reemplaza). "Enviar prueba"
+// te lo manda a vos primero. "Ver destinatarios" (dry-run) lista a quién le caería
+// según el targeting. "Enviar" (confirm:true) manda a todos vía Resend. OJO: sin
+// protección de duplicado — apretá "Enviar" una sola vez.
+function BroadcastPanel({ toast }) {
+  const { user } = useAuth()
+  const [subject, setSubject] = useState('')
+  const [body, setBody] = useState('')
+  const [plan, setPlan] = useState('')            // '' = todos
+  const [onlyVerified, setOnlyVerified] = useState(true)
+  const [branded, setBranded] = useState(true)
+  const [testTo, setTestTo] = useState('')
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [result, setResult] = useState(null)
+
+  const base = () => ({ subject, body, only_verified: onlyVerified, plan: plan || null, branded })
+  const ready = subject.trim() && body.trim()
+
+  async function loadPreview() {
+    if (!ready) { toast.push('Escribí asunto y cuerpo primero.', { type: 'warn' }); return }
+    setLoading(true); setResult(null)
+    try { setPreview(await api.post('/admin/email/broadcast', { ...base(), confirm: false })) }
+    catch (e) { toast.push('Error al previsualizar: ' + e.message, { type: 'error' }) }
+    finally { setLoading(false) }
+  }
+
+  async function sendTest() {
+    const addr = (testTo.trim() || user?.email || '').trim()
+    if (!ready) { toast.push('Escribí asunto y cuerpo primero.', { type: 'warn' }); return }
+    if (!addr) { toast.push('Poné un email de prueba.', { type: 'warn' }); return }
+    setTesting(true)
+    try {
+      const r = await api.post('/admin/email/broadcast', { ...base(), test_to: addr })
+      toast.push(r.note || (r.sent ? `Prueba enviada a ${addr}` : 'No se envió'),
+        { type: r.sent ? 'success' : 'warn' })
+    } catch (e) { toast.push('Error: ' + e.message, { type: 'error' }) }
+    finally { setTesting(false) }
+  }
+
+  async function send() {
+    const n = preview?.total_recipients || 0
+    if (n === 0) return
+    if (!confirm(`¿Enviar este mail a ${n} usuario${n > 1 ? 's' : ''}?\n\nReintentar el MISMO mail no duplica (los ya-enviados se saltean). Cambiarle el texto lo manda de nuevo.`)) return
+    setSending(true)
+    try {
+      const r = await api.post('/admin/email/broadcast', { ...base(), confirm: true })
+      setResult(r); setPreview(null)
+      toast.push(`Enviados ${r.sent_count}`
+        + (r.failed_count ? ` · ${r.failed_count} fallados` : '')
+        + (r.skipped_count ? ` · ${r.skipped_count} ya-enviados` : ''),
+        { type: r.failed_count ? 'warn' : 'success' })
+    } catch (e) { toast.push('Error al enviar: ' + e.message, { type: 'error' }) }
+    finally { setSending(false) }
+  }
+
+  const recipients = preview?.recipients || []
+  const inputCls = 'w-full text-sm px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-2/40 border border-line/60 focus:border-data-violet/60 outline-none text-ink-1 placeholder:text-ink-3'
+
+  return (
+    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <Send size={16} className="text-data-violet" />
+        <h2 className="font-semibold text-ink-0">Email a usuarios · escribí el tuyo</h2>
+      </div>
+
+      <div className="space-y-3">
+        <input value={subject} onChange={e => { setSubject(e.target.value); setPreview(null) }}
+          placeholder="Asunto" className={inputCls} maxLength={200} />
+        <textarea value={body} onChange={e => { setBody(e.target.value); setPreview(null) }}
+          placeholder="Escribí el cuerpo del mail…&#10;&#10;Un párrafo por línea en blanco. Podés poner links (https://rendi.finance)."
+          rows={7} className={inputCls + ' resize-y font-normal leading-relaxed'} maxLength={20000} />
+        <p className="text-[11px] text-ink-3">
+          <code className="px-1 rounded bg-bg-1/60">{'{nombre}'}</code> se reemplaza por el nombre de cada usuario (vacío si no tiene). El texto va como párrafos; los links se activan solos.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap text-[12px] text-ink-2 pt-1 border-t border-line/30">
+        <label className="flex items-center gap-1.5">Plan:
+          <select value={plan} onChange={e => { setPlan(e.target.value); setPreview(null) }}
+            className="bg-bg-2 dark:bg-bg-2/40 border border-line/60 rounded px-2 py-1 text-ink-1">
+            <option value="">Todos</option><option value="free">Free</option>
+            <option value="plus">Plus</option><option value="pro">Pro</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" checked={onlyVerified} onChange={e => { setOnlyVerified(e.target.checked); setPreview(null) }} className="accent-data-violet" />
+          Solo verificados
+        </label>
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" checked={branded} onChange={e => setBranded(e.target.checked)} className="accent-data-violet" />
+          Con diseño Rendi (header/footer)
+        </label>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <input value={testTo} onChange={e => setTestTo(e.target.value)}
+          placeholder={user?.email ? `Prueba a ${user.email}` : 'tu@email.com'}
+          className={inputCls + ' flex-1 min-w-[180px]'} />
+        <button onClick={sendTest} disabled={testing || !ready}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-1 hover:text-ink-0 border border-line/60 disabled:opacity-40">
+          <Mail size={13} /> {testing ? 'Enviando…' : 'Enviar prueba a mí'}
+        </button>
+        <button onClick={loadPreview} disabled={loading || !ready}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-2/40 text-ink-1 hover:text-ink-0 border border-line/60 disabled:opacity-40">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Ver destinatarios
+        </button>
+      </div>
+
+      {preview && (
+        <div className="space-y-3 pt-1 border-t border-line/30">
+          <p className="text-sm text-ink-1">
+            Le caería a <b className="text-data-violet">{preview.total_recipients}</b> usuario{preview.total_recipients === 1 ? '' : 's'}
+            {preview.plan ? ` (plan ${preview.plan})` : ''}{preview.only_verified ? ' · verificados' : ''}.
+          </p>
+          {recipients.length > 0 && (
+            <div className="max-h-56 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+              <table className="w-full text-xs">
+                <thead><tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+                  <th className="text-left px-2 py-1">Email</th><th className="text-left px-2 py-1">Nombre</th><th className="text-left px-2 py-1">Plan</th>
+                </tr></thead>
+                <tbody>{recipients.map(r => (
+                  <tr key={r.id} className="border-b border-line/20">
+                    <td className="px-2 py-1 text-ink-1">{r.email}</td>
+                    <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
+                    <td className="px-2 py-1 text-ink-3">{r.plan}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+          {preview.truncated && <p className="text-[11px] text-ink-3">Mostrando los primeros 500 · se envía a todos.</p>}
+          <div className="flex justify-end">
+            <button onClick={send} disabled={sending || preview.total_recipients === 0}
+              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 press">
+              <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${preview.total_recipients}`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {result && (
+        <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
+          <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
+          {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
+          {result.skipped_count > 0 && <> · <b className="text-ink-3">{result.skipped_count} ya-enviados (dedup)</b></>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 // ─── ReengagementPanel — mail a usuarios que se registraron pero no importaron ─
 // Preview (confirm:false) → muestra la lista exacta de destinatarios sin mandar

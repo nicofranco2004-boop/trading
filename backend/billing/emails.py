@@ -612,6 +612,45 @@ def send_reengagement(*, to: str, user_name: str = "") -> bool:
     return _send(to, subject, body_html, text, from_addr=_from_support())
 
 
+def _custom_body_to_html(body: str) -> str:
+    """Texto plano del admin → HTML: escapa, párrafos por doble salto de línea,
+    <br> por salto simple, y auto-linkea URLs http(s). El admin escribe texto, no
+    HTML (evita romper el mail con markup accidental)."""
+    import re as _re
+    out = []
+    for para in body.split("\n\n"):
+        esc = html.escape(para.strip())
+        esc = _re.sub(r'(https?://[^\s<]+)',
+                      r'<a href="\1" style="color:#5b4ddb;">\1</a>', esc)
+        esc = esc.replace("\n", "<br>")
+        if esc:
+            out.append(f'<p style="margin:0 0 14px;">{esc}</p>')
+    return "".join(out)
+
+
+def send_custom(*, to: str, user_name: str = "", subject: str, body: str,
+                branded: bool = True) -> bool:
+    """Email CUSTOM que el admin escribe (broadcast). `body` = texto plano (párrafos
+    separados por línea en blanco). `{nombre}` en el asunto/cuerpo se reemplaza por el
+    nombre del user (vacío si no tiene). Si `branded`, se envuelve en el template de
+    Rendi (header + footer); si no, va plano (mejor para caer en Principal de Gmail).
+    Replies → soporte@ (el user puede responder y le llega al equipo)."""
+    name = (user_name or "").strip()
+    def _pers(s: str) -> str:
+        return (s or "").replace("{nombre}", name).replace("{name}", name)
+    subject = _pers(subject).strip() or "Rendi"
+    body = _pers(body)
+    inner = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
+        'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
+        + _custom_body_to_html(body) +
+        '</div>'
+    )
+    html_body = _wrap_html(inner) if branded else inner
+    return _send(to, subject, html_body, body, from_addr=_from_support(),
+                 reply_to="soporte@rendi.finance")
+
+
 def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "Pro") -> bool:
     """Campaña: avisar a usuarios con ≤1 operación que les regalamos un mes de
     Pro/Plus (ya otorgado por separado vía grant-comp) y empujarlos a cargar su
