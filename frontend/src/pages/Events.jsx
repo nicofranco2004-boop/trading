@@ -500,9 +500,29 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
             return (
               <div
                 key={b.iso}
-                title={`${b.label} · ${b.total} ${b.total === 1 ? 'evento' : 'eventos'}`}
                 className="flex-1 min-w-[3px] relative group flex flex-col justify-end h-full"
               >
+                {/* Tooltip propio (instantáneo) — qué activos caen en esta barra. */}
+                {b.total > 0 && (
+                  <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-20 min-w-[130px] bg-bg-3 border border-line-2 rounded px-2.5 py-1.5 shadow-lg">
+                    <div className="text-[9px] font-mono uppercase tracking-wider text-ink-3 mb-1 whitespace-nowrap">{b.label}</div>
+                    <div className="flex flex-col gap-0.5">
+                      {b.items.slice(0, 6).map((it, i) => (
+                        <div key={i} className="flex items-center gap-1.5 text-[11px] whitespace-nowrap">
+                          <span className={`w-1.5 h-1.5 rounded-sm ${it.tone} shrink-0`} />
+                          <span className="font-mono font-semibold text-ink-0">{it.ticker}</span>
+                          <span className="text-ink-3">{it.typeLabel}</span>
+                          {it.impactPct != null && it.impactPct > 0.0001 && (
+                            <span className="text-rendi-accent ml-2">{pct(it.impactPct)}</span>
+                          )}
+                        </div>
+                      ))}
+                      {b.items.length > 6 && (
+                        <div className="text-[10px] text-ink-3">+{b.items.length - 6} más</div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div
                   className={`w-full rounded-sm ${tone} transition-opacity opacity-80 group-hover:opacity-100`}
                   style={{ height: `${h}%` }}
@@ -537,6 +557,7 @@ function buildDayBuckets(events, windowDays, tickerValueUsd, portfolioTotalUsd) 
       label: formatBucketLabel(start, bucketSize),
       total: 0,
       impact: 0,
+      items: [],
       bonds: 0,
       earnings: 0,
       dividends: 0,
@@ -554,7 +575,9 @@ function buildDayBuckets(events, windowDays, tickerValueUsd, portfolioTotalUsd) 
     if (idx >= numBuckets) continue
     const b = buckets[idx]
     b.total += 1
-    if (hasImpact) b.impact += (tickerValueUsd.get(ev.ticker) || 0) / portfolioTotalUsd
+    const evImpact = hasImpact ? (tickerValueUsd.get(ev.ticker) || 0) / portfolioTotalUsd : null
+    if (hasImpact) b.impact += evImpact
+    b.items.push({ ticker: ev.ticker, impactPct: evImpact, ...eventMini(ev) })
     if (ev.eventType?.startsWith('bond_')) b.bonds += 1
     else if (ev.eventType === 'earnings') b.earnings += 1
     else if (ev.eventType === 'ex_dividend' || ev.eventType === 'payment_date') b.dividends += 1
@@ -562,6 +585,17 @@ function buildDayBuckets(events, windowDays, tickerValueUsd, portfolioTotalUsd) 
   }
 
   return buckets
+}
+
+// Etiqueta + color por evento para el tooltip de la timeline (mismo mapping
+// de color que las barras/badges: bono=amber, earnings=purple, dividendo=blue).
+function eventMini(ev) {
+  const t = ev.eventType || ''
+  if (t.startsWith('bond_')) return { typeLabel: 'bono', tone: 'bg-amber-400/80' }
+  if (t === 'earnings') return { typeLabel: 'earnings', tone: 'bg-purple-400/80' }
+  if (t === 'ex_dividend' || t === 'payment_date') return { typeLabel: 'dividendo', tone: 'bg-blue-400/80' }
+  if (t === 'macro') return { typeLabel: 'macro', tone: 'bg-rendi-pos/80' }
+  return { typeLabel: t || 'evento', tone: 'bg-ink-3' }
 }
 
 function dominantTone(bucket) {
