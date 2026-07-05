@@ -55,22 +55,31 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     except Exception:
         weights = {}
 
-    # Pull news del cache que main mantiene + tabla `news` si está
+    # Pull news de la tabla `news` — MISMO criterio que /api/news/portfolio
+    # (si no, el briefing veía vacío mientras "Para ti" mostraba decenas).
+    # La tabla NO tiene columna `ticker`: el ticker vive en `query_source`
+    # ("NVDA stock" / "GGAL acciones"), category='portfolio'. Antes esto
+    # consultaba `WHERE ticker IN (...)` → error de columna inexistente →
+    # el except lo tragaba → briefing SIEMPRE vacío ("no hay noticias").
     rows: List[Dict[str, Any]] = []
     try:
-        # Mirror del endpoint /api/news/portfolio: consulta directa
-        # (asumimos tabla `news` con campos ticker, title, source, published_at, tags)
-        placeholders = ",".join("?" * len(portfolio_assets)) if portfolio_assets else "''"
         if portfolio_assets:
+            like_clauses = " OR ".join(["query_source LIKE ?"] * len(portfolio_assets))
+            like_params = [f"{t} %" for t in portfolio_assets]
             results = conn.execute(
-                f"""SELECT ticker, title, source, published_at, tags
+                f"""SELECT title, source, published_at, tags, query_source
                      FROM news
-                    WHERE ticker IN ({placeholders})
+                    WHERE category = 'portfolio'
+                      AND ({like_clauses})
                       AND published_at >= ?
                     ORDER BY published_at DESC LIMIT 60""",
-                (*portfolio_assets, cutoff.isoformat()),
+                (*like_params, cutoff.isoformat()),
             ).fetchall()
-            rows = [dict(r) for r in results]
+            for r in results:
+                d = dict(r)
+                # ticker = primera palabra del query_source ("NVDA stock" → "NVDA")
+                d["ticker"] = (d.get("query_source") or "").split(" ", 1)[0] or None
+                rows.append(d)
     except Exception:
         rows = []
 
