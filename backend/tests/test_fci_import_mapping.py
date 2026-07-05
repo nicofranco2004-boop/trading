@@ -44,15 +44,20 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(resolve_fci_symbol("COCOUSDPA"), "FCI:COCOS-DOLARES-PLUS-A")
         self.assertEqual(resolve_fci_symbol("SBSACAR"), "FCI:SBS-ACCIONES-ARGENTINA-A")
         self.assertEqual(resolve_fci_symbol("CONIOLA"), "FCI:ADCAP-ACCIONES-A")  # IOL, VCP 193.077
+        # Balanz USD (conf. 2026-07-05 por ticker + VCP del Resumen)
+        self.assertEqual(resolve_fci_symbol("BAHUSDA"), "FCI:BALANZ-AHORRO-EN-DOLARES-A")
+        self.assertEqual(resolve_fci_symbol("ESTRA1A"), "FCI:BALANZ-CAPITAL-ESTRATEGIA-I-USD-A")
 
     def test_case_insensitive_and_whitespace(self):
         self.assertEqual(resolve_fci_symbol("  cocoa "), "FCI:COCOS-AHORRO-A")
 
     def test_unknown_ticker_returns_none(self):
-        # COCOSPPA / BAHUSDA / ALRTAFA quedaron fuera a propósito (al costo).
+        # COCOSPPA / ALRTAFA / BBALANCED / BLATAM quedan fuera a propósito (al costo): los
+        # dos últimos son offshore "LSeries DAC" y no cotizan en ArgentinaDatos.
         self.assertIsNone(resolve_fci_symbol("COCOSPPA"))
-        self.assertIsNone(resolve_fci_symbol("BAHUSDA"))
         self.assertIsNone(resolve_fci_symbol("ALRTAFA"))
+        self.assertIsNone(resolve_fci_symbol("BBALANCED"))
+        self.assertIsNone(resolve_fci_symbol("BLATAM"))
         self.assertIsNone(resolve_fci_symbol(""))
         self.assertIsNone(resolve_fci_symbol(None))
 
@@ -79,6 +84,10 @@ class CatalogInvariantTest(unittest.TestCase):
         self.assertEqual(fci._parse_moneda(BROKER_FCI_AD_NAME["COCOUSDPA"]), "USD")
         self.assertEqual(fci._parse_moneda(BROKER_FCI_AD_NAME["COCOAUSD"]), "USD")
         self.assertEqual(fci._parse_moneda(BROKER_FCI_AD_NAME["COCOA"]), "ARS")
+        # Balanz USD: "Dólares" (BAHUSDA) y la SIGLA "USD" sin la palabra 'dólar' (ESTRA1A)
+        # — sin el fix de _parse_moneda, ESTRA1A caía como ARS y se valuaba mal.
+        self.assertEqual(fci._parse_moneda(BROKER_FCI_AD_NAME["BAHUSDA"]), "USD")
+        self.assertEqual(fci._parse_moneda(BROKER_FCI_AD_NAME["ESTRA1A"]), "USD")
 
 
 class NormalizerTest(unittest.TestCase):

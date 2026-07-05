@@ -76,6 +76,8 @@ BROKER_FCI_ALLOWLIST = [
     "SBS Acciones Argentina",  # rentaVariable ARS (vía plataforma Cocos)
     "IEB Renta Fija Dólar",    # rentaFija USD (IEB) — reportado por user 2026-06-25
     "Balanz Capital Ahorro",   # rentaFija ARS (Balanz) — ticker BCAHA, confirmado 2026-07-02
+    "Balanz Ahorro en Dólares",       # rentaFija USD (Balanz) — ticker BAHUSDA, VCP 1417,66 conf. 2026-07-05
+    "Balanz Capital Estrategia I USD",  # rentaFija USD (Balanz) — ticker ESTRA1A, VCP 1163,54 conf. 2026-07-05
     "Adcap Acciones",          # rentaVariable ARS (IOL) — ticker CONIOLA, VCP 193.077 confirmado 2026-07-02
 ]
 
@@ -124,7 +126,9 @@ def _parse_clase(name):
 
 def _parse_moneda(name):
     n = _strip_accents(name or "").lower()
-    return "USD" if "dolar" in n else "ARS"
+    # "dolar/dolares" o el sufijo "USD"/"u$s" (algunos nombres CNV usan la sigla, ej.
+    # "Balanz Capital Estrategia I USD"). Sin el "usd" un fondo dólar caía como ARS.
+    return "USD" if ("dolar" in n or "usd" in n or "u$s" in n) else "ARS"
 
 
 def _parse_emisor(name):

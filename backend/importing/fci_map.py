@@ -48,10 +48,19 @@ BROKER_FCI_AD_NAME = {
     # Balanz — confirmado 2026-07-02 vs ArgentinaDatos: el ticker BCAHA (Balanz Capital
     # AHorro clase A, descripción "Ahorro corto plazo Clase A" en el Resumen) matchea
     # "Balanz Capital Ahorro - Clase A" por PRECIO (237,27/cp = el 237,04 del PDF + 1
-    # día de devengamiento) y magnitud sana. ARS. Otros fondos Balanz (BBALANCED
-    # "LSeries DAC" = offshore, no cotiza; BAHUSDA = ambiguo) quedan SIN mapear → al
-    # costo/override (snapshot de la foto), sin riesgo de mapear a la clase equivocada.
+    # día de devengamiento) y magnitud sana. ARS.
     "BCAHA":     "Balanz Capital Ahorro - Clase A",    # rentaFija ARS (ahorro/money-market)
+    # Balanz USD — confirmado 2026-07-05 vs ArgentinaDatos por TICKER + VCP del Resumen
+    # (÷1000 porque el vcp de la API es por 1000 cuotapartes). El nombre CNV de la fuente
+    # difiere del rótulo comercial del Resumen, así que se ancla por PRECIO:
+    #   BAHUSDA "Corporativo Clase A" (foto VCP 1,42) → "Balanz Ahorro en Dólares - Clase A"
+    #     (VCP API 1417,66 → 1,4177; 92.200,52 cp × 1,4177 = u$s130.703 ≈ foto u$s130.504).
+    #   ESTRA1A "Dolar Corto Plazo Clase A" (foto VCP 1,16) → "Balanz Capital Estrategia I
+    #     USD - Clase A" (VCP API 1163,54 → 1,1635; 79.181,74 × 1,1635 = u$s92.133 ≈ 92.008).
+    # Los offshore BBALANCED/BLATAM ("LSeries DAC") NO cotizan en la fuente → siguen al
+    # costo/override (snapshot de la foto), sin riesgo de mapear a la clase equivocada.
+    "BAHUSDA":   "Balanz Ahorro en Dólares - Clase A",        # rentaFija USD (Balanz)
+    "ESTRA1A":   "Balanz Capital Estrategia I USD - Clase A",  # rentaFija USD (Balanz)
     # IOL — confirmado 2026-07-02 vs ArgentinaDatos: el ticker CONIOLA ("Adcap Acciones"
     # en IOL/BCBA) matchea "Adcap Acciones - Clase A" (rentaVariable ARS) por PRECIO
     # EXACTO (VCP 193.077,218 = los $193.077 de IOL) y magnitud sana. Clase B daría
