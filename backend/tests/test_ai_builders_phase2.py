@@ -502,8 +502,9 @@ def _phase3_db():
         );
         CREATE TABLE IF NOT EXISTS news (
             id INTEGER PRIMARY KEY,
-            ticker TEXT, title TEXT, source TEXT,
-            published_at TEXT, tags TEXT, url TEXT
+            title TEXT, source TEXT, published_at TEXT,
+            tags TEXT, url TEXT, tickers TEXT,
+            query_source TEXT, category TEXT
         );
     """)
     return conn
@@ -561,18 +562,19 @@ class TestNewsBuilder:
             "INSERT INTO positions (user_id, broker, asset, quantity, invested) "
             "VALUES (1, 'Schwab', 'AAPL', 5, 1000)"
         )
-        # 2 noticias de NVDA con tags 'earnings'; 1 de AAPL con 'macro'
+        # 2 noticias de NVDA con tags 'earnings'; 1 de AAPL con 'macro'.
+        # query_source/category como en prod (la tabla NO tiene columna 'ticker').
         from datetime import date, timedelta
         recent = date.today().isoformat()
         for _ in range(2):
             conn.execute(
-                """INSERT INTO news (ticker, title, source, published_at, tags)
-                   VALUES ('NVDA', 'NVDA up', 'Reuters', ?, '[\"earnings\"]')""",
+                """INSERT INTO news (query_source, category, title, source, published_at, tags)
+                   VALUES ('NVDA stock', 'portfolio', 'NVDA up', 'Reuters', ?, '[\"earnings\"]')""",
                 (recent,),
             )
         conn.execute(
-            """INSERT INTO news (ticker, title, source, published_at, tags)
-               VALUES ('AAPL', 'AAPL macro', 'BBG', ?, '[\"macro\"]')""",
+            """INSERT INTO news (query_source, category, title, source, published_at, tags)
+               VALUES ('AAPL stock', 'portfolio', 'AAPL macro', 'BBG', ?, '[\"macro\"]')""",
             (recent,),
         )
 
@@ -617,6 +619,26 @@ class TestNewsItemBuilder:
             p = build(conn, 1, ticker="NVDA", title="NVDA news")
         assert p["portfolio_context"]["holds_ticker"] is True
         assert p["portfolio_context"]["broker"] == "Schwab"
+
+    def test_other_news_count_uses_query_source(self):
+        """other_news_count_30d cuenta por query_source/category (schema real de
+        prod), NO por una columna 'ticker' inexistente que dejaba el conteo
+        SIEMPRE en 0 (el except tragaba el 'no such column: ticker')."""
+        from ai.builders.news_item import build
+        from datetime import date
+        conn = _phase3_db()
+        recent = date.today().isoformat()
+        for _ in range(3):
+            conn.execute(
+                """INSERT INTO news (query_source, category, title, source, published_at, tags)
+                   VALUES ('NVDA stock', 'portfolio', 'NVDA news', 'Reuters', ?, '[]')""",
+                (recent,),
+            )
+        from unittest.mock import patch
+        with patch("home.market._fetch_batch_quotes", side_effect=Exception):
+            p = build(conn, 1, ticker="NVDA", title="NVDA news")
+        # 3 en la BD − 1 (la nota actual) = 2
+        assert p["portfolio_context"]["other_news_count_30d"] == 2
 
 
 class TestEventsBuilder:

@@ -387,6 +387,15 @@ _FREE_FOCUS = {
 }
 
 
+def is_descriptive_tier(tier: str) -> bool:
+    """True para los tiers que reciben el manifiesto DESCRIPTIVO (Free/Plus),
+    False para los interpretativos (Pro/Admin). Fuente ÚNICA de verdad: el
+    system prompt (_maybe_descriptive) y el user_msg de llm.analyze() deben
+    coincidir, si no el modelo recibe órdenes contradictorias (system="describí"
+    vs user="interpretá") y se rompe la diferenciación del paywall."""
+    return tier in ("free", "plus")
+
+
 def _maybe_descriptive(topic_key: str, view_name: str, packet_summary: str, tier: str):
     """Si tier es free o plus, devuelve el manifiesto descriptive + bloque
     simple del topic. Sino None (el caller cae a Pro/causal).
@@ -394,7 +403,7 @@ def _maybe_descriptive(topic_key: str, view_name: str, packet_summary: str, tier
     Plus comparte el formato descriptivo de Free — su upgrade es cuota +
     multi-broker, no profundidad de IA. La causalidad arranca en Pro.
     """
-    if tier not in ("free", "plus"):
+    if not is_descriptive_tier(tier):
         return None
     focus = _FREE_FOCUS.get(topic_key, ["Resumen breve de lo que está en el packet."])
     return SYSTEM_BASE_DESCRIPTIVE + _topic_block_descriptive(view_name, packet_summary, focus)
@@ -1082,9 +1091,11 @@ def render_goal_prompt(tier: str = "pro") -> str:
     view = "Objetivo financiero individual"
     pkt = (
         "goal {id, label, target_usd, target_date, expected_return_pct, "
-        "monthly_contribution, current_capital_usd} + progress + scenarios "
-        "(con/sin aportes/conservador/histórico) + diagnostic {status, "
-        "eta_months, behavioral_suggestion}."
+        "monthly_contribution} + progress {current_capital_usd, gap_usd, "
+        "progress_pct, months_left} + scenarios (objetivo/histórico: "
+        "annual_return_pct, projected_value_usd, reaches_target) + diagnostic "
+        "{status, eta_months, required_return_pct, delta_pct_required, "
+        "projected_value_usd, diagnostic_text, behavioral_suggestion, user_cagr_pct}."
     )
     free = _maybe_free("goal", view, pkt, tier)
     if free:

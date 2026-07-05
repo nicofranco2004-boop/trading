@@ -86,10 +86,18 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     other_news_30d = 0
     try:
         cutoff = (date.today() - timedelta(days=30)).isoformat()
+        # La tabla `news` NO tiene columna `ticker`: el ticker vive en
+        # query_source ("NVDA stock"), category='portfolio'. Antes esto
+        # consultaba `WHERE ticker = ?` → error de columna inexistente → el
+        # except lo tragaba → other_news_count_30d SIEMPRE 0 (señal muerta que
+        # el prompt usa para "cobertura sostenida"). Mismo criterio que news.py
+        # y /api/news/portfolio.
         row = conn.execute(
             """SELECT COUNT(*) AS c FROM news
-                WHERE ticker = ? AND published_at >= ?""",
-            (ticker, cutoff),
+                WHERE category = 'portfolio'
+                  AND query_source LIKE ?
+                  AND published_at >= ?""",
+            (f"{ticker} %", cutoff),
         ).fetchone()
         other_news_30d = int(row["c"] or 0) if row else 0
         # Restamos esta noticia si está en la BD

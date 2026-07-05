@@ -116,7 +116,11 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "type": ev["event_type"],
             "date": ev["event_date"],
             "days_ahead": days_ahead,
-            "weight_pct": round(weight, 4) if weight else None,
+            # weight es fracción 0..1 (value/total) → emitir en 0..100 como el
+            # resto (events.py/home.py/top_holdings) y como lo espera el prompt
+            # (umbral ">30%"). Antes iba en fracción → la IA reportaba "0,45%"
+            # por 45% y el umbral del prompt nunca disparaba.
+            "weight_pct": round(weight * 100, 2) if weight else None,
             "details": ev["details"],
         })
 
@@ -128,5 +132,5 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "tickers_affected": len(tickers_in_events),
         "earnings_count": earnings_count,
         "dividends_count": dividends_count,
-        "weight_at_risk_pct": round(weight_at_risk, 4),
+        "weight_at_risk_pct": round(weight_at_risk * 100, 2),  # 0..100, no fracción
     }

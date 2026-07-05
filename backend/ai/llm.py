@@ -142,6 +142,7 @@ def analyze(
     max_tokens: int = 2500,
     max_retries: int = 1,
     followup_question: Optional[str] = None,
+    descriptive: bool = False,
 ) -> Optional[LLMResult]:
     """Manda el packet a Claude y devuelve output validado contra `output_model`.
 
@@ -154,6 +155,8 @@ def analyze(
         max_retries: si el LLM rompe el schema, reintentar N veces.
         followup_question: si viene, el LLM responde la pregunta puntual
             usando el mismo packet en lugar de generar el análisis general.
+        descriptive: True para tiers Free/Plus (DESCRIBIR, no interpretar) —
+            debe coincidir con el system prompt (ai.prompts.is_descriptive_tier).
 
     Returns:
         LLMResult con .output validado, o None si AI no está configurada.
@@ -186,9 +189,29 @@ def analyze(
             "3. Lenguaje probabilístico, denso, sin frases vacías.\n\n"
             f"```json\n{json.dumps(packet, sort_keys=True, ensure_ascii=False)}\n```"
         )
+    elif descriptive:
+        # Tier Free/Plus — DESCRIBIR, no interpretar. ANTES este user_msg era
+        # único y ordenaba "INTERPRETAR + insight memorable" a TODOS los tiers,
+        # contradiciendo el system prompt descriptivo de Free/Plus ("DESCRIBIR,
+        # no interpretar; nada de insights memorables, eso es Pro") → el modelo
+        # recibía órdenes opuestas y se rompía la diferenciación del paywall.
+        # sort_keys=True para que sea determinístico (cache).
+        user_msg = (
+            "Datos pre-calculados de la pantalla del usuario.\n\n"
+            "Tu trabajo: DESCRIBIR en lenguaje claro y breve qué muestran los "
+            "números del packet. Contá los hechos, no la lectura analítica: "
+            "NO interpretar, NO causalidad, NO comparaciones extendidas, NO un "
+            "insight memorable (eso es exclusivo del tier Pro).\n\n"
+            "REGLAS:\n"
+            "1. SOLO usar números/conceptos del packet. Cero invención.\n"
+            "2. Lenguaje probabilístico donde aplique, sin afirmaciones "
+            "absolutas.\n"
+            "3. Sin frases vacías. Breve y directo.\n\n"
+            f"```json\n{json.dumps(packet, sort_keys=True, ensure_ascii=False)}\n```"
+        )
     else:
-        # Mensaje del análisis principal — packet serializado + instrucción
-        # interpretativa. sort_keys=True para que sea determinístico (cache).
+        # Tier Pro/Admin — packet serializado + instrucción interpretativa.
+        # sort_keys=True para que sea determinístico (cache).
         user_msg = (
             "Datos pre-calculados de la pantalla del usuario.\n\n"
             "Tu trabajo: INTERPRETAR (no describir). Cada section debe agregar "

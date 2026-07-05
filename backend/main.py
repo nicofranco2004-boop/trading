@@ -15628,6 +15628,7 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
         # Llamada al LLM — prompt resuelto según tier (Free=descriptivo,
         # Pro/Admin=research note). Si hay follow-up, pasamos la pregunta
         # al LLM para que responda específicamente sobre el packet.
+        from ai.prompts import is_descriptive_tier
         system_prompt = render_prompt(tier=tier)
         try:
             llm_result = llm.analyze(
@@ -15636,6 +15637,9 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
                 output_model=AnalysisResult,
                 model=llm.MODEL_HAIKU,
                 followup_question=followup_question,
+                # Free/Plus: DESCRIBIR (no interpretar) — el user_msg debe
+                # coincidir con el system descriptivo, si no se contradicen.
+                descriptive=is_descriptive_tier(tier),
             )
         except Exception as ex:
             log.warning(f"AI analyze fallo (uid={uid}, screen={screen}, tier={tier}): {ex}")
@@ -15711,7 +15715,7 @@ def fundamentals_ai_summary(data: FundamentalsAISummaryIn, uid: int = Depends(ge
     tiene fundamentales.
     """
     from ai import llm, cache, quota
-    from ai.prompts import render_fundamentals_prompt
+    from ai.prompts import render_fundamentals_prompt, is_descriptive_tier
 
     if not llm.is_configured():
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
@@ -15789,6 +15793,7 @@ def fundamentals_ai_summary(data: FundamentalsAISummaryIn, uid: int = Depends(ge
                 packet=packet,
                 output_model=FundamentalsAISummary,
                 model=llm.MODEL_HAIKU,
+                descriptive=is_descriptive_tier(tier),
             )
         except Exception as ex:
             log.warning("fundamentals ai-summary fallo (uid=%s, ticker=%s): %s", uid, ticker, ex)
