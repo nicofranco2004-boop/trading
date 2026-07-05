@@ -6232,6 +6232,44 @@ def _foto_split_watermarks(conn, uid: int) -> dict:
     return out
 
 
+def _corporate_split_watermarks(conn, uid: int) -> dict:
+    """Fecha del movimiento CORPORATE de split / cambio-de-ratio por (broker, activo),
+    de import_normalized_tx. Balanz informa el split como un LOTE (BUY $0 con la
+    cantidad ya post-split; o SELL $0 en un split inverso) → la posición YA quedó al
+    ratio nuevo. Sirve de watermark de splits para NO ofrecer 'Ajustar' (que
+    multiplicaría de nuevo → doble-conteo, la 'cantidad errónea' que reporta el user),
+    SIN pisar positions.split_adjusted_through. Read-time: sobrevive al re-import (el
+    rebuild borra columnas de positions, no import_normalized_tx).
+
+    Se combina con el watermark de ajuste (wm) vía max() → hereda su VENTANA de dedup:
+    el movimiento corporate ES un evento de split real, así que un split que yfinance
+    re-loguee 1-7 días después (skew Balanz↔yfinance) se trata como el mismo evento.
+
+    Discriminación en DOS ejes (evita falsos positivos que suprimirían un split real):
+      • estructural: la acción societaria se emite SIEMPRE con unit_price=0 Y gross_amount=0
+        (balanz_movimientos rama corporate: precio="0", monto="0") → excluye un trade REAL
+        (o una nota manual del template genérico) que casualmente diga 'Split' en las notas.
+      • texto: 'split...' / '...cambio de ratio...' (sin tildes; SSoT = _classify_desc rama
+        'corporate') → excluye 'dividendo en acciones/especie', 'rescate parcial', etc.,
+        que también son corporate $0 pero NO son splits y no deben suprimir un ajuste.
+    Solo cuenta batches confirmados (un movimiento en un batch revertido/preview no crea
+    watermark → un split legítimo se sigue ofreciendo)."""
+    out = {}
+    for r in conn.execute(
+        "SELECT n.broker b, UPPER(n.asset_symbol) a, MAX(n.date) d "
+        "FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id "
+        "WHERE ib.user_id=? AND ib.status='confirmed' "
+        "  AND n.operation_type IN ('BUY','SELL') AND COALESCE(n.asset_symbol,'') <> '' "
+        "  AND COALESCE(n.unit_price,0) = 0 AND COALESCE(n.gross_amount,0) = 0 "
+        "  AND ( LOWER(COALESCE(n.notes,'')) LIKE 'split%' "
+        "        OR LOWER(COALESCE(n.notes,'')) LIKE '%cambio de ratio%' ) "
+        "GROUP BY n.broker, UPPER(n.asset_symbol)",
+        (uid,),
+    ):
+        out[(r["b"], r["a"])] = (r["d"] or "")[:10]
+    return out
+
+
 def _foto_wm_for(broker: str, base: str, foto_map: dict, pair_cache: dict, conn, uid: int) -> str:
     """Fecha de la foto de tenencia que concilió `base` en el PAR de brokers (padre↔
     '· USD'), o '' si ninguna. Se pasa como `foto_wm` a _applicable_splits para que el
@@ -6297,11 +6335,16 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_current_user)):
         base = asset[:-3] if asset.endswith(".BA") else asset
         entry = (row["entry_date"] or "")[:10]
         wm = ((row["split_adjusted_through"] if "split_adjusted_through" in row.keys() else "") or "")[:10]
+        _pair_cache = {}
+        # El split que Balanz bookeó como LOTE (posición ya post-split) cuenta como
+        # ya-ajustado → vía `wm` (evento real + ventana de dedup para el skew con yfinance).
+        # Si el user aprieta "Ajustar" igual, esto lo vuelve no-op en vez de duplicar.
+        wm = max(wm, _foto_wm_for(row["broker"], base, _corporate_split_watermarks(conn, uid), _pair_cache, conn, uid))
         # La foto de tenencia también cuenta como watermark: si el Resumen ya concilió
         # este activo (cantidad ACTUAL, post-split), NO re-aplicamos el split (sino,
         # multiplica un lote pre-split que la foto ya compensó → doble-conteo). Se pasa
         # como foto_wm aparte (sin ventana de dedup). Mismo criterio read-time que /split-check.
-        foto_wm = _foto_wm_for(row["broker"], base, _foto_split_watermarks(conn, uid), {}, conn, uid)
+        foto_wm = _foto_wm_for(row["broker"], base, _foto_split_watermarks(conn, uid), _pair_cache, conn, uid)
         # Re-derivar los splits aplicables EN EL SERVER (no confiar en el cliente).
         applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)
         if not applicable:
@@ -6365,6 +6408,9 @@ def positions_split_check(uid: int = Depends(get_current_user)):
         # Foto de tenencia como watermark: un activo que el Resumen ya concilió está al
         # ratio ACTUAL (post-split) → no hay que ofrecer "Ajustar". Se deriva read-time.
         _foto_map = _foto_split_watermarks(conn, uid)
+        # Split que Balanz ya bookeó como LOTE en los Movimientos (la posición ya está
+        # post-split): también es watermark, con ventana de dedup (evento de split real).
+        _corp_map = _corporate_split_watermarks(conn, uid)
         _pair_cache = {}
         suggestions = []
         for r in rows:
@@ -6374,6 +6420,9 @@ def positions_split_check(uid: int = Depends(get_current_user)):
                 continue
             entry = (r["entry_date"] or "")[:10]
             wm = ((r["split_adjusted_through"] if "split_adjusted_through" in r.keys() else "") or "")[:10]
+            # El split-como-lote de Balanz cuenta como ya-ajustado → va por la vía `wm`
+            # (misma semántica: evento real + ventana de dedup para el skew con yfinance).
+            wm = max(wm, _foto_wm_for(r["broker"], base, _corp_map, _pair_cache, conn, uid))
             foto_wm = _foto_wm_for(r["broker"], base, _foto_map, _pair_cache, conn, uid)
             applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)  # SSoT con /adjust-ratio
             if not applicable:
