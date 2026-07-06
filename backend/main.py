@@ -9113,6 +9113,170 @@ def _safe_float_or_none(v):
         return None
 
 
+# ─── Borrado de UN movimiento con cascada completa ───────────────────────────
+# Tipos que v1 sabe borrar (cash-flows). Compras/ventas (BUY/SELL) y FX/FUTURES
+# requieren rebuild FIFO → fase futura; se bloquean con 400 explícito.
+_DELETABLE_CASHFLOW_TYPES = {"DEPOSIT", "WITHDRAW", "DIVIDEND", "INTEREST", "FEE", "IMPUESTO"}
+
+_TRADE_BLOCK_MSG = (
+    "Por ahora solo se pueden borrar depósitos, retiros, dividendos, intereses y "
+    "comisiones. El borrado de compras/ventas llega pronto."
+)
+
+
+def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
+    """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
+    revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
+    autoritativo (recompone monthly desde fuentes, excluyendo lo ya borrado) →
+    purgar snapshots desde la fecha afectada (diarios + month-ends + hoy) →
+    re-backfill de month-ends. El caller ya borró la fila fuente y revirtió el
+    cash ANTES de llamar esto. La invalidación de la cache IA la hace el caller
+    tras el commit."""
+    for b in brokers_touched:
+        if b:
+            _repair_monthly_chain(conn, uid, b)
+    _repair_monthly_chain(conn, uid, "global")
+    _recalc_pnl_realized_from_ops(conn, uid)
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if since_date:
+        conn.execute("DELETE FROM snapshots WHERE user_id=? AND date >= ?", (uid, since_date))
+    conn.execute("DELETE FROM snapshots WHERE user_id=? AND date = ?", (uid, today))
+    _import_persister._backfill_snapshots_from_monthly(conn, uid)
+
+
+def _delete_one_movement(conn, uid: int, mid: str):
+    """Parsea el id compuesto de /api/movements, revierte los side-effects (cash +
+    operations linkeadas) y borra la fila fuente. Devuelve (since_date,
+    brokers_touched) para la cascada. Levanta HTTPException para tipos no
+    soportados en v1 (compras/ventas/holdings)."""
+    # ── tx-{n}: import_normalized_tx (movimiento importado) ──
+    if mid.startswith("tx-"):
+        try:
+            tx_id = int(mid[3:])
+        except ValueError:
+            raise HTTPException(400, "id de movimiento inválido")
+        tx = conn.execute(
+            """SELECT n.* FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                WHERE n.id=? AND b.user_id=? AND b.status='confirmed'""",
+            (tx_id, uid),
+        ).fetchone()
+        if not tx:
+            raise HTTPException(404, "Movimiento no encontrado")
+        op = (tx["operation_type"] or "").upper()
+        if op not in _DELETABLE_CASHFLOW_TYPES:
+            raise HTTPException(400, _TRADE_BLOCK_MSG)
+        broker = tx["broker"] or ""
+        amount = float(tx["gross_amount"] or 0)  # nativo del broker
+        # Reverso del CASH (única cosa que _recalc no recompone). Espeja
+        # revert_batch por op_type (persister.py:1142-1224): DEPOSIT/DIVIDEND/
+        # INTEREST SUMARON cash → restamos; WITHDRAW/FEE/IMPUESTO RESTARON → devolvemos.
+        if op in ("DEPOSIT", "DIVIDEND", "INTEREST"):
+            cash = conn.execute(
+                "SELECT id, invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+                (uid, broker),
+            ).fetchone()
+            if cash:
+                conn.execute(
+                    "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
+                    ((cash["invested"] or 0) - amount, cash["id"], uid),
+                )
+        else:  # WITHDRAW / FEE / IMPUESTO
+            _adjust_broker_cash(conn, uid, broker, amount)
+        # DIVIDEND/INTEREST crearon una operation (P&L) → borrarla + su link, si no
+        # _recalc la seguiría contando en pnl_realized.
+        conn.execute(
+            """DELETE FROM operations WHERE user_id=? AND id IN (
+                 SELECT operation_id FROM import_op_links
+                  WHERE batch_id=? AND raw_row_id=? AND operation_id IS NOT NULL)""",
+            (uid, tx["batch_id"], tx["raw_row_id"]),
+        )
+        conn.execute(
+            "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
+            (tx["batch_id"], tx["raw_row_id"]),
+        )
+        # Borrar la fila fuente → _recalc la excluye del recompute de deposits/pnl.
+        conn.execute("DELETE FROM import_normalized_tx WHERE id=?", (tx_id,))
+        since = (tx["date"] or "")[:10] or None
+        return since, {broker}
+
+    # ── me-{n}-dep / me-{n}-wit: depósito/retiro MANUAL agregado del mes ──
+    if mid.startswith("me-"):
+        parts = mid.split("-")
+        if len(parts) != 3 or parts[2] not in ("dep", "wit"):
+            raise HTTPException(400, "id de movimiento inválido")
+        try:
+            me_id = int(parts[1])
+        except ValueError:
+            raise HTTPException(400, "id de movimiento inválido")
+        row = conn.execute(
+            "SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (me_id, uid),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Movimiento no encontrado")
+        broker = row["broker"] or ""
+        direction = parts[2]
+        col = "manual_deposits" if direction == "dep" else "manual_withdrawals"
+        manual_usd = float((row[col] if col in row.keys() else 0) or 0)
+        if manual_usd <= 0:
+            raise HTTPException(404, "No hay un movimiento manual para borrar en ese mes")
+        # Reverso del cash: el flujo manual movió is_cash en NATIVO. manual_* está
+        # en USD → convertimos a nativo por la moneda del broker (aprox por tc_blue
+        # actual para ARS; exacto para USD).
+        broker_row = conn.execute(
+            "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, broker),
+        ).fetchone()
+        broker_ccy = ((broker_row["currency"] if broker_row else "USD") or "USD").upper()
+        # El flujo manual NO persiste el monto NATIVO ni el FX del momento
+        # (cash/flow solo estampa manual_* en USD). En un broker ARS, revertir el
+        # cash con el tc_blue ACTUAL dejaría un residual FANTASMA (el blue se mueve
+        # con la inflación). Bloqueamos el borrado de manuales en pesos hasta
+        # persistir el nativo (follow-up). Importados (tx-) y manuales en USD →
+        # reversa EXACTA (nativo == USD).
+        if broker_ccy == "ARS":
+            raise HTTPException(400,
+                "El borrado de depósitos/retiros manuales en pesos todavía no está "
+                "disponible (para no dejar el saldo mal por el cambio del dólar). "
+                "Los importados y los movimientos en dólares sí se pueden borrar.")
+        # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
+        _adjust_broker_cash(conn, uid, broker, -manual_usd if direction == "dep" else manual_usd)
+        # Poner el manual del mes en 0 → _recalc recompone deposits = imports + 0.
+        conn.execute(
+            f"UPDATE monthly_entries SET {col}=0 WHERE id=? AND user_id=?", (me_id, uid),
+        )
+        since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
+        return since, {broker}
+
+    # ── op-{n}-* (trade manual) / pos-{n} (holding abierto) → no soportado v1 ──
+    if mid.startswith("op-") or mid.startswith("pos-"):
+        raise HTTPException(400, _TRADE_BLOCK_MSG)
+
+    raise HTTPException(400, "id de movimiento no reconocido")
+
+
+@app.delete("/api/movements/{movement_id}")
+def delete_movement(movement_id: str, uid: int = Depends(get_current_user)):
+    """Borra UN movimiento individual (vista Operaciones) y recalcula la cascada:
+    cash, monthly_entries, snapshots (capital aportado + Evolución), insights y el
+    snapshot que consume la IA. v1: SOLO cash-flows (depósitos, retiros, dividendos,
+    intereses, comisiones). Compras/ventas → 400 (rebuild FIFO, fase futura). El id
+    es el compuesto de /api/movements (tx-/me-/op-/pos-)."""
+    mid = (movement_id or "").strip()
+
+    def _do():
+        conn = get_db()
+        try:
+            with conn:  # tx atómica: reverso + cascada
+                since_date, brokers = _delete_one_movement(conn, uid, mid)
+                _cascade_after_movement_delete(conn, uid, since_date, brokers)
+        finally:
+            conn.close()
+
+    _run_with_lock_retry(_do)
+    _ai_cache_invalidate(uid)
+    return {"ok": True}
+
+
 @app.get("/api/insights/commissions")
 def get_commissions_total(uid: int = Depends(get_current_user)):
     """Suma de las comisiones EXPLÍCITAS importadas (operation_type='FEE' en

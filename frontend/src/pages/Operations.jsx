@@ -889,15 +889,39 @@ function MovementsView() {
     })
   }
 
-  useEffect(() => {
-    let cancelled = false
+  const [deletingId, setDeletingId] = useState(null)
+
+  async function load() {
     setLoading(true)
-    api.get('/movements')
-      .then(d => { if (!cancelled) setMovements(d || []) })
-      .catch(ex => { if (!cancelled) setError(ex?.message || 'No pudimos cargar los movimientos.') })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [])
+    try {
+      setMovements(await api.get('/movements') || [])
+      setError(null)
+    } catch (ex) {
+      setError(ex?.message || 'No pudimos cargar los movimientos.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [])
+
+  // Borrado de UN movimiento (cash-flows) con cascada backend. Confirma → borra →
+  // refetch de /movements. Los KPIs de la página se recomputan solos; el gráfico
+  // del dashboard/evolución se corrige al navegar/recargar (lo lee del backend).
+  async function handleDelete(m) {
+    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto' }[m.type] || 'movimiento'
+    const monto = m.amount_usd ? ` de ${fmtUsd(m.amount_usd)}` : ''
+    if (!window.confirm(`¿Borrar este ${label}${monto}?\n\nSe recalculan tu cartera, el capital aportado y la evolución. No se puede deshacer.`)) return
+    setDeletingId(m.id)
+    try {
+      await api.delete(`/movements/${encodeURIComponent(m.id)}`)
+      await load()
+    } catch (ex) {
+      alert(ex?.message || 'No se pudo borrar el movimiento.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   // Reset página al cambiar filtros o el modo de agrupación.
   useEffect(() => { setPage(0) }, [filterType, filterBroker, filterYear, groupBy])
@@ -1052,11 +1076,12 @@ function MovementsView() {
                 <th className="text-right px-3 py-2">Precio</th>
                 <th className="text-right px-3 py-2">Monto {money.currency}</th>
                 <th className="text-left px-3 py-2">Notas</th>
+                <th className="px-3 py-2 w-8" aria-label="Acciones"></th>
               </tr>
             </thead>
             <tbody>
               {!grouped && pageRows.map(m => (
-                <MovementRow key={m.id} m={m} />
+                <MovementRow key={m.id} m={m} onDelete={handleDelete} deleting={deletingId === m.id} />
               ))}
               {grouped && groups.map(g => {
                 const isOpen = expandedGroups.has(g.key)
@@ -1070,7 +1095,7 @@ function MovementsView() {
                       fmtPnl={fmtUsdSigned}
                     />
                     {isOpen && g.rows.map(m => (
-                      <MovementRow key={m.id} m={m} indent />
+                      <MovementRow key={m.id} m={m} indent onDelete={handleDelete} deleting={deletingId === m.id} />
                     ))}
                   </Fragment>
                 )
@@ -1176,7 +1201,11 @@ function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
 // indent: cuando la fila es detalle de un grupo (modo agrupado), la atenuamos
 // e indentamos la primera celda con un marquito "└" — mismo recurso visual que
 // los lotes en Positions.
-function MovementRow({ m, indent = false }) {
+// Tipos borrables en v1 (cash-flows). Compras/ventas van a fase futura (rebuild
+// FIFO) → sin tacho. Alineado con _DELETABLE_CASHFLOW_TYPES del backend.
+const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO']
+
+function MovementRow({ m, indent = false, onDelete, deleting = false }) {
   // Phase C (audit fix H1): cada movimiento usa SU PROPIO FX histórico para
   // la conversión a ARS. m.fx_to_usd (si stampeado) > lookup por m.date >
   // tcBlue actual. Esto evita que un retiro de $1000 USD en 2024 (blue era
@@ -1219,6 +1248,20 @@ function MovementRow({ m, indent = false }) {
       </td>
       <td className="px-3 py-2 text-ink-3 text-xs max-w-xs truncate" title={m.notes}>
         {m.notes || (m.source === 'monthly' ? 'Agregado mensual' : m.source === 'import' ? 'Desde import CSV' : '')}
+      </td>
+      <td className="px-2 py-2 text-right">
+        {onDelete && DELETABLE_MOVEMENT_TYPES.includes(m.type) && (
+          <button
+            type="button"
+            onClick={() => onDelete(m)}
+            disabled={deleting}
+            title="Borrar movimiento"
+            aria-label="Borrar movimiento"
+            className="p-1 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-rendi-neg/10 disabled:opacity-40 disabled:cursor-wait"
+          >
+            <Trash2 size={13} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        )}
       </td>
     </tr>
   )
