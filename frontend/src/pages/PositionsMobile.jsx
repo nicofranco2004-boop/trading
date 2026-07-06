@@ -496,11 +496,11 @@ export default function PositionsMobile() {
       const qty = p.quantity || 0
       const invested = p.invested || 0
       // Costo en USD por moneda del LOTE, no de la cuenta: lote de COSTO EN DÓLARES
-      // (currency='USD') → tal cual, aunque viva en un broker ARS (bono/ON/FCI-USD,
-      // CEDEAR-MEP de Balanz); ARS broker → blue; lote en PESOS (currency='ARS')
-      // alojado en cuenta USD → MEP (tcCedear); USD-nativo → tal cual. Es también el
-      // fallback de valor cuando no hay precio.
-      let investedUsd = costInUsd(p) ? invested
+      // (currency='USD') EN BROKER ARS → tal cual, sin ÷blue (bono/ON/FCI-USD, CEDEAR-
+      // MEP de Balanz); ARS broker → blue; lote en PESOS (currency='ARS') alojado en
+      // cuenta USD → MEP (tcCedear); USD-nativo (incluida la acción US en broker USD)
+      // → tal cual (última rama). Es también el fallback de valor cuando no hay precio.
+      let investedUsd = isAR && costInUsd(p) ? invested
         : isAR ? invested / tcBlue
         : costInPesos(p) ? invested / tcCedear
         : invested
@@ -516,13 +516,15 @@ export default function PositionsMobile() {
           ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null,
           pnlLocal: null, dayVarLocal: null, dayVarUsd: null, dayVarPct: null, isAR,
         }
-      } else if (costInUsd(p)) {
+      } else if (isAR && costInUsd(p)) {
         // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
         // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz
         // importa cada pata en su moneda). El costo YA está en USD (investedUsd de
         // arriba, sin ÷blue); el VALOR va por el tipo de instrumento (usdLotValue:
         // CEDEAR/acción-AR por .BA÷MEP, resto por precio USD nativo). Sin esto, la
         // rama isAR de abajo dividía el costo USD por el blue → la fila colapsaba.
+        // Gateado a broker ARS: una acción US genuina en broker USD NO entra acá
+        // (usdLotValue le armaría 'AAPL.BA', inexistente) → cae al else que usa prices[US].
         const u = usdLotValue(p, prices, tcCedear)
         priceLocal = u.priceUsd
         // usdLotValue ya clampea: si no confía en el precio, valueUsd cae a su
@@ -602,16 +604,31 @@ export default function PositionsMobile() {
       // emitimos Var.día — sería una variación sobre un precio no confiable.
       if (!p.price_override && priceLocal != null && priceTrusted) {
         const cedearUsd = !isAR && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker))
+        // Lote de COSTO EN USD en broker ARS (rama isAR && costInUsd): priceLocal ya
+        // está en USD (usdLotValue). El símbolo del cierre previo es el mismo que valúa
+        // (priceSymbol(...,true,...) → '.BA' o 'FCI:'). Si es '.BA', el prevClose viene
+        // en ARS → hay que pasarlo a USD (÷MEP) igual que el CEDEAR-USD; si no (FCI/
+        // nativo USD), ya está en USD. Sin esto, priceLocal(USD) − prev(ARS) daba ~-100%.
+        const usdInArBroker = isAR && costInUsd(p)
+        const usdSymBA = usdInArBroker && priceSymbol(p.asset, true, p.asset_type).endsWith('.BA')
         const prevRaw = prevClose[(isAR || cedearUsd) ? priceSymbol(p.asset, true, p.asset_type) : p.asset]
-        // priceLocal del CEDEAR-USD ya está en USD (÷CCL); el cierre previo viene
-        // en ARS (.BA) → lo pasamos a USD con el mismo CCL para comparar igual.
-        const prev = (cedearUsd && prevRaw != null) ? prevRaw / tcCedear : prevRaw
+        // priceLocal del CEDEAR-USD (o del lote USD-en-broker-ARS priceado por .BA) ya
+        // está en USD; el cierre previo viene en ARS (.BA) → lo pasamos a USD ÷MEP.
+        const prev = ((cedearUsd || usdSymBA) && prevRaw != null) ? prevRaw / tcCedear : prevRaw
         if (prev != null && prev > 0) {
           const perUnit = priceLocal - prev
           // Mismo factor cripto que el valor: el monto absoluto de var. día queda
           // coherente con el valor mostrado. El % (perUnit/prev) es invariante.
-          dayVarLocal = perUnit * qty * f
-          dayVarUsd = isAR ? dayVarLocal / tcBlue : dayVarLocal
+          if (usdInArBroker) {
+            // Lote USD en broker ARS: perUnit ya está en USD (priceLocal y prev en USD).
+            // Mantenemos la convención isAR: dayVarLocal en ARS (×MEP) y dayVarUsd en USD,
+            // así la agregación (curLocalValue = valueUsd × tcBlue) y el % cierran igual.
+            dayVarUsd = perUnit * qty
+            dayVarLocal = dayVarUsd * tcCedear
+          } else {
+            dayVarLocal = perUnit * qty * f
+            dayVarUsd = isAR ? dayVarLocal / tcBlue : dayVarLocal
+          }
           dayVarPct = perUnit / prev
         }
       }

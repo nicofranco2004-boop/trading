@@ -28,7 +28,9 @@ function lotCostUsd(p, isAR, tc) {
   // Lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR comprado en dólar-MEP →
   // currency='USD') que vive en un broker ARS: el costo YA está en USD → NO se
   // divide por el dólar (va antes que isAR, que sí dividiría y lo colapsaría).
-  if (costInUsd(p)) return invested
+  // Gateado a broker ARS: una acción US genuina en broker USD cae al último return
+  // (invested, ya en USD) — mismo resultado, pero sin aplicarle semántica "es-ARS".
+  if (isAR && costInUsd(p)) return invested
   if (costInPesos(p) || isAR) return invested / tc
   return invested
 }

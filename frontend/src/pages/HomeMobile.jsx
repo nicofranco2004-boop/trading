@@ -155,19 +155,23 @@ export default function HomeMobile() {
     let bestAsset = null
     let bestPct = -Infinity
     const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
+    const arsBrokerSet = new Set((brokers || []).filter(b => b.currency === 'ARS').map(b => b.name))
     for (const p of positions) {
       if (p.is_cash || !p.invested) continue
+      const isAR = arsBrokerSet.has(p.broker)
       // Valuación CONSISTENTE con la Cartera (calcUSDT): un CEDEAR o cualquier
       // instrumento en un sub-broker '· USD' se valúa por su precio LOCAL .BA ÷ MEP,
       // NO por el ticker US. Antes usaba prices[p.asset] (Visa US ~$300 vs CEDEAR ~$19)
       // → valor inflado ~16× y P&L% disparado (V daba +160.658% en vez de +7%).
       let px
-      if (costInUsd(p)) {
+      if (isAR && costInUsd(p)) {
         // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
         // comprado en dólar-MEP → currency='USD') en un broker ARS (Balanz). El precio
         // por-unidad ya sale en USD de usdLotValue (CEDEAR/acción-AR por .BA÷MEP, resto
         // por NAV/precio USD nativo). Sin esto caía al else (prices[US]=null) → se
-        // salteaba del ranking (o, con costo tratado como pesos, %/valor rotos).
+        // salteaba del ranking (o, con costo tratado como pesos, %/valor rotos). Gateado
+        // a broker ARS: una acción US genuina en broker USD NO entra (usdLotValue le
+        // armaría 'AAPL.BA', inexistente) → cae al else que sí usa prices[US] correcto.
         px = usdLotValue(p, prices, tcCedear).priceUsd
       } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
@@ -187,9 +191,10 @@ export default function HomeMobile() {
       // ARS → a USD por el MEP, igual que px. El resto ya está en USD → escala por el
       // factor cripto. Sin esto, mkt(USD) vs invested(ARS) rompía el ratio del guard
       // y clampeaba de más los CEDEARs en pesos (mostraba 0% en vez de su ganancia).
-      // costInUsd: costo YA en USD (sin ÷ ni factor). costInPesos: pesos → USD por el
-      // MEP. Resto: escala por el factor cripto (1 para lo no-cripto-de-broker).
-      const invested = costInUsd(p) ? realCost : costInPesos(p) ? realCost / tcCedear : realCost * f
+      // costInUsd en broker ARS: costo YA en USD (sin ÷ ni factor). costInPesos: pesos
+      // → USD por el MEP. Resto: escala por el factor cripto (1 para lo no-cripto-de-
+      // broker) — la acción US en broker USD cae acá y realCost*1 ya está en USD.
+      const invested = isAR && costInUsd(p) ? realCost : costInPesos(p) ? realCost / tcCedear : realCost * f
       if (!(invested > 0)) continue
       // Clamp anti-distorsión (igual que computeBrokerValue): un bono per-100 leído
       // como per-1 infla el valor ×100 → pct fantasma. mkt e invested quedan en las

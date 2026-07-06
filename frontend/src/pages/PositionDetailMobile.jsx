@@ -161,6 +161,14 @@ export default function PositionDetailMobile() {
 
   const avgPrice = !p.is_cash && qty > 0 ? invested / qty : null
 
+  // Moneda de los labels de precio/costo del lote. Normalmente ARS en broker ARS,
+  // USD en broker USD. PERO un lote de COSTO EN DÓLARES en un broker ARS (bono/ON/
+  // FCI-USD, CEDEAR-MEP de Balanz → currency='USD') tiene invested/avgPrice/priceLocal
+  // YA en USD (priceLocal = usdLotValue.priceUsd) → hay que rotularlos "USD", no "ARS"
+  // (si no, se muestra un valor USD con label ARS, off por el MEP). Se decide por la
+  // moneda del COSTO del lote, no solo por isAR.
+  const lotShowsUsd = !isAR || costInUsd(p)
+
   return (
     <div
       className="min-h-screen bg-bg-0 pb-8"
@@ -243,20 +251,20 @@ export default function PositionDetailMobile() {
               {avgPrice != null && (
                 <DetailRow
                   label="Precio promedio"
-                  value={isAR ? `${formatLocalPrice(avgPrice)} ARS` : `$${avgPrice.toFixed(2)} USD`}
+                  value={lotShowsUsd ? `$${avgPrice.toFixed(2)} USD` : `${formatLocalPrice(avgPrice)} ARS`}
                   bordered
                 />
               )}
               {priceLocal != null && (
                 <DetailRow
                   label="Precio actual"
-                  value={isAR ? `${formatLocalPrice(priceLocal)} ARS` : `$${priceLocal.toFixed(2)} USD`}
+                  value={lotShowsUsd ? `$${priceLocal.toFixed(2)} USD` : `${formatLocalPrice(priceLocal)} ARS`}
                   bordered
                 />
               )}
               <DetailRow
                 label="Invertido"
-                value={isAR ? `${formatLocalPrice(invested)} ARS` : `$${Math.round(invested).toLocaleString('en-US')} USD`}
+                value={lotShowsUsd ? `$${Math.round(invested).toLocaleString('en-US')} USD` : `${formatLocalPrice(invested)} ARS`}
                 bordered
               />
               <DetailRow

@@ -237,12 +237,14 @@ export default function Dashboard() {
       const realCost = (p.invested || 0) + (p.commissions || 0)
       let valueUsd = null
       let pnlUsd = null
-      if (costInUsd(p)) {
+      if (isARS && costInUsd(p)) {
         // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
         // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
         // El costo YA está en USD (sin ÷blue); el valor va por el tipo de instrumento
         // (usdLotValue, que ya clampea con trustMktValue). Sin esto, la rama isARS de
-        // abajo dividía el costo USD por el blue → colapsaba (~1/MEP).
+        // abajo dividía el costo USD por el blue → colapsaba (~1/MEP). Gateado a broker
+        // ARS: una acción US genuina (currency='USD' en Schwab/IBKR) NO entra acá
+        // (usdLotValue le armaría 'AAPL.BA', inexistente en un broker USD) → va al else.
         const u = usdLotValue(p, prices, tcCedear)
         valueUsd = u.valueUsd
         pnlUsd = valueUsd - u.investedUsd
@@ -296,9 +298,11 @@ export default function Dashboard() {
       }
       const isExchForPct = exchangeBrokers.has(p.broker)
       const fForPct = isARS ? 1 : cryptoBrokerFactor(p.asset, isExchForPct, p.price_override != null, tcCripto, tcCedear)
-      // costInUsd (lote USD en broker ARS): el costo YA está en USD → sin ÷blue, va
-      // antes que isARS (que sí divide por blue y colapsaría el denominador del %).
-      const invForPct = costInUsd(p) ? realCost : isARS ? realCost / tcBlue : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
+      // costInUsd en broker ARS (lote USD en Balanz): el costo YA está en USD → sin
+      // ÷blue, va antes que isARS (que sí divide por blue y colapsaría el denominador
+      // del %). Gateado a broker ARS: una acción US genuina en broker USD cae al último
+      // else → realCost * fForPct (fForPct=1 no-cripto) = realCost, ya en USD.
+      const invForPct = isARS && costInUsd(p) ? realCost : isARS ? realCost / tcBlue : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
       const pnlPct = pnlUsd != null && invForPct > 0 ? pnlUsd / invForPct : null
       return { asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct }
     })

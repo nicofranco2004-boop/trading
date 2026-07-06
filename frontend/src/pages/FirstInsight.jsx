@@ -104,12 +104,14 @@ export default function FirstInsight() {
       const isARS = arsBrokers.has(p.broker)
       const cost = (p.invested || 0) + (p.commissions || 0)
       let valueUsd = null, pnlUsd = null
-      if (costInUsd(p)) {
+      if (isARS && costInUsd(p)) {
         // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
         // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
         // El costo YA está en USD (sin ÷blue); el valor va por el tipo de instrumento
         // (usdLotValue, que ya clampea). Sin esto, la rama isARS de abajo dividía el
         // costo USD por el blue → colapsaba (~1/MEP) y el ranking best/worst se rompía.
+        // Gateado a broker ARS: una acción US genuina (currency='USD' en Schwab/IBKR)
+        // NO entra acá (usdLotValue le armaría 'AAPL.BA', inexistente) → va al else US.
         const u = usdLotValue(p, prices, tcCedear)
         valueUsd = u.valueUsd
         pnlUsd = valueUsd - u.investedUsd

@@ -287,8 +287,10 @@ function InsightsDesktop({ _embeddedTab }) {
     // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
     // El costo YA está en USD; el valor va por el tipo de instrumento (usdLotValue,
     // que ya clampea). Sin esto, la rama ARS de abajo dividía por el blue → colapsaba
-    // y esta tenencia dólar desaparecía de la torta/atribución por-activo.
-    if (costInUsd(p)) {
+    // y esta tenencia dólar desaparecía de la torta/atribución por-activo. Gateado a
+    // broker ARS: una acción US genuina (currency='USD' en Schwab/IBKR) NO entra acá
+    // (usdLotValue le armaría 'AAPL.BA', inexistente en un broker USD) → va al else.
+    if (broker?.currency === 'ARS' && costInUsd(p)) {
       return usdLotValue(p, prices, tcCedear).valueUsd
     }
     if (broker?.currency === 'ARS') {
@@ -1385,9 +1387,11 @@ function InsightsDesktop({ _embeddedTab }) {
     // queda por-rama (el costo no se clampea).
     const valueUsd = holdingValueUsd(p)
     let investedUsd
-    if (costInUsd(p)) {
-      // Lote de COSTO EN DÓLARES en un broker ARS: el costo YA está en USD → sin
-      // ÷blue (va antes que isARS, que sí divide y colapsaría el costo).
+    if (isARS && costInUsd(p)) {
+      // Lote de COSTO EN DÓLARES en un broker ARS (Balanz): el costo YA está en USD
+      // → sin ÷blue (va antes que isARS, que sí divide y colapsaría el costo). Gateado
+      // a broker ARS para no pisar una acción US genuina en broker USD (esa cae al
+      // else → realCost, sincronizada con holdingValueUsd que también va al else USD).
       investedUsd = realCost
     } else if (isARS) {
       investedUsd = realCost / tcBlue
