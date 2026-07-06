@@ -27,7 +27,7 @@ import EventBadge from '../components/EventBadge'
 import { api } from '../utils/api'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
-import { computeBrokerValue, priceSymbol } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos } from '../utils/valuation'
 import { pct } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import {
@@ -1015,7 +1015,9 @@ function collectPriceSymbols(positions, brokers) {
     positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true))
   )]
   const usdtSyms = [...new Set(
-    positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => priceSymbol(p.asset, false, p.asset_type))
+    // .BA por el PADRE (sub-broker AR·USD / lote en pesos); acción AR en broker USD
+    // extranjero (Schwab) → ADR NYSE (ticker pelado).
+    positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => (isArUsdBroker(p.broker) || costInPesos(p)) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type))
   )]
   return [...arsSyms, ...usdtSyms]
 }

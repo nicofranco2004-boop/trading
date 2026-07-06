@@ -20,9 +20,12 @@ describe('priceSymbol — clases de acción US (BRK B)', () => {
   it('CEDEAR va por .BA y no se normaliza como US', () => {
     expect(priceSymbol('MELI', false, 'CEDEAR')).toBe('MELI.BA')
   })
-  it('acción argentina (YPFD/PAMP) toma .BA aunque no sea CEDEAR ni broker ARS', () => {
-    expect(priceSymbol('YPFD', false)).toBe('YPFD.BA')   // YPF (BYMA), broker USD
-    expect(priceSymbol('PAMP', false)).toBe('PAMP.BA')   // Pampa (BYMA)
+  it('acción argentina: .BA en contexto ARS (padre), ticker pelado en broker USD extranjero', () => {
+    // Lo decide el PADRE (isARS), no el ticker (espejo de _byma en el backend).
+    expect(priceSymbol('GGAL', true)).toBe('GGAL.BA')    // padre ARS / sub-broker AR·USD → BYMA
+    expect(priceSymbol('YPFD', true)).toBe('YPFD.BA')    // idem
+    expect(priceSymbol('GGAL', false)).toBe('GGAL')      // broker USD extranjero (Schwab) → ADR NYSE
+    expect(priceSymbol('YPFD', false)).toBe('YPFD')      // sin .BA forzado (antes forzaba 'YPFD.BA')
   })
   it('FCI se pide tal cual', () => {
     expect(priceSymbol('FCI:COCOS-AHORRO-A', false)).toBe('FCI:COCOS-AHORRO-A')
@@ -81,17 +84,34 @@ describe('USD broker — single equity, no live price (fallback to cost)', () =>
   it('pnlUsd = 0 (no price data)',    () => expect(r.pnlUsd).toBeCloseTo(0))
 })
 
-describe('USD broker — acción argentina (YPFD) se valúa por .BA ÷ MEP', () => {
-  // "Cocos Capital" en USD (NO es sub-broker "· USD"): YPFD es acción AR = BYMA →
-  // se valúa por su precio local .BA ÷ MEP, no por el ticker US (que no existe).
-  const positions = [pos({ broker: 'Cocos Capital', asset: 'YPFD', quantity: 10, invested: 500 })]
+describe('sub-broker AR·USD — acción argentina (YPFD) se valúa por .BA ÷ MEP', () => {
+  // Sub-broker "· USD" (padre ARS): YPFD comprado por dólar-MEP sigue siendo BYMA →
+  // .BA ÷ MEP, no el ticker US (que no existe para YPFD). isArUsdBroker lo reconoce
+  // por el sufijo "· USD" (o por parent_broker_id si el registro está poblado).
+  const positions = [pos({ broker: 'Cocos Capital · USD', asset: 'YPFD', quantity: 10, invested: 500 })]
   const prices    = { 'YPFD.BA': 72_000 }   // ARS · con TCB=1200 → 60 USD/acción → 600
-  const r         = computeBrokerValue(positions, prices, usdBroker('Cocos Capital'), TCB)
+  const r         = computeBrokerValue(positions, prices, usdBroker('Cocos Capital · USD'), TCB)
 
   it('value = YPFD.BA ÷ MEP × qty (no cae al costo)', () => expect(r.value).toBeCloseTo(600))
   it('NO se valúa como el ticker US "YPFD" (sin .BA)', () => {
-    const rUsPrice = computeBrokerValue(positions, { YPFD: 45 }, usdBroker('Cocos Capital'), TCB)
-    expect(rUsPrice.value).toBeCloseTo(500)   // no encuentra 'YPFD' (pide .BA) → costo
+    const rUsPrice = computeBrokerValue(positions, { YPFD: 45 }, usdBroker('Cocos Capital · USD'), TCB)
+    expect(rUsPrice.value).toBeCloseTo(500)   // pide .BA → 'YPFD' pelado no matchea → costo
+  })
+})
+
+describe('broker USD extranjero (Schwab) — ADR argentino (GGAL) usa el ADR NYSE, no .BA', () => {
+  // Bug reportado: GGAL/BMA en Charles Schwab (broker USD extranjero, sin padre AR) son
+  // el ADR NYSE en USD, NO la acción local .BA. Antes isArStock forzaba .BA → se preciaba
+  // por el .BA local ÷ MEP (o "—" por key mismatch). El padre (no-AR) decide → ticker pelado.
+  const positions = [pos({ broker: 'Charles Schwab', asset: 'GGAL', quantity: 100, invested: 4_000 })]
+
+  it('value = precio ADR US × qty (usa el ticker pelado)', () => {
+    const r = computeBrokerValue(positions, { GGAL: 50 }, usdBroker('Charles Schwab'), TCB)
+    expect(r.value).toBeCloseTo(5_000)
+  })
+  it('NO usa el precio .BA local', () => {
+    const r = computeBrokerValue(positions, { 'GGAL.BA': 7_000 }, usdBroker('Charles Schwab'), TCB)
+    expect(r.value).toBeCloseTo(4_000)   // pide 'GGAL' pelado → 'GGAL.BA' no matchea → costo
   })
 })
 

@@ -2,10 +2,14 @@ import { isCrypto, cryptoBrokerFactor } from './crypto'
 import { ARG_STOCK_TICKERS } from './tickers'
 
 /**
- * isArStock — ¿es una acción argentina (panel líder/general)? Estas son SIEMPRE
- * instrumentos de BYMA: se valúan por su precio local .BA ÷ dólar (no tienen ticker
- * US propio — la ADR usa otro símbolo). Sirve para que YPFD/PAMP/GGAL/etc. tomen .BA
- * aunque vivan en un broker USD que no se reconoce como sub-broker "· USD".
+ * isArStock — ¿es una acción argentina (panel líder/general)? Clasificador puro.
+ *
+ * OJO: NO se usa para elegir .BA-vs-ADR (eso lo decide el PADRE: currency del broker /
+ * isArUsdBroker, espejo de _byma en el backend). Antes forzaba .BA incondicionalmente
+ * en priceSymbol/computeBrokerValue → una acción AR con ADR de mismo símbolo (GGAL,
+ * BMA) en un broker USD extranjero (Schwab) se preciaba por su .BA local ÷ MEP (o
+ * quedaba en "—"), cuando ahí es el ADR NYSE en USD. Se dejó como clasificador porque
+ * puede ser útil (exposición AR), pero el ruteo de precio ya no depende de él.
  */
 export function isArStock(asset) {
   return ARG_STOCK_TICKERS.has((asset || '').toUpperCase().replace(/\.BA$/, ''))
@@ -81,9 +85,13 @@ export function priceSymbol(asset, isARS, assetType) {
   // dólar-MEP). Sin esto, 'MELI' se preciaría como la acción (~US$2.400) en vez
   // del CEDEAR (~US$14). Ver computeBrokerValue (rama USD) para la conversión.
   if (assetType === 'CEDEAR' && !(asset || '').endsWith('.BA')) return `${asset}.BA`
-  // Acción argentina (YPFD, PAMP, GGAL…): instrumento de BYMA → precio local .BA,
-  // aunque viva en un broker USD (dólar-MEP) que no se reconoce como sub-broker AR.
-  if (isArStock(asset) && !(asset || '').endsWith('.BA')) return `${asset}.BA`
+  // Acción argentina (GGAL, BMA, YPFD, PAMP…): a diferencia del CEDEAR, NO se fuerza
+  // .BA — la decisión la toma el PADRE (isARS), igual que _byma en el backend
+  // (byma_broker_names: currency + parent_broker_id). Padre ARS / sub-broker AR·USD →
+  // .BA (línea de abajo). Padre USD real (Schwab, sin padre AR) → ticker pelado: el ADR
+  // NYSE cuando el símbolo coincide (GGAL/BMA) o el ticker US. Forzar .BA acá preciaba
+  // el ADR de Schwab por su .BA local ÷ MEP (o lo dejaba en "—" por key mismatch con
+  // calcUSDT, que lee prices[asset] pelado).
   if (isARS) return `${asset}.BA`
   // Acción US: yfinance cotiza las CLASES con guión ('BRK-B', 'BF-B'). El import de
   // brokers US (Schwab/IBKR) puede guardar 'BRK B' (espacio) o 'BRK.B' (punto) →
@@ -256,7 +264,10 @@ export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue) {
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
     investedUsd = invested / tcBlue
     valueUsd = priceArs != null ? (priceArs * qty) / tcBlue : investedUsd
-  } else if ((p.asset_type === 'CEDEAR' || isArStock(p.asset) || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null) {
+  } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null) {
+    // .BA÷MEP decidido por el PADRE (isArUsdBroker/currency), NO por isArStock: una
+    // acción AR en un broker USD extranjero real (Schwab) es su ADR NYSE en USD, no
+    // el .BA local. Espeja _byma del backend. (isAR/costInPesos cubren el caso AR.)
     const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
     investedUsd = invested
     valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : invested
@@ -395,12 +406,15 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
         const f = cryptoBrokerFactor(p.asset, broker.is_exchange, p.price_override != null, tcCripto, cedearRate)
         invested += realCost * f
 
-        if ((p.asset_type === 'CEDEAR' || arUsd || isArStock(p.asset)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
+        if ((p.asset_type === 'CEDEAR' || arUsd) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
           // Instrumento de BYMA en broker USD: CEDEAR, o cualquier cosa en un
           // sub-broker AR "· USD" (acciones argentinas como PAMP/YPFD incluidas,
           // que NO tienen acción US). Se valúa por su precio LOCAL .BA (ARS) ÷ MEP
           // (cedearRate = dólar-MEP), que es lo que muestra el broker. NO por el
           // ticker US. La cripto NUNCA entra acá (no es .BA) → va a la rama spot.
+          // La decisión la toma el PADRE (arUsd/CEDEAR), NO isArStock: una acción AR
+          // en un broker USD extranjero real (Schwab, no arUsd) es su ADR NYSE en USD
+          // (GGAL/BMA), no el .BA local. Espeja _byma del backend (byma_broker_names).
           // El FCI-USD tampoco: su precio es el NAV en USD (va al else, sin ÷MEP);
           // sin excluirlo, un FCI ruteado a "· USD" se dividía por el MEP → al costo.
           const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]

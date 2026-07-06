@@ -67,8 +67,9 @@ export default function FirstInsight() {
       setDolar(dol)
       // Fetch precios de los assets
       const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
-      // Un lote en pesos (currency='ARS') alojado en cuenta USD pide su precio LOCAL .BA.
-      const usdSyms = [...new Set((pos || []).filter(p => !arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, costInPesos(p), p.asset_type)))]
+      // .BA por el PADRE: lote en pesos (currency='ARS') o sub-broker AR·USD → .BA;
+      // acción AR en broker USD extranjero (Schwab) → ADR NYSE (ticker pelado).
+      const usdSyms = [...new Set((pos || []).filter(p => !arsBrokers.has(p.broker) && !p.is_cash).map(p => (isArUsdBroker(p.broker) || costInPesos(p)) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
       const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
       const all = [...usdSyms, ...arsSyms].join(',')
       if (all) {
