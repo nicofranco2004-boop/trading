@@ -260,10 +260,9 @@ export default function Imports() {
         </div>
       )}
 
-      {/* Wallbit — conexión automática por API (read-only). Trae operaciones y las
-          mete por el mismo pipeline que un CSV; al sincronizar, refresca el historial
-          de abajo + la cartera. */}
-      <WallbitConnect onSynced={() => { load(); window.dispatchEvent(new Event('rendi:portfolio-changed')) }} />
+      {/* Wallbit — card de GESTIÓN (solo si ya está conectado): estado + sincronizar +
+          desconectar. El ALTA (conectar) vive en el wizard → Integración con broker. */}
+      <WallbitConnect onlyWhenConnected onSynced={() => { load(); window.dispatchEvent(new Event('rendi:portfolio-changed')) }} />
 
       <Panel padding="none">
         {loading ? (
@@ -413,6 +412,7 @@ export default function Imports() {
             setImportJustConfirmed(true)
             load()
           }}
+          onWallbitConnected={() => { load(); window.dispatchEvent(new Event('rendi:portfolio-changed')) }}
         />
       )}
 

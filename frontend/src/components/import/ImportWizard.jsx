@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw, Info } from 'lucide-react'
 import InfoTooltip from '../InfoTooltip'
 import BrokerInstructions from './BrokerInstructions'
+import WallbitConnect from './WallbitConnect'
 import { api } from '../../utils/api'
 import { whatsappUrl } from '../../utils/support'
 import { WhatsAppIcon } from '../SupportWhatsAppFab'
@@ -166,7 +167,7 @@ const OP_LABELS = {
   TRANSFER: 'Transferencia',
 }
 
-export default function ImportWizard({ onClose, onConfirmed, initialPreview = null, redoBanner = null }) {
+export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected, initialPreview = null, redoBanner = null }) {
   const [step, setStep] = useState(initialPreview ? STEP_PREVIEW : STEP_INTRO)
 
   // Activación: marca la entrada al flujo de import (antes el wizard no emitía
@@ -177,6 +178,10 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
   //   'broker'   → export de un broker soportado (parser específico)
   //   'personal' → CSV/Excel propio del usuario (parser genérico)
   const [sourceType, setSourceType] = useState(null)
+  // Paso 1a: 'csv' (export de broker o plantilla propia) vs 'integration' (API,
+  // por ahora Wallbit). null = todavía no eligió. Se lee en el footer para ocultar
+  // "Continuar" en la rama de integración (que se maneja sola, sin ese botón).
+  const [entryType, setEntryType] = useState(null)
   // Rama 'personal': moneda declarada de las operaciones del archivo. Define
   // el default al crear el broker inline y si preguntamos por ops en USD.
   const [personalCurrency, setPersonalCurrency] = useState(null)  // 'ARS' | 'USD' | null
@@ -644,7 +649,7 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
       <div className="bg-white dark:bg-bg-2 border border-line rounded-t-2xl sm:rounded-xl w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-line flex-shrink-0">
           <h2 className="font-semibold text-ink-0 text-sm sm:text-base">
-            Importar CSV
+            Importar
           </h2>
           <button onClick={onClose} className="text-ink-3 hover:text-ink-2 dark:hover:text-ink-0">
             <X size={18} />
@@ -680,6 +685,8 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
               onCreateBroker={createBrokerInline}
               effectiveCurrency={effectiveCurrency}
               isArsContext={isArsContext}
+              onWallbitConnected={onWallbitConnected}
+              entryType={entryType} setEntryType={setEntryType}
             />
           )}
 
@@ -787,10 +794,11 @@ export default function ImportWizard({ onClose, onConfirmed, initialPreview = nu
                 Cancelar
               </button>
             )}
-            {step === STEP_INTRO && (() => {
+            {step === STEP_INTRO && entryType === 'csv' && (() => {
               // Habilitar "Continuar" solo cuando el Paso 0 está completo:
               //  • broker: eligió un broker soportado (parser específico seteado)
               //  • personal: eligió moneda y (mezcla, o un broker destino)
+              // (La rama 'integration' se maneja sola —Wallbit inline— sin este botón.)
               const canContinue = sourceType === 'broker'
                 ? isSpecificParser
                 : sourceType === 'personal'
@@ -978,7 +986,7 @@ function Stepper({ step, skipMap, hasSeed, hasSeedAssets }) {
 function IntroStep({ parserGroups, sourceType, setSourceType, platform,
                      onChooseBroker, onChoosePersonal, personalCurrency, setPersonalCurrency,
                      importMode, setImportMode, brokers, singleBroker, setSingleBroker,
-                     onCreateBroker, isArsContext }) {
+                     onCreateBroker, isArsContext, onWallbitConnected, entryType, setEntryType }) {
   // Brokers soportados para la rama "de un broker": del registry, excluyendo el
   // genérico y cualquier plataforma bloqueada (BLOCKED_IMPORT_PLATFORMS).
   const supportedBrokers = (parserGroups || []).filter(g =>
@@ -1006,6 +1014,34 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
 
   return (
     <div className="space-y-5">
+      {/* ── Paso 1a: CSV vs Integración por API ───────────────────────── */}
+      <div>
+        <label className="block text-sm font-medium text-ink-0 mb-2">¿Cómo querés traer tus operaciones?</label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button type="button" onClick={() => setEntryType('csv')} className={bigCard(entryType === 'csv')}>
+            <div className="text-sm font-medium text-ink-0">Importar con CSV</div>
+            <div className="text-xs text-ink-3 mt-0.5">El export de tu broker, o un archivo propio con la plantilla de Rendi.</div>
+          </button>
+          <button type="button" onClick={() => setEntryType('integration')} className={bigCard(entryType === 'integration')}>
+            <div className="text-sm font-medium text-ink-0 flex items-center gap-1.5">
+              Integración con broker
+              <span className="text-[9px] font-mono uppercase tracking-caps text-data-violet bg-data-violet/15 rounded-full px-1.5 py-0.5">Nuevo</span>
+            </div>
+            <div className="text-xs text-ink-3 mt-0.5">Conectá tu cuenta por API y se sincroniza sola — sin subir archivos.</div>
+          </button>
+        </div>
+      </div>
+
+      {/* ── Rama: integración por API (por ahora Wallbit) ─────────────── */}
+      {entryType === 'integration' && (
+        <div>
+          <p className="text-xs text-ink-3 mb-2">Por ahora disponible para Wallbit. Vamos sumando más brokers.</p>
+          <WallbitConnect onSynced={onWallbitConnected} />
+        </div>
+      )}
+
+      {/* ── Rama: CSV (export de un broker o plantilla propia) ────────── */}
+      {entryType === 'csv' && (<>
       {/* ── P1: origen del archivo ───────────────────────────────────── */}
       <div>
         <label className="block text-sm font-medium text-ink-0 mb-2">¿De dónde viene este archivo?</label>
@@ -1015,8 +1051,8 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
             <div className="text-xs text-ink-3 mt-0.5">Lo descargaste de Cocos, Binance, Schwab, etc.</div>
           </button>
           <button type="button" onClick={onChoosePersonal} className={bigCard(sourceType === 'personal')}>
-            <div className="text-sm font-medium text-ink-0">Un archivo propio</div>
-            <div className="text-xs text-ink-3 mt-0.5">Un CSV o Excel que armaste vos.</div>
+            <div className="text-sm font-medium text-ink-0">Plantilla de Rendi</div>
+            <div className="text-xs text-ink-3 mt-0.5">Un CSV o Excel propio con el formato de Rendi.</div>
           </button>
         </div>
       </div>
@@ -1168,6 +1204,7 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
           )}
         </div>
       )}
+      </>)}
     </div>
   )
 }

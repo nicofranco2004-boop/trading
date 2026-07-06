@@ -5,7 +5,11 @@ import { api } from '../../utils/api'
 // WallbitConnect — conexión read-only a Wallbit vía API key. El usuario pega una
 // key con permiso `read`; Rendi trae sus operaciones y las sincroniza solas (sin
 // subir archivos). Estado + sync + desconexión, todo contra /api/wallbit/*.
-export default function WallbitConnect({ onSynced }) {
+//
+// onlyWhenConnected: si true, NO renderiza el formulario de conexión (devuelve null
+//   cuando no está conectado). Se usa en la página de Importar como card de gestión
+//   —estado + sincronizar + desconectar— mientras el ALTA vive en el wizard.
+export default function WallbitConnect({ onSynced, onlyWhenConnected = false }) {
   const [status, setStatus] = useState(null)   // null = cargando; {connected, ...}
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState('')          // '' | 'connect' | 'sync' | 'disconnect'
@@ -53,6 +57,8 @@ export default function WallbitConnect({ onSynced }) {
 
   if (status === null) return null   // no flashear mientras carga el estado
   const connected = !!status.connected
+  // Modo "gestión" (card de Importar): si no está conectado, el alta vive en el wizard.
+  if (onlyWhenConnected && !connected) return null
 
   const fmtDate = (s) => {
     if (!s) return null
