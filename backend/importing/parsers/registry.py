@@ -10,6 +10,7 @@ from .cocos import CocosParser
 from .balanz import BalanzParser
 from .balanz_resultados import BalanzResultadosParser
 from .balanz_movimientos import BalanzMovimientosParser
+from .balanz_internacional import BalanzInternacionalParser
 from .iol import IolParser
 from .schwab import SchwabParser
 from .bullmarket import BullMarketParser
@@ -35,6 +36,11 @@ _PARSERS: List[Parser] = [
     # can_handle no se solapan (Movimientos exige Descripción+Importe; Órdenes exige
     # Estado; Resultados no trae Importe). PPI sigue antes (exige `Saldo`).
     BalanzMovimientosParser(),
+    # Balanz INTERNACIONAL (cuenta exterior en USD): mismas columnas que Movimientos
+    # local → NO autodetecta (can_handle=False), se elige explícito en el wizard bajo
+    # el grupo "Balanz". Va después de Movimientos para que el autodetect siga cayendo
+    # en el local ante ambigüedad de headers.
+    BalanzInternacionalParser(),
     BalanzParser(),
     BalanzResultadosParser(),
     IolParser(),
