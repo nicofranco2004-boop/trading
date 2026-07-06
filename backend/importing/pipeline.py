@@ -400,6 +400,10 @@ def run_preview(
         # padre → un broker auto-creado puede inferirse USD/USDT por mayoría de filas
         # dólar-MEP (un export AR trae muchas filas USD por las compras MEP).
         'balanz_resultados': 'ARS', 'ieb': 'ARS', 'ppi': 'ARS',
+        # Balanz INTERNACIONAL: cuenta exterior en DÓLARES (acciones US reales, no
+        # CEDEARs) → el broker 'Balanz Internacional' es USD. Explícito para que NO
+        # se infiera ARS por el nombre (contiene 'balanz') ni quede ambiguo por filas.
+        'balanz_internacional': 'USD',
         'binance': 'USDT', 'schwab': 'USD', 'ibkr': 'USD',
     }
     fmt_base = FORMAT_BASE_CURRENCY.get(parser.format_id)

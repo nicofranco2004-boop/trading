@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple
 from .schema import (
     NormalizedTx,
     OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND, OP_INTEREST,
-    OP_FEE, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS,
+    OP_FEE, OP_TAX, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS,
 )
 
 
@@ -144,11 +144,15 @@ def simulate(
                 key = (broker, currency)
                 balances[key] = balances.get(key, 0.0) + amount
 
-        elif op in (OP_WITHDRAW, OP_FEE):
+        elif op in (OP_WITHDRAW, OP_FEE, OP_TAX):
+            # OP_TAX (IMPUESTO/retención) debita cash igual que FEE en el persister
+            # (persist_batch: OP_WITHDRAW, OP_FEE, OP_TAX → _persist_cash_out). Sin
+            # contarlo acá, la proyección del preview sobreestimaba el saldo por el
+            # monto de las retenciones (ej. Tax Withholding de Balanz Internacional).
             amount = float(tx.gross_amount or 0)
             if amount > 0:
-                _adjust(broker, currency, -amount, tx,
-                        f"{'Retiro' if op == OP_WITHDRAW else 'Comisión'}: {currency} {amount:,.2f}")
+                _label = {OP_WITHDRAW: "Retiro", OP_FEE: "Comisión"}.get(op, "Impuesto")
+                _adjust(broker, currency, -amount, tx, f"{_label}: {currency} {amount:,.2f}")
 
         elif op == OP_FX_ARS_TO_USD:
             ars = float(tx.gross_amount or 0)
