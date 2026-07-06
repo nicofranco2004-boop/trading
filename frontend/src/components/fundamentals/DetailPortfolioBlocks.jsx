@@ -13,7 +13,7 @@ import { useState, useEffect } from 'react'
 import { Wallet, Scale } from 'lucide-react'
 import Panel from '../Panel'
 import { api } from '../../utils/api'
-import { costInPesos, costInUsd, trustMktValue, isArUsdBroker } from '../../utils/valuation'
+import { costInPesos, costInUsd, valueEquityLot, isArUsdBroker } from '../../utils/valuation'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
@@ -71,6 +71,20 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
   const [brokers, setBrokers] = useState([])
   const [dolar, setDolar] = useState(null)
   const [pfs, setPfs] = useState([])
+  const [prices, setPrices] = useState({})
+
+  // Precios live del activo, incluído el símbolo .BA (CEDEAR / acción AR). Se usan
+  // para valuar la posición a mercado y para llevar tu costo del CEDEAR a la escala
+  // de la acción US (ratio = precioAcciónUS ÷ precioCEDEAR_USD).
+  useEffect(() => {
+    const b = baseOf(ticker)
+    if (!b) return
+    let cancelled = false
+    api.get(`/prices?symbols=${b},${b}.BA`)
+      .then(pr => { if (!cancelled) setPrices(pr || {}) })
+      .catch(() => { /* silent — sin precios caemos a costo */ })
+    return () => { cancelled = true }
+  }, [ticker])
 
   useEffect(() => {
     let cancelled = false
@@ -99,36 +113,56 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
   let owned = null
   if (positions) {
     const brokerByName = Object.fromEntries(brokers.map(b => [b.name, b]))
-    let qty = 0, costUsd = 0; const brk = new Set()
-    let assetType = null, hasOverride = false, isLocalByma = false
+    let qty = 0, costUsd = 0; const brk = new Set(); const lots = []
+    // ¿La posición es un instrumento de BYMA (se valúa por su precio LOCAL .BA ÷ MEP,
+    // no por el ticker US)? CEDEAR, broker AR, o sub-broker AR "· USD" con acciones AR.
+    // price.current_usd es la ACCIÓN US → para estos infla ~ratio× vs el CEDEAR.
+    let anyLocal = false, allLocal = true
     for (const p of positions) {
       if (p.is_cash || baseOf(p.asset) !== base) continue
-      const isAR = brokerByName[p.broker]?.currency === 'ARS'
+      const broker = brokerByName[p.broker]
+      const isAR = broker?.currency === 'ARS'
       qty += p.quantity || 0
       costUsd += lotCostUsd(p, isAR, tc)
       brk.add(p.broker)
-      if (assetType == null && p.asset_type) assetType = p.asset_type
-      if (p.price_override != null) hasOverride = true
-      // ¿Es un instrumento de BYMA que se valúa por su precio LOCAL .BA ÷ MEP y NO
-      // por el ticker US? (CEDEAR, broker AR, o sub-broker AR "· USD" con acciones
-      // argentinas). price.current_usd es la ACCIÓN US → para estos infla ~ratio×.
-      if (p.asset_type === 'CEDEAR' || isAR || isArUsdBroker(p.broker)) isLocalByma = true
+      lots.push({ p, broker })
+      const local = p.asset_type === 'CEDEAR' || isAR || isArUsdBroker(p.broker)
+      anyLocal = anyLocal || local
+      allLocal = allLocal && local
     }
     if (qty > 1e-9) {
+      const avgCostUsd = costUsd / qty
       const cur = price.current_usd
-      // Clamp anti-distorsión: si el mkt (cur·qty) se despega absurdamente del costo
-      // (p.ej. un bono per-100 leído como per-1 → valor ×100), caemos a costo.
-      // Además, para un instrumento de BYMA (CEDEAR / acción AR) NO usamos el precio
-      // de la acción US (price.current_usd la infla ~ratio×) — sin acceso al precio
-      // .BA en este componente, caemos a costo (P&L 0) igual que "sin precio".
-      const mkt = (cur != null && !isLocalByma) ? cur * qty : costUsd
-      const valueUsd = trustMktValue(mkt, costUsd, assetType, hasOverride) ? mkt : costUsd
+      // Valor real a mercado: cada lote por su propio tipo (CEDEAR→.BA÷MEP, acción
+      // US→precio US). valueEquityLot ya trae el clamp anti-distorsión (trustMktValue).
+      let valueUsd = 0
+      for (const { p, broker } of lots) valueUsd += valueEquityLot(p, broker, prices, tc, tc).valueUsd
+
+      // costOnAxis = tu costo EN LA ESCALA del precio mostrado (la acción US). Para un
+      // CEDEAR/acción AR hay que multiplicar por el ratio (CEDEARs por acción); sino
+      // "Tu costo" cae abajo de todo y parece que compraste baratísimo.
+      let costOnAxis = avgCostUsd
+      let converted = false
+      if (allLocal) {
+        const priceBa = prices[base + '.BA']
+        const nowUsdPerUnit = priceBa > 0 && tc > 0 ? priceBa / tc : null   // precio USD del CEDEAR
+        const ratio = nowUsdPerUnit != null && cur > 0 ? cur / nowUsdPerUnit : null  // acción US ÷ CEDEAR
+        if (ratio != null && Number.isFinite(ratio) && ratio > 0) {
+          costOnAxis = avgCostUsd * ratio   // tu costo, llevado a la acción US
+          converted = true
+        } else {
+          costOnAxis = null   // sin precio .BA → no marcamos "Tu costo" (evita el falso barato)
+        }
+      } else if (anyLocal) {
+        costOnAxis = null   // mezcla CEDEAR + acción US bajo el mismo ticker → dos escalas
+      }
+
+      const pnlUsd = valueUsd - costUsd
       owned = {
         qty, costUsd, brokers: [...brk],
-        avgCostUsd: costUsd / qty,
-        valueUsd,
-        pnlUsd: valueUsd - costUsd,
-        pnlPct: costUsd > 0 ? ((valueUsd - costUsd) / costUsd) * 100 : null,
+        avgCostUsd, costOnAxis, isLocalByma: anyLocal, converted,
+        valueUsd, pnlUsd,
+        pnlPct: costUsd > 0 && costOnAxis != null ? (pnlUsd / costUsd) * 100 : null,
       }
     }
   }
@@ -161,11 +195,22 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
         {owned && (
           <p className="text-sm text-ink-1 leading-relaxed mb-1">
             Tenés <span className="font-medium text-ink-0">{owned.qty.toLocaleString('en-US')} {base}</span>
-            {' '}en {owned.brokers.join(' · ')} · costo prom <span className="font-medium">{fmtUsd2(owned.avgCostUsd)}</span>
-            {' '}· hoy <span className="font-medium">{fmtUsd2(price.current_usd)}</span>
-            {owned.pnlPct != null && (
-              <span className={owned.pnlPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}> ({fmtPct(owned.pnlPct, true)})</span>
-            )}
+            {' '}en {owned.brokers.join(' · ')}
+            {owned.costOnAxis != null && (<>
+              {' '}· costo prom <span className="font-medium">{fmtUsd2(owned.costOnAxis)}</span>
+              {' '}· hoy <span className="font-medium">{fmtUsd2(price.current_usd)}</span>
+              {owned.pnlPct != null && (
+                <span className={owned.pnlPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}> ({fmtPct(owned.pnlPct, true)})</span>
+              )}
+            </>)}
+          </p>
+        )}
+
+        {owned?.isLocalByma && (
+          <p className="text-[11px] text-ink-3 leading-relaxed mb-1">
+            {owned.converted
+              ? `${base} lo tenés vía CEDEAR (una fracción de la acción US): tu costo se muestra llevado a la acción para poder compararlo (≈ ${fmtUsd2(owned.avgCostUsd)} por CEDEAR).`
+              : `${base} lo tenés vía CEDEAR (una fracción de la acción US). El precio y el valor justo de abajo son de la acción US.`}
           </p>
         )}
 
@@ -174,7 +219,7 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
           high={m.week_52_high_usd}
           current={price.current_usd}
           fairValue={price.fair_value_usd}
-          cost={owned?.avgCostUsd}
+          cost={owned?.costOnAxis}
         />
 
         {price.margin_of_safety_pct != null && (
