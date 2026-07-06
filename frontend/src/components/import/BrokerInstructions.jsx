@@ -117,6 +117,18 @@ const BROKERS = [
     parserNote: 'Del export de Movimientos reconstruimos tu cartera, tu P&L Y tu efectivo —incluye depósitos, retiros, dólar MEP, cupones, dividendos y comisiones— y clasificamos cada activo (bono, CEDEAR, acción, fondo) automáticamente. El Resumen de Cuenta (Posición consolidada) es la foto de HOY y MANDA: ajusta tus tenencias y tu saldo (pesos y dólares) para que queden exactos, aunque el historial no llegue hasta el inicio. ¿Ya importaste antes? Volvé a importar incluyendo el PDF del Resumen: no duplicamos lo que ya está. Ojo: el export de «Resultados» NO sirve —no trae tus depósitos/retiros—, tiene que ser el de Movimientos.',
   },
   {
+    id: 'balanz_internacional',
+    label: 'Balanz Internacional',
+    Logo: BalanzLogo,
+    summary: 'Tu cuenta del EXTERIOR (Balanz Capital International, en dólares, donde comprás acciones de EE.UU. reales). Subí el export de Movimientos y reconstruimos tu cartera, tu P&L y tu efectivo en USD.',
+    steps: [
+      'En Balanz web (no la app), en tu cuenta Internacional, andá a Actividad → Movimientos.',
+      'Filtrá el período DESDE EL INICIO DE TU CUENTA hasta hoy y descargá el archivo (Excel .xlsx). ⚠️ Si tomás solo un rango parcial, falta el fondeo y el saldo no cierra.',
+      'Subí ese Excel de Movimientos acá.',
+    ],
+    parserNote: 'Tu cuenta Internacional opera en DÓLARES con instrumentos del exterior (acciones de EE.UU. reales, ETFs, bonos, US Treasuries y fondos Balanz). Rendi crea el broker «Balanz Internacional» en dólares y valúa cada activo por su precio real de EE.UU. — no como CEDEAR. Incluye depósitos, retiros, cupones, dividendos y comisiones. (El Resumen de Cuenta en dólares, para fijar tenencias exactas, lo sumamos pronto.)',
+  },
+  {
     id: 'binance',
     label: 'Binance',
     Logo: BinanceLogo,

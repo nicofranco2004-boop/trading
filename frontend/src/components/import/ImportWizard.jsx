@@ -84,6 +84,9 @@ const PLATFORM_BASE_CURRENCY = {
   ibkr: 'USD',
   bullmarket: 'ARS',
   iol: 'ARS',
+  // Balanz Internacional = cuenta del exterior en dólares (acciones US reales) →
+  // broker USD (el local 'balanz' NO está acá: su moneda la rutea route_by_currency).
+  balanz_internacional: 'USD',
 }
 
 // Estado de Cuenta de Cocos (foto de tenencia) — header del CSV. Lo detectamos
@@ -114,6 +117,9 @@ const TENENCIA_BROKER_BY_FORMAT = {
   balanz: 'Balanz',
   balanz_movimientos: 'Balanz',
   balanz_resultados: 'Balanz',
+  // Balanz Internacional = plataforma/broker aparte (USD). Su foto de tenencia
+  // (Resumen de Cuenta Internacional) es un follow-up; el mapeo queda listo.
+  balanz_internacional: 'Balanz Internacional',
 }
 
 // Plataformas cuya importación está temporalmente deshabilitada (parser

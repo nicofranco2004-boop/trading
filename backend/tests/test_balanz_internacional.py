@@ -146,7 +146,8 @@ class BalanzInternacionalTest(unittest.TestCase):
         self.assertIsNotNone(get_parser("balanz_internacional"))
         p = BalanzInternacionalParser()
         self.assertFalse(p.can_handle(HDR.split(",")))
-        self.assertEqual(p.platform, "balanz")
+        # Plataforma SEPARADA (tarjeta propia en el wizard) → el user la elige directo.
+        self.assertEqual(p.platform, "balanz_internacional")
 
 
 if __name__ == "__main__":

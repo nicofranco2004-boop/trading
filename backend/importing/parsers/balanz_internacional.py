@@ -114,13 +114,18 @@ class BalanzInternacionalParser(Parser):
     format_id = "balanz_internacional"
     display_name = "Balanz Internacional — Movimientos"
     is_supported = True
-    platform = "balanz"
-    platform_label = "Balanz"
-    export_label = "Movimientos — cuenta Internacional (exterior, USD)"
+    # Plataforma SEPARADA (no bajo "Balanz"): el wizard renderiza una tarjeta por
+    # plataforma y auto-elige su primer export → si compartiera "balanz", el user
+    # nunca podría elegir el internacional (el wizard defaultea a Movimientos local).
+    # Como tarjeta propia "Balanz Internacional (USD)" se elige directo, y la moneda
+    # del broker queda USD por plataforma.
+    platform = "balanz_internacional"
+    platform_label = "Balanz Internacional"
+    export_label = "Actividad → Movimientos (exterior, USD)"
 
     # NO autodetecta: el export internacional tiene EXACTAMENTE las mismas columnas
     # que el Movimientos local → indistinguible por headers. La selección es
-    # explícita en el wizard (el user elige "Internacional" bajo Balanz).
+    # explícita en el wizard (el user elige la tarjeta "Balanz Internacional").
     def can_handle(self, headers: List[str]) -> bool:
         return False
 
