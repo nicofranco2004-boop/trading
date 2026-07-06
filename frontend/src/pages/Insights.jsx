@@ -21,7 +21,7 @@ import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/for
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { lookupHistoricalDolar } from '../utils/fx'
@@ -283,6 +283,14 @@ function InsightsDesktop({ _embeddedTab }) {
     const broker = brokers.find(b => b.name === p.broker)
     const realCost = (p.invested || 0) + (p.commissions || 0)
     const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+    // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
+    // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
+    // El costo YA está en USD; el valor va por el tipo de instrumento (usdLotValue,
+    // que ya clampea). Sin esto, la rama ARS de abajo dividía por el blue → colapsaba
+    // y esta tenencia dólar desaparecía de la torta/atribución por-activo.
+    if (costInUsd(p)) {
+      return usdLotValue(p, prices, tcCedear).valueUsd
+    }
     if (broker?.currency === 'ARS') {
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
       const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
@@ -299,7 +307,8 @@ function InsightsDesktop({ _embeddedTab }) {
       return trustMktValue(valueUsd, investedUsd, p.asset_type, p.price_override != null)
         ? valueUsd : investedUsd
     }
-    if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
+    if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null && !isCrypto(p.asset)) {
+      // El FCI-USD NO entra: su precio es el NAV en USD (va al else, sin ÷MEP).
       const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
       const mktArs = priceArs != null ? priceArs * (p.quantity || 0) : null
       return (mktArs != null && trustMktValue(mktArs, realCost, p.asset_type))
@@ -1376,11 +1385,15 @@ function InsightsDesktop({ _embeddedTab }) {
     // queda por-rama (el costo no se clampea).
     const valueUsd = holdingValueUsd(p)
     let investedUsd
-    if (isARS) {
+    if (costInUsd(p)) {
+      // Lote de COSTO EN DÓLARES en un broker ARS: el costo YA está en USD → sin
+      // ÷blue (va antes que isARS, que sí divide y colapsaría el costo).
+      investedUsd = realCost
+    } else if (isARS) {
       investedUsd = realCost / tcBlue
     } else if (costInPesos(p)) {
       investedUsd = pesoLotUsd(p, prices, tcCedear).investedUsd
-    } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
+    } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null && !isCrypto(p.asset)) {
       investedUsd = realCost
     } else {
       investedUsd = realCost * f

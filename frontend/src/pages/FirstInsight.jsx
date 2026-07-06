@@ -12,7 +12,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
@@ -104,7 +104,16 @@ export default function FirstInsight() {
       const isARS = arsBrokers.has(p.broker)
       const cost = (p.invested || 0) + (p.commissions || 0)
       let valueUsd = null, pnlUsd = null
-      if (isARS) {
+      if (costInUsd(p)) {
+        // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
+        // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
+        // El costo YA está en USD (sin ÷blue); el valor va por el tipo de instrumento
+        // (usdLotValue, que ya clampea). Sin esto, la rama isARS de abajo dividía el
+        // costo USD por el blue → colapsaba (~1/MEP) y el ranking best/worst se rompía.
+        const u = usdLotValue(p, prices, tcCedear)
+        valueUsd = u.valueUsd
+        pnlUsd = valueUsd - u.investedUsd
+      } else if (isARS) {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceArs != null) {
           // Guard anti-distorsión: mkt y costo comparados en ARS (mismas unidades).
@@ -120,11 +129,12 @@ export default function FirstInsight() {
         const trust = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null)
         valueUsd = trust ? u.valueUsd : u.investedUsd
         pnlUsd = valueUsd - u.investedUsd
-      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
         // Instrumento de BYMA en cuenta USD (CEDEAR o acción AR de un sub-broker
         // "· USD"): se valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por el ticker
         // US (un CEDEAR vale 15-100× menos que la acción → antes se inflaba 3-29×).
         // Espeja computeBrokerValue (rama USD). Broker USD → cost YA está en USD.
+        // El FCI-USD NO entra: su precio es el NAV en USD (va al else, sin ÷MEP).
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         const mktUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : null
         valueUsd = (mktUsd != null && trustMktValue(mktUsd, cost, p.asset_type)) ? mktUsd : cost

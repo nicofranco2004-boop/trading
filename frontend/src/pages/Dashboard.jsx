@@ -26,7 +26,7 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker } from '../utils/valuation'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -237,7 +237,16 @@ export default function Dashboard() {
       const realCost = (p.invested || 0) + (p.commissions || 0)
       let valueUsd = null
       let pnlUsd = null
-      if (isARS) {
+      if (costInUsd(p)) {
+        // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
+        // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
+        // El costo YA está en USD (sin ÷blue); el valor va por el tipo de instrumento
+        // (usdLotValue, que ya clampea con trustMktValue). Sin esto, la rama isARS de
+        // abajo dividía el costo USD por el blue → colapsaba (~1/MEP).
+        const u = usdLotValue(p, prices, tcCedear)
+        valueUsd = u.valueUsd
+        pnlUsd = valueUsd - u.investedUsd
+      } else if (isARS) {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceArs != null) {
           // Guard anti-distorsión: compará mkt vs costo en la MISMA moneda (ARS).
@@ -258,11 +267,12 @@ export default function Dashboard() {
         // caemos a costo → value==invested → pnl 0.
         valueUsd = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null) ? u.valueUsd : u.investedUsd
         pnlUsd = valueUsd - u.investedUsd
-      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
         // Instrumento BYMA en broker USD (CEDEAR o acción AR en sub-broker '·USD'):
         // se valúa por su precio LOCAL .BA (ARS) ÷ MEP, igual que computeBrokerValue /
         // la Cartera. Sin esta rama caía al else y usaba prices[US] → GOOGL daba ~3× /
         // +157% en vez de su valor real. mkt y costo comparados en USD (misma unidad).
+        // El FCI-USD NO entra: su precio es el NAV en USD (va al else, sin ÷MEP).
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         if (priceArs != null) {
           const mktUsd = (priceArs * (p.quantity || 0)) / tcCedear
@@ -286,7 +296,9 @@ export default function Dashboard() {
       }
       const isExchForPct = exchangeBrokers.has(p.broker)
       const fForPct = isARS ? 1 : cryptoBrokerFactor(p.asset, isExchForPct, p.price_override != null, tcCripto, tcCedear)
-      const invForPct = isARS ? realCost / tcBlue : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
+      // costInUsd (lote USD en broker ARS): el costo YA está en USD → sin ÷blue, va
+      // antes que isARS (que sí divide por blue y colapsaría el denominador del %).
+      const invForPct = costInUsd(p) ? realCost : isARS ? realCost / tcBlue : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
       const pnlPct = pnlUsd != null && invForPct > 0 ? pnlUsd / invForPct : null
       return { asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct }
     })
@@ -357,8 +369,20 @@ export default function Dashboard() {
 
       if (b.currency === 'ARS') {
         let pnlArs = 0
+        let pnlUsdDirect = 0   // P&L de lotes de COSTO EN USD (ya en dólares, sin ÷blue)
         for (const p of bpos) {
           if (p.is_cash) continue
+          // Espejo de computeBrokerValue: lote de COSTO EN DÓLARES (bono/ON/FCI-USD,
+          // o CEDEAR comprado en dólar-MEP → currency='USD') en un broker ARS. El
+          // costo YA está en USD → su P&L es directo en USD (usdLotValue ya clampea),
+          // NO entra a pnlArs (que se divide por el blue). Sin esto, el costo USD se
+          // trataba como pesos y /tcBlue lo colapsaba → el pnl_unrealized (y el
+          // capital_final del mes → el punto de la curva) quedaba mal.
+          if (costInUsd(p)) {
+            const { investedUsd, valueUsd } = usdLotValue(p, prices, tcCedear)
+            pnlUsdDirect += valueUsd - investedUsd
+            continue
+          }
           const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
           if (priceArs == null) continue
           // Cost basis ARS = invested + commissions (ambos en pesos para broker ARS)
@@ -372,8 +396,8 @@ export default function Dashboard() {
           // Sin esto, los pesos quietos generaban "ganancia/pérdida fantasma" por
           // movimientos del blue aunque el activo no se hubiera movido.
         }
-        pnlForBroker = pnlArs / tcBlue
-        pnlForGlobal = pnlArs / tcBlue
+        pnlForBroker = pnlArs / tcBlue + pnlUsdDirect
+        pnlForGlobal = pnlForBroker
       } else {
         for (const p of bpos) {
           if (p.is_cash) continue
@@ -388,10 +412,11 @@ export default function Dashboard() {
             pnlForBroker += v - investedUsd
             continue
           }
-          if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+          if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
             // CEDEAR/·USD en broker USD → valor por .BA ÷ MEP (como la Cartera), NO
             // por prices[US]. Sin esta rama el pnl_unrealized (y el capital_final del
             // mes → el punto de la curva) se inflaba con el CEDEAR a precio US (~3×).
+            // El FCI-USD NO entra: su precio es el NAV en USD (va al else, sin ÷MEP).
             const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
             const costUsd = (p.invested || 0) + (p.commissions || 0)
             if (priceArs != null) {

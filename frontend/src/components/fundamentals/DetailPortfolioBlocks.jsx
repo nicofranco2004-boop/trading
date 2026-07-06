@@ -13,7 +13,7 @@ import { useState, useEffect } from 'react'
 import { Wallet, Scale } from 'lucide-react'
 import Panel from '../Panel'
 import { api } from '../../utils/api'
-import { costInPesos, trustMktValue, isArUsdBroker } from '../../utils/valuation'
+import { costInPesos, costInUsd, trustMktValue, isArUsdBroker } from '../../utils/valuation'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
@@ -25,6 +25,10 @@ const fmtPct = (n, sign = false) => (n == null ? '—' : (sign && n >= 0 ? '+' :
 // queda como está. Espeja la convención de valueLot/valueEquityLot para el COSTO.
 function lotCostUsd(p, isAR, tc) {
   const invested = p.invested || 0
+  // Lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR comprado en dólar-MEP →
+  // currency='USD') que vive en un broker ARS: el costo YA está en USD → NO se
+  // divide por el dólar (va antes que isAR, que sí dividiría y lo colapsaría).
+  if (costInUsd(p)) return invested
   if (costInPesos(p) || isAR) return invested / tc
   return invested
 }

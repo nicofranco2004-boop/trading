@@ -37,7 +37,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
@@ -495,10 +495,13 @@ export default function PositionsMobile() {
       const isAR = arsBrokerSet.has(p.broker)
       const qty = p.quantity || 0
       const invested = p.invested || 0
-      // Costo en USD por moneda del LOTE, no de la cuenta: ARS broker → blue; lote
-      // en PESOS (currency='ARS') alojado en una cuenta USD → MEP (tcCedear);
-      // USD-nativo → tal cual. Es también el fallback de valor cuando no hay precio.
-      let investedUsd = isAR ? invested / tcBlue
+      // Costo en USD por moneda del LOTE, no de la cuenta: lote de COSTO EN DÓLARES
+      // (currency='USD') → tal cual, aunque viva en un broker ARS (bono/ON/FCI-USD,
+      // CEDEAR-MEP de Balanz); ARS broker → blue; lote en PESOS (currency='ARS')
+      // alojado en cuenta USD → MEP (tcCedear); USD-nativo → tal cual. Es también el
+      // fallback de valor cuando no hay precio.
+      let investedUsd = costInUsd(p) ? invested
+        : isAR ? invested / tcBlue
         : costInPesos(p) ? invested / tcCedear
         : invested
       let valueUsd = 0
@@ -513,6 +516,21 @@ export default function PositionsMobile() {
           ...p, valueUsd, priceLocal: null, pnlUsd: null, pnlPct: null,
           pnlLocal: null, dayVarLocal: null, dayVarUsd: null, dayVarPct: null, isAR,
         }
+      } else if (costInUsd(p)) {
+        // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
+        // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz
+        // importa cada pata en su moneda). El costo YA está en USD (investedUsd de
+        // arriba, sin ÷blue); el VALOR va por el tipo de instrumento (usdLotValue:
+        // CEDEAR/acción-AR por .BA÷MEP, resto por precio USD nativo). Sin esto, la
+        // rama isAR de abajo dividía el costo USD por el blue → la fila colapsaba.
+        const u = usdLotValue(p, prices, tcCedear)
+        priceLocal = u.priceUsd
+        // usdLotValue ya clampea: si no confía en el precio, valueUsd cae a su
+        // investedUsd (con commissions). priceTrusted = hubo precio Y no fue clampeado.
+        priceTrusted = u.priceUsd != null && u.valueUsd !== u.investedUsd
+        // Value del helper; costo = investedUsd local (sin commissions, igual que las
+        // otras ramas de este archivo) → si no hay precio confiable, P&L exacto 0.
+        valueUsd = priceTrusted ? u.valueUsd : investedUsd
       } else if (isAR) {
         priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
         // Guard anti-distorsión: un precio absurdo (p.ej. bono per-100 leído per-1
@@ -523,10 +541,11 @@ export default function PositionsMobile() {
           valueUsd = priceTrusted ? mkt : investedUsd
         }
         else valueUsd = investedUsd
-      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
         // Instrumento BYMA en broker USD (CEDEAR o acción AR como PAMP/YPFD en un
         // sub-broker "· USD"): precio LOCAL .BA (ARS) → USD via MEP, no el ticker
-        // US. priceLocal queda en USD.
+        // US. priceLocal queda en USD. El FCI-USD NO entra (su precio es el NAV en
+        // USD → va al else, sin ÷MEP; si no, un FCI ruteado a "· USD" colapsaría).
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         priceLocal = priceArs != null ? priceArs / tcCedear : null
         if (priceLocal != null) {

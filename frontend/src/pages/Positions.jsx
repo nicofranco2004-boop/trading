@@ -29,7 +29,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, trustMktValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
@@ -897,11 +897,13 @@ function PositionsDesktop() {
       return { value, pnl, pnlPct: realCost > 0 ? pnl / realCost : 0, price: priceArs / tcCedear, investedUsd: realCost }
     }
     let price
-    if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+    if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
       // Instrumento de BYMA en broker USD: CEDEAR o acción AR (PAMP/YPFD) en un
       // sub-broker "· USD". Se valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por
       // el ticker US (MELI se preciaría a ~US$1.600 en vez de ~14; PAMP/YPFD ni
-      // existen como acción US → quedaban en "—").
+      // existen como acción US → quedaban en "—"). El FCI-USD NO entra: su precio
+      // es el NAV en USD (va al else, sin ÷MEP); sin excluirlo, un FCI ruteado a
+      // un "· USD" se dividía por el MEP → colapsaba al costo.
       const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
       price = priceArs != null ? priceArs / tcCedear : null
     } else {
@@ -927,6 +929,26 @@ function PositionsDesktop() {
   function calcARS(p) {
     if (p.is_cash) {
       return { valueArs: p.invested, valueUsd: p.invested / tcBlue, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null }
+    }
+    // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
+    // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz
+    // importa cada pata en su moneda). El costo YA está en USD → NO se divide por
+    // el MEP; el valor va por el tipo de instrumento (usdLotValue). Sin esto, el
+    // path .BA de abajo dividía el costo USD por el MEP y el guard descartaba el
+    // precio real → la tenencia dólar colapsaba (~1/MEP). El lado ARS se deriva
+    // ×tcCedear para que la columna en pesos siga cerrando.
+    if (costInUsd(p)) {
+      const { investedUsd, valueUsd, priceUsd } = usdLotValue(p, prices, tcCedear)
+      const pnlUsd = valueUsd - investedUsd
+      return {
+        valueArs: valueUsd * tcCedear,
+        valueUsd,
+        pnlArs: pnlUsd * tcCedear,
+        pnlUsd,
+        pnlPct: investedUsd > 0 ? pnlUsd / investedUsd : 0,
+        priceArs: priceUsd != null ? priceUsd * tcCedear : null,
+        invUsd: investedUsd,
+      }
     }
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
     if (priceArs == null) return { valueArs: null, valueUsd: null, pnlArs: null, pnlUsd: null, pnlPct: null, priceArs: null }

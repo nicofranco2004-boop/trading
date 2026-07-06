@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, pesoLotUsd, trustMktValue } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -113,6 +113,17 @@ export default function PositionDetailMobile() {
     priceLocal = u.priceUsd
     pnlUsd = valueUsd - u.investedUsd
     pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
+  } else if (costInUsd(p) && isAR) {
+    // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
+    // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
+    // El costo YA está en USD (sin ÷blue); el valor va por el tipo de instrumento
+    // (usdLotValue: CEDEAR/acción-AR por .BA÷MEP, resto por precio USD nativo). Sin
+    // esto, la rama isAR de abajo dividía el costo USD por el blue → colapsaba.
+    const u = usdLotValue(p, prices, tcCedear)
+    valueUsd = u.valueUsd
+    priceLocal = u.priceUsd
+    pnlUsd = valueUsd - u.investedUsd
+    pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
   } else if (isAR) {
     priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
     const investedUsd = invested / tcBlue
@@ -123,10 +134,11 @@ export default function PositionDetailMobile() {
     valueUsd = trustArs ? mktArs / tcBlue : investedUsd
     pnlUsd = valueUsd - investedUsd
     pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
-  } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && p.price_override == null) {
+  } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
     // Instrumento BYMA en broker USD (CEDEAR o acción AR en un sub-broker "· USD"):
     // precio LOCAL .BA (ARS) → USD via MEP, no el ticker US (que vale 15-100× más,
-    // y las acciones AR ni existen como acción US → quedaban en "—").
+    // y las acciones AR ni existen como acción US → quedaban en "—"). El FCI-USD NO
+    // entra: su precio es el NAV en USD (va al else, sin ÷MEP).
     const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
     priceLocal = priceArs != null ? priceArs / tcCedear : null
     // mkt y cost en la MISMA moneda (USD): un bono per-100 (×100) cae a costo.

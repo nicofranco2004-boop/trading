@@ -23,7 +23,7 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, trustMktValue } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { inferType } from '../utils/tickers'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -50,6 +50,15 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
     const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
+  // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
+  // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
+  // El costo YA está en USD (sin ÷MEP); el valor va por el tipo de instrumento
+  // (usdLotValue). Sin esto, la rama isAR de abajo dividía el costo USD por el
+  // blue → la ficha del activo colapsaba (~1/MEP).
+  if (costInUsd(p) && isAR) {
+    const { investedUsd, valueUsd, priceUsd } = usdLotValue(p, prices, tcCedear)
+    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal: priceUsd }
+  }
   if (isAR) {
     const priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
     const investedUsd = invested / tcBlue
@@ -57,7 +66,7 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
     const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
-  if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && p.price_override == null && !isCrypto(p.asset)) {
+  if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null && !isCrypto(p.asset)) {
     const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
     const priceLocal = priceArs != null ? priceArs / tcCedear : null
     const mkt = priceLocal != null ? priceLocal * qty : invested
