@@ -117,7 +117,8 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     qty = Σ BUY − Σ SELL; costo = precio promedio de compra × qty tenida."""
     rows = conn.execute(
         """SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS asset_type,
-                  UPPER(COALESCE(n.currency,'')) AS currency,
+                  MAX(CASE WHEN n.operation_type='BUY' AND COALESCE(n.currency,'') <> ''
+                           THEN UPPER(n.currency) END) AS currency,
                   SUM(CASE n.operation_type WHEN 'BUY'  THEN COALESCE(n.quantity,0)
                                             WHEN 'SELL' THEN -COALESCE(n.quantity,0)
                                             ELSE 0 END) AS qty,
@@ -131,7 +132,7 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
               AND n.asset_symbol IS NOT NULL AND n.asset_symbol != ''
               AND n.operation_type IN ('BUY','SELL')
               AND n.date <= ?
-            GROUP BY n.broker, n.asset_symbol, n.asset_type, UPPER(COALESCE(n.currency,''))""",
+            GROUP BY n.broker, n.asset_symbol, n.asset_type""",
         (uid, date_iso),
     ).fetchall()
     out = []
@@ -142,8 +143,11 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
         buy_qty = r["buy_qty"] or 0
         avg_cost = (r["buy_amt"] / buy_qty) if buy_qty > 0 else 0
         # currency: para que compute_broker_value_usd respete el costo USD (sin ÷MEP)
-        # de bonos/ONs/FCI-USD/CEDEAR-MEP en un broker ARS. Particiona por moneda (un
-        # mismo activo con lotes ARS y USD sale en 2 filas, cada una con su costo).
+        # de bonos/ONs/FCI-USD/CEDEAR-MEP en un broker ARS. Se TAGEA desde las patas de
+        # COMPRA (no se particiona el GROUP BY): una VENTA de reducción sin cash (rescate
+        # parcial / reducción de capital / canje) llega con moneda vacía→'ARS' y, si
+        # particionáramos, caería en otro bucket y NO restaría la cantidad (qty inflada).
+        # MAX prioriza 'USD' si alguna compra fue en dólares (el caso "costo en dólares").
         out.append({
             "broker": r["broker"], "asset": r["asset"], "asset_type": r["asset_type"],
             "currency": (r["currency"] or None), "quantity": qty, "invested": avg_cost * qty,

@@ -9,7 +9,8 @@ Debe dar números idénticos al frontend (computeBrokerValue / usdLotValue).
 """
 import unittest
 
-from snapshots_job import compute_broker_value_usd as cbv
+from snapshots_job import (compute_broker_value_usd as cbv,
+                           position_price_key, _trust_mkt_value)
 
 
 def _p(**kw):
@@ -83,6 +84,33 @@ class RoutedUsdBrokerTest(unittest.TestCase):
         pos = [_p(asset="JPM", asset_type="CEDEAR", currency="USDT", quantity=73, invested=1573)]
         r = cbv(pos, {"JPM.BA": 33000}, "USDT", BLUE, "Balanz · USD", MEP)
         self.assertAlmostEqual(r["value"], 73 * 33000 / MEP, places=4)
+
+
+class AuditFixesTest(unittest.TestCase):
+    """Fixes del audit pre-merge: FCI se precia por su símbolo (no .BA) y el override
+    de renta fija se clampea igual que el frontend."""
+
+    def test_fci_price_key_is_bare_not_ba(self):
+        # position_price_key debe devolver el símbolo FCI crudo (NAV), NUNCA 'FCI:...BA',
+        # aun en un broker ARS — mismo criterio que el frontend priceSymbol.
+        p = {"asset": "FCI:BALANZ-AHORRO-EN-DOLARES-A", "asset_type": "FUND", "broker": "Balanz"}
+        self.assertEqual(position_price_key(p, {"Balanz"}, set()), "FCI:BALANZ-AHORRO-EN-DOLARES-A")
+
+    def test_non_fci_ars_broker_still_ba(self):
+        p = {"asset": "MELI", "asset_type": "CEDEAR", "broker": "Balanz"}
+        self.assertEqual(position_price_key(p, {"Balanz"}, set()), "MELI.BA")
+
+    def test_override_fixed_income_clamped(self):
+        # Override absurdo (per-100: 97 vs 0,97 → ×100) en renta fija → NO se confía
+        # (mirror del frontend). mult = 4850/54 ≈ 90.
+        self.assertFalse(_trust_mkt_value(4850, 54, "BOND", has_override=True))
+
+    def test_override_non_fixed_income_respected(self):
+        # Override en una acción/CEDEAR (no renta fija) → se respeta aunque sea grande.
+        self.assertTrue(_trust_mkt_value(4850, 54, "CEDEAR", has_override=True))
+
+    def test_fixed_income_in_band_trusted(self):
+        self.assertTrue(_trust_mkt_value(60, 54, "BOND", has_override=True))   # mult 1.11
 
 
 if __name__ == "__main__":

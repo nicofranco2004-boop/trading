@@ -621,10 +621,11 @@ export default function PositionsMobile() {
           // coherente con el valor mostrado. El % (perUnit/prev) es invariante.
           if (usdInArBroker) {
             // Lote USD en broker ARS: perUnit ya está en USD (priceLocal y prev en USD).
-            // Mantenemos la convención isAR: dayVarLocal en ARS (×MEP) y dayVarUsd en USD,
-            // así la agregación (curLocalValue = valueUsd × tcBlue) y el % cierran igual.
+            // dayVarUsd en USD; dayVarLocal en ARS al MISMO rate que la agregación
+            // (curLocalValue = valueUsd × tcBlue) → el % agregado cierra aunque tcBlue y
+            // tcCedear difirieran (hoy son el mismo pickFinancialRate, pero robusto).
             dayVarUsd = perUnit * qty
-            dayVarLocal = dayVarUsd * tcCedear
+            dayVarLocal = dayVarUsd * tcBlue
           } else {
             dayVarLocal = perUnit * qty * f
             dayVarUsd = isAR ? dayVarLocal / tcBlue : dayVarLocal

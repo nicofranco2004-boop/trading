@@ -37,17 +37,19 @@ log = logging.getLogger('snapshots_job')
 _FIXED_INCOME_TYPES = frozenset({'BOND', 'BONO', 'ON', 'LETRA', 'LECAP'})
 
 
-def _trust_mkt_value(mkt_value: float, real_cost: float, asset_type) -> bool:
-    """Port de frontend `_trustMktValue` (valuation.js:125-132). Si el valor de
-    mercado se va absurdamente lejos del costo, NO confiamos en el precio
-    (colisión de ticker, bono cotizado ×100, CEDEAR priceado como acción US) y
-    caemos a costo. Solo capea divergencias ABSURDAS — el P&L real pasa."""
+def _trust_mkt_value(mkt_value: float, real_cost: float, asset_type, has_override: bool = False) -> bool:
+    """Port de frontend `trustMktValue` (valuation.js). Si el valor de mercado se va
+    absurdamente lejos del costo, NO confiamos en el precio (colisión de ticker, bono
+    cotizado ×100, CEDEAR priceado como acción US) y caemos a costo. Un override manual
+    se respeta SALVO en renta fija, donde un override absurdo (ej. per-100: 97 en vez de
+    0,97 → ×100) igual se clampea — mismo criterio que el frontend."""
     if not (real_cost and real_cost > 0) or not (mkt_value and mkt_value > 0):
         return True  # sin costo no hay con qué comparar
+    fixed = (asset_type or '').upper() in _FIXED_INCOME_TYPES
+    if has_override and not fixed:
+        return True  # override de NO-renta-fija: se respeta (mirror valuation.js:302)
     mult = mkt_value / real_cost
-    if (asset_type or '').upper() in _FIXED_INCOME_TYPES:
-        return 0.02 <= mult <= 4
-    return 0.002 <= mult <= 50
+    return (0.02 <= mult <= 4) if fixed else (0.002 <= mult <= 50)
 
 
 _AR_USD_SUBBROKER_RE = re.compile(r'·\s*usd$')
@@ -90,6 +92,11 @@ def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     nunca diverjan (raíz del bug C1: el snapshot pedía/valuaba el ticker US de un
     CEDEAR comprado por dólar-MEP → 15-100× inflado)."""
     asset = p.get('asset')
+    # FCI: se precia por su NAV (tabla fci_prices), nunca por un '.BA' — mismo criterio
+    # que el frontend priceSymbol (valuation.js:78, chequea FCI ANTES del .BA). Sin este
+    # early-return, un FCI en broker ARS pedía 'FCI:....BA' (inexistente) → al costo.
+    if (asset or '').startswith('FCI:'):
+        return asset
     broker = p.get('broker')
     wants_ba = (broker in ars_names or broker in ar_usd_names
                 or (p.get('asset_type') or '').upper() == 'CEDEAR')
@@ -199,7 +206,7 @@ def compute_broker_value_usd(
                 if price is not None:
                     raw = price * (p.get('quantity') or 0)
                     mkt_usd = (raw / cedear_rate if cedear_rate > 0 else 0) if is_ars else raw
-                    trust = override is not None or _trust_mkt_value(mkt_usd, inv_usd, asset_type)
+                    trust = _trust_mkt_value(mkt_usd, inv_usd, asset_type, has_override=override is not None)
                     value += mkt_usd if trust else inv_usd
                 else:
                     value += inv_usd
@@ -216,7 +223,7 @@ def compute_broker_value_usd(
                 price_ars = override if override is not None else prices.get(f"{p['asset']}.BA")
                 if price_ars is not None:
                     mkt_usd = (price_ars * (p.get('quantity') or 0)) / cedear_rate if cedear_rate > 0 else 0
-                    trust = override is not None or _trust_mkt_value(mkt_usd, inv_usd, asset_type)
+                    trust = _trust_mkt_value(mkt_usd, inv_usd, asset_type, has_override=override is not None)
                     value += mkt_usd if trust else inv_usd
                 else:
                     value += inv_usd  # sin precio: mostrar cost como value
@@ -251,7 +258,7 @@ def compute_broker_value_usd(
                     price = override if override is not None else prices.get(p['asset'])
                     if price is not None:
                         mkt = price * (p.get('quantity') or 0)
-                        trust = override is not None or _trust_mkt_value(mkt, real_cost, asset_type)
+                        trust = _trust_mkt_value(mkt, real_cost, asset_type, has_override=override is not None)
                         value += (mkt if trust else real_cost) * cf
                     else:
                         value += real_cost * cf
@@ -372,6 +379,24 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
             sym_to_yf[sym] = crypto_yf.get(sym) or _to_yf_us(sym)
     yf_tickers = list(set(sym_to_yf.values()))
     result = {sym: None for sym in symbols}
+
+    # FCI: se precian por su NAV (tabla fci_prices, refrescada 1x/día por cron), NO por
+    # yfinance. Mismo criterio que main.get_prices. Sin esto un FCI quedaba None → al
+    # costo en el snapshot, divergiendo de la cartera en vivo (que sí toma el NAV).
+    _fci_syms = [s for s in symbols if s.startswith('FCI:')]
+    if _fci_syms:
+        try:
+            from pricing import fci as _fci_mod
+            from main import get_db as _get_db
+            _fci_conn = _get_db()
+            try:
+                for _s, _px in (_fci_mod.get_prices_for(_fci_conn, _fci_syms) or {}).items():
+                    if _px is not None:
+                        result[_s] = _px
+            finally:
+                _fci_conn.close()
+        except Exception as _ex:
+            log.warning("snapshot FCI price resolve falló: %s", _ex)
 
     if not yf_tickers:
         return result
