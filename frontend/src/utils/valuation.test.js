@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym } from './valuation.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
   it('normaliza espacio a guión (forma yfinance) para acción US', () => {
@@ -575,6 +575,67 @@ describe('pesoLotUsd — lote en pesos → USD por MEP (helper compartido)', () 
     const u = pesoLotUsd({ ...p, commissions: 1486 }, {}, MEP)
     expect(u.investedUsd).toBeCloseTo((48540 + 1486) / MEP)
   })
+})
+
+// ─── ESPEJO: lote de COSTO EN DÓLARES (currency='USD') en un broker ARS ───────
+// Bug real (usuario Balanz): bonos/ONs/FCI-USD y CEDEARs comprados en dólar-MEP
+// viven en el broker ARS con currency='USD'. El path ARS dividía TODO el costo por
+// el MEP → el costo USD colapsaba (~1/MEP) y el guard descartaba el precio real →
+// la tenencia dólar caía a ~u$s0. Fix = costInUsd/usdLotValue (espejo de costInPesos).
+describe('costInUsd — moneda del costo por lote (espejo de costInPesos)', () => {
+  it("currency='USD' → true",         () => expect(costInUsd({ currency: 'USD' })).toBe(true))
+  it("currency='USDT' → true",        () => expect(costInUsd({ currency: 'USDT' })).toBe(true))
+  it("currency='ARS' → false",        () => expect(costInUsd({ currency: 'ARS' })).toBe(false))
+  it('currency NULL → false',         () => expect(costInUsd({ currency: null })).toBe(false))
+  it("cripto con currency='USD' → false (va a spot, no por este camino)",
+     () => expect(costInUsd({ currency: 'USD', asset: 'BTC' })).toBe(false))
+})
+
+describe('isFciSym', () => {
+  it("'FCI:...' → true", () => expect(isFciSym('FCI:BALANZ-AHORRO-EN-DOLARES-A')).toBe(true))
+  it("CEDEAR → false",   () => expect(isFciSym('MELI')).toBe(false))
+})
+
+describe('usdLotValue — bono/ON USD (priceado .BA en ARS) → costo USD, valor .BA÷MEP', () => {
+  const MEP = 1500
+  const p = { asset: 'RUCEO', asset_type: 'BOND', currency: 'USD', quantity: 100, invested: 100, commissions: 0 }
+  it('costo USD SIN ÷MEP; valor = .BA×qty÷MEP', () => {
+    const u = usdLotValue(p, { 'RUCEO.BA': 1650 }, MEP)   // .BA en ARS per-1
+    expect(u.investedUsd).toBeCloseTo(100)                // costo YA en USD
+    expect(u.valueUsd).toBeCloseTo(100 * 1650 / MEP)      // 110
+  })
+  it('sin precio → valor al costo-USD (P&L 0)', () => {
+    const u = usdLotValue(p, {}, MEP)
+    expect(u.valueUsd).toBeCloseTo(100)
+  })
+})
+
+describe('usdLotValue — FCI-USD se valúa por su NAV USD (sin ÷MEP)', () => {
+  const MEP = 1500
+  const p = { asset: 'FCI:BALANZ-AHORRO-EN-DOLARES-A', asset_type: 'FUND', currency: 'USD', quantity: 1000, invested: 1400, commissions: 0 }
+  it('valor = NAV × qty (USD directo)', () => {
+    const u = usdLotValue(p, { 'FCI:BALANZ-AHORRO-EN-DOLARES-A': 1.42 }, MEP)
+    expect(u.valueUsd).toBeCloseTo(1420)
+    expect(u.investedUsd).toBeCloseTo(1400)
+  })
+})
+
+describe('computeBrokerValue — broker ARS con tenencias de COSTO USD (bono/ON/FCI/CEDEAR-MEP)', () => {
+  const MEP = 1500, BLUE = 1200
+  const positions = [
+    pos({ broker: 'Balanz', asset: 'RUCEO', asset_type: 'BOND', currency: 'USD', quantity: 100, invested: 100 }),
+    pos({ broker: 'Balanz', asset: 'FCI:BALANZ-AHORRO-EN-DOLARES-A', asset_type: 'FUND', currency: 'USD', quantity: 1000, invested: 1400 }),
+    pos({ broker: 'Balanz', asset: 'JPM', asset_type: 'CEDEAR', currency: 'USD', quantity: 73, invested: 1573 }),
+    pos({ broker: 'Balanz', asset: 'MELI', asset_type: 'CEDEAR', currency: 'ARS', quantity: 10, invested: 30000 }),  // costo ARS: NO cambia
+  ]
+  const prices = { 'RUCEO.BA': 1650, 'FCI:BALANZ-AHORRO-EN-DOLARES-A': 1.42, 'JPM.BA': 33000, 'MELI.BA': 4500 }
+  const r = computeBrokerValue(positions, prices, arsBroker('Balanz'), BLUE, MEP)
+
+  const wantValue = (100 * 1650 / MEP) + 1420 + (73 * 33000 / MEP) + (10 * 4500 / MEP)
+  const wantInv   = 100 + 1400 + 1573 + (30000 / MEP)   // USD-cost sin ÷MEP; ARS-cost ÷MEP
+  it('value NO colapsa: suma cada clase bien',  () => expect(r.value).toBeCloseTo(wantValue))
+  it('invested: costo USD sin ÷MEP, ARS ÷MEP',  () => expect(r.invested).toBeCloseTo(wantInv))
+  it('invariante ARS: valueArs / MEP === value', () => expect(r.valueArs / MEP).toBeCloseTo(r.value))
 })
 
 // ─── Guard anti-distorsión sobre override de renta fija (caso SXC2O) ──────────

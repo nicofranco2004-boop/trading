@@ -163,6 +163,13 @@ def compute_broker_value_usd(
     value = 0.0
     invested = 0.0
 
+    def _cost_in_usd(p):
+        # Espejo de costInPesos (valuation.js): el costo del lote está en USD
+        # (bono/ON/FCI-USD o CEDEAR comprado en dólar-MEP → currency='USD'). La
+        # cripto se excluye (va a spot, no por el MEP).
+        c = (p.get('currency') or '').upper()
+        return c in ('USD', 'USDT') and (p.get('asset') or '').upper() not in _CS
+
     for p in broker_positions:
         comm = p.get('commissions') or 0
         real_cost = (p.get('invested') or 0) + comm
@@ -175,6 +182,27 @@ def compute_broker_value_usd(
                 cash_usd = cash_ars / tc_blue if tc_blue > 0 else 0
                 value += cash_usd
                 invested += cash_usd  # cash ARS: value USD = invested USD (no FX gain)
+            elif _cost_in_usd(p):
+                # Lote de COSTO EN DÓLARES en un broker ARS (bono/ON/FCI-USD, o CEDEAR
+                # comprado en dólar-MEP). Costo YA en USD → NO ÷MEP; el valor va por el
+                # tipo: CEDEAR/acción-AR por .BA÷MEP, FCI/US por su precio USD nativo.
+                # Espejo de usdLotValue (valuation.js). Sin esto, el path ARS dividía el
+                # costo USD por el MEP y el guard descartaba el precio real → colapso.
+                asset = p.get('asset') or ''
+                inv_usd = real_cost  # sin ÷cedear_rate: ya está en USD
+                invested += inv_usd
+                if asset.startswith('FCI:'):
+                    sym, is_ars = asset, False          # NAV USD directo
+                else:
+                    sym, is_ars = f"{asset}.BA", True   # BYMA en ARS → ÷MEP
+                price = override if override is not None else prices.get(sym)
+                if price is not None:
+                    raw = price * (p.get('quantity') or 0)
+                    mkt_usd = (raw / cedear_rate if cedear_rate > 0 else 0) if is_ars else raw
+                    trust = override is not None or _trust_mkt_value(mkt_usd, inv_usd, asset_type)
+                    value += mkt_usd if trust else inv_usd
+                else:
+                    value += inv_usd
             else:
                 # Holdings (CEDEARs/acciones AR/bonos) → a USD por el dólar-MEP
                 # (cedear_rate), el dólar al que realmente salís de la inversión y
@@ -209,7 +237,10 @@ def compute_broker_value_usd(
                 # sin el guard, una cripto en un sub-broker '· USD' se ruteaba al .BA
                 # (no existe BTC.BA) y escalaba el costo pero NO el valor → P&L invertido.
                 if (asset_type == 'CEDEAR' or ar_usd) and override is None \
-                        and (p.get('asset') or '').upper() not in _CS:
+                        and (p.get('asset') or '').upper() not in _CS \
+                        and not (p.get('asset') or '').startswith('FCI:'):
+                    # FCI-USD excluido: su precio es el NAV en USD (va al else, sin
+                    # ÷MEP); sin esto un FCI ruteado a '· USD' se dividía por el MEP.
                     price_ars = prices.get(f"{p['asset']}.BA")
                     if price_ars is not None:
                         mkt_usd = (price_ars * (p.get('quantity') or 0)) / cedear_rate if cedear_rate > 0 else 0
