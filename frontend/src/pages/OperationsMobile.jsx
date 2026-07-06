@@ -9,10 +9,12 @@
 // - Broker: all / cada uno
 // - Period: 30d / 90d / 1y / all
 //
-// Sin edit/delete por fila — para eso van al desktop o tap → modal (futuro).
+// Toggle Trades / Movimientos: "Movimientos" (cash-flows) SÍ tiene borrado por
+// fila (tacho → DELETE /api/movements/{id}, cascada en el backend). Trades sin
+// edit/delete todavía (van al desktop o tap → modal, futuro).
 
 import { useEffect, useMemo, useState } from 'react'
-import { TrendingUp, TrendingDown, Filter, X, ArrowRight, Calendar } from 'lucide-react'
+import { TrendingUp, TrendingDown, Filter, X, ArrowRight, Calendar, Trash2, ArrowDownToLine, ArrowUpFromLine, Coins, Receipt, Repeat } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
 import EmptyState from '../components/EmptyState'
 import BottomSheet from '../components/mobile/BottomSheet'
@@ -40,6 +42,7 @@ export default function OperationsMobile() {
   // movimiento del blue posterior va a inflar/deflactar el ARS equivalente
   // mostrado. Limitación MVP; Fase C va a trackear TC por fecha.
   const money = useMoneyFormat()
+  const [view, setView] = useState('trades')  // 'trades' | 'movements'
   const [ops, setOps] = useState([])
   const [brokers, setBrokers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -98,16 +101,45 @@ export default function OperationsMobile() {
 
   const activeFiltersCount = (period !== '90d' ? 1 : 0) + (result !== 'all' ? 1 : 0) + (broker !== 'all' ? 1 : 0)
 
+  // Toggle Trades / Movimientos. "Movimientos" consume /movements (depósitos,
+  // retiros, dividendos, comisiones) con borrado — el tacho ya no es desktop-only.
+  const viewToggle = (
+    <div className="px-4 pt-3">
+      <div className="flex w-full rounded-sm border border-line/60 bg-bg-1 p-0.5 text-xs font-mono uppercase tracking-caps">
+        <button
+          onClick={() => setView('trades')}
+          className={`flex-1 py-1.5 rounded-sm transition-colors ${view === 'trades' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
+        >
+          Trades
+        </button>
+        <button
+          onClick={() => setView('movements')}
+          className={`flex-1 py-1.5 rounded-sm transition-colors ${view === 'movements' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
+        >
+          Movimientos
+        </button>
+      </div>
+    </div>
+  )
+
+  if (view === 'movements') {
+    return <div className="pb-8">{viewToggle}<MovementsMobile /></div>
+  }
+
   if (loading) {
     return (
-      <div className="px-4 py-8 text-center text-ink-3 text-sm" aria-live="polite">
-        Cargando operaciones…
+      <div className="pb-8">
+        {viewToggle}
+        <div className="px-4 py-8 text-center text-ink-3 text-sm" aria-live="polite">
+          Cargando operaciones…
+        </div>
       </div>
     )
   }
 
   return (
     <div className="pb-8">
+      {viewToggle}
       {/* Header sticky con KPIs + filtros */}
       <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-3">
         <div className="flex items-baseline justify-between mb-3">
@@ -377,4 +409,122 @@ function formatQty(q) {
   if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('en-US')
   if (Math.abs(q) >= 1) return q.toFixed(2).replace(/\.00$/, '')
   return q.toFixed(4)
+}
+
+// ─── Movimientos (cash-flows) con borrado ──────────────────────────────────
+// Paridad mobile del tacho de la vista Operaciones desktop. Consume /movements
+// y borra vía DELETE /api/movements/{id} (cascada completa en el backend).
+const MOVE_TYPE_META = {
+  DEPOSIT:  { label: 'Depósito',  Icon: ArrowDownToLine, tone: 'pos' },
+  WITHDRAW: { label: 'Retiro',    Icon: ArrowUpFromLine, tone: 'neg' },
+  DIVIDEND: { label: 'Dividendo', Icon: Coins,           tone: 'pos' },
+  INTEREST: { label: 'Interés',   Icon: Coins,           tone: 'pos' },
+  FEE:      { label: 'Comisión',  Icon: Receipt,         tone: 'neg' },
+  IMPUESTO: { label: 'Impuesto',  Icon: Receipt,         tone: 'neg' },
+  BUY:      { label: 'Compra',    Icon: TrendingUp,      tone: null },
+  SELL:     { label: 'Venta',     Icon: TrendingDown,    tone: null },
+}
+// Alineado con _DELETABLE_CASHFLOW_TYPES del backend (trades → fase futura).
+const DELETABLE_MOVE_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO']
+
+function MovementsMobile() {
+  const money = useMoneyFormat()
+  const [movements, setMovements] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [deletingId, setDeletingId] = useState(null)
+
+  async function load() {
+    setLoading(true)
+    try { setMovements(await api.get('/movements') || []) }
+    catch { setMovements([]) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { track('movements_mobile_viewed'); load() }, [])
+
+  async function handleDelete(m) {
+    const label = (MOVE_TYPE_META[m.type]?.label || 'movimiento').toLowerCase()
+    const monto = m.amount_usd ? ` de ${money.fmtMoney(m.amount_usd)}` : ''
+    if (!window.confirm(`¿Borrar este ${label}${monto}?\n\nSe recalcula tu cartera, el capital aportado y la evolución. No se puede deshacer.`)) return
+    setDeletingId(m.id)
+    try {
+      await api.delete(`/movements/${encodeURIComponent(m.id)}`)
+      await load()
+    } catch (ex) {
+      alert(ex?.message || 'No se pudo borrar el movimiento.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const grouped = useMemo(() => {
+    const groups = new Map()
+    for (const m of movements) {
+      const key = m.date || 'sin-fecha'
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(m)
+    }
+    return Array.from(groups.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1))
+  }, [movements])
+
+  if (loading) {
+    return <div className="px-4 py-8 text-center text-ink-3 text-sm" aria-live="polite">Cargando movimientos…</div>
+  }
+  if (!movements.length) {
+    return (
+      <div className="px-4 py-10">
+        <EmptyState title="Sin movimientos" description="Acá van tus depósitos, retiros, dividendos, intereses y comisiones." />
+      </div>
+    )
+  }
+
+  return (
+    <ul className="pt-1">
+      {grouped.map(([date, items]) => (
+        <li key={date}>
+          <div className="px-4 py-1.5 text-[10px] font-mono uppercase tracking-caps text-ink-3 border-b border-line/30 bg-bg-1/50">
+            {formatDateLabel(date)}
+          </div>
+          <ul>
+            {items.map(m => (
+              <MovementRowMobile key={m.id} m={m} money={money} onDelete={handleDelete} deleting={deletingId === m.id} />
+            ))}
+          </ul>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function MovementRowMobile({ m, money, onDelete, deleting }) {
+  const meta = MOVE_TYPE_META[m.type] || { label: m.type, Icon: Repeat, tone: null }
+  const { Icon } = meta
+  const canDelete = DELETABLE_MOVE_TYPES.includes(m.type)
+  const amountClass = meta.tone === 'pos' ? 'text-rendi-pos' : meta.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-1'
+  return (
+    <li className="flex items-center gap-3 px-4 py-2.5 border-t border-line/20 first:border-t-0">
+      <span className={`flex-shrink-0 w-7 h-7 rounded-sm bg-bg-2 flex items-center justify-center ${amountClass}`}>
+        <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-semibold text-ink-0 leading-none">{meta.label}</div>
+        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-3 leading-none mt-1.5 truncate">
+          {m.broker || '—'}{m.asset ? ` · ${m.asset}` : ''}
+        </div>
+      </div>
+      <div className={`flex-shrink-0 text-right text-sm font-medium tabular ${amountClass}`}>
+        {money.fmtMoney(m.amount_usd || 0)}
+      </div>
+      {canDelete && (
+        <button
+          type="button"
+          onClick={() => onDelete(m)}
+          disabled={deleting}
+          aria-label="Borrar movimiento"
+          className="flex-shrink-0 p-1.5 -mr-1 rounded-sm text-ink-3 active:text-rendi-neg active:bg-rendi-neg/10 disabled:opacity-40"
+        >
+          <Trash2 size={15} strokeWidth={1.75} aria-hidden="true" />
+        </button>
+      )}
+    </li>
+  )
 }
