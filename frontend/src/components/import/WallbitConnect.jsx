@@ -112,6 +112,12 @@ export default function WallbitConnect({ onSynced, onlyWhenConnected = false }) 
               {busy === 'connect' ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />} Conectar
             </button>
           </div>
+          {/* Disclaimer de responsabilidad — siempre visible. La API de Wallbit NO
+              expone los permisos de una key, así que no podemos bloquear por código
+              una key con permiso de operar; el mitigante es esta instrucción clara. */}
+          <p className="mt-2 text-[11px] text-ink-3 leading-relaxed">
+            Usá una key de <b>solo lectura (read)</b>. Rendi solo lee tus operaciones — nunca opera ni mueve tu dinero. Es tu responsabilidad generar la key con permiso de lectura; Rendi no se hace responsable por keys creadas con permisos de operar (<i>trade</i>).
+          </p>
           <button onClick={() => setShowHelp(v => !v)} className="mt-2 inline-flex items-center gap-1 text-[11px] text-ink-3 hover:text-ink-1 transition-colors">
             <ChevronDown size={12} className={showHelp ? 'rotate-180 transition-transform' : 'transition-transform'} /> ¿Cómo genero mi API key?
           </button>
