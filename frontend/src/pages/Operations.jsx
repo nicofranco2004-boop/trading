@@ -914,7 +914,22 @@ function MovementsView() {
   // KPIs adaptativos según filtro. fmtUsd se pasa explícito para que
   // computeMovementKpis no dependa del scope module-level (que ya quedó
   // aliased a fmtUsdRaw — desconectado del toggle global).
-  const kpis = useMemo(() => computeMovementKpis(filtered, filterType, fmtUsd), [filtered, filterType, fmtUsd])
+  // Comisiones TOTALES del scope broker/año (SIN filtrar por tipo, para que
+  // clickear el chip COMISIONES no cambie el número): FEE explícitos (amount_usd)
+  // + comisión EMBEBIDA en cada trade (fees_usd — Balanz la trae dentro del
+  // Importe). Antes la card sumaba solo los FEE explícitos → subcontaba fuerte
+  // (santi veía US$24 en vez de ~US$527). Espeja /api/insights/commissions.
+  const commTotalUsd = useMemo(() => {
+    const scoped = movements.filter(m =>
+      (filterBroker === 'all' || m.broker === filterBroker) &&
+      (filterYear === 'all' || (m.date || '').startsWith(filterYear)))
+    const loose = scoped.reduce((s, m) => m.type === 'FEE' ? s + (m.amount_usd || 0) : s, 0)
+    const embedded = scoped.reduce((s, m) =>
+      (m.type !== 'FEE' && m.type !== 'IMPUESTO') ? s + (m.fees_usd || 0) : s, 0)
+    return loose + embedded
+  }, [movements, filterBroker, filterYear])
+
+  const kpis = useMemo(() => computeMovementKpis(filtered, filterType, fmtUsd, commTotalUsd), [filtered, filterType, fmtUsd, commTotalUsd])
 
   const brokersAvailable = useMemo(() => {
     const set = new Set(movements.map(m => m.broker).filter(Boolean))
@@ -1105,7 +1120,7 @@ function MovementsView() {
 //     que el user vea dos números distintos en pantallas distintas.
 // El bruto sigue accesible filtrando por DEPÓSITOS o RETIROS individualmente
 // (en esa vista mostramos bruto + promedio, que es lo que tiene sentido ahí).
-function computeMovementKpis(rows, filterType, fmtUsd) {
+function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
   const sumByType = (t) => rows.filter(r => r.type === t).reduce((s, r) => s + (r.amount_usd || 0), 0)
   const countByType = (t) => rows.filter(r => r.type === t).length
 
@@ -1134,7 +1149,7 @@ function computeMovementKpis(rows, filterType, fmtUsd) {
   }
   if (filterType === 'FEE') {
     return [
-      { label: 'Total comisiones', value: fmtUsd(sumByType('FEE')), tone: 'neg', sub: `${countByType('FEE')} comisiones` },
+      { label: 'Total comisiones', value: fmtUsd(commTotalUsd), tone: commTotalUsd > 0 ? 'neg' : null, sub: `${countByType('FEE')} explícitas + embebidas en trades` },
     ]
   }
 
@@ -1145,7 +1160,7 @@ function computeMovementKpis(rows, filterType, fmtUsd) {
   const depCount = countByType('DEPOSIT')
   const witCount = countByType('WITHDRAW')
   const dividendos = sumByType('DIVIDEND') + sumByType('INTEREST')
-  const comisiones = sumByType('FEE')
+  const comisiones = commTotalUsd  // FEE explícitos + embebidas en trades (no solo los FEE sueltos)
   return [
     {
       label: 'Aportado neto',
@@ -1154,7 +1169,7 @@ function computeMovementKpis(rows, filterType, fmtUsd) {
       sub: `${depCount} depósitos · ${witCount} retiros`,
     },
     { label: 'Cobrado',    value: fmtUsd(dividendos), tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
-    { label: 'Comisiones', value: fmtUsd(comisiones), tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales' },
+    { label: 'Comisiones', value: fmtUsd(comisiones), tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },
   ]
 }
 
