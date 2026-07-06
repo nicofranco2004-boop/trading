@@ -294,7 +294,8 @@ def _table_cols(conn, table: str) -> set:
     allowed = {'positions', 'monthly_entries', 'operations', 'config', 'brokers', 'users', 'snapshots', 'goals',
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
                'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
-               'ai_tool_usage', 'yfinance_cache', 'credit_ledger', 'plazos_fijos'}
+               'ai_tool_usage', 'yfinance_cache', 'credit_ledger', 'plazos_fijos',
+               'user_broker_credentials'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -414,6 +415,19 @@ def init_db():
             currency TEXT NOT NULL DEFAULT 'USDT',
             parent_broker_id INTEGER REFERENCES brokers(id) ON DELETE CASCADE,
             UNIQUE(user_id, name)
+        );
+        -- Credenciales read-only por-usuario de brokers con API (Wallbit). La
+        -- api_key va CIFRADA (Fernet derivado de SECRET_KEY), nunca en claro.
+        CREATE TABLE IF NOT EXISTS user_broker_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            broker TEXT NOT NULL,               -- 'wallbit'
+            api_key_enc TEXT NOT NULL,          -- Fernet(api_key read-only)
+            scope TEXT DEFAULT 'read',
+            created_at TEXT DEFAULT (datetime('now')),
+            last_sync_at TEXT,
+            last_sync_status TEXT,              -- 'ok' | 'error: ...'
+            UNIQUE(user_id, broker)
         );
     """)
     conn.commit()
@@ -18307,6 +18321,7 @@ from importing import recompute_backfill as _import_recompute
 from importing import tenencia as _import_tenencia
 from importing import excel as _import_excel
 from importing.parsers.registry import get_parser as _get_parser
+import wallbit as _wallbit
 
 # Namespace simple con los helpers que el persister consume.
 class _ImportHelpers:
@@ -19220,6 +19235,245 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_current_user)):
         raise
     except Exception as ex:
         raise HTTPException(500, f"Error al confirmar el import: {ex}")
+    finally:
+        conn.close()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# WALLBIT — integración read-only vía API (sync automático del portfolio).
+# El usuario pega una API key con permiso `read`; Rendi trae sus TRADEs y los
+# mete por el MISMO pipeline que un CSV (store_preview_txs → persist → rebuild),
+# reconstruyendo posiciones + P&L real. Broker "Wallbit" = USD. Ver wallbit.py.
+# ════════════════════════════════════════════════════════════════════════════
+
+import threading
+# 1 lock por usuario: serializa la sección crítica del sync (leer fingerprints →
+# filtrar → escribir) para que dos syncs concurrentes del mismo user no dupliquen
+# trades. In-process (el server corre single-process); ver nota en _wallbit_do_sync.
+_wallbit_sync_locks = defaultdict(threading.Lock)
+
+
+def _wallbit_cipher():
+    """Fernet derivado de SECRET_KEY (32 bytes urlsafe-b64). SECRET_KEY es estable
+    en prod (env) → las keys cifradas sobreviven restarts. En dev es efímera →
+    una credencial guardada en dev no se puede descifrar tras reiniciar (aceptable)."""
+    import base64
+    from cryptography.fernet import Fernet
+    digest = hashlib.sha256((SECRET_KEY or "dev-insecure").encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+def _wallbit_encrypt(plain: str) -> str:
+    return _wallbit_cipher().encrypt(plain.encode("utf-8")).decode("utf-8")
+
+def _wallbit_decrypt(enc: str) -> str:
+    return _wallbit_cipher().decrypt(enc.encode("utf-8")).decode("utf-8")
+
+
+def _wallbit_ensure_broker(conn, uid: int, broker: str = "Wallbit"):
+    """Crea el broker 'Wallbit' (USD) + su cash USD si no existe. Idempotente.
+    Si el usuario YA tiene a mano un broker 'Wallbit' que NO es USD, aborta con
+    aviso: meter trades USD en un broker ARS los misvalúa (÷MEP)."""
+    row = conn.execute("SELECT id, currency FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
+    if row:
+        if (row["currency"] or "").upper() != "USD":
+            raise _wallbit.WallbitError(
+                0, f"Ya tenés un broker llamado '{broker}' en {row['currency']}. Renombralo "
+                   f"(Wallbit opera en USD) y volvé a conectar.")
+        return
+    conn.execute(
+        "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?, 'USD', NULL)",
+        (uid, broker))
+    conn.execute(
+        "INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity) VALUES (?,?, 'USD', 1, 0, 0)",
+        (uid, broker))
+
+
+def _wallbit_confirmed_fingerprints(conn, uid: int, broker: str = "Wallbit") -> set:
+    """Fingerprints de TRADEs ya importados en batches confirmados de Wallbit.
+    Sirve para que cada sync agregue SOLO lo nuevo (idempotente, sin duplicar)."""
+    rows = conn.execute(
+        """SELECT DISTINCT n.fingerprint
+             FROM import_normalized_tx n
+             JOIN import_batches b ON b.id = n.batch_id
+            WHERE b.user_id=? AND b.broker=? AND b.status='confirmed'
+              AND n.fingerprint IS NOT NULL""",
+        (uid, broker)).fetchall()
+    return {r["fingerprint"] for r in rows}
+
+
+def _wallbit_last_from_date(conn, uid: int) -> Optional[str]:
+    """Para sync incremental: fecha de la última sync menos 3 días de colchón
+    (el dedup por fingerprint absorbe el solapamiento). None → traer todo."""
+    row = conn.execute(
+        "SELECT last_sync_at FROM user_broker_credentials WHERE user_id=? AND broker='wallbit'",
+        (uid,)).fetchone()
+    if not row or not row["last_sync_at"]:
+        return None
+    try:
+        from datetime import datetime, timedelta
+        d = datetime.fromisoformat(str(row["last_sync_at"])[:10]) - timedelta(days=3)
+        return d.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _wallbit_apply_batch(conn, uid: int, sid: str):
+    """Aplica un batch de Wallbit ya en 'preview' (store_preview_txs): persist →
+    rebuild FIFO → recalc → snapshots. Reusa el motor del confirm de CSV; omite
+    los sweeps de bonos/letras (no aplican a acciones US). El dedup se hace ANTES,
+    al armar el batch, así que acá sólo hay filas nuevas."""
+    txs, raw_id_by_index = _import_pipeline.load_session_for_confirm(conn, uid=uid, session_id=sid)
+    summary = _import_persister.persist_batch(
+        conn, uid=uid, batch_id=sid, txs=txs,
+        raw_row_ids_by_index=raw_id_by_index, helpers=_import_helpers, seed_state=None)
+    tc_rb = _import_persister._read_tc_blue(conn, uid)
+    for step in (
+        lambda: _import_rebuild.rebuild_fifo_after_import(conn, uid, sid, tc_blue=tc_rb),
+        lambda: _recalc_pnl_realized_from_ops(conn, uid),
+        lambda: _import_persister._backfill_snapshots_from_monthly(conn, uid),
+    ):
+        try:
+            step()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+    return summary
+
+
+def _wallbit_do_sync(conn, uid: int, api_key: str, *, full: bool) -> dict:
+    """Fetch de trades (network, SIN transacción abierta) + apply (transacción corta).
+    Idempotente: dedup contra los fingerprints ya confirmados antes de guardar."""
+    _wallbit_ensure_broker(conn, uid)
+    conn.commit()  # cerrar la creación del broker antes del fetch (no tener txn abierta durante HTTP)
+    from_date = None if full else _wallbit_last_from_date(conn, uid)
+    trades = _wallbit.fetch_trades(api_key, from_date=from_date)   # ← HTTP, sin txn ni lock
+    txs = _wallbit.trades_to_normalized(trades, "Wallbit")
+    res = {"fetched": len(trades), "mapped": len(txs), "new_trades": 0}
+    # Sección crítica serializada POR USUARIO: sin el lock, dos syncs concurrentes del
+    # mismo user (dos pestañas, /connect + /sync, retry de red) leen el mismo `seen` y
+    # ambos insertan → trades DUPLICADOS. El lock se toma DESPUÉS del fetch, así no
+    # bloquea durante el HTTP; cubre solo leer-confirmados → filtrar → escribir. El
+    # segundo sync lee `seen` recién tras el commit del primero → ve sus fingerprints.
+    with _wallbit_sync_locks[uid]:
+        seen = _wallbit_confirmed_fingerprints(conn, uid)
+        new_txs = [t for t in txs if _import_pipeline._row_fingerprint(t) not in seen]
+        res["new_trades"] = len(new_txs)
+        if new_txs:
+            for i, t in enumerate(new_txs, start=1):
+                t.row_index = i
+            with conn:
+                sid = _import_pipeline.store_preview_txs(
+                    conn, uid, broker="Wallbit", parser_format="wallbit",
+                    file_name="Wallbit (API)", txs=new_txs)
+                _wallbit_apply_batch(conn, uid, sid)
+    return res
+
+
+class WallbitConnectIn(BaseModel):
+    api_key: str
+
+
+@app.get("/api/wallbit/status")
+def wallbit_status(uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT scope, created_at, last_sync_at, last_sync_status "
+            "FROM user_broker_credentials WHERE user_id=? AND broker='wallbit'",
+            (uid,)).fetchone()
+        if not row:
+            return {"connected": False}
+        return {
+            "connected": True, "scope": row["scope"],
+            "connected_at": row["created_at"],
+            "last_sync_at": row["last_sync_at"],
+            "last_sync_status": row["last_sync_status"],
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/wallbit/connect")
+def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends(get_current_user)):
+    """Conecta Wallbit: valida la key read-only, la guarda cifrada y hace el sync inicial."""
+    _check_rate_limit(request, max_calls=6, window_seconds=60, suffix=f"wallbit_connect:{uid}")
+    api_key = (data.api_key or "").strip()
+    if not api_key:
+        raise HTTPException(400, "Falta la API key de Wallbit.")
+    # 1) Validar la key (llamada liviana; verifica que tenga permiso read)
+    try:
+        _wallbit.validate_key(api_key)
+    except _wallbit.WallbitError as e:
+        raise HTTPException(400, e.message)
+    conn = get_db()
+    try:
+        # 2) Guardar la credencial cifrada (transacción propia → sobrevive si el sync falla)
+        with conn:
+            conn.execute(
+                """INSERT INTO user_broker_credentials (user_id, broker, api_key_enc, scope)
+                   VALUES (?, 'wallbit', ?, 'read')
+                   ON CONFLICT(user_id, broker)
+                   DO UPDATE SET api_key_enc=excluded.api_key_enc, scope='read', last_sync_status=NULL""",
+                (uid, _wallbit_encrypt(api_key)))
+        # 3) Sync inicial (trae TODO el historial)
+        try:
+            res = _wallbit_do_sync(conn, uid, api_key, full=True)
+            with conn:
+                conn.execute(
+                    "UPDATE user_broker_credentials SET last_sync_at=datetime('now'), last_sync_status='ok' "
+                    "WHERE user_id=? AND broker='wallbit'", (uid,))
+        except _wallbit.WallbitError as e:
+            with conn:
+                conn.execute(
+                    "UPDATE user_broker_credentials SET last_sync_status=? WHERE user_id=? AND broker='wallbit'",
+                    (f"error: {e.message}", uid))
+            raise HTTPException(502, f"Conectamos tu cuenta pero falló el sync inicial: {e.message}. Probá 'Sincronizar' en un rato.")
+        return {"ok": True, "connected": True, **res}
+    finally:
+        conn.close()
+
+
+@app.post("/api/wallbit/sync")
+def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_current_user)):
+    """Re-sincroniza los trades de Wallbit (incremental)."""
+    _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"wallbit_sync:{uid}")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT api_key_enc FROM user_broker_credentials WHERE user_id=? AND broker='wallbit'",
+            (uid,)).fetchone()
+        if not row:
+            raise HTTPException(400, "No tenés Wallbit conectado.")
+        try:
+            api_key = _wallbit_decrypt(row["api_key_enc"])
+        except Exception:
+            raise HTTPException(400, "No pudimos leer tu credencial de Wallbit. Reconectá tu cuenta.")
+        try:
+            res = _wallbit_do_sync(conn, uid, api_key, full=False)
+            with conn:
+                conn.execute(
+                    "UPDATE user_broker_credentials SET last_sync_at=datetime('now'), last_sync_status='ok' "
+                    "WHERE user_id=? AND broker='wallbit'", (uid,))
+        except _wallbit.WallbitError as e:
+            with conn:
+                conn.execute(
+                    "UPDATE user_broker_credentials SET last_sync_status=? WHERE user_id=? AND broker='wallbit'",
+                    (f"error: {e.message}", uid))
+            raise HTTPException(502, e.message)
+        return {"ok": True, **res}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/wallbit/disconnect")
+def wallbit_disconnect(uid: int = Depends(get_current_user)):
+    """Desconecta Wallbit (borra la credencial). Las posiciones ya importadas quedan
+    (el usuario puede borrar el broker aparte si quiere)."""
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute("DELETE FROM user_broker_credentials WHERE user_id=? AND broker='wallbit'", (uid,))
+        return {"ok": True, "connected": False}
     finally:
         conn.close()
 

@@ -7,6 +7,7 @@ import Pill from '../components/Pill'
 import EmptyState from '../components/EmptyState'
 import Modal from '../components/Modal'
 import ImportWizard from '../components/import/ImportWizard'
+import WallbitConnect from '../components/import/WallbitConnect'
 import TenenciaUpload from '../components/import/TenenciaUpload'
 import { api } from '../utils/api'
 
@@ -258,6 +259,11 @@ export default function Imports() {
           <span>{info}</span>
         </div>
       )}
+
+      {/* Wallbit — conexión automática por API (read-only). Trae operaciones y las
+          mete por el mismo pipeline que un CSV; al sincronizar, refresca el historial
+          de abajo + la cartera. */}
+      <WallbitConnect onSynced={() => { load(); window.dispatchEvent(new Event('rendi:portfolio-changed')) }} />
 
       <Panel padding="none">
         {loading ? (
