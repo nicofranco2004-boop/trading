@@ -298,7 +298,7 @@ class TestSnapshotEndToEnd(unittest.TestCase):
                 invested REAL,
                 quantity REAL,
                 commissions REAL DEFAULT 0,
-                price_override REAL, asset_type TEXT
+                price_override REAL, asset_type TEXT, currency TEXT
             );
             CREATE TABLE monthly_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -320,7 +320,7 @@ class TestSnapshotEndToEnd(unittest.TestCase):
                 total_value REAL NOT NULL,
                 total_invested REAL NOT NULL,
                 net_deposited REAL NOT NULL DEFAULT 0,
-                fx_to_usd_blue REAL,
+                fx_to_usd_blue REAL, holdings_json TEXT,
                 UNIQUE(user_id, date)
             );
             CREATE TABLE fx_rates_daily (
@@ -464,7 +464,7 @@ class TestRunDailySnapshotFxPersistence(unittest.TestCase):
                 user_id INTEGER NOT NULL, broker TEXT NOT NULL,
                 asset TEXT NOT NULL, is_cash INTEGER DEFAULT 0,
                 invested REAL, quantity REAL, commissions REAL DEFAULT 0,
-                price_override REAL, asset_type TEXT
+                price_override REAL, asset_type TEXT, currency TEXT
             );
             CREATE TABLE monthly_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -479,7 +479,7 @@ class TestRunDailySnapshotFxPersistence(unittest.TestCase):
                 user_id INTEGER NOT NULL, date TEXT NOT NULL,
                 total_value REAL NOT NULL, total_invested REAL NOT NULL,
                 net_deposited REAL NOT NULL DEFAULT 0,
-                fx_to_usd_blue REAL,
+                fx_to_usd_blue REAL, holdings_json TEXT,
                 UNIQUE(user_id, date)
             );
             CREATE TABLE fx_rates_daily (
@@ -541,10 +541,10 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         conn = sqlite3.connect(self.db_path)
         conn.executescript("""
             CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
-            CREATE TABLE brokers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, currency TEXT);
+            CREATE TABLE brokers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, currency TEXT, parent_broker_id INTEGER);
             CREATE TABLE positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, broker TEXT, asset TEXT,
-                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL, asset_type TEXT
+                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL, asset_type TEXT, currency TEXT
             );
             CREATE TABLE monthly_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, year INTEGER, month INTEGER,
@@ -553,7 +553,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
             CREATE TABLE snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
                 total_value REAL NOT NULL, total_invested REAL NOT NULL, net_deposited REAL DEFAULT 0,
-                fx_to_usd_blue REAL, UNIQUE(user_id, date)
+                fx_to_usd_blue REAL, holdings_json TEXT, UNIQUE(user_id, date)
             );
             CREATE TABLE asset_last_price (
                 symbol TEXT PRIMARY KEY, price REAL NOT NULL, updated_at TEXT NOT NULL
@@ -676,10 +676,10 @@ class TestSnapshotCedearValuationE2E(unittest.TestCase):
         conn = sqlite3.connect(self.db_path)
         conn.executescript("""
             CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
-            CREATE TABLE brokers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, currency TEXT);
+            CREATE TABLE brokers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, currency TEXT, parent_broker_id INTEGER);
             CREATE TABLE positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, broker TEXT, asset TEXT,
-                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL, asset_type TEXT
+                is_cash INTEGER DEFAULT 0, invested REAL, quantity REAL, commissions REAL DEFAULT 0, price_override REAL, asset_type TEXT, currency TEXT
             );
             CREATE TABLE monthly_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, year INTEGER, month INTEGER,
@@ -688,7 +688,7 @@ class TestSnapshotCedearValuationE2E(unittest.TestCase):
             CREATE TABLE snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
                 total_value REAL NOT NULL, total_invested REAL NOT NULL, net_deposited REAL DEFAULT 0,
-                fx_to_usd_blue REAL, UNIQUE(user_id, date)
+                fx_to_usd_blue REAL, holdings_json TEXT, UNIQUE(user_id, date)
             );
             CREATE TABLE asset_last_price (symbol TEXT PRIMARY KEY, price REAL NOT NULL, updated_at TEXT NOT NULL);
             CREATE TABLE config (user_id INTEGER, key TEXT, value REAL);
