@@ -978,7 +978,10 @@ function PositionsDesktop() {
     const b = brokers.find(bb => bb.name === p.broker)
     if (b && b.currency === 'ARS') {
       const c = calcARS(p)
-      const invUsd = ((p.invested || 0) + (p.commissions || 0)) / tcBlue
+      // Tomar el costo de calcARS (invUsd): para un lote costInUsd el costo YA está
+      // en USD y NO debe dividirse por el blue (sino P&L% explota en Renta Fija). El
+      // fallback ÷tcBlue solo aplica a lotes ARS (calcARS omite invUsd sin precio).
+      const invUsd = c.invUsd ?? (((p.invested || 0) + (p.commissions || 0)) / tcBlue)
       const valueUsd = c.valueUsd != null ? c.valueUsd : invUsd
       const pnlUsd = valueUsd - invUsd
       return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }

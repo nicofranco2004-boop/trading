@@ -518,7 +518,7 @@ def take_snapshot_for_user(
         "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (uid,)
     ).fetchall()]
     positions = [dict(r) for r in conn.execute(
-        "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override "
+        "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override, currency "
         "FROM positions WHERE user_id=?",
         (uid,)
     ).fetchall()]
@@ -673,7 +673,7 @@ def compute_live_portfolio_value(
         "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (uid,)
     ).fetchall()]
     positions = [dict(r) for r in conn.execute(
-        "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override "
+        "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override, currency "
         "FROM positions WHERE user_id=?",
         (uid,)
     ).fetchall()]

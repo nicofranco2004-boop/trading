@@ -117,6 +117,7 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     qty = Σ BUY − Σ SELL; costo = precio promedio de compra × qty tenida."""
     rows = conn.execute(
         """SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS asset_type,
+                  UPPER(COALESCE(n.currency,'')) AS currency,
                   SUM(CASE n.operation_type WHEN 'BUY'  THEN COALESCE(n.quantity,0)
                                             WHEN 'SELL' THEN -COALESCE(n.quantity,0)
                                             ELSE 0 END) AS qty,
@@ -130,7 +131,7 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
               AND n.asset_symbol IS NOT NULL AND n.asset_symbol != ''
               AND n.operation_type IN ('BUY','SELL')
               AND n.date <= ?
-            GROUP BY n.broker, n.asset_symbol, n.asset_type""",
+            GROUP BY n.broker, n.asset_symbol, n.asset_type, UPPER(COALESCE(n.currency,''))""",
         (uid, date_iso),
     ).fetchall()
     out = []
@@ -140,9 +141,12 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
             continue
         buy_qty = r["buy_qty"] or 0
         avg_cost = (r["buy_amt"] / buy_qty) if buy_qty > 0 else 0
+        # currency: para que compute_broker_value_usd respete el costo USD (sin ÷MEP)
+        # de bonos/ONs/FCI-USD/CEDEAR-MEP en un broker ARS. Particiona por moneda (un
+        # mismo activo con lotes ARS y USD sale en 2 filas, cada una con su costo).
         out.append({
             "broker": r["broker"], "asset": r["asset"], "asset_type": r["asset_type"],
-            "quantity": qty, "invested": avg_cost * qty,
+            "currency": (r["currency"] or None), "quantity": qty, "invested": avg_cost * qty,
         })
     return out
 

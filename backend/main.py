@@ -15092,7 +15092,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
             ).fetchall()]
             pos_query = (
                 "SELECT broker, asset, asset_type, is_cash, invested, quantity, "
-                "commissions, price_override FROM positions WHERE user_id=?"
+                "commissions, price_override, currency FROM positions WHERE user_id=?"
             )
             pos_args: tuple = (uid,)
             if asset_filter:
