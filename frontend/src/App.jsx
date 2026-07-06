@@ -16,6 +16,7 @@ import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import { trackPageView } from './utils/analytics'
 import { trackMetaPageView } from './utils/metaPixel'
+import { useAutoUpdate } from './utils/autoUpdate'
 
 // ─── Eager imports: páginas del flujo no-autenticado ──────────────────────────
 // Estas son las primeras que ve un user sin login (Landing → Login →
@@ -121,6 +122,11 @@ function RouteTracker() {
   //   - trackPageView(): Google Analytics 4 (page_view event)
   const location = useLocation()
   const prev = useRef(location.pathname)
+  // Auto-update proactivo: chequea si hay un bundle más nuevo publicado y
+  // recarga en un momento seguro (navegación / reapertura). Complementa el
+  // handler de "chunk viejo" de main.jsx. Vive acá porque RouteTracker se
+  // monta una sola vez, siempre, dentro del router.
+  useAutoUpdate(location.pathname)
   // Page view inicial — el primer render no dispara el useEffect con prev≠new,
   // así que lo trackeamos explícito.
   useEffect(() => {
