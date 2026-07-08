@@ -35,7 +35,7 @@ import { usePrivacy } from '../contexts/PrivacyContext'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
-import { computeDailyPnl } from '../utils/evolution'
+import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries } from '../utils/evolution'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -117,41 +117,88 @@ export default function HomeMobile() {
     return { totalValue, totalCost, totalPnl, pct }
   }, [positions, prices, brokers, tcBlue, tcCedear, tcCripto])
 
-  // Serie 30d desde snapshots — base para sparkline + delta del período
-  const series30d = useMemo(() => {
-    if (!snapshots?.length) return null
-    const sorted = [...snapshots].sort((a, b) => (a.date > b.date ? 1 : -1))
-    const values = sorted.map(s => Number(s.total_value || 0))
-    if (values.length < 2) return null
-    const first = values[0]
-    const last = values[values.length - 1]
-    const deltaUsd = last - first
-    const deltaPct = first > 0 ? deltaUsd / first : 0
-    return { values, first, last, deltaUsd, deltaPct, positive: deltaUsd >= 0 }
-  }, [snapshots])
+  // Total valuado SIEMPRE al MEP, SOLO para comparar contra snapshots (P&L Día /
+  // P&L Mes / sparkline). Los snapshots viven en MEP por diseño; si el riel del
+  // user es CCL, comparar el live-CCL contra un snapshot-MEP fabrica la brecha
+  // CCL/MEP como "ganancia del día" fantasma. El riel gobierna solo el DISPLAY
+  // (hero = totals); las comparaciones van ancladas al mismo sabor que la serie.
+  // Con riel MEP (default) tcMep === tcCedear → mismo número, cero cambio.
+  const tcMep = pickFinancialRate(dolar, 'mep') || tcBlue
+  const totalsMep = useMemo(() => {
+    if (tcMep === tcCedear) return null  // riel MEP: reusar totals (evita doble cálculo)
+    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcMep, tcMep, tcCripto) }))
+    return { totalValue: bt.reduce((s, b) => s + b.value, 0) }
+  }, [positions, prices, brokers, tcMep, tcCedear, tcCripto])
+  const compareValue = totalsMep ? totalsMep.totalValue : totals.totalValue
 
-  // KPIs derivados de monthly (P&L mes en curso) + delta vs día anterior (snapshots)
-  const kpis = useMemo(() => {
-    const sortedMonthly = monthly
+  // Capital aportado = baseline + flujos. Misma fórmula que compute_net_deposited
+  // del backend → comparable 1:1 con snapshot.net_deposited (ambos en USD).
+  const aportado = useMemo(() => {
+    const sorted = monthly
       .filter(m => m.broker === 'global')
       .sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month))
-    const lastMonth = sortedMonthly[sortedMonthly.length - 1]
-    const pnlMonth = lastMonth
-      ? (lastMonth.pnl_realized || 0) + (lastMonth.pnl_unrealized || 0)
+    const baseline = sorted[0]?.capital_inicio || 0
+    const flows = sorted.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
+    return baseline + flows
+  }, [monthly])
+
+  // Serie 30d desde snapshots + punto LIVE de hoy — base para sparkline + delta.
+  // buildPortfolioValueSeries (mismo helper que la curva del Dashboard):
+  //  · appendea el valor VIVO como punto de hoy → el "Hoy" del sparkline es el
+  //    mismo número que el hero (antes era el cierre de ayer: dos "hoy" distintos
+  //    en la misma pantalla).
+  //  · filtra por VENTANA DE FECHAS real con anchor (GET /snapshots?days=30 es
+  //    LIMIT de filas, no de días — con huecos del cron devolvía 40-60 días).
+  // El delta del período va AJUSTADO POR FLUJOS: Δ(value − net_deposited), igual
+  // que periodChange del Dashboard. Antes era Δtotal_value crudo → un depósito de
+  // $5.000 se mostraba como "+$5.000 (+52%) en 30 días" de ganancia fantasma.
+  const series30d = useMemo(() => {
+    if (!snapshots?.length) return null
+    const live = compareValue > 0 ? compareValue : null
+    const points = buildPortfolioValueSeries(snapshots, 30, live, live != null ? aportado : null)
+    if (!points || points.length < 2) return null
+    const first = points[0]
+    const last = points[points.length - 1]
+    const deltaUsd = (last.valueUsd - last.netDeposited) - (first.valueUsd - first.netDeposited)
+    const deltaPct = first.valueUsd > 0 ? deltaUsd / first.valueUsd : 0
+    return {
+      values: points.map(p => p.valueUsd),
+      first: first.valueUsd,
+      last: last.valueUsd,
+      deltaUsd,
+      deltaPct,
+      positive: deltaUsd >= 0,
+    }
+  }, [snapshots, compareValue, aportado])
+
+  // KPIs: P&L mes (month-to-date desde snapshots) + delta vs día anterior
+  const kpis = useMemo(() => {
+    // P&L Mes = Δ(Total Return) desde el cierre del mes pasado, MtM y ajustado
+    // por flujos — MISMO cálculo que "Este mes" del Dashboard (computeReturnDelta
+    // con sinceDate=1° del mes). ANTES leía pnl_realized+pnl_unrealized del último
+    // monthly_entries: como los meses cerrados quedan a COSTO, ese pnl_unrealized
+    // es el acumulado DE TODA LA VIDA (y encima solo lo sincroniza el Dashboard
+    // desktop → stale en mobile-only). Cartera que ganó $8.000 en 2 años con un
+    // julio de +$300 mostraba "P&L Mes +$8.000" (26× el real).
+    // Guard compareValue > 0: hasta que los precios live no llegaron, el valor
+    // puede estar incompleto y la variación mostraría una pérdida falsa.
+    const d = new Date()
+    const monthStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+    const monthDelta = compareValue > 0
+      ? computeReturnDelta(snapshots, { liveValue: compareValue, liveNetDeposited: aportado, sinceDate: monthStart })
       : null
-    // Capital aportado = baseline + flujos. Misma fórmula que compute_net_deposited
-    // del backend → comparable 1:1 con snapshot.net_deposited (ambos en USD).
-    const baseline = sortedMonthly[0]?.capital_inicio || 0
-    const flows = sortedMonthly.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
-    const aportado = baseline + flows
+    const pnlMonth = monthDelta?.usd ?? null
     // P&L del día = Δ(Total Return) entre la cartera live de hoy y el cierre
     // anterior, EXCLUYENDO depósitos/retiros. El cálculo viejo (Δtotal_value)
     // contaminaba el dato: un retiro de $110 se mostraba como "P&L día −$110"
     // aunque no hubiera pérdida. Ver computeDailyPnl en utils/evolution.js.
-    const daily = computeDailyPnl(snapshots, {
-      liveValue: totals.totalValue,
-      liveNetDeposited: aportado,
-    })
+    // compareValue = total al MEP (mismo sabor que los snapshots, ver totalsMep).
+    const daily = compareValue > 0
+      ? computeDailyPnl(snapshots, {
+          liveValue: compareValue,
+          liveNetDeposited: aportado,
+        })
+      : null
     const pnlDay = daily?.usd ?? null
     // Mejor activo hoy = mayor change_pct del día (necesitaría /prices con change — usamos % del PnL no real por ahora)
     let bestAsset = null
@@ -213,8 +260,8 @@ export default function HomeMobile() {
     // activo está en verde → no tiene sentido rotularlo "mejor" con un % rojo (ej. el
     // -87,5% absurdo de un bono con costo aún sin recomputar). Mostramos '—'.
     if (bestAsset && bestPct <= 0) bestAsset = null
-    return { pnlMonth, pnlDay, pnlDayMeta: daily, aportado, bestAsset }
-  }, [monthly, snapshots, positions, prices, totals, brokers, tcCripto, tcCedear])
+    return { pnlMonth, pnlMonthMeta: monthDelta, pnlDay, pnlDayMeta: daily, aportado, bestAsset }
+  }, [snapshots, positions, prices, compareValue, aportado, brokers, tcCripto, tcCedear])
 
   if (loading) {
     return (
@@ -342,6 +389,8 @@ export default function HomeMobile() {
           <KpiCell
             label="P&L Mes"
             value={hidden ? '••••••' : (kpis.pnlMonth != null ? `${kpis.pnlMonth >= 0 ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? kpis.pnlMonth * tcBlue : kpis.pnlMonth))}` : '—')}
+            sub={kpis.pnlMonth != null && kpis.pnlMonthMeta ? pctSigned(kpis.pnlMonthMeta.pct) : null}
+            subTone={kpis.pnlMonth != null ? (kpis.pnlMonth >= 0 ? 'pos' : 'neg') : null}
             tone={kpis.pnlMonth != null ? (kpis.pnlMonth >= 0 ? 'pos' : 'neg') : null}
             bordered
             leftBorder
