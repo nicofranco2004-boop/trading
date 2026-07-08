@@ -32,7 +32,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries } from '../utils/evolution'
@@ -86,13 +86,11 @@ export default function HomeMobile() {
 
   async function loadPrices(pos, bkrs) {
     if (!pos?.length || !bkrs?.length) return
-    const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
-    const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
-    const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-    // .BA por el PADRE (sub-broker AR·USD / lote en pesos), no por el ticker: una
-    // acción AR en un broker USD extranjero (Schwab) es su ADR NYSE (ticker pelado).
-    const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => (isArUsdBroker(p.broker) || costInPesos(p)) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
-    const all = [...arsSyms, ...usdtSyms].join(',')
+    // Símbolos por el helper canónico (espejo de computeBrokerValue) — misma
+    // lista que Dashboard/Positions/PositionsMobile. Suma sobre la versión previa:
+    // la cripto en un sub-broker AR '· USD' se pide SPOT (antes se pedía BTC.BA
+    // y la valuación lee prices[BTC] → caía a costo). Ver buildPriceSymbols.
+    const all = buildPriceSymbols(pos, bkrs).join(',')
     if (!all) return
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
   }
@@ -226,7 +224,9 @@ export default function HomeMobile() {
         const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
         px = priceArs != null ? priceArs / tcCedear : null
       } else {
-        px = p.price_override ?? prices[p.asset]
+        // Key normalizada primero (BRK.B → 'BRK-B', la que el fetch pide), fallback
+        // a la cruda. CEDEAR solo llega acá con override (la rama .BA lo captura).
+        px = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
       }
       if (px == null) continue
       // Cripto en broker AR (no exchange, sin override) se valúa al dólar cripto:

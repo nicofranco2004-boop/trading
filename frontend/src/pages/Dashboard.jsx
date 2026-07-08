@@ -26,7 +26,7 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, valuationPriceKey } from '../utils/valuation'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -127,17 +127,13 @@ export default function Dashboard() {
   }
 
   async function loadPrices(pos, cfg, bkrs) {
-    const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
-    // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
-    const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
-
-    const arsSyms = [...new Set(
-      pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true))
-    )]
-    const usdtSyms = [...new Set(
-      pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => p.asset)
-    )]
-    const all = [...arsSyms, ...usdtSyms].join(',')
+    // Símbolos por el helper canónico (espejo de computeBrokerValue). ANTES este
+    // fetch pedía el ticker CRUDO para brokers USD → los CEDEARs/BYMA en cuentas
+    // dólar no recibían su .BA y computeBrokerValue los caía a costo (P&L 0):
+    // el total del Dashboard quedaba subvaluado vs mobile/Cartera, y el POST
+    // /snapshots persistía ese total → salto fantasma en la serie cuando el cron
+    // lo pisaba a la noche. Ver buildPriceSymbols en utils/valuation.
+    const all = buildPriceSymbols(pos, bkrs).join(',')
     if (!all) return
     try {
       const data = await api.get(`/prices?symbols=${all}`)
@@ -282,7 +278,9 @@ export default function Dashboard() {
           pnlUsd = valueUsd - realCost
         }
       } else {
-        const price = p.price_override ?? prices[p.asset]
+        // Key normalizada primero (BRK.B → 'BRK-B', la que el fetch pide), fallback
+        // a la cruda (last-known del cron). CEDEAR solo llega acá con override.
+        const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
         // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
         // (factor 1 si no es crypto / es exchange / tiene override / falta rate).
         const isExch = exchangeBrokers.has(p.broker)
@@ -326,8 +324,11 @@ export default function Dashboard() {
     // Sin blue válido no podemos valuar posiciones ARS → cobertura 0 (bloquea).
     const hasArs = nonCash.some(p => arsBrokerNames.has(p.broker))
     if (hasArs && !(tcBlue > 0)) return 0
+    // Cobertura contra la MISMA key que la valuación lee (valuationPriceKey).
+    // El check viejo (prices[asset] || prices[asset.BA]) daba por "priceado" un
+    // lote cuya key real no llegó → el guard dejaba pasar snapshots subvaluados.
     const hasPrice = (p) =>
-      p.price_override != null || prices[p.asset] != null || prices[priceSymbol(p.asset, true)] != null
+      p.price_override != null || prices[valuationPriceKey(p, arsBrokerNames.has(p.broker))] != null
     const costUsd = (p) => {
       const c = (p.invested || 0) + (p.commissions || 0)
       return arsBrokerNames.has(p.broker) ? c / tcBlue : c
@@ -430,7 +431,10 @@ export default function Dashboard() {
             }
             continue
           }
-          const price = p.price_override ?? prices[p.asset]
+          // Key normalizada primero (BRK.B → 'BRK-B'), fallback a la cruda —
+          // mismo criterio que computeBrokerValue; sin esto el lote quedaba
+          // fuera del pnl_unrealized con el precio ya en memoria.
+          const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
           if (price == null) continue
           // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
           // (factor 1 si no es crypto / es exchange / tiene override / falta rate),

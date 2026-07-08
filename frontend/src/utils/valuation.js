@@ -315,6 +315,46 @@ export function trustMktValue(mktValue, realCost, assetType, hasOverride = false
   return fixed ? (mult <= 4 && mult >= 0.02) : (mult <= 50 && mult >= 0.002)
 }
 
+/**
+ * valuationPriceKey — la key de `prices` con la que la VALUACIÓN va a leer esta
+ * posición. Espejo EXACTO de computeBrokerValue:
+ *   · broker ARS → priceSymbol(asset, true) (.BA / FCI: as-is) — holdings L384
+ *     y usdLotValue leen la misma key.
+ *   · broker USD: cripto → key spot (prices[asset], NUNCA .BA — la valuación la
+ *     excluye de la rama BYMA); costInPesos o sub-broker AR '· USD' → .BA;
+ *     resto → ticker US (el CEDEAR resuelve .BA vía assetType en priceSymbol).
+ * Usarla para PEDIR los símbolos (/prices, /prices/prev-close) y para chequear
+ * cobertura: si el fetch pide una key distinta de la que la valuación lee, la
+ * posición cae a costo EN SILENCIO (P&L 0, Var. día "—") — es la causa raíz de
+ * "el mismo lote vale distinto en mobile que en desktop".
+ */
+export function valuationPriceKey(p, isArsBroker) {
+  if (p.is_cash) return null
+  if (isArsBroker) return priceSymbol(p.asset, true, p.asset_type)
+  if (isCrypto(p.asset)) return priceSymbol(p.asset, false, p.asset_type)
+  if (isArUsdBroker(p.broker) || costInPesos(p)) return priceSymbol(p.asset, true, p.asset_type)
+  return priceSymbol(p.asset, false, p.asset_type)
+}
+
+/**
+ * buildPriceSymbols — lista canónica de símbolos a pedir a /prices para valuar
+ * `positions`. ÚNICA fuente para armar el fetch: cada pantalla que lo
+ * re-implementaba tenía un agujero distinto (Dashboard pedía tickers crudos →
+ * CEDEARs en cuenta USD a costo; PositionsMobile no pedía .BA para costInPesos;
+ * Home/Positions pedían BTC.BA para cripto en '· USD' que la valuación lee spot).
+ */
+export function buildPriceSymbols(positions, brokers) {
+  const arsBrokers = new Set((brokers || []).filter(b => b.currency === 'ARS').map(b => b.name))
+  const known = new Set((brokers || []).map(b => b.name))
+  const syms = new Set()
+  for (const p of positions || []) {
+    if (p.is_cash || p.asset === 'USDT' || !known.has(p.broker)) continue
+    const k = valuationPriceKey(p, arsBrokers.has(p.broker))
+    if (k) syms.add(k)
+  }
+  return [...syms]
+}
+
 export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue, tcCripto = null) {
   const bpos = allPositions.filter(p => p.broker === broker.name)
   const arUsd = isArUsdBroker(broker.name)
@@ -422,7 +462,13 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
           value += (mktUsd != null && trustMktValue(mktUsd, realCost, p.asset_type))
             ? mktUsd : realCost
         } else {
-          const price = p.price_override ?? prices[p.asset]
+          // Key normalizada primero (BRK.B/BRK B → 'BRK-B', la key que el fetch
+          // pide y el backend devuelve), fallback a la cruda (last-known del cron
+          // y payloads legacy). Sin esto, un class-share con punto se fetcheaba
+          // como 'BRK-B' pero se leía 'BRK.B' → caía a costo con el precio en
+          // memoria. Un CEDEAR solo llega acá CON override (la rama .BA lo captura
+          // antes) → la cadena corta en el override y el .BA de priceSymbol no se lee.
+          const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
           const mkt = price != null ? price * (p.quantity || 0) : null
           const trust = mkt != null &&
             trustMktValue(mkt, realCost, p.asset_type, p.price_override != null)

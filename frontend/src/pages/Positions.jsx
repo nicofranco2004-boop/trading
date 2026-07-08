@@ -29,7 +29,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
@@ -432,26 +432,12 @@ function PositionsDesktop() {
   }, [bondOps, tcBlue])
 
   async function fetchPrices(pos, cfg, bkrs) {
-    const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
-    // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
-    const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
-
-    const arsSyms = [...new Set(
-      pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type))
-    )]
-    // En un sub-broker AR "· USD" todo es de BYMA (CEDEARs + acciones AR como
-    // PAMP/YPFD): se pide el símbolo local .BA. En un broker USD real (Schwab)
-    // se pide el ticker US pelado. priceSymbol(asset, true, …) fuerza el .BA.
-    // costInPesos: posición cuyo costo está en ARS en un broker USD sin parent ARS
-    // configurado (ej. IOL sin sibling). calcUSDT la busca con .BA, así que hay
-    // que pedirla con .BA también para que las keys coincidan.
-    const usdtSyms = [...new Set(
-      pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT')
-         .map(p => (isArUsdBroker(p.broker) || costInPesos(p))
-           ? priceSymbol(p.asset, true, p.asset_type)
-           : priceSymbol(p.asset, false, p.asset_type))
-    )]
-    const all = [...arsSyms, ...usdtSyms].join(',')
+    // Símbolos por el helper canónico (espejo de computeBrokerValue) — misma
+    // lista en las 4 pantallas que valúan (Dashboard/Positions/mobile). Suma
+    // sobre la versión previa de este archivo: la cripto en un sub-broker AR
+    // '· USD' se pide SPOT (antes se pedía BTC.BA y la valuación lee prices[BTC]
+    // → caía a costo). Ver buildPriceSymbols en utils/valuation.
+    const all = buildPriceSymbols(pos, bkrs).join(',')
     if (!all) return
     try {
       const data = await api.get(`/prices?symbols=${all}`)
@@ -907,7 +893,9 @@ function PositionsDesktop() {
       const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
       price = priceArs != null ? priceArs / tcCedear : null
     } else {
-      price = p.price_override ?? prices[p.asset]
+      // Key normalizada primero (BRK.B → 'BRK-B', la que el fetch pide), fallback
+      // a la cruda. CEDEAR solo llega acá con override (la rama .BA lo captura).
+      price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
     }
     // Cripto en BROKER (no exchange) se valúa al cripto-dólar (~spot+5%). El factor
     // escala tanto el valor de mercado como el costo, así el P&L% queda invariante.
@@ -1015,11 +1003,22 @@ function PositionsDesktop() {
   // previo — y el monto se pasa a USD via blue. El % es invariante a la moneda.
   // Para el resto, usa el símbolo nativo del contexto (ARS → .BA, USD → ticker US).
   function dvFor(p, isARS) {
-    const local = !isARS && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker))
+    // costInPesos: lote en ARS en broker USD (IOL sin sibling) — se valúa por su
+    // .BA (calcUSDT/pesoLotUsd), así que la Var. día usa el MISMO símbolo local.
+    // Sin esto caía a priceSymbol(asset, false) → 'GGAL' (el ADR): si el ADR no
+    // estaba priceado daba '—' garantizado; si SÍ estaba (otra posición lo trae),
+    // computaba perUnit del ADR × nominales locales → monto ×ratio inflado.
+    const local = !isARS && !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
     const symKey = local ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, isARS)
     const curPrice = p.price_override ?? prices[symKey]
     const dv = dayVarOf(p, symKey, curPrice)
-    if (dv && local) return { amount: dv.amount / tcCedear, pct: dv.pct }
+    if (!dv) return dv
+    if (local) return { amount: dv.amount / tcCedear, pct: dv.pct }
+    // Cripto en broker AR no-exchange: el MONTO de Var. día escala por el premium
+    // dólar-cripto, igual que el valor de la fila (calcUSDT) y que mobile — sin
+    // esto el monto desktop quedaba ~2-5% distinto del mobile. El % es invariante.
+    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear)
+    if (f !== 1) return { amount: dv.amount * f, pct: dv.pct }
     return dv
   }
 

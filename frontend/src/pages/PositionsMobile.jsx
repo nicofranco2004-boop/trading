@@ -37,7 +37,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
@@ -192,15 +192,23 @@ export default function PositionsMobile() {
     if (p.is_cash) return
     const broker = brokers.find(b => b.name === p.broker)
     const isARS = broker?.currency === 'ARS'
-    // CEDEAR / sub-broker "· USD": el instrumento es de BYMA y se cotiza por su .BA
-    // (ARS). El exit_price va en la moneda del broker, así que para un broker USD
-    // se preseteа el .BA ÷ dólar-MEP (USD), consistente con cómo se valúa. Para ARS
-    // se usa el .BA tal cual (ya está en pesos).
-    const local = p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)
+    // CEDEAR / sub-broker "· USD" / lote costInPesos: el instrumento es de BYMA y
+    // se cotiza por su .BA (ARS). El exit_price va en la moneda del broker, así que
+    // para un broker USD se presetea el .BA ÷ dólar-MEP (USD), consistente con cómo
+    // se valúa. Para ARS se usa el .BA tal cual (ya está en pesos). La CRIPTO se
+    // excluye del ruteo .BA: se sugiere el spot (× premium dólar-cripto si es un
+    // broker AR no-exchange, igual que la valuación de la fila) — antes leía
+    // prices['BTC.BA'] (key que ya no se fetchea) → prefillaba el COSTO stale y
+    // una venta confirmada sin editar registraba P&L incorrecto.
+    const local = !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
     let price
     if (local && !isARS) {
       const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
       price = priceArs != null ? priceArs / tcCedear : undefined
+    } else if (isCrypto(p.asset)) {
+      const spot = prices[p.asset]
+      const f = cryptoBrokerFactor(p.asset, exchangeBrokerSet.has(p.broker), false, tcCripto, tcCedear)
+      price = spot != null ? spot * f : undefined
     } else {
       price = prices[priceSymbol(p.asset, isARS, p.asset_type)]
     }
@@ -389,11 +397,13 @@ export default function PositionsMobile() {
   }
 
   async function loadPrices(pos, bkrs) {
-    const arsBrokers = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
-    const usdtBrokers = new Set(bkrs.filter(b => b.currency !== 'ARS').map(b => b.name))
-    const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-    const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
-    const all = [...arsSyms, ...usdtSyms].join(',')
+    // Símbolos por el helper canónico (espejo de computeBrokerValue). ANTES esta
+    // versión no pedía el .BA de los lotes costInPesos (ARS en broker USD, ej.
+    // IOL sin sibling) → pesoLotUsd no encontraba la key y la fila caía a costo
+    // (P&L 0, Var. día "—") SOLO en mobile — desktop sí lo pedía. También fixea
+    // la cripto en '· USD' (se pedía BTC.BA; la valuación lee spot). El mismo
+    // set alimenta /prices/prev-close → la Var. día del .BA compara .BA vs .BA.
+    const all = buildPriceSymbols(pos, bkrs).join(',')
     if (!all) return
     try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
     // Prev-close para "Var. día" — best-effort, no bloquea ni rompe si falla.
@@ -569,7 +579,9 @@ export default function PositionsMobile() {
           && trustMktValue(u.valueUsd, investedUsd, p.asset_type, p.price_override != null)
         valueUsd = priceTrusted ? u.valueUsd : investedUsd
       } else {
-        priceLocal = p.price_override ?? prices[p.asset]
+        // Key normalizada primero (BRK.B → 'BRK-B', la que el fetch pide), fallback
+        // a la cruda. CEDEAR solo llega acá con override (la rama .BA lo captura).
+        priceLocal = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
         if (priceLocal) {
           const mkt = priceLocal * qty
           priceTrusted = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null)
@@ -603,7 +615,13 @@ export default function PositionsMobile() {
       // priceTrusted: si el guard rechazó el precio (valor cayó a costo), no
       // emitimos Var.día — sería una variación sobre un precio no confiable.
       if (!p.price_override && priceLocal != null && priceTrusted) {
-        const cedearUsd = !isAR && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker))
+        // costInPesos: el lote se valúa por su .BA÷MEP (pesoLotUsd) → la Var. día
+        // usa el MISMO símbolo .BA para el cierre previo. ANTES caía al lookup
+        // prevClose[p.asset] = el ADR US: GGAL local a 6,65 USD comparado contra
+        // el cierre del ADR (~64 USD) daba "−90%" fantasma (aplica a GGAL/BMA/
+        // SUPV/CEPU/LOMA/TGS, tickers que coinciden con su ADR). La cripto se
+        // EXCLUYE del ruteo .BA (se valúa spot → prev spot, prevClose[p.asset]).
+        const cedearUsd = !isAR && !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
         // Lote de COSTO EN USD en broker ARS (rama isAR && costInUsd): priceLocal ya
         // está en USD (usdLotValue). El símbolo del cierre previo es el mismo que valúa
         // (priceSymbol(...,true,...) → '.BA' o 'FCI:'). Si es '.BA', el prevClose viene
