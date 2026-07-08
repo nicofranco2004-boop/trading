@@ -148,11 +148,13 @@ def compute_broker_value_usd(
                           quantity, commissions, price_override)
         prices: dict {symbol: price_or_None}. Para holdings .BA, key = 'ASSET.BA'.
         broker_currency: 'ARS' | 'USDT' | 'USD'
-        tc_blue: ARS/USD blue rate — cash en pesos y cost basis ARS.
+        tc_blue: rate ARS/USD de FALLBACK — solo se usa como default de
+            cedear_rate cuando el caller no lo pasa (legacy/tests).
         broker_name: nombre del broker — detecta el sub-broker '· USD'.
-        cedear_rate: dólar-MEP — valúa CEDEARs / instrumentos BYMA en brokers USD
-            por su precio .BA ÷ MEP (NO el ticker US, que vale 15-100× más).
-            Default = tc_blue (sin regresión). Ver CORRECTNESS_AUDIT (C1).
+        cedear_rate: dólar-MEP — TODO el path ARS (cash + costos + holdings .BA)
+            se convierte por este rate, espejo del frontend (pickFinancialRate =
+            MEP para todo). Antes el cash iba al blue → snapshot de sabor mixto
+            y "P&L Día" fantasma (audit variaciones H-1). Default = tc_blue.
     """
     if not cedear_rate or cedear_rate <= 0:
         cedear_rate = tc_blue
@@ -185,8 +187,15 @@ def compute_broker_value_usd(
 
         if broker_currency == 'ARS':
             if p.get('is_cash'):
+                # Cash ARS al MISMO rate que los holdings (cedear_rate = MEP cuando
+                # el caller lo pasa). El frontend canónico (computeBrokerValue) divide
+                # el cash por pickFinancialRate (MEP) — acá se dividía por el BLUE
+                # genuino del cron → snapshot de "sabor mixto" (holdings MEP + cash
+                # blue) y el live-vs-snapshot fabricaba el spread blue−MEP como
+                # "P&L Día" fantasma PERMANENTE proporcional al cash, todos los días.
+                # Callers sin cedear_rate: default = tc_blue → sin cambio.
                 cash_ars = p.get('invested') or 0
-                cash_usd = cash_ars / tc_blue if tc_blue > 0 else 0
+                cash_usd = cash_ars / cedear_rate if cedear_rate > 0 else 0
                 value += cash_usd
                 invested += cash_usd  # cash ARS: value USD = invested USD (no FX gain)
             elif _cost_in_usd(p):
@@ -521,9 +530,21 @@ def take_snapshot_for_user(
     tc_blue: float,
     crypto_yf: dict,
     target_date: Optional[str] = None,
+    tc_mep: Optional[float] = None,
 ) -> dict:
     """Computa y persiste el snapshot del portfolio del usuario `uid` para
     la fecha `target_date` (default: hoy UTC). Idempotente vía UPSERT.
+
+    CONVENCIÓN DE VALUACIÓN: TODO al dólar-MEP (holdings .BA, cash ARS y costos),
+    espejo del frontend (pickFinancialRate) y del POST /snapshots del Dashboard —
+    una sola convención para los dos writers de la serie. El blue genuino
+    (tc_blue) queda SOLO para el stamp display fx_to_usd_blue (curva en ARS) y
+    como último fallback de rate.
+
+    Args:
+        tc_mep: dólar-MEP resuelto por el JOB (fetch directo, cache-frío-proof).
+            Si viene None (callers legacy), cae a _user_tc_cedear (caché → config
+            → tc_blue), el comportamiento previo.
 
     Devuelve dict con resultado: {ok, total_value, total_invested,
     net_deposited, symbols_fetched, errors}.
@@ -590,10 +611,17 @@ def take_snapshot_for_user(
     broker_ccy = {b['name']: b['currency'] for b in brokers}
     _ars_names, _ar_usd_names = _broker_name_sets(brokers)
 
+    # Rate de valuación (dólar-MEP): preferimos el resuelto por el job (fetch
+    # directo, inmune al caché frío — antes con caché frío caía a config.tc_mep
+    # default 1415 y TODOS los holdings .BA se valuaban a un rate stale). Se
+    # resuelve ACÁ (antes del guard) para que la ponderación de cobertura use el
+    # MISMO rate que la valuación.
+    tc_cedear = tc_mep if (tc_mep and tc_mep > 0) else _user_tc_cedear(conn, uid, tc_blue)
+
     def _cost_usd(p):
         c = (p.get('invested') or 0) + (p.get('commissions') or 0)
         ccy = broker_ccy.get(p['broker'], 'USD')
-        return (c / tc_blue) if (ccy == 'ARS' and tc_blue > 0) else c
+        return (c / tc_cedear) if (ccy == 'ARS' and tc_cedear > 0) else c
 
     def _has_price(p):
         if p.get('price_override') is not None:
@@ -617,8 +645,8 @@ def take_snapshot_for_user(
                 'total_value': 0, 'total_invested': 0, 'net_deposited': 0,
                 'symbols_fetched': len(all_symbols)}
 
-    # 3. Calcular total_value e invested por broker, sumar
-    tc_cedear = _user_tc_cedear(conn, uid, tc_blue)
+    # 3. Calcular total_value e invested por broker, sumar (tc_cedear ya resuelto
+    # arriba, antes del guard de cobertura — mismo rate para ponderar y valuar).
     total_value = 0.0
     total_invested = 0.0
     by_asset = defaultdict(float)  # foto por activo (USD) para atribución MtM
@@ -738,6 +766,7 @@ def run_daily_snapshot(
     fetch_tc_blue,
     crypto_yf: dict,
     target_date: Optional[str] = None,
+    fetch_tc_mep=None,
 ) -> dict:
     """Función entry-point del scheduler. Itera todos los usuarios activos y
     toma snapshot para cada uno. Manejo de errores per-user — si uno falla,
@@ -745,9 +774,16 @@ def run_daily_snapshot(
 
     Args:
         db_path: path al SQLite file
-        fetch_tc_blue: callable que devuelve el blue rate actual (float)
+        fetch_tc_blue: callable que devuelve el blue rate actual (float) — HOY
+            solo para el stamp display fx_to_usd_blue / fx_rates_daily (la
+            valuación va al MEP).
         crypto_yf: dict {ticker: 'ticker-USD'} para mapping
         target_date: fecha YYYY-MM-DD (default: hoy UTC)
+        fetch_tc_mep: callable que devuelve el dólar-MEP actual (float). Si se
+            pasa y NO resuelve, el job ABORTA (fail-closed): sin MEP confiable,
+            valuar con config stale (default 1415) corrompería TODA la serie de
+            snapshots de esa corrida (~±15% fantasma). Si es None (callers
+            legacy/tests), cada user cae a _user_tc_cedear como siempre.
 
     Returns:
         dict resumen: {users_processed, ok, failed, target_date, errors}
@@ -765,6 +801,21 @@ def run_daily_snapshot(
     if not tc_blue or tc_blue <= 0:
         log.error(f"Blue rate inválido ({tc_blue}), abortando job")
         return {'ok': False, 'reason': 'invalid_blue', 'tc_blue': tc_blue}
+
+    # Dólar-MEP del job (valuación). Fetch directo → inmune al caché frío del
+    # server recién reiniciado (M-7 del audit: con caché frío TODOS los holdings
+    # .BA se valuaban a config.tc_mep default 1415 → snapshot −15% en un día
+    # plano + "P&L Día +17%" fantasma a la mañana). Fail-closed si no resuelve.
+    tc_mep = None
+    if fetch_tc_mep is not None:
+        try:
+            tc_mep = fetch_tc_mep()
+        except Exception as e:
+            log.error(f"Falló fetch del MEP, abortando job (fail-closed): {e}")
+            return {'ok': False, 'reason': 'mep_fetch_failed', 'error': str(e)}
+        if not tc_mep or tc_mep <= 0:
+            log.error(f"MEP inválido ({tc_mep}), abortando job (fail-closed)")
+            return {'ok': False, 'reason': 'invalid_mep', 'tc_mep': tc_mep}
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -809,7 +860,8 @@ def run_daily_snapshot(
         # falla no rollbackea a los demás. (Audit M-OPS1.)
         for uid in user_ids:
             try:
-                result = take_snapshot_for_user(conn, uid, tc_blue, crypto_yf, target)
+                result = take_snapshot_for_user(conn, uid, tc_blue, crypto_yf, target,
+                                                tc_mep=tc_mep)
                 conn.commit()
                 if result['ok']:
                     ok_count += 1

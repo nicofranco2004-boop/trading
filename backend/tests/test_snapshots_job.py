@@ -217,10 +217,12 @@ class TestCedearValuationInUsdSubbroker(unittest.TestCase):
                                      broker_name='Mi Broker USD', cedear_rate=1200)
         self.assertEqual(r['value'], 1500)  # ticker US, NO .BA
 
-    def test_ars_broker_holdings_use_mep_cash_uses_blue(self):
-        # Fix: en un broker ARS, las TENENCIAS se valúan al dólar-MEP (cedear_rate)
-        # y el CASH al blue. Antes todo iba al blue → el total quedaba ~2% por
-        # debajo del broker (que usa MEP). GGAL 100 @ .BA 1500 = 150.000 ARS.
+    def test_ars_broker_holdings_and_cash_use_mep(self):
+        # Convención única (audit variaciones H-1): en un broker ARS, TENENCIAS y
+        # CASH se valúan al dólar-MEP (cedear_rate) — espejo del frontend
+        # (pickFinancialRate = MEP para todo). Antes el cash iba al blue → snapshot
+        # de sabor mixto y el live-vs-snapshot fabricaba el spread blue−MEP como
+        # "P&L Día" fantasma permanente. GGAL 100 @ .BA 1500 = 150.000 ARS.
         holding = [{'asset': 'GGAL', 'asset_type': 'STOCK_AR', 'is_cash': False,
                     'invested': 140000, 'quantity': 100, 'commissions': 0, 'price_override': None}]
         r = compute_broker_value_usd(holding, {'GGAL.BA': 1500}, 'ARS', tc_blue=1530,
@@ -231,7 +233,14 @@ class TestCedearValuationInUsdSubbroker(unittest.TestCase):
                  'commissions': 0, 'price_override': None}]
         rc = compute_broker_value_usd(cash, {}, 'ARS', tc_blue=1530,
                                       broker_name='Balanz', cedear_rate=1499)
-        self.assertAlmostEqual(rc['value'], 153000 / 1530, places=2)    # cash al blue
+        self.assertAlmostEqual(rc['value'], 153000 / 1499, places=2)    # cash TAMBIÉN al MEP
+
+    def test_ars_cash_without_cedear_rate_falls_back_to_tc_blue(self):
+        # Callers legacy (sin cedear_rate): default = tc_blue → sin cambio.
+        cash = [{'asset': 'ARS', 'is_cash': True, 'invested': 153000, 'quantity': 0,
+                 'commissions': 0, 'price_override': None}]
+        rc = compute_broker_value_usd(cash, {}, 'ARS', tc_blue=1530)
+        self.assertAlmostEqual(rc['value'], 153000 / 1530, places=2)
 
 
 class TestComputeNetDeposited(unittest.TestCase):
@@ -527,6 +536,64 @@ class TestRunDailySnapshotFxPersistence(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['blue_venta'], 1510)  # último valor gana
         conn.close()
+
+
+class TestRunDailySnapshotMepFailClosed(TestRunDailySnapshotFxPersistence):
+    """M-7 (audit variaciones): el job resuelve el MEP con fetch directo y si NO
+    resuelve, ABORTA (fail-closed) — mejor un día sin snapshot que toda la corrida
+    valuada a un rate stale (config default 1415 → ±15% fantasma en la serie).
+    Hereda la fixture de TestRunDailySnapshotFxPersistence."""
+
+    def _rows(self, table):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_mep_fetch_raises_aborts_job(self):
+        def boom():
+            raise RuntimeError("dolarapi caído")
+        r = run_daily_snapshot(self.db_path, lambda: 1500, {}, '2026-02-20',
+                               fetch_tc_mep=boom)
+        self.assertFalse(r['ok'])
+        self.assertEqual(r['reason'], 'mep_fetch_failed')
+        # Fail-closed TOTAL: ni snapshots ni fx_rates_daily de esa corrida.
+        self.assertEqual(self._rows('snapshots'), 0)
+        self.assertEqual(self._rows('fx_rates_daily'), 0)
+
+    def test_mep_invalid_aborts_job(self):
+        for bad in (None, 0, -1):
+            r = run_daily_snapshot(self.db_path, lambda: 1500, {}, '2026-02-20',
+                                   fetch_tc_mep=lambda: bad)
+            self.assertFalse(r['ok'])
+            self.assertEqual(r['reason'], 'invalid_mep')
+        self.assertEqual(self._rows('snapshots'), 0)
+
+    def test_mep_rate_drives_valuation_not_blue(self):
+        """El tc_mep del job valúa el cash ARS (÷MEP, no ÷blue) — H-1."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (1, 'Balanz', 'ARS')")
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, invested) "
+            "VALUES (1, 'Balanz', 'ARS', 1, 150000)")
+        conn.commit()
+        conn.close()
+        r = run_daily_snapshot(self.db_path, lambda: 1500, {}, '2026-02-20',
+                               fetch_tc_mep=lambda: 1000)
+        self.assertTrue(r['ok'])
+        conn = sqlite3.connect(self.db_path)
+        val = conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=1 AND date='2026-02-20'"
+        ).fetchone()[0]
+        conn.close()
+        # 150.000 ARS ÷ MEP 1000 = 150 (si usara el blue 1500 daría 100)
+        self.assertAlmostEqual(val, 150.0, places=2)
+
+    def test_legacy_call_without_fetch_tc_mep_still_works(self):
+        """Callers legacy (sin fetch_tc_mep): sin abort, comportamiento previo."""
+        r = run_daily_snapshot(self.db_path, lambda: 1500, {}, '2026-02-20')
+        self.assertTrue(r['ok'])
 
 
 class TestSnapshotCoverageGate(unittest.TestCase):

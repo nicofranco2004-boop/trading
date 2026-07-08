@@ -19867,6 +19867,26 @@ def _get_blue_for_scheduler() -> float:
     raise RuntimeError("No se pudo obtener cotización del blue")
 
 
+def _get_mep_for_scheduler() -> float:
+    """Dólar-MEP para la VALUACIÓN del snapshot nocturno. Caché live primero
+    (misma cascada mep→ccl→cripto que el frontend), y si el caché está frío
+    (server recién reiniciado sin tráfico en /api/dolar) fetch DIRECTO — mismo
+    patrón que el CCL de fetch_prices_for_symbols. Sin esto, el cron con caché
+    frío valuaba TODOS los holdings .BA a config.tc_mep (default 1415, sembrado
+    al signup y nunca refrescado) → serie de snapshots ±15% fantasma (audit
+    variaciones M-7). Levanta si no resuelve → el job aborta (fail-closed)."""
+    mep = _current_cedear_rate()
+    if mep and mep > 0:
+        return float(mep)
+    # dolarapi llama 'bolsa' al MEP (no existe /v1/dolares/mep — devuelve 404);
+    # mismo nombre que ya usa _get_dolar_data. CCL como 2da pata.
+    for casa in ("bolsa", "contadoconliqui"):
+        d = _fetch_dolar(casa)
+        if d and d.get("venta") and float(d["venta"]) > 0:
+            return float(d["venta"])
+    raise RuntimeError("No se pudo obtener cotización del MEP")
+
+
 def _run_daily_snapshot_job():
     """Wrapper que el scheduler invoca. Pasa la config + cierra logs."""
     try:
@@ -19874,6 +19894,7 @@ def _run_daily_snapshot_job():
             db_path=DB_PATH,
             fetch_tc_blue=_get_blue_for_scheduler,
             crypto_yf=CRYPTO_YF,
+            fetch_tc_mep=_get_mep_for_scheduler,
         )
         _snapshot_log.info(f"Daily snapshot result: {result}")
     except Exception as e:
@@ -20986,6 +21007,7 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
         db_path=DB_PATH,
         fetch_tc_blue=_get_blue_for_scheduler,
         crypto_yf=CRYPTO_YF,
+        fetch_tc_mep=_get_mep_for_scheduler,
     )
     return result
 
