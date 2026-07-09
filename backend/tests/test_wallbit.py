@@ -92,13 +92,17 @@ class WallbitSyncE2ETest(unittest.TestCase):
         cls.uid = cur.lastrowid
         conn.commit()
         conn.close()
-        # monkeypatch del fetch para no pegarle a la API real (se restaura en tearDown)
-        cls._orig_fetch = W.fetch_trades
+        # monkeypatch de los 3 fetch para no pegarle a la API real (se restauran en tearDown).
+        # La foto COINCIDE con lo que dan los trades (AAPL 8) → la reconciliación es no-op
+        # para las posiciones; solo ajusta cash (no afecta las aserciones de AAPL).
+        cls._orig = (W.fetch_trades, W.fetch_stock_balances, W.fetch_asset_price)
         W.fetch_trades = lambda api_key, from_date=None: list(TRADES)
+        W.fetch_stock_balances = lambda api_key: [{"symbol": "AAPL", "shares": 8}, {"symbol": "USD", "shares": 100}]
+        W.fetch_asset_price = lambda api_key, symbol: 210.0
 
     @classmethod
     def tearDownClass(cls):
-        W.fetch_trades = cls._orig_fetch   # no dejar el monkeypatch pegado para otros tests
+        W.fetch_trades, W.fetch_stock_balances, W.fetch_asset_price = cls._orig
 
     def _positions(self, conn):
         return {r["asset"]: r for r in conn.execute(
@@ -132,6 +136,54 @@ class WallbitSyncE2ETest(unittest.TestCase):
             pos = self._positions(conn)
             self.assertAlmostEqual(pos["AAPL"]["quantity"], 8.0, places=6)
             self.assertAlmostEqual(pos["AAPL"]["invested"], 1680.0, places=2)
+        finally:
+            conn.close()
+
+
+class WallbitReconcileTest(unittest.TestCase):
+    """La foto /balance/stocks SIEMBRA los holdings que los trades no reconstruyen
+    (el caso real de Octavio: tiene SPY pero no hay un TRADE que lo compre)."""
+
+    @classmethod
+    def setUpClass(cls):
+        conn = main.get_db()
+        cur = conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("wallbit-reconcile@test.local", "x"))
+        cls.uid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        cls._orig = (W.fetch_trades, W.fetch_stock_balances, W.fetch_asset_price)
+        # Solo un trade de AAPL; pero la cuenta real tiene AAPL 10 + SPY 5 (SPY sin trade).
+        one_buy = [_trade("BUY", "AAPL", 10, 1900.0, 190.0, "2026-01-10", "a1")]
+        W.fetch_trades = lambda api_key, from_date=None: list(one_buy)
+        W.fetch_stock_balances = lambda api_key: [
+            {"symbol": "AAPL", "shares": 10}, {"symbol": "SPY", "shares": 5}, {"symbol": "USD", "shares": 300}]
+        W.fetch_asset_price = lambda api_key, symbol: {"AAPL": 195.0, "SPY": 500.0}.get(symbol, 0.0)
+
+    @classmethod
+    def tearDownClass(cls):
+        W.fetch_trades, W.fetch_stock_balances, W.fetch_asset_price = cls._orig
+
+    def test_seeds_missing_spy(self):
+        conn = main.get_db()
+        try:
+            res = main._wallbit_do_sync(conn, self.uid, "k", full=True)
+            self.assertGreaterEqual(res["seeded"], 1, "SPY debería sembrarse (no hay trade)")
+            pos = {r["asset"]: r for r in conn.execute(
+                "SELECT asset, quantity, invested FROM positions "
+                "WHERE user_id=? AND broker='Wallbit' AND is_cash=0", (self.uid,)).fetchall()}
+            self.assertIn("AAPL", pos)
+            self.assertAlmostEqual(pos["AAPL"]["quantity"], 10.0, places=6)   # del trade
+            self.assertIn("SPY", pos, "SPY debe aparecer via la foto")
+            self.assertAlmostEqual(pos["SPY"]["quantity"], 5.0, places=6)     # de la foto
+            self.assertAlmostEqual(pos["SPY"]["invested"], 2500.0, places=1)  # 5×500 (apertura P&L 0)
+            # re-sync: SPY ya coincide con la foto → no se re-siembra (idempotente)
+            res2 = main._wallbit_do_sync(conn, self.uid, "k", full=True)
+            self.assertEqual(res2["seeded"], 0)
+            pos2 = {r["asset"]: r["quantity"] for r in conn.execute(
+                "SELECT asset, quantity FROM positions WHERE user_id=? AND broker='Wallbit' AND is_cash=0", (self.uid,)).fetchall()}
+            self.assertAlmostEqual(pos2["SPY"], 5.0, places=6)   # no se duplicó
         finally:
             conn.close()
 

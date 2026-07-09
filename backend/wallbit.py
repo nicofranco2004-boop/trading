@@ -71,6 +71,21 @@ def fetch_stock_balances(api_key: str) -> List[Dict[str, Any]]:
     return (data or {}).get("data") or []
 
 
+def fetch_asset_price(api_key: str, symbol: str) -> Optional[float]:
+    """Precio actual de un activo (GET /assets/{symbol} → price). Se usa para valuar
+    las tenencias de apertura que se siembran en la reconciliación (costo = precio de
+    hoy → P&L 0). Devuelve None si no se puede obtener (no rompe el sync)."""
+    try:
+        data = _get(f"/assets/{symbol}", api_key)
+    except WallbitError:
+        return None
+    try:
+        p = float(((data or {}).get("data") or {}).get("price"))
+        return p if p > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_trades(api_key: str, from_date: Optional[str] = None) -> List[Dict[str, Any]]:
     """Trae TODOS los movimientos tipo TRADE (compras/ventas), paginando.
     `from_date` (YYYY-MM-DD) limita a movimientos desde esa fecha para sync

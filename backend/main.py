@@ -19342,21 +19342,99 @@ def _wallbit_apply_batch(conn, uid: int, sid: str):
     return summary
 
 
+def _wallbit_fetch_holdings(api_key: str):
+    """Foto de tenencias actuales (/balance/stocks) + precio de cada activo
+    (/assets/{symbol}), para valuar las aperturas seedeadas. HTTP puro (sin txn ni
+    lock). Devuelve (holdings: List[Holding], cash_usd)."""
+    balances = _wallbit.fetch_stock_balances(api_key)
+    holdings, cash_usd = [], None
+    for b in balances:
+        sym = (b.get("symbol") or "").strip().upper()
+        try:
+            sh = float(b.get("shares") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not sym:
+            continue
+        if sym == "USD":          # el cash del portfolio viene como symbol='USD'
+            cash_usd = sh
+            continue
+        if sh <= 0:
+            continue
+        price = _wallbit.fetch_asset_price(api_key, sym)
+        if not price or price <= 0:
+            log.warning("wallbit reconcile: sin precio para %s (uid) → no se siembra", sym)
+            continue
+        holdings.append(_import_tenencia.Holding(
+            ticker=sym, asset_type="STOCK", quantity=sh,
+            value=sh * price, currency="USD", price_per1=price))
+    return holdings, cash_usd
+
+
+def _wallbit_reconcile_positions(conn, uid: int, holdings, cash_usd):
+    """Reconcilia las posiciones de Wallbit contra la foto REAL /balance/stocks:
+    siembra los holdings que los trades no reconstruyeron (comprados fuera de la
+    ventana → apertura al precio de hoy, P&L 0), reduce lo que sobre y ajusta el
+    cash. Mismo mecanismo de foto de tenencia que los brokers CSV (guards
+    safe-to-rebuild + cap 50%). Batch propio, revertible. Idempotente: si ya coincide
+    con la foto, compute_reconcile no devuelve nada → no crea batch."""
+    from importing.persister import broker_pair
+    from datetime import datetime
+    if not holdings and cash_usd is None:
+        return {"seeded": 0, "reduced": 0}
+    seed_date = datetime.utcnow().strftime("%Y-%m-%d")
+    snap = _import_tenencia.TenenciaSnapshot(holdings=holdings, date=seed_date, cash_usd=cash_usd)
+    with conn:
+        pair = broker_pair(conn, uid, "Wallbit")
+        ph = ",".join("?" * len(pair))
+        current, invested_by_asset = {}, {}
+        for r in conn.execute(
+            f"SELECT asset, SUM(quantity) q, SUM(invested) inv FROM positions "
+            f"WHERE user_id=? AND is_cash=0 AND broker IN ({ph}) GROUP BY asset", (uid, *pair)):
+            current[r["asset"]] = (r["q"] or 0)
+            invested_by_asset[r["asset"]] = (r["inv"] or 0)
+        rec = _import_tenencia.compute_reconcile(current, snap)
+        seed_txs, ov = _tenencia_apply_override(
+            conn, uid, "Wallbit", pair, rec, invested_by_asset, current,
+            seed_date, complete=True, currency="USD")
+        # Cash true-up: Wallbit ES USD → el efectivo vive en el broker Wallbit (no en
+        # un sibling '· USD' como los brokers ARS). Lleva el cash al de la foto.
+        cur_cash = 0.0
+        _crow = conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker='Wallbit' AND is_cash=1 LIMIT 1",
+            (uid,)).fetchone()
+        if _crow:
+            cur_cash = float(_crow["invested"] or 0)
+        cash_txs, _ = _import_tenencia.build_cash_trueup_txs(
+            [("Wallbit", "USD", cur_cash, cash_usd, 0.01)], seed_date)
+        seed_txs = list(seed_txs) + list(cash_txs)
+        if not seed_txs:
+            return {"seeded": 0, "reduced": 0}
+        for i, t in enumerate(seed_txs):
+            t.row_index = -20000 - i   # negativo, único, no colisiona con trades
+        sid = _import_pipeline.store_preview_txs(
+            conn, uid, broker="Wallbit", parser_format="wallbit_tenencia",
+            file_name="Wallbit (tenencias)", txs=seed_txs)
+        _wallbit_apply_batch(conn, uid, sid)
+    return {"seeded": len(rec.to_seed),
+            "reduced": len((ov or {}).get("reduced", [])) + len((ov or {}).get("removed", []))}
+
+
 def _wallbit_do_sync(conn, uid: int, api_key: str, *, full: bool) -> dict:
-    """Fetch de trades (network, SIN transacción abierta) + apply (transacción corta).
-    Idempotente: dedup contra los fingerprints ya confirmados antes de guardar."""
+    """Fetch (trades + foto de tenencias, network SIN txn) + apply (bajo lock por-uid).
+    (1) trades → posiciones/P&L, idempotente por fingerprint; (2) reconciliación contra
+    /balance/stocks → siembra los holdings que los trades no cubren (P&L 0) + cash."""
     _wallbit_ensure_broker(conn, uid)
     conn.commit()  # cerrar la creación del broker antes del fetch (no tener txn abierta durante HTTP)
     from_date = None if full else _wallbit_last_from_date(conn, uid)
-    trades = _wallbit.fetch_trades(api_key, from_date=from_date)   # ← HTTP, sin txn ni lock
+    trades = _wallbit.fetch_trades(api_key, from_date=from_date)     # ← HTTP
     txs = _wallbit.trades_to_normalized(trades, "Wallbit")
-    res = {"fetched": len(trades), "mapped": len(txs), "new_trades": 0}
-    # Sección crítica serializada POR USUARIO: sin el lock, dos syncs concurrentes del
-    # mismo user (dos pestañas, /connect + /sync, retry de red) leen el mismo `seen` y
-    # ambos insertan → trades DUPLICADOS. El lock se toma DESPUÉS del fetch, así no
-    # bloquea durante el HTTP; cubre solo leer-confirmados → filtrar → escribir. El
-    # segundo sync lee `seen` recién tras el commit del primero → ve sus fingerprints.
+    holdings, cash_usd = _wallbit_fetch_holdings(api_key)            # ← HTTP (foto + precios)
+    res = {"fetched": len(trades), "mapped": len(txs), "new_trades": 0, "seeded": 0, "reduced": 0}
+    # Sección crítica serializada POR USUARIO (evita duplicados por syncs concurrentes).
+    # El lock se toma DESPUÉS de todo el HTTP → no bloquea durante la red.
     with _wallbit_sync_locks[uid]:
+        # 1) Trades → posiciones/P&L
         seen = _wallbit_confirmed_fingerprints(conn, uid)
         new_txs = [t for t in txs if _import_pipeline._row_fingerprint(t) not in seen]
         res["new_trades"] = len(new_txs)
@@ -19368,6 +19446,13 @@ def _wallbit_do_sync(conn, uid: int, api_key: str, *, full: bool) -> dict:
                     conn, uid, broker="Wallbit", parser_format="wallbit",
                     file_name="Wallbit (API)", txs=new_txs)
                 _wallbit_apply_batch(conn, uid, sid)
+        # 2) Reconciliar posiciones contra la foto real (corre DESPUÉS de los trades,
+        #    así `current` ya los refleja). Best-effort: si falla, el sync no se cae.
+        try:
+            res.update(_wallbit_reconcile_positions(conn, uid, holdings, cash_usd))
+        except Exception:
+            import traceback
+            traceback.print_exc()
     return res
 
 
