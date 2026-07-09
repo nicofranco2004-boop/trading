@@ -18,7 +18,11 @@ function fmtPct(p) {
 
 export default function WeekCard({ week }) {
   const [open, setOpen] = useState(false)
-  const positive = week.metrics.delta_pct >= 0
+  // Con % None (semana per-broker) la polaridad sale del SIGNO del USD — antes
+  // `undefined >= 0` era false pero `null >= 0` es TRUE en JS → verde en pérdidas.
+  const positive = week.metrics.delta_pct != null
+    ? week.metrics.delta_pct >= 0
+    : (week.metrics.delta_usd ?? 0) >= 0
   // Fase B: delta_usd y realized_pnl respetan el toggle global ARS/USD.
   const money = useMoneyFormat()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: true })

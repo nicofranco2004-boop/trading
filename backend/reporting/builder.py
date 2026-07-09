@@ -273,8 +273,53 @@ def compute_metrics_for_period(
             deposits = float(me.get("deposits") or 0)
             withdrawals = float(me.get("withdrawals") or 0)
             unrealized = float(me.get("pnl_unrealized") or 0)
-        if live_value is not None and is_period_current(period_type, period_start, period_end):
+        month_is_current = live_value is not None and is_period_current(period_type, period_start, period_end)
+        if month_is_current:
             end_value = float(live_value)
+            # AUDIT C-3: sin fila del mes (el rollover lazy solo corre al visitar
+            # /mensual) start quedaba 0 → "P&L del mes" = la cartera ENTERA sobre
+            # "capital inicial de US$ 0". Heredamos el cierre del mes anterior.
+            if not me:
+                prev_row = conn.execute(
+                    """SELECT capital_final FROM monthly_entries
+                        WHERE user_id = ? AND broker = ?
+                          AND (year < ? OR (year = ? AND month < ?))
+                        ORDER BY year DESC, month DESC LIMIT 1""",
+                    (uid, broker_filter, y, y, m),
+                ).fetchone()
+                if prev_row and float(prev_row["capital_final"] or 0) > 0:
+                    start_value = float(prev_row["capital_final"])
+            # AUDIT C-2 (patch pre-C1): el mes EN CURSO cierra con end MtM (live),
+            # pero capital_inicio viene de la cadena monthly A COSTO → costo-vs-
+            # mercado fabricaba TODO el unrealized histórico como "P&L del mes"
+            # (el patrón del "-64,9% fantasma"). Start desde el snapshot MtM del
+            # cierre anterior (solo global: los snapshots no se desagregan).
+            if broker_filter == "global":
+                _snap_prev = fetch_snapshot_at_or_before(conn, uid, period_start)
+                if _snap_prev and float(_snap_prev.get("total_value") or 0) > 0:
+                    start_value = float(_snap_prev["total_value"])
+                    # Sin fila monthly, los flows del mes salen del net_deposited
+                    # canónico (Δ vs el stamp del snapshot) — si no, un depósito
+                    # intra-mes contaría como ganancia.
+                    if not me:
+                        from snapshots_job import compute_net_deposited_db
+                        _end_nd = compute_net_deposited_db(
+                            conn, uid, broker_filter='global', include_baseline=True)
+                        _start_nd = float(_snap_prev.get("net_deposited") or 0)
+                        deposits = max(0.0, _end_nd - _start_nd)
+                        withdrawals = max(0.0, _start_nd - _end_nd)
+            # Sin NINGUNA base medible NI flows (usuario sin historia ni aportes
+            # registrados): período incompleto (patrón B4/B10) — delta 0 honesto
+            # en vez de "+toda la cartera (+0.0% sobre capital inicial US$ 0)".
+            # ⚠️ SOLO sin flows: el primer mes de un usuario nuevo tiene
+            # capital_inicio=0 CON deposits>0 — ahí start=0 es CORRECTO
+            # (delta = end − deposits; Dietz maneja start=0 vía avg=0.5·flows).
+            # Pisar start=end con flows vivos fabricaba delta = −deposits
+            # (depositás 5.000, vale 5.200 → "−US$5.000, −100%") en pleno
+            # onboarding. (Cazado por el review adversarial de F4.)
+            if start_value <= 0 and end_value > 0 and (deposits - withdrawals) <= 0:
+                dw_incomplete = True
+                start_value = end_value
     elif period_type == "year":
         # Sumamos los monthly_entries del año. start = capital_inicio del primer
         # mes con data; end = capital_final del último mes con data (o live
@@ -297,6 +342,13 @@ def compute_metrics_for_period(
         year_is_current = live_value is not None and is_period_current(period_type, period_start, period_end)
         if year_is_current:
             end_value = float(live_value)
+            # AUDIT C-2 (patch pre-C1): end MtM (live) vs capital_inicio A COSTO
+            # fabricaba el unrealized histórico como "P&L del año". Start desde el
+            # snapshot MtM del cierre del año pasado (solo global).
+            if broker_filter == "global":
+                _snap_y = fetch_snapshot_at_or_before(conn, uid, period_start)
+                if _snap_y and float(_snap_y.get("total_value") or 0) > 0:
+                    start_value = float(_snap_y["total_value"])
         # AUDIT B1: el retorno del año = composición GEOMÉTRICA de los retornos
         # mensuales (TWR encadenado), no un Modified Dietz único anual. Así el
         # anual coincide con lo que sugieren los meses y no depende del timing
@@ -309,14 +361,30 @@ def compute_metrics_for_period(
                 cf = float(r["capital_final"] or 0)
                 if i == len(rows) - 1 and year_is_current:
                     cf = float(live_value)
+                    # AUDIT C-2: el mes vivo componía ci A COSTO contra cf MtM →
+                    # el Dietz de ese mes concentraba TODO el fantasma (×1.8 en el
+                    # TWR anual). ci desde el snapshot MtM del cierre anterior.
+                    if broker_filter == "global":
+                        _ms = f"{y:04d}-{int(r['month']):02d}-01"
+                        _snap_m = fetch_snapshot_at_or_before(conn, uid, _ms)
+                        if _snap_m and float(_snap_m.get("total_value") or 0) > 0:
+                            ci = float(_snap_m["total_value"])
                 mp = _modified_dietz_pct(ci, cf, float(r["deposits"] or 0) - float(r["withdrawals"] or 0))
                 if mp is not None:
                     comp *= (1 + mp / 100.0)
                     have_comp = True
             if have_comp:
                 year_twr_pct = round((comp - 1) * 100, 2)
+    elif broker_filter != "global":
+        # AUDIT H-8 — day/week con filtro de broker: los snapshots son GLOBALES,
+        # así que el delta por snapshots mostraba el movimiento de TODO el
+        # portfolio como si fuera del broker (WeekCard "Binance +$1.500" cuando
+        # Binance estuvo flat y subió Balanz), y unrealized = delta_global −
+        # realized_broker mezclaba universos. Solo el realized es medible
+        # per-broker sub-mensual → delta = realized, % = None (patrón B4/B10).
+        dw_incomplete = True
     else:
-        # week / day: snapshots para start/end
+        # week / day (global): snapshots para start/end
         snap_start = fetch_snapshot_at_or_before(conn, uid, period_start)
         snap_end = fetch_snapshot_at_or_before(conn, uid, period_end)
         start_value = float(snap_start["total_value"]) if snap_start else 0.0
@@ -363,15 +431,23 @@ def compute_metrics_for_period(
     # no el Modified Dietz único anual (que diverge cuando hay aportes).
     if period_type == "year" and year_twr_pct is not None:
         delta_pct = year_twr_pct
-    # AUDIT B4/B10: día/semana sin base confiable → no mostramos un % engañoso.
-    if period_type in ("day", "week") and dw_incomplete:
+    # AUDIT B4/B10 + C-3/H-8: período sin base confiable (día/semana con huecos,
+    # broker-filter sub-mensual, mes en curso sin historia) → % None, no un
+    # número engañoso.
+    if dw_incomplete:
         delta_pct = None
 
     # Para day/week, el unrealized del período = todo el delta que no es
     # realized (las posiciones abiertas se movieron en su mark-to-market).
     # monthly_entries trae unrealized directo; day/week lo derivamos.
     if period_type in ("day", "week"):
-        unrealized = delta_usd - realized
+        if broker_filter != "global":
+            # AUDIT H-8: solo el realized es del broker; sin snapshots per-broker
+            # el MtM sub-mensual no es medible → delta = realized, unrealized 0.
+            delta_usd = realized
+            unrealized = 0.0
+        else:
+            unrealized = delta_usd - realized
 
     cum_aportado = fetch_cum_deposits_until(conn, uid, period_end, broker_filter)
     delta_pct_over_contrib = (
@@ -590,6 +666,18 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
             "Mark-to-market positivo compensó las pérdidas realizadas.",
         )
 
+    # AUDIT B3 (F4): sin % medible (delta_pct None — día/semana per-broker, o
+    # base incompleta) el headline sale del SIGNO de delta_usd, sin inventar
+    # "+0.0%". Antes: None→0.0 → "mixto — +0.0%" aunque delta_usd fuera −300.
+    if metrics.delta_pct is None:
+        if abs_usd < 100:
+            return (f"{period_word} sin grandes movimientos.", None)
+        sign = "+" if (metrics.delta_usd or 0) >= 0 else "−"
+        return (
+            f"{period_word}: {sign}US$ {abs_usd:,.0f}.".replace(",", "."),
+            "Sin base suficiente para calcular el % del período.",
+        )
+
     # Caso 1: período flat — frase invariable
     if abs(delta) < 0.5 and abs_usd < 100:
         return (f"{period_word} sin grandes movimientos.", None)
@@ -650,11 +738,19 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
             .replace(",", ".")
         )
     else:
-        direction = "ganaste" if delta >= 0 else "perdiste"
+        # AUDIT B3 (F4): con delta_pct None (día/semana per-broker, base
+        # incompleta) la dirección sale del SIGNO de delta_usd — antes None→0.0
+        # → "ganaste US$ 300 (+0.0%)" con una pérdida de −300. El "(+X%)" se
+        # omite sin dato, y el "capital inicial US$ 0" también (parecía cuenta
+        # vaciada).
+        _dir_sign = delta if metrics.delta_pct is not None else (metrics.delta_usd or 0)
+        direction = "ganaste" if _dir_sign >= 0 else "perdiste"
+        pct_txt = f" ({delta:+.1f}%)" if metrics.delta_pct is not None else ""
+        base_txt = (f" sobre un capital inicial de US$ {metrics.start_value:,.0f}"
+                    if (metrics.start_value or 0) > 0 else "")
         parts.append(
             f"En {period_label_str.lower()} {direction} "
-            f"US$ {abs(metrics.delta_usd):,.0f} ({delta:+.1f}%) "
-            f"sobre un capital inicial de US$ {metrics.start_value:,.0f}."
+            f"US$ {abs(metrics.delta_usd):,.0f}{pct_txt}{base_txt}."
             .replace(",", ".")
         )
 

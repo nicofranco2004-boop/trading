@@ -743,7 +743,48 @@ def compute_live_portfolio_value(
         log.warning(f"compute_live_portfolio_value: fetch_prices failed: {e}")
         return None
 
+    # AUDIT M-11 (variaciones): las MISMAS 3 defensas que el cron. Sin esto, un
+    # fetch flaky de yfinance dejaba posiciones a costo EN SILENCIO y Reportes
+    # mostraba una "pérdida del período" fantasma (−10% de un momento a otro),
+    # cacheada 60s. (1) retry de los faltantes; (2) last-known price en vez de
+    # costo; (3) guard de cobertura → None (el caller cae al snapshot).
+    missing = [s for s in all_symbols if prices.get(s) is None]
+    if missing:
+        try:
+            retry = fetch_prices_for_symbols(missing, crypto_yf)
+            for s, v in retry.items():
+                if v is not None:
+                    prices[s] = v
+        except Exception:
+            pass
+    apply_last_known_prices(conn, prices)
+
     tc_cedear = _user_tc_cedear(conn, uid, tc_blue)
+
+    broker_ccy = {b['name']: b['currency'] for b in brokers}
+    _ars_names, _ar_usd_names = _broker_name_sets(brokers)
+
+    def _cost_usd(p):
+        c = (p.get('invested') or 0) + (p.get('commissions') or 0)
+        ccy = broker_ccy.get(p['broker'], 'USD')
+        return (c / tc_cedear) if (ccy == 'ARS' and tc_cedear > 0) else c
+
+    def _has_price(p):
+        if p.get('price_override') is not None:
+            return True
+        return prices.get(position_price_key(p, _ars_names, _ar_usd_names)) is not None
+
+    non_cash = [p for p in positions if not p['is_cash']]
+    total_cost = sum(_cost_usd(p) for p in non_cash)
+    priced_cost = sum(_cost_usd(p) for p in non_cash if _has_price(p))
+    coverage = (priced_cost / total_cost) if total_cost > 0 else 1.0
+    if non_cash and coverage < 0.95:
+        log.warning(
+            f"compute_live_portfolio_value: cobertura {coverage:.0%} < 95% "
+            f"(uid={uid}) — devuelvo None (el caller cae al snapshot)"
+        )
+        return None
+
     total_value = 0.0
     for b in brokers:
         bpos = [p for p in positions if p['broker'] == b['name']]

@@ -488,7 +488,9 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   const snap = period.portfolio_snapshot || {}
   const pct = m.delta_pct
   const usd = m.delta_usd
-  const isPos = (pct ?? 0) >= 0
+  // Con % None (día/semana per-broker, base incompleta) la polaridad sale del
+  // SIGNO del USD — antes (pct ?? 0) >= 0 pintaba VERDE una pérdida realized.
+  const isPos = pct != null ? pct >= 0 : (usd ?? 0) >= 0
   const colorClass = isPos ? 'text-rendi-pos' : 'text-rendi-neg'
 
   // Detección de "período flat" — sin movimientos, sin trades.
@@ -504,8 +506,11 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // aportado, # posiciones, # brokers) además del P&L del período.
   const kpis = []
 
-  // Capital actual: snapshot total si lo tenemos, sino end_value del período
-  const capitalNow = snap.latest_value != null ? snap.latest_value : m.end_value
+  // Capital actual: snapshot total si lo tenemos, sino end_value del período.
+  // end_value 0 = no-dato (día/semana per-broker no valúa capital) → '—', no
+  // "US$ 0" al lado de "Posiciones: N" (parecía cuenta vaciada).
+  const _endVal = m.end_value > 0 ? m.end_value : null
+  const capitalNow = snap.latest_value != null ? snap.latest_value : _endVal
   kpis.push({
     label: 'Capital actual',
     value: capitalNow != null ? `US$ ${fmtNum(capitalNow)}` : '—',

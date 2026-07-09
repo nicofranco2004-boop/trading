@@ -10359,14 +10359,16 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
         snap_date = snap["date"]
         old_net = float(snap["net_deposited"] or 0)
 
-        row = conn.execute(
-            """SELECT COALESCE(SUM(deposits - withdrawals), 0) AS net
-                 FROM monthly_entries
-                WHERE user_id=? AND broker <> 'global'
-                  AND printf('%04d-%02d-15', year, month) <= ?""",
-            (uid, snap_date),
-        ).fetchone()
-        new_net = float(row["net"] or 0)
+        # AUDIT B1 (F4 variaciones, CRITICAL): estampar la convención CANÓNICA
+        # (filas 'global' + baseline capital_inicio), la MISMA que usan el cron
+        # (compute_net_deposited) y el POST del Dashboard. La versión anterior
+        # (SUM per-broker SIN baseline) corría en CADA arranque del proceso y
+        # PISABA los stamps canónicos → el lado prev de los Δ chips quedaba sin
+        # baseline mientras el lado latest (H-7) lo incluye → Δ1d = −baseline
+        # entero como "pérdida fantasma" tras cada deploy.
+        from snapshots_job import compute_net_deposited_db as _cnd
+        new_net = float(_cnd(conn, uid, as_of_date=snap_date,
+                             broker_filter='global', include_baseline=True) or 0)
 
         if abs(new_net - old_net) > 0.01:
             conn.execute(
@@ -20344,9 +20346,18 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     # Deltas históricos: 1, 7 y 30 días atrás (global, requieren snapshots).
     # Audit follow-up (2026-05-31): cashflow-adjusted — pasamos latest_netdep
     # para que el delta neutralice aportes/retiros del período (mismo criterio
-    # que Dashboard "HOY"). Para current snapshot, netdep = cum_deposited
-    # (que ya calculamos arriba).
-    _latest_netdep = float(cum_deposited or 0) if broker_filter == "global" else None
+    # que Dashboard "HOY").
+    # AUDIT H-7 (variaciones): el netdep de los Δ chips va CON baseline —
+    # snapshots.net_deposited (el lado prev del delta) INCLUYE capital_inicio,
+    # así que pasar cum_deposited (sin baseline) desfasaba los flows por el
+    # baseline entero → Δ1d/7d/30d inflados en exactamente ese monto (baseline
+    # 50k: "Δ1d +US$50.500" por un día de +500). Espejo del fix B5/B7 de
+    # builder.py. cum_deposited (sin baseline) queda para el KPI "Capital
+    # aportado", cuya semántica histórica no lo incluye.
+    _latest_netdep = None
+    if broker_filter == "global":
+        _latest_netdep = float(compute_net_deposited_db(
+            conn, uid, broker_filter="global", include_baseline=True) or 0)
     delta_1d = _snapshot_delta(conn, uid, latest_value, latest_date, days=1, latest_netdep=_latest_netdep) if broker_filter == "global" else None
     delta_7d = _snapshot_delta(conn, uid, latest_value, latest_date, days=7, latest_netdep=_latest_netdep) if broker_filter == "global" else None
     delta_30d = _snapshot_delta(conn, uid, latest_value, latest_date, days=30, latest_netdep=_latest_netdep) if broker_filter == "global" else None
@@ -20437,7 +20448,7 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     except ValueError:
         return None
     prev = conn.execute(
-        "SELECT date, total_value, net_deposited FROM snapshots WHERE user_id=? AND date<=? ORDER BY date DESC LIMIT 1",
+        "SELECT date, total_value, total_invested, net_deposited FROM snapshots WHERE user_id=? AND date<=? ORDER BY date DESC LIMIT 1",
         (uid, target),
     ).fetchone()
     if not prev or prev["total_value"] is None:
@@ -20446,6 +20457,10 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     if prev_v <= 0:
         return None
     prev_netdep = float(prev["net_deposited"] or 0)
+    # Legacy fallback (mismo criterio que netDepositedOf del frontend): snapshots
+    # viejos sin net_deposited → cost basis, para no desfasar el delta.
+    if prev_netdep <= 0:
+        prev_netdep = float(prev["total_invested"] or 0)
     # Cashflow-adjusted: Δ(value − netDeposited). Si el caller no pasa
     # latest_netdep, ambos lados usan 0 (equivalent al raw diff legacy).
     cur_netdep = float(latest_netdep or 0)
@@ -20484,9 +20499,22 @@ def _ytd_delta(conn, uid: int, latest_value: Optional[float],
     if not row or row["capital_inicio"] is None:
         return None
     start = float(row["capital_inicio"])
+    first_month = int(row["month"])
+    # AUDIT C-2 (variaciones): capital_inicio viene de la cadena monthly A COSTO;
+    # contra un latest_value MtM, el "YTD" fabricaba el unrealized de AÑOS
+    # anteriores como ganancia del año. Start desde el snapshot MtM del cierre
+    # del año pasado cuando existe (solo global — snapshots no se desagregan).
+    # Fallback: capital_inicio (usuarios sin snapshots previos al año).
+    if broker_filter == "global":
+        snap = conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=? AND date<=? "
+            "ORDER BY date DESC LIMIT 1",
+            (uid, f"{year:04d}-01-01"),
+        ).fetchone()
+        if snap and float(snap["total_value"] or 0) > 0:
+            start = float(snap["total_value"])
     if start <= 0:
         return None
-    first_month = int(row["month"])
     # AUDIT B2 (2026-07): descontar los flujos netos del año (aportes − retiros)
     # → retorno REAL, no inflado por depósitos. Antes: (latest − start)/start,
     # que con un aporte de $10k a mitad de año mostraba +80% cuando el retorno
@@ -20522,6 +20550,21 @@ def _user_tc_blue(conn, uid: int) -> float:
         return v if v > 0 else 1415.0
     except (TypeError, ValueError):
         return 1415.0
+
+
+def _live_valuation_rate(conn, uid: int) -> float:
+    """Dólar-MEP LIVE para valuar el end_value de Reportes — la misma cascada
+    que el cron de snapshots (_get_mep_for_scheduler: caché live → 'bolsa' →
+    CCL). AUDIT H-9 (variaciones): antes se usaba _user_tc_blue = config
+    ESTÁTICO (default 1415, sembrado al signup y nunca refrescado) → el end
+    live quedaba en una base FX distinta del start (snapshot escrito al rate
+    del día) y el delta del período fabricaba la diferencia de rates como
+    ganancia/pérdida ("Hoy −11,7%" con la cartera quieta). Fallback al config
+    solo si ni el caché ni el fetch directo resuelven."""
+    try:
+        return _get_mep_for_scheduler()
+    except Exception:
+        return _user_tc_blue(conn, uid)
 
 
 # Helper canónico para convertir gross_amount → USD vive en
@@ -20565,7 +20608,9 @@ def reports_timeline(
         # si el cron del snapshot está stale/0, el reporte mostraba una pérdida
         # fantasma (ej. -195%) aunque la cartera valga bien. Fallback al último
         # snapshot si el cálculo live falla o da 0.
-        tc_blue = _user_tc_blue(conn, uid)
+        # AUDIT H-9: rate LIVE (misma cascada que el cron) — el config estático
+        # dejaba el end en otra base FX que el start (snapshot al rate del día).
+        tc_blue = _live_valuation_rate(conn, uid)
         live_value = None
         if broker == "global":
             try:
@@ -20604,7 +20649,8 @@ def reports_period_detail(
             "inflation_ar": _fetch_inflation_ar(),
             "sp500": _fetch_sp500_monthly(),
         }
-        tc_blue = _user_tc_blue(conn, uid)
+        # AUDIT H-9: rate LIVE (misma cascada que el cron) — ver _live_valuation_rate.
+        tc_blue = _live_valuation_rate(conn, uid)
         # Para el período en curso (day/week/year actual) usamos el valor
         # LIVE del portfolio (positions × precios) si está disponible.
         # Esto permite ver el delta intraday vs cierre de ayer / lunes /
