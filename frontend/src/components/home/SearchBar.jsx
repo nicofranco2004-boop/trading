@@ -16,7 +16,7 @@ import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
 import AssetQuickView from './AssetQuickView'
 import { notifyWatchlistChanged, subscribeWatchlistChanged } from '../../utils/watchlistEvents'
-import { POPULAR_TICKERS, inferType } from '../../utils/tickers'
+import { POPULAR_TICKERS, CEDEAR_SEARCH, inferType } from '../../utils/tickers'
 
 // Normaliza el símbolo para resolver el logo: strip sufijo CEDEAR (.BA) para
 // reutilizar el logo de la US version; deja todo lo demás intacto.
@@ -138,7 +138,14 @@ export default function SearchBar() {
     const passFilter = (t) => filter === 'all' || t.type === filter
 
     const hm = userHoldings.filter(t => matches(t) && passFilter(t))
-    const sm = POPULAR_TICKERS
+    // Universo de sugeridos: POPULAR_TICKERS (curado, es lo que se ve SIN query).
+    // Con query sumamos TODOS los CEDEARs del allowlist (CEDEAR_SEARCH) para que
+    // cualquier CEDEAR sea encontrable (antes solo el subset de POPULAR_TICKERS →
+    // CAT/HON/etc. no aparecían). Dedup por símbolo; el cap de 8 evita inundar.
+    const universe = qUpper
+      ? [...POPULAR_TICKERS, ...CEDEAR_SEARCH.filter(c => !POPULAR_TICKERS.some(p => p.symbol === c.symbol))]
+      : POPULAR_TICKERS
+    const sm = universe
       .filter(t => matches(t) && passFilter(t))
       .filter(t => !hm.some(h => h.symbol === t.symbol))
       .slice(0, qUpper ? 8 : 30) // sin query: hasta 30 para que ETFs/Bonos enteros se vean

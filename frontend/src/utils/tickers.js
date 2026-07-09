@@ -176,6 +176,7 @@ export const CEDEARS_LIST = [
   { s: 'AMGN', n: 'Amgen' }, { s: 'MRNA', n: 'Moderna' }, { s: 'XOM', n: 'Exxon Mobil' },
   { s: 'CVX', n: 'Chevron' }, { s: 'COP', n: 'ConocoPhillips' }, { s: 'VIST', n: 'Vista Energy' }, { s: 'VST', n: 'Vistra Energy' }, { s: 'BA', n: 'Boeing' },
   { s: 'CAT', n: 'Caterpillar' }, { s: 'DE', n: 'John Deere' }, { s: 'GE', n: 'General Electric' }, { s: 'F', n: 'Ford' },
+  { s: 'HON', n: 'Honeywell' }, { s: 'MMM', n: '3M' }, { s: 'UNH', n: 'UnitedHealth' }, { s: 'LMT', n: 'Lockheed Martin' },
   { s: 'GM', n: 'General Motors' }, { s: 'UBER', n: 'Uber' }, { s: 'ABNB', n: 'Airbnb' },
   { s: 'SHOP', n: 'Shopify' }, { s: 'XYZ', n: 'Block (ex-Square)' }, { s: 'COIN', n: 'Coinbase' },
   { s: 'HOOD', n: 'Robinhood' }, { s: 'RKLB', n: 'Rocket Lab' }, { s: 'ASTS', n: 'AST SpaceMobile' }, { s: 'ANET', n: 'Arista Networks' },
@@ -198,6 +199,17 @@ export const CEDEARS_LIST = [
   { s: 'ARKK', n: 'ARK Innovation (CEDEAR)' }, { s: 'XLE', n: 'Energía (CEDEAR)' },
   { s: 'XLF', n: 'Financiero (CEDEAR)' }, { s: 'GLD', n: 'Oro (CEDEAR)' },
 ]
+
+// CEDEARS_LIST en el shape del buscador (SearchBar/MobileSearch). El símbolo lleva
+// '.BA' (el CEDEAR cotiza en BYMA). Se agrega al universo de búsqueda por query para
+// que TODOS los CEDEARs del allowlist sean encontrables (no solo el subset de
+// POPULAR_TICKERS). Nombres que ya traen '(CEDEAR)' (ETFs) no se duplican.
+export const CEDEAR_SEARCH = CEDEARS_LIST.map(x => ({
+  symbol: `${x.s}.BA`,
+  name: /\(CEDEAR\)/.test(x.n) ? x.n : `${x.n} (CEDEAR)`,
+  exchange: 'BCBA',
+  type: 'cedear',
+}))
 
 // === ACCIONES ARGENTINAS — Panel Líder ===
 export const ARG_LIDER = [
