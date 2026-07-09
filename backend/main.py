@@ -12691,7 +12691,7 @@ CONTEXTO ARGENTINO
 Medir en USD: regla operativa. Convertir todo a CCL/MEP. Evita la ilusión nominal.
 Dólar: blue = informal, termómetro psicológico, NO operable legalmente. MEP (AL30/GD30) = dolarizar dentro del país. CCL = sacar afuera.
 CEDEAR: certificado local que replica acción US. Ventaja: dolarización implícita vía CCL. Desventaja: spread más ancho, comisiones de custodia, tracking error.
-Inflación AR: benchmark mínimo en ARS = inflación + 5% real. El snapshot incluye comparativo con inflación acumulada y con S&P 500.
+Inflación AR: benchmark mínimo en ARS = inflación + 5% real.
 Riesgo país: spread bonos soberanos vs Treasury. >1500 estrés alto · <800 optimismo. Cuando comprime, GGAL/YPF tienden a rallear.
 
 BONOS ARGENTINOS (clave para usuarios AR — instrumentos comunes en cartera)
@@ -12728,7 +12728,7 @@ BIEN: "El P&L del año descansa parcialmente en trades cerrados de AMD/INTC. Tu 
 
 Si un ticker aparece en AMBOS lados (positions y operations), aclararlo: "mantenés posición abierta + tenés P&L cerrado en el mismo ticker; el riesgo presente es solo sobre el lote abierto".
 
-Tenés el snapshot del portfolio del usuario en el contexto. Usá los números concretos cuando sean relevantes. El snapshot incluye benchmarks (S&P 500, inflación AR, dólar blue) para comparar la performance del usuario contra referencias de mercado.
+Tenés el snapshot del portfolio del usuario en el contexto. Usá los números concretos cuando sean relevantes. El snapshot NO incluye retornos de benchmark (S&P 500, inflación): si te piden comparar contra el mercado y no tenés el dato, decílo — no inventes la cifra del índice.
 
 MÉTRICAS PRO (summary.pro_metrics):
 Si están presentes, podés usarlas para diagnósticos cuantitativos. Todas son anualizadas:
@@ -14830,6 +14830,186 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
     return sanitized
 
 
+# Cache TTL de la valuación del snapshot del chat (por uid). Evita re-fetchear
+# yfinance en cada mensaje de una misma charla (review B3). 60s = mismo criterio
+# que el snapshot del frontend.
+_CHAT_VAL_CACHE: dict = {}
+_CHAT_VAL_TTL_SEC = 60
+
+
+def _valuate_positions_for_chat(conn, uid: int):
+    """Valúa las posiciones del user con la MISMA función canónica que el resto
+    de la app (compute_broker_value_usd — port fiel de computeBrokerValue con
+    todos los clamps CEDEAR/cripto/trust). Devuelve (positions_valued, totals)
+    con value_usd / invested_usd / unrealized_pnl_usd / weight_pct por posición,
+    todo en USD al dólar MEP.
+
+    Audit IA #2 (B-1/B-2): el snapshot que armaba el FRONTEND mandaba `invested`
+    en moneda NATIVA mezclada (ARS y USD sumados 1:1) y SIN valor de mercado →
+    la IA rankeaba "posición más grande" comparando pesos crudos (un CEDEAR de
+    2M ARS ≈ US$1.400 le "ganaba" a una acción de US$5.000) e inflaba el
+    "total invertido" ~MEP×. Valuar server-side desde la DB (fuente de verdad,
+    no los números del cliente) lo resuelve de raíz.
+
+    Llamamos compute_broker_value_usd con una lista de UNA posición por vez: la
+    función suma contribuciones independientes, así que el valor por-posición es
+    exacto y la suma coincide con la valuación por-broker (verificado en tests).
+    """
+    import time as _time
+    cached = _CHAT_VAL_CACHE.get(uid)
+    if cached is not None and (_time.time() - cached[0]) < _CHAT_VAL_TTL_SEC:
+        # TTL 60s (mismo criterio que el snapshot del frontend): en una charla
+        # de varios mensajes solo el 1º paga el fetch de precios. Evita un
+        # yf.download por CADA mensaje en el path crítico (review B3).
+        return cached[1], cached[2]
+
+    brokers = [dict(r) for r in conn.execute(
+        "SELECT id, name, currency FROM brokers WHERE user_id=?", (uid,)
+    ).fetchall()]
+    positions = [dict(r) for r in conn.execute(
+        "SELECT broker, asset, asset_type, is_cash, invested, quantity, "
+        "commissions, price_override, currency FROM positions WHERE user_id=?",
+        (uid,),
+    ).fetchall()]
+
+    tc_blue = _user_tc_blue(conn, uid)
+    tc_cedear = _user_tc_cedear(conn, uid, tc_blue)
+    broker_ccy = {b['name']: b['currency'] for b in brokers}
+
+    prices: dict = {}
+    if brokers and positions:
+        try:
+            syms = build_price_symbols(positions, brokers)
+            prices = fetch_prices_for_symbols(syms, CRYPTO_YF) if syms else {}
+        except Exception as ex:
+            log.warning("chat valuation: fetch_prices failed: %s", ex)
+            prices = {}
+
+    # Valuamos por LOTE (una fila de `positions` = un lote FIFO abierto) y luego
+    # AGRUPAMOS por (broker, asset) → una entrada por HOLDING. Sin agrupar, un
+    # activo comprado en varias tandas (DCA) aparecía fragmentado y "la posición
+    # más grande" comparaba lotes sueltos (review B2). value/invested suman
+    # exacto, así que el holding agregado es correcto.
+    holdings: dict = {}   # (broker, asset) → acumulado
+    order: list = []      # preserva el orden de aparición
+    for p in positions:
+        bccy = broker_ccy.get(p['broker'])
+        if bccy is None:
+            # Posición huérfana (broker borrado/renombrado sin cascada): la
+            # referencia canónica (get_realized_vs_unrealized) las descarta.
+            # Defaultear a 'USD' contaría un saldo en pesos 1:1 como dólares
+            # (~MEP× inflado) — el mismísimo bug que este PR erradica (review B1).
+            continue
+        try:
+            r = compute_broker_value_usd(
+                [p], prices, bccy, tc_blue,
+                broker_name=p['broker'], cedear_rate=tc_cedear)
+            v = float(r.get('value', 0) or 0)
+            inv = float(r.get('invested', 0) or 0)
+        except Exception as ex:
+            log.warning("chat valuation: pos %s failed: %s", p.get('asset'), ex)
+            # Fail-safe: el costo en USD no depende de precios de mercado.
+            v = inv = 0.0
+        key = (p.get('broker'), p.get('asset'))
+        h = holdings.get(key)
+        if h is None:
+            h = {
+                "asset": p.get('asset'),
+                "broker": p.get('broker'),
+                "quantity": 0,          # se acumula abajo (init 0, como value/invested)
+                "asset_type": p.get('asset_type'),
+                "is_cash": bool(p.get('is_cash')),
+                "value_usd": 0.0,
+                "invested_usd": 0.0,
+            }
+            holdings[key] = h
+            order.append(key)
+        h["value_usd"] += v
+        h["invested_usd"] += inv
+        h["quantity"] = (h["quantity"] or 0) + (p.get('quantity') or 0)
+
+    valued: list = []
+    total_value = 0.0
+    total_holdings_value = 0.0   # base del peso: solo holdings (sin cash)
+    total_invested = 0.0
+    for key in order:
+        h = holdings[key]
+        total_value += h["value_usd"]
+        total_invested += h["invested_usd"]
+        if not h["is_cash"]:
+            total_holdings_value += h["value_usd"]
+        h["value_usd"] = round(h["value_usd"], 2)
+        h["invested_usd"] = round(h["invested_usd"], 2)
+        h["unrealized_pnl_usd"] = round(h["value_usd"] - h["invested_usd"], 2)
+        h["_kind"] = "open_position"
+        valued.append(h)
+
+    # weight_pct = % del valor de los HOLDINGS (excluye cash), para que "posición
+    # más grande"/concentración midan la exposición real y el efectivo no aparezca
+    # como "la posición más grande". El cash queda con weight_pct=None (review L1).
+    for h in valued:
+        if h["is_cash"]:
+            h["weight_pct"] = None
+        else:
+            h["weight_pct"] = (round((h["value_usd"] / total_holdings_value) * 100, 2)
+                               if total_holdings_value > 0 else 0.0)
+
+    totals = {
+        "total_value_usd": round(total_value, 2),
+        "total_invested_usd": round(total_invested, 2),
+        "total_unrealized_pnl_usd": round(total_value - total_invested, 2),
+        "tc_mep": round(tc_cedear, 2),
+        "tc_blue": round(tc_blue, 2),
+    }
+    _CHAT_VAL_CACHE[uid] = (_time.time(), valued, totals)
+    return valued, totals
+
+
+def _enrich_chat_snapshot_valuation(uid: int, snapshot: dict) -> dict:
+    """Sobrescribe positions + summary del snapshot con la valuación USD canónica
+    server-side (ver _valuate_positions_for_chat). AUTORITATIVO: no confía en los
+    números del cliente. Nunca tira excepción — si algo falla, devuelve el
+    snapshot como vino (degradación segura)."""
+    if not isinstance(snapshot, dict):
+        return snapshot
+    try:
+        conn = get_db()
+        try:
+            valued, totals = _valuate_positions_for_chat(conn, uid)
+        finally:
+            conn.close()
+    except Exception as ex:
+        log.warning("chat snapshot valuation enrich failed (uid=%s): %s", uid, ex)
+        return snapshot
+
+    out = dict(snapshot)
+    out["positions"] = valued
+    summ = dict(out.get("summary") or {})
+    summ.update(totals)
+    # Recuentos server-side, coherentes con las posiciones valuadas (agrupadas por
+    # holding). Pisamos también los contadores que trae el cliente (buildSummary)
+    # para que no coexistan dos pares que se contradicen si el snapshot del
+    # frontend está stale (review L2).
+    n_holdings = sum(1 for p in valued if not p["is_cash"])
+    n_cash = sum(1 for p in valued if p["is_cash"])
+    summ["total_positions"] = n_holdings
+    summ["total_cash_positions"] = n_cash
+    summ["open_positions_count"] = n_holdings
+    summ["cash_lines_count"] = n_cash
+    summ["valuation_note"] = (
+        "Todos los campos *_usd están en dólares al tipo MEP (la cripto de "
+        "exchange va al spot). Cada position es un HOLDING agregado (todos sus "
+        "lotes ya sumados). value_usd = valor de mercado HOY; invested_usd = "
+        "costo; weight_pct = % del valor de los holdings (excluye cash; el cash "
+        "tiene weight_pct null). Para 'posición más grande' o concentración usá "
+        "value_usd / weight_pct; para 'cuánto vale mi cartera' usá "
+        "total_value_usd. NUNCA uses 'invested' crudo ni sumes pesos con dólares. "
+        "El dólar blue es solo referencia, no la base de valuación."
+    )
+    out["summary"] = summ
+    return out
+
+
 # ── Tool definitions para el coach IA ────────────────────────────────────────
 
 _AI_TOOLS = [
@@ -15706,6 +15886,10 @@ def _ai_cache_invalidate(uid: int) -> None:
     Es 'safe' — captura cualquier excepción para no romper el endpoint
     de mutación si el cache de IA falla por alguna razón inesperada.
     """
+    # Cache en-memoria de la valuación del chat (TTL 60s) — dropear también acá
+    # para que una mutación (import/borrar broker/posición) no deje al chat con
+    # números viejos hasta 60s (review follow-up). pop es no-op si no hay entrada.
+    _CHAT_VAL_CACHE.pop(uid, None)
     try:
         from ai import cache as _ai_cache
         conn = get_db()
@@ -17639,7 +17823,15 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
 
     # Sanitizar el snapshot ANTES de serializarlo al LLM.
     snapshot_clean = _sanitize_chat_snapshot(data.snapshot)
-    portfolio_json = json.dumps(snapshot_clean, indent=2, ensure_ascii=False, default=str)
+    # M1/M2/M4 (audit IA #2): valuar server-side las posiciones con la función
+    # canónica (USD al MEP, valor de mercado + peso por posición) y sobrescribir
+    # los números del cliente, que venían en moneda nativa mezclada y sin market
+    # value → la IA rankeaba/valuaba mal.
+    snapshot_clean = _enrich_chat_snapshot_valuation(uid, snapshot_clean)
+    # JSON compacto (sin indent=2): el snapshot ahora trae más campos por
+    # posición; el compacto compensa el payload y baja tokens de input.
+    portfolio_json = json.dumps(
+        snapshot_clean, ensure_ascii=False, default=str, separators=(",", ":"))
 
     # Bloque de hechos persistentes del user (Ola 3-L).
     facts_block = ""
@@ -17661,7 +17853,11 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     system_text = f"""{base_system}
 
 REGLA CRÍTICA sobre los datos del usuario que vienen en el primer user message:
-El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly, brokers y benchmarks. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
+El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly y brokers. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas.
+
+VALUACIÓN (crítico para no dar cifras mal): cada position trae value_usd (valor de mercado HOY), invested_usd (costo) y weight_pct (% de la cartera), TODO en dólares al tipo MEP (la cripto de exchange va al spot). Para "¿cuál es mi posición más grande?", "¿cuánto vale mi cartera?" o concentración, usá value_usd / summary.total_value_usd y weight_pct — NUNCA el 'invested' crudo ni sumes montos en pesos con montos en dólares. summary.tc_mep y summary.tc_blue son las cotizaciones; el blue es solo referencia, no la base de valuación.
+
+El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativas de mercado. Si el usuario pide comparar su performance contra el S&P o la inflación y no tenés ese dato en el contexto ni en una tool, decílo con franqueza — NO inventes el retorno del índice."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
