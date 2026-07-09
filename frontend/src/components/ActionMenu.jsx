@@ -1,9 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { MoreVertical } from 'lucide-react'
 
 /**
  * ActionMenu — three-dot menu for table rows.
  * Replaces multiple icon buttons with a clean popover.
+ *
+ * El menú se renderiza en un PORTAL (document.body) con position:fixed y un z-index
+ * alto: así escapa del contexto de apilamiento / overflow de la fila de la tabla.
+ * Sin esto, el ⋮ de la fila siguiente quedaba POR ENCIMA del menú abierto (cada fila
+ * es su propio stacking context) y lo tapaba (bug reportado en Posiciones, mobile).
  *
  * Usage:
  *   <ActionMenu items={[
@@ -13,22 +19,45 @@ import { MoreVertical } from 'lucide-react'
  */
 export default function ActionMenu({ items = [], align = 'right' }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+  const [pos, setPos] = useState(null)   // coords fixed {top, left} del menú
+  const btnRef = useRef(null)
+  const menuRef = useRef(null)
 
-  // Close on outside click / escape
+  const MENU_W = 190
+
+  // Posiciona el menú debajo del botón, alineado a der/izq y clampeado al viewport.
+  const place = () => {
+    const b = btnRef.current?.getBoundingClientRect()
+    if (!b) return
+    const left = align === 'right' ? b.right - MENU_W : b.left
+    const clampedLeft = Math.min(Math.max(8, left), window.innerWidth - MENU_W - 8)
+    setPos({ top: Math.round(b.bottom + 4), left: Math.round(clampedLeft) })
+  }
+
+  useLayoutEffect(() => { if (open) place() }, [open])
+
+  // Cerrar en click afuera / escape / scroll / resize (más simple y robusto que
+  // reposicionar: el menú es transitorio).
   useEffect(() => {
     if (!open) return
     function onDown(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+      if (btnRef.current?.contains(e.target)) return
+      if (menuRef.current?.contains(e.target)) return
+      setOpen(false)
     }
-    function onKey(e) {
-      if (e.key === 'Escape') setOpen(false)
-    }
+    function onKey(e) { if (e.key === 'Escape') setOpen(false) }
+    function onScrollResize() { setOpen(false) }
     document.addEventListener('mousedown', onDown)
+    document.addEventListener('touchstart', onDown)
     document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', onScrollResize, true)
+    window.addEventListener('resize', onScrollResize)
     return () => {
       document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('touchstart', onDown)
       document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onScrollResize, true)
+      window.removeEventListener('resize', onScrollResize)
     }
   }, [open])
 
@@ -36,8 +65,9 @@ export default function ActionMenu({ items = [], align = 'right' }) {
   if (visibleItems.length === 0) return null
 
   return (
-    <div className="relative inline-block" ref={ref}>
+    <>
       <button
+        ref={btnRef}
         onClick={() => setOpen(o => !o)}
         className={`p-1 rounded-md transition ${open
           ? 'bg-bg-2 dark:bg-bg-2/60 text-ink-1'
@@ -45,13 +75,17 @@ export default function ActionMenu({ items = [], align = 'right' }) {
         }`}
         title="Más acciones"
         aria-label="Más acciones"
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
         <MoreVertical size={14} />
       </button>
 
-      {open && (
+      {open && pos && createPortal(
         <div
-          className={`absolute z-30 mt-1 min-w-[180px] py-1 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}
+          ref={menuRef}
+          className="fixed z-[200] min-w-[190px] py-1 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-lg"
+          style={{ top: pos.top, left: pos.left }}
           role="menu"
         >
           {visibleItems.map((it, i) => {
@@ -75,8 +109,9 @@ export default function ActionMenu({ items = [], align = 'right' }) {
               </button>
             )
           })}
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   )
 }
