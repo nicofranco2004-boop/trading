@@ -46,19 +46,10 @@ const DEFAULT_SUGGESTED = [
   '¿Qué activo es el que más riesgo me agrega?',
 ]
 
-// Red de seguridad client-side: el path de streaming no pasa por el
-// _strip_markdown del servidor, así que limpiamos el markdown acá sobre el
-// texto acumulado. El modelo está instruido a NO usar markdown, así que esto
-// casi nunca hace nada — pero evita que se cuele un **bold** o un "- " suelto.
-// Idempotente: se aplica sobre el buffer completo en cada delta.
-function stripMarkdown(t) {
-  if (!t) return t
-  let s = t.replace(/\*\*(.+?)\*\*/g, '$1')   // bold
-  s = s.replace(/\*(.+?)\*/g, '$1')           // italic
-  s = s.replace(/^\s{0,3}[-*+]\s+/gm, '')     // list markers
-  s = s.replace(/^\s{0,3}#{1,6}\s+/gm, '')    // headers
-  return s
-}
+// stripMarkdown vive en utils/stripMarkdown.js (testeable sin la cadena de
+// imports de React; ver B-14 del audit IA #2 — el regex viejo mutilaba
+// aritmética con asteriscos).
+import { stripMarkdown } from '../utils/stripMarkdown'
 
 export default function AICoach({ snapshot, suggested, autoAsk }) {
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
@@ -76,6 +67,19 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
   const scrollRef = useRef(null)
   // ¿el user está pegado al fondo? Solo auto-scrolleamos si sí (ver useEffect).
   const stickToBottomRef = useRef(true)
+  // B-5 (audit IA #2): `loading` se apaga al PRIMER token (para ocultar los
+  // puntitos) → desde ahí el guard quedaba abierto durante TODO el stream y una
+  // 2da pregunta mezclaba deltas en la misma burbuja + cobraba doble cuota.
+  // `sending` cubre la ventana completa (hasta el finally de chatStream):
+  // - sendingRef: guard SINCRÓNICO race-proof (el estado tarda un render)
+  // - sending (estado): deshabilita chips/input/submit con re-render
+  const sendingRef = useRef(false)
+  const [sending, setSending] = useState(false)
+  // Abort del stream en curso al tocar "Nuevo" o cerrar el drawer — sin esto
+  // los deltas del stream viejo seguían llegando y re-poblaban una burbuja
+  // fantasma sobre el chat "nuevo".
+  const abortRef = useRef(null)
+  useEffect(() => () => { abortRef.current?.abort() }, [])
 
   // Cargar cuota inicial — solo lectura, sin gating front (el server tiene la
   // verdad). Si falla, no rompemos UX — el server devolverá 429 si excede.
@@ -112,7 +116,11 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
 
   async function send(text) {
     const content = (text || '').trim()
-    if (!content || loading || !snapshot) return
+    if (!content || loading || sendingRef.current || !snapshot) return
+    sendingRef.current = true
+    setSending(true)
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
 
     const userMsg = { role: 'user', content }
     const newMessages = [...messages, userMsg]
@@ -152,7 +160,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       // Marcar Coach IA como "descubierto" — usado por OnboardingChecklist
       // en Home para detectar que el user ya probó el chat.
       markAIDiscovered()
-      await api.chatStream({ messages: newMessages, snapshot }, { onDelta })
+      await api.chatStream({ messages: newMessages, snapshot }, { onDelta, signal: ctrl.signal })
       // Edge: el stream cerró sin emitir texto → mostrar algo en vez de nada.
       if (!assistantAdded) {
         setMessages(m => [...m, { role: 'assistant', content: stripMarkdown(acc) || '…' }])
@@ -160,6 +168,11 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       // Refrescar cuota tras success — no es crítico, best-effort.
       api.get('/ai/usage').then(u => setUsage(u)).catch(() => {})
     } catch (e) {
+      // Abort deliberado (tocó "Nuevo" o cerró el drawer): salir en silencio —
+      // no es un error del usuario y reset() ya dejó el chat como corresponde.
+      if (e?.name === 'AbortError' || ctrl.signal.aborted) {
+        return
+      }
       // Manejo de errores tier-aware. El backend devuelve `detail` de 3 formas:
       //   1. dict { error, message, usage? }  → 403 gate, 429 cuota (shape custom)
       //   2. array [{ type, loc, msg, input }] → 422 validation Pydantic
@@ -180,7 +193,12 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       // tarda > 30s. El detail vendrá undefined. Damos mensaje útil al user.
       // Síntoma reportado: pregunta sobre P/E en follow-up → tools cache
       // miss + 2-3 round-trips Anthropic → > 30s → Vercel corta.
-      if (!detail && (status === 504 || status === 502 || status === 503 || e?.payload === null)) {
+      if (e?.truncated) {
+        // B-6: el stream se cortó sin frame terminal (Vercel 30s, red móvil).
+        // Antes esto se mostraba como respuesta COMPLETA; ahora avisamos y el
+        // user reintenta (el mensaje parcial se remueve abajo).
+        msg = 'La respuesta se cortó a mitad de camino. Volvé a intentarlo — si pasa seguido, probá una pregunta más corta.'
+      } else if (!detail && (status === 504 || status === 502 || status === 503 || e?.payload === null)) {
         msg = 'El bot tardó más de lo normal en responder. Intentá una pregunta más simple, o esperá unos segundos y reintentá.'
       } else if (detail && typeof detail === 'object' && !Array.isArray(detail) && detail.message) {
         // Caso 1: error estructurado del backend (gate Free, cuota agotada)
@@ -218,6 +236,9 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       })
     } finally {
       setLoading(false)
+      sendingRef.current = false
+      setSending(false)
+      if (abortRef.current === ctrl) abortRef.current = null
     }
   }
 
@@ -231,6 +252,9 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
   }
 
   function reset() {
+    // Abortar el stream en curso ANTES de limpiar: sin esto, los deltas del
+    // stream viejo re-poblaban una burbuja fantasma sobre el chat nuevo.
+    abortRef.current?.abort()
     setMessages([])
     setError(null)
     setUpgradeInfo(null)
@@ -372,7 +396,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
               <button
                 key={q}
                 onClick={() => send(q)}
-                disabled={loading}
+                disabled={loading || sending}
                 className="text-xs px-3 py-1.5 bg-bg-2 hover:bg-bg-3 dark:bg-bg-2 dark:hover:bg-bg-3 border border-line text-ink-1 rounded-full transition disabled:opacity-40 disabled:cursor-not-allowed text-left"
               >
                 {q}
@@ -404,7 +428,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
             type="text"
             value={freeText}
             onChange={e => setFreeText(e.target.value)}
-            disabled={loading}
+            disabled={loading || sending}
             placeholder="Preguntale lo que quieras sobre tu cartera…"
             className="flex-1 bg-bg-2 dark:bg-bg-2/60 border border-line text-sm text-ink-0 placeholder:text-ink-3 rounded-sm px-3 py-2 focus:outline-none focus:border-data-violet/60 disabled:opacity-50"
             maxLength={500}
@@ -412,7 +436,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
           />
           <button
             type="submit"
-            disabled={loading || !freeText.trim()}
+            disabled={loading || sending || !freeText.trim()}
             className="bg-data-violet hover:bg-data-violet/90 text-white rounded-sm p-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center"
             title="Enviar"
             aria-label="Enviar pregunta"

@@ -150,6 +150,11 @@ async function getBlob(path) {
 async function chatStream(body, { onDelta, signal } = {}) {
   if (isDemoMode()) {
     const res = await req('POST', '/ai/chat', { ...body, stream: false })
+    // El mock demo resuelve por setTimeout (inabortable): respetar el abort
+    // acá — sin esto, reset()/"Nuevo" en demo dejaba una burbuja fantasma.
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError')
+    }
     if (onDelta && res?.reply) onDelta(res.reply)
     return { tier: res?.tier }
   }
@@ -177,6 +182,11 @@ async function chatStream(body, { onDelta, signal } = {}) {
   let buf = ''
   let tier = null
   let streamErr = null
+  // B-6 (audit IA #2): sin sentinel de fin, un stream CORTADO a mitad (Vercel
+  // corta a 30s, red móvil, proxy) terminaba el reader sin frame terminal y se
+  // devolvía como si la respuesta estuviera COMPLETA — el user leía media
+  // respuesta creyendo que era toda. Solo `done`/`error` marcan fin legítimo.
+  let sawTerminal = false
 
   while (true) {
     const { value, done } = await reader.read()
@@ -196,9 +206,11 @@ async function chatStream(body, { onDelta, signal } = {}) {
         if (evt.t === 'delta') {
           if (onDelta && evt.d) onDelta(evt.d)
         } else if (evt.t === 'done') {
+          sawTerminal = true
           tier = evt.tier ?? tier
         } else if (evt.t === 'error') {
           // Error del LLM a mitad de stream: lo guardamos y cortamos la lectura.
+          sawTerminal = true
           const err = new Error(evt.message || 'Error en el chat')
           err.status = 503
           err.payload = { detail: { error: evt.code, message: evt.message } }
@@ -211,6 +223,11 @@ async function chatStream(body, { onDelta, signal } = {}) {
   }
   try { reader.cancel() } catch {}
   if (streamErr) throw streamErr
+  if (!sawTerminal) {
+    const err = new Error('La respuesta se cortó antes de terminar.')
+    err.truncated = true
+    throw err
+  }
   return { tier }
 }
 
