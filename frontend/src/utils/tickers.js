@@ -176,7 +176,7 @@ export const CEDEARS_LIST = [
   { s: 'AMGN', n: 'Amgen' }, { s: 'MRNA', n: 'Moderna' }, { s: 'XOM', n: 'Exxon Mobil' },
   { s: 'CVX', n: 'Chevron' }, { s: 'COP', n: 'ConocoPhillips' }, { s: 'VIST', n: 'Vista Energy' }, { s: 'VST', n: 'Vistra Energy' }, { s: 'BA', n: 'Boeing' },
   { s: 'CAT', n: 'Caterpillar' }, { s: 'DE', n: 'John Deere' }, { s: 'GE', n: 'General Electric' }, { s: 'F', n: 'Ford' },
-  { s: 'HON', n: 'Honeywell' }, { s: 'MMM', n: '3M' }, { s: 'UNH', n: 'UnitedHealth' }, { s: 'LMT', n: 'Lockheed Martin' },
+  { s: 'HON', n: 'Honeywell' }, { s: 'MMM', n: '3M' }, { s: 'UNH', n: 'UnitedHealth' }, { s: 'LMT', n: 'Lockheed Martin' }, { s: 'RTX', n: 'RTX (Raytheon)' },
   { s: 'GM', n: 'General Motors' }, { s: 'UBER', n: 'Uber' }, { s: 'ABNB', n: 'Airbnb' },
   { s: 'SHOP', n: 'Shopify' }, { s: 'XYZ', n: 'Block (ex-Square)' }, { s: 'COIN', n: 'Coinbase' },
   { s: 'HOOD', n: 'Robinhood' }, { s: 'RKLB', n: 'Rocket Lab' }, { s: 'ASTS', n: 'AST SpaceMobile' }, { s: 'ANET', n: 'Arista Networks' },
@@ -198,6 +198,7 @@ export const CEDEARS_LIST = [
   { s: 'EEM', n: 'Emerging Markets (CEDEAR)' }, { s: 'EWZ', n: 'Brasil (CEDEAR)' },
   { s: 'ARKK', n: 'ARK Innovation (CEDEAR)' }, { s: 'XLE', n: 'Energía (CEDEAR)' },
   { s: 'XLF', n: 'Financiero (CEDEAR)' }, { s: 'GLD', n: 'Oro (CEDEAR)' },
+  { s: 'XLV', n: 'Salud (CEDEAR)' }, { s: 'IBIT', n: 'iShares Bitcoin (CEDEAR)' },
 ]
 
 // CEDEARS_LIST en el shape del buscador (SearchBar/MobileSearch). El símbolo lleva
@@ -249,7 +250,19 @@ export const ARG_GENERAL = [
   { s: 'RICH', n: 'Laboratorios Richmond' }, { s: 'ROSE', n: 'Instituto Rosenbusch' },
   { s: 'SAMI', n: 'San Miguel' }, { s: 'SEMI', n: 'Molinos Juan Semino' },
   { s: 'TGLT', n: 'TGLT' },
+  { s: 'ECOG', n: 'Ecogas' }, { s: 'A3', n: 'A3 Mercados' },
 ]
+
+// Acciones argentinas (panel líder + general) en el shape del buscador. Símbolo
+// PELADO (el precio se pide como '<TICKER>.BA' vía priceSymbol/ARG_STOCK_TICKERS).
+// Se suma al universo de búsqueda por query para que TODAS las acciones AR del
+// allowlist sean encontrables (no solo el subset de POPULAR_TICKERS).
+export const AR_STOCK_SEARCH = [...ARG_LIDER, ...ARG_GENERAL].map(x => ({
+  symbol: x.s,
+  name: x.n,
+  exchange: 'BCBA',
+  type: 'stock_ar',
+}))
 
 // === BONOS — Soberanos AR en USD ============================================
 // Los AL son ley local, los GD ley extranjera (NY/UK). AE = ley local variantes.
