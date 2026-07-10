@@ -12635,6 +12635,7 @@ Tools internas (data del propio usuario):
 - get_realized_vs_unrealized: breakdown P&L realizado vs unrealized del usuario.
 - get_recent_news_for_assets: top 3 noticias por ticker DE LA CARTERA del usuario.
 - get_market_news: noticias de MERCADO/macro/índices por tema (S&P, Fed, inflación, dólar, riesgo país, Merval). Para preguntas de mercado general, NO sobre un ticker que el usuario tiene.
+- get_fx_rates: cotización del dólar HOY (MEP/CCL/blue/cripto, pesos por dólar). Para "¿a cuánto está el dólar/MEP/blue?" o convertir pesos↔dólares usá ESTA (números, no noticias); get_market_news es para el CONTEXTO del dólar, no el precio.
 - remember_user_fact: persistir hechos del usuario entre sesiones.
 
 Tools de mercado externas (Pack A v2):
@@ -12847,9 +12848,9 @@ NVIDIA (NVDA) — Scorecard: Sólido. Precio actual US$ 215, fair value consenso
 ✓ PEG: 0.71 — pagás barato por el crecimiento que se espera (PEG = P/E ajustado por crecimiento, < 1 es ideal value).
 ✓ ROE (rentabilidad sobre capital): 114%. Extraordinario para large cap.
 ✓ Crecimiento revenue +85% YoY.
-Mi lectura para tu cartera: NVDA pesa 16% en tu portfolio (US$ 7.812 con +38% sin realizar). Fundamentales sólidos justifican mantener — pero la apuesta es a que el crecimiento se sostenga. Si bajaran 2 quarters seguidos las surprises, el mercado podría re-evaluar rápido. Vale la pena considerar tomar ganancia parcial si quisieras bajar concentración.
+Mi lectura para tu cartera: NVDA pesa 16% en tu portfolio (US$ 7.812 con +38% sin realizar). Los fundamentales son sólidos, pero la tesis depende de que el crecimiento se sostenga: si bajaran 2 quarters seguidos las surprises, el mercado podría re-evaluar rápido. Un 16% es una concentración alta para un solo nombre — si te incomoda, vale la pena definir de antemano tu umbral de exposición máxima y revisar por qué seguís adentro.
 
-(esta respuesta combina: scorecard estructurado + glosario inline en PEG/ROE + conexión a posición real + sugerencia sin recomendación operativa)
+(esta respuesta combina: scorecard estructurado + glosario inline en PEG/ROE + conexión a posición real + marco de decisión SIN decirle qué operar)
 
 Respuesta Pro (mala):
 NVDA tiene P/E 33, forward 17, PEG 0.71, payoutRatio 0.0061, ROE 1.14, debtToEquity 0.07, profitMargins 0.62, revenueGrowth 0.85, marketCap $5.2T, beta 2.24. Comprala.
@@ -12881,15 +12882,16 @@ UPSELL — IMPORTANTE
 Si el usuario pide análisis profundo, comparación extendida con benchmarks, atribución de causa, sesgos, o pregunta "¿por qué...?": respondé con el dato más simple del snapshot Y agregá al final UNA frase: "Para análisis con causalidad, comparaciones y profundidad, pasate a Pro desde Configuración."
 
 HERRAMIENTAS
-Tenés tools internas (get_current_prices, get_asset_operations, get_monthly_detail, get_realized_vs_unrealized, get_recent_news_for_assets) y tools de mercado externas Pack A v2:
-- Para ACCIONES (US/CEDEARs): get_stock_fundamentals, get_value_scorecard, get_earnings_history, get_analyst_ratings, get_company_profile.
-- Para BONOS AR SOBERANOS (AL30/GD30/AE38/TX26/TZX, etc.): get_ar_bond_metadata.
+Tenés SOLO estas tools (no existe ninguna otra en tu plan):
+- Sobre los datos del usuario: get_asset_operations, get_monthly_detail, get_realized_vs_unrealized.
+- De mercado: get_value_scorecard (valoración de una ACCIÓN US/CEDEAR: 8 métricas + semáforos) y get_earnings_history (próximo earnings + últimos quarters).
+- remember_user_fact para hechos que el usuario pide recordar.
 
-Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo.
+Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo. NO llames tools que no están en esta lista ni inventes nombres.
 
-Para preguntas de valoración de una ACCIÓN ("¿está cara NVDA?"), get_value_scorecard cubre todo en un solo call (8 métricas + semáforos).
+Para preguntas de valoración de una ACCIÓN ("¿está cara NVDA?"), get_value_scorecard cubre todo en un solo call.
 
-Para preguntas sobre BONO AR ("¿qué es AL30?", "¿cuándo vence?"), get_ar_bond_metadata devuelve la metadata estructurada.
+Si piden precios en vivo, noticias, ratings de analistas, perfil de empresa o detalle de BONOS AR (AL30/GD30/…): ese nivel de datos de mercado es del plan Pro — respondé con lo que tenga el snapshot y sumá la frase de upsell de arriba. Si el scorecard devuelve available:false para un bono, explicá que el análisis de bonos con datos de mercado es de Pro.
 
 NUNCA llames tools de mercado para CRIPTO — no aplican métricas tradicionales (P/E, ROE no se calculan). Decile honesto: "para cripto no manejo métricas de valoración tradicionales".
 
@@ -15306,7 +15308,39 @@ _AI_TOOLS = [
             "required": ["content"],
         },
     },
+    {
+        # M12 (audit IA #2): tool de cotización del dólar. Sin esto, ante la
+        # pregunta AR más común ("¿a cuánto está el dólar/MEP/blue?") el LLM
+        # inventaba el rate. Fuente = _get_dolar_data (mismo caché que /api/dolar).
+        "name": "get_fx_rates",
+        "description": (
+            "Devuelve las cotizaciones del dólar en Argentina HOY: MEP (dólar "
+            "bolsa, la base de valuación de la cartera), CCL (contado con liqui), "
+            "blue (informal) y cripto. Valores en pesos por dólar.\n\n"
+            "USALA cuando el usuario pregunta a cuánto está el dólar, el MEP, el "
+            "blue, el CCL, o cuando necesitás convertir un monto en pesos a "
+            "dólares. Citá siempre CUÁL dólar usaste (la cartera se valúa al MEP). "
+            "NO inventes el número: si la tool falla, decílo."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
+
+# M20 (audit IA #2): las tools de INVESTIGACIÓN de mercado externa (precios,
+# noticias, fundamentals, analistas, perfil, metadata de bonos, FX) son un
+# diferencial Pro — pasárselas a Free/Plus (que además no piden texto libre)
+# solo agrega tool-loops innecesarios (costo/latencia) y filtra feature Pro.
+# Free/Plus conservan las tools sobre SUS PROPIOS datos + los 2 chips de
+# onboarding de la whitelist (scorecard slot #5, earnings slot #8).
+_AI_TOOLS_FREE_NAMES = frozenset({
+    "get_value_scorecard",       # whitelist #5 (chip onboarding)
+    "get_earnings_history",      # whitelist #8 (chip onboarding)
+    "get_realized_vs_unrealized",  # P&L propio del user
+    "get_asset_operations",      # operaciones propias
+    "get_monthly_detail",        # mensual propio
+    "remember_user_fact",        # memoria del user
+})
+_AI_TOOLS_FREE = [t for t in _AI_TOOLS if t["name"] in _AI_TOOLS_FREE_NAMES]
 
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int) -> dict:
@@ -15358,7 +15392,72 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
         for sym in valid:
             yf_t = CRYPTO_YF.get(sym, sym)
             result[sym] = _fetch_one(yf_t)
-        return {"prices": result, "note": "Precios en USD (o ARS para .BA)"}
+        # M10/B-8 (audit IA #2): fallback de bonos AR. yfinance no cotiza
+        # soberanos/ONs argentinos (AL30/GD30/…) → quedaban en null, o el .BA
+        # daba per-100 sin ÷100. Resolvemos por data912 (per-1) igual que
+        # fetch_prices_for_symbols/snapshots_job. Para no-bonos devuelve None →
+        # se mantiene el precio de yfinance.
+        for sym in valid:
+            try:
+                bp = _resolve_ar_bond_price(sym)
+                if bp is None:
+                    # Especies D/C (AL30D/GD30C): normalizar a la base antes del
+                    # lookup — 'AL30D' crudo buscaba 'AL30DD' → null teniendo el
+                    # precio exacto en data912. _strip_bond_suffix valida contra
+                    # la metadata (no muerde tickers como AMD).
+                    from ai.ar_bonds_metadata import _strip_bond_suffix
+                    _is_ba = sym.endswith('.BA')
+                    _base = _strip_bond_suffix(sym[:-3] if _is_ba else sym)
+                    _norm = f"{_base}.BA" if _is_ba else _base
+                    if _norm != sym:
+                        bp = _resolve_ar_bond_price(_norm)
+            except Exception:
+                bp = None
+            if bp is not None:
+                result[sym] = bp
+        return {
+            "prices": result,
+            "note": (
+                "Precios en USD para tickers US; ARS para sufijo .BA. Los bonos AR "
+                "(AL30/GD30/…) vienen per-1 VN vía data912 (base+'D' = USD MEP; "
+                ".BA = ARS). Un valor null = sin cotización disponible; NO lo "
+                "inventes."
+            ),
+        }
+
+    elif name == "get_fx_rates":
+        # M12: cotización del dólar (mismo caché que /api/dolar). Devolvemos
+        # solo la venta (lo relevante para valuar/convertir).
+        try:
+            d = _get_dolar_data() or {}
+        except Exception as ex:
+            log.warning("get_fx_rates: _get_dolar_data falló: %s", ex)
+            return {"error": "No pude obtener las cotizaciones del dólar ahora."}
+
+        def _venta(casa):
+            obj = d.get(casa)
+            try:
+                v = obj.get("venta") if isinstance(obj, dict) else obj
+                return round(float(v), 2) if v and float(v) > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        rates = {
+            "mep": _venta("mep"),
+            "ccl": _venta("ccl"),
+            "blue": _venta("blue"),
+            "cripto": _venta("cripto"),
+        }
+        if not any(v for v in rates.values()):
+            return {"error": "Cotizaciones del dólar no disponibles ahora."}
+        return {
+            "rates_ars_per_usd": rates,
+            "note": (
+                "Pesos por dólar (venta), HOY. La cartera del usuario se valúa al "
+                "MEP (la cripto de exchange al spot); el blue es solo referencia. "
+                "Citá SIEMPRE cuál dólar usaste."
+            ),
+        }
 
     elif name == "get_asset_operations":
         raw_asset = input_data.get("asset", "")
@@ -15902,7 +16001,7 @@ def _ai_cache_invalidate(uid: int) -> None:
 
 
 @app.post("/api/ai/analyze")
-def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
+def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_current_user)):
     """Análisis contextual estructurado de una pantalla o sub-componente.
 
     El `screen` usa notación con puntos para sub-topics:
@@ -15921,6 +16020,10 @@ def ai_analyze(data: AIAnalyzeIn, uid: int = Depends(get_current_user)):
     from ai import llm, cache, quota
     from ai.schema import AnalysisResult
     from ai.registry import get_topic, list_topics
+
+    # M22 (audit IA #2): rate-limit por-request (por uid+IP). Análisis IA es el
+    # otro endpoint caro; un cache miss dispara el LLM.
+    _check_rate_limit(request, max_calls=10, window_seconds=60, suffix=f"ai_analyze:{uid}")
 
     if not llm.is_configured():
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
@@ -16118,7 +16221,8 @@ def get_fundamentals(ticker: str, uid: int = Depends(get_current_user)):
 
 
 @app.post("/api/fundamentals/ai-summary")
-def fundamentals_ai_summary(data: FundamentalsAISummaryIn, uid: int = Depends(get_current_user)):
+def fundamentals_ai_summary(data: FundamentalsAISummaryIn, request: Request,
+                            uid: int = Depends(get_current_user)):
     """Resumen IA ("Lo mejor" / "Ojo con esto") de los fundamentales de una acción.
 
     Reusa EXACTAMENTE la infra de /api/ai/analyze: tier (quota.get_tier),
@@ -16129,6 +16233,11 @@ def fundamentals_ai_summary(data: FundamentalsAISummaryIn, uid: int = Depends(ge
     """
     from ai import llm, cache, quota
     from ai.prompts import render_fundamentals_prompt, is_descriptive_tier
+
+    # M22 (audit IA #2): mismo guard por-request que analyze — mismo costo LLM
+    # en cache miss.
+    _check_rate_limit(request, max_calls=10, window_seconds=60,
+                      suffix=f"ai_fund:{uid}")
 
     if not llm.is_configured():
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
@@ -17617,13 +17726,36 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> i
         return 0
 
 
-def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total: int, max_calls: int):
+def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total: int, max_calls: int,
+                        allowed_names=None):
     """Ejecuta los tool_use blocks de una respuesta y arma los tool_result.
     Mismo hard-cap por turno que el path JSON (Audit Pack A v2 #5). Devuelve
-    (tool_results, tool_calls_total_actualizado). Compartido stream/no-stream."""
+    (tool_results, tool_calls_total_actualizado). Compartido stream/no-stream.
+
+    allowed_names (M20 enforcement): set de nombres de tool permitidos para el
+    tier del request. El gate del parámetro `tools` es ADVISORY — el modelo
+    puede emitir un tool_use con cualquier nombre (el prompt FREE viejo se los
+    daba por nombre exacto) y sin este check el server lo ejecutaba igual =
+    bypass silencioso del gating. None = sin restricción (compat)."""
     tool_results = []
     for block in response_content:
         if block.type == "tool_use":
+            if allowed_names is not None and block.name not in allowed_names:
+                log.warning("ai_chat tool_denied tier=%s uid=%s tool=%s",
+                            tier, uid, block.name)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps({
+                        "error": (
+                            f"la tool '{block.name}' no está disponible en tu plan. "
+                            "Respondé con los datos del snapshot; si el usuario "
+                            "necesita ese dato de mercado, mencioná que es parte "
+                            "del plan Pro."
+                        ),
+                    }, ensure_ascii=False),
+                })
+                continue
             if tool_calls_total >= max_calls:
                 log.warning(
                     "ai_chat tool_cap_exceeded tier=%s uid=%s tool=%s total=%d",
@@ -17691,6 +17823,11 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
 
     from ai import quota
+
+    # M22 (audit IA #2): rate-limit por-request (por uid+IP) ANTES de tocar DB o
+    # LLM. Defensa contra ráfagas/scripts (el endpoint más caro de la app) y
+    # mitiga el race de la cuota semanal (concurrencia acotada por minuto).
+    _check_rate_limit(request, max_calls=12, window_seconds=60, suffix=f"ai_chat:{uid}")
 
     # Resolver tier + cuota + perfil + facts en una sola conexión.
     conn = get_db()
@@ -17762,6 +17899,12 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
         conn.close()
 
     is_premium = tier in ("pro", "admin")
+    # M20: Free/Plus reciben solo las tools sobre sus propios datos + los chips
+    # de onboarding; las de investigación de mercado externa quedan Pro-only.
+    # allowed_names = enforcement en EJECUCIÓN (el parámetro tools es advisory:
+    # el modelo puede emitir cualquier nombre y el dispatch lo ejecutaría).
+    chat_tools = _AI_TOOLS if is_premium else _AI_TOOLS_FREE
+    chat_allowed_names = {t["name"] for t in chat_tools}
 
     # Gating Free/Plus: solo whitelist. Pro/Admin: libre.
     #
@@ -17939,7 +18082,7 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                         model="claude-haiku-4-5",
                         max_tokens=max_tokens,
                         system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
-                        tools=_AI_TOOLS,
+                        tools=chat_tools,
                         messages=messages_loop,
                     ) as stream:
                         for chunk in stream.text_stream:
@@ -17952,7 +18095,9 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                         yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
                         return
                     # tool_use: ejecutar y seguir. El preámbulo (raro) ya se streameó.
-                    tool_results, tcalls = _ai_chat_exec_tools(resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN)
+                    tool_results, tcalls = _ai_chat_exec_tools(
+                        resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN,
+                        allowed_names=chat_allowed_names)
                     messages_loop.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
                     messages_loop.append({"role": "user", "content": tool_results})
                 # Fallback: forzar síntesis sin tools (mismo criterio que el path JSON).
@@ -17960,7 +18105,7 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                     model="claude-haiku-4-5",
                     max_tokens=max_tokens_fallback,
                     system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
-                    tools=_AI_TOOLS,
+                    tools=chat_tools,
                     tool_choice={"type": "none"},
                     messages=messages_loop,
                 ) as stream:
@@ -18004,7 +18149,7 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                 system=[
                     {"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}
                 ],
-                tools=_AI_TOOLS,
+                tools=chat_tools,
                 messages=messages_loop,
             )
             last_response = response
@@ -18032,35 +18177,13 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                     log.warning("record_chat failed for uid=%s: %s", uid, ex)
                 return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
-            # Hay tool_use: ejecutar cada tool y continuar el loop.
-            # Hard cap: si llegamos a MAX_TOOL_CALLS_PER_TURN, rechazamos
-            # los tools restantes con un tool_result de error.
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    if tool_calls_total >= MAX_TOOL_CALLS_PER_TURN:
-                        log.warning(
-                            "ai_chat tool_cap_exceeded tier=%s uid=%s tool=%s total=%d",
-                            tier, uid, block.name, tool_calls_total,
-                        )
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": json.dumps({
-                                "error": (
-                                    f"cap de {MAX_TOOL_CALLS_PER_TURN} tools por turno alcanzado. "
-                                    "Sintetizá una respuesta con lo que ya tenés."
-                                ),
-                            }, ensure_ascii=False),
-                        })
-                        continue
-                    tool_calls_total += 1
-                    result = _execute_ai_tool(block.name, block.input, uid)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, ensure_ascii=False, default=str),
-                    })
+            # Hay tool_use: ejecutar cada tool y continuar el loop. Unificado
+            # sobre _ai_chat_exec_tools (mismo hard-cap + M20 enforcement por
+            # tier que el path streaming — antes este loop inline duplicaba la
+            # lógica y quedó sin el gate).
+            tool_results, tool_calls_total = _ai_chat_exec_tools(
+                response.content, uid, tier, tool_calls_total,
+                MAX_TOOL_CALLS_PER_TURN, allowed_names=chat_allowed_names)
 
             # Agregar respuesta del asistente (con tool_use blocks) + resultados al historial
             messages_loop.append({
@@ -18079,7 +18202,7 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
             model="claude-haiku-4-5",
             max_tokens=max_tokens_fallback,
             system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
-            tools=_AI_TOOLS,
+            tools=chat_tools,
             tool_choice={"type": "none"},
             messages=messages_loop,
         )

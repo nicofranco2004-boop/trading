@@ -69,6 +69,10 @@ class TestChatSnapshotValuation(unittest.TestCase):
     def setUp(self):
         main._CHAT_VAL_CACHE.clear()  # uid puede reusarse entre tests
         self.conn = main.get_db()
+        # addCleanup: cierra la conn AUNQUE setUp falle a mitad — si no, la
+        # write-txn abierta queda como lock permanente para el resto de la
+        # suite (cascada de "database is locked" de 45s en otros archivos).
+        self.addCleanup(self.conn.close)
         for t in ("positions", "brokers", "users"):
             self.conn.execute(f"DELETE FROM {t}")
         cur = self.conn.execute(
@@ -94,7 +98,12 @@ class TestChatSnapshotValuation(unittest.TestCase):
         self.conn.commit()
 
     def tearDown(self):
-        self.conn.close()
+        # No dejar minas FK a otros archivos de test sobre la misma DB: si
+        # dejamos positions/brokers apuntando a users, el "DELETE FROM users"
+        # de otro setUp viola FK. La conn la cierra addCleanup.
+        for t in ("positions", "brokers", "users"):
+            self.conn.execute(f"DELETE FROM {t}")
+        self.conn.commit()
 
     def _valuate(self):
         main._CHAT_VAL_CACHE.pop(self.uid, None)  # evitar hit de test previo

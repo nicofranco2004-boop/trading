@@ -26,6 +26,15 @@ os.environ["DB_PATH"] = TMP_DB.name
 
 import main
 
+# Aislamiento INDEPENDIENTE del orden de import: el env var de arriba solo tiene
+# efecto si este módulo es el PRIMERO en importar main. Cuando pytest colecciona
+# varios archivos, otro test importa main antes (con la DB compartida) y estos
+# tests corrían contra ESA DB → colisiones de users.email + "database is locked"
+# de ~45s (threads de _ensure_news_batch_parallel sobre la DB real). get_db()
+# lee la global en runtime → la forzamos y creamos el schema en la tmp.
+main.DB_PATH = TMP_DB.name
+main.init_db()
+
 
 def _iso(days_ago=0):
     return (datetime.utcnow() - timedelta(days=days_ago)).isoformat()
@@ -34,20 +43,23 @@ def _iso(days_ago=0):
 class MarketNewsToolTest(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
-        for t in ("news", "users"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
+        # addCleanup (no tearDown): corre AUNQUE setUp falle a mitad. Sin esto,
+        # un setUp que explota deja la conn viva con la write-txn abierta →
+        # lock permanente (unittest retiene las instancias) → cada test
+        # siguiente se come 3×15s de busy_timeout ("database is locked").
+        self.addCleanup(self.conn.close)
+        # DELETE en orden hijos→padres y SIN except-pass: el DELETE de users
+        # fallaba por FK (positions/brokers de OTROS archivos de test sobre la
+        # misma DB) y el except lo escondía → UNIQUE de users.email + cascada
+        # de locks. Mejor un error visible que 45s de lock silencioso.
+        for t in ("positions", "brokers", "news", "users"):
+            self.conn.execute(f"DELETE FROM {t}")
         cur = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
             ("mn@rendi.test", "x"))
         self.uid = cur.lastrowid
         self.conn.commit()
         self._n = 0
-
-    def tearDown(self):
-        self.conn.close()
 
     def _seed(self, title, summary="", category="market", days_ago=0,
               qsource="S&P 500", source="google_news_rss"):
