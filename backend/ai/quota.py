@@ -287,9 +287,9 @@ def record_hub_query(conn, user_id: int, cost_usd_cents: int = 0) -> None:
 
 
 def record_chat(conn, user_id: int, cost_usd_cents: int = 0) -> None:
-    """Suma 1 al contador chat del día (cap semanal se computa al leer).
-    Llamarlo DESPUÉS del response exitoso del LLM, no antes — si el LLM
-    falla, no consumimos cuota."""
+    """LEGACY (pre B-9): suma 1 al contador chat del día. El flujo actual usa
+    reserve_chat (ANTES del LLM) + record_chat_cost (después) + refund_chat en
+    fallo. Se conserva para compat de tests/scripts."""
     today = date.today().isoformat()
     with conn:
         conn.execute(
@@ -297,6 +297,72 @@ def record_chat(conn, user_id: int, cost_usd_cents: int = 0) -> None:
                VALUES (?, ?, 1, ?)
                ON CONFLICT(user_id, date) DO UPDATE SET
                  chat_count = chat_count + 1,
+                 cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
+            (user_id, today, cost_usd_cents),
+        )
+
+
+def reserve_chat(conn, user_id: int) -> tuple[bool, dict]:
+    """Reserva ATÓMICA de 1 slot de chat ANTES del LLM (audit IA #2 B-9).
+
+    El flujo viejo (can_chat → LLM → record_chat) era check-then-act sin lock:
+    N requests concurrentes leían el mismo count y TODOS pasaban el gate — un
+    Free en 0/3 disparaba N llamadas al LLM. Acá el conteo y el incremento
+    ocurren en UN statement: el WHERE re-verifica el cap DENTRO de la
+    transacción de escritura de SQLite (serializada) → sin ventana.
+
+    Devuelve (ok, usage). Con ok=True el slot ya está tomado: si el LLM falla,
+    el caller debe devolverlo con refund_chat. usage refleja el estado
+    POST-reserva (la consulta en curso ya cuenta).
+    """
+    tier = get_tier(conn, user_id)
+    limit = LIMITS[tier]["chat_per_week"]
+    today = date.today()
+    window_start = _window_start(today).isoformat()
+    with conn:
+        cur = conn.execute(
+            """INSERT INTO ai_usage_daily (user_id, date, chat_count, cost_usd_cents)
+               SELECT ?, ?, 1, 0
+                WHERE (SELECT COALESCE(SUM(chat_count), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 chat_count = chat_count + 1
+               WHERE (SELECT COALESCE(SUM(chat_count), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?""",
+            (user_id, today.isoformat(), user_id, window_start, limit,
+             user_id, window_start, limit),
+        )
+        ok = cur.rowcount > 0
+    return ok, get_current_usage(conn, user_id)
+
+
+def refund_chat(conn, user_id: int) -> None:
+    """Devuelve el slot reservado por reserve_chat cuando el LLM falló — el
+    usuario no recibió respuesta, no se le cobra la consulta. Resta de la fila
+    MÁS RECIENTE con chat_count > 0 (no de "hoy": una reserva a las 23:59 con
+    error a las 00:01 refundaría un día sin fila = slot perdido 7 días).
+    Nunca por debajo de 0."""
+    with conn:
+        conn.execute(
+            """UPDATE ai_usage_daily SET chat_count = MAX(0, chat_count - 1)
+                WHERE user_id = ?
+                  AND date = (SELECT MAX(date) FROM ai_usage_daily
+                               WHERE user_id = ? AND chat_count > 0)""",
+            (user_id, user_id),
+        )
+
+
+def record_chat_cost(conn, user_id: int, cost_usd_cents: int = 0) -> None:
+    """Registra SOLO el costo del chat exitoso (el slot ya lo tomó
+    reserve_chat — sumar acá de nuevo sería doble descuento)."""
+    if not cost_usd_cents:
+        return
+    today = date.today().isoformat()
+    with conn:
+        conn.execute(
+            """INSERT INTO ai_usage_daily (user_id, date, cost_usd_cents)
+               VALUES (?, ?, ?)
+               ON CONFLICT(user_id, date) DO UPDATE SET
                  cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
             (user_id, today, cost_usd_cents),
         )

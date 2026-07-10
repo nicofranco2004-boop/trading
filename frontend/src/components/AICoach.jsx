@@ -150,6 +150,18 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
         })
       }
     }
+    // B-13: el turno terminó en tool_use — lo streameado era el PREÁMBULO
+    // ("déjame consultar los precios…"), no la respuesta. Limpiamos la burbuja
+    // y volvemos al loader mientras corren las tools; la síntesis final llega
+    // en el próximo turno con su propio stream.
+    const onReset = () => {
+      acc = ''
+      if (assistantAdded) {
+        assistantAdded = false
+        setMessages(m => m.slice(0, -1))
+      }
+      setLoading(true)
+    }
 
     try {
       // GA4: engagement metric. No mandamos el content del mensaje (PII potential).
@@ -160,7 +172,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       // Marcar Coach IA como "descubierto" — usado por OnboardingChecklist
       // en Home para detectar que el user ya probó el chat.
       markAIDiscovered()
-      await api.chatStream({ messages: newMessages, snapshot }, { onDelta, signal: ctrl.signal })
+      await api.chatStream({ messages: newMessages, snapshot }, { onDelta, onReset, signal: ctrl.signal })
       // Edge: el stream cerró sin emitir texto → mostrar algo en vez de nada.
       if (!assistantAdded) {
         setMessages(m => [...m, { role: 'assistant', content: stripMarkdown(acc) || '…' }])

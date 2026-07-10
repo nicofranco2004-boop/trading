@@ -1620,6 +1620,18 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_import_mappings_user ON import_mappings(user_id);
     """)
 
+    # B-7 (audit IA #2): purga del cache yfinance envenenado — fundamentals/
+    # analysts de tickers .BA cacheados ANTES del guard traen ARS bajo campos
+    # *_usd y se servirían hasta 12-24h (7 días vía stale-fallback). Post-guard,
+    # esos kinds para .BA devuelven available:false (payload mínimo) → borrar
+    # en cada boot es idempotente y de costo trivial.
+    try:
+        conn.execute(
+            "DELETE FROM yfinance_cache WHERE ticker LIKE '%.BA' "
+            "AND kind IN ('fundamentals', 'analysts')")
+    except Exception:
+        pass  # tabla puede no existir en DBs muy viejas pre-migración
+
     conn.commit()
     conn.close()
 
@@ -13481,6 +13493,22 @@ def _yf_fundamentals_fetcher(yf_ticker: str) -> dict:
             "reason": f"yfinance no tiene fundamentales para {yf_ticker} (cripto, bono o ticker inválido)",
         }
 
+    # B-7 (audit IA #2): mismo guard que el scorecard ("Audit fix #4") — un .BA
+    # con currency != USD trae TODO en pesos (market_cap, 52w, EPS) y esta
+    # función lo emitía bajo campos *_usd (~1400× inflado). El dispatch de
+    # tools del LLM llama este fetcher DIRECTO (sin el pre-gate del endpoint
+    # REST) y la descripción de la tool pone 'TSLA.BA' como ejemplo.
+    _ccy = (info.get("currency") or "USD").upper()
+    if _ccy != "USD" and yf_ticker.endswith(".BA"):
+        us_ticker = yf_ticker.replace(".BA", "")
+        return {
+            "available": False,
+            "reason": (
+                f"Los fundamentales de {yf_ticker} vienen en {_ccy}, no USD. "
+                f"Consultá '{us_ticker}' (mismo subyacente listado en US)."
+            ),
+        }
+
     return {
         "available": True,
         "ticker": yf_ticker,
@@ -13993,6 +14021,20 @@ def _yf_analysts_fetcher(yf_ticker: str) -> dict:
         return {
             "available": False,
             "reason": f"{yf_ticker} no tiene cobertura de analistas (cripto, ETF o ticker inválido).",
+        }
+
+    # B-7 (audit IA #2): mismo guard que el scorecard. Peor que fundamentals:
+    # acá el hint hardcodea "US$" sobre el target, y el upside podía mezclar
+    # precio .BA en ARS con target del subyacente en USD (porcentaje absurdo).
+    _ccy = (info.get("currency") or "USD").upper()
+    if _ccy != "USD" and yf_ticker.endswith(".BA"):
+        us_ticker = yf_ticker.replace(".BA", "")
+        return {
+            "available": False,
+            "reason": (
+                f"Los targets/precios de {yf_ticker} vienen en {_ccy}, no USD. "
+                f"Consultá '{us_ticker}' (mismo subyacente listado en US)."
+            ),
         }
 
     current = info.get("currentPrice") or info.get("regularMarketPrice")
@@ -14798,7 +14840,35 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
     if not isinstance(raw, dict):
         return {}
 
-    sanitized: dict = dict(raw)  # shallow copy
+    # B-15 (audit IA #2): proyección a SCHEMA FIJO — el snapshot es un canal de
+    # texto libre controlado por el cliente; una key extra ("instructions",
+    # "note", lo que sea) entraba VERBATIM al contexto del LLM = bypass de la
+    # whitelist Free + superficie de prompt-injection. Solo pasan las keys que
+    # el frontend legítimo manda (AICoachDrawer). Lo demás se dropea y loggea.
+    _ALLOWED_SNAPSHOT_KEYS = {"summary", "positions", "operations", "monthly", "brokers"}
+    _dropped = [k for k in raw.keys() if k not in _ALLOWED_SNAPSHOT_KEYS]
+    if _dropped:
+        log.warning("Chat snapshot: keys no esperadas dropeadas: %s", _dropped[:10])
+    sanitized: dict = {k: v for k, v in raw.items() if k in _ALLOWED_SNAPSHOT_KEYS}
+
+    # Truncado defensivo de strings largos en las filas (un campo de texto
+    # inflado no debe poder inyectar párrafos de "instrucciones" ni reventar
+    # el presupuesto de tokens). Los campos legítimos (tickers, brokers,
+    # fechas, notas cortas) entran cómodos en 300 chars.
+    def _truncate_strings(obj, limit=300, depth=0):
+        # depth cap (review): un snapshot anidado cientos de niveles pasa el
+        # parser JSON (recursión C) pero reventaba ESTA recursión Python con
+        # RecursionError → 500. Más profundo que 20 no es un snapshot legítimo.
+        if depth > 20:
+            return "[nested-too-deep]"
+        if isinstance(obj, str):
+            return obj[:limit]
+        if isinstance(obj, list):
+            return [_truncate_strings(x, limit, depth + 1) for x in obj]
+        if isinstance(obj, dict):
+            return {k: _truncate_strings(v, limit, depth + 1) for k, v in obj.items()}
+        return obj
+    sanitized = _truncate_strings(sanitized)
 
     # 1. Listas top-level — si vienen None, convertimos a []
     for list_key in ("positions", "operations", "monthly", "brokers"):
@@ -15488,15 +15558,35 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
         except (TypeError, ValueError):
             months_raw = 12
         months = max(1, min(months_raw, 24))
+        # B-11 (audit IA #2): ventana de MESES real, no LIMIT por filas —
+        # `LIMIT months*6` truncaba a usuarios con >6 brokers (perdían los
+        # meses viejos en silencio) y sobraba para los de 1. Cutoff por
+        # (year, month) de los N meses más recientes.
+        from datetime import date as _date
+        _today = _date.today()
+        _cut_y, _cut_m = _today.year, _today.month
+        for _ in range(months - 1):
+            _cut_m -= 1
+            if _cut_m == 0:
+                _cut_y, _cut_m = _cut_y - 1, 12
         conn = get_db()
         rows = conn.execute(
             """SELECT year, month, broker, deposits, withdrawals,
                       pnl_realized, pnl_unrealized, capital_inicio, capital_final
-               FROM monthly_entries WHERE user_id=? ORDER BY year DESC, month DESC LIMIT ?""",
-            (uid, months * 6),
+               FROM monthly_entries
+              WHERE user_id=? AND (year > ? OR (year = ? AND month >= ?))
+              ORDER BY year DESC, month DESC""",
+            (uid, _cut_y, _cut_y, _cut_m),
         ).fetchall()
         conn.close()
-        return {"entries": [dict(r) for r in rows]}
+        return {
+            "entries": [dict(r) for r in rows],
+            "_note": (
+                "Las filas con broker='global' son el AGREGADO cross-broker del "
+                "mes (en USD); las demás son el desglose por broker. NO sumes "
+                "'global' con las por-broker — duplicarías."
+            ),
+        }
 
     elif name == "get_realized_vs_unrealized":
         # Devuelve breakdown PRECISO de realized (trades cerrados, USD absoluto)
@@ -17783,17 +17873,76 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
 
 
 def _record_chat_quota(uid: int, cost_cents: int) -> None:
-    """Descuenta 1 consulta de la cuota semanal (solo en éxito). Best-effort:
-    un fallo de escritura no debe romper la respuesta que ya se está enviando."""
+    """Registra el COSTO del chat exitoso. B-9: el slot de cuota ya lo tomó
+    quota.reserve_chat ANTES del LLM (reserva atómica) — acá solo se suma el
+    costo estimado; sumar el contador de nuevo sería doble descuento.
+    Best-effort: un fallo de escritura no rompe la respuesta en vuelo."""
     from ai import quota
     try:
         conn2 = get_db()
         try:
-            quota.record_chat(conn2, uid, cost_usd_cents=cost_cents)
+            quota.record_chat_cost(conn2, uid, cost_usd_cents=cost_cents)
         finally:
             conn2.close()
     except Exception as ex:
-        log.warning("record_chat failed for uid=%s: %s", uid, ex)
+        log.warning("record_chat_cost failed for uid=%s: %s", uid, ex)
+
+
+def _refund_chat_quota(uid: int) -> None:
+    """Devuelve el slot reservado cuando el LLM falló (el user no recibió
+    respuesta → no se le cobra). Best-effort."""
+    from ai import quota
+    try:
+        conn2 = get_db()
+        try:
+            quota.refund_chat(conn2, uid)
+        finally:
+            conn2.close()
+    except Exception as ex:
+        log.warning("refund_chat failed for uid=%s: %s", uid, ex)
+
+
+def _chat_quota_429(tier: str, usage: dict) -> HTTPException:
+    """Arma el 429 de cuota de chat (shape consistente con /api/ai/analyze,
+    con upgrade payload para UpgradePromoCard). Usado por el pre-check
+    temprano Y por la reserva atómica pre-LLM (B-9)."""
+    upgrade_available = tier in ("free", "plus")
+    target_tier = "plus" if tier == "free" else "pro"
+    if target_tier == "plus":
+        benefits = [
+            "3× más Chat Coach IA (9 consultas/sem vs 3)",
+            "Hasta 3 brokers (vs 1 en Free)",
+            "Reportes históricos + Export CSV",
+            "Diagnóstico completo + 4 detectores de comportamiento",
+        ]
+    else:  # plus → pro
+        benefits = [
+            "Chat libre con el Coach IA (40 consultas/sem)",
+            "10× más análisis IA (60/sem vs 6/sem)",
+            "Respuestas con causalidad y memoria persistente",
+            "Brokers ilimitados + comportamiento completo",
+        ]
+    # resets_on dinámico del usage (rolling 7d — NUNCA decir "lunes").
+    resets_on = usage.get("resets_on")
+    if resets_on:
+        msg = f"Llegaste al máximo de consultas ({usage['chat_count']}/{usage['chat_limit']}) de esta semana. Tu próxima consulta se libera el {resets_on}."
+    else:
+        msg = f"Llegaste al máximo de consultas ({usage['chat_count']}/{usage['chat_limit']}) de esta semana. Tu próxima consulta se libera cuando expira el slot más antiguo (ventana móvil de 7 días)."
+    return HTTPException(
+        429,
+        detail={
+            "error": "chat_quota_exceeded",
+            "message": msg,
+            "usage": usage,
+            "upgrade": {
+                "available": upgrade_available,
+                "current_tier": tier,
+                "target_tier": target_tier,
+                "resets_on": resets_on,
+                "benefits": benefits,
+            },
+        },
+    )
 
 
 @app.post("/api/ai/chat")
@@ -17833,57 +17982,14 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     conn = get_db()
     try:
         tier = quota.get_tier(conn, uid)
-        # Cuota semanal por tier (Free/Plus=6, Pro=60, Admin=1000). Bloqueo
-        # ANTES de procesar — barato + claro mensaje al usuario.
+        # Cuota semanal por tier (Free/Plus=6, Pro=60, Admin=1000). PRE-CHECK
+        # barato read-only para el 429 temprano con upgrade payload. La toma
+        # REAL del slot es la reserva atómica justo antes del LLM (B-9) — el
+        # review cazó que reservar acá dejaba ~130 líneas de ventana donde una
+        # excepción cobraba el slot sin dar respuesta.
         allowed, usage = quota.can_chat(conn, uid)
         if not allowed:
-            # Shape consistente con /api/ai/analyze: incluye `upgrade` payload
-            # para que el frontend renderee UpgradePromoCard con CTA a Pro/Plus
-            # en lugar de un banner de error plano. Audit #4.
-            #
-            # Target del upgrade:
-            #   - Free → Plus (3 → 9 chats = 3× más, upgrade barato)
-            #   - Plus → Pro (9 → 40 chats + chat libre + IA causal)
-            #   - Pro/Admin: no aplica, no debería llegar acá pero por las dudas
-            upgrade_available = tier in ("free", "plus")
-            target_tier = "plus" if tier == "free" else "pro"
-            if target_tier == "plus":
-                benefits = [
-                    "3× más Chat Coach IA (9 consultas/sem vs 3)",
-                    "Hasta 3 brokers (vs 1 en Free)",
-                    "Reportes históricos + Export CSV",
-                    "Diagnóstico completo + 4 detectores de comportamiento",
-                ]
-            else:  # plus → pro
-                benefits = [
-                    "Chat libre con el Coach IA (40 consultas/sem)",
-                    "10× más análisis IA (60/sem vs 6/sem)",
-                    "Respuestas con causalidad y memoria persistente",
-                    "Brokers ilimitados + comportamiento completo",
-                ]
-            # resets_on dinámico del usage (calculado por quota.get_current_usage
-            # como date(MIN(date), '+7 days') del slot más viejo). Si null,
-            # texto genérico — la cuota es rolling 7d, NUNCA decir "lunes".
-            resets_on = usage.get("resets_on")
-            if resets_on:
-                msg = f"Llegaste al máximo de consultas ({usage['chat_count']}/{usage['chat_limit']}) de esta semana. Tu próxima consulta se libera el {resets_on}."
-            else:
-                msg = f"Llegaste al máximo de consultas ({usage['chat_count']}/{usage['chat_limit']}) de esta semana. Tu próxima consulta se libera cuando expira el slot más antiguo (ventana móvil de 7 días)."
-            raise HTTPException(
-                429,
-                detail={
-                    "error": "chat_quota_exceeded",
-                    "message": msg,
-                    "usage": usage,
-                    "upgrade": {
-                        "available": upgrade_available,
-                        "current_tier": tier,
-                        "target_tier": target_tier,
-                        "resets_on": resets_on,
-                        "benefits": benefits,
-                    },
-                },
-            )
+            raise _chat_quota_429(tier, usage)
         prof_row = conn.execute(
             "SELECT investor_profile FROM users WHERE id=?", (uid,)
         ).fetchone()
@@ -18062,6 +18168,22 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
     tool_calls_total = 0
     last_response = None  # capturamos el response final para record_chat con tokens
 
+    # B-9: reserva ATÓMICA del slot INMEDIATAMENTE antes del LLM (cuenta e
+    # incrementa en un statement — la concurrencia ya no bypassea el cap). Va
+    # ACÁ y no en el pre-check de arriba para que la ventana entre reservar y
+    # responder sea ~0: una excepción en el armado (whitelist 403, snapshot,
+    # facts) ya no puede cobrar un slot sin dar respuesta. Si el LLM falla,
+    # los paths de error refundean.
+    _rconn = get_db()
+    try:
+        _reserved, _rusage = quota.reserve_chat(_rconn, uid)
+    finally:
+        _rconn.close()
+    if not _reserved:
+        # Perdió la carrera contra otro request concurrente (el pre-check de
+        # arriba pasó con el último slot). Mismo 429 con upgrade payload.
+        raise _chat_quota_429(tier, _rusage)
+
     # ── STREAMING (opt-in vía data.stream) ────────────────────────────────────
     # Devuelve SSE: el texto de la respuesta FINAL se emite token por token
     # (typewriter) para que el user lea desde el primer segundo. El loop de
@@ -18076,6 +18198,16 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
             # que bufferean por content-length.
             yield ": ok\n\n"
             tcalls = 0
+            # B-9 (review): contabilidad del slot reservado.
+            # - settled: done/error emitido → la cuota quedó resuelta (cobrada
+            #   o refundeada). Si el generator muere SIN settled (GeneratorExit
+            #   por desconexión del cliente / corte del proxy — NO lo atrapa el
+            #   except Exception), el finally decide.
+            # - synth_deltas: deltas del turno EN CURSO (se resetea con el frame
+            #   reset). Anti-abuso: si el user ya recibió respuesta sustancial y
+            #   se desconecta antes del done, se le COBRA (sin esto: leer y
+            #   cortar al 95% = chats infinitos). Si casi no llegó texto, refund.
+            state = {"settled": False, "synth_deltas": 0}
             try:
                 for _turn in range(MAX_TOOL_LOOPS + 1):
                     with client.messages.stream(
@@ -18087,14 +18219,22 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                     ) as stream:
                         for chunk in stream.text_stream:
                             if chunk:
+                                state["synth_deltas"] += 1
                                 yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
                         resp = stream.get_final_message()
                     if resp.stop_reason != "tool_use":
                         cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
                         _record_chat_quota(uid, cost_cents)
+                        state["settled"] = True
                         yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
                         return
-                    # tool_use: ejecutar y seguir. El preámbulo (raro) ya se streameó.
+                    # tool_use: B-13 — el frame `reset` avisa que lo streameado
+                    # era PREÁMBULO ("déjame consultar…"), no la respuesta: el
+                    # cliente limpia la burbuja y vuelve al loader. Va ANTES de
+                    # ejecutar las tools (review): el user ve el loader DURANTE
+                    # la ventana silenciosa de tools (además de keep-alive).
+                    yield "data: " + json.dumps({"t": "reset"}) + "\n\n"
+                    state["synth_deltas"] = 0
                     tool_results, tcalls = _ai_chat_exec_tools(
                         resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN,
                         allowed_names=chat_allowed_names)
@@ -18111,10 +18251,12 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                 ) as stream:
                     for chunk in stream.text_stream:
                         if chunk:
+                            state["synth_deltas"] += 1
                             yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
                     resp = stream.get_final_message()
                 cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
                 _record_chat_quota(uid, cost_cents)
+                state["settled"] = True
                 yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
             except Exception as ex:
                 ex_name = type(ex).__name__
@@ -18127,7 +18269,24 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                     if ex_name in ("BadRequestError",):
                         log.error("ai_chat stream BadRequest uid=%s detail=%s", uid, str(ex)[:500])
                     code, msg = "ai_internal", "Hubo un problema procesando tu consulta. Tocá \"Nuevo\" e intentá de nuevo."
+                # B-9: el LLM falló → devolver el slot reservado (el user no
+                # recibió respuesta, no se le cobra la consulta).
+                _refund_chat_quota(uid)
+                state["settled"] = True
                 yield "data: " + json.dumps({"t": "error", "code": code, "message": msg}, ensure_ascii=False) + "\n\n"
+            finally:
+                if not state["settled"]:
+                    # GeneratorExit (cliente cerró el tab / red móvil / proxy
+                    # cortó) — el except Exception no lo atrapa. Con poca o
+                    # ninguna síntesis emitida devolvemos el slot; con respuesta
+                    # sustancial ya entregada, se cobra (best-effort de costo 0).
+                    if state["synth_deltas"] < 5:
+                        log.info("ai_chat stream interrumpido sin respuesta (deltas=%d) uid=%s → refund",
+                                 state["synth_deltas"], uid)
+                        _refund_chat_quota(uid)
+                    else:
+                        log.info("ai_chat stream interrumpido con respuesta parcial (deltas=%d) uid=%s → se cobra",
+                                 state["synth_deltas"], uid)
 
         return StreamingResponse(
             _sse(),
@@ -18170,7 +18329,7 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
                 try:
                     conn2 = get_db()
                     try:
-                        quota.record_chat(conn2, uid, cost_usd_cents=cost_cents)
+                        quota.record_chat_cost(conn2, uid, cost_usd_cents=cost_cents)  # B-9: slot ya reservado
                     finally:
                         conn2.close()
                 except Exception as ex:
@@ -18212,7 +18371,7 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
         try:
             conn2 = get_db()
             try:
-                quota.record_chat(conn2, uid, cost_usd_cents=cost_cents)
+                quota.record_chat_cost(conn2, uid, cost_usd_cents=cost_cents)  # B-9: slot ya reservado
             finally:
                 conn2.close()
         except Exception as ex:
@@ -18232,6 +18391,8 @@ El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativ
         # f"Error en el chat: {ex}" con texto técnico al user.
         ex_name = type(ex).__name__
         log.warning("ai_chat exception tier=%s uid=%s type=%s msg=%s", tier, uid, ex_name, str(ex)[:200])
+        # B-9: fallo del LLM en el path JSON → devolver el slot reservado.
+        _refund_chat_quota(uid)
         if ex_name in ("APITimeoutError", "APIConnectionError"):
             raise HTTPException(
                 503,

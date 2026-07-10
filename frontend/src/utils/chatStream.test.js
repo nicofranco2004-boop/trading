@@ -88,6 +88,26 @@ describe('chatStream', () => {
     expect(caught?.truncated).toBe(true)
   })
 
+  it('frame reset (turno tool_use) dispara onReset y el stream sigue', async () => {
+    // B-13: el preámbulo pre-tools se descarta client-side vía onReset; la
+    // síntesis final llega después y el done cierra normal.
+    globalThis.fetch = vi.fn(async () => sseResponse([
+      'data: {"t":"delta","d":"déjame consultar los precios…"}\n\n',
+      'data: {"t":"reset"}\n\n',
+      'data: {"t":"delta","d":"NVDA está a US$ 215."}\n\n',
+      'data: {"t":"done","tier":"pro"}\n\n',
+    ]))
+    let acc = ''
+    let resets = 0
+    const r = await api.chatStream({ messages: [] }, {
+      onDelta: d => { acc += d },
+      onReset: () => { acc = ''; resets += 1 },
+    })
+    expect(resets).toBe(1)
+    expect(acc).toBe('NVDA está a US$ 215.')   // el preámbulo se descartó
+    expect(r.tier).toBe('pro')
+  })
+
   it('frame error del LLM lanza con status 503 (no truncated)', async () => {
     globalThis.fetch = vi.fn(async () => sseResponse([
       'data: {"t":"delta","d":"algo"}\n\n',
