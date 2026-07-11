@@ -697,6 +697,40 @@ def _persist_cash_in(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers,
     _apply_cash_flow(conn, uid, batch_id, raw_row_id, tx, helpers, sign=+1, tc_blue=tc_blue)
 
 
+def _is_amort_capital_return(op_type: str, asset_symbol, asset_type, notes) -> bool:
+    """¿Este DIVIDEND/INTEREST es el CASH de una AMORTIZACIÓN de bono SIN cantidad?
+
+    Balanz ("Renta y Amortización / TX26" con cantidad 0), IOL y el generic mandan
+    la amortización como cash-only → caía en DIVIDENDO y el capital DEVUELTO se
+    contaba entero como ganancia realizada (P&L inflado — reporte de user 2026-07-09
+    con TX26). Una amortización devuelve TU capital: no es ingreso.
+
+    Sin la cantidad no podemos armar la VENTA (eso es la Parte A, que sí ocurre
+    cuando el export trae cantidad) ni consumir cost-basis FIFO (necesita el face)
+    → modelamos DEVOLUCIÓN DE CAPITAL P&L-neutral: el cash entra igual, pero NO
+    suma a pnl_realized y la operation queda como 'Amortización' con pnl 0 (mismo
+    op_type que el flujo manual de bond_cashflow, que tampoco toca el P&L mensual).
+    Conservador: si el pago incluía cupón/CER genuino, se sub-cuenta (nunca se
+    sobre-cuenta). El nominal lo termina de clavar la foto de tenencia o el sweep.
+
+    Contrato del marcador (mismo que las VENTA-amort del sweep): notes contiene
+    'amortiz' Y el activo es un bono (asset_type BOND o ticker de bono AR conocido).
+    """
+    if op_type not in (OP_DIVIDEND, OP_INTEREST):
+        return False
+    if not asset_symbol:
+        return False
+    if "amortiz" not in (notes or "").lower():
+        return False
+    if (asset_type or "").upper() == "BOND":
+        return True
+    try:
+        from ai.ar_bonds_metadata import is_known_ar_bond
+        return is_known_ar_bond(asset_symbol)
+    except Exception:
+        return False
+
+
 def _persist_dividend_or_interest(conn, uid, batch_id, raw_row_id, tx: NormalizedTx,
                                     helpers, tc_blue: float):
     """Dividendo / Interés → cash up + fila en operations + pnl_realized.
@@ -706,11 +740,15 @@ def _persist_dividend_or_interest(conn, uid, batch_id, raw_row_id, tx: Normalize
     realizada (pnl_realized), aparecen en /operaciones para que el usuario
     vea historia, y suben el cash igual que un deposit.
 
+    EXCEPCIÓN — amortización de bono sin cantidad (_is_amort_capital_return):
+    devolución de capital → cash entra igual, pero op_type='Amortización' con
+    pnl_usd=0 y SIN tocar pnl_realized (no es ganancia). Ver docstring del helper.
+
     En operations:
-        op_type = "Dividendo" o "Interés"
+        op_type = "Dividendo" o "Interés" (o "Amortización" para el caso especial)
         asset   = el ticker que pagó (VOO, AL30, etc — puede ser NULL)
         quantity = el monto (en moneda nativa del broker)
-        pnl_usd = el monto convertido a USD si el broker es ARS
+        pnl_usd = el monto convertido a USD si el broker es ARS (0 para amort)
     """
     broker_row = conn.execute(
         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, tx.broker),
@@ -725,24 +763,34 @@ def _persist_dividend_or_interest(conn, uid, batch_id, raw_row_id, tx: Normalize
     # 1. Subir cash del broker (auto-crea posición si no existe)
     helpers._adjust_broker_cash(conn, uid, tx.broker, amount)
 
+    # ¿Amortización de bono sin cantidad? → devolución de capital, P&L-neutral.
+    is_amort = _is_amort_capital_return(
+        tx.operation_type, tx.asset_symbol, tx.asset_type, tx.notes)
+
     # 2. Insertar fila en operations
-    op_label = "Dividendo" if tx.operation_type == OP_DIVIDEND else "Interés"
+    if is_amort:
+        op_label = "Amortización"
+    else:
+        op_label = "Dividendo" if tx.operation_type == OP_DIVIDEND else "Interés"
     amount_usd = (amount / tc_blue) if currency == "ARS" else amount
+    pnl_usd = 0.0 if is_amort else round(amount_usd, 2)
     cur = conn.execute(
         """INSERT INTO operations (user_id, date, broker, asset, op_type,
            entry_price, exit_price, quantity, pnl_usd, pnl_pct, commissions)
            VALUES (?,?,?,?,?,?,?,?,?,?,0)""",
         (uid, tx.date, tx.broker, tx.asset_symbol or "—", op_label,
          None, None, round(amount, 4),
-         round(amount_usd, 2), None),
+         pnl_usd, None),
     )
     op_id = cur.lastrowid
     _link(conn, batch_id, raw_row_id, operation_id=op_id)
 
-    # 3. monthly_pnl_realized (en USD — convención de monthly_entries)
-    y, m = int(tx.date[:4]), int(tx.date[5:7])
-    helpers._update_monthly_pnl_realized(conn, uid, tx.broker, y, m, amount_usd)
-    helpers._update_monthly_pnl_realized(conn, uid, "global", y, m, amount_usd)
+    # 3. monthly_pnl_realized (en USD — convención de monthly_entries).
+    #    La amortización NO suma: es capital que vuelve, no ganancia.
+    if not is_amort:
+        y, m = int(tx.date[:4]), int(tx.date[5:7])
+        helpers._update_monthly_pnl_realized(conn, uid, tx.broker, y, m, amount_usd)
+        helpers._update_monthly_pnl_realized(conn, uid, "global", y, m, amount_usd)
 
 
 def _persist_cash_out(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, tc_blue: float):
@@ -1200,10 +1248,15 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                     "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
                     ((cash["invested"] or 0) - amount, cash["id"], uid),
                 )
-            # Bajar pnl_realized (revertir lo que sumó al persistir)
-            y, m = int(tx["date"][:4]), int(tx["date"][5:7])
-            helpers._update_monthly_pnl_realized(conn, uid, tx["broker"], y, m, -amount_usd)
-            helpers._update_monthly_pnl_realized(conn, uid, "global", y, m, -amount_usd)
+            # Bajar pnl_realized (revertir lo que sumó al persistir). SIMÉTRICO
+            # con el persist: la amortización-capital-return NUNCA sumó → acá
+            # tampoco resta (sin el guard, revertir dejaría pnl_realized en
+            # negativo por un profit que jamás se contó).
+            if not _is_amort_capital_return(
+                    tx["operation_type"], tx["asset_symbol"], tx["asset_type"], tx["notes"]):
+                y, m = int(tx["date"][:4]), int(tx["date"][5:7])
+                helpers._update_monthly_pnl_realized(conn, uid, tx["broker"], y, m, -amount_usd)
+                helpers._update_monthly_pnl_realized(conn, uid, "global", y, m, -amount_usd)
 
         elif op in ("WITHDRAW", "FEE", "IMPUESTO"):
             amount = float(tx["gross_amount"] or 0)
