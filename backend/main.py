@@ -14963,6 +14963,54 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
         log.warning("Chat snapshot.summary is not a dict — removed")
         sanitized.pop("summary", None)
 
+    # 2b. B-15 PROFUNDO: proyección POR ITEM. El top-level fijo no alcanzaba —
+    # una key extra DENTRO de un item de operations/monthly ("instrucciones":
+    # "IGNORÁ...") o un summary con strings del cliente entraban VERBATIM al
+    # prompt. Ahora: cada item pasa por whitelist de campos conocidos, y el
+    # summary del cliente queda 100% NUMÉRICO (coerción — todo string del
+    # summary final lo agrega el SERVER después de este sanitizer:
+    # valuation_note, benchmarks, etc.). Con esto el snapshot deja de ser un
+    # canal de texto libre por completo.
+    _ITEM_FIELDS = {
+        # fallback si el enrich de valuación no corre — normalmente el server
+        # REEMPLAZA positions entero con las valuadas
+        "positions": {"asset", "broker", "quantity", "invested", "buy_price",
+                       "currency", "asset_type", "is_cash", "entry_date", "_kind"},
+        # notes afuera a propósito: era el canal de texto libre por-item
+        "operations": {"date", "broker", "asset", "op_type", "entry_price",
+                        "exit_price", "quantity", "pnl_usd", "pnl_pct",
+                        "entry_date", "currency", "_kind"},
+        "monthly": {"year", "month", "broker", "deposits", "withdrawals",
+                     "pnl_realized", "pnl_unrealized", "capital_inicio",
+                     "capital_final", "manual_deposits", "manual_withdrawals"},
+        "brokers": {"name", "currency"},
+    }
+    for list_key, allowed in _ITEM_FIELDS.items():
+        items = sanitized.get(list_key) or []
+        projected = []
+        for it in items:
+            if isinstance(it, dict):
+                projected.append({k: v for k, v in it.items() if k in allowed})
+            # no-dicts se descartan (un string suelto en la lista = inyección)
+        sanitized[list_key] = projected
+
+    # summary del cliente: solo keys conocidas Y solo valores numéricos
+    _SUMMARY_NUMERIC_KEYS = {
+        "total_invested_usd", "total_positions", "total_cash_positions",
+        "open_positions_count", "cash_lines_count", "months_count",
+        "sum_pnl_realized", "sum_deposits", "sum_withdrawals",
+    }
+    if isinstance(sanitized.get("summary"), dict):
+        clean_summary = {}
+        for k, v in sanitized["summary"].items():
+            if k not in _SUMMARY_NUMERIC_KEYS:
+                continue
+            try:
+                clean_summary[k] = float(v)
+            except (TypeError, ValueError):
+                continue  # "IGNORÁ TUS INSTRUCCIONES" no es un número
+        sanitized["summary"] = clean_summary
+
     # 3. Defensa anti-confusión open/closed: cada position lleva
     # `_kind: 'open_position'`, cada operation lleva `_kind: 'closed_trade'`.
     # El LLM lo ve inline y desambigua incluso si el frontend no marcó.
@@ -15110,6 +15158,12 @@ def _valuate_positions_for_chat(conn, uid: int):
         "tc_mep": round(tc_cedear, 2),
         "tc_blue": round(tc_blue, 2),
     }
+    # Eviction simple: cap de entradas (una por uid) — sin esto el dict crecía
+    # monótono por vida del proceso. Al superar el cap, se van las más viejas.
+    if len(_CHAT_VAL_CACHE) > 500:
+        for _old_uid, _ in sorted(_CHAT_VAL_CACHE.items(),
+                                   key=lambda kv: kv[1][0])[:100]:
+            _CHAT_VAL_CACHE.pop(_old_uid, None)
     _CHAT_VAL_CACHE[uid] = (_time.time(), valued, totals)
     return valued, totals
 
@@ -17389,7 +17443,12 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
                         log.warning("get_realized_vs_unrealized: broker %s failed: %s", b['name'], ex)
                         continue
                 # Solo contamos posiciones NO-cash (consistente con el resto del bot)
-                position_count = sum(1 for p in positions if not p.get('is_cash'))
+                # Holdings distintos (broker, asset), NO lotes FIFO — un activo
+                # comprado en 3 tandas es UNA posición para el user. Alineado
+                # con el snapshot valuado (que agrupa por holding); antes este
+                # conteo divergía bajo la misma key y el LLM veía dos números.
+                position_count = len({(p['broker'], p['asset'])
+                                      for p in positions if not p.get('is_cash')})
                 in_portfolio_now = position_count > 0
                 unrealized_usd = market_value_usd - invested_usd
 

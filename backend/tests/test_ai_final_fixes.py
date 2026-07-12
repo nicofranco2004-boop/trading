@@ -194,18 +194,24 @@ class TestB15SnapshotSchema(unittest.TestCase):
         self.assertIn("summary", out)
 
     def test_truncates_long_strings(self):
+        # B-15 profundo: los campos NO permitidos (note/notes) se dropean por
+        # proyección; el truncado a 300 sigue vigente para los permitidos.
         out = main._sanitize_chat_snapshot({
-            "operations": [{"asset": "AAPL", "note": "x" * 5000}],
+            "operations": [{"asset": "x" * 5000, "note": "y" * 5000}],
         })
-        self.assertLessEqual(len(out["operations"][0]["note"]), 300)
+        self.assertLessEqual(len(out["operations"][0]["asset"]), 300)
+        self.assertNotIn("note", out["operations"][0])
 
     def test_normal_snapshot_passes(self):
         out = main._sanitize_chat_snapshot({
-            "summary": {"total_value_usd": 100},
+            # B-15 profundo: el summary del CLIENTE solo pasa keys de la
+            # whitelist numérica (total_value_usd lo estampa el SERVER en el
+            # enrich, después del sanitizer).
+            "summary": {"total_invested_usd": 100},
             "positions": [{"asset": "AAPL"}],
             "operations": [], "monthly": [], "brokers": [],
         })
-        self.assertEqual(out["summary"]["total_value_usd"], 100)
+        self.assertEqual(out["summary"]["total_invested_usd"], 100)
         self.assertEqual(out["positions"][0]["_kind"], "open_position")
         self.assertTrue(out["_sanitized"])
 
