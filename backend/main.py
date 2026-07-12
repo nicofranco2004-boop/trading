@@ -15095,7 +15095,25 @@ def _pct_move(series: dict, cur_key: str, prev_key: str):
     return None
 
 
-def _build_chat_benchmarks(conn, uid: int):
+def _kick_bench_refresh():
+    """Dispara el refresh de benchmarks en background (fire-and-forget, mismo
+    lock que el SWR del endpoint). Nunca lanza."""
+    try:
+        if not _bench_refresh_inflight["flag"]:
+            _bench_refresh_inflight["flag"] = True
+            def _bg():
+                try:
+                    _benchmarks_fetch_and_cache()
+                except Exception as ex:
+                    log.warning("chat benchmarks refresh failed: %s", ex)
+                finally:
+                    _bench_refresh_inflight["flag"] = False
+            _bench_fetch_executor.submit(_bg)
+    except Exception:
+        pass
+
+
+def _build_chat_benchmarks(conn, uid: int, _today=None):
     """Bloque compacto de benchmarks REALES + retornos del user para el snapshot
     del chat (M-benchmark, quick win del audit de conversión). Los números van
     PRE-CALCULADOS server-side — el modelo no hace aritmética, solo los cita.
@@ -15103,35 +15121,36 @@ def _build_chat_benchmarks(conn, uid: int):
     Fuente: _bench_cache (el mismo SWR de /api/benchmarks, TTL 1h). Con caché
     frío devuelve None y dispara el refresh en background (fire-and-forget) —
     NUNCA bloquear el chat 15-20s; el prompt instruye a decir "no tengo el
-    dato" y la PRÓXIMA pregunta ya lo tiene.
+    dato" y la PRÓXIMA pregunta ya lo tiene. Cache stale (> TTL) se sirve
+    igual + refresh en background (SWR completo, no solo la mitad fría).
 
     Retornos del user: _portfolio_snapshot_summary (motor recién auditado —
     Δ30d y YTD cashflow-adjusted). La cartera se mide en USD (MEP): contra el
     S&P la comparación es directa; contra la inflación (pesos) el bloque trae
-    el retorno en PESOS aproximado = retorno USD compuesto con la variación
-    del blue del mismo período, con etiqueta explícita de aproximación.
+    ars_ytd_pct_approx = retorno USD compuesto con la devaluación (blue) de la
+    MISMA VENTANA del user (desde ytd_since — el review demostró 23pts de
+    error componiendo el YTD de marzo del user con el blue desde diciembre).
+
+    _today: inyectable para tests (determinismo — sin esto, 2 tests explotaban
+    todos los eneros por colisión ym_prev == dec_prev en las fixtures).
     """
     data = _bench_cache.get("data") if _bench_cache else None
     if not data:
         # Caché frío (post-restart sin tráfico en /api/benchmarks): calentar en
-        # background sin bloquear este request (mismo lock que el SWR).
-        try:
-            if not _bench_refresh_inflight["flag"]:
-                _bench_refresh_inflight["flag"] = True
-                def _bg():
-                    try:
-                        _benchmarks_fetch_and_cache()
-                    except Exception as ex:
-                        log.warning("chat benchmarks warmup failed: %s", ex)
-                    finally:
-                        _bench_refresh_inflight["flag"] = False
-                _bench_fetch_executor.submit(_bg)
-        except Exception:
-            pass
+        # background sin bloquear este request.
+        _kick_bench_refresh()
         return None
+    # SWR mitad-caliente (review): si la data está vencida, servirla igual pero
+    # disparar el refresh — sin esto el chat servía data stale para siempre si
+    # nadie visitaba el Dashboard.
+    try:
+        if (time.time() - float(_bench_cache.get("ts") or 0)) > BENCH_TTL:
+            _kick_bench_refresh()
+    except Exception:
+        pass
 
     from datetime import date as _date
-    today = _date.today()
+    today = _today or _date.today()
     ym = f"{today.year:04d}-{today.month:02d}"
     py, pm = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
     ym_prev = f"{py:04d}-{pm:02d}"
@@ -15185,15 +15204,38 @@ def _build_chat_benchmarks(conn, uid: int):
     except Exception as ex:
         log.warning("chat benchmarks: summary del user falló uid=%s: %s", uid, ex)
 
-    # Retorno del user en PESOS (aprox): USD compuesto con devaluación blue del
-    # mismo período — la respuesta directa a "¿le gano a la inflación?".
+    # Retorno del user en PESOS (aprox): USD compuesto con la devaluación blue
+    # de la MISMA VENTANA del user (desde el mes anterior a ytd_since) — la
+    # respuesta directa a "¿le gano a la inflación?". El review demostró que
+    # componer el YTD del user (que puede arrancar en marzo) con el blue desde
+    # diciembre sobreestimaba 23pts. Sin base del blue en esa ventana → null.
     user_ytd_ars = None
-    if user_ytd is not None and blue_ytd is not None:
-        user_ytd_ars = round(((1 + user_ytd / 100) * (1 + blue_ytd / 100) - 1) * 100, 2)
+    if user_ytd is not None and blue:
+        _blue_base_key = dec_prev
+        try:
+            if user_ytd_since:
+                sy, sm = int(user_ytd_since[:4]), int(user_ytd_since[5:7])
+                _blue_base_key = (f"{sy:04d}-{sm - 1:02d}" if sm > 1
+                                  else f"{sy - 1:04d}-12")
+        except (TypeError, ValueError):
+            _blue_base_key = dec_prev
+        _blue_user_window = _pct_move(blue, blue_cur_key, _blue_base_key)
+        if _blue_user_window is not None:
+            user_ytd_ars = round(
+                ((1 + user_ytd / 100) * (1 + _blue_user_window / 100) - 1) * 100, 2)
+
+    # Cobertura del YTD de inflación (review): INDEC publica con 1-2 meses de
+    # rezago → el YTD compuesto llega hasta el último mes publicado, no hasta
+    # hoy. Sin exponerlo, "le ganás a la inflación" salía con sesgo pro-user
+    # sistemático (~2%/mes no contado).
+    inf_ytd_through = None
+    if ytd_months:
+        inf_ytd_through = max(k for k in inflation.keys()
+                              if k.startswith(f"{today.year:04d}-"))
 
     return {
         "inflation_ar": {"month_pct": inf_month, "month": inf_month_key,
-                          "ytd_pct": inf_ytd},
+                          "ytd_pct": inf_ytd, "ytd_through": inf_ytd_through},
         "sp500_total_return_usd": {"month_pct": sp_month, "ytd_pct": sp_ytd},
         "dolar_blue_move": {"month_pct": blue_month, "ytd_pct": blue_ytd},
         "merval_ars": {"ytd_pct": merval_ytd},
@@ -15206,14 +15248,22 @@ def _build_chat_benchmarks(conn, uid: int):
         "_note": (
             "Retornos REALES precalculados — citalos, NO hagas aritmética nueva. "
             "user_portfolio está en USD (MEP), cashflow-adjusted (los aportes no "
-            "cuentan como ganancia). Comparaciones correctas: vs S&P 500 → "
-            "usd_ytd_pct contra sp500_total_return_usd.ytd_pct (ambos USD). Vs "
-            "inflación → ars_ytd_pct_approx contra inflation_ar.ytd_pct (ambos "
-            "pesos; 'approx' porque usa el blue como proxy de devaluación — "
-            "aclaralo en una palabra). NUNCA compares el retorno USD directo "
-            "contra la inflación en pesos. Cualquier campo null = no hay dato: "
-            "decílo, no lo inventes. inflation_ar.month es el último mes "
-            "PUBLICADO por INDEC (suele haber 1 mes de rezago)."
+            "cuentan como ganancia); usd_30d_pct es ventana RODANTE de 30 días "
+            "(no mes calendario); los month_pct de S&P/blue pueden incluir el "
+            "mes EN CURSO parcial (al día de hoy). Comparaciones correctas: vs "
+            "S&P 500 → usd_ytd_pct contra sp500_total_return_usd.ytd_pct (ambos "
+            "USD; si ytd_since no es enero, la ventana del user es más corta que "
+            "la del índice — mencionalo). Vs inflación → ars_ytd_pct_approx "
+            "contra inflation_ar.ytd_pct (ambos pesos; 'approx' porque usa el "
+            "blue como proxy de devaluación en la MISMA ventana del user — "
+            "aclaralo en una palabra). OJO: el YTD de inflación llega hasta "
+            "ytd_through (INDEC publica con 1-2 meses de rezago) mientras el del "
+            "user llega hasta hoy — si la comparación está peleada (diferencia "
+            "menor a ~2-4 puntos), decí que con la inflación de los meses aún no "
+            "publicados el resultado puede cambiar. NUNCA compares el retorno "
+            "USD directo contra la inflación en pesos. Cualquier campo null = no "
+            "hay dato: decílo, no lo inventes. inflation_ar.month es el último "
+            "mes PUBLICADO por INDEC."
         ),
     }
 
