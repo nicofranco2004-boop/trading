@@ -12649,6 +12649,7 @@ Tools internas (data del propio usuario):
 - get_market_news: noticias de MERCADO/macro/índices por tema (S&P, Fed, inflación, dólar, riesgo país, Merval). Para preguntas de mercado general, NO sobre un ticker que el usuario tiene.
 - get_fx_rates: cotización del dólar HOY (MEP/CCL/blue/cripto, pesos por dólar). Para "¿a cuánto está el dólar/MEP/blue?" o convertir pesos↔dólares usá ESTA (números, no noticias); get_market_news es para el CONTEXTO del dólar, no el precio.
 - remember_user_fact: persistir hechos del usuario entre sesiones.
+- register_trade / undo_last_trade: registrar en Rendi una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo anota en el tracker. Flujo obligatorio: llamá register_trade con lo que tengas → el server te dice qué falta (preguntalo TODO en una sola repregunta, usando el snapshot para proponer broker/tipo) o te da un resumen + token → mostrás el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntás si confirma → SOLO con el sí, re-llamás con confirmed=true + token. Si es de hoy y no sabe el precio, ofrecé el actual (get_current_prices, price_source='market_today'); si es retroactiva el precio lo da el usuario. NUNCA digas "registrado" sin el status registered. Si dice que se equivocó: undo_last_trade.
 
 Tools de mercado externas (Pack A v2):
 Para EQUITIES (acciones US, CEDEARs listados en US — yfinance):
@@ -12900,8 +12901,12 @@ Tenés SOLO estas tools (no existe ninguna otra en tu plan):
 - Sobre los datos del usuario: get_asset_operations, get_monthly_detail, get_realized_vs_unrealized.
 - De mercado: get_value_scorecard (valoración de una ACCIÓN US/CEDEAR: 8 métricas + semáforos) y get_earnings_history (próximo earnings + últimos quarters).
 - remember_user_fact para hechos que el usuario pide recordar.
+- register_trade / undo_last_trade: registrar una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo ANOTA en Rendi. Flujo: llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen + token → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → SOLO con el sí, re-llamá con confirmed=true + token. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
+- get_current_prices: SOLO para ofrecer el precio actual dentro del flujo de registro cuando la operación es de HOY y el usuario no lo sabe (price_source='market_today'). No la uses para consultas de precios sueltas — eso es de Pro.
 
-Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo. NO llames tools que no están en esta lista ni inventes nombres.
+Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo — EXCEPCIÓN: en el flujo de registro podés combinar get_current_prices + register_trade en la misma respuesta. NO llames tools que no están en esta lista ni inventes nombres.
+
+TEXTO LIBRE EN TU PLAN: si el mensaje NO es una de las preguntas guiadas, SOLO puede ser para registrar una operación (o continuar un registro en curso). Procesá el registro y NADA más — si además pide análisis u opinión ("¿y conviene?", "¿está cara?"), registrá y cerrá con: "Para análisis con causalidad, pasate a Pro desde Configuración." No respondas la parte de análisis.
 
 Para preguntas de valoración de una ACCIÓN ("¿está cara NVDA?"), get_value_scorecard cubre todo en un solo call.
 
@@ -15291,6 +15296,370 @@ def _enrich_chat_benchmarks(uid: int, snapshot: dict) -> dict:
     return out
 
 
+# ── register_trade: el write-path del chat (registro conversacional) ─────────
+# El Coach puede REGISTRAR compras/ventas manuales que el usuario le dicta en
+# lenguaje natural. Diseño de alta confianza (escribe en la cartera):
+#   1. DOS FASES server-enforced: la tool sin token válido NUNCA escribe —
+#      valida, deriva y devuelve un resumen + confirmation_token (single-use,
+#      TTL 10 min). Solo la re-llamada con ese token ejecuta. La confirmación
+#      la garantiza el SERVER, no el prompt.
+#   2. Se ejecuta el payload GUARDADO al emitir el token (no el que reenvía el
+#      modelo en la confirmación) — el user confirma exactamente lo que vio.
+#   3. El write reusa el MISMO camino que el alta manual de la UI
+#      (create_position / sell_position_fifo): cash, FIFO cross-broker,
+#      operations, monthly — cero lógica duplicada.
+#   4. Aritmética SERVER-SIDE: quantity = amount/price la deriva el handler
+#      (el modelo nunca calcula); inconsistencia >1% entre ambos → rechazo.
+#   5. Contrato read-only intacto: esto anota en Rendi, jamás toca el broker
+#      real — el resumen de confirmación lo dice SIEMPRE.
+
+_PENDING_TRADES: dict = {}    # uid → {token, payload, summary, ts}
+_TRADE_FLOW_OPEN: dict = {}   # uid → ts del último needs_info (continuaciones Free)
+_LAST_CHAT_TRADE: dict = {}   # uid → info del último write por chat (para undo)
+_PENDING_TRADE_TTL = 600      # 10 min para confirmar
+_UNDO_TRADE_TTL = 24 * 3600   # undo disponible 24 h
+
+_TRADE_KIND_TO_ASSET_TYPE = {
+    "CRYPTO": "CRYPTO", "CEDEAR": "CEDEAR", "STOCK": "STOCK", "AR_STOCK": "STOCK",
+}
+# Guard de sanidad: ningún registro por chat puede superar este monto nocional
+# (en la moneda de la operación). No es un límite de producto — es el freno a
+# un typo/alucinación tipo "65000000" que corrompería cash/P&L.
+_TRADE_MAX_NOTIONAL = 5_000_000
+
+
+def _fmt_qty(q: float) -> str:
+    """Cantidad legible: 0.03077 BTC, 20 NVDA (sin ceros de más)."""
+    if q == int(q):
+        return str(int(q))
+    return f"{q:.8f}".rstrip("0").rstrip(".")
+
+
+def _register_trade_summary(p: dict) -> str:
+    ccy = "US$" if p["currency"] == "USD" else "$"
+    side = "COMPRA" if p["action"] == "buy" else "VENTA"
+    tipo = {"CRYPTO": "cripto", "CEDEAR": "CEDEAR", "STOCK": "acción",
+            "AR_STOCK": "acción AR"}.get(p["kind"], p["kind"])
+    s = (f"{side} {_fmt_qty(p['quantity'])} {p['asset']} ({tipo}) @ {ccy} "
+         f"{p['price']:,.2f} = {ccy} {p['amount']:,.2f} en {p['broker']}")
+    if p.get("date_is_today") is False:
+        s += f" con fecha {p['date']}"
+    if p.get("autodeposit_needed"):
+        s += (f". OJO: tu cash registrado en {p['broker']} no alcanza — "
+              f"registro también un depósito de {ccy} {p['autodeposit_needed']:,.2f} "
+              "para cubrirlo (así el P&L no miente)")
+    return s.replace(",", "@").replace(".", ",").replace("@", ".")
+
+
+def _register_trade_handler(input_data: dict, uid: int) -> dict:
+    """Handler de la tool register_trade. Ver el bloque de diseño de arriba."""
+    import secrets
+    from ai.trade_tickers import resolve_asset
+
+    now = time.time()
+    # Expirar pendientes viejos (lazy, sin cron)
+    pend = _PENDING_TRADES.get(uid)
+    if pend and (now - pend["ts"]) > _PENDING_TRADE_TTL:
+        _PENDING_TRADES.pop(uid, None)
+        pend = None
+
+    # ── FASE 2: confirmación con token ────────────────────────────────────
+    if input_data.get("confirmed") and input_data.get("confirmation_token"):
+        if not pend or not secrets.compare_digest(
+                str(input_data.get("confirmation_token")), pend["token"]):
+            return {"error": (
+                "No hay un registro pendiente con ese código (expiró a los 10 "
+                "minutos o ya se usó). Pedile al usuario los datos de nuevo y "
+                "rearmá el registro desde cero."
+            )}
+        payload = pend["payload"]          # ← se ejecuta LO CONFIRMADO, no lo
+        _PENDING_TRADES.pop(uid, None)     #   que reenvía el modelo
+        return _execute_confirmed_trade(payload, uid)
+
+    # ── FASE 1: validar + derivar + pedir confirmación ────────────────────
+    missing, hints = [], []
+    action = str(input_data.get("action") or "").strip().lower()
+    if action not in ("buy", "sell"):
+        missing.append("action (buy|sell)")
+
+    raw_asset = str(input_data.get("asset") or "").strip()
+    asset, kinds = resolve_asset(raw_asset)
+    if not raw_asset:
+        missing.append("asset")
+    elif not asset:
+        return {"error": (
+            f"No reconozco '{raw_asset}' como un activo registrable. Por ahora "
+            "puedo registrar cripto, acciones US/ETFs, CEDEARs y acciones "
+            "argentinas (bonos y FCI todavía no — se cargan desde la app). "
+            "Pedile al usuario el ticker exacto."
+        )}
+
+    conn = get_db()
+    try:
+        # Brokers reales del user (para validar y para los hints)
+        brokers = {r["name"]: r["currency"] for r in conn.execute(
+            "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)).fetchall()}
+        if not brokers:
+            return {"error": "El usuario no tiene brokers creados — decile que primero cree uno desde la app (Cartera → Agregar)."}
+
+        raw_broker = str(input_data.get("broker") or "").strip()
+        broker = next((b for b in brokers if b.lower() == raw_broker.lower()), None)
+        if not raw_broker:
+            missing.append("broker")
+            hints.append(f"brokers del usuario: {', '.join(sorted(brokers))}")
+        elif broker is None:
+            return {"error": (
+                f"'{raw_broker}' no es un broker del usuario. Tiene: "
+                f"{', '.join(sorted(brokers))}. Preguntale en cuál fue."
+            )}
+
+        # Tipo de activo: si el ticker es ambiguo (AMZN = CEDEAR o acción US),
+        # el modelo DEBE haber desambiguado con el usuario.
+        raw_kind = str(input_data.get("asset_type") or "").strip().upper()
+        kind = raw_kind if raw_kind in kinds else None
+        if len(kinds) == 1:
+            kind = next(iter(kinds))   # sin ambigüedad → server decide
+        if kind is None:
+            opts = sorted(kinds)
+            # Hint server-side: ¿qué tiene YA el usuario de este activo?
+            held = conn.execute(
+                "SELECT broker, asset_type, quantity, currency FROM positions "
+                "WHERE user_id=? AND asset=? AND is_cash=0 AND quantity>0",
+                (uid, asset)).fetchall()
+            if held:
+                hints.append("el usuario YA tiene " + "; ".join(
+                    f"{_fmt_qty(r['quantity'])} {asset} ({r['asset_type'] or 's/tipo'}) "
+                    f"en {r['broker']}" for r in held))
+            missing.append(f"asset_type ({' | '.join(opts)}) — preguntale al usuario")
+
+        currency = str(input_data.get("currency") or "").strip().upper()
+        if currency not in ("ARS", "USD"):
+            missing.append("currency (ARS|USD)")
+            if broker:
+                hints.append(f"la moneda de {broker} es {brokers[broker]}")
+
+        # Precio y cantidad/monto — derivación server-side
+        def _num(key):
+            v = input_data.get(key)
+            try:
+                f = float(v)
+                return f if f > 0 and f < 1e15 else None
+            except (TypeError, ValueError):
+                return None
+        price, quantity, amount = _num("price"), _num("quantity"), _num("amount")
+        if price is None:
+            missing.append("price (si la operación es de HOY podés ofrecer el "
+                           "precio actual de get_current_prices como default)")
+        if quantity is None and amount is None:
+            missing.append("quantity o amount (con uno alcanza)")
+
+        # Fecha: default hoy; retroactiva exige precio dado por el USUARIO
+        today_iso = datetime.utcnow().strftime("%Y-%m-%d")
+        date = str(input_data.get("date") or "").strip() or today_iso
+        if not _DATE_RE.match(date):
+            return {"error": f"Fecha inválida: '{date}' (formato YYYY-MM-DD)."}
+        if date > today_iso:
+            return {"error": "La fecha no puede ser futura."}
+        date_is_today = (date == today_iso)
+        if (not date_is_today
+                and str(input_data.get("price_source") or "").strip().lower() == "market_today"):
+            return {"error": (
+                "La operación es retroactiva: NO uses el precio de hoy como "
+                "costo (mentiría el P&L). Preguntale al usuario a qué precio "
+                "operó ese día."
+            )}
+
+        if missing:
+            _TRADE_FLOW_OPEN[uid] = time.time()
+            return {
+                "status": "needs_info",
+                "missing": missing,
+                "hints": hints,
+                "_note": (
+                    "Faltan datos para registrar. Preguntale al usuario TODO lo "
+                    "que falta en UNA sola pregunta (no de a uno), usando los "
+                    "hints. Cuando tengas todo, volvé a llamar register_trade."
+                ),
+            }
+
+        # Derivar la pata faltante + chequear consistencia
+        if quantity is None:
+            quantity = amount / price
+        elif amount is None:
+            amount = quantity * price
+        elif abs(quantity * price - amount) > 0.01 * max(amount, 1e-9):
+            return {"error": (
+                f"Los números no cierran: {_fmt_qty(quantity)} × {price} = "
+                f"{quantity * price:,.2f}, pero el monto dicho es {amount:,.2f} "
+                "(>1% de diferencia). Preguntale al usuario cuál vale."
+            )}
+        if amount > _TRADE_MAX_NOTIONAL:
+            return {"error": (
+                f"El monto ({amount:,.0f}) supera el máximo por registro "
+                f"({_TRADE_MAX_NOTIONAL:,.0f}). Si es real, que lo cargue "
+                "desde la app."
+            )}
+
+        # Venta: verificar tenencia FIFO disponible (mismo par que el endpoint)
+        autodeposit_needed = 0.0
+        if action == "sell":
+            from importing.persister import broker_pair
+            _pair = broker_pair(conn, uid, broker)
+            _ph = ",".join("?" * len(_pair))
+            have = conn.execute(
+                f"SELECT COALESCE(SUM(quantity),0) AS q FROM positions "
+                f"WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0",
+                (uid, *_pair, asset)).fetchone()
+            available = float(have["q"] or 0)
+            if quantity > available + 1e-9:
+                return {"error": (
+                    f"El usuario tiene {_fmt_qty(available)} {asset} en "
+                    f"{broker} y quiere vender {_fmt_qty(quantity)}. Avisale y "
+                    "preguntá si la cantidad es otra o si la tenencia está en "
+                    "otro broker."
+                )}
+        else:
+            # Compra: anticipar el autodepósito (transparencia en el resumen +
+            # decide si el undo automático estará disponible)
+            cash_row = conn.execute(
+                "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+                (uid, broker)).fetchone()
+            cash_now = float(cash_row["invested"] or 0) if cash_row else 0.0
+            shortfall = round(amount - cash_now, 2)
+            autodeposit_needed = shortfall if shortfall > 0 else 0.0
+    finally:
+        conn.close()
+
+    payload = {
+        "action": action, "asset": asset, "kind": kind,
+        "asset_type": _TRADE_KIND_TO_ASSET_TYPE[kind],
+        "broker": broker, "currency": currency,
+        "quantity": round(quantity, 8), "price": price,
+        "amount": round(amount, 2), "date": date,
+        "date_is_today": date_is_today,
+        "autodeposit_needed": autodeposit_needed,
+    }
+    token = "ct_" + secrets.token_urlsafe(12)
+    _PENDING_TRADES[uid] = {"token": token, "payload": payload,
+                            "summary": _register_trade_summary(payload), "ts": now}
+    return {
+        "status": "needs_confirmation",
+        "summary": _PENDING_TRADES[uid]["summary"],
+        "confirmation_token": token,
+        "_note": (
+            "NO está registrado todavía. Mostrale al usuario el summary TAL "
+            "CUAL + la aclaración '(esto solo lo anota en Rendi — no toca tu "
+            "cuenta del broker)' y preguntale si confirma. SOLO si responde "
+            "afirmativamente, volvé a llamar register_trade con "
+            "confirmed=true y este confirmation_token. Si cambia algo, rearmá "
+            "desde cero (sin token)."
+        ),
+    }
+
+
+def _execute_confirmed_trade(p: dict, uid: int) -> dict:
+    """Ejecuta el payload confirmado por el MISMO camino que el alta manual."""
+    now = time.time()
+    try:
+        if p["action"] == "buy":
+            pos_in = PositionIn(
+                broker=p["broker"], asset=p["asset"], buy_price=p["price"],
+                quantity=p["quantity"], invested=p["amount"],
+                asset_type=p["asset_type"], currency=p["currency"],
+                entry_date=p["date"], notes="Registrado por Coach IA",
+            )
+            row = create_position(pos_in, uid)
+            _LAST_CHAT_TRADE[uid] = {
+                "kind": "buy", "position_id": row.get("id"),
+                "cash_debited": p["amount"],
+                "autodeposit": p["autodeposit_needed"],
+                "broker": p["broker"], "asset": p["asset"],
+                "quantity": p["quantity"], "summary": _register_trade_summary(p),
+                "ts": now,
+            }
+        else:
+            sell_in = SellIn(
+                broker=p["broker"], asset=p["asset"], quantity=p["quantity"],
+                exit_price=p["price"], date=p["date"], currency=p["currency"],
+            )
+            sell_position_fifo(sell_in, uid)
+            _LAST_CHAT_TRADE[uid] = {
+                "kind": "sell", "broker": p["broker"], "asset": p["asset"],
+                "quantity": p["quantity"], "summary": _register_trade_summary(p),
+                "ts": now,
+            }
+    except HTTPException as ex:
+        detail = ex.detail if isinstance(ex.detail, str) else str(ex.detail)
+        return {"error": f"No se pudo registrar: {detail}"}
+    except Exception as ex:
+        log.error("register_trade write failed uid=%s: %s", uid, ex)
+        return {"error": "No se pudo registrar por un error interno. Decile al usuario que lo intente desde la app."}
+
+    _CHAT_VAL_CACHE.pop(uid, None)   # el próximo snapshot del chat ya lo ve
+    undo_note = (
+        "Si el usuario dice que se equivocó, llamá undo_last_trade."
+        if p["action"] == "buy" and not p["autodeposit_needed"] else
+        "Para revertirlo: desde la app (Cartera para la posición, Operaciones "
+        "para movimientos) — el undo automático no cubre este caso."
+    )
+    return {
+        "status": "registered",
+        "summary": _LAST_CHAT_TRADE[uid]["summary"],
+        "_note": (
+            "Registrado OK. Confirmale al usuario con el summary. " + undo_note
+        ),
+    }
+
+
+def _undo_last_trade_handler(uid: int) -> dict:
+    """Deshace el ÚLTIMO registro hecho por chat (solo compras, 24 h, y solo si
+    la posición sigue intacta y no hubo autodepósito). Borra la fila Y devuelve
+    el cash exacto que la compra debitó — el delete_position de la UI NO
+    devuelve el cash (asimetría conocida), por eso acá va el espejo completo."""
+    info = _LAST_CHAT_TRADE.get(uid)
+    if not info or (time.time() - info["ts"]) > _UNDO_TRADE_TTL:
+        return {"error": "No encuentro un registro reciente hecho por chat para deshacer (ventana: 24 h)."}
+    if info["kind"] != "buy":
+        return {"error": (
+            "Solo puedo deshacer COMPRAS automáticamente. Para revertir la "
+            "venta: que registre la compra inversa, o desde la app."
+        )}
+    if info.get("autodeposit"):
+        return {"error": (
+            "Esa compra vino con un depósito automático (el cash no alcanzaba) "
+            "— revertir ambos a mano es más seguro: borrá la posición desde "
+            "Cartera y el depósito desde Operaciones (tachito)."
+        )}
+    conn = get_db()
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT id, quantity FROM positions WHERE id=? AND user_id=?",
+                (info["position_id"], uid)).fetchone()
+            if not row:
+                _LAST_CHAT_TRADE.pop(uid, None)
+                return {"error": "Esa posición ya no existe (¿la borraron desde la app?). Nada para deshacer."}
+            if abs(float(row["quantity"] or 0) - info["quantity"]) > 1e-9:
+                return {"error": (
+                    "La posición cambió desde que se registró (¿venta parcial?) "
+                    "— no puedo deshacerla automáticamente. Mejor desde la app."
+                )}
+            conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
+                         (info["position_id"], uid))
+            # Devolver el cash EXACTO que create_position debitó
+            _adjust_broker_cash(conn, uid, info["broker"], info["cash_debited"])
+    finally:
+        conn.close()
+    _LAST_CHAT_TRADE.pop(uid, None)
+    _CHAT_VAL_CACHE.pop(uid, None)
+    _ai_cache_invalidate(uid)
+    return {
+        "status": "undone",
+        "summary": f"Deshecho: {info['summary']}",
+        "_note": "Confirmale al usuario que el registro se revirtió (posición borrada y cash devuelto).",
+    }
+
+
 # ── Tool definitions para el coach IA ────────────────────────────────────────
 
 _AI_TOOLS = [
@@ -15603,6 +15972,61 @@ _AI_TOOLS = [
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "register_trade",
+        "description": (
+            "Registra una COMPRA o VENTA manual en la cartera de Rendi que el "
+            "usuario te dicta ('compré 2000 USD de BTC a 65000', 'vendí 20 "
+            "nominales de Amazon'). NO opera en el broker real — solo lo ANOTA "
+            "en el tracker, como el botón Agregar de la app.\n\n"
+            "FLUJO OBLIGATORIO (el server lo fuerza):\n"
+            "1. Ante la intención de registrar, llamala con lo que tengas — el "
+            "server valida y te dice qué falta (needs_info) o te da un resumen "
+            "+ confirmation_token (needs_confirmation).\n"
+            "2. Mostrale el resumen al usuario y preguntá si confirma. NUNCA "
+            "digas que quedó registrado antes del status 'registered'.\n"
+            "3. SOLO con el sí explícito: re-llamá con confirmed=true + el "
+            "confirmation_token.\n\n"
+            "Reglas: NO calcules vos la cantidad (mandá amount y el server "
+            "deriva). Si el ticker es ambiguo (AMZN puede ser CEDEAR o acción "
+            "US), preguntá — el snapshot te dice qué tiene ya el usuario. Si "
+            "la operación es de HOY y no sabe el precio, ofrecé el actual de "
+            "get_current_prices y mandá price_source='market_today'; si es "
+            "RETROACTIVA, el precio lo tiene que dar el usuario. Soporta "
+            "cripto, acciones US/ETFs, CEDEARs y acciones AR (bonos/FCI no)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["buy", "sell"]},
+                "asset": {"type": "string", "description": "Ticker o nombre (BTC, AMZN, 'amazon')"},
+                "asset_type": {"type": "string", "enum": ["CRYPTO", "CEDEAR", "STOCK", "AR_STOCK"],
+                                "description": "Obligatorio si el ticker es ambiguo (preguntale al usuario)"},
+                "broker": {"type": "string", "description": "Nombre EXACTO de un broker del usuario (está en el snapshot)"},
+                "currency": {"type": "string", "enum": ["ARS", "USD"]},
+                "quantity": {"type": "number", "description": "Cantidad de unidades (si el usuario la dio)"},
+                "amount": {"type": "number", "description": "Monto total (si dio el monto, NO calcules la cantidad — el server la deriva)"},
+                "price": {"type": "number", "description": "Precio unitario"},
+                "price_source": {"type": "string", "enum": ["user", "market_today"],
+                                  "description": "'market_today' SOLO si usaste el precio actual y la operación es de hoy"},
+                "date": {"type": "string", "description": "YYYY-MM-DD (omitir = hoy)"},
+                "confirmed": {"type": "boolean", "description": "true SOLO tras el sí explícito del usuario al resumen"},
+                "confirmation_token": {"type": "string", "description": "El token que devolvió needs_confirmation"},
+            },
+            "required": ["action", "asset"],
+        },
+    },
+    {
+        "name": "undo_last_trade",
+        "description": (
+            "Deshace el ÚLTIMO registro hecho por chat cuando el usuario dice "
+            "que se equivocó ('no, era otro precio', 'deshacelo'). Solo cubre "
+            "COMPRAS de las últimas 24 h sin depósito automático — borra la "
+            "posición y devuelve el cash exacto. Para lo demás, el server te "
+            "dice cómo guiar al usuario."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 # M20 (audit IA #2): las tools de INVESTIGACIÓN de mercado externa (precios,
@@ -15618,6 +16042,15 @@ _AI_TOOLS_FREE_NAMES = frozenset({
     "get_asset_operations",      # operaciones propias
     "get_monthly_detail",        # mensual propio
     "remember_user_fact",        # memoria del user
+    # Registro conversacional (decisión de producto 2026-07-12): TODOS los
+    # tiers pueden registrar — consume el cupo de chat del plan (Free ~3/sem
+    # = probar; Pro = usar). 1 registro completo = 1 uso (las continuaciones
+    # del flujo se refundean — ver _maybe_refund_trade_turn).
+    "register_trade",
+    "undo_last_trade",
+    # get_current_prices vuelve a Free SOLO por el default de precio-de-hoy
+    # del flujo de registro (el prompt FREE lo limita a ese uso).
+    "get_current_prices",
 })
 _AI_TOOLS_FREE = [t for t in _AI_TOOLS if t["name"] in _AI_TOOLS_FREE_NAMES]
 
@@ -15656,7 +16089,13 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int) -> dict:
     if not isinstance(input_data, dict):
         return {"error": "input_data debe ser dict"}
 
-    if name == "get_current_prices":
+    if name == "register_trade":
+        return _register_trade_handler(input_data, uid)
+
+    elif name == "undo_last_trade":
+        return _undo_last_trade_handler(uid)
+
+    elif name == "get_current_prices":
         raw_symbols = input_data.get("symbols", [])
         if not isinstance(raw_symbols, list):
             return {"error": "symbols debe ser lista"}
@@ -17965,6 +18404,35 @@ def _normalize_question(s: str) -> str:
 _FREE_QUESTIONS_NORMALIZED = frozenset(_normalize_question(q) for q in _FREE_QUESTIONS_WHITELIST)
 
 
+_TRADE_INTENT_RE = re.compile(
+    r"\b(compr[eé]|vend[ií]|anot[aá]|registr[aá](me|le)?|cargá|carga(me)?)\b",
+    re.IGNORECASE)
+
+
+def _is_trade_intent(text: str) -> bool:
+    """¿El mensaje es una intención de REGISTRAR una operación? ('compré 2000
+    usd de btc a 65000'). Gate del texto libre para Free/Plus: la whitelist de
+    12 preguntas bloquea todo lo demás, pero el registro conversacional es para
+    TODOS los tiers (decisión de producto) — este detector abre el paso SOLO a
+    mensajes con verbo de operación. El prompt FREE limita qué se hace con
+    ellos (solo registro, nada de análisis libre) y el gate de tools (M20) +
+    la whitelist de la tool acotan el daño de un falso positivo."""
+    return bool(_TRADE_INTENT_RE.search(text or ""))
+
+
+def _trade_flow_open(uid: int) -> bool:
+    """¿Hay un flujo de registro ABIERTO para el uid? (pendiente de confirmar,
+    o el server pidió datos hace <10 min). Permite que las respuestas de
+    continuación de Free/Plus ('a 65000', 'sí, confirmá') pasen el gate de
+    whitelist aunque no matcheen el detector de intención."""
+    now = time.time()
+    pend = _PENDING_TRADES.get(uid)
+    if pend and (now - pend["ts"]) <= _PENDING_TRADE_TTL:
+        return True
+    opened = _TRADE_FLOW_OPEN.get(uid)
+    return bool(opened and (now - opened) <= _PENDING_TRADE_TTL)
+
+
 def _is_whitelisted_question(text: str) -> bool:
     """True si `text` matchea alguna pregunta de la whitelist (case + accent
     insensitive). Free/Plus solo pueden mandar éstas."""
@@ -18026,7 +18494,7 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> i
 
 
 def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total: int, max_calls: int,
-                        allowed_names=None):
+                        allowed_names=None, turn_flags=None):
     """Ejecuta los tool_use blocks de una respuesta y arma los tool_result.
     Mismo hard-cap por turno que el path JSON (Audit Pack A v2 #5). Devuelve
     (tool_results, tool_calls_total_actualizado). Compartido stream/no-stream.
@@ -18035,7 +18503,11 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
     tier del request. El gate del parámetro `tools` es ADVISORY — el modelo
     puede emitir un tool_use con cualquier nombre (el prompt FREE viejo se los
     daba por nombre exacto) y sin este check el server lo ejecutaba igual =
-    bypass silencioso del gating. None = sin restricción (compat)."""
+    bypass silencioso del gating. None = sin restricción (compat).
+
+    turn_flags (set mutable, opcional): el caller lo pasa para saber qué pasó
+    en el turno — se usa para el refund de cuota del flujo de registro
+    ('trade_tool' = se llamó register_trade; 'undo_ok' = undo exitoso)."""
     tool_results = []
     for block in response_content:
         if block.type == "tool_use":
@@ -18073,6 +18545,12 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
                 continue
             tool_calls_total += 1
             result = _execute_ai_tool(block.name, block.input, uid)
+            if turn_flags is not None:
+                if block.name == "register_trade":
+                    turn_flags.add("trade_tool")
+                elif (block.name == "undo_last_trade" and isinstance(result, dict)
+                        and result.get("status") == "undone"):
+                    turn_flags.add("undo_ok")
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -18109,6 +18587,21 @@ def _refund_chat_quota(uid: int) -> None:
             conn2.close()
     except Exception as ex:
         log.warning("refund_chat failed for uid=%s: %s", uid, ex)
+
+
+def _maybe_refund_trade_turn(uid: int, had_pending_at_start: bool, turn_flags: set) -> None:
+    """Cuota del registro conversacional: 1 registro COMPLETO = 1 uso del plan.
+    El primer turno del flujo ("compré X") cobra su slot normal; los turnos de
+    CONTINUACIÓN (responder el precio, el "sí, confirmá") se refundean — sin
+    esto, un Free con 3/semana quemaba la semana en UNA operación, o peor, se
+    quedaba sin cupo a mitad de la confirmación. Gates server-side:
+      - continuación = había un registro pendiente al INICIO del turno Y este
+        turno llamó register_trade (no alcanza con chatear teniendo un pending)
+      - un undo EXITOSO también se refundea (deshacer un error no cuesta slot;
+        el registro que deshizo ya pagó el suyo; los intentos fallidos cobran)
+    """
+    if ("undo_ok" in turn_flags) or (had_pending_at_start and "trade_tool" in turn_flags):
+        _refund_chat_quota(uid)
 
 
 def _chat_quota_429(tier: str, usage: dict) -> HTTPException:
@@ -18237,7 +18730,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
             break
 
     if not is_premium:
-        if not _is_whitelisted_question(last_user_msg):
+        _trade_gate_pass = _is_trade_intent(last_user_msg) or _trade_flow_open(uid)
+        if not _is_whitelisted_question(last_user_msg) and not _trade_gate_pass:
             log.info("ai_chat rejected non-whitelisted msg, tier=%s uid=%s msg=%r",
                      tier, uid, last_user_msg[:80])
             # 403 con upgrade payload — para que el frontend muestre la card
@@ -18248,7 +18742,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
                 403,
                 detail={
                     "error": "free_chat_not_allowed",
-                    "message": "El chat libre está disponible solo en el plan Pro. Elegí una de las preguntas guiadas o actualizá tu plan.",
+                    "message": "El chat libre está disponible solo en el plan Pro. Elegí una de las preguntas guiadas, registrá una operación (probá: \"compré 100 USD de BTC a 65.000\") o actualizá tu plan.",
                     "tier": tier,
                     "upgrade": {
                         "available": True,
@@ -18387,6 +18881,12 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
     # responder sea ~0: una excepción en el armado (whitelist 403, snapshot,
     # facts) ya no puede cobrar un slot sin dar respuesta. Si el LLM falla,
     # los paths de error refundean.
+    # Cuota del registro conversacional: si YA hay un trade pendiente de
+    # confirmación, este turno es una CONTINUACIÓN del flujo → si termina
+    # llamando register_trade, el slot se refundea (1 registro = 1 uso).
+    _trade_pending_at_start = uid in _PENDING_TRADES
+    _turn_flags: set = set()
+
     _rconn = get_db()
     try:
         _reserved, _rusage = quota.reserve_chat(_rconn, uid)
@@ -18438,6 +18938,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                     if resp.stop_reason != "tool_use":
                         cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
                         _record_chat_quota(uid, cost_cents)
+                        _maybe_refund_trade_turn(uid, _trade_pending_at_start, _turn_flags)
                         state["settled"] = True
                         yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
                         return
@@ -18450,7 +18951,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                     state["synth_deltas"] = 0
                     tool_results, tcalls = _ai_chat_exec_tools(
                         resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN,
-                        allowed_names=chat_allowed_names)
+                        allowed_names=chat_allowed_names, turn_flags=_turn_flags)
                     messages_loop.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
                     messages_loop.append({"role": "user", "content": tool_results})
                 # Fallback: forzar síntesis sin tools (mismo criterio que el path JSON).
@@ -18469,6 +18970,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                     resp = stream.get_final_message()
                 cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
                 _record_chat_quota(uid, cost_cents)
+                _maybe_refund_trade_turn(uid, _trade_pending_at_start, _turn_flags)
                 state["settled"] = True
                 yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
             except Exception as ex:
@@ -18547,6 +19049,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                         conn2.close()
                 except Exception as ex:
                     log.warning("record_chat failed for uid=%s: %s", uid, ex)
+                _maybe_refund_trade_turn(uid, _trade_pending_at_start, _turn_flags)
                 return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
             # Hay tool_use: ejecutar cada tool y continuar el loop. Unificado
@@ -18555,7 +19058,8 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
             # lógica y quedó sin el gate).
             tool_results, tool_calls_total = _ai_chat_exec_tools(
                 response.content, uid, tier, tool_calls_total,
-                MAX_TOOL_CALLS_PER_TURN, allowed_names=chat_allowed_names)
+                MAX_TOOL_CALLS_PER_TURN, allowed_names=chat_allowed_names,
+                turn_flags=_turn_flags)
 
             # Agregar respuesta del asistente (con tool_use blocks) + resultados al historial
             messages_loop.append({
@@ -18589,6 +19093,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 conn2.close()
         except Exception as ex:
             log.warning("record_chat failed for uid=%s: %s", uid, ex)
+        _maybe_refund_trade_turn(uid, _trade_pending_at_start, _turn_flags)
         return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
     except HTTPException:

@@ -263,7 +263,10 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
 
   function handleFreeSubmit(e) {
     e.preventDefault()
-    if (!canChatFree) return  // safety: Free no debería ver el input
+    // El input ahora es para TODOS: Pro = chat libre; Free/Plus = registrar
+    // operaciones ("compré 2000 USD de BTC a 65.000"). El gate del CONTENIDO
+    // es server-side (whitelist + detector de intención de registro) — si un
+    // Free manda otra cosa, el 403 del server trae la card de upgrade.
     const text = freeText.trim()
     if (!text) return
     setFreeText('')
@@ -438,32 +441,36 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       )}
 
       {/* Input libre — SOLO Pro/Admin. Free/Plus ven los chips o el upsell. */}
-      {canChatFree && (
-        <form
-          onSubmit={handleFreeSubmit}
-          className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40 flex items-center gap-2"
+      {/* Input de texto para TODOS los tiers: Pro = chat libre; Free/Plus =
+          registrar operaciones dictadas ("compré 2000 USD de BTC a 65.000").
+          El gate del contenido es server-side (whitelist + intención de
+          registro) — acá solo cambia el placeholder por tier. */}
+      <form
+        onSubmit={handleFreeSubmit}
+        className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40 flex items-center gap-2"
+      >
+        <input
+          type="text"
+          value={freeText}
+          onChange={e => setFreeText(e.target.value)}
+          disabled={loading || sending}
+          placeholder={canChatFree
+            ? 'Preguntale lo que quieras sobre tu cartera…'
+            : 'Registrá una operación: "compré 2000 USD de BTC a 65.000"'}
+          className="flex-1 bg-bg-2 dark:bg-bg-2/60 border border-line text-sm text-ink-0 placeholder:text-ink-3 rounded-sm px-3 py-2 focus:outline-none focus:border-data-violet/60 disabled:opacity-50"
+          maxLength={500}
+          aria-label={canChatFree ? 'Pregunta libre al coach IA' : 'Registrar una operación con el coach IA'}
+        />
+        <button
+          type="submit"
+          disabled={loading || sending || !freeText.trim()}
+          className="bg-data-violet hover:bg-data-violet/90 text-white rounded-sm p-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center"
+          title="Enviar"
+          aria-label="Enviar"
         >
-          <input
-            type="text"
-            value={freeText}
-            onChange={e => setFreeText(e.target.value)}
-            disabled={loading || sending}
-            placeholder="Preguntale lo que quieras sobre tu cartera…"
-            className="flex-1 bg-bg-2 dark:bg-bg-2/60 border border-line text-sm text-ink-0 placeholder:text-ink-3 rounded-sm px-3 py-2 focus:outline-none focus:border-data-violet/60 disabled:opacity-50"
-            maxLength={500}
-            aria-label="Pregunta libre al coach IA"
-          />
-          <button
-            type="submit"
-            disabled={loading || sending || !freeText.trim()}
-            className="bg-data-violet hover:bg-data-violet/90 text-white rounded-sm p-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center"
-            title="Enviar"
-            aria-label="Enviar pregunta"
-          >
-            <Send size={14} strokeWidth={2} />
-          </button>
-        </form>
-      )}
+          <Send size={14} strokeWidth={2} />
+        </button>
+      </form>
 
       {/* Upsell Free/Plus → Pro: visible cuando NO tiene chat libre. Muestra
           qué desbloquea Pro sin ser intrusivo (un slot debajo de los chips). */}
@@ -471,7 +478,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
         <div className="border-t border-line/70 dark:border-line/40 px-3 py-2 bg-data-violet/5 flex items-center gap-2">
           <Lock size={11} className="text-data-violet flex-shrink-0" />
           <p className="text-[10px] text-ink-2 leading-snug flex-1">
-            ¿Querés preguntar libre? Pro desbloquea chat sin restricciones (40 consultas/sem).
+            Con tu plan podés registrar operaciones acá. ¿Análisis y preguntas libres? Eso es Pro (40 consultas/sem).
           </p>
           <a
             href="/planes"

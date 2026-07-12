@@ -25,7 +25,10 @@ class TestM20ToolGating(unittest.TestCase):
 
     def test_free_set_excludes_market_research(self):
         free = {t["name"] for t in main._AI_TOOLS_FREE}
-        for pro_only in ("get_fx_rates", "get_market_news", "get_current_prices",
+        # get_current_prices volvió a Free con el registro conversacional
+        # (default de precio-de-hoy del flujo register_trade; el prompt FREE
+        # lo limita a ese uso). El resto del research de mercado sigue Pro.
+        for pro_only in ("get_fx_rates", "get_market_news",
                          "get_stock_fundamentals", "get_analyst_ratings",
                          "get_company_profile", "get_recent_news_for_assets",
                          "get_ar_bond_metadata"):
