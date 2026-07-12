@@ -169,6 +169,13 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
         is_freeform: !!(isPro || isAdmin),
         tier,
       })
+      // M-benchmark (hipótesis de conversión): trackear la pregunta de
+      // benchmark por separado — es el momento de upsell que estamos midiendo
+      // (pregunta → respuesta con data real → CTA Pro → ¿upgrade?).
+      const _q = content.toLowerCase()
+      if (_q.includes('s&p') || _q.includes('inflación') || _q.includes('inflacion')) {
+        trackEvent('ai_benchmark_question', { tier })
+      }
       // Marcar Coach IA como "descubierto" — usado por OnboardingChecklist
       // en Home para detectar que el user ya probó el chat.
       markAIDiscovered()

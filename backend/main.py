@@ -12741,7 +12741,7 @@ BIEN: "El P&L del año descansa parcialmente en trades cerrados de AMD/INTC. Tu 
 
 Si un ticker aparece en AMBOS lados (positions y operations), aclararlo: "mantenés posición abierta + tenés P&L cerrado en el mismo ticker; el riesgo presente es solo sobre el lote abierto".
 
-Tenés el snapshot del portfolio del usuario en el contexto. Usá los números concretos cuando sean relevantes. El snapshot NO incluye retornos de benchmark (S&P 500, inflación): si te piden comparar contra el mercado y no tenés el dato, decílo — no inventes la cifra del índice.
+Tenés el snapshot del portfolio del usuario en el contexto. Usá los números concretos cuando sean relevantes. Si summary.benchmarks está presente, trae retornos REALES (inflación, S&P 500, blue) + los del usuario, precalculados — seguí las reglas de comparación de su _note al pie de la letra. Si falta o un campo es null, decí que no tenés el dato — NUNCA inventes la cifra de un índice.
 
 MÉTRICAS PRO (summary.pro_metrics):
 Si están presentes, podés usarlas para diagnósticos cuantitativos. Todas son anualizadas:
@@ -12892,6 +12892,8 @@ CONTEXTO ARGENTINO MÍNIMO
 
 UPSELL — IMPORTANTE
 Si el usuario pide análisis profundo, comparación extendida con benchmarks, atribución de causa, sesgos, o pregunta "¿por qué...?": respondé con el dato más simple del snapshot Y agregá al final UNA frase: "Para análisis con causalidad, comparaciones y profundidad, pasate a Pro desde Configuración."
+
+BENCHMARKS ("¿le gano a la inflación / al S&P / al dólar?"): si summary.benchmarks está presente, respondé CON los números reales que trae (ya vienen calculados; respetá su _note: USD contra USD, pesos contra pesos) — es de las respuestas más valiosas que das, no la esquives. Cerrá con UNA frase de upsell ESPECÍFICA: "Pro te muestra este mismo versus mes a mes desde que arrancaste, y qué activos lo explican." Si summary.benchmarks no está o el campo es null, decí que ahora no tenés el dato — no lo inventes.
 
 HERRAMIENTAS
 Tenés SOLO estas tools (no existe ninguna otra en tu plan):
@@ -15078,6 +15080,163 @@ def _enrich_chat_snapshot_valuation(uid: int, snapshot: dict) -> dict:
         "total_value_usd. NUNCA uses 'invested' crudo ni sumes pesos con dólares. "
         "El dólar blue es solo referencia, no la base de valuación."
     )
+    out["summary"] = summ
+    return out
+
+
+def _pct_move(series: dict, cur_key: str, prev_key: str):
+    """% entre dos puntos de una serie {YYYY-MM: valor}. None si falta data."""
+    try:
+        cur, prev = series.get(cur_key), series.get(prev_key)
+        if cur and prev and float(prev) > 0:
+            return round((float(cur) / float(prev) - 1) * 100, 2)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _build_chat_benchmarks(conn, uid: int):
+    """Bloque compacto de benchmarks REALES + retornos del user para el snapshot
+    del chat (M-benchmark, quick win del audit de conversión). Los números van
+    PRE-CALCULADOS server-side — el modelo no hace aritmética, solo los cita.
+
+    Fuente: _bench_cache (el mismo SWR de /api/benchmarks, TTL 1h). Con caché
+    frío devuelve None y dispara el refresh en background (fire-and-forget) —
+    NUNCA bloquear el chat 15-20s; el prompt instruye a decir "no tengo el
+    dato" y la PRÓXIMA pregunta ya lo tiene.
+
+    Retornos del user: _portfolio_snapshot_summary (motor recién auditado —
+    Δ30d y YTD cashflow-adjusted). La cartera se mide en USD (MEP): contra el
+    S&P la comparación es directa; contra la inflación (pesos) el bloque trae
+    el retorno en PESOS aproximado = retorno USD compuesto con la variación
+    del blue del mismo período, con etiqueta explícita de aproximación.
+    """
+    data = _bench_cache.get("data") if _bench_cache else None
+    if not data:
+        # Caché frío (post-restart sin tráfico en /api/benchmarks): calentar en
+        # background sin bloquear este request (mismo lock que el SWR).
+        try:
+            if not _bench_refresh_inflight["flag"]:
+                _bench_refresh_inflight["flag"] = True
+                def _bg():
+                    try:
+                        _benchmarks_fetch_and_cache()
+                    except Exception as ex:
+                        log.warning("chat benchmarks warmup failed: %s", ex)
+                    finally:
+                        _bench_refresh_inflight["flag"] = False
+                _bench_fetch_executor.submit(_bg)
+        except Exception:
+            pass
+        return None
+
+    from datetime import date as _date
+    today = _date.today()
+    ym = f"{today.year:04d}-{today.month:02d}"
+    py, pm = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+    ym_prev = f"{py:04d}-{pm:02d}"
+    dec_prev = f"{today.year - 1:04d}-12"
+
+    inflation = data.get("inflation_ar") or {}
+    sp500 = data.get("sp500") or {}
+    blue = data.get("dolar_blue") or {}
+    merval = data.get("merval") or {}
+
+    # Inflación: % mensual directo. "Mes" = ÚLTIMO mes publicado por INDEC —
+    # el rezago real es de ~2 meses (verificado con la serie viva: en julio lo
+    # último publicado era mayo), así que buscamos el máximo key ≤ mes actual,
+    # no solo actual/anterior. YTD = composición geométrica de lo publicado.
+    _inf_keys = sorted(k for k in inflation.keys() if k <= ym)
+    inf_month_key = _inf_keys[-1] if _inf_keys else None
+    inf_month = float(inflation[inf_month_key]) if inf_month_key else None
+    inf_ytd = None
+    ytd_months = [v for k, v in sorted(inflation.items())
+                  if k.startswith(f"{today.year:04d}-")]
+    if ytd_months:
+        comp = 1.0
+        for v in ytd_months:
+            comp *= (1 + float(v) / 100.0)
+        inf_ytd = round((comp - 1) * 100, 2)
+
+    # Series de cierres mensuales (S&P TR en USD, blue y merval en ARS): el mes
+    # ACTUAL puede tener cierre parcial (al día de hoy) — se etiqueta en note.
+    def _prev_ym(ymk: str) -> str:
+        y, m = (int(x) for x in ymk.split("-"))
+        return f"{y:04d}-{m - 1:02d}" if m > 1 else f"{y - 1:04d}-12"
+
+    sp_cur_key = ym if ym in sp500 else ym_prev
+    sp_month = _pct_move(sp500, sp_cur_key, _prev_ym(sp_cur_key))
+    sp_ytd = _pct_move(sp500, sp_cur_key, dec_prev)
+    blue_cur_key = ym if ym in blue else ym_prev
+    blue_month = _pct_move(blue, blue_cur_key, _prev_ym(blue_cur_key))
+    blue_ytd = _pct_move(blue, blue_cur_key, dec_prev)
+    merval_cur_key = ym if ym in merval else ym_prev
+    merval_ytd = _pct_move(merval, merval_cur_key, dec_prev)
+
+    # Retornos del USER (consolidado, USD-MEP, cashflow-adjusted).
+    user_30d = user_ytd = user_ytd_since = None
+    try:
+        s = _portfolio_snapshot_summary(conn, uid, broker_filter="global")
+        d30 = s.get("delta_30d") or {}
+        yt = s.get("ytd") or {}
+        user_30d = d30.get("pct")
+        user_ytd = yt.get("pct")
+        user_ytd_since = yt.get("since_date")
+    except Exception as ex:
+        log.warning("chat benchmarks: summary del user falló uid=%s: %s", uid, ex)
+
+    # Retorno del user en PESOS (aprox): USD compuesto con devaluación blue del
+    # mismo período — la respuesta directa a "¿le gano a la inflación?".
+    user_ytd_ars = None
+    if user_ytd is not None and blue_ytd is not None:
+        user_ytd_ars = round(((1 + user_ytd / 100) * (1 + blue_ytd / 100) - 1) * 100, 2)
+
+    return {
+        "inflation_ar": {"month_pct": inf_month, "month": inf_month_key,
+                          "ytd_pct": inf_ytd},
+        "sp500_total_return_usd": {"month_pct": sp_month, "ytd_pct": sp_ytd},
+        "dolar_blue_move": {"month_pct": blue_month, "ytd_pct": blue_ytd},
+        "merval_ars": {"ytd_pct": merval_ytd},
+        "user_portfolio": {
+            "usd_30d_pct": user_30d,
+            "usd_ytd_pct": user_ytd,
+            "ytd_since": user_ytd_since,
+            "ars_ytd_pct_approx": user_ytd_ars,
+        },
+        "_note": (
+            "Retornos REALES precalculados — citalos, NO hagas aritmética nueva. "
+            "user_portfolio está en USD (MEP), cashflow-adjusted (los aportes no "
+            "cuentan como ganancia). Comparaciones correctas: vs S&P 500 → "
+            "usd_ytd_pct contra sp500_total_return_usd.ytd_pct (ambos USD). Vs "
+            "inflación → ars_ytd_pct_approx contra inflation_ar.ytd_pct (ambos "
+            "pesos; 'approx' porque usa el blue como proxy de devaluación — "
+            "aclaralo en una palabra). NUNCA compares el retorno USD directo "
+            "contra la inflación en pesos. Cualquier campo null = no hay dato: "
+            "decílo, no lo inventes. inflation_ar.month es el último mes "
+            "PUBLICADO por INDEC (suele haber 1 mes de rezago)."
+        ),
+    }
+
+
+def _enrich_chat_benchmarks(uid: int, snapshot: dict) -> dict:
+    """Adjunta summary.benchmarks al snapshot del chat. Nunca tira excepción
+    (sin benchmarks el prompt instruye honestidad — degradación segura)."""
+    if not isinstance(snapshot, dict):
+        return snapshot
+    try:
+        conn = get_db()
+        try:
+            bench = _build_chat_benchmarks(conn, uid)
+        finally:
+            conn.close()
+    except Exception as ex:
+        log.warning("chat benchmarks enrich failed uid=%s: %s", uid, ex)
+        return snapshot
+    if not bench:
+        return snapshot
+    out = dict(snapshot)
+    summ = dict(out.get("summary") or {})
+    summ["benchmarks"] = bench
     out["summary"] = summ
     return out
 
@@ -18077,6 +18236,10 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     # los números del cliente, que venían en moneda nativa mezclada y sin market
     # value → la IA rankeaba/valuaba mal.
     snapshot_clean = _enrich_chat_snapshot_valuation(uid, snapshot_clean)
+    # M-benchmark (quick win conversión): retornos reales de inflación/S&P/blue
+    # + los del user, precalculados — "¿le gano a la inflación?" deja de ser
+    # "no tengo el dato" y pasa a ser el momento de upsell con data real.
+    snapshot_clean = _enrich_chat_benchmarks(uid, snapshot_clean)
     # JSON compacto (sin indent=2): el snapshot ahora trae más campos por
     # posición; el compacto compensa el payload y baja tokens de input.
     portfolio_json = json.dumps(
@@ -18106,7 +18269,7 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
 
 VALUACIÓN (crítico para no dar cifras mal): cada position trae value_usd (valor de mercado HOY), invested_usd (costo) y weight_pct (% de la cartera), TODO en dólares al tipo MEP (la cripto de exchange va al spot). Para "¿cuál es mi posición más grande?", "¿cuánto vale mi cartera?" o concentración, usá value_usd / summary.total_value_usd y weight_pct — NUNCA el 'invested' crudo ni sumes montos en pesos con montos en dólares. summary.tc_mep y summary.tc_blue son las cotizaciones; el blue es solo referencia, no la base de valuación.
 
-El snapshot NO incluye retornos de benchmark (S&P 500, inflación) ni comparativas de mercado. Si el usuario pide comparar su performance contra el S&P o la inflación y no tenés ese dato en el contexto ni en una tool, decílo con franqueza — NO inventes el retorno del índice."""
+BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (inflación AR, S&P 500 total return, dólar blue, Merval) y los del usuario (USD y pesos-aprox), YA calculados — usá esos números tal cual y respetá las reglas de comparación de su _note (USD contra USD, pesos contra pesos). Si summary.benchmarks NO está o un campo es null, decí con franqueza que no tenés ese dato — NUNCA inventes el retorno de un índice."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
