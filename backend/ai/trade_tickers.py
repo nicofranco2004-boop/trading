@@ -276,6 +276,21 @@ def resolve_asset(raw: str):
     if not s:
         return None, set()
     s = NAME_ALIASES.get(s, s)
+    # Nombres con espacios/puntos/guiones ("space x", "coca-cola"): probar la
+    # versión compactada contra los aliases Y contra los tickers directos.
+    if (s not in CRYPTO_TICKERS and s not in CEDEAR_TICKERS
+            and s not in US_TICKERS and s not in AR_STOCK_TICKERS):
+        import re as _re
+        def _known(t):
+            return (t in CRYPTO_TICKERS or t in CEDEAR_TICKERS
+                    or t in US_TICKERS or t in AR_STOCK_TICKERS)
+        compact = _re.sub(r"[\s.\-]+", "", s)      # "SPACE X" → "SPACEX"
+        dashed = _re.sub(r"[\s.]+", "-", s)         # "BRK.B" → "BRK-B"
+        for cand in (NAME_ALIASES.get(compact), compact if _known(compact) else None,
+                     dashed if _known(dashed) else None):
+            if cand:
+                s = cand
+                break
     kinds = set()
     if s in CRYPTO_TICKERS:
         kinds.add("CRYPTO")

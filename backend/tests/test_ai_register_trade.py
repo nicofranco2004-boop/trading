@@ -42,6 +42,17 @@ class TestResolveAsset(unittest.TestCase):
         self.assertEqual(resolve_asset("amazon"), ("AMZN", {"STOCK", "CEDEAR"}))
         self.assertEqual(resolve_asset("CHORIPAN"), (None, set()))
 
+    def test_multiword_and_separator_variants(self):
+        """El caso REAL de la prueba de Nico: 'space x' (con espacio) no
+        resolvía → el modelo inventaba tickers. SPCX SÍ está en Rendi."""
+        self.assertEqual(resolve_asset("space x")[0], "SPCX")
+        self.assertEqual(resolve_asset("spacex")[0], "SPCX")
+        self.assertEqual(resolve_asset("coca cola")[0], "KO")
+        self.assertEqual(resolve_asset("brk.b")[0], "BRK-B")
+        self.assertEqual(resolve_asset("BRK B")[0], "BRK-B")
+        # y lo compactado NO abre falsos positivos
+        self.assertEqual(resolve_asset("CHORI PAN"), (None, set()))
+
 
 class _Base(unittest.TestCase):
     def setUp(self):
