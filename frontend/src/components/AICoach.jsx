@@ -462,7 +462,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
           disabled={loading || sending}
           placeholder={canChatFree
             ? 'Preguntale lo que quieras sobre tu cartera…'
-            : 'Registrá una operación: "compré 2000 USD de BTC a 65.000"'}
+            : 'Registrá: "compré 2000 USD de BTC" o "deposité 600.000 pesos en Balanz"'}
           className="flex-1 bg-bg-2 dark:bg-bg-2/60 border border-line text-sm text-ink-0 placeholder:text-ink-3 rounded-sm px-3 py-2 focus:outline-none focus:border-data-violet/60 disabled:opacity-50"
           maxLength={500}
           aria-label={canChatFree ? 'Pregunta libre al coach IA' : 'Registrar una operación con el coach IA'}

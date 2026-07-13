@@ -885,6 +885,210 @@ class TestMarketPriceServerSide(_Base):
         self.assertEqual(r.get("status"), "needs_confirmation", r)
 
 
+class TestCashFlowChat(_Base):
+    """Depósitos/retiros/transferencias por chat — escriben por el MISMO path
+    que los botones Depositar/Retirar (cash_flow → positions is_cash +
+    monthly_entries is_manual broker+global + repair chain)."""
+
+    def _monthly(self, broker):
+        r = self.conn.execute(
+            "SELECT deposits, withdrawals, manual_deposits, manual_withdrawals, year, month "
+            "FROM monthly_entries WHERE user_id=? AND broker=? ORDER BY year, month",
+            (self.uid, broker)).fetchall()
+        return [dict(x) for x in r]
+
+    def _cash_of(self, broker):
+        r = self.conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1",
+            (self.uid, broker)).fetchone()
+        return float(r["invested"]) if r else None
+
+    def test_deposit_happy_path(self):
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertIn("DEPÓSITO", r["summary"])
+        self.assertIn("600.000", r["summary"])
+        r2 = _h({"confirm_pending": True}, self.uid, request_id="B",
+                confirm_signal="yes")
+        self.assertEqual(r2.get("status"), "registered", r2)
+        # cash del broker +600k (el seed no tenía cash ARS en Balanz → se crea)
+        self.assertAlmostEqual(self._cash_of("Balanz"), 600000.0, places=2)
+        # monthly_entries broker + global con manual_deposits en USD
+        mb = self._monthly("Balanz")
+        mg = self._monthly("global")
+        self.assertEqual(len(mb), 1)
+        self.assertGreater(mb[0]["manual_deposits"], 0)
+        self.assertAlmostEqual(mb[0]["manual_deposits"], mg[-1]["manual_deposits"], places=2)
+
+    def test_nico_literal_phrase_is_intent(self):
+        self.assertTrue(main._is_trade_intent(
+            "AYER HICE UN DEPOSITO DE 600000 PESOS EN BALANZ"))
+        self.assertTrue(main._is_trade_intent("retiré 500 dólares de binance"))
+        self.assertTrue(main._is_trade_intent("hice una transferencia de balanz a cocos"))
+        self.assertTrue(main._is_trade_intent("saqué 200 mil pesos"))
+
+    def test_needs_info_without_broker_and_amount(self):
+        r = _h({"action": "deposit"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_info", r)
+        self.assertTrue(any("broker" in m for m in r["missing"]))
+        self.assertTrue(any("amount" in m for m in r["missing"]))
+        # NO pide asset ni price para cash
+        self.assertFalse(any(m.startswith("asset") for m in r["missing"]))
+        self.assertFalse(any(m.startswith("price") for m in r["missing"]))
+
+    def test_currency_mismatch_rejected(self):
+        r = _h({"action": "deposit", "broker": "Binance", "amount": 500000,
+                "currency": "ARS"}, self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("opera en USD", r["error"])
+
+    def test_withdraw_over_available_rejected_phase1(self):
+        # seed: Binance tiene 5000 USD de cash
+        r = _h({"action": "withdraw", "broker": "Binance", "amount": 9000},
+               self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("5,000", r["error"].replace(".", ","))
+
+    def test_withdraw_happy_path(self):
+        r = _h({"action": "withdraw", "broker": "Binance", "amount": 1000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertIn("RETIRO", r["summary"])
+        r2 = _h({"confirm_pending": True}, self.uid, request_id="B",
+                confirm_signal="yes")
+        self.assertEqual(r2.get("status"), "registered", r2)
+        self.assertAlmostEqual(self._cash_of("Binance"), 4000.0, places=2)
+        mb = self._monthly("Binance")
+        self.assertAlmostEqual(mb[0]["manual_withdrawals"], 1000.0, places=2)
+
+    def test_retro_date_books_correct_month(self):
+        # depósito con fecha de un mes ANTERIOR → monthly_entries de ese mes
+        from datetime import datetime, timedelta
+        prev = (datetime.utcnow().replace(day=1) - timedelta(days=1))
+        retro = prev.strftime("%Y-%m-15")
+        r = _h({"action": "deposit", "broker": "Binance", "amount": 800,
+                "date": retro}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertIn("con fecha", r["summary"])
+        r2 = _h({"confirm_pending": True}, self.uid, request_id="B",
+                confirm_signal="yes")
+        self.assertEqual(r2.get("status"), "registered", r2)
+        mb = self._monthly("Binance")
+        target = [m for m in mb if m["year"] == prev.year and m["month"] == prev.month]
+        self.assertEqual(len(target), 1, mb)
+        self.assertAlmostEqual(target[0]["manual_deposits"], 800.0, places=2)
+
+    def test_amendment_inherits_cash_fields(self):
+        # 'no, eran 650.000' hereda broker/fecha sin KeyError
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        r2 = _h({"amount": 650000}, self.uid, request_id="B", confirm_signal="")
+        self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+        p = main._TRADE_DRAFT[self.uid]["payload"]
+        self.assertEqual(p["amount"], 650000)
+        self.assertEqual(p["broker"], "Balanz")
+
+    def test_question_on_pending_cash_does_not_write(self):
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        # re-llamada del modelo sin señal-sí (turno-pregunta) → re-muestra
+        r2 = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+                self.uid, request_id="B", confirm_signal="")
+        self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+        self.assertIsNone(self._cash_of("Balanz"))   # sin write
+
+    def test_recall_with_yes_executes_cash(self):
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        r2 = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+                self.uid, request_id="B", confirm_signal="yes")
+        self.assertEqual(r2.get("status"), "registered", r2)
+
+    def test_epilogue_matches_amount_for_cash(self):
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        ep = main._pending_summary_epilogue(self.uid, "Entendido, lo anoto.")
+        self.assertIn("Registro pendiente", ep)
+        self.assertEqual(main._pending_summary_epilogue(
+            self.uid, "DEPÓSITO $ 600.000,00 en Balanz — ¿Confirmás?"), "")
+
+    def test_undo_cash_gives_specific_message(self):
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+               self.uid, request_id="A")
+        _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
+        u = main._undo_last_trade_handler(self.uid)
+        self.assertIn("error", u)
+        self.assertIn("movimiento inverso", u["error"])
+        # y no tocó nada
+        self.assertAlmostEqual(self._cash_of("Balanz"), 600000.0, places=2)
+
+    def test_transfer_same_currency(self):
+        # seed: Binance 5000 USD. Creamos un 2do broker USD destino.
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Schwab", "USD"))
+        self.conn.commit()
+        r = _h({"action": "transfer", "broker": "Binance", "to_broker": "Schwab",
+                "amount": 1200}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertIn("TRANSFERENCIA", r["summary"])
+        r2 = _h({"confirm_pending": True}, self.uid, request_id="B",
+                confirm_signal="yes")
+        self.assertEqual(r2.get("status"), "registered", r2)
+        self.assertAlmostEqual(self._cash_of("Binance"), 3800.0, places=2)
+        self.assertAlmostEqual(self._cash_of("Schwab"), 1200.0, places=2)
+        # bruto: retiro en origen + depósito en destino, neto global 0
+        mo = self._monthly("Binance")
+        md = self._monthly("Schwab")
+        self.assertAlmostEqual(mo[0]["manual_withdrawals"], 1200.0, places=2)
+        self.assertAlmostEqual(md[0]["manual_deposits"], 1200.0, places=2)
+
+    def test_transfer_cross_currency_rejected(self):
+        r = _h({"action": "transfer", "broker": "Balanz", "to_broker": "Binance",
+                "amount": 500000}, self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("conversión", r["error"])
+
+    def test_transfer_same_broker_rejected(self):
+        r = _h({"action": "transfer", "broker": "Binance", "to_broker": "Binance",
+                "amount": 100}, self.uid, request_id="A")
+        self.assertIn("error", r)
+
+    def test_transfer_leg2_failure_compensates(self):
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Schwab", "USD"))
+        self.conn.commit()
+        r = _h({"action": "transfer", "broker": "Binance", "to_broker": "Schwab",
+                "amount": 1200}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        real_cash_flow = main.cash_flow
+        calls = {"n": 0}
+
+        def flaky(data, uid):
+            calls["n"] += 1
+            if calls["n"] == 2:      # la pata deposit del destino explota
+                raise RuntimeError("boom")
+            return real_cash_flow(data, uid)
+
+        with patch.object(main, "cash_flow", side_effect=flaky):
+            r2 = _h({"confirm_pending": True}, self.uid, request_id="B",
+                    confirm_signal="yes")
+        self.assertIn("error", r2)
+        # compensado: el cash del origen quedó como antes
+        self.assertAlmostEqual(self._cash_of("Binance"), 5000.0, places=2)
+        self.assertIsNone(self._cash_of("Schwab"))
+
+    def test_trades_unaffected_regression(self):
+        # el branch cash no toca el flujo buy: compra normal sigue OK
+        r = _h({"action": "buy", "asset": "BTC", "broker": "Binance",
+                "quantity": 0.01, "price": 65000}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+
+
 class TestBrokerCurrencyDisambiguation(_Base):
     """Prueba real de Nico: el modelo etiquetó INTC como STOCK (acción US) en
     Balanz (pesos) → el precio de mercado moría en un loop de 'preguntale el

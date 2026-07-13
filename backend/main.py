@@ -6802,12 +6802,26 @@ class CashFlowIn(BaseModel):
     direction: str = Field(...)   # "deposit" | "withdraw"
     amount: float = Field(..., gt=0, le=1e12)
     tc_blue: float = Field(1415, gt=0, le=1_000_000)  # needed to convert ARS→USD for global entry
+    # Fecha del movimiento (YYYY-MM-DD, opcional). La UI no la manda (None →
+    # hoy, comportamiento histórico); el registro por chat sí ("ayer hice un
+    # depósito") — monthly_entries bookea el AÑO/MES de esta fecha (mismo
+    # patrón que _autodeposit_if_overdraw, que ya registra retro por fecha).
+    date: Optional[str] = Field(None, max_length=10)
 
     @field_validator('direction')
     @classmethod
     def valid_direction(cls, v):
         if v not in ('deposit', 'withdraw'):
             raise ValueError('direction debe ser deposit o withdraw')
+        return v
+
+    @field_validator('date')
+    @classmethod
+    def valid_date(cls, v):
+        if v is None or v == '':
+            return None
+        if not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida')
         return v
 
     @field_validator('broker_name')
@@ -7470,11 +7484,20 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_current_user)):
             # 3 & 4. Ambas entradas (broker + global) se guardan en USD.
             # Toda la tabla monthly_entries usa USD como unidad. La conversión ARS→USD
             # la hace Monthly.jsx al mostrar (multiplica × TC para tabs ARS).
+            # El mes/año sale de data.date si vino (movimiento retroactivo del
+            # chat); sin fecha → hoy (comportamiento histórico de la UI).
             now = datetime.utcnow()
+            _fy, _fm = now.year, now.month
+            if data.date:
+                try:
+                    _fd = datetime.strptime(data.date, "%Y-%m-%d")
+                    _fy, _fm = _fd.year, _fd.month
+                except ValueError:
+                    pass
             amount_usd = data.amount / data.tc_blue if currency == 'ARS' else data.amount
-            _update_monthly_flow(conn, uid, data.broker_name, now.year, now.month,
+            _update_monthly_flow(conn, uid, data.broker_name, _fy, _fm,
                                  data.direction, amount_usd, is_manual=True)
-            _update_monthly_flow(conn, uid, 'global', now.year, now.month,
+            _update_monthly_flow(conn, uid, 'global', _fy, _fm,
                                  data.direction, amount_usd, is_manual=True)
             # Phase 8 — repair chain for both touched brokers.
             _repair_monthly_chain(conn, uid, data.broker_name)
@@ -12649,7 +12672,7 @@ Tools internas (data del propio usuario):
 - get_market_news: noticias de MERCADO/macro/índices por tema (S&P, Fed, inflación, dólar, riesgo país, Merval). Para preguntas de mercado general, NO sobre un ticker que el usuario tiene.
 - get_fx_rates: cotización del dólar HOY (MEP/CCL/blue/cripto, pesos por dólar). Para "¿a cuánto está el dólar/MEP/blue?" o convertir pesos↔dólares usá ESTA (números, no noticias); get_market_news es para el CONTEXTO del dólar, no el precio.
 - remember_user_fact: persistir hechos del usuario entre sesiones.
-- register_trade / undo_last_trade: registrar en Rendi una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo anota en el tracker. Flujo obligatorio (el server lleva el estado; vos NO manejás tokens): llamá register_trade con lo que tengas → el server te dice qué falta (preguntalo TODO en una sola repregunta, usando el snapshot para proponer broker/tipo) o te da un resumen → mostrás el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntás si confirma → cuando el usuario responda EN SU PRÓXIMO MENSAJE: si confirma, register_trade con confirm_pending=true (solo eso); si quiere CAMBIAR un dato, register_trade con SOLO el dato corregido (el server conserva el resto — NO uses cancel); si niega y nada más, cancel=true. NO confirmes en el mismo turno del resumen. Si es de hoy y no sabe el precio, mandá price_source='market_today' SIN price (el server usa la cotización real solo; NO le pases el número de get_current_prices). Si es retroactiva el precio lo da el usuario. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
+- register_trade / undo_last_trade: registrar en Rendi lo que el usuario te dicta — compras/ventas ("compré 2000 USD de BTC a 65000"), depósitos/retiros de cash ("ayer deposité 600.000 pesos en Balanz" → action=deposit, broker, amount, date; sin activo ni precio) y transferencias de cash entre sus brokers (action=transfer + to_broker) — NO opera el broker real, solo lo anota en el tracker. Flujo obligatorio (el server lleva el estado; vos NO manejás tokens): llamá register_trade con lo que tengas → el server te dice qué falta (preguntalo TODO en una sola repregunta, usando el snapshot para proponer broker/tipo) o te da un resumen → mostrás el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntás si confirma → cuando el usuario responda EN SU PRÓXIMO MENSAJE: si confirma, register_trade con confirm_pending=true (solo eso); si quiere CAMBIAR un dato, register_trade con SOLO el dato corregido (el server conserva el resto — NO uses cancel); si niega y nada más, cancel=true. NO confirmes en el mismo turno del resumen. Si es de hoy y no sabe el precio, mandá price_source='market_today' SIN price (el server usa la cotización real solo; NO le pases el número de get_current_prices). Si es retroactiva el precio lo da el usuario. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
 
 Tools de mercado externas (Pack A v2):
 Para EQUITIES (acciones US, CEDEARs listados en US — yfinance):
@@ -12901,12 +12924,12 @@ Tenés SOLO estas tools (no existe ninguna otra en tu plan):
 - Sobre los datos del usuario: get_asset_operations, get_monthly_detail, get_realized_vs_unrealized.
 - De mercado: get_value_scorecard (valoración de una ACCIÓN US/CEDEAR: 8 métricas + semáforos) y get_earnings_history (próximo earnings + últimos quarters).
 - remember_user_fact para hechos que el usuario pide recordar.
-- register_trade / undo_last_trade: registrar una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo ANOTA en Rendi. Flujo (el server lleva el estado, sin tokens): llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → cuando responda EN SU PRÓXIMO MENSAJE: confirma → register_trade con confirm_pending=true; quiere cambiar un dato → register_trade con SOLO el dato corregido (el server conserva el resto, NO uses cancel); niega y nada más → cancel=true. NO confirmes en el mismo turno. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
+- register_trade / undo_last_trade: registrar lo que el usuario te dicta — compras/ventas ("compré 2000 USD de BTC a 65000") y también depósitos/retiros/transferencias de cash ("deposité 600.000 pesos en Balanz" → action=deposit, broker, amount; sin activo ni precio) — NO opera el broker real, solo lo ANOTA en Rendi. Flujo (el server lleva el estado, sin tokens): llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → cuando responda EN SU PRÓXIMO MENSAJE: confirma → register_trade con confirm_pending=true; quiere cambiar un dato → register_trade con SOLO el dato corregido (el server conserva el resto, NO uses cancel); niega y nada más → cancel=true. NO confirmes en el mismo turno. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
 - get_current_prices: SOLO si el usuario quiere VER un precio dentro del flujo de registro. Para registrar a precio de mercado de HOY no la necesitás: mandá price_source='market_today' SIN price y el server cotiza solo. No la uses para consultas de precios sueltas — eso es de Pro.
 
 Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo — EXCEPCIÓN: en el flujo de registro podés combinar get_current_prices + register_trade en la misma respuesta. NO llames tools que no están en esta lista ni inventes nombres. EXCEPCIÓN de formato: al pedir los datos faltantes de un registro, usá la lista numerada que te indica la tool (esa lista SÍ está permitida).
 
-TEXTO LIBRE EN TU PLAN: si el mensaje NO es una de las preguntas guiadas, SOLO puede ser para registrar una operación (o continuar un registro en curso). Procesá el registro y NADA más — si además pide análisis u opinión ("¿y conviene?", "¿está cara?"), registrá y cerrá con: "Para análisis con causalidad, pasate a Pro desde Configuración." No respondas la parte de análisis.
+TEXTO LIBRE EN TU PLAN: si el mensaje NO es una de las preguntas guiadas, SOLO puede ser para registrar una operación o un movimiento de cash (depósito/retiro/transferencia), o continuar un registro en curso. Procesá el registro y NADA más — si además pide análisis u opinión ("¿y conviene?", "¿está cara?"), registrá y cerrá con: "Para análisis con causalidad, pasate a Pro desde Configuración." No respondas la parte de análisis.
 
 Para preguntas de valoración de una ACCIÓN ("¿está cara NVDA?"), get_value_scorecard cubre todo en un solo call.
 
@@ -15388,6 +15411,18 @@ def _fmt_qty(q: float) -> str:
 
 def _register_trade_summary(p: dict) -> str:
     ccy = "US$" if p["currency"] == "USD" else "$"
+    if p["action"] in ("deposit", "withdraw", "transfer"):
+        if p["action"] == "deposit":
+            s = f"DEPÓSITO {ccy} {p['amount']:,.2f} en {p['broker']}"
+        elif p["action"] == "withdraw":
+            s = f"RETIRO {ccy} {p['amount']:,.2f} de {p['broker']}"
+        else:
+            s = (f"TRANSFERENCIA {ccy} {p['amount']:,.2f} de {p['broker']} a "
+                 f"{p.get('to_broker')} (se anota como retiro en {p['broker']} "
+                 f"+ depósito en {p.get('to_broker')})")
+        if p.get("date_is_today") is False:
+            s += f" con fecha {p['date']}"
+        return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
     side = "COMPRA" if p["action"] == "buy" else "VENTA"
     tipo = {"CRYPTO": "cripto", "CEDEAR": "CEDEAR", "STOCK": "acción",
             "AR_STOCK": "acción AR"}.get(p["kind"], p["kind"])
@@ -15569,18 +15604,24 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
 
         def _close(a, b):
             return abs(a - b) <= max(0.01 * max(abs(b), 1), 1e-6)
-        # ¿algún campo PRESENTE contradice el pendiente? (ausente = no contradice)
+        _pp_cash = _pp.get("action") in ("deposit", "withdraw", "transfer")
+        _in_to_broker = str(input_data.get("to_broker") or "").strip().lower()
+        # ¿algún campo PRESENTE contradice el pendiente? (ausente = no
+        # contradice; los payloads CASH llevan asset/price/quantity en None →
+        # esas cláusulas se gatean por presencia en el payload)
         _amends = (
             (bool(_in_action) and _in_action != _pp["action"])
             or (_in_asset is not None and _in_asset != _pp["asset"])
             # asset presente pero irreconocible = enmienda (no "da igual")
-            or (bool(_raw_asset_in) and _in_asset is None)
+            or (bool(_raw_asset_in) and _in_asset is None and not _pp_cash)
             or (bool(_in_broker) and _in_broker != str(_pp["broker"]).lower())
+            or (bool(_in_to_broker)
+                and _in_to_broker != str(_pp.get("to_broker") or "").lower())
             or (bool(_in_ccy) and _in_ccy in ("ARS", "USD")
                 and _in_ccy != _pp["currency"])
             or (bool(_in_date) and _DATE_RE.match(_in_date)
                 and _in_date != _pp["date"])
-            or (bool(_in_kind)
+            or (bool(_in_kind) and not _pp_cash
                 and _in_kind not in (_pp.get("kind"), _pp.get("asset_type")))
             or (_in_amount is not None and not _close(_in_amount, _pp["amount"]))
             # 'usá el precio de mercado' sobre un pendiente ES una enmienda:
@@ -15588,22 +15629,29 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # pendiente) en un turno NO confirmatorio → re-armar (review: sin
             # esto era IMPOSIBLE enmendar un pendiente a precio de mercado)
             or (str(input_data.get("price_source") or "").lower() == "market_today"
-                and confirm_signal != "yes"
-                and (_in_price is None or not _close(_in_price, _pp["price"])))
+                and confirm_signal != "yes" and not _pp_cash
+                and (_in_price is None or _pp.get("price") is None
+                     or not _close(_in_price, _pp["price"])))
             # la exención de precio para market_today aplica SOLO en el turno
             # del sí (ahí el payload pendiente gana y el número re-mandado se
             # ignora de verdad); en turnos ambiguos un precio distinto ES una
             # enmienda (review: la exención vieja se tragaba 'la pagué a 2000')
-            or (_in_price is not None
+            or (_in_price is not None and _pp.get("price") is not None
                 and not (confirm_signal == "yes"
                          and str(input_data.get("price_source") or "").lower() == "market_today")
                 and not _close(_in_price, _pp["price"]))
-            or (_in_qty is not None and not _close(_in_qty, _pp["quantity"]))
+            or (_in_qty is not None and _pp.get("quantity") is not None
+                and not _close(_in_qty, _pp["quantity"]))
         )
         if not _amends:
-            # ¿re-llamada sustantiva? (action+asset presentes e iguales) — un
-            # input {} o casi vacío JAMÁS confirma.
-            _substantive = bool(_in_action) and _in_asset is not None
+            # ¿re-llamada sustantiva? — un input {} o casi vacío JAMÁS
+            # confirma. Trades: action+asset presentes e iguales; cash:
+            # action + (broker o monto) — no hay asset que exigir.
+            if _pp_cash:
+                _substantive = bool(_in_action) and (bool(_in_broker)
+                                                     or _in_amount is not None)
+            else:
+                _substantive = bool(_in_action) and _in_asset is not None
             if confirm_signal == "yes" and _substantive:
                 claimed = _TRADE_DRAFT.pop(uid, None)
                 if claimed and claimed.get("status") == "confirming":
@@ -15629,19 +15677,27 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # cambió) no obligue a rearmar de cero (falla real de la prueba e2e:
         # el modelo cancelaba y el registro se perdía entero).
         _pl = draft["payload"]
-        prev = {"action": _pl["action"], "asset": _pl["asset"],
-                "asset_type": _pl.get("kind"), "broker": _pl["broker"],
-                "currency": _pl["currency"], "quantity": _pl["quantity"],
-                "amount": _pl["amount"], "price": _pl["price"],
-                "date": _pl["date"]}
-        # el campo DERIVADO no se hereda: se re-deriva del primario + el
-        # dato enmendado (heredar qty Y amount con un precio nuevo no cierra)
-        if _pl.get("derived") in ("quantity", "amount"):
-            prev.pop(_pl["derived"], None)
+        if _pl["action"] in ("deposit", "withdraw", "transfer"):
+            # payload cash: sin asset/precio/cantidad
+            prev = {"action": _pl["action"], "broker": _pl["broker"],
+                    "currency": _pl["currency"], "amount": _pl["amount"],
+                    "date": _pl["date"]}
+            if _pl.get("to_broker"):
+                prev["to_broker"] = _pl["to_broker"]
+        else:
+            prev = {"action": _pl["action"], "asset": _pl["asset"],
+                    "asset_type": _pl.get("kind"), "broker": _pl["broker"],
+                    "currency": _pl["currency"], "quantity": _pl["quantity"],
+                    "amount": _pl["amount"], "price": _pl["price"],
+                    "date": _pl["date"]}
+            # el campo DERIVADO no se hereda: se re-deriva del primario + el
+            # dato enmendado (heredar qty Y amount con un precio nuevo no cierra)
+            if _pl.get("derived") in ("quantity", "amount"):
+                prev.pop(_pl["derived"], None)
     fields = dict(prev)
     _from_input = set()
-    for k in ("action", "asset", "asset_type", "broker", "currency", "quantity",
-              "amount", "price", "price_source", "date"):
+    for k in ("action", "asset", "asset_type", "broker", "to_broker", "currency",
+              "quantity", "amount", "price", "price_source", "date"):
         if input_data.get(k) not in (None, ""):
             fields[k] = input_data.get(k)
             _from_input.add(k)
@@ -15673,20 +15729,26 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
 
     missing, hints = [], []
     action = str(fields.get("action") or "").strip().lower()
-    if action not in ("buy", "sell"):
-        missing.append("action (buy|sell)")
+    # Movimientos de CASH (depósito/retiro/transferencia): sin activo, sin
+    # precio, sin cantidad — validación propia más abajo, mismo flujo de
+    # draft/confirmación. Escriben por el MISMO path que los botones
+    # Depositar/Retirar de la app (cash_flow → monthly_entries is_manual).
+    _is_cash = action in ("deposit", "withdraw", "transfer")
+    if action not in ("buy", "sell") and not _is_cash:
+        missing.append("action (buy|sell|deposit|withdraw|transfer)")
 
     raw_asset = str(fields.get("asset") or "").strip()
-    asset, kinds = resolve_asset(raw_asset)
-    if not raw_asset:
-        missing.append("asset")
-    elif not asset:
-        _TRADE_DRAFT.pop(uid, None)
-        return {"error": (
-            f"No reconozco '{raw_asset}' como activo registrable. Puedo cripto, "
-            "acciones US/ETFs, CEDEARs y acciones argentinas (bonos y FCI todavía "
-            "no — se cargan desde la app). Pedile el ticker exacto."
-        )}
+    asset, kinds = (None, set()) if _is_cash else resolve_asset(raw_asset)
+    if not _is_cash:
+        if not raw_asset:
+            missing.append("asset")
+        elif not asset:
+            _TRADE_DRAFT.pop(uid, None)
+            return {"error": (
+                f"No reconozco '{raw_asset}' como activo registrable. Puedo cripto, "
+                "acciones US/ETFs, CEDEARs y acciones argentinas (bonos y FCI todavía "
+                "no — se cargan desde la app). Pedile el ticker exacto."
+            )}
 
     conn = get_db()
     try:
@@ -15714,21 +15776,23 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             bc = brokers[broker]["currency"]
             broker_ccy = "ARS" if bc == "ARS" else "USD"   # USDT/USD → USD
 
-        # asset_type: desambiguar si el ticker es ambiguo
-        raw_kind = str(fields.get("asset_type") or "").strip().upper()
-        kind = raw_kind if raw_kind in kinds else None
-        if len(kinds) == 1:
-            kind = next(iter(kinds))
-        if kind is None:
-            held = conn.execute(
-                "SELECT broker, asset_type, quantity FROM positions "
-                "WHERE user_id=? AND asset=? AND is_cash=0 AND quantity>0",
-                (uid, asset)).fetchall()
-            if held:
-                hints.append("el usuario YA tiene " + "; ".join(
-                    f"{_fmt_qty(r['quantity'])} {asset} ({r['asset_type'] or 's/tipo'}) en {r['broker']}"
-                    for r in held))
-            missing.append(f"asset_type ({' | '.join(sorted(kinds))}) — preguntale")
+        # asset_type: desambiguar si el ticker es ambiguo (no aplica a cash)
+        kind = None
+        if not _is_cash:
+            raw_kind = str(fields.get("asset_type") or "").strip().upper()
+            kind = raw_kind if raw_kind in kinds else None
+            if len(kinds) == 1:
+                kind = next(iter(kinds))
+            if kind is None:
+                held = conn.execute(
+                    "SELECT broker, asset_type, quantity FROM positions "
+                    "WHERE user_id=? AND asset=? AND is_cash=0 AND quantity>0",
+                    (uid, asset)).fetchall()
+                if held:
+                    hints.append("el usuario YA tiene " + "; ".join(
+                        f"{_fmt_qty(r['quantity'])} {asset} ({r['asset_type'] or 's/tipo'}) en {r['broker']}"
+                        for r in held))
+                missing.append(f"asset_type ({' | '.join(sorted(kinds))}) — preguntale")
 
         # currency: si el broker es conocido, DEBE coincidir con su moneda
         currency = str(fields.get("currency") or "").strip().upper()
@@ -15764,8 +15828,45 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         price = _num_or_none(fields.get("price"))
         quantity = _num_or_none(fields.get("quantity"))
         amount = _num_or_none(fields.get("amount"))
-        if quantity is None and amount is None:
+        if _is_cash:
+            # cash: solo importa el monto (price/quantity mandados por error
+            # se ignoran); el modelo a veces manda el monto como quantity
+            if amount is None and quantity is not None:
+                amount = quantity
+            price = None
+            quantity = None
+            if amount is None:
+                missing.append("amount (el monto del movimiento)")
+        elif quantity is None and amount is None:
             missing.append("quantity o amount")
+
+        # transfer: broker destino, y las monedas tienen que coincidir
+        to_broker = None
+        if action == "transfer":
+            raw_to = str(fields.get("to_broker") or "").strip()
+            if not raw_to:
+                missing.append("to_broker (el broker destino)")
+            else:
+                to_broker = next((b for b in brokers if b.lower() == raw_to.lower()), None)
+                if to_broker is None:
+                    _TRADE_DRAFT.pop(uid, None)
+                    return {"error": (
+                        f"'{raw_to}' no es un broker del usuario. Tiene: "
+                        f"{', '.join(sorted(brokers))}. Preguntá a cuál fue."
+                    )}
+                if broker and to_broker == broker:
+                    _TRADE_DRAFT.pop(uid, None)
+                    return {"error": "El broker origen y destino son el mismo — preguntá de dónde a dónde fue la plata."}
+                if broker:
+                    _to_ccy = "ARS" if brokers[to_broker]["currency"] == "ARS" else "USD"
+                    if broker_ccy and _to_ccy != broker_ccy:
+                        _TRADE_DRAFT.pop(uid, None)
+                        return {"error": (
+                            f"{broker} opera en {broker_ccy} y {to_broker} en {_to_ccy} — "
+                            "eso es una conversión de moneda, no una transferencia. "
+                            "Se hace desde la app ('Comprar/Vender USD' en el broker), "
+                            "o registrá el retiro y el depósito por separado con cada monto."
+                        )}
 
         today_iso = datetime.utcnow().strftime("%Y-%m-%d")
         date = str(fields.get("date") or "").strip() or today_iso
@@ -15832,7 +15933,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 _feed_down = True
                 hints.append(f"{asset} sin cotización automática en este momento "
                              "— preguntale el precio exacto al usuario")
-        if price is None and not _mkt_src:
+        if price is None and not _mkt_src and not _is_cash:
             if _feed_down:
                 # NO ofrecer market_today acá: acaba de fallar — re-mandarlo
                 # generaba un loop de needs_info idénticos (review)
@@ -15873,21 +15974,22 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # hereda el dato PRIMARIO del usuario y re-deriva el otro (sin esto,
         # heredar qty Y amount viejos con el precio nuevo no cierra nunca).
         _derived_field = None
-        if quantity is None:
-            quantity = amount / price
-            _derived_field = "quantity"
-        elif amount is None:
-            amount = quantity * price
-            _derived_field = "amount"
-        elif abs(quantity * price - amount) > 0.01 * max(amount, 1e-9):
-            _TRADE_DRAFT.pop(uid, None)
-            return {"error": (
-                f"Los números no cierran: {_fmt_qty(quantity)} × {price} = "
-                f"{quantity*price:,.2f} ≠ monto {amount:,.2f}. Preguntá cuál vale."
-            )}
-        if quantity < 1e-8:
-            _TRADE_DRAFT.pop(uid, None)
-            return {"error": "La cantidad da prácticamente cero — revisá monto y precio con el usuario."}
+        if not _is_cash:
+            if quantity is None:
+                quantity = amount / price
+                _derived_field = "quantity"
+            elif amount is None:
+                amount = quantity * price
+                _derived_field = "amount"
+            elif abs(quantity * price - amount) > 0.01 * max(amount, 1e-9):
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": (
+                    f"Los números no cierran: {_fmt_qty(quantity)} × {price} = "
+                    f"{quantity*price:,.2f} ≠ monto {amount:,.2f}. Preguntá cuál vale."
+                )}
+            if quantity < 1e-8:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": "La cantidad da prácticamente cero — revisá monto y precio con el usuario."}
         if amount > _TRADE_MAX_NOTIONAL.get(currency, 5_000_000):
             _TRADE_DRAFT.pop(uid, None)
             return {"error": f"El monto ({amount:,.0f} {currency}) es demasiado grande para registrar por chat. Que lo cargue desde la app."}
@@ -15897,7 +15999,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # 1000×; nada legítimo se mueve 4× intradía). Retroactivos exentos
         # (precios viejos legítimamente lejos); sin cotización → pasa
         # (fail-open: la palabra del usuario manda).
-        if date_is_today and not _mkt_src:
+        if date_is_today and not _mkt_src and not _is_cash:
             _ref = _trade_market_price(asset, kind, currency, uid)
             if _ref and max(price / _ref, _ref / price) > 4:
                 _TRADE_DRAFT.pop(uid, None)
@@ -15946,7 +16048,22 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # contaba como USD = ~1415× inflado). MEP (dólar de salida real).
             if currency == "ARS":
                 tc_venta = _current_cedear_rate() or _user_tc_blue(conn, uid)
-        else:
+        elif action in ("withdraw", "transfer"):
+            # retiro (o pata origen de una transferencia): no puede dejar el
+            # cash negativo — mismo predicado que el endpoint (que igual lo
+            # re-chequea al ejecutar; acá evitamos armar un pendiente muerto)
+            cash_row = conn.execute(
+                "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+                (uid, broker)).fetchone()
+            cash_now = float(cash_row["invested"] or 0) if cash_row else 0.0
+            if amount > cash_now + 0.005:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": (
+                    f"El usuario tiene {cash_now:,.2f} {currency} de cash en "
+                    f"{broker} y quiere sacar {amount:,.2f}. Avisale y preguntá "
+                    "si el monto o el broker son otros."
+                )}
+        elif action == "buy":
             cash_row = conn.execute(
                 "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, broker)).fetchone()
@@ -15958,9 +16075,13 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
 
     payload = {
         "action": action, "asset": asset, "kind": kind,
-        "asset_type": _TRADE_KIND_TO_ASSET_TYPE[kind],
+        "asset_type": _TRADE_KIND_TO_ASSET_TYPE[kind] if kind else None,
         "broker": broker, "broker_id": brokers[broker]["id"],
-        "currency": currency, "quantity": round(quantity, 8), "price": price,
+        "to_broker": to_broker if action == "transfer" else None,
+        "to_broker_id": brokers[to_broker]["id"] if (action == "transfer" and to_broker) else None,
+        "currency": currency,
+        "quantity": round(quantity, 8) if quantity is not None else None,
+        "price": price,
         "amount": round(amount, 2), "date": date, "date_is_today": date_is_today,
         "tc_venta": round(tc_venta, 2) if tc_venta else None,
         "autodeposit_needed": autodeposit_needed,
@@ -16030,6 +16151,64 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                 "broker_id": p.get("broker_id"), "asset": p["asset"],
                 "quantity": p["quantity"], "summary": _register_trade_summary(p),
                 "ts": now}
+        elif p["action"] in ("deposit", "withdraw"):
+            # MISMO path que los botones Depositar/Retirar de la app: cash de
+            # la posición + monthly_entries (broker + global, is_manual) +
+            # repair chain. El FX para el mensual (ARS→USD) se resuelve
+            # SERVER-SIDE (jamás del modelo — misma regla que market_today).
+            _c2 = get_db()
+            try:
+                _tc = _current_cedear_rate() or _user_tc_blue(_c2, uid)
+            finally:
+                _c2.close()
+            cash_flow(CashFlowIn(
+                broker_name=broker_name, direction=p["action"],
+                amount=p["amount"], tc_blue=_tc,
+                date=None if p.get("date_is_today") else p.get("date")), uid)
+            _ai_cache_invalidate(uid)   # cash_flow no lo hace (create_position sí)
+            _LAST_CHAT_TRADE[uid] = {
+                "kind": p["action"], "broker_id": p.get("broker_id"),
+                "amount": p["amount"], "tc_used": _tc,
+                "summary": _register_trade_summary(p), "ts": now}
+        elif p["action"] == "transfer":
+            # retiro en origen + depósito en destino (misma moneda, validada
+            # en fase 1). El retiro va PRIMERO (es la pata que puede fallar
+            # por saldo); si el depósito fallara, COMPENSAMOS re-depositando
+            # en el origen — nunca puede quedar plata desaparecida en silencio.
+            _to = get_db()
+            try:
+                to_row = _to.execute(
+                    "SELECT name FROM brokers WHERE id=? AND user_id=?",
+                    (p.get("to_broker_id"), uid)).fetchone()
+                _tc = _current_cedear_rate() or _user_tc_blue(_to, uid)
+            finally:
+                _to.close()
+            if not to_row:
+                return {"error": "El broker destino ya no existe (¿lo borraron/renombraron?). Pedile al usuario que rearme el registro."}
+            _date_arg = None if p.get("date_is_today") else p.get("date")
+            cash_flow(CashFlowIn(broker_name=broker_name, direction="withdraw",
+                                 amount=p["amount"], tc_blue=_tc, date=_date_arg), uid)
+            try:
+                cash_flow(CashFlowIn(broker_name=to_row["name"], direction="deposit",
+                                     amount=p["amount"], tc_blue=_tc, date=_date_arg), uid)
+            except Exception as ex2:
+                log.error("transfer: pata deposit falló uid=%s: %s — compensando", uid, ex2)
+                try:
+                    cash_flow(CashFlowIn(broker_name=broker_name, direction="deposit",
+                                         amount=p["amount"], tc_blue=_tc, date=_date_arg), uid)
+                    return {"error": ("No se pudo acreditar en el destino — el retiro "
+                                      "se revirtió, no cambió nada. Que lo cargue desde la app.")}
+                except Exception:
+                    log.error("transfer: COMPENSACIÓN falló uid=%s", uid)
+                    return {"error": (
+                        f"Quedó el retiro en {broker_name} SIN el depósito en "
+                        f"{to_row['name']} — avisale al usuario que cargue el "
+                        "depósito desde la app (Cartera → Cash → Depositar).")}
+            _ai_cache_invalidate(uid)
+            _LAST_CHAT_TRADE[uid] = {
+                "kind": "transfer", "broker_id": p.get("broker_id"),
+                "to_broker_id": p.get("to_broker_id"), "amount": p["amount"],
+                "tc_used": _tc, "summary": _register_trade_summary(p), "ts": now}
         else:
             sell_in = SellIn(
                 broker=broker_name, asset=p["asset"], quantity=p["quantity"],
@@ -16049,9 +16228,13 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
 
     _CHAT_VAL_CACHE.pop(uid, None)
     undo_ok = p["action"] == "buy" and not _LAST_CHAT_TRADE[uid].get("autodeposit")
-    undo_note = ("Si el usuario dice que se equivocó, llamá undo_last_trade."
-                 if undo_ok else
-                 "Para revertirlo: desde la app (Cartera / Operaciones).")
+    if p["action"] in ("deposit", "withdraw", "transfer"):
+        undo_note = ("No hay undo automático de movimientos de cash: se "
+                     "revierte registrando el movimiento inverso, o desde la app.")
+    elif undo_ok:
+        undo_note = "Si el usuario dice que se equivocó, llamá undo_last_trade."
+    else:
+        undo_note = "Para revertirlo: desde la app (Cartera / Operaciones)."
     return {"status": "registered", "summary": _LAST_CHAT_TRADE[uid]["summary"],
             "_note": "Registrado OK. Confirmale con el summary. " + undo_note}
 
@@ -16069,7 +16252,8 @@ _UNDO_STRONG_RE = re.compile(
 # 'borrá el broker X' dispare el undo del último registro).
 _UNDO_OBJECT_RE = re.compile(
     r"\b(operaci[oó]n\w*|registro\w*|compra\w*|venta\w*|[uú]ltim\w*|eso|"
-    r"reci[eé]n|anterior)\b", re.IGNORECASE)
+    r"reci[eé]n|anterior|dep[oó]sito\w*|retiro\w*|transferencia\w*)\b",
+    re.IGNORECASE)
 
 # Clasificador de la respuesta a un pendiente por TOKENS (review nocturno B2):
 # el approach por regex-substring ejecutaba writes ante condicionales y
@@ -16151,11 +16335,13 @@ def _pending_summary_epilogue(uid: int, text: str) -> str:
     if (time.time() - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
         return ""
     p = d.get("payload") or {}
-    if p.get("price") is None:
+    # trades: se matchea el PRECIO; movimientos de cash (sin precio): el MONTO
+    ref_val = p.get("price") if p.get("price") is not None else p.get("amount")
+    if ref_val is None:
         return ""
     text_digits = re.sub(r"\D", "", text or "")
-    price_digits = re.sub(r"\D", "", f"{p['price']:g}")
-    if price_digits and price_digits in text_digits:
+    ref_digits = re.sub(r"\D", "", f"{ref_val:g}")
+    if ref_digits and ref_digits in text_digits:
         return ""
     return ("\n\nRegistro pendiente: " + str(d.get("summary", ""))
             + " — ¿Confirmás? (sí/no)")
@@ -16189,6 +16375,11 @@ def _undo_last_trade_handler(uid: int) -> dict:
     info = _LAST_CHAT_TRADE.get(uid)
     if not info or (time.time() - info["ts"]) > _UNDO_TRADE_TTL:
         return {"error": "No encuentro un registro reciente por chat para deshacer (ventana: 24 h)."}
+    if info["kind"] in ("deposit", "withdraw", "transfer"):
+        return {"error": ("No deshago movimientos de cash automáticamente. "
+                          "Se revierte registrando el movimiento inverso "
+                          "(un retiro por el depósito, etc.), o desde la app "
+                          "(Operaciones → Movimientos).")}
     if info["kind"] != "buy":
         return {"error": ("Solo deshago COMPRAS automáticamente. Para revertir la "
                           "venta: registrá la compra inversa, o desde la app.")}
@@ -16539,10 +16730,18 @@ _AI_TOOLS = [
     {
         "name": "register_trade",
         "description": (
-            "Registra una COMPRA o VENTA manual en la cartera de Rendi que el "
-            "usuario te dicta ('compré 2000 USD de BTC a 65000', 'vendí 20 "
-            "nominales de Amazon'). NO opera en el broker real — solo lo ANOTA "
-            "en el tracker, como el botón Agregar de la app.\n\n"
+            "Registra en la cartera de Rendi lo que el usuario te dicta: una "
+            "COMPRA o VENTA ('compré 2000 USD de BTC a 65000', 'vendí 20 "
+            "nominales de Amazon'), un DEPÓSITO o RETIRO de cash ('ayer hice "
+            "un depósito de 600.000 pesos en Balanz', 'retiré 500 dólares de "
+            "Binance') o una TRANSFERENCIA de cash entre sus brokers ('pasé "
+            "200.000 pesos de Balanz a Cocos'). NO opera en el broker real — "
+            "solo lo ANOTA en el tracker, como los botones Agregar y "
+            "Depositar/Retirar de la app.\n\n"
+            "Para CASH (deposit/withdraw/transfer) alcanza con: action, "
+            "broker, amount (el monto tal cual lo dijo; la moneda es la del "
+            "broker), date si no es de hoy, y to_broker solo en transfer. "
+            "SIN asset, SIN price, SIN quantity.\n\n"
             "FLUJO OBLIGATORIO (el server lleva el estado; vos NO manejás "
             "tokens):\n"
             "1. Ante la intención de registrar, llamala con lo que tengas — el "
@@ -16578,11 +16777,12 @@ _AI_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["buy", "sell"]},
-                "asset": {"type": "string", "description": "Ticker o nombre (BTC, AMZN, 'amazon')"},
+                "action": {"type": "string", "enum": ["buy", "sell", "deposit", "withdraw", "transfer"]},
+                "asset": {"type": "string", "description": "Ticker o nombre (BTC, AMZN, 'amazon') — solo buy/sell"},
                 "asset_type": {"type": "string", "enum": ["CRYPTO", "CEDEAR", "STOCK", "AR_STOCK"],
                                 "description": "Obligatorio si el ticker es ambiguo (preguntale al usuario)"},
-                "broker": {"type": "string", "description": "Nombre EXACTO de un broker del usuario (está en el snapshot)"},
+                "broker": {"type": "string", "description": "Nombre EXACTO de un broker del usuario (está en el snapshot). En transfer = el broker ORIGEN"},
+                "to_broker": {"type": "string", "description": "SOLO transfer: broker DESTINO (nombre exacto)"},
                 "currency": {"type": "string", "enum": ["ARS", "USD"]},
                 "quantity": {"type": "number", "description": "Cantidad de unidades (si el usuario la dio)"},
                 "amount": {"type": "number", "description": "Monto total (si dio el monto, NO calcules la cantidad — el server la deriva)"},
@@ -18991,7 +19191,12 @@ _FREE_QUESTIONS_NORMALIZED = frozenset(_normalize_question(q) for q in _FREE_QUE
 _TRADE_INTENT_RE = re.compile(
     r"\b(compr[eéoóá]\w*|vend[ií]\w*|anot[aáeé]\w*|registr[aáoóeé]\w*|"
     r"carg[aáoóuú]\w*|agreg[aáoóuú]\w*|deshac[eé]\w*|desharme|revert[íi]\w*|"
-    r"corregí|me equivoqué)\b",
+    r"corregí|me equivoqué|"
+    # movimientos de cash: verbos Y sustantivos, con y sin tilde (la frase
+    # real que falló fue 'HICE UN DEPOSITO DE 600000 PESOS' — sin verbo de
+    # la lista y sin tilde)
+    r"dep[oó]sit[eéoó]\w*|deposit[eé]\w*|ingres[eé]\w*|retir[eéoó]\w*|"
+    r"saqu[eé]\w*|extraje|extracci[oó]n\w*|transfer[íi]\w*|transferencia\w*)\b",
     re.IGNORECASE)
 
 
@@ -19365,7 +19570,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
                 403,
                 detail={
                     "error": "free_chat_not_allowed",
-                    "message": "El chat libre está disponible solo en el plan Pro. Elegí una de las preguntas guiadas, registrá una operación (probá: \"compré 100 USD de BTC a 65.000\") o actualizá tu plan.",
+                    "message": "El chat libre está disponible solo en el plan Pro. Elegí una de las preguntas guiadas, registrá una operación o un movimiento (probá: \"compré 100 USD de BTC a 65.000\" o \"deposité 600.000 pesos en Balanz\") o actualizá tu plan.",
                     "tier": tier,
                     "upgrade": {
                         "available": True,
