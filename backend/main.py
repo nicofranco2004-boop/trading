@@ -15412,13 +15412,21 @@ def _num_or_none(v):
         return None
 
 
+# Pool chico para acotar el fetch de precio del registro (review: get_prices
+# in-request sin deadline podía colgar el turno 35-55s en cache-miss frío,
+# contra el corte de ~30s del proxy). Timeout → None → fail-open (pide precio).
+_TRADE_PRICE_POOL = None
+
+
 def _trade_market_price(asset: str, kind, currency: str, uid: int):
     """Precio de mercado SERVER-SIDE para el flujo de registro (mismo feed que
-    la UI: get_prices = cache 60s + data912 + last-known). Resuelve el símbolo
-    canónico por tipo y devuelve el precio EN LA MONEDA de la operación, o None
-    si no aplica / no hay cotización (→ el precio lo da el usuario):
+    la UI: get_prices = cache 60s + data912 + last-known ACOTADO a 48 h).
+    Resuelve el símbolo canónico por tipo y devuelve el precio EN LA MONEDA de
+    la operación, o None si no aplica / no hay cotización (→ lo da el usuario):
       · CEDEAR / acción AR → '<ASSET>.BA' (ARS). Solo válido si currency==ARS.
-      · stock US / cripto → ticker pelado (USD). Solo válido si currency==USD.
+      · stock US → ticker pelado (USD). Solo válido si currency==USD.
+      · cripto → '<ASSET>-USD' (review: el ticker PELADO colisionaba con
+        equities homónimos — DASH cotizaba DoorDash, FET un energy stock 318×).
     Nació del bug real de la demo: el número viajaba POR el LLM y llegó ÷1000
     (separador de miles es-AR, AMZN 2675→'2.675') o en USD del ticker US
     (INTC 105 vs .BA 34.380) → cantidades infladas 327-1000×."""
@@ -15426,19 +15434,49 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
         if currency != "ARS":
             return None
         sym = f"{asset}.BA"
-    elif kind in ("STOCK", "CRYPTO"):
+    elif kind == "CRYPTO":
+        if currency != "USD":
+            return None
+        sym = CRYPTO_YF.get(asset, f"{asset}-USD")
+    elif kind == "STOCK":
         if currency != "USD":
             return None
         sym = asset
     else:
         return None
+    global _TRADE_PRICE_POOL
     try:
-        p = (get_prices(sym, uid) or {}).get(sym)
+        if _TRADE_PRICE_POOL is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _TRADE_PRICE_POOL = ThreadPoolExecutor(max_workers=2)
+        fut = _TRADE_PRICE_POOL.submit(get_prices, sym, uid)
+        p = (fut.result(timeout=8) or {}).get(sym)
         p = float(p) if p is not None else None
-        return p if p and p > 0 else None
+        if not p or p <= 0:
+            return None
     except Exception as ex:
         log.warning("register_trade: market price fetch %s falló: %s", sym, ex)
         return None
+    # Frescura: get_prices rellena huecos con el last-known SIN límite de edad
+    # (para valuar la cartera está bien; para escribir el costo de un lote "de
+    # HOY" no). Si la última persistencia del símbolo es vieja, no confiamos.
+    try:
+        _c = get_db()
+        try:
+            row = _c.execute("SELECT updated_at FROM asset_last_price WHERE symbol=?",
+                             (sym,)).fetchone()
+        finally:
+            _c.close()
+        if row and row["updated_at"]:
+            _age = (datetime.utcnow()
+                    - datetime.fromisoformat(str(row["updated_at"]).replace("Z", "")))
+            if _age.total_seconds() > 48 * 3600:
+                log.info("register_trade: precio de %s con last-known viejo (%s) → lo da el usuario",
+                         sym, row["updated_at"])
+                return None
+    except Exception:
+        pass   # sin metadata de edad → comportamiento previo (aceptar)
+    return p
 
 
 def _register_trade_handler(input_data: dict, uid: int, request_id=None,
@@ -15538,11 +15576,20 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             or (bool(_in_kind)
                 and _in_kind not in (_pp.get("kind"), _pp.get("asset_type")))
             or (_in_amount is not None and not _close(_in_amount, _pp["amount"]))
-            # una re-llamada con price_source='market_today' no contradice por
-            # precio: el número que re-manda el modelo se ignora igual (el
-            # server re-resuelve la cotización — ver _trade_market_price)
+            # 'usá el precio de mercado' sobre un pendiente ES una enmienda:
+            # market_today sin price (o con un price que no es eco del
+            # pendiente) en un turno NO confirmatorio → re-armar (review: sin
+            # esto era IMPOSIBLE enmendar un pendiente a precio de mercado)
+            or (str(input_data.get("price_source") or "").lower() == "market_today"
+                and confirm_signal != "yes"
+                and (_in_price is None or not _close(_in_price, _pp["price"])))
+            # la exención de precio para market_today aplica SOLO en el turno
+            # del sí (ahí el payload pendiente gana y el número re-mandado se
+            # ignora de verdad); en turnos ambiguos un precio distinto ES una
+            # enmienda (review: la exención vieja se tragaba 'la pagué a 2000')
             or (_in_price is not None
-                and str(input_data.get("price_source") or "").lower() != "market_today"
+                and not (confirm_signal == "yes"
+                         and str(input_data.get("price_source") or "").lower() == "market_today")
                 and not _close(_in_price, _pp["price"]))
             or (_in_qty is not None and not _close(_in_qty, _pp["quantity"]))
         )
@@ -15580,6 +15627,10 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 "currency": _pl["currency"], "quantity": _pl["quantity"],
                 "amount": _pl["amount"], "price": _pl["price"],
                 "date": _pl["date"]}
+        # el campo DERIVADO no se hereda: se re-deriva del primario + el
+        # dato enmendado (heredar qty Y amount con un precio nuevo no cierra)
+        if _pl.get("derived") in ("quantity", "amount"):
+            prev.pop(_pl["derived"], None)
     fields = dict(prev)
     _from_input = set()
     for k in ("action", "asset", "asset_type", "broker", "currency", "quantity",
@@ -15604,6 +15655,14 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             fields.pop("amount", None)
         elif "quantity" not in _from_input:
             fields.pop("quantity", None)
+    # 'Usá el precio de mercado' como enmienda: si price_source vino en ESTE
+    # input y price no, el price heredado del draft/payload anterior quedó
+    # obsoleto — se saca para que la cotización server-side lo re-resuelva
+    # (sin esto el precio dictado viejo se reclasificaba como dictado de
+    # nuevo y la enmienda a mercado nunca ganaba — review).
+    if ("price_source" in _from_input and "price" not in _from_input
+            and str(fields.get("price_source") or "").lower() == "market_today"):
+        fields.pop("price", None)
 
     missing, hints = [], []
     action = str(fields.get("action") or "").strip().lower()
@@ -15718,11 +15777,13 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # Con price_source='market_today' IGNORAMOS el price que re-manda el
         # modelo y cotizamos server-side el símbolo canónico del activo.
         _mkt_src = str(fields.get("price_source") or "").lower() == "market_today"
+        _feed_down = False
         if _mkt_src and asset and kind and currency in ("ARS", "USD"):
             _ref = _trade_market_price(asset, kind, currency, uid)
             if _ref is not None:
-                if price is not None and max(price / _ref, _ref / price) > 1.10:
-                    # El modelo mandó UN PRECIO + market_today y no coinciden:
+                if price is not None and max(price / _ref, _ref / price) > 1.03:
+                    # El modelo mandó UN PRECIO + market_today y no coinciden
+                    # (un eco real del feed difiere ≤~1% por el cache de 60s):
                     # o es un precio DICTADO mal etiquetado ('a 105 cada uno'
                     # → el server no debe pisarlo con el de mercado), o es el
                     # relay mangleado del feed. En ambos casos: tratarlo como
@@ -15731,7 +15792,11 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                     fields.pop("price_source", None)
                 else:
                     price = _ref
-                    fields["price"] = _ref   # el draft re-plantado lleva el precio real
+                    # NO persistir el precio en fields: el re-plant de
+                    # gathering re-cotiza fresco en el próximo turno (review:
+                    # persistirlo hacía comparar server-vs-server y una
+                    # cotización vieja podía quedar reclasificada 'dictada')
+                    fields.pop("price", None)
             elif price is not None:
                 # feed caído pero hay un precio declarado → dictado (fail-open)
                 _mkt_src = False
@@ -15740,13 +15805,20 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 # sin cotización automática y sin precio → lo da el usuario
                 fields.pop("price_source", None)
                 _mkt_src = False
+                _feed_down = True
                 hints.append(f"{asset} sin cotización automática en este momento "
                              "— preguntale el precio exacto al usuario")
         if price is None and not _mkt_src:
-            missing.append("price (si la operación es de HOY al precio de mercado, "
-                           "mandá price_source='market_today' SIN price — el server "
-                           "usa la cotización real; si es retroactiva, preguntá a "
-                           "qué precio operó)")
+            if _feed_down:
+                # NO ofrecer market_today acá: acaba de fallar — re-mandarlo
+                # generaba un loop de needs_info idénticos (review)
+                missing.append("price — no hay cotización automática ahora: "
+                               "preguntale el precio exacto al usuario")
+            else:
+                missing.append("price (si la operación es de HOY al precio de mercado, "
+                               "mandá price_source='market_today' SIN price — el server "
+                               "usa la cotización real; si es retroactiva, preguntá a "
+                               "qué precio operó)")
 
         if missing:
             # free_turns viaja con el draft: si no se preserva en el re-plant,
@@ -15771,10 +15843,16 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                               "registro.'. Nada más.")}
 
         # ── Todo presente: derivar + validar ──────────────────────────────
+        # Recordamos QUÉ campo se derivó: una enmienda de precio posterior
+        # hereda el dato PRIMARIO del usuario y re-deriva el otro (sin esto,
+        # heredar qty Y amount viejos con el precio nuevo no cierra nunca).
+        _derived_field = None
         if quantity is None:
             quantity = amount / price
+            _derived_field = "quantity"
         elif amount is None:
             amount = quantity * price
+            _derived_field = "amount"
         elif abs(quantity * price - amount) > 0.01 * max(amount, 1e-9):
             _TRADE_DRAFT.pop(uid, None)
             return {"error": (
@@ -15860,6 +15938,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         "amount": round(amount, 2), "date": date, "date_is_today": date_is_today,
         "tc_venta": round(tc_venta, 2) if tc_venta else None,
         "autodeposit_needed": autodeposit_needed,
+        "derived": _derived_field,
     }
     _TRADE_DRAFT[uid] = {
         "status": "confirming", "payload": payload,

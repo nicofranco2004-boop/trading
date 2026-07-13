@@ -769,6 +769,74 @@ class TestMarketPriceServerSide(_Base):
         self.assertEqual(r.get("status"), "needs_confirmation", r)
         self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["price"], 30000)
 
+    def test_feed_down_missing_text_does_not_bait_market_today(self):
+        # el needs_info de feed-caído NO debe re-ofrecer market_today (loop)
+        with patch.object(main, "_trade_market_price", return_value=None):
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "amount": 500000,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_info", r)
+        price_items = [m for m in r["missing"] if m.startswith("price")]
+        self.assertTrue(price_items and all("market_today" not in m for m in price_items),
+                        price_items)
+
+    def test_replant_does_not_persist_server_price(self):
+        # market_today con quantity faltante: el draft NO guarda el precio
+        # cotizado (el próximo turno re-cotiza fresco, server-vs-server nunca)
+        with patch.object(main, "_trade_market_price", return_value=2675.0):
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "price_source": "market_today"},
+                   self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_info", r)
+        self.assertNotIn("price", main._TRADE_DRAFT[self.uid]["fields"])
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["fields"].get("price_source"),
+                         "market_today")
+
+    def test_amend_pending_to_market_price(self):
+        # 'mejor usá el precio de mercado' sobre un pendiente DICTADO: la
+        # re-llamada {price_source: market_today} sin price re-arma al precio
+        # real (review: antes era IMPOSIBLE enmendar a mercado — loopeaba el
+        # summary viejo)
+        with patch.object(main, "_trade_market_price", return_value=32860.0):
+            r = _h({"action": "buy", "asset": "INTC", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "quantity": 6, "price": 30000},
+                   self.uid, request_id="A")
+            self.assertEqual(r.get("status"), "needs_confirmation", r)
+            r2 = _h({"price_source": "market_today"}, self.uid,
+                    request_id="B", confirm_signal="")
+        self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["price"], 32860.0)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["quantity"], 6)
+
+    def test_amend_price_with_hallucinated_market_today_not_swallowed(self):
+        # 'en realidad la pagué a 2000' + market_today alucinado en un turno
+        # NO-sí: cuenta como enmienda (review: la exención vieja la tragaba y
+        # el sí posterior registraba el precio VIEJO)
+        with patch.object(main, "_trade_market_price", return_value=2675.0):
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "quantity": 10,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+            self.assertEqual(r.get("status"), "needs_confirmation", r)
+            self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["price"], 2675.0)
+            r2 = _h({"price": 2000, "price_source": "market_today"}, self.uid,
+                    request_id="B", confirm_signal="")
+        self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["price"], 2000)
+
+    def test_confirm_recall_with_market_today_echo_still_executes(self):
+        # el turno del SÍ con la re-llamada típica de Haiku (campos + su
+        # número + market_today) sigue ejecutando el payload pendiente
+        with patch.object(main, "_trade_market_price", return_value=2675.0):
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "quantity": 10,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+            self.assertEqual(r.get("status"), "needs_confirmation", r)
+            r2 = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                     "broker": "Balanz", "quantity": 10, "price": 2.675,
+                     "price_source": "market_today"}, self.uid,
+                    request_id="B", confirm_signal="yes")
+        self.assertEqual(r2.get("status"), "registered", r2)
+
     def test_market_today_feed_down_asks_user(self):
         with patch.object(main, "_trade_market_price", return_value=None):
             r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
@@ -829,13 +897,52 @@ class TestTradeMarketPriceSymbolResolution(unittest.TestCase):
     def test_us_stock_ars_returns_none(self):
         self.assertIsNone(main._trade_market_price("NVDA", "STOCK", "ARS", 1))
 
-    def test_crypto_usd_plain_symbol(self):
-        with patch.object(main, "get_prices", return_value={"BTC": 65000.0}):
+    def test_crypto_uses_usd_suffix(self):
+        # el ticker PELADO colisiona con equities homónimos (DASH→DoorDash,
+        # FET→Forum Energy 318×) — la cripto SIEMPRE se cotiza '<X>-USD'
+        with patch.object(main, "get_prices", return_value={"BTC-USD": 65000.0}) as gp:
             self.assertEqual(main._trade_market_price("BTC", "CRYPTO", "USD", 1), 65000.0)
+            gp.assert_called_once_with("BTC-USD", 1)
+        with patch.object(main, "get_prices", return_value={"DASH-USD": 33.31}) as gp:
+            self.assertEqual(main._trade_market_price("DASH", "CRYPTO", "USD", 1), 33.31)
+            gp.assert_called_once_with("DASH-USD", 1)
 
     def test_feed_error_returns_none(self):
         with patch.object(main, "get_prices", side_effect=RuntimeError("boom")):
             self.assertIsNone(main._trade_market_price("AMZN", "CEDEAR", "ARS", 1))
+
+    def test_stale_last_known_rejected(self):
+        # get_prices puede servir un last-known viejo: para ESCRIBIR un lote
+        # "de hoy" no alcanza — >48h de la última persistencia → None
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM asset_last_price WHERE symbol='AMZN.BA'")
+            conn.execute(
+                "INSERT INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,?)",
+                ("AMZN.BA", 2675.0, "2026-06-01T10:00:00"))
+            conn.commit()
+            with patch.object(main, "get_prices", return_value={"AMZN.BA": 2675.0}):
+                self.assertIsNone(main._trade_market_price("AMZN", "CEDEAR", "ARS", 1))
+            conn.execute("DELETE FROM asset_last_price WHERE symbol='AMZN.BA'")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_fresh_last_known_accepted(self):
+        from datetime import datetime
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM asset_last_price WHERE symbol='AMZN.BA'")
+            conn.execute(
+                "INSERT INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,?)",
+                ("AMZN.BA", 2675.0, datetime.utcnow().isoformat()))
+            conn.commit()
+            with patch.object(main, "get_prices", return_value={"AMZN.BA": 2675.0}):
+                self.assertEqual(main._trade_market_price("AMZN", "CEDEAR", "ARS", 1), 2675.0)
+            conn.execute("DELETE FROM asset_last_price WHERE symbol='AMZN.BA'")
+            conn.commit()
+        finally:
+            conn.close()
 
 
 class TestSanitizeAssistantBlocks(unittest.TestCase):
