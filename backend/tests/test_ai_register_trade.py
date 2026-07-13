@@ -892,7 +892,8 @@ class TestCashFlowChat(_Base):
 
     def _monthly(self, broker):
         r = self.conn.execute(
-            "SELECT deposits, withdrawals, manual_deposits, manual_withdrawals, year, month "
+            "SELECT deposits, withdrawals, manual_deposits, manual_withdrawals, "
+            "capital_inicio, capital_final, year, month "
             "FROM monthly_entries WHERE user_id=? AND broker=? ORDER BY year, month",
             (self.uid, broker)).fetchall()
         return [dict(x) for x in r]
@@ -989,6 +990,74 @@ class TestCashFlowChat(_Base):
         self.assertEqual(len(target), 1, mb)
         self.assertAlmostEqual(target[0]["manual_deposits"], 800.0, places=2)
 
+    def test_retro_before_first_row_no_phantom_capital(self):
+        # review: un retro a un mes ANTERIOR al primer registro heredaba el
+        # capital_final de un mes FUTURO → capital fantasma permanente en la
+        # cadena (broker Y global) que el repair no sana. Ahora inicio=0.
+        from datetime import datetime, timedelta
+        main.cash_flow(main.CashFlowIn(broker_name="Binance", direction="deposit",
+                                       amount=1000, tc_blue=1415), self.uid)
+        prev = (datetime.utcnow().replace(day=1) - timedelta(days=1))
+        retro = prev.strftime("%Y-%m-15")
+        _h({"action": "deposit", "broker": "Binance", "amount": 800, "date": retro},
+           self.uid, request_id="A")
+        _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
+        for broker in ("Binance", "global"):
+            chain = self._monthly(broker)
+            self.assertAlmostEqual(chain[0]["capital_inicio"], 0.0, places=2,
+                                   msg=f"{broker}: {chain}")
+            self.assertAlmostEqual(chain[-1]["capital_final"], 1800.0, places=2,
+                                   msg=f"{broker}: {chain}")
+
+    def test_amend_cash_amount_sent_as_quantity(self):
+        # review HIGH: 'no, eran 650000' que el modelo manda como quantity se
+        # tragaba y el sí escribía el monto VIEJO
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        r2 = _h({"action": "deposit", "broker": "Balanz", "quantity": 650000},
+                self.uid, request_id="B", confirm_signal="")
+        self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["amount"], 650000)
+        # y el sí ejecuta el enmendado
+        r3 = _h({"confirm_pending": True}, self.uid, request_id="C", confirm_signal="yes")
+        self.assertEqual(r3.get("status"), "registered", r3)
+        self.assertAlmostEqual(self._cash_of("Balanz"), 650000.0, places=2)
+
+    def test_amend_cash_mixed_broker_and_quantity(self):
+        # {broker:Cocos, quantity:650000}: aplica AMBOS, no la mitad
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Cocos", "ARS"))
+        self.conn.commit()
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        r2 = _h({"action": "deposit", "broker": "Cocos", "quantity": 650000},
+                self.uid, request_id="B", confirm_signal="")
+        self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+        p = main._TRADE_DRAFT[self.uid]["payload"]
+        self.assertEqual(p["amount"], 650000)
+        self.assertEqual(p["broker"], "Cocos")
+
+    def test_retro_cash_ignores_spurious_price_source(self):
+        # review LOW: price_source='market_today' colado en un deposit retro
+        # mataba el draft con un error de trades sin sentido
+        from datetime import datetime, timedelta
+        prev = (datetime.utcnow().replace(day=1) - timedelta(days=1))
+        retro = prev.strftime("%Y-%m-15")
+        r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000,
+                "date": retro, "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+
+    def test_transfer_verbs_are_intent(self):
+        for msg in ("pasé 200.000 pesos de balanz a cocos",
+                    "moví 500 dólares de binance a wallbit",
+                    "mandé 300 usd de binance a schwab"):
+            self.assertTrue(main._is_trade_intent(msg), msg)
+        # sin señal financiera NO (ambiguo)
+        self.assertFalse(main._is_trade_intent("pasé por el banco hoy"))
+        self.assertFalse(main._is_trade_intent("moví el auto de lugar"))
+
     def test_amendment_inherits_cash_fields(self):
         # 'no, eran 650.000' hereda broker/fecha sin KeyError
         r = _h({"action": "deposit", "broker": "Balanz", "amount": 600000},
@@ -1068,6 +1137,18 @@ class TestCashFlowChat(_Base):
                 "amount": 100}, self.uid, request_id="A")
         self.assertIn("error", r)
 
+    def test_transfer_global_nets_to_zero(self):
+        # review MEDIUM: transfer entre brokers propios no debe inflar el
+        # capital_final del mes (era +monto por el clamp asimétrico)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Schwab", "USD"))
+        self.conn.commit()
+        r = _h({"action": "transfer", "broker": "Binance", "to_broker": "Schwab",
+                "amount": 1200}, self.uid, request_id="A")
+        _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
+        g = self._monthly("global")
+        self.assertAlmostEqual(g[-1]["capital_final"], 0.0, places=2, msg=g)
+
     def test_transfer_leg2_failure_compensates(self):
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, "Schwab", "USD"))
@@ -1091,6 +1172,13 @@ class TestCashFlowChat(_Base):
         # compensado: el cash del origen quedó como antes
         self.assertAlmostEqual(self._cash_of("Binance"), 5000.0, places=2)
         self.assertIsNone(self._cash_of("Schwab"))
+        # y el mes NO quedó inflado con retiro+depósito brutos (revert limpio)
+        mb = self._monthly("Binance")
+        if mb:
+            self.assertAlmostEqual(mb[-1]["manual_withdrawals"], 0.0, places=2, msg=mb)
+        g = self._monthly("global")
+        if g:
+            self.assertAlmostEqual(g[-1]["capital_final"], 0.0, places=2, msg=g)
 
     def test_trades_unaffected_regression(self):
         # el branch cash no toca el flujo buy: compra normal sigue OK

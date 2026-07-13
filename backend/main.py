@@ -7298,11 +7298,17 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
         )
         return
 
-    # Crear fila del mes — capital_inicio = capital_final del mes anterior más reciente
+    # Crear fila del mes — capital_inicio = capital_final del mes ANTERIOR al
+    # target (estrictamente anterior: un flujo RETRO a un mes previo al primer
+    # registro heredaba el capital_final de un mes FUTURO → capital fantasma
+    # permanente en broker Y global que el repair no puede sanar porque nunca
+    # corrige la primera fila de la cadena — review cash-chat, repro real).
     prev = conn.execute(
         """SELECT capital_final FROM monthly_entries
-           WHERE user_id=? AND broker=? ORDER BY year DESC, month DESC LIMIT 1""",
-        (uid, broker),
+           WHERE user_id=? AND broker=?
+             AND (year < ? OR (year = ? AND month < ?))
+           ORDER BY year DESC, month DESC LIMIT 1""",
+        (uid, broker, year, year, month),
     ).fetchone()
     cap_inicio = float(prev['capital_final']) if prev else 0.0
     deposits = amount if direction == 'deposit' else 0.0
@@ -7310,6 +7316,11 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
     man_dep = amount if (is_manual and direction == 'deposit') else 0.0
     man_wit = amount if (is_manual and direction == 'withdraw') else 0.0
     cap_final = cap_inicio + (amount if direction == 'deposit' else -amount)
+    # SIN clamp a 0: el clamp era asimétrico con el path UPDATE y rompía el
+    # neto-0 de una transferencia cuya pata retiro CREA la fila del mes (el
+    # retiro se tragaba, el depósito sumaba entero → capital_final fantasma
+    # del mes abierto — review cash-chat). Un capital_final negativo de mes
+    # abierto es honesto (flujo neto negativo); el repair recalcula al cierre.
     conn.execute(
         """INSERT INTO monthly_entries
            (user_id, year, month, broker, deposits, withdrawals,
@@ -7317,7 +7328,7 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
             pnl_realized, pnl_unrealized, capital_inicio, capital_final)
            VALUES (?,?,?,?,?,?,?,?,0,0,?,?)""",
         (uid, year, month, broker, deposits, withdrawals,
-         man_dep, man_wit, cap_inicio, max(0.0, cap_final)),
+         man_dep, man_wit, cap_inicio, cap_final),
     )
 
 
@@ -7511,6 +7522,42 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_current_user)):
     except Exception as ex:
         conn.close()
         raise HTTPException(500, f"Error al registrar flujo de caja: {ex}")
+
+
+def _revert_cash_flow(uid: int, broker_name: str, direction: str,
+                      amount: float, tc_blue: float, date: str = None) -> None:
+    """Deshace EXACTAMENTE un cash_flow previo (misma moneda/mes): repone el
+    cash y RESTA de la MISMA columna (deposits/withdrawals) — no suma a la
+    opuesta. Se usa para compensar la pata retiro de una transferencia cuyo
+    depósito falló: sin esto el mes quedaba con retiro+depósito brutos (neto 0
+    en cash pero inflado en aportes/Evolución — review cash-chat)."""
+    conn = get_db()
+    try:
+        with conn:
+            br = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=?",
+                              (uid, broker_name)).fetchone()
+            currency = br["currency"] if br else "USD"
+            # revertir el cash nativo: si fue withdraw, sumar; si fue deposit, restar
+            sign = 1.0 if direction == "withdraw" else -1.0
+            _adjust_broker_cash(conn, uid, broker_name, sign * amount)
+            now = datetime.utcnow()
+            _fy, _fm = now.year, now.month
+            if date:
+                try:
+                    _fd = datetime.strptime(date, "%Y-%m-%d")
+                    _fy, _fm = _fd.year, _fd.month
+                except ValueError:
+                    pass
+            amount_usd = amount / tc_blue if currency == "ARS" else amount
+            # amount NEGATIVO con la MISMA direction = resta de esa columna
+            _update_monthly_flow(conn, uid, broker_name, _fy, _fm, direction,
+                                 -amount_usd, is_manual=True)
+            _update_monthly_flow(conn, uid, "global", _fy, _fm, direction,
+                                 -amount_usd, is_manual=True)
+            _repair_monthly_chain(conn, uid, broker_name)
+            _repair_monthly_chain(conn, uid, "global")
+    finally:
+        conn.close()
 
 
 # ─── Conversión ARS ↔ USD dentro de un broker ────────────────────────────────
@@ -15606,6 +15653,11 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             return abs(a - b) <= max(0.01 * max(abs(b), 1), 1e-6)
         _pp_cash = _pp.get("action") in ("deposit", "withdraw", "transfer")
         _in_to_broker = str(input_data.get("to_broker") or "").strip().lower()
+        # cash: el monto mandado en el slot equivocado (quantity/price) ES el
+        # monto — sin este alias la enmienda no contradecía y el sí escribía
+        # el monto VIEJO (review, repro real)
+        if _pp_cash and _in_amount is None:
+            _in_amount = _in_qty if _in_qty is not None else _in_price
         # ¿algún campo PRESENTE contradice el pendiente? (ausente = no
         # contradice; los payloads CASH llevan asset/price/quantity en None →
         # esas cláusulas se gatean por presencia en el payload)
@@ -15829,13 +15881,30 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         quantity = _num_or_none(fields.get("quantity"))
         amount = _num_or_none(fields.get("amount"))
         if _is_cash:
-            # cash: solo importa el monto (price/quantity mandados por error
-            # se ignoran); el modelo a veces manda el monto como quantity
-            if amount is None and quantity is not None:
+            # cash: solo importa el monto. El modelo a veces lo manda en el
+            # slot equivocado (quantity/price) — el monto que vino EN ESTE
+            # input pisa al heredado (review: 'no, eran 650000' mandado como
+            # quantity se tragaba y el sí escribía el monto VIEJO).
+            _in_amt = _num_or_none(input_data.get("amount"))
+            _in_alt = _num_or_none(input_data.get("quantity"))
+            if _in_alt is None:
+                _in_alt = _num_or_none(input_data.get("price"))
+            if _in_amt is None and _in_alt is not None:
+                amount = _in_alt
+            elif amount is None and quantity is not None:
                 amount = quantity
             price = None
             quantity = None
-            if amount is None:
+            # price/quantity/price_source no existen para cash: se limpian de
+            # fields para que ningún check de precios downstream dispare (un
+            # price_source colado mataba el draft retro con un error de
+            # trades sin sentido — review) y el re-plant lleve el monto bueno
+            fields.pop("quantity", None)
+            fields.pop("price", None)
+            fields.pop("price_source", None)
+            if amount is not None:
+                fields["amount"] = amount
+            else:
                 missing.append("amount (el monto del movimiento)")
         elif quantity is None and amount is None:
             missing.append("quantity o amount")
@@ -16194,8 +16263,11 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
             except Exception as ex2:
                 log.error("transfer: pata deposit falló uid=%s: %s — compensando", uid, ex2)
                 try:
-                    cash_flow(CashFlowIn(broker_name=broker_name, direction="deposit",
-                                         amount=p["amount"], tc_blue=_tc, date=_date_arg), uid)
+                    # revert LIMPIO del retiro (repone cash + resta la columna
+                    # de retiro): el mes queda como si nada hubiera pasado, no
+                    # con retiro+depósito brutos inflando aportes
+                    _revert_cash_flow(uid, broker_name, "withdraw", p["amount"],
+                                      _tc, _date_arg)
                     return {"error": ("No se pudo acreditar en el destino — el retiro "
                                       "se revirtió, no cambió nada. Que lo cargue desde la app.")}
                 except Exception:
@@ -19203,7 +19275,8 @@ _TRADE_INTENT_RE = re.compile(
 # real de Nico fue 'HICE UN DEPOSITO DE 600000 PESOS' (sin tilde).
 _CASH_VERB_RE = re.compile(
     r"\b(deposit[eéoó]\w*|ingres[eé]\w*|retir[eéoó]\w*|saqu[eé]\w*|extraje|"
-    r"transfer[íi]\w*)\b", re.IGNORECASE)
+    r"transfer[íi]\w*|pas[eéoó]\w*|mov[íi]\w*|mand[eé]\w*|envi[eé]\w*)\b",
+    re.IGNORECASE)
 _CASH_NOUN_RE = re.compile(
     r"\b(un|una|el|la|hice|hizo|carg[aá]\w*)\s+(dep[oó]sito\w*|retiro\w*|"
     r"transferencia\w*|extracci[oó]n\w*)\b", re.IGNORECASE)
