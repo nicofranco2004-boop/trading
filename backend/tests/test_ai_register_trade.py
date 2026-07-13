@@ -254,9 +254,23 @@ class TestSellARS(_Base):
 
 
 class TestSellFifoCurrencyAware(_Base):
-    def test_sell_usd_with_only_ars_lots_rejected(self):
-        """Venta USD con lotes SOLO en pesos → fase 1 rechaza (antes pasaba y el
-        fallback del endpoint consumía los ARS mal)."""
+    def test_legacy_null_currency_lots_counted(self):
+        """Lotes legacy con currency=NULL: el gate usa _native_ccy (el MISMO
+        predicado del endpoint) → los cuenta y NO rechaza en falso (review M1).
+        Broker USDT + lote NULL → _native_ccy lo resuelve USD."""
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, asset_type, is_cash, "
+            "invested, quantity, currency, entry_date) "
+            "VALUES (?,?,?,?,0,5000,10,NULL,'2026-01-10')",
+            (self.uid, "Binance", "SOL", "CRYPTO"))
+        self.conn.commit()
+        r = _h({"action": "sell", "asset": "SOL", "broker": "Binance",
+                "quantity": 5, "price": 100}, self.uid, request_id="A")
+        self.assertEqual(r["status"], "needs_confirmation")  # NO falso rechazo
+
+    def test_fallback_any_ccy_when_no_same_ccy(self):
+        """Sin lotes de la moneda de venta pero con lotes cross-ccy: el gate
+        cae al total (misma red de seguridad legacy del endpoint) y no crashea."""
         self.conn.execute(
             "INSERT INTO positions (user_id, broker, asset, asset_type, is_cash, "
             "invested, quantity, currency, entry_date) "
@@ -264,13 +278,7 @@ class TestSellFifoCurrencyAware(_Base):
             (self.uid, "Binance", "SOL", "CRYPTO"))
         self.conn.commit()
         r = _h({"action": "sell", "asset": "SOL", "broker": "Binance",
-                "currency": "USD", "quantity": 5, "price": 100}, self.uid, request_id="A")
-        # Binance es USDT→USD; el lote es ARS → same-ccy USD da 0, cae al any_ccy=10
-        # PERO la moneda de la venta (USD del broker) no matchea el lote ARS.
-        # El test clave: no debe pasar a confirmar una venta que el endpoint no puede honrar.
-        # Con currency forzada a USD (broker) y lotes ARS, same_ccy=0 → available=any=10 → pasa.
-        # Documentamos: el fallback legacy del endpoint consume el ARS. Aceptable si la
-        # cantidad alcanza; el guard real es el SUM. Verificamos que al menos NO crashea.
+                "quantity": 5, "price": 100}, self.uid, request_id="A")
         self.assertIn(r.get("status", "error"), ("needs_confirmation", "error"))
 
 
@@ -316,15 +324,49 @@ class TestUndo(_Base):
         self.assertEqual(float(cash["invested"]), 5000.0)   # cash al broker renombrado
 
 
+class TestFreeTurnsCapSurvivesRearm(_Base):
+    def test_free_turns_preserved_across_replants(self):
+        """H1 del re-review: el contador anti-abuso vive en el draft y el
+        handler lo re-plantaba en 0 en cada needs_info/needs_confirmation →
+        chat gratis ilimitado. Ahora se preserva."""
+        _h({"action": "buy", "asset": "BTC"}, self.uid, request_id="A")  # needs_info
+        main._TRADE_DRAFT[self.uid]["free_turns"] = 5   # simular 5 turnos gratis
+        # re-plant vía otra llamada incompleta (needs_info de nuevo)
+        _h({"action": "buy", "asset": "BTC", "broker": "Binance"}, self.uid, request_id="B")
+        self.assertEqual(main._TRADE_DRAFT[self.uid].get("free_turns"), 5)
+        # re-plant vía needs_confirmation (draft completo)
+        _h({"action": "buy", "asset": "BTC", "broker": "Binance",
+            "amount": 2000, "price": 65000}, self.uid, request_id="C")
+        self.assertEqual(main._TRADE_DRAFT[self.uid].get("free_turns"), 5)
+
+
+class TestPromptsNoStaleToken(unittest.TestCase):
+    def test_prompts_no_longer_mention_token_flow(self):
+        """M2 del re-review: los prompts dictaban el flujo de token ELIMINADO →
+        el modelo intentaba confirmed=true+confirmation_token y la confirmación
+        se rompía silenciosa."""
+        for sys_prompt in (main._AI_CHAT_SYSTEM, main._AI_CHAT_SYSTEM_FREE):
+            self.assertNotIn("confirmation_token", sys_prompt)
+            self.assertNotIn("confirmed=true", sys_prompt)
+            self.assertIn("confirm_pending", sys_prompt)
+
+
 class TestQuotaRefund(unittest.TestCase):
-    def test_undo_ok_refunds(self):
+    def test_undo_ok_refunds_when_reserved(self):
         with patch.object(main, "_refund_chat_quota") as m:
-            main._maybe_refund_trade_turn(1, {"undo_ok"})
+            main._maybe_refund_trade_turn(1, {"undo_ok"}, reserved=True)
         m.assert_called_once_with(1)
+
+    def test_undo_in_free_turn_no_refund(self):
+        """L1 del re-review: un undo en turno GRATIS (skip-reserve) no debe
+        devolver un slot que nunca se cobró."""
+        with patch.object(main, "_refund_chat_quota") as m:
+            main._maybe_refund_trade_turn(1, {"undo_ok"}, reserved=False)
+        m.assert_not_called()
 
     def test_non_undo_no_refund(self):
         with patch.object(main, "_refund_chat_quota") as m:
-            main._maybe_refund_trade_turn(1, {"trade_registered"})
+            main._maybe_refund_trade_turn(1, {"trade_registered"}, reserved=True)
         m.assert_not_called()
 
 

@@ -12649,7 +12649,7 @@ Tools internas (data del propio usuario):
 - get_market_news: noticias de MERCADO/macro/índices por tema (S&P, Fed, inflación, dólar, riesgo país, Merval). Para preguntas de mercado general, NO sobre un ticker que el usuario tiene.
 - get_fx_rates: cotización del dólar HOY (MEP/CCL/blue/cripto, pesos por dólar). Para "¿a cuánto está el dólar/MEP/blue?" o convertir pesos↔dólares usá ESTA (números, no noticias); get_market_news es para el CONTEXTO del dólar, no el precio.
 - remember_user_fact: persistir hechos del usuario entre sesiones.
-- register_trade / undo_last_trade: registrar en Rendi una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo anota en el tracker. Flujo obligatorio: llamá register_trade con lo que tengas → el server te dice qué falta (preguntalo TODO en una sola repregunta, usando el snapshot para proponer broker/tipo) o te da un resumen + token → mostrás el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntás si confirma → SOLO con el sí, re-llamás con confirmed=true + token. Si es de hoy y no sabe el precio, ofrecé el actual (get_current_prices, price_source='market_today'); si es retroactiva el precio lo da el usuario. NUNCA digas "registrado" sin el status registered. Si dice que se equivocó: undo_last_trade.
+- register_trade / undo_last_trade: registrar en Rendi una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo anota en el tracker. Flujo obligatorio (el server lleva el estado; vos NO manejás tokens): llamá register_trade con lo que tengas → el server te dice qué falta (preguntalo TODO en una sola repregunta, usando el snapshot para proponer broker/tipo) o te da un resumen → mostrás el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntás si confirma → cuando el usuario responda EN SU PRÓXIMO MENSAJE: si confirma, register_trade con confirm_pending=true (solo eso); si niega o cambia algo, cancel=true y rearmá. NO confirmes en el mismo turno del resumen. Si es de hoy y no sabe el precio, ofrecé el actual (get_current_prices, price_source='market_today'); si es retroactiva el precio lo da el usuario. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
 
 Tools de mercado externas (Pack A v2):
 Para EQUITIES (acciones US, CEDEARs listados en US — yfinance):
@@ -12901,7 +12901,7 @@ Tenés SOLO estas tools (no existe ninguna otra en tu plan):
 - Sobre los datos del usuario: get_asset_operations, get_monthly_detail, get_realized_vs_unrealized.
 - De mercado: get_value_scorecard (valoración de una ACCIÓN US/CEDEAR: 8 métricas + semáforos) y get_earnings_history (próximo earnings + últimos quarters).
 - remember_user_fact para hechos que el usuario pide recordar.
-- register_trade / undo_last_trade: registrar una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo ANOTA en Rendi. Flujo: llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen + token → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → SOLO con el sí, re-llamá con confirmed=true + token. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
+- register_trade / undo_last_trade: registrar una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo ANOTA en Rendi. Flujo (el server lleva el estado, sin tokens): llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → cuando responda EN SU PRÓXIMO MENSAJE: confirma → register_trade con confirm_pending=true; niega o cambia → cancel=true y rearmá. NO confirmes en el mismo turno. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
 - get_current_prices: SOLO para ofrecer el precio actual dentro del flujo de registro cuando la operación es de HOY y el usuario no lo sabe (price_source='market_today'). No la uses para consultas de precios sueltas — eso es de Pro.
 
 Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo — EXCEPCIÓN: en el flujo de registro podés combinar get_current_prices + register_trade en la misma respuesta. NO llames tools que no están en esta lista ni inventes nombres.
@@ -15570,8 +15570,13 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None) -> dict
             )}
 
         if missing:
+            # free_turns viaja con el draft: si no se preserva en el re-plant,
+            # el cap anti-abuso se resetea en cada re-arm (review H1) → chat
+            # gratis ilimitado con un draft abierto.
+            _prev_ft = (draft or {}).get("free_turns", 0)
             _TRADE_DRAFT[uid] = {"status": "gathering", "fields": fields,
-                                 "request_id": request_id, "ts": now}
+                                 "request_id": request_id, "ts": now,
+                                 "free_turns": _prev_ft}
             return {"status": "needs_info", "missing": missing, "hints": hints,
                     "_note": ("Faltan datos. Preguntá TODO junto (no de a uno) "
                               "usando los hints. Después llamá register_trade con "
@@ -15601,19 +15606,25 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None) -> dict
             # FIFO currency-aware: replicar el predicado de sell_position_fifo
             # (consume lotes de la MISMA moneda si existen). El SUM debe mirar
             # los MISMOS lotes que el endpoint va a tocar.
+            # MISMO predicado de selección de lotes que sell_position_fifo:
+            # behavioral._native_ccy resuelve la moneda REAL del lote (cubre
+            # currency NULL legacy — el SUM por columna cruda sub-contaba esos
+            # lotes y rechazaba ventas legítimas, review M1). Filtramos en
+            # Python con la misma función que usa el endpoint.
             from importing.persister import broker_pair
+            from behavioral import _native_ccy
             _pair = broker_pair(conn, uid, broker)
             _ph = ",".join("?" * len(_pair))
-            same_ccy = conn.execute(
-                f"SELECT COALESCE(SUM(quantity),0) q FROM positions WHERE user_id=? "
-                f"AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity>0 "
-                f"AND UPPER(COALESCE(currency,''))=?",
-                (uid, *_pair, asset, "USD" if currency == "USD" else "ARS")).fetchone()["q"]
-            any_ccy = conn.execute(
-                f"SELECT COALESCE(SUM(quantity),0) q FROM positions WHERE user_id=? "
-                f"AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity>0",
-                (uid, *_pair, asset)).fetchone()["q"]
-            available = float(same_ccy) if float(same_ccy) > 0 else float(any_ccy)
+            _lots = [dict(r) for r in conn.execute(
+                f"SELECT broker, asset, quantity, currency FROM positions "
+                f"WHERE user_id=? AND broker IN ({_ph}) AND asset=? "
+                f"AND is_cash=0 AND quantity>0",
+                (uid, *_pair, asset)).fetchall()]
+            _sell_ccy = "USD" if currency == "USD" else "ARS"
+            same_ccy = sum(float(l["quantity"] or 0) for l in _lots
+                           if _native_ccy(l) == _sell_ccy)
+            any_ccy = sum(float(l["quantity"] or 0) for l in _lots)
+            available = same_ccy if same_ccy > 0 else any_ccy
             if quantity > available + 1e-9:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": (
@@ -15648,6 +15659,8 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None) -> dict
         "status": "confirming", "payload": payload,
         "summary": _register_trade_summary(payload),
         "request_id": request_id, "ts": now,
+        # preservar el contador anti-abuso a través de los re-plants (review H1)
+        "free_turns": (draft or {}).get("free_turns", 0),
     }
     return {
         "status": "needs_confirmation",
@@ -18608,7 +18621,7 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
 
     turn_flags (set mutable, opcional): el caller lo pasa para saber qué pasó
     en el turno — se usa para el refund de cuota del flujo de registro
-    ('trade_tool' = se llamó register_trade; 'undo_ok' = undo exitoso)."""
+    ('trade_registered' = write ejecutado; 'undo_ok' = undo exitoso)."""
     tool_results = []
     for block in response_content:
         if block.type == "tool_use":
@@ -18693,13 +18706,14 @@ def _refund_chat_quota(uid: int) -> None:
         log.warning("refund_chat failed for uid=%s: %s", uid, ex)
 
 
-def _maybe_refund_trade_turn(uid: int, turn_flags: set) -> None:
-    """Refund del slot cuando un UNDO exitoso se ejecutó en un turno propio (el
-    'deshacelo' es un mensaje nuevo, no una continuación → reservó su slot; pero
-    deshacer un error no debe costar cuota; el registro deshecho ya pagó el
-    suyo). Los intentos de undo FALLIDOS cobran. Las continuaciones del registro
-    NO pasan por acá — son gratis por skip-reserve (ver ai_chat)."""
-    if "undo_ok" in turn_flags:
+def _maybe_refund_trade_turn(uid: int, turn_flags: set, reserved: bool = True) -> None:
+    """Refund del slot cuando un UNDO exitoso se ejecutó en un turno que RESERVÓ
+    (deshacer un error no debe costar cuota; el registro deshecho ya pagó el
+    suyo). Los intentos fallidos cobran. reserved=False (turno gratis por
+    skip-reserve) → NO refundear: devolvería un slot que nunca se cobró
+    (review L1). Docstring de turn_flags: 'trade_registered' (write ejecutado),
+    'undo_ok' (undo exitoso)."""
+    if reserved and "undo_ok" in turn_flags:
         _refund_chat_quota(uid)
 
 
@@ -19056,7 +19070,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                     if resp.stop_reason != "tool_use":
                         cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
                         _record_chat_quota(uid, cost_cents)
-                        _maybe_refund_trade_turn(uid, _turn_flags)
+                        _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                         state["settled"] = True
                         yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
                         return
@@ -19089,7 +19103,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                     resp = stream.get_final_message()
                 cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
                 _record_chat_quota(uid, cost_cents)
-                _maybe_refund_trade_turn(uid, _turn_flags)
+                _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                 state["settled"] = True
                 yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
             except Exception as ex:
@@ -19168,7 +19182,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                         conn2.close()
                 except Exception as ex:
                     log.warning("record_chat failed for uid=%s: %s", uid, ex)
-                _maybe_refund_trade_turn(uid, _turn_flags)
+                _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                 return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
             # Hay tool_use: ejecutar cada tool y continuar el loop. Unificado
@@ -19212,7 +19226,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 conn2.close()
         except Exception as ex:
             log.warning("record_chat failed for uid=%s: %s", uid, ex)
-        _maybe_refund_trade_turn(uid, _turn_flags)
+        _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
         return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
     except HTTPException:
