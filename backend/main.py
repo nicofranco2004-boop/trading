@@ -16112,6 +16112,29 @@ def _confirm_pending_trade_by_uid(uid: int) -> dict:
     return _execute_confirmed_trade(claimed["payload"], uid)
 
 
+def _pending_summary_epilogue(uid: int, text: str) -> str:
+    """Garantía server-side de VISIBILIDAD del pendiente: si al final del
+    turno queda un draft 'confirming', el usuario tiene que haber visto el
+    resumen VIGENTE — el próximo 'sí' lo ejecuta tal cual. Si el texto del
+    modelo no contiene el precio del pendiente (Haiku a veces narra 'cambio
+    el precio a X' sin re-armar, o re-arma a otro precio sin mostrarlo — las
+    dos pasaron en e2e reales), el server anexa el resumen él mismo."""
+    d = _TRADE_DRAFT.get(uid)
+    if not d or d.get("status") != "confirming":
+        return ""
+    if (time.time() - d.get("ts", 0)) > _TRADE_DRAFT_TTL:
+        return ""
+    p = d.get("payload") or {}
+    if p.get("price") is None:
+        return ""
+    text_digits = re.sub(r"\D", "", text or "")
+    price_digits = re.sub(r"\D", "", f"{p['price']:g}")
+    if price_digits and price_digits in text_digits:
+        return ""
+    return ("\n\nRegistro pendiente: " + str(d.get("summary", ""))
+            + " — ¿Confirmás? (sí/no)")
+
+
 def _trade_error_human(err) -> str:
     """Los errores del handler están escritos PARA EL MODELO ('Pedile al
     usuario…', 'Que lo cargue desde la app', 'no_pending'). El short-circuit
@@ -19557,7 +19580,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
             #   reset). Anti-abuso: si el user ya recibió respuesta sustancial y
             #   se desconecta antes del done, se le COBRA (sin esto: leer y
             #   cortar al 95% = chats infinitos). Si casi no llegó texto, refund.
-            state = {"settled": False, "synth_deltas": 0}
+            state = {"settled": False, "synth_deltas": 0, "synth_text": ""}
             try:
                 # +1 iteración cuando la 1ra va FORZADA a register_trade: esa
                 # vuelta no puede combinar tools (p.ej. get_current_prices para
@@ -19584,9 +19607,15 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                         for chunk in stream.text_stream:
                             if chunk:
                                 state["synth_deltas"] += 1
+                                state["synth_text"] += chunk
                                 yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
                         resp = stream.get_final_message()
                     if resp.stop_reason != "tool_use":
+                        # Garantía de visibilidad: si quedó un pendiente y el
+                        # modelo no mostró sus números, anexar el resumen.
+                        _ep = _pending_summary_epilogue(uid, state["synth_text"])
+                        if _ep:
+                            yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
                         cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
                         _record_chat_quota(uid, cost_cents)
                         _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
@@ -19618,8 +19647,12 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                     for chunk in stream.text_stream:
                         if chunk:
                             state["synth_deltas"] += 1
+                            state["synth_text"] += chunk
                             yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
                     resp = stream.get_final_message()
+                _ep = _pending_summary_epilogue(uid, state["synth_text"])
+                if _ep:
+                    yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
                 cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
                 _record_chat_quota(uid, cost_cents)
                 _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
@@ -19709,6 +19742,8 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 except Exception as ex:
                     log.warning("record_chat failed for uid=%s: %s", uid, ex)
                 _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
+                # Garantía de visibilidad del pendiente (ver _pending_summary_epilogue)
+                text = text + _pending_summary_epilogue(uid, text)
                 return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
             # Hay tool_use: ejecutar cada tool y continuar el loop. Unificado
@@ -19754,6 +19789,8 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
         except Exception as ex:
             log.warning("record_chat failed for uid=%s: %s", uid, ex)
         _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
+        # Garantía de visibilidad del pendiente (ver _pending_summary_epilogue)
+        text = text + _pending_summary_epilogue(uid, text)
         return {"reply": _strip_markdown(text.strip()), "tier": tier}
 
     except HTTPException:

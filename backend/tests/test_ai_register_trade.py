@@ -945,6 +945,37 @@ class TestTradeMarketPriceSymbolResolution(unittest.TestCase):
             conn.close()
 
 
+class TestPendingSummaryEpilogue(_Base):
+    """Garantía server-side: si el turno termina con un confirming y el texto
+    del modelo no muestra el precio del pendiente, se anexa el resumen (e2e
+    real: Haiku dijo 'cambio el precio a $15.000' pero el pendiente había
+    quedado a precio de mercado → el sí ejecutaba algo nunca visto)."""
+
+    def _arm(self, price=2697.5):
+        with patch.object(main, "_trade_market_price", return_value=price):
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "amount": 500000,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+
+    def test_appends_when_model_hides_the_price(self):
+        self._arm()
+        ep = main._pending_summary_epilogue(self.uid, "Entendido — cambio el precio a $ 15.000.")
+        self.assertIn("Registro pendiente", ep)
+        self.assertIn("¿Confirmás?", ep)
+
+    def test_silent_when_price_shown(self):
+        self._arm()
+        self.assertEqual(main._pending_summary_epilogue(
+            self.uid, "COMPRA 185,36 AMZN @ $ 2.697,50 ¿Confirmás?"), "")
+
+    def test_silent_without_confirming_draft(self):
+        self.assertEqual(main._pending_summary_epilogue(self.uid, "hola"), "")
+        main._TRADE_DRAFT[self.uid] = {"status": "gathering", "fields": {},
+                                        "ts": __import__("time").time()}
+        self.assertEqual(main._pending_summary_epilogue(self.uid, "hola"), "")
+
+
 class TestSanitizeAssistantBlocks(unittest.TestCase):
     """El SDK agrega campos (parsed_output) que la API rechaza con 400 si se
     re-mandan en el historial del loop. La proyección tiene que dejar SOLO los
