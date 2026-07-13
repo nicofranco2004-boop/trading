@@ -313,7 +313,15 @@ function PositionsDesktop() {
       if (pos) fetchPrices(pos, cfg, bkrs)
       api.get('/dolar').then(setDolar).catch(() => {})
     }, REFRESH_MS)
-    return () => clearInterval(id)
+    // El Coach IA registró/deshizo una operación (drawer sobre esta página):
+    // recargar al instante — sin esto el usuario tenía que refrescar a mano
+    // para ver la posición nueva.
+    const onPortfolioChanged = () => loadAll()
+    window.addEventListener('rendi:portfolio-changed', onPortfolioChanged)
+    return () => {
+      clearInterval(id)
+      window.removeEventListener('rendi:portfolio-changed', onPortfolioChanged)
+    }
   }, [])
 
   // Si el broker filtrado desaparece (lo borraste/renombraste vía BrokerManager,

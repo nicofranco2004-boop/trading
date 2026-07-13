@@ -46,6 +46,16 @@ describe('chatStream', () => {
     const r = await api.chatStream({ messages: [] }, { onDelta: d => { acc += d } })
     expect(acc).toBe('hola mundo')
     expect(r.tier).toBe('pro')
+    expect(r.portfolioChanged).toBe(false)   // turno sin write → no refresh
+  })
+
+  it('done con portfolio_changed (registro/undo por chat) → portfolioChanged', async () => {
+    globalThis.fetch = vi.fn(async () => sseResponse([
+      'data: {"t":"delta","d":"✅ Listo, registré: COMPRA 0,01 BTC"}\n\n',
+      'data: {"t":"done","tier":"pro","portfolio_changed":true}\n\n',
+    ]))
+    const r = await api.chatStream({ messages: [] }, { onDelta: () => {} })
+    expect(r.portfolioChanged).toBe(true)
   })
 
   it('stream TRUNCADO (sin frame terminal) lanza err.truncated', async () => {

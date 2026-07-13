@@ -19198,19 +19198,29 @@ def _maybe_refund_trade_turn(uid: int, turn_flags: set, reserved: bool = True) -
         _refund_chat_quota(uid)
 
 
-def _chat_direct_reply(stream: bool, text: str, tier: str):
+def _chat_direct_reply(stream: bool, text: str, tier: str,
+                       portfolio_changed: bool = False):
     """Respuesta del chat SIN llamar al LLM (short-circuit de confirmación de
     registro). Devuelve un StreamingResponse SSE (delta+done) si stream, o el
-    JSON {reply,tier} si no — mismo shape que consume el frontend."""
+    JSON {reply,tier} si no — mismo shape que consume el frontend.
+
+    portfolio_changed: el turno ESCRIBIÓ en la cartera (registro/undo) → el
+    frontend refresca Cartera y el snapshot del chat sin F5 del usuario."""
     if stream:
         def _sse():
             yield ": ok\n\n"
             yield "data: " + json.dumps({"t": "delta", "d": text}, ensure_ascii=False) + "\n\n"
-            yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
+            _done = {"t": "done", "tier": tier}
+            if portfolio_changed:
+                _done["portfolio_changed"] = True
+            yield "data: " + json.dumps(_done) + "\n\n"
         return StreamingResponse(_sse(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache, no-transform",
                                           "X-Accel-Buffering": "no"})
-    return {"reply": text, "tier": tier}
+    out = {"reply": text, "tier": tier}
+    if portfolio_changed:
+        out["portfolio_changed"] = True
+    return out
 
 
 def _chat_quota_429(tier: str, usage: dict) -> HTTPException:
@@ -19532,7 +19542,8 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 _msg = f"✅ Listo, registré: {_res.get('summary', '')}"
             else:
                 _msg = "No pude completar el registro: " + _trade_error_human(_res.get("error"))
-            return _chat_direct_reply(data.stream, _msg, tier)
+            return _chat_direct_reply(data.stream, _msg, tier,
+                                      portfolio_changed=_res.get("status") == "registered")
         if _confirm_signal == "no":
             _TRADE_DRAFT.pop(uid, None)
             return _chat_direct_reply(
@@ -19552,7 +19563,8 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                  or _UNDO_OBJECT_RE.search(last_user_msg or ""))):
         _res = _undo_last_trade_handler(uid)
         if _res.get("status") == "undone":
-            return _chat_direct_reply(data.stream, f"✅ {_res.get('summary', '')}", tier)
+            return _chat_direct_reply(data.stream, f"✅ {_res.get('summary', '')}", tier,
+                                      portfolio_changed=True)
         return _chat_direct_reply(data.stream, _trade_error_human(_res.get("error")), tier)
 
     _free_continuation = _flow_open and _draft0.get("free_turns", 0) < _TRADE_FREE_TURNS_CAP
@@ -19655,7 +19667,10 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                         _record_chat_quota(uid, cost_cents)
                         _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                         state["settled"] = True
-                        yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
+                        _done = {"t": "done", "tier": tier}
+                        if _turn_flags & {"trade_registered", "undo_ok"}:
+                            _done["portfolio_changed"] = True
+                        yield "data: " + json.dumps(_done) + "\n\n"
                         return
                     # tool_use: B-13 — el frame `reset` avisa que lo streameado
                     # era PREÁMBULO ("déjame consultar…"), no la respuesta: el
@@ -19692,7 +19707,10 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 _record_chat_quota(uid, cost_cents)
                 _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                 state["settled"] = True
-                yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
+                _done = {"t": "done", "tier": tier}
+                if _turn_flags & {"trade_registered", "undo_ok"}:
+                    _done["portfolio_changed"] = True
+                yield "data: " + json.dumps(_done) + "\n\n"
             except Exception as ex:
                 ex_name = type(ex).__name__
                 log.warning("ai_chat stream exception tier=%s uid=%s type=%s msg=%s", tier, uid, ex_name, str(ex)[:200])
@@ -19779,7 +19797,10 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
                 # Garantía de visibilidad del pendiente (ver _pending_summary_epilogue)
                 text = text + _pending_summary_epilogue(uid, text)
-                return {"reply": _strip_markdown(text.strip()), "tier": tier}
+                _out = {"reply": _strip_markdown(text.strip()), "tier": tier}
+                if _turn_flags & {"trade_registered", "undo_ok"}:
+                    _out["portfolio_changed"] = True
+                return _out
 
             # Hay tool_use: ejecutar cada tool y continuar el loop. Unificado
             # sobre _ai_chat_exec_tools (mismo hard-cap + M20 enforcement por
@@ -19826,7 +19847,10 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
         _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
         # Garantía de visibilidad del pendiente (ver _pending_summary_epilogue)
         text = text + _pending_summary_epilogue(uid, text)
-        return {"reply": _strip_markdown(text.strip()), "tier": tier}
+        _out = {"reply": _strip_markdown(text.strip()), "tier": tier}
+        if _turn_flags & {"trade_registered", "undo_ok"}:
+            _out["portfolio_changed"] = True
+        return _out
 
     except HTTPException:
         raise

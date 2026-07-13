@@ -536,8 +536,12 @@ class TestE2EHonest(_Base):
             self.assertEqual(self._count(), 1)               # turno 1 cobra
             self.assertIn(self.uid, main._TRADE_DRAFT)
             self.assertEqual(main._TRADE_DRAFT[self.uid]["status"], "confirming")
+            # turno sin write → sin flag de refresh
+            self.assertNotIn("portfolio_changed", r1.json())
             r2 = self._chat("sí, confirmá")
             self.assertEqual(r2.status_code, 200, r2.text)
+            # el write avisa al frontend para refrescar Cartera al instante
+            self.assertIs(r2.json().get("portfolio_changed"), True)
         # registrado por el camino real
         row = self.conn.execute(
             "SELECT invested FROM positions WHERE user_id=? AND asset='BTC' AND is_cash=0",
@@ -1121,6 +1125,7 @@ class TestE2EQuestionOnPendingDoesNotWrite(_Base):
             r2 = self._chat("deshacé la última operación")
             self.assertEqual(r2.status_code, 200, r2.text)
             self.assertIn("Deshecho", r2.json()["reply"])
+            self.assertIs(r2.json().get("portfolio_changed"), True)
         self.assertIsNone(self.conn.execute(
             "SELECT id FROM positions WHERE user_id=? AND asset='BTC' AND is_cash=0",
             (self.uid,)).fetchone())

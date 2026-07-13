@@ -156,7 +156,7 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
       throw new DOMException('Aborted', 'AbortError')
     }
     if (onDelta && res?.reply) onDelta(res.reply)
-    return { tier: res?.tier }
+    return { tier: res?.tier, portfolioChanged: !!res?.portfolio_changed }
   }
 
   const res = await fetch('/api/ai/chat', {
@@ -181,6 +181,9 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
   const decoder = new TextDecoder()
   let buf = ''
   let tier = null
+  // El turno ESCRIBIÓ en la cartera (registro/undo por chat) — el caller
+  // dispara el refresh de Cartera y del snapshot sin F5 del usuario.
+  let portfolioChanged = false
   let streamErr = null
   // B-6 (audit IA #2): sin sentinel de fin, un stream CORTADO a mitad (Vercel
   // corta a 30s, red móvil, proxy) terminaba el reader sin frame terminal y se
@@ -213,6 +216,7 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
         } else if (evt.t === 'done') {
           sawTerminal = true
           tier = evt.tier ?? tier
+          if (evt.portfolio_changed) portfolioChanged = true
         } else if (evt.t === 'error') {
           // Error del LLM a mitad de stream: lo guardamos y cortamos la lectura.
           sawTerminal = true
@@ -233,7 +237,7 @@ async function chatStream(body, { onDelta, onReset, signal } = {}) {
     err.truncated = true
     throw err
   }
-  return { tier }
+  return { tier, portfolioChanged }
 }
 
 export const api = {

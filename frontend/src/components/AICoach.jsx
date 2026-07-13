@@ -179,10 +179,16 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       // Marcar Coach IA como "descubierto" — usado por OnboardingChecklist
       // en Home para detectar que el user ya probó el chat.
       markAIDiscovered()
-      await api.chatStream({ messages: newMessages, snapshot }, { onDelta, onReset, signal: ctrl.signal })
+      const res = await api.chatStream({ messages: newMessages, snapshot }, { onDelta, onReset, signal: ctrl.signal })
       // Edge: el stream cerró sin emitir texto → mostrar algo en vez de nada.
       if (!assistantAdded) {
         setMessages(m => [...m, { role: 'assistant', content: stripMarkdown(acc) || '…' }])
+      }
+      // El turno ESCRIBIÓ en la cartera (registro/undo): avisar a la app para
+      // que Cartera y el snapshot del drawer se refresquen al instante, sin
+      // que el usuario tenga que recargar a mano.
+      if (res?.portfolioChanged) {
+        window.dispatchEvent(new Event('rendi:portfolio-changed'))
       }
       // Refrescar cuota tras success — no es crítico, best-effort.
       api.get('/ai/usage').then(u => setUsage(u)).catch(() => {})

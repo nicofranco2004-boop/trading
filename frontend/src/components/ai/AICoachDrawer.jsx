@@ -21,6 +21,9 @@ export default function AICoachDrawer() {
   // Espejo del snapshot para leerlo dentro del effect sin meterlo en deps
   // (si estuviera en deps, cada setSnapshot dispararía un refetch en loop).
   const snapshotRef = useRef(null)
+  // Bump → re-corre el fetch del snapshot (registro/undo por chat: la próxima
+  // pregunta tiene que ver la cartera NUEVA, no la de la apertura del drawer).
+  const [refreshTick, setRefreshTick] = useState(0)
 
   // Re-traer el contexto VIVO cada vez que se abre el drawer. Antes se cacheaba
   // 60s para ahorrar refetch en aperturas rápidas, pero eso causaba un bug de
@@ -73,6 +76,16 @@ export default function AICoachDrawer() {
       })
 
     return () => { cancelled = true }
+  }, [isOpen, refreshTick])
+
+  // El chat registró/deshizo una operación → refrescar el snapshot en
+  // background (ya hay uno a la vista, así que sin loader) para que la
+  // próxima pregunta vea la cartera nueva.
+  useEffect(() => {
+    if (!isOpen) return
+    const onPortfolioChanged = () => setRefreshTick(t => t + 1)
+    window.addEventListener('rendi:portfolio-changed', onPortfolioChanged)
+    return () => window.removeEventListener('rendi:portfolio-changed', onPortfolioChanged)
   }, [isOpen])
 
   // Cerrar con ESC
