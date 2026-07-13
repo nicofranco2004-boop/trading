@@ -12971,7 +12971,7 @@ Tenés SOLO estas tools (no existe ninguna otra en tu plan):
 - Sobre los datos del usuario: get_asset_operations, get_monthly_detail, get_realized_vs_unrealized.
 - De mercado: get_value_scorecard (valoración de una ACCIÓN US/CEDEAR: 8 métricas + semáforos) y get_earnings_history (próximo earnings + últimos quarters).
 - remember_user_fact para hechos que el usuario pide recordar.
-- register_trade / undo_last_trade: registrar lo que el usuario te dicta — compras/ventas ("compré 2000 USD de BTC a 65000") y también depósitos/retiros/transferencias de cash ("deposité 600.000 pesos en Balanz" → action=deposit, broker, amount; sin activo ni precio) — NO opera el broker real, solo lo ANOTA en Rendi. Flujo (el server lleva el estado, sin tokens): llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → cuando responda EN SU PRÓXIMO MENSAJE: confirma → register_trade con confirm_pending=true; quiere cambiar un dato → register_trade con SOLO el dato corregido (el server conserva el resto, NO uses cancel); niega y nada más → cancel=true. NO confirmes en el mismo turno. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
+- register_trade / undo_last_trade: registrar lo que el usuario te dicta — compras/ventas ("compré 2000 USD de BTC a 65000"), depósitos/retiros/transferencias de cash ("deposité 600.000 pesos en Balanz") y conversiones de dólares ("pasé 200.000 pesos a dólares en Balanz" → action=convert) — NO opera el broker real, solo lo ANOTA en Rendi. Flujo (el server lleva el estado, sin tokens): llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → cuando responda EN SU PRÓXIMO MENSAJE: confirma → register_trade con confirm_pending=true; quiere cambiar un dato → register_trade con SOLO el dato corregido (el server conserva el resto, NO uses cancel); niega y nada más → cancel=true. NO confirmes en el mismo turno. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade. IMPORTANTE — si el usuario dicta VARIAS operaciones en un mensaje (ej: "pasé plata de A a B y la convertí a dólares"), registrá SOLO la primera y al final del resumen agregá "(después seguimos con: <lo que falta>)". NUNCA des por hecha ni te olvides de una operación que no confirmaste una por una.
 - get_current_prices: SOLO si el usuario quiere VER un precio dentro del flujo de registro. Para registrar a precio de mercado de HOY no la necesitás: mandá price_source='market_today' SIN price y el server cotiza solo. No la uses para consultas de precios sueltas — eso es de Pro.
 
 Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo — EXCEPCIÓN: en el flujo de registro podés combinar get_current_prices + register_trade en la misma respuesta. NO llames tools que no están en esta lista ni inventes nombres. EXCEPCIÓN de formato: al pedir los datos faltantes de un registro, usá la lista numerada que te indica la tool (esa lista SÍ está permitida).
@@ -15741,12 +15741,15 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         _pl = draft["payload"]
         if _pl["action"] in ("deposit", "withdraw", "transfer", "convert"):
             # payload cash/convert: sin asset/precio/cantidad. currency de un
-            # convert es la de ORIGEN (no la del broker) → se hereda igual.
+            # convert es la UNIDAD del monto (no la del broker) → se hereda igual.
             prev = {"action": _pl["action"], "broker": _pl["broker"],
                     "currency": _pl["currency"], "amount": _pl["amount"],
                     "date": _pl["date"]}
             if _pl.get("to_broker"):
                 prev["to_broker"] = _pl["to_broker"]
+            if _pl["action"] == "convert" and _pl.get("conv_direction"):
+                prev["convert_side"] = ("buy" if _pl["conv_direction"] == "ars_to_usd"
+                                        else "sell")
         else:
             prev = {"action": _pl["action"], "asset": _pl["asset"],
                     "asset_type": _pl.get("kind"), "broker": _pl["broker"],
@@ -15760,7 +15763,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
     fields = dict(prev)
     _from_input = set()
     for k in ("action", "asset", "asset_type", "broker", "to_broker", "currency",
-              "quantity", "amount", "price", "price_source", "date"):
+              "quantity", "amount", "price", "price_source", "date", "convert_side"):
         if input_data.get(k) not in (None, ""):
             fields[k] = input_data.get(k)
             _from_input.add(k)
@@ -16120,31 +16123,51 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         conv_tc = conv_usd = conv_ars = conv_direction = conv_from_broker = None
         if _is_convert:
             # comprar/vender dólares dentro de un broker ARS. tc SERVER-SIDE
-            # (MEP), montos derivados; from_broker según dirección.
+            # (MEP). El SENTIDO lo da convert_side (buy=compra dólares /
+            # sell=vende dólares); 'currency' es la UNIDAD del monto que dijo
+            # el usuario ('compré 300 DÓLARES' → USD=target; 'pasé 200.000
+            # PESOS' → ARS=source). Así 'compré 300 dólares' compra 300 USD,
+            # no convierte 300 pesos (bug del e2e).
             conv_tc = _current_cedear_rate() or _user_tc_blue(conn, uid)
             if not conv_tc or conv_tc <= 0:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": "No pude obtener el dólar MEP ahora — probá en un momento o cargalo desde la app."}
-            if currency == "ARS":       # compra dólares: paga 'amount' pesos
+            _side = str(fields.get("convert_side") or "").strip().lower()
+            if _side not in ("buy", "sell"):
+                # pesos gastados = compra; sin señal clara y en dólares → pedir
+                _side = "buy" if currency == "ARS" else ""
+            if not _side:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": ("¿Compró o vendió dólares? Re-llamá con "
+                                  "convert_side='buy' (compra/dolariza) o "
+                                  "'sell' (vende/pesifica).")}
+            if _side == "buy":            # comprar dólares: origen = pesos del padre
                 conv_direction = "ars_to_usd"
-                conv_ars = amount
-                conv_usd = round(amount / conv_tc, 2)
                 conv_from_broker = broker
-                _src_cash = conn.execute(
+                if currency == "USD":     # dijo cuántos DÓLARES comprar
+                    conv_usd = amount
+                    conv_ars = round(amount * conv_tc, 2)
+                else:                     # dijo cuántos PESOS gastar
+                    conv_ars = amount
+                    conv_usd = round(amount / conv_tc, 2)
+                _src = conn.execute(
                     "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                     (uid, broker)).fetchone()
-                _have = float(_src_cash["invested"] or 0) if _src_cash else 0.0
-                if amount > _have + 0.005:
+                _have = float(_src["invested"] or 0) if _src else 0.0
+                if conv_ars > _have + 0.005:
                     _TRADE_DRAFT.pop(uid, None)
                     return {"error": (
-                        f"El usuario tiene {_have:,.2f} ARS en {broker} y quiere "
-                        f"convertir {amount:,.2f}. Avisale y preguntá el monto correcto."
+                        f"El usuario tiene {_have:,.2f} ARS en {broker} y la compra "
+                        f"cuesta {conv_ars:,.2f}. Avisale y preguntá el monto correcto."
                     )}
-            else:                        # vende 'amount' dólares → recibe pesos
+            else:                          # vender dólares: origen = sub-broker USD
                 conv_direction = "usd_to_ars"
-                conv_usd = amount
-                conv_ars = round(amount * conv_tc, 2)
-                # el origen es el sub-broker USD del padre
+                if currency == "ARS":      # dijo cuántos PESOS recibir (raro)
+                    conv_ars = amount
+                    conv_usd = round(amount / conv_tc, 2)
+                else:                      # dijo cuántos DÓLARES vender
+                    conv_usd = amount
+                    conv_ars = round(amount * conv_tc, 2)
                 _sib = conn.execute(
                     "SELECT name, invested FROM brokers b "
                     "LEFT JOIN positions p ON p.broker=b.name AND p.user_id=b.user_id AND p.is_cash=1 "
@@ -16158,11 +16181,11 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                     )}
                 conv_from_broker = _sib["name"]
                 _have = float(_sib["invested"] or 0)
-                if amount > _have + 0.005:
+                if conv_usd > _have + 0.005:
                     _TRADE_DRAFT.pop(uid, None)
                     return {"error": (
                         f"El usuario tiene US$ {_have:,.2f} en {broker} y quiere "
-                        f"vender US$ {amount:,.2f}. Avisale y preguntá el monto correcto."
+                        f"vender US$ {conv_usd:,.2f}. Avisale y preguntá el monto correcto."
                     )}
         elif action == "sell":
             # FIFO currency-aware: replicar el predicado de sell_position_fifo
@@ -16921,10 +16944,15 @@ _AI_TOOLS = [
             "CONVERSIÓN de moneda (comprar/vender dólares dentro de un broker, "
             "'pasé 200.000 pesos a dólares en Balanz', 'compré 500 dólares en "
             "Cocos', 'vendí 300 dólares'): action='convert', broker (el broker "
-            "en PESOS), amount (el monto que dijo), currency = la moneda de la "
-            "que SALE la plata ('ARS' si compra dólares con pesos, 'USD' si "
-            "vende dólares por pesos). El server pone el tipo de cambio y "
-            "calcula la otra pata. NO uses buy/sell para dólares.\n\n"
+            "en PESOS), amount (el número que dijo), currency = la UNIDAD de "
+            "ese número ('ARS' si dijo pesos, 'USD' si dijo dólares), y "
+            "convert_side='buy' si COMPRA/dolariza dólares o 'sell' si "
+            "VENDE/pesifica. Ejemplos: 'pasé 200.000 pesos a dólares' → "
+            "amount=200000, currency=ARS, convert_side=buy. 'compré 500 "
+            "dólares' → amount=500, currency=USD, convert_side=buy. 'vendí 300 "
+            "dólares' → amount=300, currency=USD, convert_side=sell. El server "
+            "pone el tipo de cambio y la otra pata. NO uses buy/sell (son para "
+            "activos, no para dólares).\n\n"
             "OPERACIONES MÚLTIPLES: si el usuario dicta VARIAS cosas en un "
             "mensaje (ej: 'pasé plata de A a B y la convertí a dólares'), "
             "registralas DE A UNA — cada una necesita su propia confirmación. "
@@ -16971,6 +16999,8 @@ _AI_TOOLS = [
                                 "description": "Obligatorio si el ticker es ambiguo (preguntale al usuario)"},
                 "broker": {"type": "string", "description": "Nombre EXACTO de un broker del usuario (está en el snapshot). En transfer = el broker ORIGEN"},
                 "to_broker": {"type": "string", "description": "SOLO transfer: broker DESTINO (nombre exacto)"},
+                "convert_side": {"type": "string", "enum": ["buy", "sell"],
+                                  "description": "SOLO convert: 'buy' si compra/dolariza (pesos→USD), 'sell' si vende/pesifica (USD→pesos)"},
                 "currency": {"type": "string", "enum": ["ARS", "USD"]},
                 "quantity": {"type": "number", "description": "Cantidad de unidades (si el usuario la dio)"},
                 "amount": {"type": "number", "description": "Monto total (si dio el monto, NO calcules la cantidad — el server la deriva)"},

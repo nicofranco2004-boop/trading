@@ -1220,10 +1220,12 @@ class TestConvertChat(_Base):
     def test_sell_dollars(self):
         # primero comprar para tener USD, luego vender
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
-            _h({"action": "convert", "broker": "Balanz", "amount": 200000, "currency": "ARS"},
+            _h({"action": "convert", "broker": "Balanz", "amount": 200000,
+                "currency": "ARS", "convert_side": "buy"},
                self.uid, request_id="A")
             _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
-            r = _h({"action": "convert", "broker": "Balanz", "amount": 100, "currency": "USD"},
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 100,
+                    "currency": "USD", "convert_side": "sell"},
                    self.uid, request_id="C")
             self.assertEqual(r.get("status"), "needs_confirmation", r)
             self.assertIn("VENTA DE DÓLARES", r["summary"])
@@ -1231,6 +1233,27 @@ class TestConvertChat(_Base):
             self.assertEqual(r2.get("status"), "registered", r2)
         self.assertAlmostEqual(self._cash("Balanz · USD"), 33.33, places=2)
         self.assertAlmostEqual(self._cash("Balanz"), 1950000.0, places=2)
+
+    def test_buy_dollars_target_stated_in_usd(self):
+        # 'compré 300 dólares' → amount=300 USD (target), convert_side=buy →
+        # gasta 300*tc pesos, acredita 300 USD (bug del e2e: interpretaba 300
+        # pesos → 0,21 USD)
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 300,
+                    "currency": "USD", "convert_side": "buy"}, self.uid, request_id="A")
+            self.assertEqual(r.get("status"), "needs_confirmation", r)
+            self.assertIn("US$ 300", r["summary"])
+            _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
+        self.assertAlmostEqual(self._cash("Balanz · USD"), 300.0, places=2)
+        self.assertAlmostEqual(self._cash("Balanz"), 2000000.0 - 450000.0, places=2)
+
+    def test_convert_usd_amount_without_side_asks(self):
+        # 'convertí 300 dólares' sin verbo claro de compra/venta → pregunta
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 300,
+                    "currency": "USD"}, self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("ompró o vendió", r["error"])
 
     def test_buy_dollars_over_cash_rejected(self):
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
