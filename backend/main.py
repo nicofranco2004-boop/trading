@@ -15432,14 +15432,20 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
     (INTC 105 vs .BA 34.380) → cantidades infladas 327-1000×."""
     if kind in ("CEDEAR", "AR_STOCK"):
         if currency != "ARS":
+            log.info("register_trade: sin precio de mercado para %s %s/%s (feed .BA es ARS)",
+                     asset, kind, currency)
             return None
         sym = f"{asset}.BA"
     elif kind == "CRYPTO":
         if currency != "USD":
+            log.info("register_trade: sin precio de mercado para %s CRYPTO/%s (feed es USD)",
+                     asset, currency)
             return None
         sym = CRYPTO_YF.get(asset, f"{asset}-USD")
     elif kind == "STOCK":
         if currency != "USD":
+            log.info("register_trade: sin precio de mercado para %s STOCK/%s (feed es USD)",
+                     asset, currency)
             return None
         sym = asset
     else:
@@ -15453,6 +15459,7 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
         p = (fut.result(timeout=8) or {}).get(sym)
         p = float(p) if p is not None else None
         if not p or p <= 0:
+            log.info("register_trade: feed sin cotización para %s", sym)
             return None
     except Exception as ex:
         log.warning("register_trade: market price fetch %s falló: %s", sym, ex)
@@ -15737,6 +15744,23 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         elif currency not in ("ARS", "USD"):
             missing.append("currency (ARS|USD)")
 
+        # Desambiguación por la moneda del broker: una acción US NO puede
+        # vivir en un broker en pesos. Si el ticker también existe como CEDEAR
+        # (INTC, AMZN, ...), el server corrige el tipo él solo — el modelo
+        # etiquetaba STOCK y el precio de mercado moría en un loop de
+        # 'preguntale el precio exacto' (prueba real de Nico con INTC).
+        if kind == "STOCK" and currency == "ARS":
+            if "CEDEAR" in kinds:
+                kind = "CEDEAR"
+                fields["asset_type"] = "CEDEAR"
+            else:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": (
+                    f"{asset} es una acción US y {broker or 'ese broker'} opera "
+                    "en pesos — ahí no puede estar. Preguntá si fue en otro "
+                    "broker (o si es otro activo)."
+                )}
+
         price = _num_or_none(fields.get("price"))
         quantity = _num_or_none(fields.get("quantity"))
         amount = _num_or_none(fields.get("amount"))
@@ -15815,10 +15839,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 missing.append("price — no hay cotización automática ahora: "
                                "preguntale el precio exacto al usuario")
             else:
-                missing.append("price (si la operación es de HOY al precio de mercado, "
-                               "mandá price_source='market_today' SIN price — el server "
-                               "usa la cotización real; si es retroactiva, preguntá a "
-                               "qué precio operó)")
+                missing.append("price — preguntale a qué precio operó, OFRECIENDO "
+                               "la alternativa: 'o lo registro al precio de mercado "
+                               "de hoy'. Si acepta el de hoy: re-llamá con "
+                               "price_source='market_today' SIN price (el server usa "
+                               "la cotización real). Retroactiva: solo el precio del "
+                               "usuario.")
 
         if missing:
             # free_turns viaja con el draft: si no se preserva en el re-plant,

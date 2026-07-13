@@ -881,6 +881,34 @@ class TestMarketPriceServerSide(_Base):
         self.assertEqual(r.get("status"), "needs_confirmation", r)
 
 
+class TestBrokerCurrencyDisambiguation(_Base):
+    """Prueba real de Nico: el modelo etiquetó INTC como STOCK (acción US) en
+    Balanz (pesos) → el precio de mercado moría en un loop de 'preguntale el
+    precio exacto'. Una acción US no puede vivir en un broker ARS: si el
+    ticker tiene CEDEAR, el server corrige el tipo él solo."""
+
+    def test_stock_in_ars_broker_corrected_to_cedear(self):
+        with patch.object(main, "_trade_market_price", return_value=32860.0) as mp:
+            r = _h({"action": "buy", "asset": "INTC", "asset_type": "STOCK",
+                    "broker": "Balanz", "amount": 200000, "currency": "ARS",
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        p = main._TRADE_DRAFT[self.uid]["payload"]
+        self.assertEqual(p["kind"], "CEDEAR")
+        self.assertEqual(p["price"], 32860.0)
+        mp.assert_called_once_with("INTC", "CEDEAR", "ARS", self.uid)
+
+    def test_pure_us_stock_in_ars_broker_rejected(self):
+        with patch("ai.trade_tickers.resolve_asset",
+                   return_value=("FAKEUS", {"STOCK"})):
+            r = _h({"action": "buy", "asset": "FAKEUS", "asset_type": "STOCK",
+                    "broker": "Balanz", "quantity": 10, "price": 100},
+                   self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("pesos", r["error"])
+        self.assertNotIn(self.uid, main._TRADE_DRAFT)
+
+
 class TestTradeMarketPriceSymbolResolution(unittest.TestCase):
     """El helper resuelve el símbolo canónico y solo cotiza cuando la moneda
     de la operación coincide con la del feed (CEDEAR/.BA=ARS; US/cripto=USD)."""
