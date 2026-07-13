@@ -927,6 +927,16 @@ class TestCashFlowChat(_Base):
         self.assertTrue(main._is_trade_intent("retiré 500 dólares de binance"))
         self.assertTrue(main._is_trade_intent("hice una transferencia de balanz a cocos"))
         self.assertTrue(main._is_trade_intent("saqué 200 mil pesos"))
+        self.assertTrue(main._is_trade_intent("deposité plata en balanz"))
+
+    def test_cash_verbs_without_financial_signal_not_intent(self):
+        # 'me retiro a dormir' armaba un RETIRO inventado (e2e real) — un verbo
+        # de cash sin monto/moneda al lado NO es intención de registro
+        for msg in ("me retiro a dormir, gracias por todo",
+                    "me retiro, hasta mañana",
+                    "ingresé a la app desde el celular",
+                    "saqué una foto de la pantalla"):
+            self.assertFalse(main._is_trade_intent(msg), msg)
 
     def test_needs_info_without_broker_and_amount(self):
         r = _h({"action": "deposit"}, self.uid, request_id="A")

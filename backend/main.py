@@ -16741,7 +16741,9 @@ _AI_TOOLS = [
             "Para CASH (deposit/withdraw/transfer) alcanza con: action, "
             "broker, amount (el monto tal cual lo dijo; la moneda es la del "
             "broker), date si no es de hoy, y to_broker solo en transfer. "
-            "SIN asset, SIN price, SIN quantity.\n\n"
+            "SIN asset, SIN price, SIN quantity. NUNCA inventes amount (si no "
+            "lo dijo, no lo mandes — el server lo pregunta) ni date ('ayer' = "
+            "HOY del contexto menos 1 día; si no podés calcularla, no la mandes).\n\n"
             "FLUJO OBLIGATORIO (el server lleva el estado; vos NO manejás "
             "tokens):\n"
             "1. Ante la intención de registrar, llamala con lo que tengas — el "
@@ -19191,13 +19193,23 @@ _FREE_QUESTIONS_NORMALIZED = frozenset(_normalize_question(q) for q in _FREE_QUE
 _TRADE_INTENT_RE = re.compile(
     r"\b(compr[eéoóá]\w*|vend[ií]\w*|anot[aáeé]\w*|registr[aáoóeé]\w*|"
     r"carg[aáoóuú]\w*|agreg[aáoóuú]\w*|deshac[eé]\w*|desharme|revert[íi]\w*|"
-    r"corregí|me equivoqué|"
-    # movimientos de cash: verbos Y sustantivos, con y sin tilde (la frase
-    # real que falló fue 'HICE UN DEPOSITO DE 600000 PESOS' — sin verbo de
-    # la lista y sin tilde)
-    r"dep[oó]sit[eéoó]\w*|deposit[eé]\w*|ingres[eé]\w*|retir[eéoó]\w*|"
-    r"saqu[eé]\w*|extraje|extracci[oó]n\w*|transfer[íi]\w*|transferencia\w*)\b",
+    r"corregí|me equivoqué)\b",
     re.IGNORECASE)
+# Movimientos de cash: los VERBOS solos son ambiguos en castellano ('me
+# retiro a dormir' armaba un RETIRO inventado — e2e real) → un verbo de cash
+# solo cuenta como intención si el mensaje además trae señal FINANCIERA
+# (dígitos o palabra de moneda). Los SUSTANTIVOS con artículo ('hice un
+# depósito', 'una transferencia') son inequívocos y cuentan solos — la frase
+# real de Nico fue 'HICE UN DEPOSITO DE 600000 PESOS' (sin tilde).
+_CASH_VERB_RE = re.compile(
+    r"\b(deposit[eéoó]\w*|ingres[eé]\w*|retir[eéoó]\w*|saqu[eé]\w*|extraje|"
+    r"transfer[íi]\w*)\b", re.IGNORECASE)
+_CASH_NOUN_RE = re.compile(
+    r"\b(un|una|el|la|hice|hizo|carg[aá]\w*)\s+(dep[oó]sito\w*|retiro\w*|"
+    r"transferencia\w*|extracci[oó]n\w*)\b", re.IGNORECASE)
+_CASH_CONTEXT_RE = re.compile(
+    r"\d|\b(peso\w*|d[oó]lar\w*|usd[t]?|ars|plata|cash|efectivo|mil|lucas?|"
+    r"palos?)\b", re.IGNORECASE)
 
 
 def _is_trade_intent(text: str) -> bool:
@@ -19207,8 +19219,17 @@ def _is_trade_intent(text: str) -> bool:
     conversacional es para TODOS los tiers. El prompt FREE limita qué se hace
     con ellos (solo registro) y el gate de tools (M20) + la whitelist de la tool
     acotan el daño de un falso positivo. (_trade_flow_open vive arriba, junto al
-    estado del draft.)"""
-    return bool(_TRADE_INTENT_RE.search(text or ""))
+    estado del draft.)
+
+    Cash: sustantivo con artículo ('hice un depósito') cuenta solo; un VERBO
+    de cash ('retiré', 'saqué') solo cuenta con señal financiera al lado —
+    'me retiro a dormir' NO es un retiro (e2e real: armaba un RETIRO
+    inventado del total del cash esperando un sí)."""
+    t = text or ""
+    return bool(
+        _TRADE_INTENT_RE.search(t)
+        or _CASH_NOUN_RE.search(t)
+        or (_CASH_VERB_RE.search(t) and _CASH_CONTEXT_RE.search(t)))
 
 
 def _is_whitelisted_question(text: str) -> bool:
@@ -19653,7 +19674,12 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
     # faltan aunque el chat no tenga memoria entre requests (Free one-shot). Sin
     # esto, el turno del "sí, confirmá" llegaba sin saber qué se iba a registrar.
     _draft_ctx = _trade_draft_context(uid)
-    context_block_text = f"""--- CONTEXTO DE TU CARTERA (snapshot del momento) ---{facts_block}
+    # La fecha de HOY va en el contexto: sin esto el modelo no puede resolver
+    # fechas relativas ('ayer hice un depósito') y las inventaba de su prior
+    # (caso real: 'AYER' → 2025-01-08, año equivocado, mensual mal bookeado).
+    _today_line = f"HOY es {datetime.utcnow().strftime('%Y-%m-%d')}."
+    context_block_text = f"""--- CONTEXTO DE TU CARTERA (snapshot del momento) ---
+{_today_line}{facts_block}
 
 ```json
 {portfolio_json}
