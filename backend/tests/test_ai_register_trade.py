@@ -405,6 +405,42 @@ class TestGateIntent(unittest.TestCase):
         main._TRADE_DRAFT.pop(uid, None)
 
 
+class TestConfirmWord(unittest.TestCase):
+    """El short-circuit EJECUTA un write sin pasar por el modelo → todo lo
+    dudoso tiene que dar '' (ambiguo) para que decida el modelo."""
+
+    def test_clear_yes(self):
+        for msg in ("sí", "si", "dale", "ok", "confirmá", "confirmo", "listo",
+                    "sí, dale", "perfecto", "de una", "registralo", "hacelo",
+                    "SI", "Dale!", "correcto"):
+            self.assertEqual(main._confirm_word(msg), "yes", msg)
+
+    def test_clear_no(self):
+        for msg in ("no", "cancelá", "cancelalo", "mejor no", "esperá", "nop"):
+            self.assertEqual(main._confirm_word(msg), "no", msg)
+
+    def test_ambiguous_goes_to_model(self):
+        for msg in (
+            "va",                          # débil, ya no cuenta como sí
+            "bien",
+            "¿cómo va mi cartera?",        # pregunta con 'va'
+            "como va mi cartera en general esta semana",  # largo, >5 palabras
+            "sí, pero a 64000",            # dígitos = enmienda
+            "dale pero cambiá el precio a 100",
+            "ok?",                         # pregunta
+            "sí o no?",
+            "",
+            "   ",
+            "y cuánto sería en dólares?",  # pregunta sin dígitos
+            "sí no sé",                    # señales mezcladas
+        ):
+            self.assertEqual(main._confirm_word(msg), "", repr(msg))
+
+    def test_mixed_signals_ambiguous(self):
+        self.assertEqual(main._confirm_word("sí... no, esperá"), "")
+        self.assertEqual(main._confirm_word("no, dale"), "")
+
+
 class TestToolRegistration(unittest.TestCase):
     def test_registered_all_tiers(self):
         names = {t["name"] for t in main._AI_TOOLS}

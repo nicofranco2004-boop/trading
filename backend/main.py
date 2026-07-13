@@ -15794,20 +15794,26 @@ _UNDO_ONLY_RE = re.compile(
 
 _TRADE_YES_RE = re.compile(
     r"\b(s[ií]|dale|confirm[oaáà]\w*|ok|okay|oka|listo|correcto|perfecto|"
-    r"de una|obvio|exacto|así es|asi es|va|joya|bien|es correcto|adelante)\b",
+    r"de una|exacto|adelante|registr[aá]lo|hacelo)\b",
     re.IGNORECASE)
 _TRADE_NO_RE = re.compile(
-    r"\b(no|cancel[aáà]?\w*|mejor|espera[áà]?|par[aá]|cambi[aáà]\w*|"
+    r"\b(no|cancel[aáà]?\w*|mejor|esper[aáà]\w*|par[aá]|cambi[aáà]\w*|"
     r"en realidad|nop|negativo)\b", re.IGNORECASE)
 
 
 def _confirm_word(text: str) -> str:
     """Clasifica la respuesta del usuario a un registro PENDIENTE: 'yes' / 'no'
-    / '' (ambiguo → que decida el modelo). Un dígito en el mensaje = puede
-    estar enmendando un valor → ambiguo. Robusto: si hay AMBAS señales o
-    ninguna, devuelve '' y el flujo por el modelo se encarga."""
+    / '' (ambiguo → que decida el modelo). Guardas contra falsos positivos
+    (el short-circuit EJECUTA un write — la duda va al modelo):
+      - dígitos en el mensaje = puede estar enmendando un valor → ambiguo
+      - mensaje LARGO (>32 chars o >5 palabras) = probablemente está diciendo
+        otra cosa ("¿cómo va mi cartera en general?") → ambiguo
+      - señales mezcladas (sí+no) → ambiguo
+      - '?' en el mensaje = es una pregunta, no una confirmación → ambiguo"""
     t = (text or "").strip()
     if not t or any(c.isdigit() for c in t):
+        return ""
+    if len(t) > 32 or len(t.split()) > 5 or "?" in t or "¿" in t:
         return ""
     yes = bool(_TRADE_YES_RE.search(t))
     no = bool(_TRADE_NO_RE.search(t))
