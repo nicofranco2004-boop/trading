@@ -15578,9 +15578,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None) -> dict
                                  "request_id": request_id, "ts": now,
                                  "free_turns": _prev_ft}
             return {"status": "needs_info", "missing": missing, "hints": hints,
-                    "_note": ("Faltan datos. Preguntá TODO junto (no de a uno) "
-                              "usando los hints. Después llamá register_trade con "
-                              "todos los campos.")}
+                    "_note": ("Faltan datos. Preguntá TODO junto en UNA sola "
+                              "oración CORTA estilo chat (ej: '¿A qué precio y "
+                              "en qué broker?'). SIN listas, SIN párrafos, SIN "
+                              "explicaciones — el usuario ya sabe qué está "
+                              "haciendo. Usá los hints solo para proponer "
+                              "(ej: '¿en Binance?'), no para enumerarlos.")}
 
         # ── Todo presente: derivar + validar ──────────────────────────────
         if quantity is None:
@@ -15666,10 +15669,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None) -> dict
         "status": "needs_confirmation",
         "summary": _TRADE_DRAFT[uid]["summary"],
         "_note": (
-            "NO está registrado. Mostrale el summary TAL CUAL + '(esto solo lo "
-            "anota en Rendi — no toca tu cuenta del broker)' y preguntá si "
-            "confirma. Cuando responda en su PRÓXIMO mensaje: si confirma, "
-            "register_trade con confirm_pending=true; si no, cancel=true."
+            "NO está registrado. Respondé SOLO: el summary tal cual + '(esto "
+            "solo lo anota en Rendi — no toca tu cuenta del broker)' + "
+            "'¿Confirmás?'. NADA más — sin repetir los datos en prosa ni "
+            "explicar el proceso. Cuando responda en su PRÓXIMO mensaje: "
+            "confirma → register_trade con confirm_pending=true; no → "
+            "cancel=true."
         ),
     }
 
@@ -16113,8 +16118,14 @@ _AI_TOOLS = [
             "o cambia algo, con cancel=true. NO confirmes en el mismo turno que "
             "armaste el resumen — esperá la respuesta del usuario.\n\n"
             "Reglas: NO calcules vos la cantidad (mandá amount y el server "
-            "deriva). Si el ticker es ambiguo (AMZN puede ser CEDEAR o acción "
-            "US), preguntá — el snapshot te dice qué tiene ya el usuario. Si "
+            "deriva). Sé BREVE en las repreguntas: una oración, estilo chat, "
+            "sin listas — es un trámite simple, no un formulario. NUNCA "
+            "inventes tickers ni ofrezcas activos que no conocés (si el "
+            "usuario dice 'Space X', mandá ese nombre tal cual — el server "
+            "valida contra la lista y te da el error correcto para explicarle; "
+            "SpaceX, por ejemplo, no cotiza en bolsa). Si el ticker es ambiguo "
+            "(AMZN puede ser CEDEAR o acción US), preguntá — el snapshot te "
+            "dice qué tiene ya el usuario. Si "
             "la operación es de HOY y no sabe el precio, ofrecé el actual de "
             "get_current_prices y mandá price_source='market_today'; si es "
             "RETROACTIVA, el precio lo tiene que dar el usuario. Soporta "
