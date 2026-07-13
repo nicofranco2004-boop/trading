@@ -19554,7 +19554,16 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
         not _UNDO_ONLY_RE.search(last_user_msg or "")
         and not _has_question
         and (_is_trade_intent(last_user_msg)
-             or (_flow_open and _draft0.get("status") == "gathering"))
+             or (_flow_open and _draft0.get("status") == "gathering")
+             # enmienda sobre un pendiente ('no, mejor a 5500'): mensaje con
+             # dígitos y sin pregunta → forzar la tool para que la enmienda
+             # sea DETERMINÍSTICA (Haiku 2 de 3 veces narraba 'cambio el
+             # precio' SIN re-armar). Es seguro: desde el review nocturno la
+             # re-llamada forzada NO puede escribir sin señal-sí del usuario
+             # (solo re-arma o re-muestra), y el epílogo hace visible el
+             # pendiente resultante.
+             or (_flow_open and _draft0.get("status") == "confirming"
+                 and any(c.isdigit() for c in (last_user_msg or ""))))
     )
 
     # ── STREAMING (opt-in vía data.stream) ────────────────────────────────────
