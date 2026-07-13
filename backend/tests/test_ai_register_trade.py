@@ -30,8 +30,14 @@ import main
 from ai.trade_tickers import resolve_asset
 
 
-def _h(input_data, uid, request_id="req1"):
-    return main._register_trade_handler(input_data, uid, request_id=request_id)
+def _h(input_data, uid, request_id="req1", confirm_signal=""):
+    return main._register_trade_handler(input_data, uid, request_id=request_id,
+                                        confirm_signal=confirm_signal)
+
+
+def _yes(input_data, uid, request_id="B"):
+    """Confirmación con señal-sí del usuario (como la computa ai_chat)."""
+    return _h(input_data, uid, request_id=request_id, confirm_signal="yes")
 
 
 class TestResolveAsset(unittest.TestCase):
@@ -184,7 +190,7 @@ class TestTurnBoundary(_Base):
     def test_confirm_same_request_rejected(self):
         _h({"action": "buy", "asset": "BTC", "broker": "Binance",
             "amount": 2000, "price": 65000}, self.uid, request_id="A")
-        r = _h({"confirm_pending": True}, self.uid, request_id="A")  # MISMO request
+        r = _h({"confirm_pending": True}, self.uid, request_id="A", confirm_signal="yes")  # MISMO request
         self.assertIn("error", r)
         self.assertIn("NO confirmes", r["error"])
         # el draft sigue vivo (no se perdió)
@@ -193,12 +199,12 @@ class TestTurnBoundary(_Base):
     def test_confirm_next_request_executes(self):
         _h({"action": "buy", "asset": "BTC", "broker": "Binance",
             "amount": 2000, "price": 65000}, self.uid, request_id="A")
-        r = _h({"confirm_pending": True}, self.uid, request_id="B")  # request nuevo
+        r = _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")  # request nuevo
         self.assertEqual(r["status"], "registered")
         self.assertEqual(self._cash(), 3000.0)
 
     def test_confirm_without_pending_rejected(self):
-        r = _h({"confirm_pending": True}, self.uid, request_id="Z")
+        r = _h({"confirm_pending": True}, self.uid, request_id="Z", confirm_signal="yes")
         self.assertIn("error", r)
 
     def test_cancel_clears_draft(self):
@@ -215,8 +221,8 @@ class TestConfirmAtomicAndBoundary(_Base):
         una sola escribe."""
         _h({"action": "buy", "asset": "BTC", "broker": "Binance",
             "amount": 2000, "price": 65000}, self.uid, request_id="A")
-        r1 = _h({"confirm_pending": True}, self.uid, request_id="B")
-        r2 = _h({"confirm_pending": True}, self.uid, request_id="C")
+        r1 = _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
+        r2 = _h({"confirm_pending": True}, self.uid, request_id="C", confirm_signal="yes")
         statuses = {r1.get("status"), r2.get("status")}
         self.assertIn("registered", statuses)
         self.assertTrue("error" in r1 or "error" in r2)  # el segundo rebota
@@ -249,7 +255,7 @@ class TestSellARS(_Base):
         with patch.object(main, "_current_cedear_rate", return_value=1415.0):
             _h({"action": "sell", "asset": "GGAL", "broker": "Balanz",
                 "quantity": 20, "price": 5000}, self.uid, request_id="A")
-            r = _h({"confirm_pending": True}, self.uid, request_id="B")
+            r = _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
         self.assertEqual(r["status"], "registered")
         op = self.conn.execute(
             "SELECT pnl_usd FROM operations WHERE user_id=? AND asset='GGAL'",
@@ -297,7 +303,7 @@ class TestUndo(_Base):
     def _register_buy(self, amount=2000):
         _h({"action": "buy", "asset": "BTC", "broker": "Binance",
             "amount": amount, "price": 65000}, self.uid, request_id="A")
-        return _h({"confirm_pending": True}, self.uid, request_id="B")
+        return _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
 
     def test_undo_returns_exact_cash(self):
         self._register_buy()
@@ -541,6 +547,276 @@ class TestE2EHonest(_Base):
             r = self._chat("dame un análisis profundo de mi cartera")
         self.assertEqual(r.status_code, 403)
         self.assertEqual(self._count(), 0)
+
+
+# ── Ronda nocturna: la red de seguridad NO escribe sin un sí del usuario ──────
+class TestSafetyNetRequiresYes(_Base):
+    """Review nocturno B1 (CRITICAL): una re-llamada del modelo sobre un
+    pendiente solo ejecuta con señal-sí del USUARIO (confirm_signal='yes') y
+    con action+asset presentes. Preguntas / input vacío / campos alucinados
+    → re-mostrar el resumen, JAMÁS escribir."""
+
+    FIELDS = {"action": "buy", "asset": "BTC", "broker": "Binance",
+              "quantity": 0.03, "price": 65000}
+
+    def _arm(self):
+        r = _h(dict(self.FIELDS), self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+
+    def test_recall_without_yes_does_not_write(self):
+        self._arm()
+        # turno-pregunta: el modelo re-manda los MISMOS campos (señal ambigua)
+        r = _h(dict(self.FIELDS), self.uid, request_id="B", confirm_signal="")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertIn("no", r["_note"].lower())
+        self.assertIsNone(self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND asset='BTC' AND is_cash=0",
+            (self.uid,)).fetchone())
+        # el draft sigue vivo (el usuario todavía puede confirmar)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["status"], "confirming")
+
+    def test_empty_recall_never_confirms_even_with_yes(self):
+        self._arm()
+        r = _h({}, self.uid, request_id="B", confirm_signal="yes")
+        self.assertNotEqual(r.get("status"), "registered", r)
+        self.assertIsNone(self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND asset='BTC' AND is_cash=0",
+            (self.uid,)).fetchone())
+
+    def test_recall_with_yes_executes_pending(self):
+        self._arm()
+        r = _h(dict(self.FIELDS), self.uid, request_id="B", confirm_signal="yes")
+        self.assertEqual(r.get("status"), "registered", r)
+
+    def test_unresolvable_asset_is_amendment_not_confirmation(self):
+        self._arm()
+        bad = dict(self.FIELDS); bad["asset"] = "CHORIPAN"
+        r = _h(bad, self.uid, request_id="B", confirm_signal="yes")
+        self.assertNotEqual(r.get("status"), "registered", r)
+        self.assertIsNone(self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND asset='BTC' AND is_cash=0",
+            (self.uid,)).fetchone())
+
+    def test_hallucinated_date_change_rearms_not_writes(self):
+        self._arm()
+        amended = dict(self.FIELDS); amended["date"] = "2020-01-02"
+        r = _h(amended, self.uid, request_id="B", confirm_signal="yes")
+        # fecha distinta = contradicción → re-arma (no escribe el pendiente)
+        self.assertNotEqual(r.get("status"), "registered", r)
+
+
+class TestAmendMergeFromPending(_Base):
+    """Falla real de la prueba e2e: 'no, mejor a 5500' perdía el registro
+    entero. Ahora una re-llamada PARCIAL sobre un confirming hereda el resto
+    del payload y re-deriva el monto."""
+
+    def test_partial_price_amend_keeps_rest(self):
+        r = _h({"action": "buy", "asset": "GGAL", "broker": "Balanz",
+                "quantity": 10, "price": 6000}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        # el modelo re-llama SOLO con el precio corregido
+        r2 = _h({"price": 5500}, self.uid, request_id="B", confirm_signal="")
+        self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+        p = main._TRADE_DRAFT[self.uid]["payload"]
+        self.assertEqual(p["price"], 5500)
+        self.assertEqual(p["quantity"], 10)
+        self.assertEqual(p["asset"], "GGAL")
+        self.assertAlmostEqual(p["amount"], 55000.0, places=2)   # re-derivado
+        # y el sí siguiente ejecuta el ENMENDADO
+        r3 = _h({"confirm_pending": True}, self.uid, request_id="C",
+                confirm_signal="yes")
+        self.assertEqual(r3.get("status"), "registered", r3)
+        row = self.conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND asset='GGAL' AND is_cash=0",
+            (self.uid,)).fetchone()
+        self.assertAlmostEqual(row["invested"], 55000.0, places=2)
+
+
+class TestConfirmPendingRequiresYes(_Base):
+    def test_confirm_pending_without_signal_reshows(self):
+        r = _h({"action": "buy", "asset": "BTC", "broker": "Binance",
+                "quantity": 0.03, "price": 65000}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation")
+        r2 = _h({"confirm_pending": True}, self.uid, request_id="B",
+                confirm_signal="")
+        self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["status"], "confirming")
+
+
+class TestGatheringTtlNotRefreshed(_Base):
+    """Review nocturno B3: el re-plant de needs_info preserva el ts — un draft
+    basura de un falso positivo muere a los 15 min del ARRANQUE aunque el
+    usuario siga chateando."""
+
+    def test_replant_preserves_ts(self):
+        _h({"action": "buy", "asset": "BTC"}, self.uid, request_id="A")
+        ts0 = main._TRADE_DRAFT[self.uid]["ts"]
+        main._TRADE_DRAFT[self.uid]["ts"] = ts0 - 100   # envejecer
+        _h({"broker": "Binance"}, self.uid, request_id="B")
+        self.assertAlmostEqual(main._TRADE_DRAFT[self.uid]["ts"], ts0 - 100, places=1)
+
+
+class TestTradeErrorHuman(unittest.TestCase):
+    def test_no_pending_and_model_directed_strings(self):
+        self.assertIn("pendiente", main._trade_error_human("no_pending"))
+        self.assertIn("pendiente", main._trade_error_human(None))
+        out = main._trade_error_human(
+            "El broker ya no existe (¿lo borraron/renombraron?). Pedile al usuario que rearme el registro.")
+        self.assertNotIn("Pedile", out)
+        out2 = main._trade_error_human(
+            "No se pudo registrar por un error interno. Que lo cargue desde la app.")
+        self.assertNotIn("Que lo cargue", out2)
+        self.assertIn("app", out2)
+
+
+class TestUndoShortCircuitGating(unittest.TestCase):
+    """El undo determinístico solo dispara ante pedidos EXPLÍCITOS: verbo
+    fuerte + (una sola palabra clítica o mención de la operación), sin
+    dígitos, sin pregunta, sin draft abierto."""
+
+    def _fires(self, msg):
+        return bool(
+            main._UNDO_STRONG_RE.search(msg)
+            and not any(c.isdigit() for c in msg)
+            and "?" not in msg and "¿" not in msg
+            and len(msg.split()) <= 6
+            and (len(msg.split()) == 1 or main._UNDO_OBJECT_RE.search(msg)))
+
+    def test_fires_on_explicit(self):
+        for m in ("deshacelo", "borrala", "deshacé la última operación",
+                  "deshacé eso", "revertí la compra", "borrá lo de recién"):
+            self.assertTrue(self._fires(m), m)
+
+    def test_does_not_fire_on_other_things(self):
+        for m in ("borrá el broker Binance",        # objeto ≠ operación
+                  "me equivoqué",                    # no es verbo fuerte
+                  "¿podés deshacer la última operación?",  # pregunta → modelo
+                  "deshacé la compra de 10 GGAL de ayer que cargué mal a 6000",  # larga+dígitos
+                  "hola"):
+            self.assertFalse(self._fires(m), m)
+
+
+class TestSanitizeAssistantBlocks(unittest.TestCase):
+    """El SDK agrega campos (parsed_output) que la API rechaza con 400 si se
+    re-mandan en el historial del loop. La proyección tiene que dejar SOLO los
+    campos válidos y conservar los ids de tool_use (coherencia con su
+    tool_result)."""
+
+    def test_projects_valid_fields_only(self):
+        class _TBx:
+            type = "text"
+            def model_dump(self):
+                return {"type": "text", "text": "hola", "parsed_output": {"x": 1}}
+
+        class _UBx:
+            type = "tool_use"
+            def model_dump(self):
+                return {"type": "tool_use", "id": "tu9", "name": "register_trade",
+                        "input": {"a": 1}, "parsed_output": None, "caching": "x"}
+
+        out = main._sanitize_assistant_blocks([_TBx(), _UBx()])
+        self.assertEqual(out[0], {"type": "text", "text": "hola"})
+        self.assertEqual(out[1]["id"], "tu9")
+        self.assertEqual(out[1]["name"], "register_trade")
+        self.assertEqual(out[1]["input"], {"a": 1})
+        self.assertNotIn("parsed_output", out[1])
+        self.assertNotIn("caching", out[1])
+
+
+class TestConfirmWordNight(unittest.TestCase):
+    """Casos del review nocturno B2: condicionales y enmiendas SIN dígitos."""
+
+    def test_conditional_and_amendment_phrases_ambiguous(self):
+        for m in ("dale, pero en dólares", "sí, en dólares", "si querés",
+                  "si es en pesos dale", "sí solo si es hoy",
+                  "quedó listo lo anterior", "no sé", "todavía no",
+                  "sí pero mañana", "dale cuando puedas"):
+            self.assertEqual(main._confirm_word(m), "", m)
+
+    def test_clear_still_clear(self):
+        self.assertEqual(main._confirm_word("de una"), "yes")
+        self.assertEqual(main._confirm_word("sí, dale nomás"), "yes")
+        self.assertEqual(main._confirm_word("mejor no"), "no")
+        self.assertEqual(main._confirm_word("cancelalo"), "no")
+
+
+class TestE2EQuestionOnPendingDoesNotWrite(_Base):
+    """E2E del CRITICAL del review: draft confirmando + pregunta del usuario
+    ('¿y cuánto sería en pesos?') + modelo que re-llama register_trade con los
+    campos → NO escribe, re-muestra el resumen."""
+
+    def setUp(self):
+        super().setUp()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _chat(self, text):
+        return self.client.post(
+            "/api/ai/chat",
+            headers={"Authorization": f"Bearer {self.token}"},
+            json={"messages": [{"role": "user", "content": text}],
+                  "snapshot": {"summary": {}, "positions": [], "operations": [],
+                                "monthly": [], "brokers": []}, "stream": False})
+
+    def test_question_recall_no_write(self):
+        def fake_create(**kw):
+            msgs = kw.get("messages", [])
+            last_user = ""
+            for m in reversed(msgs):
+                if m.get("role") == "user":
+                    c = m.get("content")
+                    last_user = c if isinstance(c, str) else str(c)
+                    break
+            if "compré" in last_user.lower():
+                return _Resp([_UB("register_trade", {
+                    "action": "buy", "asset": "BTC", "broker": "Binance",
+                    "amount": 2000, "price": 65000})], stop="tool_use")
+            if "pesos" in last_user.lower():
+                # Haiku-style: ante la pregunta re-llama la tool con los campos
+                return _Resp([_UB("register_trade", {
+                    "action": "buy", "asset": "BTC", "broker": "Binance",
+                    "amount": 2000, "price": 65000})], stop="tool_use")
+            return _Resp([_TB("resumen: COMPRA 0.03 BTC. ¿Confirmás?")])
+
+        mc = MagicMock()
+        mc.messages.create.side_effect = fake_create
+        with patch.object(main, "_get_anthropic_client", return_value=mc), \
+             patch.object(main, "_kick_bench_refresh", lambda: None):
+            r1 = self._chat("compré 2000 usd de btc a 65000")
+            self.assertEqual(r1.status_code, 200, r1.text)
+            self.assertEqual(main._TRADE_DRAFT[self.uid]["status"], "confirming")
+            r2 = self._chat("¿y cuánto sería en pesos?")
+            self.assertEqual(r2.status_code, 200, r2.text)
+        # NO se escribió nada; el draft sigue esperando el sí
+        self.assertIsNone(self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND asset='BTC' AND is_cash=0",
+            (self.uid,)).fetchone())
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["status"], "confirming")
+
+    def test_explicit_undo_message_is_deterministic(self):
+        """El undo por chat no depende del modelo: pedido explícito → se
+        ejecuta server-side (el fake model EXPLOTARÍA si lo llamaran)."""
+        def boom(**kw):
+            raise AssertionError("el undo explícito no debe llamar al LLM")
+        mc = MagicMock()
+        mc.messages.create.side_effect = boom
+        # armar y confirmar una compra por el camino del handler
+        _h({"action": "buy", "asset": "BTC", "broker": "Binance",
+            "quantity": 0.02, "price": 65000}, self.uid, request_id="A")
+        r = _h({"confirm_pending": True}, self.uid, request_id="B",
+               confirm_signal="yes")
+        self.assertEqual(r.get("status"), "registered", r)
+        cash_after_buy = self._cash()
+        with patch.object(main, "_get_anthropic_client", return_value=mc), \
+             patch.object(main, "_kick_bench_refresh", lambda: None):
+            r2 = self._chat("deshacé la última operación")
+            self.assertEqual(r2.status_code, 200, r2.text)
+            self.assertIn("Deshecho", r2.json()["reply"])
+        self.assertIsNone(self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND asset='BTC' AND is_cash=0",
+            (self.uid,)).fetchone())
+        self.assertAlmostEqual(self._cash(), cash_after_buy + 1300.0, places=2)
 
 
 if __name__ == "__main__":
