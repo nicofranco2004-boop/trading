@@ -15458,6 +15458,16 @@ def _fmt_qty(q: float) -> str:
 
 def _register_trade_summary(p: dict) -> str:
     ccy = "US$" if p["currency"] == "USD" else "$"
+    if p["action"] == "convert":
+        if p.get("conv_direction") == "ars_to_usd":
+            s = (f"COMPRA DE DÓLARES: $ {p['conv_ars']:,.2f} → US$ "
+                 f"{p['conv_usd']:,.2f} en {p['broker']} (al MEP {p['conv_tc']:,.0f})")
+        else:
+            s = (f"VENTA DE DÓLARES: US$ {p['conv_usd']:,.2f} → $ "
+                 f"{p['conv_ars']:,.2f} en {p['broker']} (al MEP {p['conv_tc']:,.0f})")
+        if p.get("date_is_today") is False:
+            s += f" con fecha {p['date']}"
+        return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
     if p["action"] in ("deposit", "withdraw", "transfer"):
         if p["action"] == "deposit":
             s = f"DEPÓSITO {ccy} {p['amount']:,.2f} en {p['broker']}"
@@ -15651,12 +15661,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
 
         def _close(a, b):
             return abs(a - b) <= max(0.01 * max(abs(b), 1), 1e-6)
-        _pp_cash = _pp.get("action") in ("deposit", "withdraw", "transfer")
+        _pp_money = _pp.get("action") in ("deposit", "withdraw", "transfer", "convert")
         _in_to_broker = str(input_data.get("to_broker") or "").strip().lower()
         # cash: el monto mandado en el slot equivocado (quantity/price) ES el
         # monto — sin este alias la enmienda no contradecía y el sí escribía
         # el monto VIEJO (review, repro real)
-        if _pp_cash and _in_amount is None:
+        if _pp_money and _in_amount is None:
             _in_amount = _in_qty if _in_qty is not None else _in_price
         # ¿algún campo PRESENTE contradice el pendiente? (ausente = no
         # contradice; los payloads CASH llevan asset/price/quantity en None →
@@ -15665,7 +15675,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             (bool(_in_action) and _in_action != _pp["action"])
             or (_in_asset is not None and _in_asset != _pp["asset"])
             # asset presente pero irreconocible = enmienda (no "da igual")
-            or (bool(_raw_asset_in) and _in_asset is None and not _pp_cash)
+            or (bool(_raw_asset_in) and _in_asset is None and not _pp_money)
             or (bool(_in_broker) and _in_broker != str(_pp["broker"]).lower())
             or (bool(_in_to_broker)
                 and _in_to_broker != str(_pp.get("to_broker") or "").lower())
@@ -15673,7 +15683,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 and _in_ccy != _pp["currency"])
             or (bool(_in_date) and _DATE_RE.match(_in_date)
                 and _in_date != _pp["date"])
-            or (bool(_in_kind) and not _pp_cash
+            or (bool(_in_kind) and not _pp_money
                 and _in_kind not in (_pp.get("kind"), _pp.get("asset_type")))
             or (_in_amount is not None and not _close(_in_amount, _pp["amount"]))
             # 'usá el precio de mercado' sobre un pendiente ES una enmienda:
@@ -15681,7 +15691,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # pendiente) en un turno NO confirmatorio → re-armar (review: sin
             # esto era IMPOSIBLE enmendar un pendiente a precio de mercado)
             or (str(input_data.get("price_source") or "").lower() == "market_today"
-                and confirm_signal != "yes" and not _pp_cash
+                and confirm_signal != "yes" and not _pp_money
                 and (_in_price is None or _pp.get("price") is None
                      or not _close(_in_price, _pp["price"])))
             # la exención de precio para market_today aplica SOLO en el turno
@@ -15699,7 +15709,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # ¿re-llamada sustantiva? — un input {} o casi vacío JAMÁS
             # confirma. Trades: action+asset presentes e iguales; cash:
             # action + (broker o monto) — no hay asset que exigir.
-            if _pp_cash:
+            if _pp_money:
                 _substantive = bool(_in_action) and (bool(_in_broker)
                                                      or _in_amount is not None)
             else:
@@ -15729,8 +15739,9 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # cambió) no obligue a rearmar de cero (falla real de la prueba e2e:
         # el modelo cancelaba y el registro se perdía entero).
         _pl = draft["payload"]
-        if _pl["action"] in ("deposit", "withdraw", "transfer"):
-            # payload cash: sin asset/precio/cantidad
+        if _pl["action"] in ("deposit", "withdraw", "transfer", "convert"):
+            # payload cash/convert: sin asset/precio/cantidad. currency de un
+            # convert es la de ORIGEN (no la del broker) → se hereda igual.
             prev = {"action": _pl["action"], "broker": _pl["broker"],
                     "currency": _pl["currency"], "amount": _pl["amount"],
                     "date": _pl["date"]}
@@ -15786,12 +15797,27 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
     # draft/confirmación. Escriben por el MISMO path que los botones
     # Depositar/Retirar de la app (cash_flow → monthly_entries is_manual).
     _is_cash = action in ("deposit", "withdraw", "transfer")
-    if action not in ("buy", "sell") and not _is_cash:
-        missing.append("action (buy|sell|deposit|withdraw|transfer)")
+    # convert = comprar/vender dólares dentro de un broker ARS (pesos↔USD).
+    # Reusa el endpoint /conversions (el botón 'Comprar USD' de la app).
+    _is_convert = action == "convert"
+    _is_money = _is_cash or _is_convert   # ninguno lleva asset/precio/cantidad
+    if action not in ("buy", "sell") and not _is_money:
+        missing.append("action (buy|sell|deposit|withdraw|transfer|convert)")
 
     raw_asset = str(fields.get("asset") or "").strip()
-    asset, kinds = (None, set()) if _is_cash else resolve_asset(raw_asset)
-    if not _is_cash:
+    asset, kinds = (None, set()) if _is_money else resolve_asset(raw_asset)
+    # 'compré 200 dólares' NO es una compra de activo — es una conversión.
+    # Lo redirigimos para que el modelo use action=convert.
+    if action in ("buy", "sell") and raw_asset.upper() in (
+            "USD", "USDT", "DOLAR", "DOLARES", "DÓLAR", "DÓLARES", "DOLA", "VERDE", "VERDES"):
+        _TRADE_DRAFT.pop(uid, None)
+        return {"error": (
+            "Comprar o vender dólares dentro de un broker es una CONVERSIÓN, no "
+            "una compra de activo. Re-llamá con action='convert' (broker, amount, "
+            "y currency = la moneda de la que sale: 'ARS' si compra dólares, "
+            "'USD' si los vende)."
+        )}
+    if not _is_money:
         if not raw_asset:
             missing.append("asset")
         elif not asset:
@@ -15830,7 +15856,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
 
         # asset_type: desambiguar si el ticker es ambiguo (no aplica a cash)
         kind = None
-        if not _is_cash:
+        if not _is_money:
             raw_kind = str(fields.get("asset_type") or "").strip().upper()
             kind = raw_kind if raw_kind in kinds else None
             if len(kinds) == 1:
@@ -15846,9 +15872,21 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                         for r in held))
                 missing.append(f"asset_type ({' | '.join(sorted(kinds))}) — preguntale")
 
-        # currency: si el broker es conocido, DEBE coincidir con su moneda
+        # currency: si el broker es conocido, DEBE coincidir con su moneda.
+        # EXCEPCIÓN convert: la moneda es la de ORIGEN (pesos que compran USD,
+        # o USD que se venden a pesos) e es INDEPENDIENTE del broker (que es
+        # siempre el padre ARS) → no se fuerza.
         currency = str(fields.get("currency") or "").strip().upper()
-        if broker_ccy:
+        if _is_convert:
+            if broker and broker_ccy != "ARS":
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": (
+                    f"Comprar/vender dólares se hace sobre un broker en PESOS "
+                    f"(el padre), no sobre {broker}. Preguntá en qué broker ARS fue."
+                )}
+            if currency not in ("ARS", "USD"):
+                missing.append("currency (ARS = compra dólares | USD = vende dólares)")
+        elif broker_ccy:
             if currency and currency != broker_ccy:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": (
@@ -15880,11 +15918,11 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         price = _num_or_none(fields.get("price"))
         quantity = _num_or_none(fields.get("quantity"))
         amount = _num_or_none(fields.get("amount"))
-        if _is_cash:
-            # cash: solo importa el monto. El modelo a veces lo manda en el
-            # slot equivocado (quantity/price) — el monto que vino EN ESTE
-            # input pisa al heredado (review: 'no, eran 650000' mandado como
-            # quantity se tragaba y el sí escribía el monto VIEJO).
+        if _is_money:
+            # cash y convert: solo importa el MONTO. El modelo a veces lo manda
+            # en el slot equivocado (quantity/price) — el monto que vino EN
+            # ESTE input pisa al heredado (review: 'no, eran 650000' mandado
+            # como quantity se tragaba y el sí escribía el monto VIEJO).
             _in_amt = _num_or_none(input_data.get("amount"))
             _in_alt = _num_or_none(input_data.get("quantity"))
             if _in_alt is None:
@@ -15895,10 +15933,6 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 amount = quantity
             price = None
             quantity = None
-            # price/quantity/price_source no existen para cash: se limpian de
-            # fields para que ningún check de precios downstream dispare (un
-            # price_source colado mataba el draft retro con un error de
-            # trades sin sentido — review) y el re-plant lleve el monto bueno
             fields.pop("quantity", None)
             fields.pop("price", None)
             fields.pop("price_source", None)
@@ -16002,7 +16036,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 _feed_down = True
                 hints.append(f"{asset} sin cotización automática en este momento "
                              "— preguntale el precio exacto al usuario")
-        if price is None and not _mkt_src and not _is_cash:
+        if price is None and not _mkt_src and not _is_money:
             if _feed_down:
                 # NO ofrecer market_today acá: acaba de fallar — re-mandarlo
                 # generaba un loop de needs_info idénticos (review)
@@ -16043,7 +16077,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # hereda el dato PRIMARIO del usuario y re-deriva el otro (sin esto,
         # heredar qty Y amount viejos con el precio nuevo no cierra nunca).
         _derived_field = None
-        if not _is_cash:
+        if not _is_money:
             if quantity is None:
                 quantity = amount / price
                 _derived_field = "quantity"
@@ -16068,7 +16102,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # 1000×; nada legítimo se mueve 4× intradía). Retroactivos exentos
         # (precios viejos legítimamente lejos); sin cotización → pasa
         # (fail-open: la palabra del usuario manda).
-        if date_is_today and not _mkt_src and not _is_cash:
+        if date_is_today and not _mkt_src and not _is_money:
             _ref = _trade_market_price(asset, kind, currency, uid)
             if _ref and max(price / _ref, _ref / price) > 4:
                 _TRADE_DRAFT.pop(uid, None)
@@ -16083,7 +16117,54 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
 
         tc_venta = None
         autodeposit_needed = 0.0
-        if action == "sell":
+        conv_tc = conv_usd = conv_ars = conv_direction = conv_from_broker = None
+        if _is_convert:
+            # comprar/vender dólares dentro de un broker ARS. tc SERVER-SIDE
+            # (MEP), montos derivados; from_broker según dirección.
+            conv_tc = _current_cedear_rate() or _user_tc_blue(conn, uid)
+            if not conv_tc or conv_tc <= 0:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": "No pude obtener el dólar MEP ahora — probá en un momento o cargalo desde la app."}
+            if currency == "ARS":       # compra dólares: paga 'amount' pesos
+                conv_direction = "ars_to_usd"
+                conv_ars = amount
+                conv_usd = round(amount / conv_tc, 2)
+                conv_from_broker = broker
+                _src_cash = conn.execute(
+                    "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+                    (uid, broker)).fetchone()
+                _have = float(_src_cash["invested"] or 0) if _src_cash else 0.0
+                if amount > _have + 0.005:
+                    _TRADE_DRAFT.pop(uid, None)
+                    return {"error": (
+                        f"El usuario tiene {_have:,.2f} ARS en {broker} y quiere "
+                        f"convertir {amount:,.2f}. Avisale y preguntá el monto correcto."
+                    )}
+            else:                        # vende 'amount' dólares → recibe pesos
+                conv_direction = "usd_to_ars"
+                conv_usd = amount
+                conv_ars = round(amount * conv_tc, 2)
+                # el origen es el sub-broker USD del padre
+                _sib = conn.execute(
+                    "SELECT name, invested FROM brokers b "
+                    "LEFT JOIN positions p ON p.broker=b.name AND p.user_id=b.user_id AND p.is_cash=1 "
+                    "WHERE b.user_id=? AND b.parent_broker_id=(SELECT id FROM brokers WHERE user_id=? AND name=?) "
+                    "AND b.currency='USDT' LIMIT 1", (uid, uid, broker)).fetchone()
+                if not _sib:
+                    _TRADE_DRAFT.pop(uid, None)
+                    return {"error": (
+                        f"{broker} no tiene dólares para vender (no hay sub-broker USD). "
+                        "Revisá el broker o el sentido de la operación con el usuario."
+                    )}
+                conv_from_broker = _sib["name"]
+                _have = float(_sib["invested"] or 0)
+                if amount > _have + 0.005:
+                    _TRADE_DRAFT.pop(uid, None)
+                    return {"error": (
+                        f"El usuario tiene US$ {_have:,.2f} en {broker} y quiere "
+                        f"vender US$ {amount:,.2f}. Avisale y preguntá el monto correcto."
+                    )}
+        elif action == "sell":
             # FIFO currency-aware: replicar el predicado de sell_position_fifo
             # (consume lotes de la MISMA moneda si existen). El SUM debe mirar
             # los MISMOS lotes que el endpoint va a tocar.
@@ -16155,6 +16236,10 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         "tc_venta": round(tc_venta, 2) if tc_venta else None,
         "autodeposit_needed": autodeposit_needed,
         "derived": _derived_field,
+        # convert: dirección + montos de las dos patas + tc + broker de origen
+        "conv_direction": conv_direction, "conv_tc": conv_tc,
+        "conv_usd": conv_usd, "conv_ars": conv_ars,
+        "conv_from_broker": conv_from_broker,
     }
     _TRADE_DRAFT[uid] = {
         "status": "confirming", "payload": payload,
@@ -16170,12 +16255,14 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             "NO está registrado. Respondé SOLO: el summary tal cual + '(esto "
             "solo lo anota en Rendi — no toca tu cuenta del broker)' + "
             "'¿Confirmás?'. NADA más — sin repetir los datos en prosa ni "
-            "explicar el proceso. Cuando responda en su PRÓXIMO mensaje: "
-            "confirma → register_trade con confirm_pending=true; quiere "
-            "CAMBIAR un dato (precio/cantidad/broker/moneda/fecha) → "
-            "register_trade de nuevo mandando SOLO el dato corregido (el "
-            "server conserva el resto del registro, NO uses cancel); dice que "
-            "no y nada más → cancel=true."
+            "explicar el proceso. ÚNICA excepción: si el usuario dictó OTRA "
+            "operación en el mismo mensaje que todavía no registraste, agregá "
+            "una última línea '(después seguimos con: <lo que falta>)'. Cuando "
+            "responda en su PRÓXIMO mensaje: confirma → register_trade con "
+            "confirm_pending=true; quiere CAMBIAR un dato (precio/cantidad/"
+            "broker/moneda/fecha) → register_trade de nuevo mandando SOLO el "
+            "dato corregido (el server conserva el resto, NO uses cancel); "
+            "dice que no y nada más → cancel=true."
         ),
     }
 
@@ -16239,6 +16326,20 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                 "kind": p["action"], "broker_id": p.get("broker_id"),
                 "amount": p["amount"], "tc_used": _tc,
                 "summary": _register_trade_summary(p), "ts": now}
+        elif p["action"] == "convert":
+            # comprar/vender dólares dentro del broker: MISMO endpoint que el
+            # botón 'Comprar/Vender USD' (create_conversion). El tc lo fijó el
+            # server en fase 1 (jamás del modelo).
+            create_conversion(ConversionIn(
+                from_broker=p["conv_from_broker"], direction=p["conv_direction"],
+                ars_amount=p["conv_ars"], usd_amount=p["conv_usd"],
+                tc=p["conv_tc"], kind="MEP",
+                date=None if p.get("date_is_today") else p.get("date")), uid)
+            _ai_cache_invalidate(uid)
+            _LAST_CHAT_TRADE[uid] = {
+                "kind": "convert", "broker_id": p.get("broker_id"),
+                "amount": p["amount"], "summary": _register_trade_summary(p),
+                "ts": now}
         elif p["action"] == "transfer":
             # retiro en origen + depósito en destino (misma moneda, validada
             # en fase 1). El retiro va PRIMERO (es la pata que puede fallar
@@ -16300,7 +16401,7 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
 
     _CHAT_VAL_CACHE.pop(uid, None)
     undo_ok = p["action"] == "buy" and not _LAST_CHAT_TRADE[uid].get("autodeposit")
-    if p["action"] in ("deposit", "withdraw", "transfer"):
+    if p["action"] in ("deposit", "withdraw", "transfer", "convert"):
         undo_note = ("No hay undo automático de movimientos de cash: se "
                      "revierte registrando el movimiento inverso, o desde la app.")
     elif undo_ok:
@@ -16447,11 +16548,12 @@ def _undo_last_trade_handler(uid: int) -> dict:
     info = _LAST_CHAT_TRADE.get(uid)
     if not info or (time.time() - info["ts"]) > _UNDO_TRADE_TTL:
         return {"error": "No encuentro un registro reciente por chat para deshacer (ventana: 24 h)."}
-    if info["kind"] in ("deposit", "withdraw", "transfer"):
+    if info["kind"] in ("deposit", "withdraw", "transfer", "convert"):
         return {"error": ("No deshago movimientos de cash automáticamente. "
                           "Se revierte registrando el movimiento inverso "
-                          "(un retiro por el depósito, etc.), o desde la app "
-                          "(Operaciones → Movimientos).")}
+                          "(un retiro por el depósito, una venta de dólares por "
+                          "la compra, etc.), o desde la app (Operaciones → "
+                          "Movimientos).")}
     if info["kind"] != "buy":
         return {"error": ("Solo deshago COMPRAS automáticamente. Para revertir la "
                           "venta: registrá la compra inversa, o desde la app.")}
@@ -16816,6 +16918,18 @@ _AI_TOOLS = [
             "SIN asset, SIN price, SIN quantity. NUNCA inventes amount (si no "
             "lo dijo, no lo mandes — el server lo pregunta) ni date ('ayer' = "
             "HOY del contexto menos 1 día; si no podés calcularla, no la mandes).\n\n"
+            "CONVERSIÓN de moneda (comprar/vender dólares dentro de un broker, "
+            "'pasé 200.000 pesos a dólares en Balanz', 'compré 500 dólares en "
+            "Cocos', 'vendí 300 dólares'): action='convert', broker (el broker "
+            "en PESOS), amount (el monto que dijo), currency = la moneda de la "
+            "que SALE la plata ('ARS' si compra dólares con pesos, 'USD' si "
+            "vende dólares por pesos). El server pone el tipo de cambio y "
+            "calcula la otra pata. NO uses buy/sell para dólares.\n\n"
+            "OPERACIONES MÚLTIPLES: si el usuario dicta VARIAS cosas en un "
+            "mensaje (ej: 'pasé plata de A a B y la convertí a dólares'), "
+            "registralas DE A UNA — cada una necesita su propia confirmación. "
+            "Armá la PRIMERA y avisá al final qué queda pendiente. NUNCA des "
+            "por hecha una operación que el usuario no confirmó una por una.\n\n"
             "FLUJO OBLIGATORIO (el server lleva el estado; vos NO manejás "
             "tokens):\n"
             "1. Ante la intención de registrar, llamala con lo que tengas — el "
@@ -16851,7 +16965,7 @@ _AI_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["buy", "sell", "deposit", "withdraw", "transfer"]},
+                "action": {"type": "string", "enum": ["buy", "sell", "deposit", "withdraw", "transfer", "convert"]},
                 "asset": {"type": "string", "description": "Ticker o nombre (BTC, AMZN, 'amazon') — solo buy/sell"},
                 "asset_type": {"type": "string", "enum": ["CRYPTO", "CEDEAR", "STOCK", "AR_STOCK"],
                                 "description": "Obligatorio si el ticker es ambiguo (preguntale al usuario)"},
@@ -19275,7 +19389,15 @@ _TRADE_INTENT_RE = re.compile(
 # real de Nico fue 'HICE UN DEPOSITO DE 600000 PESOS' (sin tilde).
 _CASH_VERB_RE = re.compile(
     r"\b(deposit[eéoó]\w*|ingres[eé]\w*|retir[eéoó]\w*|saqu[eé]\w*|extraje|"
-    r"transfer[íi]\w*|pas[eéoó]\w*|mov[íi]\w*|mand[eé]\w*|envi[eé]\w*)\b",
+    r"transfer[íi]\w*|pas[eéoó]\w*|mov[íi]\w*|mand[eé]\w*|envi[eé]\w*|"
+    r"convert[íi]\w*|cambi[eé]\w*|dolari[cz][eéoó]\w*)\b",
+    re.IGNORECASE)
+# 'compré/vendí 500 dólares' = conversión (no una compra de activo). El verbo
+# compr/vend ya matchea _TRADE_INTENT_RE, así que el gate pasa; el handler lo
+# rutea a convert. Sumamos 'conversión'/'dólares' como sustantivo-señal por si
+# viene sin verbo claro.
+_CASH_NOUN2_RE = re.compile(
+    r"\b(conversi[oó]n\w*)\b|\b(compr\w*|vend\w*|pas\w*)\s+\w*\s*d[oó]lar",
     re.IGNORECASE)
 _CASH_NOUN_RE = re.compile(
     r"\b(un|una|el|la|hice|hizo|carg[aá]\w*)\s+(dep[oó]sito\w*|retiro\w*|"
@@ -19302,6 +19424,7 @@ def _is_trade_intent(text: str) -> bool:
     return bool(
         _TRADE_INTENT_RE.search(t)
         or _CASH_NOUN_RE.search(t)
+        or _CASH_NOUN2_RE.search(t)
         or (_CASH_VERB_RE.search(t) and _CASH_CONTEXT_RE.search(t)))
 
 

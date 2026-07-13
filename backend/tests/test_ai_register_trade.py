@@ -1187,6 +1187,84 @@ class TestCashFlowChat(_Base):
         self.assertEqual(r.get("status"), "needs_confirmation", r)
 
 
+class TestConvertChat(_Base):
+    """Comprar/vender dólares por chat (pesos↔USD dentro de un broker) —
+    reusa create_conversion (el botón 'Comprar/Vender USD' de la app)."""
+
+    def setUp(self):
+        super().setUp()
+        # Balanz (ARS) con cash en pesos para convertir
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, invested, currency) "
+            "VALUES (?,?,?,1,2000000,'ARS')", (self.uid, "Balanz", "ARS"))
+        self.conn.commit()
+
+    def _cash(self, broker):
+        r = self.conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1",
+            (self.uid, broker)).fetchone()
+        return float(r["invested"]) if r else None
+
+    def test_buy_dollars(self):
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 200000,
+                    "currency": "ARS"}, self.uid, request_id="A")
+            self.assertEqual(r.get("status"), "needs_confirmation", r)
+            self.assertIn("COMPRA DE DÓLARES", r["summary"])
+            self.assertIn("133,33", r["summary"])
+            r2 = _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
+            self.assertEqual(r2.get("status"), "registered", r2)
+        self.assertAlmostEqual(self._cash("Balanz"), 1800000.0, places=2)
+        self.assertAlmostEqual(self._cash("Balanz · USD"), 133.33, places=2)
+
+    def test_sell_dollars(self):
+        # primero comprar para tener USD, luego vender
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            _h({"action": "convert", "broker": "Balanz", "amount": 200000, "currency": "ARS"},
+               self.uid, request_id="A")
+            _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 100, "currency": "USD"},
+                   self.uid, request_id="C")
+            self.assertEqual(r.get("status"), "needs_confirmation", r)
+            self.assertIn("VENTA DE DÓLARES", r["summary"])
+            r2 = _h({"confirm_pending": True}, self.uid, request_id="D", confirm_signal="yes")
+            self.assertEqual(r2.get("status"), "registered", r2)
+        self.assertAlmostEqual(self._cash("Balanz · USD"), 33.33, places=2)
+        self.assertAlmostEqual(self._cash("Balanz"), 1950000.0, places=2)
+
+    def test_buy_dollars_over_cash_rejected(self):
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 9_000_000,
+                    "currency": "ARS"}, self.uid, request_id="A")
+        self.assertIn("error", r)
+
+    def test_sell_dollars_without_usd_subbroker_rejected(self):
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 100,
+                    "currency": "USD"}, self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("dólares", r["error"])
+
+    def test_convert_needs_currency(self):
+        r = _h({"action": "convert", "broker": "Balanz", "amount": 200000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_info", r)
+        self.assertTrue(any("currency" in m for m in r["missing"]), r)
+
+    def test_buy_asset_named_dollars_routes_to_convert(self):
+        # 'compré 500 dólares' NO es una compra de activo → error que rutea
+        r = _h({"action": "buy", "asset": "dólares", "broker": "Balanz",
+                "amount": 200000}, self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("CONVERSIÓN", r["error"])
+
+    def test_convert_intent_gate(self):
+        for msg in ("pasé 200.000 pesos a dólares en balanz",
+                    "compré 500 dólares en cocos",
+                    "vendí 300 dólares", "dolaricé 100.000 pesos"):
+            self.assertTrue(main._is_trade_intent(msg), msg)
+
+
 class TestBrokerCurrencyDisambiguation(_Base):
     """Prueba real de Nico: el modelo etiquetó INTC como STOCK (acción US) en
     Balanz (pesos) → el precio de mercado moría en un loop de 'preguntale el
