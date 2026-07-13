@@ -15357,12 +15357,13 @@ def _trade_draft_context(uid: int) -> str:
     if d["status"] == "confirming":
         return (
             "\n\n--- REGISTRO PENDIENTE DE CONFIRMAR ---\n"
-            f"Le propusiste al usuario registrar: {d['summary']}.\n"
-            "Si en ESTE mensaje el usuario CONFIRMA (sí/dale/confirmá/correcto), "
-            "llamá register_trade con confirm_pending=true (sin más campos). Si "
-            "NIEGA o cambia algo, llamá register_trade con cancel=true y rearmá "
-            "con los datos nuevos. NO des por registrado nada sin el status "
-            "'registered'.\n--- FIN ---"
+            f"YA le mostraste al usuario este resumen y espera su respuesta: {d['summary']}.\n"
+            "Si en ESTE mensaje el usuario acepta (sí/dale/confirmá/ok/correcto/"
+            "listo), llamá register_trade con SOLO {confirm_pending:true} — NO "
+            "vuelvas a mandar los campos (asset, price, etc.), NO rearmes. Si "
+            "NIEGA o quiere cambiar algo, register_trade con {cancel:true} y "
+            "empezá de nuevo con lo que pida. NUNCA des por registrado nada "
+            "hasta que el server responda status 'registered'.\n--- FIN ---"
         )
     # gathering
     f = d.get("fields", {})
@@ -15444,6 +15445,44 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None) -> dict
         if not claimed or claimed.get("status") != "confirming":
             return {"error": "El registro ya se procesó o expiró."}
         return _execute_confirmed_trade(claimed["payload"], uid)
+
+    # ── RED DE SEGURIDAD: re-llamada sobre un pendiente = confirmación ────
+    # Haiku, ante el "sí" del usuario, MUCHAS veces re-llama register_trade (con
+    # los campos, o casi vacío, o hasta alucinando la fecha) en vez de usar
+    # confirm_pending → sin esto se rearmaba en loop y NUNCA ejecutaba. Regla:
+    # si hay un draft 'confirming' de un request ANTERIOR (hubo un mensaje nuevo
+    # del usuario) y esta re-llamada NO es una ENMIENDA (ningún campo presente
+    # CONTRADICE el pendiente) y no es cancel → es una confirmación. Ejecutamos
+    # el payload PENDIENTE (el que el usuario vio y aprobó, NO el re-enviado —
+    # así una fecha/valor alucinado en la re-llamada se ignora). Una enmienda
+    # real (otro precio/monto/activo) SÍ contradice → cae a rearmado normal.
+    if (draft and draft.get("status") == "confirming"
+            and request_id is not None and draft.get("request_id") != request_id
+            and not input_data.get("cancel")):
+        _pp = draft["payload"]
+        _in_action = str(input_data.get("action") or "").strip().lower()
+        _in_asset, _ = resolve_asset(str(input_data.get("asset") or ""))
+        _in_amount = _num_or_none(input_data.get("amount"))
+        _in_price = _num_or_none(input_data.get("price"))
+        _in_qty = _num_or_none(input_data.get("quantity"))
+        _in_broker = str(input_data.get("broker") or "").strip().lower()
+
+        def _close(a, b):
+            return abs(a - b) <= max(0.01 * max(abs(b), 1), 1e-6)
+        # ¿algún campo PRESENTE contradice el pendiente? (ausente = no contradice)
+        _amends = (
+            (bool(_in_action) and _in_action != _pp["action"])
+            or (_in_asset is not None and _in_asset != _pp["asset"])
+            or (bool(_in_broker) and _in_broker != str(_pp["broker"]).lower())
+            or (_in_amount is not None and not _close(_in_amount, _pp["amount"]))
+            or (_in_price is not None and not _close(_in_price, _pp["price"]))
+            or (_in_qty is not None and not _close(_in_qty, _pp["quantity"]))
+        )
+        if not _amends:
+            claimed = _TRADE_DRAFT.pop(uid, None)
+            if claimed and claimed.get("status") == "confirming":
+                return _execute_confirmed_trade(claimed["payload"], uid)
+        # si _amends: sigue al rearmado normal (arranca un draft nuevo)
 
     # ── GATHERING / validación (fase 1) ───────────────────────────────────
     # Acumular con el draft previo si es la MISMA operación (mismo action+asset);
@@ -15745,6 +15784,48 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                  "Para revertirlo: desde la app (Cartera / Operaciones).")
     return {"status": "registered", "summary": _LAST_CHAT_TRADE[uid]["summary"],
             "_note": "Registrado OK. Confirmale con el summary. " + undo_note}
+
+
+# Verbos que son SOLO undo (no fuerzan register_trade — el modelo llama
+# undo_last_trade libremente).
+_UNDO_ONLY_RE = re.compile(
+    r"\b(deshac[eé]\w*|desharme|revert[íi]\w*|me equivoqu[eé]|borr[aá]\w*)\b",
+    re.IGNORECASE)
+
+_TRADE_YES_RE = re.compile(
+    r"\b(s[ií]|dale|confirm[oaáà]\w*|ok|okay|oka|listo|correcto|perfecto|"
+    r"de una|obvio|exacto|así es|asi es|va|joya|bien|es correcto|adelante)\b",
+    re.IGNORECASE)
+_TRADE_NO_RE = re.compile(
+    r"\b(no|cancel[aáà]?\w*|mejor|espera[áà]?|par[aá]|cambi[aáà]\w*|"
+    r"en realidad|nop|negativo)\b", re.IGNORECASE)
+
+
+def _confirm_word(text: str) -> str:
+    """Clasifica la respuesta del usuario a un registro PENDIENTE: 'yes' / 'no'
+    / '' (ambiguo → que decida el modelo). Un dígito en el mensaje = puede
+    estar enmendando un valor → ambiguo. Robusto: si hay AMBAS señales o
+    ninguna, devuelve '' y el flujo por el modelo se encarga."""
+    t = (text or "").strip()
+    if not t or any(c.isdigit() for c in t):
+        return ""
+    yes = bool(_TRADE_YES_RE.search(t))
+    no = bool(_TRADE_NO_RE.search(t))
+    if yes and not no:
+        return "yes"
+    if no and not yes:
+        return "no"
+    return ""
+
+
+def _confirm_pending_trade_by_uid(uid: int) -> dict:
+    """Ejecuta el registro PENDIENTE de un uid (pop atómico). Para el
+    short-circuit de ai_chat cuando el usuario confirma con palabras — no
+    depende de que el modelo llame la tool (Haiku a veces solo free-textea)."""
+    claimed = _TRADE_DRAFT.pop(uid, None)
+    if not claimed or claimed.get("status") != "confirming":
+        return {"error": "no_pending"}
+    return _execute_confirmed_trade(claimed["payload"], uid)
 
 
 def _undo_last_trade_handler(uid: int) -> dict:
@@ -16131,7 +16212,9 @@ _AI_TOOLS = [
             "dice qué tiene ya el usuario. Si "
             "la operación es de HOY y no sabe el precio, ofrecé el actual de "
             "get_current_prices y mandá price_source='market_today'; si es "
-            "RETROACTIVA, el precio lo tiene que dar el usuario. Soporta "
+            "RETROACTIVA, el precio lo tiene que dar el usuario. Si dice 'hoy' "
+            "o no menciona fecha, NO mandes date (el server pone la de hoy) — "
+            "NUNCA inventes una fecha. Soporta "
             "cripto, acciones US/ETFs, CEDEARs y acciones AR (bonos/FCI no)."
         ),
         "input_schema": {
@@ -18621,6 +18704,26 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> i
         return 0
 
 
+def _sanitize_assistant_blocks(content) -> list:
+    """Proyecta los bloques de una respuesta del modelo a los campos VÁLIDOS de
+    la API de Anthropic antes de reenviarlos como historial. El SDK agrega
+    campos propios (ej. `parsed_output` en text blocks) que la API RECHAZA con
+    400 'Extra inputs are not permitted' al hacer el próximo call del loop de
+    tools — rompía cualquier chat Pro multi-turno con tool_use en la historia
+    (lo destapó el registro conversacional, que es multi-turno por diseño)."""
+    out = []
+    for b in content:
+        d = b.model_dump() if hasattr(b, "model_dump") else dict(b)
+        t = d.get("type")
+        if t == "text":
+            out.append({"type": "text", "text": d.get("text", "")})
+        elif t == "tool_use":
+            out.append({"type": "tool_use", "id": d.get("id"),
+                        "name": d.get("name"), "input": d.get("input") or {}})
+        # otros tipos (thinking, etc.) se omiten del historial reenviado
+    return out
+
+
 def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total: int, max_calls: int,
                         allowed_names=None, turn_flags=None, request_id=None):
     """Ejecuta los tool_use blocks de una respuesta y arma los tool_result.
@@ -18729,6 +18832,21 @@ def _maybe_refund_trade_turn(uid: int, turn_flags: set, reserved: bool = True) -
     'undo_ok' (undo exitoso)."""
     if reserved and "undo_ok" in turn_flags:
         _refund_chat_quota(uid)
+
+
+def _chat_direct_reply(stream: bool, text: str, tier: str):
+    """Respuesta del chat SIN llamar al LLM (short-circuit de confirmación de
+    registro). Devuelve un StreamingResponse SSE (delta+done) si stream, o el
+    JSON {reply,tier} si no — mismo shape que consume el frontend."""
+    if stream:
+        def _sse():
+            yield ": ok\n\n"
+            yield "data: " + json.dumps({"t": "delta", "d": text}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({"t": "done", "tier": tier}) + "\n\n"
+        return StreamingResponse(_sse(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache, no-transform",
+                                          "X-Accel-Buffering": "no"})
+    return {"reply": text, "tier": tier}
 
 
 def _chat_quota_429(tier: str, usage: dict) -> HTTPException:
@@ -19043,6 +19161,41 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
         if not _reserved:
             raise _chat_quota_429(tier, _rusage)
 
+    # ── SHORT-CIRCUIT de confirmación (determinístico, sin depender del LLM) ──
+    # Si hay un registro PENDIENTE (de un turno anterior) y el usuario responde
+    # con una palabra clara de sí/no, resolvemos SERVER-SIDE y respondemos sin
+    # llamar al modelo. Haiku es poco confiable en el turno del "sí" (a veces
+    # re-arma, a veces solo escribe "Registrando..." sin ejecutar) → sacarlo de
+    # la decisión hace la confirmación 100% confiable. Es una CONTINUACIÓN
+    # (gratis, no reserva cuota). Ambiguo ('sí pero a 16000') → sigue al LLM.
+    _pending_draft = _TRADE_DRAFT.get(uid)
+    if (_pending_draft and _pending_draft.get("status") == "confirming"
+            and _free_continuation):
+        _verdict = _confirm_word(last_user_msg)
+        if _verdict == "yes":
+            _res = _confirm_pending_trade_by_uid(uid)
+            if _res.get("status") == "registered":
+                _msg = f"✅ Listo, registré: {_res.get('summary', '')}"
+            else:
+                _msg = ("No pude completar el registro: "
+                        + (_res.get("error") or "el pendiente expiró") +
+                        " Probá de nuevo desde el principio.")
+            return _chat_direct_reply(data.stream, _msg, tier)
+        if _verdict == "no":
+            _TRADE_DRAFT.pop(uid, None)
+            return _chat_direct_reply(
+                data.stream, "Ok, lo descarté. Decime si querés cargar otra cosa.", tier)
+
+    # ¿Forzar register_trade en la 1ra iteración? Sí cuando el mensaje es una
+    # intención de registro o hay un registro en curso (draft abierto) — así el
+    # modelo produce la operación estructurada en vez de charlar. NO cuando el
+    # short-circuit ya resolvió un sí/no (esos ya retornaron arriba). Los verbos
+    # de UNDO no fuerzan register_trade (el modelo llama undo_last_trade libre).
+    _force_register = (
+        (_is_trade_intent(last_user_msg) and not _UNDO_ONLY_RE.search(last_user_msg))
+        or bool(_pending_draft and _pending_draft.get("status") in ("gathering", "confirming"))
+    )
+
     # ── STREAMING (opt-in vía data.stream) ────────────────────────────────────
     # Devuelve SSE: el texto de la respuesta FINAL se emite token por token
     # (typewriter) para que el user lea desde el primer segundo. El loop de
@@ -19069,12 +19222,22 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
             state = {"settled": False, "synth_deltas": 0}
             try:
                 for _turn in range(MAX_TOOL_LOOPS + 1):
+                    # FORZAR register_trade en la 1ra iteración de un turno con
+                    # intención de registro o draft abierto: Haiku tiende a
+                    # CHARLAR en vez de llamar la tool → el draft nunca se creaba
+                    # y la confirmación era imposible. Con tool_choice forzado, el
+                    # server SIEMPRE ve la operación estructurada; la iteración
+                    # siguiente (libre) produce el texto para el usuario.
+                    _extra = {}
+                    if _turn == 0 and _force_register:
+                        _extra["tool_choice"] = {"type": "tool", "name": "register_trade"}
                     with client.messages.stream(
                         model="claude-haiku-4-5",
                         max_tokens=max_tokens,
                         system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
                         tools=chat_tools,
                         messages=messages_loop,
+                        **_extra,
                     ) as stream:
                         for chunk in stream.text_stream:
                             if chunk:
@@ -19099,7 +19262,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                         resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN,
                         allowed_names=chat_allowed_names, turn_flags=_turn_flags,
                         request_id=_req_id)
-                    messages_loop.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
+                    messages_loop.append({"role": "assistant", "content": _sanitize_assistant_blocks(resp.content)})
                     messages_loop.append({"role": "user", "content": tool_results})
                 # Fallback: forzar síntesis sin tools (mismo criterio que el path JSON).
                 with client.messages.stream(
@@ -19163,7 +19326,10 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
         )
 
     try:
-        for _ in range(MAX_TOOL_LOOPS + 1):
+        for _loop_i in range(MAX_TOOL_LOOPS + 1):
+            _extra_j = {}
+            if _loop_i == 0 and _force_register:
+                _extra_j["tool_choice"] = {"type": "tool", "name": "register_trade"}
             response = client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=max_tokens,
@@ -19172,6 +19338,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
                 ],
                 tools=chat_tools,
                 messages=messages_loop,
+                **_extra_j,
             )
             last_response = response
 
@@ -19211,7 +19378,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
             # Agregar respuesta del asistente (con tool_use blocks) + resultados al historial
             messages_loop.append({
                 "role": "assistant",
-                "content": [b.model_dump() for b in response.content],
+                "content": _sanitize_assistant_blocks(response.content),
             })
             messages_loop.append({"role": "user", "content": tool_results})
 
