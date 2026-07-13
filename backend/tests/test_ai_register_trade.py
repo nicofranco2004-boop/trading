@@ -65,6 +65,11 @@ class _Base(unittest.TestCase):
         main._TRADE_DRAFT.clear()
         main._LAST_CHAT_TRADE.clear()
         main._CHAT_VAL_CACHE.clear()
+        # Los tests NUNCA tocan el feed real: fail-open por default (los tests
+        # del cinturón/market_today lo re-parchean con su propio valor).
+        _mp = patch.object(main, "_trade_market_price", return_value=None)
+        _mp.start()
+        self.addCleanup(_mp.stop)
         self.conn = main.get_db()
         self.addCleanup(self.conn.close)
         for t in ("operations", "monthly_entries", "positions", "brokers", "users", "ai_usage_daily"):
@@ -694,6 +699,94 @@ class TestUndoShortCircuitGating(unittest.TestCase):
                   "deshacé la compra de 10 GGAL de ayer que cargué mal a 6000",  # larga+dígitos
                   "hola"):
             self.assertFalse(self._fires(m), m)
+
+
+class TestMarketPriceServerSide(_Base):
+    """Bug real de la demo de Nico (2026-07-13): el precio de mercado viajaba
+    POR el LLM — AMZN llegó ÷1000 (separador es-AR: 2675→'2.675') e INTC llegó
+    en USD del ticker US (105 vs .BA 34.380) → cantidades infladas 327-1000×.
+    Con price_source='market_today' el server cotiza el activo él solo e
+    IGNORA el price del modelo."""
+
+    def test_market_today_ignores_model_price(self):
+        # el modelo manda su número mangleado (2.675) — el server usa 2675 (.BA)
+        with patch.object(main, "_trade_market_price", return_value=2675.0) as mp:
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "amount": 500000, "price": 2.675,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        p = main._TRADE_DRAFT[self.uid]["payload"]
+        self.assertEqual(p["price"], 2675.0)
+        self.assertAlmostEqual(p["quantity"], 500000 / 2675.0, places=6)
+        mp.assert_called_once_with("AMZN", "CEDEAR", "ARS", self.uid)
+
+    def test_market_today_feed_down_asks_user(self):
+        with patch.object(main, "_trade_market_price", return_value=None):
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "amount": 500000,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_info", r)
+        self.assertTrue(any("price" in m for m in r["missing"]), r)
+        # el price_source viciado no queda pegado en el draft
+        self.assertNotIn("price_source", main._TRADE_DRAFT[self.uid]["fields"])
+
+    def test_dictated_price_far_from_market_rejected(self):
+        # INTC dictado/mangleado a 105 con mercado .BA en 34.380 → 327× → error
+        with patch.object(main, "_trade_market_price", return_value=34380.0):
+            r = _h({"action": "buy", "asset": "INTC", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "amount": 200000, "price": 105},
+                   self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("lejísimos", r["error"])
+        self.assertNotIn(self.uid, main._TRADE_DRAFT)
+
+    def test_dictated_price_near_market_ok(self):
+        with patch.object(main, "_trade_market_price", return_value=6000.0):
+            r = _h({"action": "buy", "asset": "GGAL", "asset_type": "AR_STOCK",
+                    "broker": "Balanz", "quantity": 10, "price": 5500},
+                   self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+
+    def test_retroactive_price_not_checked(self):
+        # precio viejo legítimamente lejos del mercado de hoy → pasa sin belt
+        with patch.object(main, "_trade_market_price", return_value=34380.0) as mp:
+            r = _h({"action": "buy", "asset": "INTC", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "quantity": 100, "price": 105,
+                    "date": "2020-03-01"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        mp.assert_not_called()
+
+    def test_dictated_today_feed_down_fail_open(self):
+        with patch.object(main, "_trade_market_price", return_value=None):
+            r = _h({"action": "buy", "asset": "INTC", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "quantity": 100, "price": 105},
+                   self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+
+
+class TestTradeMarketPriceSymbolResolution(unittest.TestCase):
+    """El helper resuelve el símbolo canónico y solo cotiza cuando la moneda
+    de la operación coincide con la del feed (CEDEAR/.BA=ARS; US/cripto=USD)."""
+
+    def test_cedear_ars_uses_ba(self):
+        with patch.object(main, "get_prices", return_value={"AMZN.BA": 2675.0}) as gp:
+            self.assertEqual(main._trade_market_price("AMZN", "CEDEAR", "ARS", 1), 2675.0)
+            gp.assert_called_once_with("AMZN.BA", 1)
+
+    def test_cedear_usd_returns_none(self):
+        # comparar un precio USD contra el feed ARS sería un falso positivo
+        self.assertIsNone(main._trade_market_price("AMZN", "CEDEAR", "USD", 1))
+
+    def test_us_stock_ars_returns_none(self):
+        self.assertIsNone(main._trade_market_price("NVDA", "STOCK", "ARS", 1))
+
+    def test_crypto_usd_plain_symbol(self):
+        with patch.object(main, "get_prices", return_value={"BTC": 65000.0}):
+            self.assertEqual(main._trade_market_price("BTC", "CRYPTO", "USD", 1), 65000.0)
+
+    def test_feed_error_returns_none(self):
+        with patch.object(main, "get_prices", side_effect=RuntimeError("boom")):
+            self.assertIsNone(main._trade_market_price("AMZN", "CEDEAR", "ARS", 1))
 
 
 class TestSanitizeAssistantBlocks(unittest.TestCase):

@@ -12649,7 +12649,7 @@ Tools internas (data del propio usuario):
 - get_market_news: noticias de MERCADO/macro/índices por tema (S&P, Fed, inflación, dólar, riesgo país, Merval). Para preguntas de mercado general, NO sobre un ticker que el usuario tiene.
 - get_fx_rates: cotización del dólar HOY (MEP/CCL/blue/cripto, pesos por dólar). Para "¿a cuánto está el dólar/MEP/blue?" o convertir pesos↔dólares usá ESTA (números, no noticias); get_market_news es para el CONTEXTO del dólar, no el precio.
 - remember_user_fact: persistir hechos del usuario entre sesiones.
-- register_trade / undo_last_trade: registrar en Rendi una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo anota en el tracker. Flujo obligatorio (el server lleva el estado; vos NO manejás tokens): llamá register_trade con lo que tengas → el server te dice qué falta (preguntalo TODO en una sola repregunta, usando el snapshot para proponer broker/tipo) o te da un resumen → mostrás el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntás si confirma → cuando el usuario responda EN SU PRÓXIMO MENSAJE: si confirma, register_trade con confirm_pending=true (solo eso); si quiere CAMBIAR un dato, register_trade con SOLO el dato corregido (el server conserva el resto — NO uses cancel); si niega y nada más, cancel=true. NO confirmes en el mismo turno del resumen. Si es de hoy y no sabe el precio, ofrecé el actual (get_current_prices, price_source='market_today'); si es retroactiva el precio lo da el usuario. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
+- register_trade / undo_last_trade: registrar en Rendi una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo anota en el tracker. Flujo obligatorio (el server lleva el estado; vos NO manejás tokens): llamá register_trade con lo que tengas → el server te dice qué falta (preguntalo TODO en una sola repregunta, usando el snapshot para proponer broker/tipo) o te da un resumen → mostrás el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntás si confirma → cuando el usuario responda EN SU PRÓXIMO MENSAJE: si confirma, register_trade con confirm_pending=true (solo eso); si quiere CAMBIAR un dato, register_trade con SOLO el dato corregido (el server conserva el resto — NO uses cancel); si niega y nada más, cancel=true. NO confirmes en el mismo turno del resumen. Si es de hoy y no sabe el precio, mandá price_source='market_today' SIN price (el server usa la cotización real solo; NO le pases el número de get_current_prices). Si es retroactiva el precio lo da el usuario. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
 
 Tools de mercado externas (Pack A v2):
 Para EQUITIES (acciones US, CEDEARs listados en US — yfinance):
@@ -12902,7 +12902,7 @@ Tenés SOLO estas tools (no existe ninguna otra en tu plan):
 - De mercado: get_value_scorecard (valoración de una ACCIÓN US/CEDEAR: 8 métricas + semáforos) y get_earnings_history (próximo earnings + últimos quarters).
 - remember_user_fact para hechos que el usuario pide recordar.
 - register_trade / undo_last_trade: registrar una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo ANOTA en Rendi. Flujo (el server lleva el estado, sin tokens): llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → cuando responda EN SU PRÓXIMO MENSAJE: confirma → register_trade con confirm_pending=true; quiere cambiar un dato → register_trade con SOLO el dato corregido (el server conserva el resto, NO uses cancel); niega y nada más → cancel=true. NO confirmes en el mismo turno. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
-- get_current_prices: SOLO para ofrecer el precio actual dentro del flujo de registro cuando la operación es de HOY y el usuario no lo sabe (price_source='market_today'). No la uses para consultas de precios sueltas — eso es de Pro.
+- get_current_prices: SOLO si el usuario quiere VER un precio dentro del flujo de registro. Para registrar a precio de mercado de HOY no la necesitás: mandá price_source='market_today' SIN price y el server cotiza solo. No la uses para consultas de precios sueltas — eso es de Pro.
 
 Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo — EXCEPCIÓN: en el flujo de registro podés combinar get_current_prices + register_trade en la misma respuesta. NO llames tools que no están en esta lista ni inventes nombres. EXCEPCIÓN de formato: al pedir los datos faltantes de un registro, usá la lista numerada que te indica la tool (esa lista SÍ está permitida).
 
@@ -15412,6 +15412,35 @@ def _num_or_none(v):
         return None
 
 
+def _trade_market_price(asset: str, kind, currency: str, uid: int):
+    """Precio de mercado SERVER-SIDE para el flujo de registro (mismo feed que
+    la UI: get_prices = cache 60s + data912 + last-known). Resuelve el símbolo
+    canónico por tipo y devuelve el precio EN LA MONEDA de la operación, o None
+    si no aplica / no hay cotización (→ el precio lo da el usuario):
+      · CEDEAR / acción AR → '<ASSET>.BA' (ARS). Solo válido si currency==ARS.
+      · stock US / cripto → ticker pelado (USD). Solo válido si currency==USD.
+    Nació del bug real de la demo: el número viajaba POR el LLM y llegó ÷1000
+    (separador de miles es-AR, AMZN 2675→'2.675') o en USD del ticker US
+    (INTC 105 vs .BA 34.380) → cantidades infladas 327-1000×."""
+    if kind in ("CEDEAR", "AR_STOCK"):
+        if currency != "ARS":
+            return None
+        sym = f"{asset}.BA"
+    elif kind in ("STOCK", "CRYPTO"):
+        if currency != "USD":
+            return None
+        sym = asset
+    else:
+        return None
+    try:
+        p = (get_prices(sym, uid) or {}).get(sym)
+        p = float(p) if p is not None else None
+        return p if p and p > 0 else None
+    except Exception as ex:
+        log.warning("register_trade: market price fetch %s falló: %s", sym, ex)
+        return None
+
+
 def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                             confirm_signal: str = "") -> dict:
     """Handler de register_trade. Ver el bloque de diseño A–F arriba.
@@ -15509,7 +15538,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             or (bool(_in_kind)
                 and _in_kind not in (_pp.get("kind"), _pp.get("asset_type")))
             or (_in_amount is not None and not _close(_in_amount, _pp["amount"]))
-            or (_in_price is not None and not _close(_in_price, _pp["price"]))
+            # una re-llamada con price_source='market_today' no contradice por
+            # precio: el número que re-manda el modelo se ignora igual (el
+            # server re-resuelve la cotización — ver _trade_market_price)
+            or (_in_price is not None
+                and str(input_data.get("price_source") or "").lower() != "market_today"
+                and not _close(_in_price, _pp["price"]))
             or (_in_qty is not None and not _close(_in_qty, _pp["quantity"]))
         )
         if not _amends:
@@ -15647,8 +15681,6 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         price = _num_or_none(fields.get("price"))
         quantity = _num_or_none(fields.get("quantity"))
         amount = _num_or_none(fields.get("amount"))
-        if price is None:
-            missing.append("price (si es de HOY, ofrecé el actual con get_current_prices y price_source='market_today')")
         if quantity is None and amount is None:
             missing.append("quantity o amount")
 
@@ -15678,6 +15710,32 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 f"{asset} cotiza en pesos (BYMA). El precio actual está en ARS: "
                 "no lo registres como USD. Confirmá el precio y la moneda con el usuario."
             )}
+
+        # ── market_today: el precio lo pone el SERVER, no el modelo ────────
+        # Fix del bug real de la demo de Nico: el número del feed viajaba por
+        # el LLM y llegó mangleado (AMZN 2675 ARS → '2.675' por separador
+        # es-AR; INTC en USD del ticker US) → cantidades infladas 327-1000×.
+        # Con price_source='market_today' IGNORAMOS el price que re-manda el
+        # modelo y cotizamos server-side el símbolo canónico del activo.
+        _mkt_src = str(fields.get("price_source") or "").lower() == "market_today"
+        if _mkt_src and asset and kind and currency in ("ARS", "USD"):
+            _ref = _trade_market_price(asset, kind, currency, uid)
+            if _ref is not None:
+                price = _ref
+                fields["price"] = _ref   # el draft re-plantado lleva el precio real
+            else:
+                # sin cotización automática → el precio lo da el usuario
+                price = None
+                fields.pop("price", None)
+                fields.pop("price_source", None)
+                _mkt_src = False
+                hints.append(f"{asset} sin cotización automática en este momento "
+                             "— preguntale el precio exacto al usuario")
+        if price is None and not _mkt_src:
+            missing.append("price (si la operación es de HOY al precio de mercado, "
+                           "mandá price_source='market_today' SIN price — el server "
+                           "usa la cotización real; si es retroactiva, preguntá a "
+                           "qué precio operó)")
 
         if missing:
             # free_turns viaja con el draft: si no se preserva en el re-plant,
@@ -15718,6 +15776,21 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         if amount > _TRADE_MAX_NOTIONAL.get(currency, 5_000_000):
             _TRADE_DRAFT.pop(uid, None)
             return {"error": f"El monto ({amount:,.0f} {currency}) es demasiado grande para registrar por chat. Que lo cargue desde la app."}
+
+        # Cinturón: un precio DICTADO de HOY lejísimos del mercado es casi
+        # seguro moneda o escala equivocada (los bugs reales fueron 327× y
+        # 1000×; nada legítimo se mueve 4× intradía). Retroactivos exentos
+        # (precios viejos legítimamente lejos); sin cotización → pasa
+        # (fail-open: la palabra del usuario manda).
+        if date_is_today and not _mkt_src:
+            _ref = _trade_market_price(asset, kind, currency, uid)
+            if _ref and max(price / _ref, _ref / price) > 4:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": (
+                    f"El precio {price:g} {currency} está lejísimos del mercado de "
+                    f"hoy ({asset} ≈ {_ref:g} {currency}). ¿Moneda o escala "
+                    "equivocada? Confirmá el precio exacto con el usuario."
+                )}
 
         tc_venta = None
         autodeposit_needed = 0.0
@@ -16351,8 +16424,10 @@ _AI_TOOLS = [
             "— NO asumas por tu cuenta qué cotiza y qué no). Si el ticker es ambiguo "
             "(AMZN puede ser CEDEAR o acción US), preguntá — el snapshot te "
             "dice qué tiene ya el usuario. Si "
-            "la operación es de HOY y no sabe el precio, ofrecé el actual de "
-            "get_current_prices y mandá price_source='market_today'; si es "
+            "la operación es de HOY y no sabe el precio, mandá "
+            "price_source='market_today' SIN price: el server registra al "
+            "precio de mercado REAL él solo (NO le pases números de "
+            "get_current_prices — si mandás price se ignora). Si es "
             "RETROACTIVA, el precio lo tiene que dar el usuario. Si dice 'hoy' "
             "o no menciona fecha, NO mandes date (el server pone la de hoy) — "
             "NUNCA inventes una fecha. Soporta "
@@ -16369,9 +16444,9 @@ _AI_TOOLS = [
                 "currency": {"type": "string", "enum": ["ARS", "USD"]},
                 "quantity": {"type": "number", "description": "Cantidad de unidades (si el usuario la dio)"},
                 "amount": {"type": "number", "description": "Monto total (si dio el monto, NO calcules la cantidad — el server la deriva)"},
-                "price": {"type": "number", "description": "Precio unitario"},
+                "price": {"type": "number", "description": "Precio unitario DICTADO por el usuario (no mandes precios de mercado — para eso está price_source)"},
                 "price_source": {"type": "string", "enum": ["user", "market_today"],
-                                  "description": "'market_today' SOLO si usaste el precio actual y la operación es de hoy"},
+                                  "description": "'market_today' = operación de HOY al precio de mercado; el server cotiza el activo él solo (si mandás price se ignora)"},
                 "date": {"type": "string", "description": "YYYY-MM-DD (omitir = hoy)"},
                 "confirm_pending": {"type": "boolean", "description": "true SOLO cuando el usuario, en un mensaje NUEVO, confirma el registro pendiente (mandalo solo, sin otros campos)"},
                 "cancel": {"type": "boolean", "description": "true si el usuario niega o quiere cambiar el registro pendiente"},
