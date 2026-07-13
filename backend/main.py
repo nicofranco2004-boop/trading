@@ -12904,7 +12904,7 @@ Tenés SOLO estas tools (no existe ninguna otra en tu plan):
 - register_trade / undo_last_trade: registrar una compra/venta que el usuario te dicta ("compré 2000 USD de BTC a 65000") — NO opera el broker real, solo lo ANOTA en Rendi. Flujo (el server lleva el estado, sin tokens): llamá register_trade con lo que tengas → el server dice qué falta (preguntá TODO junto) o devuelve un resumen → mostrá el resumen + "(esto solo lo anota en Rendi — no toca tu cuenta del broker)" y preguntá si confirma → cuando responda EN SU PRÓXIMO MENSAJE: confirma → register_trade con confirm_pending=true; niega o cambia → cancel=true y rearmá. NO confirmes en el mismo turno. NUNCA digas "registrado" sin el status registered. Se equivocó → undo_last_trade.
 - get_current_prices: SOLO para ofrecer el precio actual dentro del flujo de registro cuando la operación es de HOY y el usuario no lo sabe (price_source='market_today'). No la uses para consultas de precios sueltas — eso es de Pro.
 
-Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo — EXCEPCIÓN: en el flujo de registro podés combinar get_current_prices + register_trade en la misma respuesta. NO llames tools que no están en esta lista ni inventes nombres.
+Usalas SOLO si el snapshot no tiene la respuesta. UNA tool call por respuesta, máximo — EXCEPCIÓN: en el flujo de registro podés combinar get_current_prices + register_trade en la misma respuesta. NO llames tools que no están en esta lista ni inventes nombres. EXCEPCIÓN de formato: al pedir los datos faltantes de un registro, usá la lista numerada que te indica la tool (esa lista SÍ está permitida).
 
 TEXTO LIBRE EN TU PLAN: si el mensaje NO es una de las preguntas guiadas, SOLO puede ser para registrar una operación (o continuar un registro en curso). Procesá el registro y NADA más — si además pide análisis u opinión ("¿y conviene?", "¿está cara?"), registrá y cerrá con: "Para análisis con causalidad, pasate a Pro desde Configuración." No respondas la parte de análisis.
 
@@ -15578,12 +15578,14 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None) -> dict
                                  "request_id": request_id, "ts": now,
                                  "free_turns": _prev_ft}
             return {"status": "needs_info", "missing": missing, "hints": hints,
-                    "_note": ("Faltan datos. Preguntá TODO junto en UNA sola "
-                              "oración CORTA estilo chat (ej: '¿A qué precio y "
-                              "en qué broker?'). SIN listas, SIN párrafos, SIN "
-                              "explicaciones — el usuario ya sabe qué está "
-                              "haciendo. Usá los hints solo para proponer "
-                              "(ej: '¿en Binance?'), no para enumerarlos.")}
+                    "_note": ("Faltan datos. Pedílos DIRECTO con este formato "
+                              "EXACTO, sin preámbulo ('Entendido/Voy a "
+                              "registrar' NO): una línea 'Para registrarlo "
+                              "necesito:' + lista numerada SOLO con lo que "
+                              "falta, cada ítem corto y con aclaración solo si "
+                              "suma (ej: '1) Precio de compra' / '2) Broker — "
+                              "¿Binance o Balanz?') + cierre 'Con eso lo "
+                              "registro.'. Nada más.")}
 
         # ── Todo presente: derivar + validar ──────────────────────────────
         if quantity is None:
@@ -16118,8 +16120,9 @@ _AI_TOOLS = [
             "o cambia algo, con cancel=true. NO confirmes en el mismo turno que "
             "armaste el resumen — esperá la respuesta del usuario.\n\n"
             "Reglas: NO calcules vos la cantidad (mandá amount y el server "
-            "deriva). Sé BREVE en las repreguntas: una oración, estilo chat, "
-            "sin listas — es un trámite simple, no un formulario. NUNCA "
+            "deriva). Repreguntas DIRECTAS: 'Para registrarlo necesito:' + "
+            "lista numerada de lo que falta + 'Con eso lo registro.' — sin "
+            "preámbulos ni párrafos. NUNCA "
             "inventes tickers ni ofrezcas activos que no conocés (si el "
             "usuario dice un nombre raro, mandalo tal cual — el server "
             "valida contra la lista real de Rendi y te da la respuesta correcta "
