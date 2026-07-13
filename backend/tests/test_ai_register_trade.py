@@ -708,17 +708,66 @@ class TestMarketPriceServerSide(_Base):
     Con price_source='market_today' el server cotiza el activo él solo e
     IGNORA el price del modelo."""
 
-    def test_market_today_ignores_model_price(self):
-        # el modelo manda su número mangleado (2.675) — el server usa 2675 (.BA)
+    def test_market_today_without_price_uses_server(self):
+        # el path limpio (lo que instruye el prompt): market_today SIN price
         with patch.object(main, "_trade_market_price", return_value=2675.0) as mp:
             r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
-                    "broker": "Balanz", "amount": 500000, "price": 2.675,
+                    "broker": "Balanz", "amount": 500000,
                     "price_source": "market_today"}, self.uid, request_id="A")
         self.assertEqual(r.get("status"), "needs_confirmation", r)
         p = main._TRADE_DRAFT[self.uid]["payload"]
         self.assertEqual(p["price"], 2675.0)
         self.assertAlmostEqual(p["quantity"], 500000 / 2675.0, places=6)
-        mp.assert_called_once_with("AMZN", "CEDEAR", "ARS", self.uid)
+        mp.assert_called_with("AMZN", "CEDEAR", "ARS", self.uid)
+
+    def test_market_today_with_echoed_price_uses_server(self):
+        # el modelo re-manda el precio del feed casi igual (echo ≤10%) → ref
+        with patch.object(main, "_trade_market_price", return_value=2675.0):
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "amount": 500000, "price": 2700,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["price"], 2675.0)
+
+    def test_market_today_with_mangled_price_reasks(self):
+        # el bug real: 2675 relayado como '2.675' (÷1000) — ya no se registra
+        # NI se pisa en silencio: cae al cinturón y repregunta
+        with patch.object(main, "_trade_market_price", return_value=2675.0):
+            r = _h({"action": "buy", "asset": "AMZN", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "amount": 500000, "price": 2.675,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("lejísimos", r["error"])
+
+    def test_mislabeled_dictated_price_not_overridden(self):
+        # 'a 105 cada uno' etiquetado market_today: NO pisar el dictado con el
+        # de mercado — 105 vs 32860 (313×) → el cinturón repregunta (falla
+        # real del e2e: antes registraba 0,32 CEDEARs al precio de mercado)
+        with patch.object(main, "_trade_market_price", return_value=34380.0):
+            r = _h({"action": "buy", "asset": "INTC", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "quantity": 100, "price": 105,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertIn("error", r)
+        self.assertIn("lejísimos", r["error"])
+
+    def test_mislabeled_dictated_plausible_price_respected(self):
+        # dictado 30.000 con mercado 32.860 (9,5% off... >10%? no: 1.095) —
+        # dentro del eco 10% usa ref; a 28.000 (17% off, <4×) respeta el dictado
+        with patch.object(main, "_trade_market_price", return_value=32860.0):
+            r = _h({"action": "buy", "asset": "INTC", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "quantity": 6, "price": 28000,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["price"], 28000)
+
+    def test_market_today_feed_down_with_price_fails_open(self):
+        # feed caído + precio declarado → dictado (la palabra del usuario manda)
+        with patch.object(main, "_trade_market_price", return_value=None):
+            r = _h({"action": "buy", "asset": "INTC", "asset_type": "CEDEAR",
+                    "broker": "Balanz", "quantity": 6, "price": 30000,
+                    "price_source": "market_today"}, self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["price"], 30000)
 
     def test_market_today_feed_down_asks_user(self):
         with patch.object(main, "_trade_market_price", return_value=None):

@@ -15721,12 +15721,23 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         if _mkt_src and asset and kind and currency in ("ARS", "USD"):
             _ref = _trade_market_price(asset, kind, currency, uid)
             if _ref is not None:
-                price = _ref
-                fields["price"] = _ref   # el draft re-plantado lleva el precio real
+                if price is not None and max(price / _ref, _ref / price) > 1.10:
+                    # El modelo mandó UN PRECIO + market_today y no coinciden:
+                    # o es un precio DICTADO mal etiquetado ('a 105 cada uno'
+                    # → el server no debe pisarlo con el de mercado), o es el
+                    # relay mangleado del feed. En ambos casos: tratarlo como
+                    # dictado y que el cinturón de plausibilidad decida.
+                    _mkt_src = False
+                    fields.pop("price_source", None)
+                else:
+                    price = _ref
+                    fields["price"] = _ref   # el draft re-plantado lleva el precio real
+            elif price is not None:
+                # feed caído pero hay un precio declarado → dictado (fail-open)
+                _mkt_src = False
+                fields.pop("price_source", None)
             else:
-                # sin cotización automática → el precio lo da el usuario
-                price = None
-                fields.pop("price", None)
+                # sin cotización automática y sin precio → lo da el usuario
                 fields.pop("price_source", None)
                 _mkt_src = False
                 hints.append(f"{asset} sin cotización automática en este momento "
@@ -15789,7 +15800,10 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 return {"error": (
                     f"El precio {price:g} {currency} está lejísimos del mercado de "
                     f"hoy ({asset} ≈ {_ref:g} {currency}). ¿Moneda o escala "
-                    "equivocada? Confirmá el precio exacto con el usuario."
+                    "equivocada? Confirmá el precio exacto con el usuario. Si "
+                    "quería el precio de mercado, re-llamá con price_source="
+                    "'market_today' SIN price; si insiste en que ese precio es "
+                    "real, que lo cargue desde la app (Cartera → Agregar)."
                 )}
 
         tc_venta = None
