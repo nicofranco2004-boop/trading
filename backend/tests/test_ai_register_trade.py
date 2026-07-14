@@ -1208,7 +1208,8 @@ class TestConvertChat(_Base):
     def test_buy_dollars(self):
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
             r = _h({"action": "convert", "broker": "Balanz", "amount": 200000,
-                    "currency": "ARS", "convert_side": "buy"}, self.uid, request_id="A")
+                    "currency": "ARS", "convert_side": "buy",
+                    "price_source": "market_today"}, self.uid, request_id="A")
             self.assertEqual(r.get("status"), "needs_confirmation", r)
             self.assertIn("COMPRA DE DÓLARES", r["summary"])
             self.assertIn("133,33", r["summary"])
@@ -1221,12 +1222,12 @@ class TestConvertChat(_Base):
         # primero comprar para tener USD, luego vender
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
             _h({"action": "convert", "broker": "Balanz", "amount": 200000,
-                "currency": "ARS", "convert_side": "buy"},
-               self.uid, request_id="A")
+                "currency": "ARS", "convert_side": "buy",
+                "price_source": "market_today"}, self.uid, request_id="A")
             _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
             r = _h({"action": "convert", "broker": "Balanz", "amount": 100,
-                    "currency": "USD", "convert_side": "sell"},
-                   self.uid, request_id="C")
+                    "currency": "USD", "convert_side": "sell",
+                    "price_source": "market_today"}, self.uid, request_id="C")
             self.assertEqual(r.get("status"), "needs_confirmation", r)
             self.assertIn("VENTA DE DÓLARES", r["summary"])
             r2 = _h({"confirm_pending": True}, self.uid, request_id="D", confirm_signal="yes")
@@ -1240,7 +1241,8 @@ class TestConvertChat(_Base):
         # pesos → 0,21 USD)
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
             r = _h({"action": "convert", "broker": "Balanz", "amount": 300,
-                    "currency": "USD", "convert_side": "buy"}, self.uid, request_id="A")
+                    "currency": "USD", "convert_side": "buy",
+                    "price_source": "market_today"}, self.uid, request_id="A")
             self.assertEqual(r.get("status"), "needs_confirmation", r)
             self.assertIn("US$ 300", r["summary"])
             _h({"confirm_pending": True}, self.uid, request_id="B", confirm_signal="yes")
@@ -1258,13 +1260,15 @@ class TestConvertChat(_Base):
     def test_buy_dollars_over_cash_rejected(self):
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
             r = _h({"action": "convert", "broker": "Balanz", "amount": 9_000_000,
-                    "currency": "ARS", "convert_side": "buy"}, self.uid, request_id="A")
+                    "currency": "ARS", "convert_side": "buy",
+                    "price_source": "market_today"}, self.uid, request_id="A")
         self.assertIn("error", r)
 
     def test_sell_dollars_without_usd_subbroker_rejected(self):
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
             r = _h({"action": "convert", "broker": "Balanz", "amount": 100,
-                    "currency": "USD", "convert_side": "sell"}, self.uid, request_id="A")
+                    "currency": "USD", "convert_side": "sell",
+                    "price_source": "market_today"}, self.uid, request_id="A")
         self.assertIn("error", r)
         self.assertIn("dólares", r["error"])
 
@@ -1288,12 +1292,14 @@ class TestConvertChat(_Base):
         cash0 = self._cash("Balanz")
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
             r = _h({"action": "convert", "broker": "Balanz", "amount": 100000,
-                    "currency": "ARS", "convert_side": "buy"}, self.uid, request_id="A")
+                    "currency": "ARS", "convert_side": "buy",
+                    "price_source": "market_today"}, self.uid, request_id="A")
             self.assertEqual(r.get("status"), "needs_confirmation", r)
             self.assertIn("COMPRA", r["summary"])
             # corrección de sentido a venta (mismo broker/monto) EN dólares
             r2 = _h({"action": "convert", "broker": "Balanz", "amount": 100,
-                     "currency": "USD", "convert_side": "sell"}, self.uid,
+                     "currency": "USD", "convert_side": "sell",
+                     "price_source": "market_today"}, self.uid,
                     request_id="B", confirm_signal="")
         # NO ejecutó la compra original (cash intacto) y el pendiente ya NO es
         # la compra: o re-armó como venta, o pidió/rebotó — nunca la compra
@@ -1301,21 +1307,59 @@ class TestConvertChat(_Base):
         _pend = main._TRADE_DRAFT.get(self.uid, {}).get("payload") or {}
         self.assertNotEqual(_pend.get("conv_direction"), "ars_to_usd", r2)
 
-    def test_retroactive_convert_blocked(self):
-        # review MEDIUM: convert de otro día tomaría el MEP de HOY → bloqueado
+    def test_today_convert_without_tc_asks_offering_today(self):
+        # pedido de Nico: 'compré 4M pesos en balanz usd' sin tc → pide el tc
+        # OFRECIENDO el de hoy; con price_source='market_today' usa el MEP
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 300000,
+                    "currency": "ARS", "convert_side": "buy"}, self.uid, request_id="A")
+            self.assertEqual(r.get("status"), "needs_info", r)
+            tc_items = [m for m in r["missing"] if m.startswith("tc")]
+            self.assertTrue(tc_items, r)
+            self.assertIn("MEP de hoy", tc_items[0])   # ofrece el de hoy
+            # el usuario acepta el de hoy
+            r2 = _h({"price_source": "market_today"}, self.uid, request_id="B",
+                    confirm_signal="")
+            self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+            p = main._TRADE_DRAFT[self.uid]["payload"]
+            self.assertEqual(p["conv_tc"], 1500.0)
+            self.assertTrue(p["tc_from_today"])
+
+    def test_today_convert_user_tc_overrides_mep(self):
+        # el usuario da su propio dólar → se usa ese, no el MEP de hoy
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 200000,
+                    "currency": "ARS", "convert_side": "buy", "tc": 1400},
+                   self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        p = main._TRADE_DRAFT[self.uid]["payload"]
+        self.assertEqual(p["conv_tc"], 1400)
+        self.assertFalse(p["tc_from_today"])
+        self.assertIn("al dólar", r["summary"])   # no dice 'MEP' si fue dictado
+
+    def test_retroactive_convert_needs_tc(self):
+        # review MEDIUM: convert de otro día NO puede usar el MEP de hoy → pide
+        # el tc de ese día (sin tc → needs_info; con tc → registra al tc dado)
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
             r = _h({"action": "convert", "broker": "Balanz", "amount": 200000,
                     "currency": "ARS", "convert_side": "buy",
                     "date": "2026-06-04"}, self.uid, request_id="A")
-        self.assertIn("error", r)
-        self.assertIn("otro día", r["error"])
+            self.assertEqual(r.get("status"), "needs_info", r)
+            self.assertTrue(any(m.startswith("tc") for m in r["missing"]), r)
+            # con el tc del día operado → registra a ESE tc, no al de hoy
+            r2 = _h({"tc": 1000}, self.uid, request_id="B", confirm_signal="")
+            self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+            p = main._TRADE_DRAFT[self.uid]["payload"]
+            self.assertEqual(p["conv_tc"], 1000)
+            self.assertAlmostEqual(p["conv_usd"], 200.0, places=2)  # 200k/1000
 
     def test_tiny_convert_amount_rejected_phase1(self):
         # review LOW: monto que redondea una pata a 0 → error claro en fase 1
         # (antes armaba un draft confirmable que reventaba con 'error interno')
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):
             r = _h({"action": "convert", "broker": "Balanz", "amount": 1,
-                    "currency": "ARS", "convert_side": "buy"}, self.uid, request_id="A")
+                    "currency": "ARS", "convert_side": "buy",
+                    "price_source": "market_today"}, self.uid, request_id="A")
         self.assertIn("error", r)
         self.assertIn("chico", r["error"])
         self.assertNotIn(self.uid, main._TRADE_DRAFT)

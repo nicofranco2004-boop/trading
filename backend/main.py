@@ -15459,12 +15459,13 @@ def _fmt_qty(q: float) -> str:
 def _register_trade_summary(p: dict) -> str:
     ccy = "US$" if p["currency"] == "USD" else "$"
     if p["action"] == "convert":
+        _rate = "al MEP" if p.get("tc_from_today") else "al dólar"
         if p.get("conv_direction") == "ars_to_usd":
             s = (f"COMPRA DE DÓLARES: $ {p['conv_ars']:,.2f} → US$ "
-                 f"{p['conv_usd']:,.2f} en {p['broker']} (al MEP {p['conv_tc']:,.0f})")
+                 f"{p['conv_usd']:,.2f} en {p['broker']} ({_rate} {p['conv_tc']:,.0f})")
         else:
             s = (f"VENTA DE DÓLARES: US$ {p['conv_usd']:,.2f} → $ "
-                 f"{p['conv_ars']:,.2f} en {p['broker']} (al MEP {p['conv_tc']:,.0f})")
+                 f"{p['conv_ars']:,.2f} en {p['broker']} ({_rate} {p['conv_tc']:,.0f})")
         if p.get("date_is_today") is False:
             s += f" con fecha {p['date']}"
         return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
@@ -15760,6 +15761,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             if _pl["action"] == "convert" and _pl.get("conv_direction"):
                 prev["convert_side"] = ("buy" if _pl["conv_direction"] == "ars_to_usd"
                                         else "sell")
+                # heredar el tc del usuario (si lo dio); si era el MEP de hoy,
+                # que el re-arm lo re-cotice fresco vía market_today
+                if _pl.get("tc_from_today"):
+                    prev["price_source"] = "market_today"
+                elif _pl.get("conv_tc"):
+                    prev["tc"] = _pl["conv_tc"]
         else:
             prev = {"action": _pl["action"], "asset": _pl["asset"],
                     "asset_type": _pl.get("kind"), "broker": _pl["broker"],
@@ -15773,7 +15780,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
     fields = dict(prev)
     _from_input = set()
     for k in ("action", "asset", "asset_type", "broker", "to_broker", "currency",
-              "quantity", "amount", "price", "price_source", "date", "convert_side"):
+              "quantity", "amount", "price", "price_source", "date", "convert_side", "tc"):
         if input_data.get(k) not in (None, ""):
             fields[k] = input_data.get(k)
             _from_input.add(k)
@@ -15904,6 +15911,27 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # vendió. Siempre explícito → cero riesgo de dirección al revés.
             if str(fields.get("convert_side") or "").strip().lower() not in ("buy", "sell"):
                 missing.append("convert_side ('buy' si compró/dolarizó | 'sell' si vendió/pesificó) — mirá el verbo")
+            # TC de la conversión: el del usuario, o el MEP de hoy si lo pidió
+            # explícito (market_today) y es de hoy. Si no hay ninguno → pedirlo
+            # OFRECIENDO el de hoy (pedido de Nico: 'que pida el tc y ofrezca
+            # el de hoy'). Un tc del usuario ADEMÁS habilita conversiones
+            # retroactivas (el server ya no tiene que adivinar el MEP viejo).
+            # date_is_today se computa más abajo — acá lo derivamos inline
+            _today_iso_c = datetime.utcnow().strftime("%Y-%m-%d")
+            _date_c = str(fields.get("date") or "").strip() or _today_iso_c
+            _has_tc = _num_or_none(fields.get("tc")) is not None
+            _tc_today = (str(fields.get("price_source") or "").lower() == "market_today"
+                         and _date_c == _today_iso_c)
+            if not _has_tc and not _tc_today:
+                try:
+                    _mep_now = _current_cedear_rate() or _user_tc_blue(conn, uid)
+                except Exception:
+                    _mep_now = None
+                _offer = (f" (o la registro al MEP de hoy, $ {_mep_now:,.0f}"
+                          .replace(",", ".") + ")") if _mep_now else ""
+                missing.append(f"tc — a qué cotización del dólar operó{_offer}. "
+                               "Si acepta el de hoy, re-llamá con "
+                               "price_source='market_today'; si dio otro, mandá tc=<ese número>")
         elif broker_ccy:
             if currency and currency != broker_ccy:
                 _TRADE_DRAFT.pop(uid, None)
@@ -16143,19 +16171,13 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # el usuario ('compré 300 DÓLARES' → USD=target; 'pasé 200.000
             # PESOS' → ARS=source). Así 'compré 300 dólares' compra 300 USD,
             # no convierte 300 pesos (bug del e2e).
-            # Retroactivo: el tc lo pone el server con el MEP de HOY, que NO es
-            # el de una fecha pasada → montos y cost-basis quedarían mal. Igual
-            # que buy/sell (que exige el precio del día), bloqueamos el convert
-            # retroactivo por chat y guiamos a la app (review MEDIUM).
-            if not date_is_today:
-                _TRADE_DRAFT.pop(uid, None)
-                return {"error": (
-                    "Una conversión de otro día necesita el dólar de ESE día — "
-                    "cargala desde la app (Cartera → Comprar/Vender USD, ahí "
-                    "ponés el tipo de cambio exacto). Por chat solo registro las "
-                    "conversiones de hoy."
-                )}
-            conv_tc = _current_cedear_rate() or _user_tc_blue(conn, uid)
+            # TC: el del usuario (habilita retroactivo), o el MEP de hoy si
+            # aceptó el de hoy. La ausencia de ambos ya se atajó en 'missing'.
+            _user_tc = _num_or_none(fields.get("tc"))
+            if _user_tc and _user_tc > 0:
+                conv_tc = _user_tc
+            else:
+                conv_tc = _current_cedear_rate() or _user_tc_blue(conn, uid)
             if not conv_tc or conv_tc <= 0:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": "No pude obtener el dólar MEP ahora — probá en un momento o cargalo desde la app."}
@@ -16288,6 +16310,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         "conv_direction": conv_direction, "conv_tc": conv_tc,
         "conv_usd": conv_usd, "conv_ars": conv_ars,
         "conv_from_broker": conv_from_broker,
+        "tc_from_today": bool(_is_convert and not (_num_or_none(fields.get("tc")))),
     }
     _TRADE_DRAFT[uid] = {
         "status": "confirming", "payload": payload,
@@ -16976,8 +16999,11 @@ _AI_TOOLS = [
             "VENDE/pesifica. Ejemplos: 'pasé 200.000 pesos a dólares' → "
             "amount=200000, currency=ARS, convert_side=buy. 'compré 500 "
             "dólares' → amount=500, currency=USD, convert_side=buy. 'vendí 300 "
-            "dólares' → amount=300, currency=USD, convert_side=sell. El server "
-            "pone el tipo de cambio y la otra pata. NO uses buy/sell (son para "
+            "dólares' → amount=300, currency=USD, convert_side=sell. Además el "
+            "TIPO DE CAMBIO: si el usuario lo dijo, mandá tc=<pesos por dólar>; "
+            "si no lo dijo y es de HOY, mandá price_source='market_today' (el "
+            "server usa el MEP); si no lo dijo, PREGUNTALE a qué dólar la hizo "
+            "(el server te ofrece el de hoy). NO uses buy/sell (son para "
             "activos, no para dólares).\n\n"
             "OPERACIONES MÚLTIPLES: si el usuario dicta VARIAS cosas en un "
             "mensaje (ej: 'pasé plata de A a B y la convertí a dólares'), "
@@ -17027,6 +17053,7 @@ _AI_TOOLS = [
                 "to_broker": {"type": "string", "description": "SOLO transfer: broker DESTINO (nombre exacto)"},
                 "convert_side": {"type": "string", "enum": ["buy", "sell"],
                                   "description": "SOLO convert: 'buy' si compra/dolariza (pesos→USD), 'sell' si vende/pesifica (USD→pesos)"},
+                "tc": {"type": "number", "description": "SOLO convert: el tipo de cambio (pesos por dólar) al que operó, si el usuario lo dijo. Si no lo dijo y es de HOY, mandá price_source='market_today' y el server usa el MEP; si no, preguntáselo."},
                 "currency": {"type": "string", "enum": ["ARS", "USD"]},
                 "quantity": {"type": "number", "description": "Cantidad de unidades (si el usuario la dio)"},
                 "amount": {"type": "number", "description": "Monto total (si dio el monto, NO calcules la cantidad — el server la deriva)"},
