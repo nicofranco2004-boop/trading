@@ -3443,23 +3443,25 @@ function ProfileInvestorBlock({
     (horizonCard?.status === 'no_profile' || horizonCard?.status === 'no_data')
 
   if (noProfileAtAll) {
-    // Empty state cuando el user no completó el test. Audit fix 2026-05-27:
-    // antes había un CTA "Hacer el test" → /perfil-inversor. Después del
-    // restructure, /perfil-inversor redirige a /analisis?tab=perfil — donde
-    // ya estamos viendo este componente. Resultado: botón self-link inútil.
-    // Solución: cambiar el copy para que apunte al test embebido ARRIBA
-    // (PerfilInversor _embeddedInAnalisis) en lugar de a una URL.
+    // Empty state cuando el user no completó el test. El test se migró a
+    // Configuración › Test de inversor (2026-07-14) — ya no vive en esta
+    // página —, así que el CTA linkea allá.
     return (
       <div className="bg-white dark:bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
         <div className="flex items-center gap-2 text-ink-3">
           <UserRound size={18} />
-          <span className="text-xs font-medium uppercase tracking-wide">Completá el test de arriba</span>
+          <span className="text-xs font-medium uppercase tracking-wide">Completá tu test de inversor</span>
         </div>
         <p className="text-sm text-ink-1 leading-snug max-w-xl">
-          El test de 7 preguntas (arriba en esta misma página) define tu perfil
-          (conservador / moderado / agresivo) y nos permite mostrarte acá cómo se
-          alinea tu cartera real con lo que declarás.
+          El test de 7 preguntas define tu perfil (conservador / moderado / agresivo)
+          y nos permite mostrarte acá cómo se alinea tu cartera real con lo que declarás.
         </p>
+        <Link
+          to="/config?tab=test"
+          className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/40 rounded-sm px-3 py-2 transition-colors"
+        >
+          Completar test de inversor →
+        </Link>
       </div>
     )
   }

@@ -29,7 +29,8 @@ import { track } from '../utils/track'
 const Insights = lazy(() => import('./Insights'))
 const Behavioral = lazy(() => import('./Behavioral'))
 const Reports = lazy(() => import('./Reports'))
-const PerfilInversor = lazy(() => import('./PerfilInversor'))
+// El test de inversor (PerfilInversor) se migró a Configuración › Test de
+// inversor. Acá, la tab Perfil muestra sólo el cruce cartera-vs-perfil.
 
 const TABS = [
   { id: 'diagnostico',    label: 'Diagnóstico',         icon: Compass,    desc: 'Lo que te dice el sistema sobre tu performance' },
@@ -119,22 +120,11 @@ export default function Analisis() {
         {tab === 'diagnostico' && <Insights _embeddedTab="diagnostico" />}
         {tab === 'metricas' && <Insights _embeddedTab="metricas" />}
         {tab === 'perfil' && (
-          <>
-            {/* Test arriba (input) + cards de cruce abajo (output del input).
-                ProfileInvestorBlock dentro de Insights muestra empty state
-                amistoso si el test no está completo, así que no necesitamos
-                lógica condicional acá — siempre mostramos ambos bloques. */}
-            <div className="border-b border-line/40 pb-6 mb-6">
-              <h2 className="text-lg font-semibold text-ink-0 mb-1">Tu test de inversor</h2>
-              <p className="text-sm text-ink-3 mb-4">7 preguntas que alimentan el Coach IA + las cards de cruce de abajo.</p>
-              <PerfilInversor _embeddedInAnalisis />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-ink-0 mb-1">Tu cartera vs. tu perfil declarado</h2>
-              <p className="text-sm text-ink-3 mb-4">Cómo se alinea lo que hacés con lo que dijiste en el test.</p>
-              <Insights _embeddedTab="perfil" />
-            </div>
-          </>
+          // El TEST se migró a Configuración › Test de inversor. Acá queda sólo
+          // el cruce cartera-vs-perfil declarado. Si el test no está completo,
+          // ProfileInvestorBlock (dentro de Insights) muestra un CTA para
+          // completarlo en /config.
+          <Insights _embeddedTab="perfil" />
         )}
         {tab === 'comportamiento' && <Behavioral />}
         {tab === 'reportes' && <Reports />}

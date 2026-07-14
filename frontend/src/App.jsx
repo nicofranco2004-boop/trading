@@ -41,7 +41,6 @@ const Config = lazy(() => import('./pages/Config'))
 const Insights = lazy(() => import('./pages/Insights'))
 const Admin = lazy(() => import('./pages/Admin'))
 const Goals = lazy(() => import('./pages/Goals'))
-const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
 const Imports = lazy(() => import('./pages/Imports'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Novedades = lazy(() => import('./pages/Novedades'))
@@ -171,10 +170,10 @@ function AppRoutes() {
       <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />
       <Route path="/operaciones" element={<Operations />} />
       <Route path="/config" element={<Config />} />
-      {/* /perfil-inversor ahora es tab dentro de Análisis. PerfilInversor sigue
-          como componente embebido en Analisis.jsx — el URL viejo redirige al
-          tab para que bookmarks externos no se rompan. */}
-      <Route path="/perfil-inversor" element={<Navigate to="/analisis?tab=perfil" replace />} />
+      {/* El test de inversor se migró a Configuración › Test de inversor
+          (2026-07-14). El URL viejo /perfil-inversor redirige ahí para que
+          bookmarks externos y el menú "Más" de mobile lleven al test. */}
+      <Route path="/perfil-inversor" element={<Navigate to="/config?tab=test" replace />} />
       {/* /objetivos sigue siendo redirect a /posiciones?tab=objetivos arriba */}
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />

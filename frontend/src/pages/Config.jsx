@@ -17,7 +17,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2,
   CheckCircle2, AlertCircle, Trash2, UserRound, CreditCard, ArrowLeftRight,
-  Bell, LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check,
+  Bell, LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check, ClipboardList,
 } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
@@ -32,17 +32,19 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
+import InvestorProfileForm from '../components/InvestorProfileForm'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
 // ─── Secciones ───────────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'cuenta',         label: 'Cuenta',          icon: UserRound,      sub: 'Datos, seguridad y eliminación' },
-  { id: 'planes',         label: 'Planes',          icon: CreditCard,     sub: 'Tu plan y uso de IA' },
-  { id: 'fx',             label: 'Tipos de cambio', icon: ArrowLeftRight, sub: 'Moneda de valuación y cotizaciones' },
-  { id: 'notificaciones', label: 'Notificaciones',  icon: Bell,           sub: 'Próximamente' },
-  { id: 'soporte',        label: 'Soporte',         icon: LifeBuoy,       sub: 'WhatsApp y ayuda' },
+  { id: 'cuenta',         label: 'Cuenta',           icon: UserRound,      sub: 'Datos, seguridad y eliminación' },
+  { id: 'test',           label: 'Test de inversor', icon: ClipboardList,  sub: 'Contexto para el Coach IA' },
+  { id: 'planes',         label: 'Planes',           icon: CreditCard,     sub: 'Tu plan y uso de IA' },
+  { id: 'fx',             label: 'Tipos de cambio',  icon: ArrowLeftRight, sub: 'Moneda de valuación y cotizaciones' },
+  { id: 'notificaciones', label: 'Notificaciones',   icon: Bell,           sub: 'Próximamente' },
+  { id: 'soporte',        label: 'Soporte',          icon: LifeBuoy,       sub: 'WhatsApp y ayuda' },
 ]
 const VALID_TAB_IDS = new Set(TABS.map(t => t.id))
 const DEFAULT_TAB = 'cuenta'
@@ -538,8 +540,30 @@ export default function Config() {
     )
   }
 
+  // Test de inversor — el formulario de 7 preguntas que alimenta al Coach IA.
+  // Se migró acá desde Análisis (2026-07-14): sólo se ve cuando el user entra a
+  // esta sección, no siempre. El cruce cartera-vs-perfil sigue en Análisis ›
+  // Perfil (con CTA a esta sección si el test no está completo).
+  function renderPerfil() {
+    return (
+      <Panel padding="none">
+        <header className="px-4 py-3 border-b border-line">
+          <h2 className="text-sm font-medium text-ink-0">Test de inversor</h2>
+          <p className="text-xs text-ink-3 mt-0.5">
+            7 preguntas para que el Coach IA te conozca · define tu perfil (conservador / moderado / agresivo).
+            Las respuestas viajan al prompt cuando le hablás al modelo — no se comparten con nadie.
+          </p>
+        </header>
+        <div className="p-4">
+          <InvestorProfileForm />
+        </div>
+      </Panel>
+    )
+  }
+
   function renderSection(id) {
     switch (id) {
+      case 'test':           return renderPerfil()
       case 'planes':         return renderPlanes()
       case 'fx':             return renderFx()
       case 'notificaciones': return renderNotificaciones()
