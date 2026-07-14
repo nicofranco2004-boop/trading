@@ -5375,7 +5375,7 @@ AR_BONDS_DATA912 = {
     'GD29', 'GD30', 'GD35', 'GD38', 'GD41', 'GD46',
     'TX26', 'TX28', 'T2X5', 'TZX26', 'TZX27', 'TZX28', 'TZV27',
     # Ampliación 2026-06 — del export de Balanz, con precio live en data912:
-    'BB37D', 'BPOA7', 'BPOC7', 'BPOD7',   # BOPREAL (Bonos del BCRA)
+    'BB37D', 'BPOA7', 'BPOB7', 'BPOC7', 'BPOD7',   # BOPREAL (Bonos del BCRA)
     'T30J6',                              # Boncer/dual 2026
     'PNDCO',                             # ON (Pan American Energy)
     'BA37D',                             # Buenos Aires 2037 (sub-soberano provincial USD)

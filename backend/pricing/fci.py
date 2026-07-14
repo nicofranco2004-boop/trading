@@ -78,6 +78,8 @@ BROKER_FCI_ALLOWLIST = [
     "Balanz Capital Ahorro",   # rentaFija ARS (Balanz) — ticker BCAHA, confirmado 2026-07-02
     "Balanz Ahorro en Dólares",       # rentaFija USD (Balanz) — ticker BAHUSDA, VCP 1417,66 conf. 2026-07-05
     "Balanz Capital Estrategia I USD",  # rentaFija USD (Balanz) — ticker ESTRA1A, VCP 1163,54 conf. 2026-07-05
+    "Balanz Capital Estrategia III USD",  # rentaFija USD (Balanz) — ticker ESTRA3A, VCP 1069,96 conf. 2026-07-10
+    "Balanz Money Market USD",         # mercadoDinero USD (Balanz) — ticker BCMMUSDA, VCP 1024,74 conf. 2026-07-10
     "Balanz Acciones",         # rentaVariable ARS (Balanz) — reportado por user 2026-07-08; VCP Clase A 163.681,18 (→163,68) vs ArgentinaDatos, fecha 2026-07-08
     "Adcap Acciones",          # rentaVariable ARS (IOL) — ticker CONIOLA, VCP 193.077 confirmado 2026-07-02
 ]

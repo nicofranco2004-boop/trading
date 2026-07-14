@@ -61,6 +61,8 @@ BROKER_FCI_AD_NAME = {
     # costo/override (snapshot de la foto), sin riesgo de mapear a la clase equivocada.
     "BAHUSDA":   "Balanz Ahorro en Dólares - Clase A",        # rentaFija USD (Balanz)
     "ESTRA1A":   "Balanz Capital Estrategia I USD - Clase A",  # rentaFija USD (Balanz)
+    "ESTRA3A":   "Balanz Capital Estrategia III USD - Clase A",  # rentaFija USD (Balanz) — reportado user 2026-07-10, VCP 1069,96 vs AD
+    "BCMMUSDA":  "Balanz Money Market USD - Clase A",           # mercadoDinero USD (Balanz) — VCP 1024,74 (÷1000=1,02 escala USD, no la ARS 'Capital Money Market' de 12k)
     # IOL — confirmado 2026-07-02 vs ArgentinaDatos: el ticker CONIOLA ("Adcap Acciones"
     # en IOL/BCBA) matchea "Adcap Acciones - Clase A" (rentaVariable ARS) por PRECIO
     # EXACTO (VCP 193.077,218 = los $193.077 de IOL) y magnitud sana. Clase B daría

@@ -295,6 +295,10 @@ export const BONDS_AR_SOV_USD = [
   // BOPREAL (BCRA, USD). El Serie 3 (BPY26) venció 31/05/26 → no tiene precio
   // live en data912 (delisteado): se carga y valúa a costo.
   { s: 'BPY26', n: 'BOPREAL Serie 3 2026 (BCRA, USD)' },
+  // BOPREAL Serie 1 — strips A/B/C/D (precio live en data912; ya reconocidos en
+  // AR_BONDS_DATA912). BPOB7 reportado por user 2026-07-10.
+  { s: 'BPOA7', n: 'BOPREAL Serie 1-A (BCRA, USD)' }, { s: 'BPOB7', n: 'BOPREAL Serie 1-B (BCRA, USD)' },
+  { s: 'BPOC7', n: 'BOPREAL Serie 1-C (BCRA, USD)' }, { s: 'BPOD7', n: 'BOPREAL Serie 1-D (BCRA, USD)' },
 ]
 
 // === BONOS — Soberanos AR en pesos / CER ====================================
