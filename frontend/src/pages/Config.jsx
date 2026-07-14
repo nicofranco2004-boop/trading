@@ -17,7 +17,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2,
   CheckCircle2, AlertCircle, Trash2, UserRound, CreditCard, ArrowLeftRight,
-  Bell, LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock,
+  Bell, LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check,
 } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
@@ -31,6 +31,7 @@ import ImportWizard from '../components/import/ImportWizard'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
+import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -399,7 +400,13 @@ export default function Config() {
   }
 
   function renderPlanes() {
-    return <PlanHero tier={user?.tier || 'free'} usage={aiUsage} />
+    const tier = user?.tier || 'free'
+    return (
+      <div className="space-y-5">
+        <PlanHero tier={tier} usage={aiUsage} />
+        <PlanComparisonCards currentTier={tier} />
+      </div>
+    )
   }
 
   function renderFx() {
@@ -1110,6 +1117,74 @@ function PlanHeroAdmin({ usage }) {
       >
         Ver planes →
       </button>
+    </section>
+  )
+}
+
+// ─── PlanComparisonCards ──────────────────────────────────────────────────────
+// Cuadros de "qué incluye cada plan" (Free / Plus / Pro) debajo del PlanHero,
+// en la sección Planes de Config. Reusa la MISMA data que /planes (data/
+// planCatalog.js) para no duplicar ni desincronizar. Resalta en violet el plan
+// que el user ya tiene. Para precios + upgrade, linkea a /planes.
+const CONFIG_PLANS = [
+  { id: 'free', name: 'Free', feat: FREE_FEATURES },
+  { id: 'plus', name: 'Plus', feat: PLUS_FEATURES },
+  { id: 'pro',  name: 'Pro',  feat: PRO_FEATURES },
+]
+
+function PlanComparisonCards({ currentTier }) {
+  const norm = (currentTier || 'free').toLowerCase()
+  return (
+    <section>
+      <div className="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
+        <h2 className="text-sm font-medium text-ink-1">Qué incluye cada plan</h2>
+        <Link to="/planes" className="text-xs text-data-violet hover:underline inline-flex items-center gap-1">
+          Ver planes y precios →
+        </Link>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {CONFIG_PLANS.map(p => {
+          const isCurrent = norm === p.id
+          return (
+            <div
+              key={p.id}
+              className={`rounded-lg border p-4 flex flex-col ${isCurrent ? 'border-data-violet/40 bg-data-violet/[0.04]' : 'border-line bg-bg-1'}`}
+            >
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <span className={`text-sm font-semibold ${isCurrent ? 'text-data-violet' : 'text-ink-0'}`}>{p.name}</span>
+                {isCurrent && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-data-violet/15 text-data-violet">
+                    Tu plan
+                  </span>
+                )}
+              </div>
+
+              {/* Quotas — grid mini de números (análisis/sem, chat/sem, brokers) */}
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                {p.feat.quotas.map(q => (
+                  <div key={q.label} className="rounded-sm bg-bg-2/50 border border-line/50 px-2 py-1.5 text-center">
+                    <div className="text-base font-medium tabular text-ink-0 leading-none">{q.value}</div>
+                    <div className="text-[10px] text-ink-3 mt-1 leading-tight">{q.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Essentials — features core con check */}
+              <ul className="space-y-1.5">
+                {p.feat.essentials.map((f, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <Check size={13} strokeWidth={2.25} className="mt-0.5 flex-shrink-0 text-rendi-pos" aria-hidden="true" />
+                    <span className="text-xs text-ink-2 leading-snug">
+                      {f.label}
+                      {f.sub && <span className="block text-[11px] text-ink-3 mt-0.5">{f.sub}</span>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )
+        })}
+      </div>
     </section>
   )
 }

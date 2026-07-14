@@ -24,7 +24,6 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom'
 import { Compass, TrendingUp, Brain, BarChart3, UserRound } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
-import CurrencyRail from '../components/CurrencyRail'
 import { track } from '../utils/track'
 
 const Insights = lazy(() => import('./Insights'))
@@ -87,8 +86,7 @@ export default function Analisis() {
 
       {/* Tab strip — filled pills con violet en la activa. Mismo diseño que
           Cartera.jsx para consistencia visual entre las 2 páginas con tabs
-          principales del producto. A la derecha, el toggle de divisa (mismo
-          que Cartera) para que el user pueda cambiar USD/ARS desde acá también. */}
+          principales del producto. */}
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <div className="inline-flex flex-wrap gap-2">
           {TABS.map(t => {
@@ -112,11 +110,9 @@ export default function Analisis() {
           })}
         </div>
       </div>
-      {/* Riel de moneda — mismo control global que Cartera (USD MEP / USD CCL / Pesos). */}
-      <div className="mb-5 max-w-2xl mx-auto">
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5 select-none text-center">Ver en</div>
-        <CurrencyRail />
-      </div>
+      {/* El selector de moneda de valuación (riel USD MEP / CCL / Pesos) se
+          unificó en Configuración → Tipos de cambio. Acá sólo se muestran los
+          valores en la moneda elegida; para cambiarla, el user va a /config. */}
 
       {/* Tab content — lazy boundary por tab (cada uno es un chunk separado) */}
       <Suspense fallback={<div className="text-center py-20 text-ink-3 text-sm">Cargando…</div>}>

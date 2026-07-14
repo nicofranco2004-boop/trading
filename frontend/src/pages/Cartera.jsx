@@ -27,7 +27,6 @@ import { useSearchParams, useLocation } from 'react-router-dom'
 import { Briefcase, TrendingUp, Target } from 'lucide-react'
 import { track } from '../utils/track'
 import Skeleton from '../components/Skeleton'
-import CurrencyRail from '../components/CurrencyRail'
 import { markPositionsDiscovered } from '../utils/positionsDiscovered'
 
 const Positions = lazy(() => import('./Positions'))
@@ -126,13 +125,9 @@ export default function Cartera() {
           })}
         </div>
       </div>
-      {/* Riel de moneda de valuación — barra ancha (USD MEP / USD CCL / Pesos).
-          Global: cambiarlo acá lo cambia en toda la app. Vive a nivel Cartera
-          para estar disponible en las 3 tabs (Posiciones / Evolución / Objetivos). */}
-      <div className="mb-5 max-w-2xl mx-auto">
-        <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1.5 select-none text-center">Ver en</div>
-        <CurrencyRail />
-      </div>
+      {/* El selector de moneda de valuación (riel USD MEP / CCL / Pesos) se
+          unificó en Configuración → Tipos de cambio. Acá sólo se muestran los
+          valores en la moneda elegida; para cambiarla, el user va a /config. */}
 
       <Suspense fallback={
         <div className="space-y-4 py-6" aria-busy="true">
