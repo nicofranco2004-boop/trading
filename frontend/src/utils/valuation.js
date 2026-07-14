@@ -407,14 +407,19 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
 
       if (p.is_cash) {
         const cashArs = p.invested || 0  // cash no tiene commissions
-        const cashUsd = cashArs / tcBlue
+        // Unificación FX (espeja el backend behavioral._position_value_usd): el
+        // cash en pesos → USD por el dólar-MEP (cedearRate), IGUAL que las
+        // tenencias. Es el dólar al que dolarizás la plata quieta EN el broker
+        // (comprás un bono, salís en USD), no el blue de la calle. Antes iba al
+        // blue y quedaba inconsistente con los holdings y con el backend.
+        const cashUsd = cashArs / cedearRate
         valueArs  += cashArs
         value     += cashUsd
         invested  += cashUsd  // cash en pesos: invested USD = value USD (no FX gain)
       } else {
         // Holdings (CEDEARs / acciones AR / bonos) → a USD por el dólar-MEP
         // (cedearRate), que es el dólar al que REALMENTE salís de la inversión y
-        // el que muestra el broker. El blue es para el CASH, no para las tenencias.
+        // el que muestra el broker. Cash y holdings usan el MISMO rate (MEP).
         // Antes valuábamos acá al blue y el total quedaba ~2% por debajo del broker.
         // FX-phantom fix: invested y value usan el MISMO rate (MEP), así se mueven
         // juntos y solo aparece P&L cuando el activo realmente rinde.

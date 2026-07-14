@@ -199,11 +199,11 @@ describe('ARS broker — FX phantom eliminated', () => {
   })
 })
 
-describe('ARS broker — holdings al MEP (cedearRate), cash al blue', () => {
-  // Fix: las tenencias (CEDEARs/acciones AR) se valúan al dólar-MEP (cedearRate),
-  // NO al blue — es el dólar al que salís de la inversión y el que muestra el
-  // broker. El blue queda solo para el cash. Antes el total quedaba ~2% por
-  // debajo del broker.
+describe('ARS broker — holdings Y cash al MEP (cedearRate)', () => {
+  // Unificación FX: tanto las tenencias (CEDEARs/acciones AR) como el CASH en
+  // pesos se valúan al dólar-MEP (cedearRate) — es el dólar al que dolarizás la
+  // plata EN el broker. Antes el cash iba al blue (inconsistente con los holdings
+  // y con el backend behavioral._position_value_usd, que ya usa MEP).
   const BLUE = 1530, MEP = 1499
   it('holding usa MEP, no blue', () => {
     const positions = [pos({ broker: 'Balanz', asset: 'GGAL', quantity: 100, invested: 140_000 })]
@@ -212,10 +212,11 @@ describe('ARS broker — holdings al MEP (cedearRate), cash al blue', () => {
     expect(r.value).not.toBeCloseTo(150_000 / BLUE)  // NO al blue
     expect(r.invested).toBeCloseTo(140_000 / MEP)
   })
-  it('cash sigue al blue', () => {
+  it('cash también al MEP, no al blue', () => {
     const positions = [pos({ broker: 'Balanz', asset: 'ARS', is_cash: true, invested: 153_000 })]
     const r = computeBrokerValue(positions, {}, arsBroker('Balanz'), BLUE, MEP)
-    expect(r.value).toBeCloseTo(153_000 / BLUE)
+    expect(r.value).toBeCloseTo(153_000 / MEP)        // cash al MEP, igual que holdings
+    expect(r.value).not.toBeCloseTo(153_000 / BLUE)   // NO al blue
   })
 })
 
