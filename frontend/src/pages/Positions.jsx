@@ -469,6 +469,24 @@ function PositionsDesktop() {
     setModal('add-flow')
   }
 
+  // "Agregar compra" desde el menú (3 puntitos) de una posición: saltea el flow
+  // (broker → tipo → ticker) y abre el form DIRECTO con el MISMO ticker/broker/tipo
+  // pre-cargados — espejo de openSell(). El form auto-completa el precio actual y
+  // deja cambiar el ticker con "onChangeAsset" si hiciera falta. Para cash cae al
+  // flow normal (no tiene sentido "comprar más" de una posición de efectivo).
+  function openBuyForPosition(p) {
+    if (!p || p.is_cash) return openAdd(p?.broker)
+    setForm({
+      ...EMPTY_POS,
+      broker: p.broker,
+      asset: p.asset,
+      asset_type: p.asset_type || '',
+      currency: p.currency || '',
+      entry_date: today(),
+    })
+    setModal('add')
+  }
+
   // Callback del AddPositionFlow cuando el user selecciona un ticker. Trae el
   // broker elegido en el paso 1 (o el preseleccionado). Abre el form.
   function onAssetSelectedFromFlow({ asset, broker, category }) {
@@ -1622,7 +1640,7 @@ function PositionsDesktop() {
                                   subtitle={`${p.asset} · ${p.broker}`}
                                 />
                               )}
-                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
+                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openBuy: openBuyForPosition, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                             </div>
                           </td>
                         </tr>
@@ -1820,7 +1838,7 @@ function PositionsDesktop() {
                                 subtitle={`${p.asset} · ${p.broker}`}
                               />
                             )}
-                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
+                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openBuy: openBuyForPosition, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                           </div>
                         </td>
                       </tr>
@@ -2460,7 +2478,7 @@ function sortBrokersForDisplay(brokers) {
   return out
 }
 
-function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
+function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
   // Fila AGREGADA (varios lotes del mismo ticker): editar/eliminar son POR LOTE
   // (la posición agregada es sintética, no un registro real — no hay un único id
   // que editar, y promediar rompería el costo FIFO y las fechas de compra).
@@ -2468,7 +2486,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
   // Editar/Eliminar. Vender opera FIFO sobre toda la posición.
   if (isAgg) {
     return [
-      { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd(p.broker) },
+      { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
       { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
       { divider: true },
       // Un solo control de lotes: expande (donde se edita/elimina cada lote) y,
@@ -2506,7 +2524,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
       { label: 'Registrar cupón',         icon: <Coins size={13} className="text-rendi-pos" />,       onClick: () => openBondCashflow(p, 'coupon') },
       { label: 'Registrar amortización',  icon: <LayersIcon size={13} className="text-rendi-accent" />, onClick: () => openBondCashflow(p, 'amortization') },
       { divider: true },
-      { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd(p.broker) },
+      { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
       { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
       { divider: true },
       { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
@@ -2514,7 +2532,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openSell, del, openCashFlow, 
     ]
   }
   return [
-    { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd(p.broker) },
+    { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
     { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
     { divider: true },
     { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
