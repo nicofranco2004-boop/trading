@@ -15663,6 +15663,10 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             return abs(a - b) <= max(0.01 * max(abs(b), 1), 1e-6)
         _pp_money = _pp.get("action") in ("deposit", "withdraw", "transfer", "convert")
         _in_to_broker = str(input_data.get("to_broker") or "").strip().lower()
+        _in_side = str(input_data.get("convert_side") or "").strip().lower()
+        # sentido implícito del pendiente convert (ars_to_usd=compra / usd_to_ars=venta)
+        _pp_side = ("buy" if _pp.get("conv_direction") == "ars_to_usd" else "sell") \
+            if _pp.get("action") == "convert" else None
         # cash: el monto mandado en el slot equivocado (quantity/price) ES el
         # monto — sin este alias la enmienda no contradecía y el sí escribía
         # el monto VIEJO (review, repro real)
@@ -15683,6 +15687,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 and _in_ccy != _pp["currency"])
             or (bool(_in_date) and _DATE_RE.match(_in_date)
                 and _in_date != _pp["date"])
+            # corrección de SENTIDO de una conversión ('no, la vendí'): en un
+            # convert compra y venta difieren SOLO en convert_side (mismo
+            # amount/currency) → sin esta cláusula el flip no contradecía nada
+            # y el sí registraba la dirección OPUESTA (review HIGH, money-crit)
+            or (_in_side in ("buy", "sell") and _pp_side is not None
+                and _in_side != _pp_side)
             or (bool(_in_kind) and not _pp_money
                 and _in_kind not in (_pp.get("kind"), _pp.get("asset_type")))
             or (_in_amount is not None and not _close(_in_amount, _pp["amount"]))
@@ -15888,7 +15898,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                     f"(el padre), no sobre {broker}. Preguntá en qué broker ARS fue."
                 )}
             if currency not in ("ARS", "USD"):
-                missing.append("currency (ARS = compra dólares | USD = vende dólares)")
+                missing.append("currency (ARS = si dio el monto en pesos | USD = si lo dio en dólares)")
+            # convert_side REQUERIDO (review HIGH/LOW): sin él, un ARS-amount
+            # defaulteaba a 'buy' y podía invertir el sentido si el usuario
+            # vendió. Siempre explícito → cero riesgo de dirección al revés.
+            if str(fields.get("convert_side") or "").strip().lower() not in ("buy", "sell"):
+                missing.append("convert_side ('buy' si compró/dolarizó | 'sell' si vendió/pesificó) — mirá el verbo")
         elif broker_ccy:
             if currency and currency != broker_ccy:
                 _TRADE_DRAFT.pop(uid, None)
@@ -16128,19 +16143,23 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # el usuario ('compré 300 DÓLARES' → USD=target; 'pasé 200.000
             # PESOS' → ARS=source). Así 'compré 300 dólares' compra 300 USD,
             # no convierte 300 pesos (bug del e2e).
+            # Retroactivo: el tc lo pone el server con el MEP de HOY, que NO es
+            # el de una fecha pasada → montos y cost-basis quedarían mal. Igual
+            # que buy/sell (que exige el precio del día), bloqueamos el convert
+            # retroactivo por chat y guiamos a la app (review MEDIUM).
+            if not date_is_today:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": (
+                    "Una conversión de otro día necesita el dólar de ESE día — "
+                    "cargala desde la app (Cartera → Comprar/Vender USD, ahí "
+                    "ponés el tipo de cambio exacto). Por chat solo registro las "
+                    "conversiones de hoy."
+                )}
             conv_tc = _current_cedear_rate() or _user_tc_blue(conn, uid)
             if not conv_tc or conv_tc <= 0:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": "No pude obtener el dólar MEP ahora — probá en un momento o cargalo desde la app."}
-            _side = str(fields.get("convert_side") or "").strip().lower()
-            if _side not in ("buy", "sell"):
-                # pesos gastados = compra; sin señal clara y en dólares → pedir
-                _side = "buy" if currency == "ARS" else ""
-            if not _side:
-                _TRADE_DRAFT.pop(uid, None)
-                return {"error": ("¿Compró o vendió dólares? Re-llamá con "
-                                  "convert_side='buy' (compra/dolariza) o "
-                                  "'sell' (vende/pesifica).")}
+            _side = str(fields.get("convert_side") or "").strip().lower()   # ya validado en missing
             if _side == "buy":            # comprar dólares: origen = pesos del padre
                 conv_direction = "ars_to_usd"
                 conv_from_broker = broker
@@ -16187,6 +16206,12 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                         f"El usuario tiene US$ {_have:,.2f} en {broker} y quiere "
                         f"vender US$ {conv_usd:,.2f}. Avisale y preguntá el monto correcto."
                     )}
+            # Ambas patas > 0 (review LOW): un monto minúsculo redondeaba una
+            # pata a 0,00 y armaba un draft confirmable que reventaba con
+            # 'error interno' al ejecutar (ConversionIn exige gt=0).
+            if not conv_ars or conv_ars <= 0 or not conv_usd or conv_usd <= 0:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": "El monto es demasiado chico para convertir — revisá el número con el usuario."}
         elif action == "sell":
             # FIFO currency-aware: replicar el predicado de sell_position_fifo
             # (consume lotes de la MISMA moneda si existen). El SUM debe mirar
@@ -16283,9 +16308,10 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             "una última línea '(después seguimos con: <lo que falta>)'. Cuando "
             "responda en su PRÓXIMO mensaje: confirma → register_trade con "
             "confirm_pending=true; quiere CAMBIAR un dato (precio/cantidad/"
-            "broker/moneda/fecha) → register_trade de nuevo mandando SOLO el "
-            "dato corregido (el server conserva el resto, NO uses cancel); "
-            "dice que no y nada más → cancel=true."
+            "broker/moneda/fecha, o compró↔vendió en una conversión → "
+            "convert_side) → register_trade de nuevo mandando SOLO el dato "
+            "corregido (el server conserva el resto, NO uses cancel); dice que "
+            "no y nada más → cancel=true."
         ),
     }
 
