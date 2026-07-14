@@ -1325,6 +1325,23 @@ class TestConvertChat(_Base):
             self.assertEqual(p["conv_tc"], 1500.0)
             self.assertTrue(p["tc_from_today"])
 
+    def test_tc_correction_sticks(self):
+        # bug de e2e real: 'no, lo hice a 1400' ({tc:1400}) sobre una conversión
+        # armada al MEP se descartaba y el sí registraba al MEP viejo
+        with patch.object(main, "_current_cedear_rate", return_value=1500.0):
+            r = _h({"action": "convert", "broker": "Balanz", "amount": 2000000,
+                    "currency": "ARS", "convert_side": "buy",
+                    "price_source": "market_today"}, self.uid, request_id="A")
+            self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["conv_tc"], 1500.0)
+            r2 = _h({"tc": 1400}, self.uid, request_id="B", confirm_signal="")
+            self.assertEqual(r2.get("status"), "needs_confirmation", r2)
+            p = main._TRADE_DRAFT[self.uid]["payload"]
+            self.assertEqual(p["conv_tc"], 1400)
+            self.assertAlmostEqual(p["conv_usd"], 2000000 / 1400, places=2)
+            r3 = _h({"confirm_pending": True}, self.uid, request_id="C", confirm_signal="yes")
+            self.assertEqual(r3.get("status"), "registered", r3)
+        self.assertAlmostEqual(self._cash("Balanz · USD"), 2000000 / 1400, places=2)
+
     def test_today_convert_user_tc_overrides_mep(self):
         # el usuario da su propio dólar → se usa ese, no el MEP de hoy
         with patch.object(main, "_current_cedear_rate", return_value=1500.0):

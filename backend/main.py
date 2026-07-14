@@ -15694,6 +15694,13 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # y el sí registraba la dirección OPUESTA (review HIGH, money-crit)
             or (_in_side in ("buy", "sell") and _pp_side is not None
                 and _in_side != _pp_side)
+            # corrección del TIPO DE CAMBIO de una conversión ('no, lo hice a
+            # 1400'): el modelo manda {tc:1400}; sin esta cláusula NO contradecía
+            # nada y el sí registraba al tc VIEJO (bug de e2e real, money-crit)
+            or (_pp.get("action") == "convert"
+                and _num_or_none(input_data.get("tc")) is not None
+                and _pp.get("conv_tc") is not None
+                and not _close(_num_or_none(input_data.get("tc")), _pp["conv_tc"]))
             or (bool(_in_kind) and not _pp_money
                 and _in_kind not in (_pp.get("kind"), _pp.get("asset_type")))
             or (_in_amount is not None and not _close(_in_amount, _pp["amount"]))
