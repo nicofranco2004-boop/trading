@@ -82,7 +82,7 @@ export default function InsightsYReportes() {
         <li><strong>Anchoring</strong>: si recomprás lo que vendiste mal recientemente.</li>
       </ul>
       <p>
-        <strong>Free</strong> ve 1 detector básico. <strong>Plus</strong> ve 4.{' '}
+        <strong>Free</strong> ve 3 detectores. <strong>Plus</strong> ve 6.{' '}
         <strong>Pro</strong> ve los 12 disponibles.
       </p>
 

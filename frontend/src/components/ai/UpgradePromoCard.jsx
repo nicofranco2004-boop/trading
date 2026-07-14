@@ -23,7 +23,7 @@ const DEFAULT_BENEFITS_PLUS = [
   '3× más Chat Coach IA (9 consultas/sem vs 3)',
   'Hasta 3 brokers (vs 1 en Free)',
   'Reportes históricos + Export CSV',
-  'Diagnóstico completo + 4 detectores',
+  'Diagnóstico completo + 6 detectores',
 ]
 
 function fmtReset(iso) {

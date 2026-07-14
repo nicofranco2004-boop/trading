@@ -649,9 +649,9 @@ function EvidenceRow({ label, value, count, mono }) {
 
 // ─── BehavioralCards — grid de cards con gate Free/Pro ──────────────────────
 // • Pro/Admin: muestra todas las cards con su análisis personalizado.
-// • Free: muestra UNA card visible + las 11 restantes como "preview
+// • Free (3) / Plus (6): muestra las cards visibles + el resto como "preview
 //   educativo" — explican QUÉ detecta cada sesgo (definición abstracta)
-//   sin exponer la data personal del user. Cada preview tiene CTA a Pro.
+//   sin exponer la data personal del user. Cada preview tiene CTA a Plus/Pro.
 //
 // Rationale: el patrón anterior (un solo "Desbloqueá 11 análisis más con
 // Pro") no comunicaba valor — el user no sabía qué sesgos se estaban
@@ -688,8 +688,8 @@ function BehavioralCards({ cards, onCardClick }) {
   const locked = cards.slice(visibleCount)
 
   // Cuántas cards puede ver Plus (debe coincidir con plan.py PLUS limits).
-  // Free ve 1, Plus ve 6, Pro ve todas. Para Free, las cards en posiciones
-  // 1-5 (las que ve Plus que él no) tienen CTA "Plus"; las 6-11 son Pro-only.
+  // Free ve 3, Plus ve 6, Pro ve todas. Para Free, las cards en posiciones
+  // 3-5 (las que ve Plus que él no) tienen CTA "Plus"; las 6-11 son Pro-only.
   const PLUS_VISIBLE_COUNT = 6
 
   return (
@@ -725,7 +725,7 @@ function BehavioralCards({ cards, onCardClick }) {
 
       {/* CTA general al final — track distinto al de cada card */}
       {locked.length > 0 && (
-        <LockedCtaFooter hiddenCount={locked.length} />
+        <LockedCtaFooter hiddenCount={locked.length} totalCount={cards.length} />
       )}
     </div>
   )
@@ -811,7 +811,7 @@ function BehavioralCardLockedPreview({ card, targetTier = 'pro' }) {
 // ─── LockedCtaFooter ────────────────────────────────────────────────────────
 // CTA grande al final del grid de previews. Resumen visual + botón único
 // para upgradear. Track distinto al click-per-card para distinguir intenciones.
-function LockedCtaFooter({ hiddenCount }) {
+function LockedCtaFooter({ hiddenCount, totalCount }) {
   const navigate = useNavigate()
   const go = () => {
     track('feature_blocked_clicked', { feature: 'comportamiento.full', source: 'behavioral_grid_footer' })
@@ -826,7 +826,7 @@ function LockedCtaFooter({ hiddenCount }) {
         </p>
       </div>
       <p className="text-xs text-ink-2 mb-3 max-w-md mx-auto">
-        Rendi Pro detecta {hiddenCount + 1} sesgos comportamentales sobre tu historial real, con evidencia específica y recomendaciones del Coach IA.
+        Rendi Pro detecta {totalCount} sesgos comportamentales sobre tu historial real, con evidencia específica y recomendaciones del Coach IA.
       </p>
       <button
         type="button"

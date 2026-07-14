@@ -153,7 +153,7 @@ def test_get_plan_features_free_shape():
     assert out["limits"]["brokers_can_create"] is False
     assert out["limits"]["brokers_grandfather"] is False
     assert out["limits"]["insights_diagnostic_visible"] == 3
-    assert out["limits"]["behavioral_tags_visible"] == 1
+    assert out["limits"]["behavioral_tags_visible"] == 3
     # Free no tiene acceso a ninguna feature paywallable
     assert all(v is False for v in out["access"].values())
 

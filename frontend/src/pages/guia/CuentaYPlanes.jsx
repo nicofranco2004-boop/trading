@@ -46,7 +46,7 @@ export default function CuentaYPlanes() {
         <li>Dashboard completo + 4 KPIs + curva de evolución.</li>
         <li>Posiciones, Operaciones, Wrapped anual, Objetivos.</li>
         <li>3 cards de Insights (las básicas).</li>
-        <li>1 detector de comportamiento.</li>
+        <li>3 detectores de comportamiento.</li>
         <li>6 análisis IA + 3 chat por semana (Coach IA limitado a 12 preguntas guiadas).</li>
         <li>Reportes: solo último mes.</li>
       </ul>
@@ -56,7 +56,7 @@ export default function CuentaYPlanes() {
         <li>Todo lo de Free.</li>
         <li>Hasta 3 brokers.</li>
         <li>Insights completo: 6 observaciones, distribución por activo desbloqueada.</li>
-        <li>4 detectores de comportamiento visibles.</li>
+        <li>6 detectores de comportamiento visibles.</li>
         <li>Reportes históricos completos (todos los meses).</li>
         <li>Export CSV consolidado para tu contador.</li>
         <li>6 análisis + 9 chat por semana (3× más chat que Free).</li>
