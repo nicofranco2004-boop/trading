@@ -1,18 +1,28 @@
-// Config — settings como tablero operativo (V2 audit pattern).
+// Config — settings con secciones (sub-sidebar en desktop, lista drill-in en mobile).
 // ════════════════════════════════════════════════════════════════════════════
-// Estructura:
-//   1. PageHeader operativo (eyebrow "Configuración / Workspace" + título corto)
-//   2. KPI strip de FX rates (4 cells: Blue / MEP / CCL / Cripto) con dot live
-//   3. Status row "FUENTE · dolarapi.com · SYNC HH:MM"
-//   4. Grid 2 col: Brokers conectados (tabla densa) | Datos del workspace (key-value)
-//   5. Grid 2 col: Cambiar contraseña | Datos / Importaciones (Sistema)
+// Fase A del rediseño: MISMAS piezas que antes, reorganizadas en 5 secciones
+// navegables por ?tab= (mismo mecanismo que Análisis/Cartera). Sin features
+// nuevas — sólo estructura. Secciones:
+//   • Cuenta          → Datos + Importar + Contraseña + Eliminar cuenta
+//   • Planes          → PlanHero (plan actual, uso IA, gestión de suscripción)
+//   • Tipos de cambio → Moneda de valuación (riel) + Cotizaciones (FX)
+//   • Notificaciones  → placeholder "Próximamente"
+//   • Soporte         → WhatsApp directo
+//
+// Desktop: PageHeader + sub-sidebar vertical + contenido de la sección activa.
+// Mobile:  lista de secciones (sin ?tab) → drill-in a la sección (con back).
 
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import {
+  RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2,
+  CheckCircle2, AlertCircle, Trash2, UserRound, CreditCard, ArrowLeftRight,
+  Bell, LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock,
+} from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { track } from '../utils/track'
+import { useIsMobile } from '../hooks/useIsMobile'
 import PageHeader from '../components/PageHeader'
 import CurrencyRail from '../components/CurrencyRail'
 import Panel from '../components/Panel'
@@ -23,6 +33,26 @@ import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
+
+// ─── Secciones ───────────────────────────────────────────────────────────────
+
+const TABS = [
+  { id: 'cuenta',         label: 'Cuenta',          icon: UserRound,      sub: 'Datos, seguridad y eliminación' },
+  { id: 'planes',         label: 'Planes',          icon: CreditCard,     sub: 'Tu plan y uso de IA' },
+  { id: 'fx',             label: 'Tipos de cambio', icon: ArrowLeftRight, sub: 'Moneda de valuación y cotizaciones' },
+  { id: 'notificaciones', label: 'Notificaciones',  icon: Bell,           sub: 'Próximamente' },
+  { id: 'soporte',        label: 'Soporte',         icon: LifeBuoy,       sub: 'WhatsApp y ayuda' },
+]
+const VALID_TAB_IDS = new Set(TABS.map(t => t.id))
+const DEFAULT_TAB = 'cuenta'
+const TAB_LABEL = Object.fromEntries(TABS.map(t => [t.id, t.label]))
+
+// Avisos "Próximamente" de la sección Notificaciones (placeholder Fase A).
+const NOTIF_SOON = [
+  { icon: Bell,          title: 'Alertas de precio',          desc: 'Cuando un activo toca el valor que definís' },
+  { icon: Mail,          title: 'Resumen semanal por email',  desc: 'Cómo rindió tu cartera + lo que pasó en el mercado' },
+  { icon: CalendarClock, title: 'Eventos de tu cartera',      desc: 'Dividendos, pagos de bonos, splits, cauciones' },
+]
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -80,9 +110,6 @@ function MetaRow({ label, children, last }) {
   )
 }
 
-// currencyTone() vive ahora en BrokerManager.jsx — Config sólo muestra el
-// contador de brokers, no toca el currency styling.
-
 // ─── Página ──────────────────────────────────────────────────────────────────
 
 const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
@@ -90,6 +117,8 @@ const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 export default function Config() {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
+  const isMobile = useIsMobile()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [delState, setDelState] = useState({ loading: false, error: '' })
   const [brokers, setBrokers] = useState([])  // sólo para contador en "Cuenta"
   const [dolar, setDolar] = useState(null)
@@ -100,6 +129,13 @@ export default function Config() {
   const [aiUsage, setAiUsage] = useState(null)
   const plan = usePlanFeatures()
 
+  // Sección activa desde la URL (?tab=cuenta). En desktop, sin ?tab cae al
+  // default 'cuenta'. En mobile, sin ?tab mostramos la LISTA de secciones
+  // (patrón drill-in tipo iOS Settings). Tabs inválidos se ignoran.
+  const urlTab = searchParams.get('tab')
+  const validTab = urlTab && VALID_TAB_IDS.has(urlTab) ? urlTab : null
+  const activeSection = validTab || (isMobile ? null : DEFAULT_TAB)
+
   useEffect(() => {
     loadDolar()
     loadBrokers()
@@ -107,6 +143,26 @@ export default function Config() {
     const id = setInterval(loadDolar, DOLAR_REFRESH_MS)
     return () => clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    if (activeSection) track('config_tab_viewed', { tab: activeSection, surface: isMobile ? 'mobile' : 'desktop' })
+  }, [activeSection])  // eslint-disable-line react-hooks/exhaustive-deps — sólo trackeamos cambio de sección, no de breakpoint
+
+  // replace:true (igual que Análisis/Cartera): la sección es una preferencia de
+  // vista, no un paso navegable. Evita que el sub-sidebar arme un rastro en el
+  // historial (Back caminaría las tabs) y que el "back" de mobile apile /config
+  // en vez de popear (que haría que el Back del celular re-abra la sección).
+  function goSection(id) {
+    const next = new URLSearchParams(searchParams)
+    next.set('tab', id)
+    setSearchParams(next, { replace: true })
+  }
+
+  function backToList() {
+    const next = new URLSearchParams(searchParams)
+    next.delete('tab')
+    setSearchParams(next, { replace: true })
+  }
 
   async function loadAiUsage() {
     try { setAiUsage(await api.get('/ai/usage')) } catch {}
@@ -166,231 +222,290 @@ export default function Config() {
   const fetchedAt = dolar?.fetched_at ? new Date(dolar.fetched_at) : null
   const labelClass = 'block text-xs text-ink-3 mb-1'
   const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2'
-  const selectClass = 'bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:border-ink-2'
 
-  return (
-    <div className="page-shell-wide">
-      <PageHeader
-        title="Configuración"
-        subtitle="Gestioná tus brokers, tipos de cambio y datos de cuenta."
-      />
+  // ─── Renderers de sección ──────────────────────────────────────────────────
 
-      {/* ── Plan actual ──────────────────────────────────────────────────── */}
-      <PlanHero tier={user?.tier || 'free'} usage={aiUsage} />
-
-      {/* ── Moneda de valuación (riel unificado: USD MEP / USD CCL / Pesos) ── */}
-      {/* Un solo control que combina los dos ejes: en qué moneda ver la app
-          (USD/ARS) + con qué dólar valuar tenencias en pesos (MEP/CCL). Mismo
-          state global que el riel de Cartera/Análisis: cambiarlo acá lo cambia
-          en toda la app. Acá vive como preferencia persistente y descubrible. */}
-      <section className="mb-6">
-        <div className="border border-line rounded bg-bg-1 px-4 py-3.5">
-          <div className="min-w-0 mb-3">
-            <h2 className="text-sm font-medium text-ink-1">Moneda de valuación</h2>
-            <p className="text-xs text-ink-3 mt-0.5">
-              En qué moneda ves toda la app. <b>USD MEP</b>: dólar local (default). <b>USD CCL</b>: el
-              dólar implícito en el precio de los CEDEARs. <b>Pesos</b>: todos tus valores en ARS.
-            </p>
-          </div>
-          <CurrencyRail />
-        </div>
-      </section>
-
-      {/* ── FX rates ─────────────────────────────────────────────────────── */}
-      <section className="mb-6">
-        <div className="flex items-baseline justify-between mb-2 gap-3 flex-wrap">
-          <h2 className="text-sm font-medium text-ink-1">Tipos de cambio</h2>
-          <span className="text-xs text-ink-3 inline-flex items-center gap-3">
-            <span>dolarapi.com · sync {fmtTime(fetchedAt)}</span>
-            <button
-              type="button"
-              onClick={loadDolar}
-              className="inline-flex items-center gap-1 text-ink-3 hover:text-ink-0 transition-colors"
-              title="Actualizar cotización"
-            >
-              <RefreshCw size={11} strokeWidth={1.75} />
-              Actualizar
-            </button>
-          </span>
-        </div>
-        <div className="border border-line rounded bg-bg-1 flex flex-wrap">
-          <FxCell
-            first
-            label="Blue"
-            sub="ARS/USD"
-            value={dolar?.blue?.venta}
-            compra={dolar?.blue?.compra}
-            venta={dolar?.blue?.venta}
-          />
-          <FxCell
-            label="MEP"
-            sub="ARS/USD"
-            value={dolar?.mep?.venta}
-            compra={dolar?.mep?.compra}
-            venta={dolar?.mep?.venta}
-          />
-          <FxCell
-            label="CCL"
-            sub="ARS/USD"
-            value={dolar?.ccl?.venta}
-            compra={dolar?.ccl?.compra}
-            venta={dolar?.ccl?.venta}
-          />
-          <FxCell
-            label="Cripto"
-            sub="ARS/USDT"
-            value={dolar?.cripto?.venta}
-            compra={dolar?.cripto?.compra}
-            venta={dolar?.cripto?.venta}
-          />
-        </div>
-      </section>
-
-      {/* ── Cuenta / Workspace info ──────────────────────────────────────── */}
-      {/* Brokers management se mudó a /posiciones (BrokerManager). */}
-      <Panel padding="none" className="mb-4">
-        <header className="px-4 py-3 border-b border-line">
-          <h2 className="text-sm font-medium text-ink-0">Cuenta</h2>
-          <p className="text-xs text-ink-3 mt-0.5">Datos de tu workspace</p>
-        </header>
-        <div>
-          <MetaRow label="Email">
-            <span className="font-medium text-ink-0">{user?.email || user?.name || '—'}</span>
-            {user?.is_admin && (
-              <Pill tone="info" className="ml-2">Admin</Pill>
-            )}
-          </MetaRow>
-          <MetaRow label="Workspace">
-            <span className="text-ink-1">
-              {user?.email ? user.email.split('@')[0] : (user?.name || '—')}
-              <span className="text-ink-3 ml-1.5">· personal</span>
-            </span>
-          </MetaRow>
-          <MetaRow label="Plan">
-            <Pill tone="signal">{(plan.tier || 'free').toUpperCase()}</Pill>
-          </MetaRow>
-          <MetaRow label="Brokers">
-            <span className="tabular">
-              {brokers.length} {brokers.length === 1 ? 'conectado' : 'conectados'}
-              <span className="text-ink-3 ml-1.5">· se gestionan desde /posiciones</span>
-            </span>
-          </MetaRow>
-          <MetaRow label="Miembro desde" last>
-            <span className="tabular text-xs">{memberSince(user?.created_at)}</span>
-          </MetaRow>
-        </div>
-      </Panel>
-
-      {/* ── Grid: Datos / Importaciones | Cambiar contraseña ─────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Datos / Importaciones */}
+  function renderCuenta() {
+    return (
+      <div className="space-y-4">
+        {/* Datos del workspace. Brokers management se mudó a /posiciones. */}
         <Panel padding="none">
           <header className="px-4 py-3 border-b border-line">
-            <h2 className="text-sm font-medium text-ink-0">Importar datos</h2>
-            <p className="text-xs text-ink-3 mt-0.5">Subí un CSV con tu historial</p>
+            <h2 className="text-sm font-medium text-ink-0">Datos</h2>
+            <p className="text-xs text-ink-3 mt-0.5">Tu identidad en Rendi</p>
           </header>
-          <div className="p-4 space-y-3">
-            <p className="text-sm text-ink-2 leading-relaxed">
-              Reconstruí el portfolio sin cargar todo a mano. Soporta exports de cualquier broker — vas a poder mapear las columnas y previsualizar antes de confirmar.
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setShowImport(true)}
-                className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"
-              >
-                <Upload size={12} strokeWidth={2} /> Importar CSV
-              </button>
-              <Link
-                to="/imports"
-                className="inline-flex items-center gap-1.5 text-xs text-ink-2 hover:text-ink-0 border border-line bg-bg-2 hover:bg-bg-3 px-3 py-1.5 rounded-sm transition-colors"
-              >
-                <History size={12} strokeWidth={1.75} /> Ver historial
-              </Link>
-            </div>
+          <div>
+            <MetaRow label="Email">
+              <span className="font-medium text-ink-0">{user?.email || user?.name || '—'}</span>
+              {user?.is_admin && (
+                <Pill tone="info" className="ml-2">Admin</Pill>
+              )}
+            </MetaRow>
+            <MetaRow label="Workspace">
+              <span className="text-ink-1">
+                {user?.email ? user.email.split('@')[0] : (user?.name || '—')}
+                <span className="text-ink-3 ml-1.5">· personal</span>
+              </span>
+            </MetaRow>
+            <MetaRow label="Plan">
+              <Pill tone="signal">{(plan.tier || 'free').toUpperCase()}</Pill>
+            </MetaRow>
+            <MetaRow label="Brokers">
+              <span className="tabular">
+                {brokers.length} {brokers.length === 1 ? 'conectado' : 'conectados'}
+                <span className="text-ink-3 ml-1.5">· se gestionan desde /posiciones</span>
+              </span>
+            </MetaRow>
+            <MetaRow label="Miembro desde" last>
+              <span className="tabular text-xs">{memberSince(user?.created_at)}</span>
+            </MetaRow>
           </div>
         </Panel>
 
-        {/* Cambiar contraseña */}
-        <Panel padding="none">
-          <header className="flex items-center gap-2 px-4 py-3 border-b border-line">
-            <KeyRound size={14} strokeWidth={1.75} className="text-ink-3" aria-hidden="true" />
-            <div>
-              <h2 className="text-sm font-medium text-ink-0">Contraseña</h2>
-              <p className="text-xs text-ink-3 mt-0.5">Cambiala periódicamente</p>
+        {/* Importar datos | Cambiar contraseña */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Importar datos */}
+          <Panel padding="none">
+            <header className="px-4 py-3 border-b border-line">
+              <h2 className="text-sm font-medium text-ink-0">Importar datos</h2>
+              <p className="text-xs text-ink-3 mt-0.5">Subí un CSV con tu historial</p>
+            </header>
+            <div className="p-4 space-y-3">
+              <p className="text-sm text-ink-2 leading-relaxed">
+                Reconstruí el portfolio sin cargar todo a mano. Soporta exports de cualquier broker — vas a poder mapear las columnas y previsualizar antes de confirmar.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowImport(true)}
+                  className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors"
+                >
+                  <Upload size={12} strokeWidth={2} /> Importar CSV
+                </button>
+                <Link
+                  to="/imports"
+                  className="inline-flex items-center gap-1.5 text-xs text-ink-2 hover:text-ink-0 border border-line bg-bg-2 hover:bg-bg-3 px-3 py-1.5 rounded-sm transition-colors"
+                >
+                  <History size={12} strokeWidth={1.75} /> Ver historial
+                </Link>
+              </div>
             </div>
-          </header>
-          <form onSubmit={changePassword} className="p-4 space-y-3">
-            <div>
-              <label className={labelClass}>Contraseña actual</label>
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={pwForm.current}
-                onChange={e => setPwForm(f => ({ ...f, current: e.target.value }))}
-                className={inputClass}
-                placeholder="••••••••••"
-                required
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
+          </Panel>
+
+          {/* Cambiar contraseña */}
+          <Panel padding="none">
+            <header className="flex items-center gap-2 px-4 py-3 border-b border-line">
+              <KeyRound size={14} strokeWidth={1.75} className="text-ink-3" aria-hidden="true" />
               <div>
-                <label className={labelClass}>Nueva</label>
+                <h2 className="text-sm font-medium text-ink-0">Contraseña</h2>
+                <p className="text-xs text-ink-3 mt-0.5">Cambiala periódicamente</p>
+              </div>
+            </header>
+            <form onSubmit={changePassword} className="p-4 space-y-3">
+              <div>
+                <label className={labelClass}>Contraseña actual</label>
                 <input
                   type="password"
-                  autoComplete="new-password"
-                  value={pwForm.next}
-                  onChange={e => setPwForm(f => ({ ...f, next: e.target.value }))}
+                  autoComplete="current-password"
+                  value={pwForm.current}
+                  onChange={e => setPwForm(f => ({ ...f, current: e.target.value }))}
                   className={inputClass}
-                  minLength={10}
+                  placeholder="••••••••••"
                   required
                 />
               </div>
-              <div>
-                <label className={labelClass}>Confirmar</label>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={pwForm.confirm}
-                  onChange={e => setPwForm(f => ({ ...f, confirm: e.target.value }))}
-                  className={inputClass}
-                  minLength={10}
-                  required
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelClass}>Nueva</label>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={pwForm.next}
+                    onChange={e => setPwForm(f => ({ ...f, next: e.target.value }))}
+                    className={inputClass}
+                    minLength={10}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>Confirmar</label>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={pwForm.confirm}
+                    onChange={e => setPwForm(f => ({ ...f, confirm: e.target.value }))}
+                    className={inputClass}
+                    minLength={10}
+                    required
+                  />
+                </div>
               </div>
-            </div>
-            <p className="text-xs text-ink-3">
-              Mínimo 10 caracteres. Al actualizarla se cierran las sesiones activas en otros dispositivos.
+              <p className="text-xs text-ink-3">
+                Mínimo 10 caracteres. Al actualizarla se cierran las sesiones activas en otros dispositivos.
+              </p>
+              {pwState.error && (
+                <p className="text-xs text-rendi-neg">{pwState.error}</p>
+              )}
+              {pwState.success && (
+                <p className="text-xs text-rendi-pos">{pwState.success}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setPwForm({ current: '', next: '', confirm: '' }); setPwState({ loading: false, error: '', success: '' }) }}
+                  className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={pwState.loading}
+                  className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
+                >
+                  <Lock size={12} strokeWidth={1.75} />
+                  {pwState.loading ? 'Guardando…' : 'Cambiar contraseña'}
+                </button>
+              </div>
+            </form>
+          </Panel>
+        </div>
+
+        {/* Zona de peligro — eliminar cuenta */}
+        <Panel padding="none" className="border-rendi-neg/30">
+          <div className="px-4 py-3 border-b border-rendi-neg/20 flex items-center gap-2">
+            <AlertCircle size={14} className="text-rendi-neg" strokeWidth={1.75} />
+            <h2 className="text-sm font-medium text-rendi-neg">Eliminar cuenta</h2>
+          </div>
+          <div className="px-4 py-4 flex items-center justify-between gap-4 flex-wrap">
+            <p className="text-xs text-ink-3 leading-relaxed max-w-md">
+              Elimina tu cuenta y todos tus datos de forma permanente (brokers, posiciones, operaciones,
+              historial) y cancela tu suscripción. Esta acción <b>no se puede deshacer</b>.
             </p>
-            {pwState.error && (
-              <p className="text-xs text-rendi-neg">{pwState.error}</p>
-            )}
-            {pwState.success && (
-              <p className="text-xs text-rendi-pos">{pwState.success}</p>
-            )}
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-col items-end gap-1">
               <button
-                type="button"
-                onClick={() => { setPwForm({ current: '', next: '', confirm: '' }); setPwState({ loading: false, error: '', success: '' }) }}
-                className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
+                onClick={deleteAccount}
+                disabled={delState.loading}
+                className="inline-flex items-center gap-1.5 text-xs bg-rendi-neg/10 hover:bg-rendi-neg/15 text-rendi-neg border border-rendi-neg/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
               >
-                Cancelar
+                <Trash2 size={12} strokeWidth={1.75} />
+                {delState.loading ? 'Eliminando…' : 'Eliminar mi cuenta'}
               </button>
-              <button
-                type="submit"
-                disabled={pwState.loading}
-                className="inline-flex items-center gap-1.5 text-xs bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
-              >
-                <Lock size={12} strokeWidth={1.75} />
-                {pwState.loading ? 'Guardando…' : 'Cambiar contraseña'}
-              </button>
+              {delState.error && <span className="text-[11px] text-rendi-neg">{delState.error}</span>}
             </div>
-          </form>
+          </div>
         </Panel>
       </div>
+    )
+  }
 
-      {/* ── Soporte ─────────────────────────────────────────────────────── */}
-      <Panel padding="none" className="mt-4">
+  function renderPlanes() {
+    return <PlanHero tier={user?.tier || 'free'} usage={aiUsage} />
+  }
+
+  function renderFx() {
+    return (
+      <div className="space-y-6">
+        {/* Moneda de valuación (riel unificado: USD MEP / USD CCL / Pesos).
+            Mismo state global que el riel de Cartera/Análisis: cambiarlo acá lo
+            cambia en toda la app. */}
+        <section>
+          <div className="border border-line rounded bg-bg-1 px-4 py-3.5">
+            <div className="min-w-0 mb-3">
+              <h2 className="text-sm font-medium text-ink-1">Moneda de valuación</h2>
+              <p className="text-xs text-ink-3 mt-0.5">
+                En qué moneda ves toda la app. <b>USD MEP</b>: dólar local (default). <b>USD CCL</b>: el
+                dólar implícito en el precio de los CEDEARs. <b>Pesos</b>: todos tus valores en ARS.
+              </p>
+            </div>
+            <CurrencyRail />
+          </div>
+        </section>
+
+        {/* Cotizaciones en vivo */}
+        <section>
+          <div className="flex items-baseline justify-between mb-2 gap-3 flex-wrap">
+            <h2 className="text-sm font-medium text-ink-1">Cotizaciones</h2>
+            <span className="text-xs text-ink-3 inline-flex items-center gap-3">
+              <span>dolarapi.com · sync {fmtTime(fetchedAt)}</span>
+              <button
+                type="button"
+                onClick={loadDolar}
+                className="inline-flex items-center gap-1 text-ink-3 hover:text-ink-0 transition-colors"
+                title="Actualizar cotización"
+              >
+                <RefreshCw size={11} strokeWidth={1.75} />
+                Actualizar
+              </button>
+            </span>
+          </div>
+          <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+            <FxCell
+              first
+              label="Blue"
+              sub="ARS/USD"
+              value={dolar?.blue?.venta}
+              compra={dolar?.blue?.compra}
+              venta={dolar?.blue?.venta}
+            />
+            <FxCell
+              label="MEP"
+              sub="ARS/USD"
+              value={dolar?.mep?.venta}
+              compra={dolar?.mep?.compra}
+              venta={dolar?.mep?.venta}
+            />
+            <FxCell
+              label="CCL"
+              sub="ARS/USD"
+              value={dolar?.ccl?.venta}
+              compra={dolar?.ccl?.compra}
+              venta={dolar?.ccl?.venta}
+            />
+            <FxCell
+              label="Cripto"
+              sub="ARS/USDT"
+              value={dolar?.cripto?.venta}
+              compra={dolar?.cripto?.compra}
+              venta={dolar?.cripto?.venta}
+            />
+          </div>
+        </section>
+      </div>
+    )
+  }
+
+  function renderNotificaciones() {
+    return (
+      <Panel padding="none">
+        <header className="px-4 py-3 border-b border-line flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-medium text-ink-0">Notificaciones</h2>
+            <p className="text-xs text-ink-3 mt-0.5">Elegí qué te avisamos y por dónde</p>
+          </div>
+          <Pill tone="off">Próximamente</Pill>
+        </header>
+        <div>
+          {NOTIF_SOON.map((s, i) => {
+            const Icon = s.icon
+            return (
+              <div key={s.title} className={`flex items-center gap-3 px-4 py-3.5 opacity-80 ${i > 0 ? 'border-t border-line/30' : ''}`}>
+                <Icon size={17} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-ink-1">{s.title}</div>
+                  <div className="text-xs text-ink-3 mt-0.5">{s.desc}</div>
+                </div>
+                <Pill tone="off">Pronto</Pill>
+              </div>
+            )
+          })}
+        </div>
+      </Panel>
+    )
+  }
+
+  function renderSoporte() {
+    return (
+      <Panel padding="none">
         <div className="px-4 py-3 border-b border-line/40 flex items-center justify-between">
           <h2 className="text-sm font-medium text-ink-0">Soporte</h2>
           <span className="text-[10px] text-ink-3 uppercase tracking-wider">WhatsApp directo</span>
@@ -413,31 +528,102 @@ export default function Config() {
           </a>
         </div>
       </Panel>
+    )
+  }
 
-      {/* ── Zona de peligro — eliminar cuenta ───────────────────────────── */}
-      <Panel padding="none" className="mt-4 border-rendi-neg/30">
-        <div className="px-4 py-3 border-b border-rendi-neg/20 flex items-center gap-2">
-          <AlertCircle size={14} className="text-rendi-neg" strokeWidth={1.75} />
-          <h2 className="text-sm font-medium text-rendi-neg">Eliminar cuenta</h2>
-        </div>
-        <div className="px-4 py-4 flex items-center justify-between gap-4 flex-wrap">
-          <p className="text-xs text-ink-3 leading-relaxed max-w-md">
-            Elimina tu cuenta y todos tus datos de forma permanente (brokers, posiciones, operaciones,
-            historial) y cancela tu suscripción. Esta acción <b>no se puede deshacer</b>.
-          </p>
-          <div className="flex flex-col items-end gap-1">
-            <button
-              onClick={deleteAccount}
-              disabled={delState.loading}
-              className="inline-flex items-center gap-1.5 text-xs bg-rendi-neg/10 hover:bg-rendi-neg/15 text-rendi-neg border border-rendi-neg/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
-            >
-              <Trash2 size={12} strokeWidth={1.75} />
-              {delState.loading ? 'Eliminando…' : 'Eliminar mi cuenta'}
-            </button>
-            {delState.error && <span className="text-[11px] text-rendi-neg">{delState.error}</span>}
+  function renderSection(id) {
+    switch (id) {
+      case 'planes':         return renderPlanes()
+      case 'fx':             return renderFx()
+      case 'notificaciones': return renderNotificaciones()
+      case 'soporte':        return renderSoporte()
+      case 'cuenta':
+      default:               return renderCuenta()
+    }
+  }
+
+  return (
+    <div className="page-shell-wide">
+      {/* ── MOBILE: lista de secciones (sin ?tab) ─────────────────────────── */}
+      {isMobile && !activeSection && (
+        <>
+          <PageHeader
+            title="Configuración"
+            subtitle="Cuenta, plan, tipos de cambio y más."
+          />
+          <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
+            {TABS.map((t, i) => {
+              const Icon = t.icon
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => goSection(t.id)}
+                  className={`flex items-center gap-3 px-4 py-3 w-full text-left hover:bg-bg-2/60 active:bg-bg-3 transition-colors ${i > 0 ? 'border-t border-line/40' : ''}`}
+                >
+                  <Icon size={18} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" aria-hidden="true" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-ink-0 leading-tight">{t.label}</div>
+                    <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{t.sub}</div>
+                  </div>
+                  <ChevronRight size={15} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
+                </button>
+              )
+            })}
           </div>
-        </div>
-      </Panel>
+        </>
+      )}
+
+      {/* ── MOBILE: sección abierta (drill-in con back) ───────────────────── */}
+      {isMobile && activeSection && (
+        <>
+          <button
+            onClick={backToList}
+            className="inline-flex items-center gap-1 text-sm font-medium text-data-violet mb-2 -ml-1 py-1.5 pr-2"
+          >
+            <ChevronLeft size={16} strokeWidth={2} aria-hidden="true" /> Configuración
+          </button>
+          <h1 className="text-xl font-medium text-ink-0 tracking-tight leading-tight mb-4">{TAB_LABEL[activeSection]}</h1>
+          {renderSection(activeSection)}
+        </>
+      )}
+
+      {/* ── DESKTOP: PageHeader + sub-sidebar + contenido ─────────────────── */}
+      {!isMobile && (
+        <>
+          <PageHeader
+            eyebrow="Workspace"
+            title="Configuración"
+            subtitle="Tu cuenta, tu plan, los tipos de cambio y las notificaciones — cada cosa en su lugar."
+          />
+          <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] gap-6 items-start">
+            <nav className="md:sticky md:top-4 flex flex-col gap-0.5" aria-label="Secciones de configuración">
+              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 px-2.5 pt-0.5 pb-2 select-none">Secciones</div>
+              {TABS.map(t => {
+                const Icon = t.icon
+                const active = activeSection === t.id
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => goSection(t.id)}
+                    aria-current={active ? 'page' : undefined}
+                    className={`flex items-center gap-2.5 text-left w-full px-2.5 py-2 rounded-sm border transition-colors ${
+                      active
+                        ? 'bg-data-violet/10 text-data-violet border-data-violet/25 text-sm font-semibold'
+                        : 'text-ink-2 border-transparent text-sm font-medium hover:text-ink-0 hover:bg-bg-2'
+                    }`}
+                  >
+                    <Icon size={16} strokeWidth={1.75} className={active ? 'text-data-violet' : 'text-ink-3'} aria-hidden="true" />
+                    {t.label}
+                  </button>
+                )
+              })}
+            </nav>
+            <div className="min-w-0">
+              {renderSection(activeSection)}
+            </div>
+          </div>
+        </>
+      )}
 
       {showImport && (
         <ImportWizard
@@ -459,9 +645,9 @@ export default function Config() {
 }
 
 // ─── PlanHero ────────────────────────────────────────────────────────────────
-// Sección destacada al tope de Config con plan actual + uso semanal de IA
-// + comparativa Free vs Pro + CTA upgrade (solo en Free). Tono violet para
-// Pro, sutil para Free (que SIGUE el highlight es el botón de upgrade).
+// Sección destacada con plan actual + uso semanal de IA + comparativa Free vs
+// Pro + CTA upgrade (solo en Free). Tono violet para Pro, sutil para Free (que
+// SIGUE el highlight es el botón de upgrade).
 
 function PlanHero({ tier, usage }) {
   if (tier === 'admin') return <PlanHeroAdmin usage={usage} />
@@ -484,7 +670,7 @@ function PlanHeroFree({ usage }) {
   }
 
   return (
-    <section className="mb-6 border border-data-violet/30 bg-data-violet/[0.04] rounded-lg overflow-hidden">
+    <section className="border border-data-violet/30 bg-data-violet/[0.04] rounded-lg overflow-hidden">
       <div className="p-5 flex items-center gap-5 flex-wrap">
         {/* Left: tier badge + headline */}
         <div className="flex-1 min-w-[240px]">
@@ -667,7 +853,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           : 'Tu suscripción está cancelada. Mantenés acceso hasta fin del período cobrado. Después la cuenta vuelve a Free.')
 
   return (
-    <section className={`mb-6 border rounded-lg p-5 flex items-center gap-5 flex-wrap ${containerStyle}`}>
+    <section className={`border rounded-lg p-5 flex items-center gap-5 flex-wrap ${containerStyle}`}>
       <div className="flex-1 min-w-[240px]">
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Plan actual</span>
@@ -911,7 +1097,7 @@ function PlanHeroAdmin({ usage }) {
   const navigate = useNavigate()
   const count = usage?.analyses_count ?? 0
   return (
-    <section className="mb-6 border border-rendi-pos/30 bg-rendi-pos/[0.04] rounded-lg px-5 py-3.5 flex items-center gap-3 flex-wrap">
+    <section className="border border-rendi-pos/30 bg-rendi-pos/[0.04] rounded-lg px-5 py-3.5 flex items-center gap-3 flex-wrap">
       <Zap size={14} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0" />
       <span className="font-mono text-[10px] uppercase tracking-caps text-rendi-pos">Plan ADMIN</span>
       <span className="text-sm text-ink-1 flex-1 min-w-[200px]">
