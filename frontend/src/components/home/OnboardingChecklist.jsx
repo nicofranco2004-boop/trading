@@ -188,7 +188,7 @@ export default function OnboardingChecklist() {
       done: state.hasProfile,
       Icon: Brain,
       title: 'Quiz de perfil inversor',
-      desc: '7 preguntas. Mejora análisis IA con tu horizonte y tolerancia.',
+      desc: 'Unas preguntas rápidas. Mejora análisis IA con tu horizonte y tolerancia.',
       cta: 'Hacer quiz',
       onClick: () => navigate('/perfil-inversor'),
     },

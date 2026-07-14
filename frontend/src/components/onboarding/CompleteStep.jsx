@@ -57,7 +57,7 @@ export default function CompleteStep({ skipped, position }) {
         <ActionCard
           Icon={Brain}
           title="Quiz de perfil"
-          desc="7 preguntas. Mejora la precisión de los análisis IA."
+          desc="Unas preguntas rápidas. Mejora la precisión de los análisis IA."
           onClick={() => navigate('/analisis?tab=perfil')}
         />
       </div>

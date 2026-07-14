@@ -550,7 +550,7 @@ export default function Config() {
         <header className="px-4 py-3 border-b border-line">
           <h2 className="text-sm font-medium text-ink-0">Test de inversor</h2>
           <p className="text-xs text-ink-3 mt-0.5">
-            7 preguntas para que el Coach IA te conozca · define tu perfil (conservador / moderado / agresivo).
+            Un test corto para que el Coach IA te conozca · define tu perfil (conservador / moderado / agresivo).
             Las respuestas viajan al prompt cuando le hablás al modelo — no se comparten con nadie.
           </p>
         </header>

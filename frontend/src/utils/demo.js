@@ -2661,6 +2661,7 @@ export function handleDemoRequest(method, path, body) {
         net_worth: '10_to_30',
         liquidity: 'no',
         experience: '2_to_5',
+        return_expectation: 'grow',
       }
     }
     if (basePath === '/imports')     return []

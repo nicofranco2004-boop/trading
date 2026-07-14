@@ -2520,6 +2520,7 @@ _INVESTOR_PROFILE_OPTS = {
     "net_worth":   {"under_10", "10_to_30", "30_to_60", "over_60"},
     "liquidity":   {"yes", "no", "partial"},
     "experience":  {"first_time", "under_2", "2_to_5", "over_5"},
+    "return_expectation": {"preserve", "beat_inflation", "grow", "aggressive"},
 }
 
 
@@ -2531,6 +2532,7 @@ class InvestorProfileIn(BaseModel):
     net_worth: Optional[str] = None
     liquidity: Optional[str] = None
     experience: Optional[str] = None
+    return_expectation: Optional[str] = None
 
 
 @app.get("/api/auth/investor-profile")
@@ -13085,6 +13087,12 @@ _INVESTOR_LABELS = {
         "2_to_5": "entre 2 y 5 años de experiencia",
         "over_5": "más de 5 años de experiencia",
     },
+    "return_expectation": {
+        "preserve": "preservar capital (empatar la inflación)",
+        "beat_inflation": "ganarle a la inflación por algunos puntos",
+        "grow": "crecer fuerte (inflación + ~10 puntos reales)",
+        "aggressive": "maximizar el retorno, aceptando alta volatilidad",
+    },
 }
 
 
@@ -13112,7 +13120,7 @@ def _format_investor_profile_for_prompt(profile_json: Optional[str], mode: str =
         return ""
 
     lines = []
-    label_order = ["horizon", "drawdown", "goal", "style", "net_worth", "liquidity", "experience"]
+    label_order = ["horizon", "drawdown", "goal", "style", "net_worth", "liquidity", "experience", "return_expectation"]
     captions = {
         "horizon": "Horizonte declarado",
         "drawdown": "Reacción ante drawdown del 30%",
@@ -13121,6 +13129,7 @@ def _format_investor_profile_for_prompt(profile_json: Optional[str], mode: str =
         "net_worth": "Peso del portfolio en su patrimonio",
         "liquidity": "Necesidad de liquidez próxima",
         "experience": "Experiencia invirtiendo",
+        "return_expectation": "Expectativa de retorno",
     }
     for key in label_order:
         val = profile.get(key)

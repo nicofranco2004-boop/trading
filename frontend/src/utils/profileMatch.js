@@ -597,3 +597,83 @@ export function computeLiquidityRisk(profile, positions, brokers) {
     comparison,
   }
 }
+
+
+// ─── Card: Expectativa de retorno vs retorno real ───────────────────────────
+//
+// Cruza la expectativa de retorno declarada en el test contra el retorno REAL
+// de la cartera (neto de inflación, en pesos) sobre la ventana disponible.
+// A diferencia de las otras cards, el retorno/inflación NO se derivan de las
+// posiciones — se calculan en Insights (TWR + inflación INDEC) y se pasan acá
+// vía `returnData`. Así mantenemos la lógica declarado-vs-real en un solo lugar.
+
+const _round1 = (x) => Math.round(x * 10) / 10
+
+// Piso de retorno REAL (%) orientativo por expectativa declarada. NO es un
+// objetivo prometido ni un pronóstico: es sólo la vara para decir si el retorno
+// real va "en línea / por encima / por debajo" de lo que el user declaró buscar.
+export const RETURN_EXPECTATION_META = {
+  preserve:       { label: 'preservar capital',       floorReal: 0 },
+  beat_inflation: { label: 'ganarle a la inflación',  floorReal: 3 },
+  grow:           { label: 'crecer fuerte',           floorReal: 10 },
+  aggressive:     { label: 'maximizar el retorno',    floorReal: 18 },
+}
+
+/**
+ * computeReturnExpectation
+ *
+ * @param {Object} profile     { return_expectation, ... } o null
+ * @param {Object} returnData  { portfolioReturnPct, inflationPct, realReturnPct, monthsCounted }
+ *                             realReturnPct = retorno neto de inflación (pesos), null si no computable.
+ * @returns {Object} CardData
+ */
+export function computeReturnExpectation(profile, returnData = {}) {
+  const declared = profile?.return_expectation
+  const meta = declared ? RETURN_EXPECTATION_META[declared] : null
+  const { portfolioReturnPct, inflationPct, realReturnPct, monthsCounted } = returnData
+
+  // Sin expectativa declarada: no_profile si tenemos datos de retorno (el user
+  // tiene cartera pero no respondió esta pregunta → card oculta hasta que la
+  // responda), no_data si tampoco hay retorno computable.
+  if (!meta) {
+    return { status: realReturnPct != null && isFinite(realReturnPct) ? 'no_profile' : 'no_data' }
+  }
+
+  const declaredData = {
+    expectation: declared,
+    expectationLabel: meta.label,
+    floorReal: meta.floorReal,
+  }
+
+  // Expectativa respondida pero sin serie de retorno computable (cartera nueva,
+  // o sin exposición en pesos para cruzar contra inflación INDEC).
+  if (realReturnPct == null || !isFinite(realReturnPct)) {
+    return { status: 'no_data', declared: declaredData }
+  }
+
+  // Guarda de plausibilidad: un retorno real absurdamente extremo casi siempre
+  // viene del "retorno fantasma" de la cadena TWR en pesos (usa cost-basis en
+  // vez de mark-to-market → subestima el retorno y lo hunde contra inflación).
+  // No mostramos la card con un número que no podemos confiar. Ver backlog
+  // TWR/C1. Banda amplia para no ocultar caídas reales moderadas.
+  if (realReturnPct < -40 || realReturnPct > 150) {
+    return { status: 'no_data', declared: declaredData }
+  }
+
+  // Veredicto descriptivo (no juzga): above / in_line / below la vara de la
+  // expectativa, con banda de tolerancia de ±2 pts alrededor del piso.
+  const gap = realReturnPct - meta.floorReal
+  const comparison = gap >= 2 ? 'above' : gap >= -2 ? 'in_line' : 'below'
+
+  return {
+    status: 'ready',
+    declared: declaredData,
+    actual: {
+      realReturnPct: _round1(realReturnPct),
+      portfolioReturnPct: (portfolioReturnPct != null && isFinite(portfolioReturnPct)) ? _round1(portfolioReturnPct) : null,
+      inflationPct: (inflationPct != null && isFinite(inflationPct)) ? _round1(inflationPct) : null,
+      monthsCounted: monthsCounted ?? null,
+    },
+    comparison,
+  }
+}

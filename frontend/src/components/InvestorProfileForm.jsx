@@ -83,6 +83,17 @@ const QUESTIONS = [
       { id: 'over_5',     label: '+5 años' },
     ],
   },
+  {
+    id: 'return_expectation',
+    label: '¿Qué esperás que rinda esta plata?',
+    hint: 'En términos reales — contra la inflación.',
+    options: [
+      { id: 'preserve',       label: 'Preservar capital',      sub: 'Que no me la coma la inflación' },
+      { id: 'beat_inflation', label: 'Ganarle a la inflación', sub: 'Algunos puntos por encima' },
+      { id: 'grow',           label: 'Crecer fuerte',          sub: 'Inflación + ~10 puntos' },
+      { id: 'aggressive',     label: 'Maximizar retorno',      sub: 'Banco la volatilidad por más upside' },
+    ],
+  },
 ]
 
 export default function InvestorProfileForm() {
@@ -118,7 +129,8 @@ export default function InvestorProfileForm() {
     <div className="px-4 py-4 space-y-5">
       <div className="flex items-baseline justify-between flex-wrap gap-2">
         <p className="text-xs text-ink-3 leading-relaxed max-w-2xl">
-          7 preguntas rápidas para que el Coach IA te conozca mejor. Se guarda automáticamente.
+          {QUESTIONS.length} preguntas rápidas para que el Coach IA te conozca mejor — todas opcionales,
+          y cuantas más respondas, más insights de perfil desbloqueás. Se guarda automáticamente.
           Las respuestas no se comparten — solo viajan al prompt de la IA cuando le hablás.
         </p>
         <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 whitespace-nowrap">

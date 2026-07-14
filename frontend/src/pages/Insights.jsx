@@ -65,6 +65,7 @@ import {
   computeConcentrationVsProfile,
   computeStyleCoherence,
   computeLiquidityRisk,
+  computeReturnExpectation,
 } from '../utils/profileMatch'
 
 const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -1601,6 +1602,26 @@ function InsightsDesktop({ _embeddedTab }) {
     return { cumPct: (cum - 1) * 100, monthsCounted: count, fromKey: arsWindowFirstKey, toKey: lastKeyEff }
   })()
 
+  // Card de perfil "Expectativa de retorno" — cruza la expectativa declarada en
+  // el test contra el retorno REAL (neto de inflación, pesos) de la ventana ARS.
+  // Se computa acá (no junto a las otras cards de perfil) porque necesita el
+  // retorno en pesos + la inflación recortada a la misma ventana, disponibles
+  // recién en este punto. Mismo criterio de moneda que el diagnóstico de
+  // inflación: retorno-pesos vs inflación-pesos (NUNCA mezclar con USD).
+  const returnExpectationCard = (() => {
+    const ret = portfolioReturnArsPctRaw
+    const infl = inflationCumArsWindow?.cumPct
+    const realReturnPct = (ret != null && isFinite(ret) && infl != null)
+      ? ((1 + ret / 100) / (1 + infl / 100) - 1) * 100
+      : null
+    return computeReturnExpectation(investorProfile, {
+      portfolioReturnPct: ret,
+      inflationPct: infl ?? null,
+      realReturnPct,
+      monthsCounted: inflationCumArsWindow?.monthsCounted ?? null,
+    })
+  })()
+
   // ── Diagnóstico general — motor data-driven (utils/diagnostics.js) ────────
   // Existen muchos generadores; cada uno mira un aspecto distinto del
   // portfolio y emite un bullet solo si su condición aplica. Cada día se
@@ -2759,6 +2780,7 @@ function InsightsDesktop({ _embeddedTab }) {
           concentrationCard={concentrationCard}
           styleCard={styleCard}
           liquidityCard={liquidityCard}
+          returnExpectationCard={returnExpectationCard}
         />
       </Section>
       )}
@@ -3425,7 +3447,7 @@ function InsightCard({ icon, title, children, accent, tooltip }) {
 
 function ProfileInvestorBlock({
   allocationCard, objectiveCard, horizonCard, drawdownCard, concentrationCard,
-  styleCard, liquidityCard,
+  styleCard, liquidityCard, returnExpectationCard,
 }) {
   // Estado del acordeón (divulgación progresiva) — Set de keys de sección
   // expandidas. DEBE declararse antes de cualquier early return para no violar
@@ -3453,7 +3475,7 @@ function ProfileInvestorBlock({
           <span className="text-xs font-medium uppercase tracking-wide">Completá tu test de inversor</span>
         </div>
         <p className="text-sm text-ink-1 leading-snug max-w-xl">
-          El test de 7 preguntas define tu perfil (conservador / moderado / agresivo)
+          El test de inversor define tu perfil (conservador / moderado / agresivo)
           y nos permite mostrarte acá cómo se alinea tu cartera real con lo que declarás.
         </p>
         <Link
@@ -3504,6 +3526,7 @@ function ProfileInvestorBlock({
   const CARD_DEFS = [
     { code: 'allocation',    id: 'profile-card-allocation',    card: allocationCard,    subtitle: 'Match perfil vs cartera',       node: () => <ProfileAllocationCard data={allocationCard} /> },
     { code: 'objective',     id: 'profile-card-objective',     card: objectiveCard,     subtitle: 'Coherencia con tu objetivo',    node: () => <ProfileObjectiveCard data={objectiveCard} /> },
+    { code: 'return_exp',    id: 'profile-card-return',        card: returnExpectationCard, subtitle: 'Retorno esperado vs real',   node: () => <ProfileReturnExpectationCard data={returnExpectationCard} /> },
     { code: 'horizon',       id: 'profile-card-horizon',       card: horizonCard,       subtitle: 'Horizonte vs composición',      node: () => <ProfileHorizonCard data={horizonCard} /> },
     { code: 'drawdown',      id: 'profile-card-drawdown',      card: drawdownCard,      subtitle: 'Drawdown tolerado vs real',     node: () => <ProfileDrawdownCard data={drawdownCard} /> },
     { code: 'concentration', id: 'profile-card-concentration', card: concentrationCard, subtitle: 'Concentración vs perfil',        node: () => <ProfileConcentrationCard data={concentrationCard} /> },
@@ -3546,6 +3569,11 @@ function ProfileInvestorBlock({
         return Math.min(60, (c.actual?.riskPct || 0) * 0.6)
       case 'objective':
         return Math.min(55, (c.actual?.misalignedPct || 0) * 0.55)
+      case 'return_exp':
+        // Estar por debajo de la expectativa declarada es accionable, pero NO
+        // debe destacarse por encima de riesgos reales (liquidez/concentración/
+        // drawdown puntúan más alto). Score moderado.
+        return c.comparison === 'below' ? 42 : 0
       case 'allocation':
         return Math.min(50, (c.comparison?.driftPct || 0) * 0.5)
       case 'style':
@@ -3569,6 +3597,8 @@ function ProfileInvestorBlock({
         return `Marcaste horizonte ${c.declared.horizonLabel}, pero ${c.actual.riskPct}% de tu cartera está en ${c.declared.riskLabel}.`
       case 'objective':
         return `Solo ${c.actual.alignedPct}% de tu cartera está alineado con tu objetivo (${c.declared.goalLabel}); el resto está en ${c.declared.misalignedLabel}.`
+      case 'return_exp':
+        return `Declaraste que buscás ${c.declared.expectationLabel}, pero tu retorno real (neto de inflación) fue ${c.actual.realReturnPct}%${c.actual.monthsCounted ? ` en los últimos ${c.actual.monthsCounted} meses` : ''}.`
       case 'allocation':
         return `${Math.round(c.comparison.driftPct)}% de tu cartera está en buckets distintos a la asignación de referencia para un perfil ${c.declared.categoryLabel}.`
       case 'style':
@@ -3591,7 +3621,7 @@ function ProfileInvestorBlock({
     {
       key: 'coherencia',
       title: 'Coherencia con tu perfil',
-      codes: ['allocation', 'objective', 'horizon'],
+      codes: ['allocation', 'objective', 'return_exp', 'horizon'],
     },
     {
       key: 'riesgo',
@@ -3889,6 +3919,47 @@ function ProfileObjectiveCard({ data }) {
 
 
 // Card 2: Horizonte declarado vs composición.
+// Card: Expectativa de retorno declarada vs retorno real (neto de inflación).
+function ProfileReturnExpectationCard({ data }) {
+  if (!data || data.status !== 'ready') return null
+  const { realReturnPct, portfolioReturnPct, inflationPct, monthsCounted } = data.actual
+  const realPos = realReturnPct >= 0
+  const verdictText = data.comparison === 'above'
+    ? 'Tu retorno real va por encima de esa expectativa.'
+    : data.comparison === 'in_line'
+      ? 'Tu retorno real va en línea con esa expectativa.'
+      : 'Por ahora tu retorno real está por debajo de esa expectativa.'
+  const tooltip = (
+    <>
+      <p className="font-semibold text-ink-0">Cómo se calcula</p>
+      <p>El test pregunta qué esperás que rinda tu plata (preservar / ganarle a la inflación / crecer / maximizar). Lo cruzamos con tu retorno REAL: el rendimiento de tu cartera en pesos (TWR) neto de la inflación INDEC, sobre la misma ventana de meses.</p>
+      <p className="text-ink-3">La vara de cada expectativa (retorno real orientativo) es heurística — no es un objetivo prometido ni un pronóstico.</p>
+    </>
+  )
+  return (
+    <InsightCard icon={<Target size={18} />} title="Retorno esperado vs real" tooltip={tooltip}>
+      <p className="text-sm text-ink-1 leading-snug">
+        Buscás <span className="font-semibold text-ink-0">{data.declared.expectationLabel}</span>.
+      </p>
+      <div className="mt-3 flex items-baseline gap-3">
+        <p className={`text-2xl font-bold tabular ${realPos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+          {realReturnPct > 0 ? '+' : ''}{realReturnPct}%
+        </p>
+        <p className="text-xs text-ink-3">
+          retorno real (neto de inflación){monthsCounted ? `, ${monthsCounted} meses` : ''}
+        </p>
+      </div>
+      {portfolioReturnPct != null && inflationPct != null && (
+        <p className="text-xs text-ink-3 mt-1 leading-snug tabular">
+          Cartera {portfolioReturnPct > 0 ? '+' : ''}{portfolioReturnPct}% en pesos · Inflación {inflationPct}%
+        </p>
+      )}
+      <p className="text-xs text-ink-2 mt-3 leading-snug">{verdictText}</p>
+    </InsightCard>
+  )
+}
+
+
 function ProfileHorizonCard({ data }) {
   const tooltip = (
     <>
