@@ -34,7 +34,7 @@ const PerfilInversor = lazy(() => import('./PerfilInversor'))
 
 const TABS = [
   { id: 'diagnostico',    label: 'Diagnóstico',         icon: Compass,    desc: 'Lo que te dice el sistema sobre tu performance' },
-  { id: 'metricas',       label: 'Métricas Pro',        icon: TrendingUp, desc: 'Sharpe, Sortino, Alpha, IR, Volatilidad, Beta' },
+  { id: 'metricas',       label: 'Métricas',            icon: TrendingUp, desc: 'Sharpe, Sortino, Alpha, IR, Volatilidad, Beta' },
   { id: 'perfil',         label: 'Perfil del inversor', icon: UserRound,  desc: 'Test + cruce con tu cartera real' },
   { id: 'comportamiento', label: 'Comportamiento',      icon: Brain,      desc: 'Sesgos detectados sobre tu historial' },
   { id: 'reportes',       label: 'Reportes',            icon: BarChart3,  desc: 'Performance mensual y timeline' },

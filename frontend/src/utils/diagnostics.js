@@ -133,10 +133,13 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'warn',
     generate: ({ discipline }) => {
       if (!discipline || !discipline.deposits || !discipline.pnl) return null
-      // crecimiento total = depósitos + pnl. Si los depósitos explican >70%, advertir.
-      const total = Math.abs(discipline.total)
-      if (total <= 0) return null
-      const depositShare = (Math.abs(discipline.deposits) / total) * 100
+      // Share de aportes en el MOVIMIENTO del portfolio = |aportes| / (|aportes| + |pnl|).
+      // El denominador es la suma de magnitudes → siempre en [0,100]. Antes dividía
+      // por |aportes+pnl|, que con pnl<0 (cartera en pérdida) daba >100%. Coincide
+      // con la barra de atribución (PerformanceAttribution) que ya normalizaba así.
+      const denom = Math.abs(discipline.deposits) + Math.abs(discipline.pnl)
+      if (denom <= 0) return null
+      const depositShare = (Math.abs(discipline.deposits) / denom) * 100
       if (depositShare < 70) return null
       return `El **${depositShare.toFixed(0)}%** del crecimiento de tu portfolio proviene de aportes, no del rendimiento del mercado. La performance real es la que genera tu capital existente.`
     },
@@ -147,9 +150,11 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'positive',
     generate: ({ discipline }) => {
       if (!discipline || !discipline.deposits || !discipline.pnl) return null
-      const total = Math.abs(discipline.total)
-      if (total <= 0 || discipline.pnl <= 0) return null
-      const pnlShare = (discipline.pnl / total) * 100
+      // Complemento de growth_from_deposits: mismo denominador |aportes|+|pnl|
+      // para que ambos shares sumen 100% y ninguno pase de 100.
+      const denom = Math.abs(discipline.deposits) + Math.abs(discipline.pnl)
+      if (denom <= 0 || discipline.pnl <= 0) return null
+      const pnlShare = (discipline.pnl / denom) * 100
       if (pnlShare < 60) return null
       return `El **${pnlShare.toFixed(0)}%** del crecimiento proviene del rendimiento del mercado, no de aportes nuevos. Indicador positivo de gestión.`
     },

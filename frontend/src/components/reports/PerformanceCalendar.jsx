@@ -150,7 +150,14 @@ export default function PerformanceCalendar({ yearGroups }) {
               const m = months.find(mm => monthNum(mm.period_key) === idx + 1)
               return { idx, month: m }
             })
-            const yearDeltaSum = months.reduce((s, m) => s + (m.metrics?.delta_pct || 0), 0)
+            // Retorno anual = producto geométrico de los meses con data (NO suma
+            // aritmética de %, que sobreestima en años en tendencia y falla en los
+            // volátiles). Meses vacíos/irrelevantes → factor 1 (no-op).
+            const yearReturnPct = (months.reduce((acc, m) => {
+              const r = m.metrics?.delta_pct
+              if (r == null || !m.is_relevant) return acc
+              return acc * (1 + r / 100)
+            }, 1) - 1) * 100
             return (
               <div key={year} className="flex items-center gap-4">
                 <div className="font-mono text-[12px] tracking-label text-ink-3 min-w-[52px] tabular">
@@ -193,10 +200,10 @@ export default function PerformanceCalendar({ yearGroups }) {
                 </div>
                 <div
                   className={`font-mono text-[12px] min-w-[80px] text-right tabular font-medium ${
-                    yearDeltaSum >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+                    yearReturnPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
                   }`}
                 >
-                  {yearDeltaSum >= 0 ? '+' : ''}{yearDeltaSum.toFixed(2)}%
+                  {yearReturnPct >= 0 ? '+' : ''}{yearReturnPct.toFixed(2)}%
                 </div>
               </div>
             )

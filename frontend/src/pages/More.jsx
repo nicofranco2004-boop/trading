@@ -32,7 +32,7 @@ const GROUPS = [
   {
     label: 'Análisis',
     items: [
-      { to: '/analisis',     label: 'Análisis',     icon: Brain, sub: 'Diagnóstico, métricas pro, sesgos' },
+      { to: '/analisis',     label: 'Análisis',     icon: Brain, sub: 'Diagnóstico, métricas, sesgos' },
       { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge, sub: 'Calidad de tus tenencias + buscador' },
       { to: '/novedades',    label: 'Novedades',    icon: Bell,  sub: 'Noticias + eventos' },
     ],

@@ -11,6 +11,7 @@ import PageHeader from '../components/PageHeader'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
+import ArAlternativesVerdict from '../components/ArAlternativesVerdict'
 import Card from '../components/Card'
 import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
@@ -1913,7 +1914,9 @@ function InsightsDesktop({ _embeddedTab }) {
         const lastRow = chartData[chartData.length - 1] || {}
         const cumulativeReturnPct = lastRow[`${userName} P/L total`] ?? null
         const benchmarkReturnPct = lastRow[benchmarkKey] ?? null
-        const benchmarkLabel = currency === 'USD' ? 'S&P 500' : 'Inflación AR'
+        // Label dinámico = el mismo nombre del benchmark seleccionado (chart legend).
+        // Antes estaba hardcodeado a S&P 500 / Inflación AR e ignoraba la selección.
+        const benchmarkLabel = benchmarkKey
         return (
           <InsightsKpiStrip
             diagnosis={diagnosis}
@@ -1927,6 +1930,22 @@ function InsightsDesktop({ _embeddedTab }) {
           />
         )
       })()}
+
+      {/* Veredicto vs alternativas argentinas — de-buried: reusa las comparaciones
+          flow-matched ya computadas (vsPlazoFijo / vsDolar) + retorno real vs inflación. */}
+      <ArAlternativesVerdict
+        items={[
+          { key: 'plazo_fijo', label: 'Plazo fijo UVA', pct: vsPlazoFijo?.pct ?? null },
+          { key: 'dolar', label: 'Dólar', pct: vsDolar?.pct ?? null },
+          {
+            key: 'inflacion',
+            label: 'Inflación',
+            pct: (portfolioReturnArsPctRaw != null && isFinite(portfolioReturnArsPctRaw) && inflationCumArsWindow?.cumPct != null)
+              ? ((1 + portfolioReturnArsPctRaw / 100) / (1 + inflationCumArsWindow.cumPct / 100) - 1) * 100
+              : null,
+          },
+        ]}
+      />
 
       {/* ══════════════════════════════════════════════════════════════════════
           HERO — Diagnóstico con divulgación progresiva (2026-06-12).
@@ -2188,251 +2207,6 @@ function InsightsDesktop({ _embeddedTab }) {
 
       </Section>
 
-      {/* ══════════════════════════════════════════════════════════════════════
-          ELIMINADO Sprint restructure 2026-05-27: la sección "Comportamiento" /
-          "Tu estilo de inversor" con 5 cards (mejor operación, win rate,
-          concentración top 3, hold time, comisiones) se eliminó porque entraba
-          en conflicto visual con (a) el tab "Comportamiento" del nav nuevo y
-          (b) la sección "Perfil del inversor" más abajo. Las 5 métricas ahora
-          rotan como observaciones en el sistema de "Diagnóstico" arriba
-          (generadores: best_trade_celebration, winrate_balanced_summary,
-          hold_time_summary, commissions_high/summary; concentration_top3 ya
-          existía). Si querés recuperar las cards complejas con tooltips +
-          breakdowns, revertí el commit del restructure.
-          ══════════════════════════════════════════════════════════════════════ */}
-      {false && (
-      <Section title="Tu estilo de inversor" subtitle="Métricas operativas: tasa de acierto, horizonte de posiciones, concentración y costos.">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-
-        {/* Mejor operación cerrada individual */}
-        <InsightCard
-          icon={<Trophy size={18} />}
-          title="Mejor operación cerrada"
-          accent={bestWorstOp != null && bestWorstOp.best.pnl_usd > 0}
-          tooltip={
-            <>
-              <p className="font-semibold text-ink-0">Cómo se calcula</p>
-              <p>Operación individual cerrada con mayor P&L en USD.</p>
-              <p className="text-ink-3">Distinto al "mejor activo total": aquí importa la operación puntual, no el resultado agregado del activo.</p>
-            </>
-          }
-        >
-          {!bestWorstOp ? (
-            <p className="text-sm text-ink-3">Aún no hay operaciones cerradas.</p>
-          ) : (
-            <>
-              <p className="text-2xl font-bold text-ink-0">
-                {bestWorstOp.best.asset}
-              </p>
-              <p className="text-xs text-ink-3 mt-1">
-                <span className={`${colorClass(bestWorstOp.best.pnl_usd)} font-medium`}>
-                  {amt(bestWorstOp.best.pnl_usd, { signed: true })}
-                </span>
-                {bestWorstOp.best.date && (
-                  <span className="text-ink-3"> · {bestWorstOp.best.date}</span>
-                )}
-              </p>
-              {bestWorstOp.worst && bestWorstOp.worst.pnl_usd < 0 && (
-                <p className="text-xs text-ink-2 mt-3 leading-snug">
-                  Peor operación: <span className="font-semibold text-rendi-neg">{bestWorstOp.worst.asset}</span> con <span className={colorClass(bestWorstOp.worst.pnl_usd)}>{amt(bestWorstOp.worst.pnl_usd, { signed: true })}</span>.
-                </p>
-              )}
-            </>
-          )}
-        </InsightCard>
-
-        {/* Win rate */}
-        <InsightCard
-          icon={<Target size={18} />}
-          title="Win rate y profit factor"
-          accent={profitFactor != null && profitFactor.profitFactor >= 1}
-          tooltip={
-            <>
-              <p className="font-semibold text-ink-0">Qué son</p>
-              <p><span className="font-medium">Win rate:</span> porcentaje de operaciones cerradas con ganancia.</p>
-              <p><span className="font-medium">Profit factor:</span> total ganado dividido total perdido.</p>
-              <div className="border-t border-line/60 my-1.5" />
-              <p className="font-semibold text-ink-0">Cómo leer el Profit Factor</p>
-              <p><span className="text-rendi-neg">&lt; 1</span>: perdés más de lo que ganás (resultado neto negativo).</p>
-              <p><span className="text-ink-2">1.0 – 1.5</span>: marginal — ganás un poco más de lo que perdés.</p>
-              <p><span className="text-rendi-pos">1.5 – 2.0</span>: bueno.</p>
-              <p><span className="text-rendi-pos">&gt; 2.0</span>: excelente — por cada $1 que perdés, ganás más de $2.</p>
-              <div className="border-t border-line/60 my-1.5" />
-              <p className="text-ink-3">Las dos métricas se leen juntas: un win rate alto con ganancias chiquitas puede tener PF &lt; 1 (perdés en neto aunque aciertes más seguido).</p>
-              <p className="text-ink-3">Excluimos micro-trades (&lt; USD 1.5) porque son ruido — fees parciales, ajustes de futuros, redondeos que no reflejan decisiones reales del trader.</p>
-            </>
-          }
-        >
-          {!winRate ? (
-            <p className="text-sm text-ink-3">Aún no hay operaciones cerradas.</p>
-          ) : (
-            <>
-              <div className="flex items-baseline gap-3">
-                <p className="text-2xl font-bold text-ink-0">
-                  {winRate.pct.toFixed(0)}%
-                </p>
-                {profitFactor && (
-                  <p className={`text-base font-semibold tabular ${
-                    profitFactor.profitFactor === Infinity ? 'text-rendi-pos'
-                    : profitFactor.profitFactor >= 1.5 ? 'text-rendi-pos'
-                    : profitFactor.profitFactor >= 1 ? 'text-emerald-600/80 dark:text-emerald-400/80'
-                    : 'text-rendi-neg'
-                  }`}>
-                    PF {profitFactor.profitFactor === Infinity ? '∞' : profitFactor.profitFactor.toFixed(2)}
-                  </p>
-                )}
-              </div>
-              <p className="text-xs text-ink-3 mt-1">
-                <span className="text-emerald-500">{winRate.wins} ganadoras</span> ·
-                <span className="text-red-500"> {winRate.losses} perdedoras</span>
-                {winRate.ratio != null && <span className="text-ink-3"> · R/R {winRate.ratio.toFixed(2)}x</span>}
-              </p>
-              {winRate.microExcluded > 0 && (
-                <p className="text-[11px] text-ink-3 mt-1 italic">
-                  {winRate.microExcluded} {winRate.microExcluded === 1 ? 'trade chico' : 'trades chicos'} (&lt; $1.5) excluidos del cálculo
-                </p>
-              )}
-              <p className="text-xs text-ink-2 mt-3 leading-snug">
-                {profitFactor && profitFactor.profitFactor < 1
-                  ? `Profit factor < 1: con ${winRate.pct.toFixed(0)}% de aciertos, las pérdidas brutas superan a las ganancias. Resultado neto negativo.`
-                  : profitFactor && profitFactor.profitFactor >= 2
-                  ? `Por cada dólar perdido, generás ${profitFactor.profitFactor.toFixed(1)}. Expectativa positiva sólida.`
-                  : winRate.pct >= 60
-                  ? 'Tasa de acierto alta y ganancias promedio mayores a las pérdidas.'
-                  : winRate.pct >= 40
-                  ? 'Tasa de acierto cercana al 50%. La diferencia entre ganadoras y perdedoras define la rentabilidad.'
-                  : 'Más operaciones perdedoras que ganadoras. Conviene revisar los criterios de entrada.'}
-              </p>
-            </>
-          )}
-        </InsightCard>
-
-        {/* Concentración */}
-        <InsightCard
-          icon={<Layers size={18} />}
-          title="Concentración (top 3)"
-          accent={concentration != null && concentration.sharePct < 70}
-          tooltip={
-            <>
-              <p className="font-semibold text-ink-0">Qué es</p>
-              <p>Porcentaje de la cartera concentrado en los 3 activos más grandes (excluyendo cash).</p>
-              <div className="border-t border-line/60 my-1.5" />
-              <p className="font-semibold text-ink-0">Cómo leerlo</p>
-              <p>Cuanto más alto, más dependés de esos 3 activos. Si uno cae fuerte, te afecta de lleno — no tenés diversificación que amortigüe.</p>
-              <p className="text-ink-3">Concentración del 100% en pocos activos = todo el riesgo en pocas apuestas. Diversificación dispersa ese riesgo entre más activos no correlacionados.</p>
-            </>
-          }
-        >
-          {!concentration ? (
-            <p className="text-sm text-ink-3">Aún no hay posiciones cargadas.</p>
-          ) : (
-            <>
-              <p className="text-2xl font-bold text-ink-0">
-                {concentration.sharePct.toFixed(0)}%
-              </p>
-              <p className="text-xs text-ink-3 mt-1">
-                {concentration.top3.map(t => t.asset).join(' · ')}
-              </p>
-              {gainConcentration && gainConcentration.sharePct >= 40 && (
-                <p className="text-xs text-ink-2 mt-3 leading-snug">
-                  El <span className="font-semibold text-ink-0 dark:text-white">{gainConcentration.sharePct.toFixed(0)}%</span> de tus ganancias proviene de <span className="font-semibold">{gainConcentration.topAsset}</span>. Sin esa posición, el rendimiento global cambia significativamente.
-                </p>
-              )}
-              {(!gainConcentration || gainConcentration.sharePct < 40) && (
-                <p className="text-xs text-ink-2 mt-3 leading-snug">
-                  {concentration.sharePct >= 80
-                    ? 'Concentración elevada. Una caída en cualquiera de estos activos impacta fuertemente a la cartera.'
-                    : concentration.sharePct >= 60
-                    ? 'Concentración moderada. Aceptable si tenés convicción y conocimiento sobre los activos.'
-                    : 'Cartera diversificada entre varios activos.'}
-                </p>
-              )}
-            </>
-          )}
-        </InsightCard>
-
-        {/* Hold time promedio */}
-        <InsightCard
-          icon={<Clock size={18} />}
-          title="Hold time promedio"
-          accent={holdTime != null}
-          tooltip={
-            <>
-              <p className="font-semibold text-ink-0">Cómo se calcula</p>
-              <p>Días promedio transcurridos entre la fecha de compra y la de venta de cada operación cerrada.</p>
-              <p className="text-ink-3">Solo se incluyen operaciones con ambas fechas registradas.</p>
-            </>
-          }
-        >
-          {!holdTime ? (
-            <p className="text-sm text-ink-3">Sin datos suficientes. Se requieren operaciones con fecha de entrada registrada.</p>
-          ) : (
-            <>
-              <p className="text-2xl font-bold text-ink-0">
-                {holdTime.avg.toFixed(0)} {holdTime.avg === 1 ? 'día' : 'días'}
-              </p>
-              <p className="text-xs text-ink-3 mt-1">
-                Sobre {holdTime.count} {holdTime.count === 1 ? 'operación' : 'operaciones'} cerradas
-              </p>
-              <p className="text-xs text-ink-2 mt-3 leading-snug">
-                {holdTime.avgWin != null && holdTime.avgLoss != null && (
-                  <>Ganadoras: <span className="text-emerald-500 font-medium">{holdTime.avgWin.toFixed(0)}d</span> · Perdedoras: <span className="text-red-500 font-medium">{holdTime.avgLoss.toFixed(0)}d</span>. </>
-                )}
-                {holdTime.avg < 7
-                  ? 'Trading de muy corto plazo. Costos y comisiones tienen alto impacto en este horizonte.'
-                  : holdTime.avg < 30
-                  ? 'Horizonte semanal — estilo swing trading.'
-                  : holdTime.avg < 180
-                  ? 'Posiciones de mediano plazo.'
-                  : 'Largo plazo: las posiciones se mantienen para capturar tendencias estructurales.'}
-              </p>
-            </>
-          )}
-        </InsightCard>
-
-        {/* Comisiones totales pagadas */}
-        <InsightCard
-          icon={<CircleDollarSign size={18} />}
-          title="Comisiones totales"
-          accent={false}
-          tooltip={
-            <>
-              <p className="font-semibold text-ink-0">Qué es</p>
-              <p>Suma de todas las comisiones que pagaste — fees del broker, comisiones de mercado, costos de extracción, fees de futuros.</p>
-              <div className="border-t border-line/60 my-1.5" />
-              <p className="font-semibold text-ink-0">Nota</p>
-              <p className="text-ink-3">Si tu broker es en pesos, lo convertimos a USD al blue. Si el fee va embebido en el precio (spread, fee dentro de una compra), no aparece acá.</p>
-            </>
-          }
-        >
-          {!commissionsStats ? (
-            <p className="text-sm text-ink-3">Aún no hay comisiones registradas.</p>
-          ) : (
-            <>
-              <p className="text-2xl font-bold text-ink-0">
-                {amt(commissionsStats.total)}
-              </p>
-              <p className="text-xs text-ink-3 mt-1">
-                Sobre {commissionsStats.count} {commissionsStats.count === 1 ? 'operación' : 'operaciones'} · prom. {amt(commissionsStats.avgPerTrade)}
-              </p>
-              {commissionsStats.taxes > 0 && (
-                <p className="text-xs text-ink-3 mt-1">
-                  + <span className="font-semibold text-ink-1 dark:text-white">{amt(commissionsStats.taxes)}</span> en impuestos/retenciones <span className="text-ink-3">(aparte — no son comisión)</span>
-                </p>
-              )}
-              <p className="text-xs text-ink-2 mt-3 leading-snug">
-                {commissionsStats.pctOfGrossWin != null && commissionsStats.pctOfGrossWin >= 1
-                  ? <>Equivalen al <span className="font-semibold text-ink-0 dark:text-white">{commissionsStats.pctOfGrossWin.toFixed(1)}%</span> de tus ganancias brutas. {commissionsStats.pctOfGrossWin >= 20 ? 'Peso alto sobre el resultado — revisá si conviene operar menos o cambiar de broker.' : commissionsStats.pctOfGrossWin >= 10 ? 'Peso moderado: vale la pena monitorear que no crezca.' : 'Costo razonable en relación a lo generado.'}</>
-                  : 'Costo total de operar tu cartera.'}
-              </p>
-            </>
-          )}
-        </InsightCard>
-
-      </div>
-
-      </Section>
-      )}
 
       {/* ╔═══════════════════════════════════════════════════════════════════╗
           ║ Cierro el bloque "Diagnóstico" para que la sección Métricas Pro    ║
@@ -2468,7 +2242,7 @@ function InsightsDesktop({ _embeddedTab }) {
         )
         return (
         <Section
-          title="Métricas pro"
+          title="Métricas"
           subtitle="Volatilidad, Beta, Sharpe, Sortino y CAGR en Plus; Alpha, Information Ratio y Calmar en Pro."
         >
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
