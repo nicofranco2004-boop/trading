@@ -105,6 +105,7 @@ export const ETFS = [
   { s: 'QQQ', n: 'Invesco QQQ (Nasdaq 100)' }, { s: 'QQQM', n: 'Invesco Nasdaq 100' },
   { s: 'DIA', n: 'SPDR Dow Jones' }, { s: 'IWM', n: 'iShares Russell 2000' },
   { s: 'VTI', n: 'Vanguard Total Stock Market' }, { s: 'VEA', n: 'Vanguard Developed Markets' },
+  { s: 'VIG', n: 'Vanguard Dividend Appreciation' }, { s: 'VYM', n: 'Vanguard High Dividend Yield' }, { s: 'SCHD', n: 'Schwab US Dividend Equity' },
   { s: 'VWO', n: 'Vanguard Emerging Markets' }, { s: 'EEM', n: 'iShares Emerging Markets' },
   { s: 'EFA', n: 'iShares MSCI EAFE' }, { s: 'EWZ', n: 'iShares Brasil' },
   { s: 'ARGT', n: 'Global X Argentina' }, { s: 'MCHI', n: 'iShares China' },
@@ -199,6 +200,7 @@ export const CEDEARS_LIST = [
   { s: 'ARKK', n: 'ARK Innovation (CEDEAR)' }, { s: 'XLE', n: 'Energía (CEDEAR)' },
   { s: 'XLF', n: 'Financiero (CEDEAR)' }, { s: 'GLD', n: 'Oro (CEDEAR)' },
   { s: 'XLV', n: 'Salud (CEDEAR)' }, { s: 'IBIT', n: 'iShares Bitcoin (CEDEAR)' },
+  { s: 'VIG', n: 'Vanguard Dividend Appreciation (CEDEAR)' },
 ]
 
 // CEDEARS_LIST en el shape del buscador (SearchBar/MobileSearch). El símbolo lleva
@@ -263,6 +265,15 @@ export const AR_STOCK_SEARCH = [...ARG_LIDER, ...ARG_GENERAL].map(x => ({
   exchange: 'BCBA',
   type: 'stock_ar',
 }))
+
+// Acciones US + ETFs US en el shape del buscador (símbolo pelado, cotiza en EE.UU.).
+// Se suma al universo de búsqueda por query para que TODO el allowlist US sea
+// encontrable (no solo el subset de POPULAR_TICKERS) — ej. VIG/VYM/SCHD que están
+// en ETFS pero no en POPULAR_TICKERS no aparecían para agregar a la watchlist.
+export const US_SEARCH = [
+  ...STOCKS_US.map(x => ({ symbol: x.s, name: x.n, exchange: 'NASDAQ', type: 'stock_us' })),
+  ...ETFS.map(x => ({ symbol: x.s, name: x.n, exchange: 'NYSE', type: 'etf' })),
+]
 
 // === BONOS — Soberanos AR en USD ============================================
 // Los AL son ley local, los GD ley extranjera (NY/UK). AE = ley local variantes.

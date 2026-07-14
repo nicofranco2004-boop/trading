@@ -28,7 +28,7 @@ import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 // duplicar el universo. Import statement nombrado — agregamos los exports en
 // la otra refactor.
 import { POPULAR_TICKERS, FILTERS, inferType } from '../components/home/SearchBar'
-import { CEDEAR_SEARCH, AR_STOCK_SEARCH } from '../utils/tickers'
+import { CEDEAR_SEARCH, AR_STOCK_SEARCH, US_SEARCH } from '../utils/tickers'
 
 export default function MobileSearch() {
   const navigate = useNavigate()
@@ -86,7 +86,7 @@ export default function MobileSearch() {
     // para que cualquier CEDEAR sea encontrable. Dedup por símbolo.
     const allPopular = qUpper
       ? [...POPULAR_TICKERS,
-         ...[...CEDEAR_SEARCH, ...AR_STOCK_SEARCH].filter(c => !POPULAR_TICKERS.some(p => p.symbol === c.symbol))]
+         ...[...CEDEAR_SEARCH, ...AR_STOCK_SEARCH, ...US_SEARCH].filter(c => !POPULAR_TICKERS.some(p => p.symbol === c.symbol))]
       : POPULAR_TICKERS
 
     function matchesQuery(t) {
