@@ -112,7 +112,7 @@ export default function ProfileSummaryBlock({ className = '' }) {
             <h4 className="text-sm font-semibold text-ink-0 mb-1">Analizá tu perfil con la IA</h4>
             <p className="text-xs text-ink-2 max-w-md mx-auto mb-4 leading-relaxed">
               El Coach lee tu test y tu cartera real, y arma una lectura a medida: qué importa
-              para vos y por qué. Se genera una vez y queda guardada.
+              para vos y por qué. Se genera cuando la pedís y queda cacheada unas horas.
             </p>
             <button
               onClick={analyze}
@@ -120,11 +120,11 @@ export default function ProfileSummaryBlock({ className = '' }) {
             >
               <Sparkles size={14} strokeWidth={1.75} /> Analizar mi perfil
             </button>
-            {count != null && limit != null && (
-              <div className="mt-3 font-mono text-[10px] text-ink-3">
-                Análisis IA · usaste {count}/{limit} esta semana · se cachea 24 h
-              </div>
-            )}
+            <div className="mt-3 font-mono text-[10px] text-ink-3">
+              {count != null && limit != null
+                ? `Análisis IA · usaste ${count}/${limit} esta semana`
+                : 'Usa 1 de tus análisis IA de la semana'}
+            </div>
           </div>
         )}
       </div>

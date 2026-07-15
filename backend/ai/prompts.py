@@ -295,6 +295,7 @@ _FREE_FOCUS = {
         "Un resumen de lo que se desprende de cruzar tu test con tu cartera real.",
         "Los 2-3 desvíos o coincidencias más salientes entre lo declarado y lo real (concentración, horizonte vs composición, estilo, liquidez).",
         "Sin inventar números ni el retorno real (no viene en el packet).",
+        "Si no hay test cargado (profile_declared vacío) o los cruces no tienen data (crosses vacío o todos en status no_portfolio/no_data/no_profile), decir solo eso e invitar a completar el test — no inventes desvíos ni describas una cartera que no está.",
     ],
     "behavioral.card": [
         "Qué dice exactamente el detector — value_label + one_liner.",
@@ -684,6 +685,7 @@ def render_profile_summary_prompt(tier: str = "pro") -> str:
             "Si profile_declared está vacío → no hay test cargado, decir solo eso y sugerir completarlo. No inventes declaración.",
             "El packet NO trae el retorno real (vive en el frontend). Podés mencionar la expectativa declarada (return_expectation), pero NUNCA inventes el retorno real ni cruces 'performance vs expectativa' con un número.",
             "Un cross con status 'no_portfolio'/'no_data'/'no_profile' no tiene data cruzable — no lo fuerces; concentrate en los que sí.",
+            "El cross 'drawdown' NO trae el drawdown real ni el máximo (su actual.note lo aclara: 'no disponible en backend'). Razoná SOLO sobre la preferencia declarada — no afirmes dirección ni magnitud ('aguantaste caídas de X', 'tu drawdown fue mayor a lo que tolerás'); eso no está en el packet.",
             "NO card-por-card: es UNA lectura conectada, no 7 párrafos sueltos. Máximo 2-3 sections.",
             "No 'deberías'/'te conviene'. Tono descriptivo-causal: 'la tensión entre X e Y suele implicar Z'.",
         ],

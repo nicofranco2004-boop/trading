@@ -72,6 +72,32 @@ def _invested_usd(p: Dict[str, Any], tc_blue: float, tc_cedear: float | None = N
 # necesaria para construir el packet — no toda la formateada, sino los datos
 # crudos que el LLM necesita para razonar.
 
+# Stablecoins tratadas como CASH (mismo criterio que classifyAssetBucket del
+# frontend, profileAllocations.js) cuando la posición no viene marcada is_cash —
+# muchos brokers cripto no las marcan. Sin esto la lectura IA narra "alternativo/
+# volátil" y la card de Liquidez de abajo muestra "cash" → contradicción visible.
+_STABLECOINS = {"USDT", "USDC", "DAI"}
+
+
+def _is_trade_op(op_type) -> bool:
+    """Clasificador canónico de "trade cerrado" para la frecuencia de operación.
+
+    Espejo de computeStyleCoherence (profileMatch.js) e Insights.isTradeOp:
+    excluye Compra/Dividendo/Interés/Conversión (retorno pasivo o cambio de
+    moneda, no decisiones de trading). El DB guarda op_type en ESPAÑOL ('Venta',
+    'Futuros'), NUNCA 'SELL' — el filtro viejo `== "SELL"` no matcheaba nunca y
+    el eje de estilo quedaba muerto (siempre no_data) para todo user real,
+    mientras la card de abajo sí lo computaba. Ver CORRECTNESS_AUDIT M-MET1."""
+    t = str(op_type or "").strip()
+    if not t:
+        return False
+    if t in ("Compra", "Dividendo", "Interés"):
+        return False
+    if t.startswith("CONVERSION") or t.startswith("Conversión"):
+        return False
+    return True
+
+
 _CARD_TITLES = {
     "allocation":    "Match perfil vs cartera",
     "objective":     "Coherencia con objetivo",
@@ -263,7 +289,12 @@ def _build_card_data(
                 break
 
         val = _invested_usd(p, tc_blue, tc_mep)
-        if ticker in crypto_set:
+        if ticker in _STABLECOINS:
+            # Stablecoin no marcada is_cash → cash (no "alternativo"): matchea
+            # classifyAssetBucket del frontend, que es lo que ve el user en las
+            # cards de Liquidez/Allocation justo debajo de la lectura IA.
+            bucket_totals["cash"] += val
+        elif ticker in crypto_set:
             bucket_totals["alternative"] += val
         elif _is_ar_bond(ticker):
             bucket_totals["fixed_income"] += val
@@ -337,18 +368,21 @@ def _build_card_data(
         }
 
     if code == "style":
-        # Trade frequency: SELLs en los últimos 6 meses.
-        # Audit fix 2026-05-27: `recent` se inicializa ANTES del try porque
-        # antes lo accedíamos abajo con `'recent' in dir()` que no funciona
-        # como pensábamos (dir() devuelve nombres del scope local — si recent
-        # nunca se asignó por excepción, len(recent) tira NameError igual
-        # antes del check). Inicializarlo arriba elimina el race.
+        # Frecuencia de trading: trades cerrados en los últimos 6 meses. Usa la
+        # regla canónica _is_trade_op (Venta/Futuros, excluye Compra/pasivos/
+        # conversión) — el filtro viejo `== "SELL"` NUNCA matcheaba (el DB guarda
+        # 'Venta') y dejaba el eje muerto para todo user real.
+        # `recent` se inicializa ANTES del try: si una fecha mal formada tira
+        # excepción, len(recent) abajo no debe dar NameError.
         from datetime import datetime, timedelta
         recent = []
         trades_per_month = 0
         try:
-            sells = [o for o in operations if (o.get("op_type") or "").upper() == "SELL" and o.get("date")]
-            if not sells:
+            sells = [o for o in operations if _is_trade_op(o.get("op_type")) and o.get("date")]
+            # < 3 trades cerrados → sin patrón que analizar (mismo umbral que
+            # computeStyleCoherence del frontend, así la card y la lectura IA
+            # coinciden en cuándo el eje tiene o no tiene data).
+            if len(sells) < 3:
                 return {
                     "status": "no_data",
                     "declared": {"style": profile.get("style")},
