@@ -1139,6 +1139,15 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: ['¿Cuánto cuesta el disposition effect anualizado en esta cartera?'],
   },
+  'profile.summary': {
+    tldr: 'Tu perfil declarado (Moderado, con la mira en libertad financiera a largo plazo) y tu conducta real casi coinciden — pero no donde creés. La tensión no es el estilo: es la concentración cruzada con un horizonte declarado en meses.',
+    sections: [
+      { title: 'Estilo declarado vs. real', tone: 'positive', body: 'Marcaste un perfil "mixto", pero en los hechos operás poco más de una vez por mes: sos buy-and-hold. Para una cartera con 33% en cripto, esa mano quieta es hoy lo que más te ordena — no es un problema, juega a tu favor.' },
+      { title: 'Concentración contra horizonte', tone: 'warning', body: 'Tus 3 mayores tenencias son el 44% del total y un tercio está en alternativos (cripto). Contra un horizonte que declaraste en "meses", esa combinación es de cartera de plazo largo. Es tu mayor exposición real, sobre todo si de verdad pensás necesitar esta plata pronto.' },
+      { title: 'Lo declarado que sí cierra', tone: 'neutral', body: 'Dijiste que no necesitás esta plata en los próximos 12-24 meses, y eso es coherente con bancarte la volatilidad de cripto. Si el plan es genuinamente largo, la composición está OK. Si el "meses" fue una respuesta por defecto del test, vale la pena revisar esa contradicción antes que cualquier compra nueva.' },
+    ],
+    follow_ups: [],
+  },
   insights: {
     tldr: 'El +14% TWR del año descansa sobre dos motores asimétricos (NVDA por peso, INTC por trade único). Le gana a la inflación AR con margen pero queda algunos puntos debajo del SPY — combinación coherente con un portfolio con cash drag y exposure parcial al panel local.',
     sections: [

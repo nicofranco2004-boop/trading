@@ -10,6 +10,7 @@ import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import ProfileSummaryBlock from '../components/ai/ProfileSummaryBlock'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import ArAlternativesVerdict from '../components/ArAlternativesVerdict'
 import Card from '../components/Card'
@@ -2772,6 +2773,11 @@ function InsightsDesktop({ _embeddedTab }) {
         title={_embeddedTab === 'perfil' ? 'Diagnóstico vs. perfil declarado' : 'Perfil del inversor'}
         subtitle="Cómo se alinea tu cartera real con lo que declaraste en el test."
       >
+        {/* Lectura IA holística — solo si hay test hecho (si no, la CTA a
+            completar el test la muestra el propio ProfileInvestorBlock). */}
+        {investorProfile && Object.keys(investorProfile).length > 0 && (
+          <ProfileSummaryBlock />
+        )}
         <ProfileInvestorBlock
           allocationCard={allocationCard}
           objectiveCard={objectiveCard}

@@ -291,6 +291,11 @@ _FREE_FOCUS = {
         "Cuáles son los principales detectados.",
         "Patrones positivos detectados.",
     ],
+    "profile.summary": [
+        "Un resumen de lo que se desprende de cruzar tu test con tu cartera real.",
+        "Los 2-3 desvíos o coincidencias más salientes entre lo declarado y lo real (concentración, horizonte vs composición, estilo, liquidez).",
+        "Sin inventar números ni el retorno real (no viene en el packet).",
+    ],
     "behavioral.card": [
         "Qué dice exactamente el detector — value_label + one_liner.",
         "Si es positivo, qué está bien; si es negativo, qué es lo que mide.",
@@ -645,6 +650,42 @@ def render_profile_card_prompt(tier: str = "pro") -> str:
             "Para code='drawdown', el packet NO trae el drawdown real (vive en frontend). Razonar sobre la preferencia declarada sin inventar números reales.",
             "No usar 'deberías' / 'te conviene'. Tono descriptivo: 'la incongruencia entre X e Y suele implicar Z'.",
             "Para 'aligned', no agregar caveat artificial — si está bien alineado, decirlo claro.",
+        ],
+    )
+
+
+def render_profile_summary_prompt(tier: str = "pro") -> str:
+    view = "Tu lectura personalizada del Perfil del inversor (SÍNTESIS de TODO el cruce test↔cartera — no una card, una lectura conectada)"
+    pkt = (
+        "profile_declared (las respuestas del test: horizon, drawdown, goal, "
+        "style, net_worth, liquidity, experience, return_expectation) y `crosses` "
+        "(TODOS los cruces declarado-vs-cartera-real: allocation con buckets %, "
+        "objective, horizon vs composición, concentration top3, style trades/mes, "
+        "liquidity safe/volatile). El LLM sintetiza qué importa MÁS para este user "
+        "y conecta los puntos entre ejes, en vez de listar card por card."
+    )
+    free = _maybe_free("profile.summary", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "SINTETIZÁ: de TODOS los cruces, elegí los 2-3 que más importan para ESTE user y armá UNA lectura conectada. El tldr es el hallazgo #1, no un resumen genérico.",
+            "CONECTÁ EJES: un mismatch en un eje suele explicarse (o agravarse) por otro. Ej: horizonte 'meses' + 33% cripto + estilo pasivo real → la tensión real es el horizonte declarado, no el estilo; y la mano quieta juega A FAVOR.",
+            "Priorizá riesgo real (liquidez severa, concentración alta, horizonte-vs-composición) por encima de desvíos menores. Si algo está alineado y ordena la cartera, decilo — no inventes problemas.",
+            "Usá SOLO números presentes en crosses.*.actual. Nunca inventes porcentajes, retornos ni drawdowns.",
+        ],
+        insight_examples=[
+            "Declarás estilo mixto pero operás 1,3 veces por mes: en los hechos sos buy-and-hold, y para una cartera con 33% en cripto esa mano quieta es hoy lo que más te ordena. El problema no es el estilo: es la concentración — tus 3 mayores tenencias son el 44% del total. Sumado a un horizonte declarado de 'meses', esa combinación es tu mayor exposición.",
+            "Marcaste que necesitás la plata en menos de 2 años pero ~35% está en renta variable + alternativos: si hay corrección justo cuando la precisás, estarías vendiendo en el peor momento. El resto del perfil es coherente (bien diversificada, sin concentración), así que el único eje a mirar es cuánto de la cartera está realmente disponible y estable a esa fecha.",
+        ],
+        pitfalls=[
+            "Si profile_declared está vacío → no hay test cargado, decir solo eso y sugerir completarlo. No inventes declaración.",
+            "El packet NO trae el retorno real (vive en el frontend). Podés mencionar la expectativa declarada (return_expectation), pero NUNCA inventes el retorno real ni cruces 'performance vs expectativa' con un número.",
+            "Un cross con status 'no_portfolio'/'no_data'/'no_profile' no tiene data cruzable — no lo fuerces; concentrate en los que sí.",
+            "NO card-por-card: es UNA lectura conectada, no 7 párrafos sueltos. Máximo 2-3 sections.",
+            "No 'deberías'/'te conviene'. Tono descriptivo-causal: 'la tensión entre X e Y suele implicar Z'.",
         ],
     )
 
