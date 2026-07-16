@@ -11,6 +11,7 @@ import PageHeader from '../components/PageHeader'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import ProfileSummaryBlock from '../components/ai/ProfileSummaryBlock'
+import ProfileDashboard from '../components/profile/ProfileDashboard'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import ArAlternativesVerdict from '../components/ArAlternativesVerdict'
 import Card from '../components/Card'
@@ -2787,6 +2788,7 @@ function InsightsDesktop({ _embeddedTab }) {
           styleCard={styleCard}
           liquidityCard={liquidityCard}
           returnExpectationCard={returnExpectationCard}
+          positions={positionsWithValue}
         />
       </Section>
       )}
@@ -3453,18 +3455,10 @@ function InsightCard({ icon, title, children, accent, tooltip }) {
 
 function ProfileInvestorBlock({
   allocationCard, objectiveCard, horizonCard, drawdownCard, concentrationCard,
-  styleCard, liquidityCard, returnExpectationCard,
+  styleCard, liquidityCard, returnExpectationCard, positions = [],
 }) {
-  // Estado del acordeón (divulgación progresiva) — Set de keys de sección
-  // expandidas. DEBE declararse antes de cualquier early return para no violar
-  // las Rules of Hooks. Default: la primera sección ('coherencia') abierta,
-  // el resto colapsado para reducir ruido. El usuario expande lo que necesita.
-  const [expandedSections, setExpandedSections] = useState(() => new Set(['coherencia']))
-
   // Si las cards basadas en perfil NO tienen perfil utilizable, mostramos
-  // un CTA único en vez de 5 empty states duplicados.
-  // Chequeamos las cards que dependen de la categoría derivada (allocation +
-  // concentration) — si esas dos están sin profile, el resto también lo está.
+  // un CTA único en vez de 9 módulos bloqueados.
   const noProfileAtAll =
     (allocationCard?.status === 'no_profile' || allocationCard?.status === 'no_data') &&
     (objectiveCard?.status === 'no_profile' || objectiveCard?.status === 'no_data') &&
@@ -3494,251 +3488,26 @@ function ProfileInvestorBlock({
     )
   }
 
-  // Helper: wrap cada card con AskAIAbout para que tenga ✦ "Preguntar a la IA"
-  // (mismo patrón que Behavioral). El backend resuelve via topic profile.card
-  // + param code. Cada code mapea a un cruce específico del perfil declarado
-  // contra la cartera real.
-  const wrap = (code, subtitle, child) => (
-    <AskAIAbout
-      topic="profile.card"
-      params={{ code }}
-      subtitle={subtitle}
-      className="h-full"
-    >
-      {child}
-    </AskAIAbout>
-  )
-
-  // Filtramos cards que están en estado "no se renderiza" (no_data / no_profile)
-  // ANTES de wrappar con AskAIAbout. De lo contrario, el wrapper queda como
-  // un slot vacío en el grid y rompe la alineación 3-columnas (ej: si Estilo
-  // no tiene suficientes SELLs, antes quedaba como hueco y Liquidez caía sola
-  // en la fila 3 en lugar de completar la segunda fila).
-  const hasRenderableContent = (card) =>
-    card && card.status !== 'no_data' && card.status !== 'no_profile'
-
-  // ── Divulgación progresiva (2026-06-11) ───────────────────────────────────
-  // Antes: grilla densa de hasta 7 cards a la vez → el usuario tenía que
-  // escanear todo. Ahora: un hallazgo DESTACADO arriba ("Lo que más importa")
-  // + el resto agrupado en secciones colapsables (acordeón), con mini-resumen
-  // en cada header para no tener que abrirlas.
-  //
-  // Conservamos TODO el contenido y la funcionalidad de las cards existentes
-  // (botón ✦ de Análisis IA via `wrap`, tooltips, empty states no_portfolio,
-  // gating). Solo reorganizamos el LAYOUT.
-
-  // Definición declarativa de cada card → permite scorear severidad, renderizar
-  // y agrupar de forma uniforme. `node()` devuelve el JSX wrappeado con IA.
-  const CARD_DEFS = [
-    { code: 'allocation',    id: 'profile-card-allocation',    card: allocationCard,    subtitle: 'Match perfil vs cartera',       node: () => <ProfileAllocationCard data={allocationCard} /> },
-    { code: 'objective',     id: 'profile-card-objective',     card: objectiveCard,     subtitle: 'Coherencia con tu objetivo',    node: () => <ProfileObjectiveCard data={objectiveCard} /> },
-    { code: 'return_exp',    id: 'profile-card-return',        card: returnExpectationCard, subtitle: 'Retorno esperado vs real',   node: () => <ProfileReturnExpectationCard data={returnExpectationCard} /> },
-    { code: 'horizon',       id: 'profile-card-horizon',       card: horizonCard,       subtitle: 'Horizonte vs composición',      node: () => <ProfileHorizonCard data={horizonCard} /> },
-    { code: 'drawdown',      id: 'profile-card-drawdown',      card: drawdownCard,      subtitle: 'Drawdown tolerado vs real',     node: () => <ProfileDrawdownCard data={drawdownCard} /> },
-    { code: 'concentration', id: 'profile-card-concentration', card: concentrationCard, subtitle: 'Concentración vs perfil',        node: () => <ProfileConcentrationCard data={concentrationCard} /> },
-    { code: 'style',         id: 'profile-card-style',         card: styleCard,         subtitle: 'Estilo declarado vs actividad', node: () => <ProfileStyleCard data={styleCard} /> },
-    { code: 'liquidity',     id: 'profile-card-liquidity',     card: liquidityCard,     subtitle: 'Liquidez declarada vs cartera', node: () => <ProfileLiquidityCard data={liquidityCard} /> },
-  ]
-
-  const byCode = Object.fromEntries(CARD_DEFS.map(d => [d.code, d]))
-  const renderCard = (def) => def && hasRenderableContent(def.card)
-    ? wrap(def.code, def.subtitle, def.node())
-    : null
-
-  // Heurística de severidad / desalineación (0-100). NO hay un flag explícito
-  // en la data, así que lo derivamos de los valores que ya tenemos en cada
-  // card (`comparison` + magnitudes). Cuanto mayor el score, más accionable.
-  // Solo puntúan cards con status='ready' (cruce real perfil↔cartera); las
-  // 'no_portfolio' no tienen desalineación que mostrar como hallazgo.
-  // Prioridad de diseño: liquidez severa > concentración/DD por encima del
-  // rango > horizonte/objetivo desalineados > estilo. Empates → orden de la
-  // lista (ya prioriza riesgo de liquidez/concentración).
-  function severityScore(def) {
-    const c = def?.card
-    if (!c || c.status !== 'ready') return -1
-    switch (def.code) {
-      case 'liquidity':
-        if (c.comparison === 'mismatch_severe') return 100
-        if (c.comparison === 'mismatch_risky') return 78
-        return 0
-      case 'concentration':
-        // Concentración alta = riesgo. Gap por encima del rango típico escala.
-        if (c.comparison === 'above') return 70 + Math.min(20, (c.actual?.top3Pct || 0) / 5)
-        if (c.comparison === 'below') return 12
-        return 0
-      case 'drawdown':
-        if (c.comparison === 'above') return 65
-        if (c.comparison === 'below') return 15
-        return 0
-      case 'horizon':
-        // % de cartera que genera "riesgo de timing" para el horizonte declarado.
-        return Math.min(60, (c.actual?.riskPct || 0) * 0.6)
-      case 'objective':
-        return Math.min(55, (c.actual?.misalignedPct || 0) * 0.55)
-      case 'return_exp':
-        // Estar por debajo de la expectativa declarada es accionable, pero NO
-        // debe destacarse por encima de riesgos reales (liquidez/concentración/
-        // drawdown puntúan más alto). Score moderado.
-        return c.comparison === 'below' ? 42 : 0
-      case 'allocation':
-        return Math.min(50, (c.comparison?.driftPct || 0) * 0.5)
-      case 'style':
-        return c.comparison && c.comparison !== 'aligned' ? 40 : 0
-      default:
-        return 0
-    }
-  }
-
-  // 1 línea de contexto para el hallazgo destacado, por card.
-  function highlightLine(def) {
-    const c = def.card
-    switch (def.code) {
-      case 'liquidity':
-        return `Tenés ${c.actual.safePct}% en cash + renta fija y ${c.actual.volatilePct}% en activos volátiles, frente a una necesidad de liquidez declarada como "${c.declared.liquidityLabel}".`
-      case 'concentration':
-        return `Tus top ${Math.min(3, c.actual.holdingsCount)} activos concentran ${c.actual.top3Pct}% de la cartera — por encima del rango típico (${c.declared.typicalRange.min}-${c.declared.typicalRange.max}%) para un perfil ${c.declared.categoryLabel}.`
-      case 'drawdown':
-        return `El drawdown máximo real de tu cartera (${c.actual.drawdownPct}%) está por encima de la tolerancia que declaraste (${c.declared.impliedTolerance.min}-${c.declared.impliedTolerance.max}%).`
-      case 'horizon':
-        return `Marcaste horizonte ${c.declared.horizonLabel}, pero ${c.actual.riskPct}% de tu cartera está en ${c.declared.riskLabel}.`
-      case 'objective':
-        return `Solo ${c.actual.alignedPct}% de tu cartera está alineado con tu objetivo (${c.declared.goalLabel}); el resto está en ${c.declared.misalignedLabel}.`
-      case 'return_exp':
-        return `Declaraste que buscás ${c.declared.expectationLabel}, pero tu retorno real (neto de inflación) fue ${c.actual.realReturnPct}%${c.actual.monthsCounted ? ` en los últimos ${c.actual.monthsCounted} meses` : ''}.`
-      case 'allocation':
-        return `${Math.round(c.comparison.driftPct)}% de tu cartera está en buckets distintos a la asignación de referencia para un perfil ${c.declared.categoryLabel}.`
-      case 'style':
-        return `Operás ${c.actual.tradesPerMonth} veces/mes, más cercano a un estilo ${c.actual.inferredStyleLabel.toLowerCase()} que al ${c.declared.styleLabel.toLowerCase()} que declaraste.`
-      default:
-        return 'Hay un desvío entre lo que declaraste en el test y tu cartera real.'
-    }
-  }
-
-  // Elegimos el hallazgo destacado: la card ready con mayor severidad.
-  const ranked = CARD_DEFS
-    .filter(d => hasRenderableContent(d.card))
-    .map(d => ({ def: d, score: severityScore(d) }))
-    .sort((a, b) => b.score - a.score)
-  const featured = ranked.length && ranked[0].score > 0 ? ranked[0].def : null
-
-  // Grupos del acordeón. Cada grupo lista los CODES que contiene; renderizamos
-  // solo las cards con contenido (excluyendo la destacada, que ya va arriba).
-  const GROUPS = [
-    {
-      key: 'coherencia',
-      title: 'Coherencia con tu perfil',
-      codes: ['allocation', 'objective', 'return_exp', 'horizon'],
-    },
-    {
-      key: 'riesgo',
-      title: 'Riesgo y exposición',
-      codes: ['drawdown', 'concentration', 'liquidity'],
-    },
-    {
-      key: 'comportamiento',
-      title: 'Comportamiento',
-      codes: ['style'],
-    },
-  ]
-
-  // Mini-resumen por grupo (header del acordeón) — para no tener que abrirlo.
-  function groupSummary(group) {
-    const defs = group.codes.map(c => byCode[c]).filter(d => hasRenderableContent(d?.card))
-    if (defs.length === 0) return null
-    if (group.key === 'coherencia') {
-      // "N de M alineadas" — alineada = sin desvío material (score bajo).
-      const ready = defs.filter(d => d.card.status === 'ready')
-      if (ready.length === 0) return `${defs.length} ${defs.length === 1 ? 'card' : 'cards'}`
-      const aligned = ready.filter(d => severityScore(d) < 25).length
-      return `${aligned} de ${ready.length} alineadas`
-    }
-    if (group.key === 'riesgo') {
-      const parts = []
-      const conc = byCode.concentration
-      if (conc && conc.card.status === 'ready') parts.push(`Concentración ${conc.card.actual.top3Pct}%`)
-      const dd = byCode.drawdown
-      if (dd && dd.card.status === 'ready') parts.push(`DD ${dd.card.actual.drawdownPct}%`)
-      const liq = byCode.liquidity
-      if (liq && liq.card.status === 'ready') parts.push(`Liquidez ${liq.card.actual.safePct}% seguro`)
-      return parts.length ? parts.join(' · ') : `${defs.length} ${defs.length === 1 ? 'card' : 'cards'}`
-    }
-    if (group.key === 'comportamiento') {
-      const st = byCode.style
-      if (st && st.card.status === 'ready') return `${st.card.actual.tradesPerMonth} trades/mes · estilo ${st.card.actual.inferredStyleLabel.toLowerCase()}`
-      return `${defs.length} ${defs.length === 1 ? 'card' : 'cards'}`
-    }
-    return null
-  }
-
-  const toggleSection = (key) =>
-    setExpandedSections(prev => {
-      const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
-      return next
-    })
-
-  // "Ver detalle" del hallazgo destacado: expande la sección que lo contiene
-  // y scrollea a la card real (sin duplicar la lógica de la card).
-  const scrollToCard = (def) => {
-    if (!def) return
-    const group = GROUPS.find(g => g.codes.includes(def.code))
-    if (group) setExpandedSections(prev => new Set(prev).add(group.key))
-    // Esperamos a que la sección se expanda antes de scrollear.
-    setTimeout(() => {
-      document.getElementById(def.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }, 60)
-  }
-
+  // ── Tablero adaptativo (2026-07-15) ─────────────────────────────────────
+  // Reemplaza al featured-hero + acordeón: los 9 cruces como módulos VISUALES
+  // ordenados por relevancia (motor determinístico en utils/profileDashboard).
+  // Cada usuario ve primero lo que más le importa; lo que no tiene data queda
+  // bloqueado con su cómo-desbloquearlo. La lectura IA vive arriba de este
+  // bloque (ProfileSummaryBlock) y narra sobre estos mismos números.
   return (
-    <div className="space-y-5">
-      {/* ── "Lo que más importa": 1 solo hallazgo, el más accionable ───────── */}
-      {featured && (
-        <div className="rounded-lg border border-rendi-accent/40 dark:border-rendi-accent/30 bg-rendi-accent/[0.04] dark:bg-rendi-accent/[0.06] p-5">
-          <div className="flex items-center gap-2 mb-2">
-            <Sparkles size={15} className="text-rendi-accent" strokeWidth={2} />
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-rendi-accent">Lo que más importa</span>
-          </div>
-          <p className="text-base font-semibold text-ink-0 leading-snug">{featured.subtitle}</p>
-          <p className="text-sm text-ink-2 mt-1.5 leading-snug max-w-2xl">{highlightLine(featured)}</p>
-          <button
-            type="button"
-            onClick={() => scrollToCard(featured)}
-            className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-rendi-accent hover:underline"
-          >
-            Ver detalle
-            <ArrowRight size={14} strokeWidth={2} />
-          </button>
-        </div>
-      )}
-
-      {/* ── Resto de las cards, en secciones colapsables (acordeón) ────────── */}
-      {GROUPS.map(group => {
-        const defs = group.codes
-          .map(c => byCode[c])
-          .filter(d => hasRenderableContent(d?.card) && d.code !== featured?.code)
-        if (defs.length === 0) return null
-        const open = expandedSections.has(group.key)
-        const summary = groupSummary(group)
-        return (
-          <AccordionSection
-            key={group.key}
-            title={group.title}
-            count={defs.length}
-            summary={summary}
-            open={open}
-            onToggle={() => toggleSection(group.key)}
-          >
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {defs.map(def => (
-                <div key={def.code} id={def.id} className="scroll-mt-24">
-                  {renderCard(def)}
-                </div>
-              ))}
-            </div>
-          </AccordionSection>
-        )
-      })}
-    </div>
+    <ProfileDashboard
+      cards={{
+        allocation: allocationCard,
+        objective: objectiveCard,
+        horizon: horizonCard,
+        drawdown: drawdownCard,
+        concentration: concentrationCard,
+        style: styleCard,
+        liquidity: liquidityCard,
+        return_exp: returnExpectationCard,
+      }}
+      positions={positions}
+    />
   )
 }
 
