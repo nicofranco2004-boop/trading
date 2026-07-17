@@ -1,5 +1,5 @@
 import { isCrypto, cryptoBrokerFactor } from './crypto'
-import { ARG_STOCK_TICKERS, CEDEAR_TICKERS } from './tickers'
+import { ARG_STOCK_TICKERS, CEDEAR_TICKERS, cedearEspecieBase } from './tickers'
 
 /**
  * isArStock — ¿es una acción argentina (panel líder/general)? Clasificador puro.
@@ -198,8 +198,7 @@ export function costInPesos(p) {
 export function holdingHasReliableFundamentals(p, arsBrokerNames) {
   const onBA = arsBrokerNames.has(p?.broker) || isArUsdBroker(p?.broker) || costInPesos(p)
   if (!onBA) return true                         // broker US real → el símbolo ES el ticker US
-  const base = (p?.asset || '').toUpperCase().replace(/\.BA$/, '')
-  return CEDEAR_TICKERS.has(base)                 // BYMA → solo CEDEAR reconocido
+  return CEDEAR_TICKERS.has(cedearEspecieBase(p?.asset))   // BYMA → CEDEAR reconocido (con alias de especie)
 }
 
 /**

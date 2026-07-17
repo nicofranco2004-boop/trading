@@ -192,6 +192,7 @@ export const CEDEARS_LIST = [
   { s: 'PDD', n: 'PDD Holdings' }, { s: 'NIO', n: 'NIO' }, { s: 'BIDU', n: 'Baidu' },
   { s: 'MELI', n: 'MercadoLibre' }, { s: 'PBR', n: 'Petrobras' }, { s: 'VALE', n: 'Vale' },
   { s: 'ITUB', n: 'Itaú Unibanco' }, { s: 'BBD', n: 'Banco Bradesco' }, { s: 'NU', n: 'Nu Holdings' },
+  { s: 'SID', n: 'Companhia Siderúrgica Nacional' },
   { s: 'ABEV', n: 'Ambev' }, { s: 'AZN', n: 'AstraZeneca' }, { s: 'NVS', n: 'Novartis' }, { s: 'T', n: 'AT&T' },
   { s: 'BRK-B', n: 'Berkshire Hathaway' }, { s: 'OKLO', n: 'Oklo' },
   // ETFs disponibles como CEDEAR
@@ -377,6 +378,20 @@ export const ARG_STOCK_TICKERS = new Set([...sym(ARG_LIDER), ...sym(ARG_GENERAL)
 // por su MISMO símbolo. Una acción local o una especie dólar-MEP (ej. 'SID') NO →
 // evita analizar una homónima yanqui al azar. Ver holdingHasReliableFundamentals.
 export const CEDEAR_TICKERS = new Set(sym(CEDEARS_LIST))
+
+// Alias de especie de CEDEAR: algunos CEDEARs cotizan su especie en PESOS con un
+// código propio distinto del ticker US real (que es la especie dólar-MEP). Mapea
+// la especie-pesos → el ticker canónico (US) para reconocer/analizar/agrupar como
+// UNA sola empresa. Ej: el CEDEAR de Companhia Siderúrgica Nacional cotiza 'SI'
+// (pesos) y 'SID' (dólar-MEP); 'SID' ES el ticker NYSE real → canónico. Solo se
+// aplica en contexto AR/BYMA (en un broker US 'SI' es otra empresa real).
+export const CEDEAR_ESPECIE_ALIAS = { SI: 'SID' }
+
+// Ticker canónico de un CEDEAR: upper + sin '.BA' + alias de especie-pesos.
+export function cedearEspecieBase(asset) {
+  const t = (asset || '').toUpperCase().replace(/\.BA$/, '')
+  return CEDEAR_ESPECIE_ALIAS[t] || t
+}
 
 // Helper para encontrar nombre de un ticker (incluye bonos)
 export function tickerName(s) {

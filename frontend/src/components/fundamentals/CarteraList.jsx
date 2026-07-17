@@ -16,7 +16,7 @@ import EmptyState from '../EmptyState'
 import Skeleton from '../Skeleton'
 import AssetLogo from '../AssetLogo'
 import { api } from '../../utils/api'
-import { inferType } from '../../utils/tickers'
+import { inferType, cedearEspecieBase } from '../../utils/tickers'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 import {
   computeBrokerValue, valueEquityLot, priceSymbol, isArUsdBroker, costInPesos,
@@ -108,7 +108,11 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
       // broker AR NO se analiza como su homónima yanqui al azar (que daría dos
       // "empresas" con veredictos opuestos). Ver holdingHasReliableFundamentals.
       if (!isEquityLike(p) || !holdingHasReliableFundamentals(p, arsBrokers)) { excluded += 1; continue }
-      const base = baseTicker(p.asset)
+      // Base canónica: en contexto AR aplicamos alias de especie → la pata pesos
+      // 'SI' y la dólar 'SID' del CEDEAR de CSN colapsan en UN holding, analizado
+      // por su ticker NYSE real. En broker US el ticker queda como está.
+      const onBA = arsBrokers.has(p.broker) || isArUsdBroker(p.broker) || costInPesos(p)
+      const base = onBA ? cedearEspecieBase(p.asset) : baseTicker(p.asset)
       const { valueUsd, investedUsd } = valueEquityLot(p, brokerByName[p.broker], prices, tcBlue, tcCedear)
       const h = map.get(base) || { base, valueUsd: 0, investedUsd: 0, brokers: new Set() }
       h.valueUsd += valueUsd || 0

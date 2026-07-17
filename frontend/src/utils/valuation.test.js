@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals } from './valuation.js'
+import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
   it('normaliza espacio a guión (forma yfinance) para acción US', () => {
@@ -32,15 +33,25 @@ describe('priceSymbol — clases de acción US (BRK B)', () => {
   })
 })
 
-describe('holdingHasReliableFundamentals — no analizar acciones locales/especies como su homónima yanqui', () => {
+describe('holdingHasReliableFundamentals + alias de especie CEDEAR (SI/SID = CSN)', () => {
   const ARS = new Set(['Balanz', 'Cocos', 'IOL'])   // brokers ARS del usuario
   const h = (asset, broker, extra) => ({ asset, broker, currency: null, ...extra })
 
-  it("especie dólar-MEP 'SID' en broker AR → NO analizable (era Companhia Siderúrgica al azar)", () => {
-    expect(holdingHasReliableFundamentals(h('SID', 'Balanz'), ARS)).toBe(false)
+  it("CEDEAR 'SID' (Companhia Siderúrgica) en broker AR → analizable (ticker NYSE real)", () => {
+    expect(holdingHasReliableFundamentals(h('SID', 'Balanz'), ARS)).toBe(true)
   })
-  it("pata pesos 'SI' en broker AR → NO analizable (era Shoulder Innovations al azar)", () => {
-    expect(holdingHasReliableFundamentals(h('SI', 'Balanz'), ARS)).toBe(false)
+  it("especie pesos 'SI' del mismo CEDEAR en broker AR → analizable vía alias a SID", () => {
+    expect(holdingHasReliableFundamentals(h('SI', 'Balanz'), ARS)).toBe(true)
+  })
+  it("'SI' y 'SID' colapsan al MISMO canónico 'SID' (una empresa, no dos)", () => {
+    expect(cedearEspecieBase('SI')).toBe('SID')
+    expect(cedearEspecieBase('SID')).toBe('SID')
+    expect(cedearEspecieBase('si')).toBe('SID')       // case-insensitive
+  })
+  it('el alias NO toca tickers reconocidos ni los que terminan en D', () => {
+    expect(cedearEspecieBase('AAPL')).toBe('AAPL')
+    expect(cedearEspecieBase('YPFD')).toBe('YPFD')    // no rompe la acción local de YPF
+    expect(cedearEspecieBase('MELI.BA')).toBe('MELI') // strip .BA
   })
   it('acción argentina local no reconocida (TXAR) en broker AR → NO analizable', () => {
     expect(holdingHasReliableFundamentals(h('TXAR', 'Cocos'), ARS)).toBe(false)
@@ -48,22 +59,19 @@ describe('holdingHasReliableFundamentals — no analizar acciones locales/especi
   it('CEDEAR reconocido (AAPL) en broker AR → SÍ analizable (símbolo = ticker US real)', () => {
     expect(holdingHasReliableFundamentals(h('AAPL', 'Cocos'), ARS)).toBe(true)
   })
-  it('CEDEAR con sufijo .BA (MELI.BA) en broker AR → SÍ analizable', () => {
-    expect(holdingHasReliableFundamentals(h('MELI.BA', 'Balanz'), ARS)).toBe(true)
+  it("sub-broker dólar-MEP 'Cocos · USD': SID analizable", () => {
+    expect(holdingHasReliableFundamentals(h('SID', 'Cocos · USD'), ARS)).toBe(true)
   })
-  it("sub-broker dólar-MEP 'Cocos · USD': una especie local sigue NO analizable", () => {
-    expect(holdingHasReliableFundamentals(h('SID', 'Cocos · USD'), ARS)).toBe(false)
+  it('lote de costo en pesos (currency=ARS) aunque el broker no sea ARS → gatea como AR: SI→SID analizable', () => {
+    expect(holdingHasReliableFundamentals(h('SI', 'OtroUSD', { currency: 'ARS' }), ARS)).toBe(true)
   })
-  it("sub-broker dólar-MEP 'Cocos · USD': un CEDEAR sí", () => {
-    expect(holdingHasReliableFundamentals(h('NVDA', 'Cocos · USD'), ARS)).toBe(true)
-  })
-  it('lote de costo en pesos (currency=ARS) aunque el broker no sea ARS → gatea como AR', () => {
-    expect(holdingHasReliableFundamentals(h('SID', 'OtroUSD', { currency: 'ARS' }), ARS)).toBe(false)
+  it('acción local no reconocida en sub-broker USD sigue sin analizarse', () => {
+    expect(holdingHasReliableFundamentals(h('CEPU', 'Cocos · USD'), ARS)).toBe(false)
   })
   it('broker US real (Schwab): cualquier ticker US es analizable como está (SMCI no está en el allowlist)', () => {
     expect(holdingHasReliableFundamentals(h('SMCI', 'Schwab'), ARS)).toBe(true)
   })
-  it("broker US real: 'SI' ahí ES Shoulder Innovations (el usuario la tiene de verdad) → analizable", () => {
+  it("broker US real: 'SI' ahí ES Shoulder Innovations (el usuario la tiene de verdad); no se aliasea", () => {
     expect(holdingHasReliableFundamentals(h('SI', 'Schwab'), ARS)).toBe(true)
   })
 })
