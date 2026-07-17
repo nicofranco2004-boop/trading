@@ -1,5 +1,5 @@
 import { isCrypto, cryptoBrokerFactor } from './crypto'
-import { ARG_STOCK_TICKERS } from './tickers'
+import { ARG_STOCK_TICKERS, CEDEAR_TICKERS } from './tickers'
 
 /**
  * isArStock — ¿es una acción argentina (panel líder/general)? Clasificador puro.
@@ -175,6 +175,31 @@ export function costInPesos(p) {
   // tenga currency='ARS' → la excluimos para no dividir un costo cripto por el MEP
   // (y evitar doble conversión). Solo aplica a CEDEAR/acción AR/bono en pesos.
   return (p?.currency || '').toUpperCase() === 'ARS' && !isCrypto(p?.asset)
+}
+
+/**
+ * holdingHasReliableFundamentals — ¿esta tenencia tiene fundamentals CONFIABLES en
+ * yfinance por su símbolo? Gatea qué holdings se pueden analizar (Calidad de
+ * cartera). Espeja el ruteo .BA de la valuación (mismo 'useBA': broker ARS,
+ * sub-broker '· USD' dólar-MEP, o lote de costo en pesos).
+ *
+ * En contexto BYMA/AR, SOLO un CEDEAR reconocido mapea a una empresa US real por su
+ * MISMO símbolo. Una acción argentina local (GGAL, TXAR), una especie dólar-MEP
+ * (ej. 'SID' = 'SI' en dólares) o un ticker desconocido NO tienen ADR de igual
+ * símbolo → yfinance devolvería una empresa yanqui homónima al azar (SID→Companhia
+ * Siderúrgica Nacional, SI→Shoulder Innovations) y un análisis de negocio/precio
+ * del activo EQUIVOCADO — dos "empresas" con veredictos opuestos para el MISMO
+ * holding. En un broker US real el ticker SÍ es el símbolo US → confiable.
+ *
+ * @param {Object} p                    posición
+ * @param {Set<string>} arsBrokerNames  nombres de brokers con currency==='ARS'
+ * @returns {boolean}
+ */
+export function holdingHasReliableFundamentals(p, arsBrokerNames) {
+  const onBA = arsBrokerNames.has(p?.broker) || isArUsdBroker(p?.broker) || costInPesos(p)
+  if (!onBA) return true                         // broker US real → el símbolo ES el ticker US
+  const base = (p?.asset || '').toUpperCase().replace(/\.BA$/, '')
+  return CEDEAR_TICKERS.has(base)                 // BYMA → solo CEDEAR reconocido
 }
 
 /**

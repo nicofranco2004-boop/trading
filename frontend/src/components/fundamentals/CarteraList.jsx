@@ -20,6 +20,7 @@ import { inferType } from '../../utils/tickers'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 import {
   computeBrokerValue, valueEquityLot, priceSymbol, isArUsdBroker, costInPesos,
+  holdingHasReliableFundamentals,
 } from '../../utils/valuation'
 import { businessQuality, priceRead, AXIS_PILL } from './axes'
 
@@ -97,11 +98,16 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
 
   const { holdings, heldBases, analizableValue, excludedCount } = useMemo(() => {
     const brokerByName = Object.fromEntries(brokers.map(b => [b.name, b]))
+    const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
     const map = new Map()
     let excluded = 0
     for (const p of positions) {
       if (p.is_cash) continue
-      if (!isEquityLike(p)) { excluded += 1; continue }
+      // Fuera lo no-equity (cripto/bono/FCI) Y las tenencias SIN fundamentals
+      // confiables: una acción local o una especie dólar-MEP (ej. 'SID') en un
+      // broker AR NO se analiza como su homónima yanqui al azar (que daría dos
+      // "empresas" con veredictos opuestos). Ver holdingHasReliableFundamentals.
+      if (!isEquityLike(p) || !holdingHasReliableFundamentals(p, arsBrokers)) { excluded += 1; continue }
       const base = baseTicker(p.asset)
       const { valueUsd, investedUsd } = valueEquityLot(p, brokerByName[p.broker], prices, tcBlue, tcCedear)
       const h = map.get(base) || { base, valueUsd: 0, investedUsd: 0, brokers: new Set() }
@@ -223,7 +229,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
             {pctAnalizable != null && (
               <p className="text-[11px] text-ink-3">
                 {pctAnalizable}% de tu cartera analizable
-                {excludedCount > 0 && ` · ${excludedCount} ${excludedCount === 1 ? 'tenencia' : 'tenencias'} sin fundamentals (cripto, bonos, FCI)`}
+                {excludedCount > 0 && ` · ${excludedCount} ${excludedCount === 1 ? 'tenencia' : 'tenencias'} sin fundamentals (cripto, bonos, FCI, acciones locales)`}
               </p>
             )}
           </div>

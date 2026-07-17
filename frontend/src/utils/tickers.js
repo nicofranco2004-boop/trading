@@ -371,6 +371,13 @@ export const BOND_TICKERS = new Set([
 // .BA aunque vivan en un broker USD (compra dólar-MEP) que no se reconoce como AR.
 export const ARG_STOCK_TICKERS = new Set([...sym(ARG_LIDER), ...sym(ARG_GENERAL)])
 
+// CEDEARs reconocidos (el símbolo del allowlist ES el ticker US del subyacente:
+// AAPL, MSFT, MELI…). Set para gatear qué tenencias de un broker AR/BYMA tienen
+// fundamentals CONFIABLES en yfinance: solo un CEDEAR mapea a una empresa US real
+// por su MISMO símbolo. Una acción local o una especie dólar-MEP (ej. 'SID') NO →
+// evita analizar una homónima yanqui al azar. Ver holdingHasReliableFundamentals.
+export const CEDEAR_TICKERS = new Set(sym(CEDEARS_LIST))
+
 // Helper para encontrar nombre de un ticker (incluye bonos)
 export function tickerName(s) {
   const all = [
