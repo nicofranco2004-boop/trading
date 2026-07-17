@@ -2102,38 +2102,18 @@ function InsightsDesktop({ _embeddedTab }) {
         <DiagnosisSection diagnosis={diagnosis} plan={plan} />
       )}
 
-      {/* ── Strip de exposición — cash + clases de activo ─────────────────── */}
-      {(assetTypeBreakdown.length > 0 || cashRatio > 0) && (
-        <section>
-          <div className="bg-white dark:bg-bg-1 border border-line rounded p-4 sm:p-5">
-            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <p className="eyebrow">Exposición</p>
-              <span className="text-xs text-ink-2">
-                Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1)}%</span>
-              </span>
-            </div>
-            {assetTypeBreakdown.length > 0 && (
-              <div className="flex h-2 rounded-full overflow-hidden bg-bg-2 dark:bg-bg-2">
-                {assetTypeBreakdown.map((d, i) => (
-                  <div
-                    key={d.type}
-                    style={{ width: `${d.sharePct}%`, background: PIE_COLORS[i % PIE_COLORS.length] }}
-                    title={`${d.type}: ${d.sharePct.toFixed(1)}%`}
-                  />
-                ))}
-              </div>
-            )}
-            {assetTypeBreakdown.length > 0 && (
-              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-[11px] font-mono">
-                {assetTypeBreakdown.map((d, i) => (
-                  <span key={d.type} className="flex items-center gap-1.5 text-ink-2">
-                    <span className="inline-block w-2 h-2 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                    {d.type}: <span className="tabular font-medium">{d.sharePct.toFixed(0)}%</span>
-                  </span>
-                ))}
-              </div>
-            )}
+      {/* ── Composición por activo — estándar, incluye cash. Movida arriba
+          (era "Por activo" en Distribución, gateada Pro). El cruce por CLASE
+          de activo vive ahora en el Perfil del inversor. ──────────────────── */}
+      {compositionRows.length > 0 && (
+        <section className="bg-white dark:bg-bg-1 border border-line rounded p-4 sm:p-5">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <p className="eyebrow">Composición por activo</p>
+            <span className="text-xs text-ink-2">
+              Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1)}%</span>
+            </span>
           </div>
+          <CompositionByAsset rows={compositionRows} />
         </section>
       )}
 
@@ -2351,6 +2331,49 @@ function InsightsDesktop({ _embeddedTab }) {
       )}
 
       </Section>
+
+      {/* ── Atribución por activo — qué explica tu P&L (cerradas + abiertas) ── */}
+      {(topContribPos.length > 0 || topContribNeg.length > 0) && (
+        <Section
+          id="atribucion"
+          title="Atribución por activo"
+          subtitle={`Activos que más impactan tu P&L total — cerradas + abiertas, en ${currency}.`}
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <ContribList tone="positive" title="A favor" items={topContribPos} fmt={amt} />
+            <ContribList tone="negative" title="En contra" items={topContribNeg} fmt={amt} />
+          </div>
+        </Section>
+      )}
+
+      {/* ── Distribución por broker — solo con ≥2 brokers (si no, es una torta
+          de una sola porción que no aporta). ─────────────────────────────── */}
+      {pieData.length >= 2 && (
+        <Section title="Distribución por broker" subtitle="Cómo se reparte tu capital entre brokers.">
+          <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-ink-0">Por broker</h2>
+              {brokerConcentration && (
+                <span className="text-xs text-ink-3">
+                  Top: <span className="font-medium text-ink-1">{brokerConcentration.top.name}</span> ({brokerConcentration.top.sharePct.toFixed(0)}%)
+                </span>
+              )}
+            </div>
+            <ResponsiveContainer width="100%" height={260}>
+              <PieChart>
+                <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
+                  {pieData.map((_, i) => <Cell key={`pie-d-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                </Pie>
+                <Legend formatter={(v) => <span className="text-ink-2 text-xs">{v}</span>} iconType="circle" iconSize={8} />
+                <Tooltip
+                  contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                  formatter={(v) => [`${amt(v)} (${((v / totalPortfolio) * 100).toFixed(1)}%)`, '']}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+      )}
 
 
       {/* ╔═══════════════════════════════════════════════════════════════════╗
@@ -2915,93 +2938,6 @@ function InsightsDesktop({ _embeddedTab }) {
       </Section>
       )}
 
-      {/* ╔═══════════════════════════════════════════════════════════════════╗
-          ║ BLOQUE DIAGNÓSTICO (continuación) — atribución y distribución solo║
-          ║ se muestran en tab 'diagnostico' o standalone.                     ║
-          ║ Cierra al final del return.                                        ║
-          ╚═══════════════════════════════════════════════════════════════════╝ */}
-      {showDiagnostico && (<>
-
-      {/* Diagnóstico se renderiza arriba como hero — ver bloque al inicio. */}
-
-      {/* Qué explica tu resultado — top contributors + detractors */}
-      {(topContribPos.length > 0 || topContribNeg.length > 0) && (
-        <Section
-          id="atribucion"
-          title="Atribución por activo"
-          subtitle={`Activos que más impactan tu P&L total — incluye operaciones cerradas y posiciones abiertas, en ${currency}.`}
-        >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <ContribList tone="positive" title="A favor" items={topContribPos} fmt={amt} />
-            <ContribList tone="negative" title="En contra" items={topContribNeg} fmt={amt} />
-          </div>
-        </Section>
-      )}
-
-      {/* Otras señales (warning / info) — alertas no urgentes */}
-      {otherAlerts.length > 0 && (
-        <Section title="Otras señales" subtitle="Alertas adicionales y observaciones complementarias.">
-          <div className="space-y-2">
-            {otherAlerts.map((a, i) => (
-              <AlertBanner key={`other-${i}`} level={a.level} category={a.category} title={a.title} text={a.text} />
-            ))}
-          </div>
-        </Section>
-      )}
-
-      {/* ── Distribución (broker + activo + tipo) ───────────────────────────── */}
-      <Section title="Distribución" subtitle="Cómo se reparte tu capital entre brokers, activos y clases de instrumento.">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Pie chart por broker */}
-        <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-ink-0">Por broker</h2>
-            {brokerConcentration && (
-              <span className="text-xs text-ink-3">
-                Top: <span className="font-medium text-ink-1">{brokerConcentration.top.name}</span> ({brokerConcentration.top.sharePct.toFixed(0)}%)
-              </span>
-            )}
-          </div>
-          {pieData.length === 0 ? (
-            <p className="text-ink-3 text-sm text-center py-8">Aún no hay posiciones cargadas.</p>
-          ) : (
-            <ResponsiveContainer width="100%" height={260}>
-              <PieChart>
-                <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
-                  {pieData.map((_, i) => <Cell key={`pie-d-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                </Pie>
-                <Legend formatter={(v) => <span className="text-ink-2 text-xs">{v}</span>} iconType="circle" iconSize={8} />
-                <Tooltip
-                  contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
-                  formatter={(v) => [`${amt(v)} (${((v / totalPortfolio) * 100).toFixed(1)}%)`, '']}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-
-        {/* Composición POR ACTIVO — estándar para todos (antes Pro-gated). Cada
-            activo con su % del total, incluye cash. Reemplaza al viejo "Por
-            activo" gateado y al duplicado "Distribución por tipo" (ese cruce
-            por clase ya vive en el Perfil del inversor). */}
-        <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
-          <h2 className="font-semibold text-ink-0 mb-4">Por activo</h2>
-          <CompositionByAsset rows={compositionRows} />
-        </div>
-      </div>
-      </Section>
-
-      {/* Comparativa con benchmarks: eliminada — el chart interactivo de arriba
-          (Cartera vs benchmark) ya permite comparar contra cualquiera de estos
-          benchmarks vía su selector. Las cards duplicaban esa info. */}
-
-      {/* Coach IA movido al sidebar (botón "Coach IA" arriba de todo) — abre
-          un drawer global accesible desde cualquier página. */}
-
-      {/* ╔═══════════════════════════════════════════════════════════════════╗
-          ║ Fin del bloque "Diagnóstico" continuación.                         ║
-          ╚═══════════════════════════════════════════════════════════════════╝ */}
-      </>)}
 
     </div>
   )
