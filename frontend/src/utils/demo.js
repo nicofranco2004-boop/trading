@@ -1148,6 +1148,15 @@ const DEMO_AI_RESULTS = {
     ],
     follow_ups: [],
   },
+  'insights.summary': {
+    tldr: 'Le ganás a la inflación (+6%) y al plazo fijo, pero el diagnóstico marca dos cosas que van juntas: NVDA concentra tu resultado y tenés casi la mitad en cash sin desplegar.',
+    sections: [
+      { title: 'Concentración de resultado', tone: 'warning', body: 'NVDA es tu mayor posición y explica buena parte de lo que ganaste. No es un problema mientras acompañe — pero tu resultado hoy depende más de un solo activo que de la cartera entera. Una corrección del Nasdaq se siente fuerte acá.' },
+      { title: 'Cash sin desplegar', tone: 'neutral', body: 'Cerca del 45% está en cash (USDT + pesos). Si no es una reserva táctica con fecha, es el mayor freno del portfolio: es plata que no trabaja mientras esperás. La decisión pendiente no es qué activo sumar, sino bajo qué condición ese cash entra.' },
+      { title: 'Lo que sí funciona', tone: 'positive', body: 'Contra las alternativas locales vas bien: le ganás a la inflación y al plazo fijo, y tu operativa es tranquila (pocos trades). Esa mano quieta, con tanta cripto y tech, es hoy lo que más te ordena.' },
+    ],
+    follow_ups: [],
+  },
   insights: {
     tldr: 'El +14% TWR del año descansa sobre dos motores asimétricos (NVDA por peso, INTC por trade único). Le gana a la inflación AR con margen pero queda algunos puntos debajo del SPY — combinación coherente con un portfolio con cash drag y exposure parcial al panel local.',
     sections: [

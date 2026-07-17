@@ -12,6 +12,11 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import ProfileSummaryBlock from '../components/ai/ProfileSummaryBlock'
 import ProfileDashboard from '../components/profile/ProfileDashboard'
+import DiagnosticoSummaryBlock from '../components/diagnostico/DiagnosticoSummaryBlock'
+import DeltaSinceVisit from '../components/diagnostico/DeltaSinceVisit'
+import CompositionByAsset from '../components/diagnostico/CompositionByAsset'
+import { buildDiagnosticoLayout } from '../utils/diagnosticoTemplate'
+import { useLastVisit } from '../hooks/useLastVisit'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import ArAlternativesVerdict from '../components/ArAlternativesVerdict'
 import Card from '../components/Card'
@@ -153,6 +158,9 @@ function InsightsDesktop({ _embeddedTab }) {
   const { user } = useAuth()
   const { valuationDollar, currency } = useCurrency()
   const plan = usePlanFeatures()
+  // "Desde tu última visita" — el hook va ARRIBA (antes del guard de loading);
+  // el delta se computa con record(snapshot) más abajo, cuando la data existe.
+  const lastVisit = useLastVisit(`diagnostico:${user?.email ?? 'anon'}`)
   // Flags de renderizado condicional cuando se embebe dentro de /analisis.
   // Standalone (sin _embeddedTab) → renderiza TODO.
   // En tab 'diagnostico' → todo menos "Métricas Pro" y "Perfil del inversor".
@@ -1895,6 +1903,104 @@ function InsightsDesktop({ _embeddedTab }) {
     )
   }
 
+  // ── Diagnóstico adaptativo (2026-07-17) ─────────────────────────────────
+  // Motor de la plantilla: clasifica el arquetipo y decide orden/visibilidad
+  // de los slots. La IA (DiagnosticoSummaryBlock) narra arriba; nunca decide
+  // el layout ni los números (mismo espíritu que el Perfil).
+
+  // Veredicto comparativo — items que también muestra ArAlternativesVerdict.
+  // Los extraemos a una const para reusarlos en el render Y en los params IA.
+  const verdictItems = [
+    { key: 'plazo_fijo', label: 'Plazo fijo UVA', pct: vsPlazoFijo?.pct ?? null },
+    { key: 'dolar', label: 'Dólar', pct: vsDolar?.pct ?? null },
+    {
+      key: 'inflacion',
+      label: 'Inflación',
+      pct: (portfolioReturnArsPctRaw != null && isFinite(portfolioReturnArsPctRaw) && inflationCumArsWindow?.cumPct != null)
+        ? ((1 + portfolioReturnArsPctRaw / 100) / (1 + inflationCumArsWindow.cumPct / 100) - 1) * 100
+        : null,
+    },
+  ]
+
+  // Composición POR ACTIVO (incluye cash) — % de cada activo sobre el total.
+  // Top 7 + cola agrupada en "Otros N activos". Estándar para todos.
+  const compositionRows = (() => {
+    const byAsset = {}
+    let total = 0
+    for (const p of positionsWithValue) {
+      const v = p.value_usd
+      if (v == null || v <= 0) continue
+      const name = p.is_cash ? 'Efectivo' : String(p.asset || '').toUpperCase()
+      if (!name) continue
+      if (!byAsset[name]) byAsset[name] = { value: 0, cash: !!p.is_cash }
+      byAsset[name].value += v
+      total += v
+    }
+    if (total <= 0) return []
+    const rows = Object.entries(byAsset)
+      .map(([name, o]) => ({ name, value: o.value, pct: Math.round((o.value / total) * 100), cash: o.cash }))
+      .sort((a, b) => b.value - a.value)
+    const TOP = 7
+    if (rows.length <= TOP) return rows.map(({ value, ...r }) => r)
+    const tailPct = rows.slice(TOP).reduce((s, r) => s + r.pct, 0)
+    return [...rows.slice(0, TOP).map(({ value, ...r }) => r), { name: `Otros ${rows.length - TOP} activos`, pct: tailPct, cash: false }]
+  })()
+
+  const hasVerdicts = verdictItems.some(v => v.pct != null)
+
+  const cryptoSharePct = assetTypeBreakdown.find(d => d.type === 'Cripto')?.sharePct || 0
+  const rentaFijaSharePct = (() => {
+    if (totalPortfolio <= 0) return 0
+    const rf = positionsWithValue.reduce((s, p) => {
+      const t = String(p.asset_type || '').toUpperCase()
+      return (t === 'BOND' || t === 'ON' || t === 'FUND') ? s + (p.value_usd || 0) : s
+    }, 0)
+    return (rf / totalPortfolio) * 100
+  })()
+
+  // Delta "desde tu última visita" — record() computa y agenda persistencia.
+  // Solo en la tab Diagnóstico (Métricas/Perfil son el mismo componente con
+  // otro _embeddedTab; sin este guard pisarían la huella de "última visita").
+  const { delta: visitDelta } = showDiagnostico
+    ? lastVisit.record({ valueUsd: totalPortfolio, findingIds: diagnosis.map(d => d.id) })
+    : { delta: null }
+
+  const diagLayout = buildDiagnosticoLayout({
+    nonCashPositions: positionsWithValue.filter(p => !p.is_cash && (p.value_usd || 0) > 0).length,
+    monthsTracked: globalMonthly.length,
+    snapshotsCount: snapshots.length,
+    cryptoSharePct,
+    rentaFijaSharePct,
+    hasMissingPrices,
+    diagnosisCount: diagnosis.length,
+    hasFeatured: diagnosis.some(d => d.severity === 'urgent' || d.severity === 'warn'),
+    hasVerdicts,
+    hasContributors: topContribPos.length + topContribNeg.length > 0,
+    hasComposition: compositionRows.length > 0,
+    hasDrawdown: drawdownSeries.length >= 2,
+    isFirstVisit: !!visitDelta?.isFirstVisit,
+  })
+  // El veredicto se muestra SOLO si el motor no lo suprimió (ej. usuario nuevo
+  // sin historial → 'le perdés al plazo fijo' sobre días de ruido). Y va ARRIBA
+  // (antes del KPI) para el conservador AR / cripto — su pregunta central.
+  const verdictVisible = diagLayout.slots.includes('verdict') && hasVerdicts
+  const verdictFirst = verdictVisible &&
+    diagLayout.slots.indexOf('verdict') < diagLayout.slots.indexOf('kpi')
+  const verdictNode = verdictVisible ? <ArAlternativesVerdict items={verdictItems} /> : null
+  // El motor también decide si la curva de drawdown se muestra (se suprime sin
+  // ≥2 meses de serie, en vez de un placeholder "necesitás 2 meses").
+  const showDrawdown = diagLayout.slots.includes('drawdown')
+
+  // Params para la lectura IA — le pasamos lo que el frontend YA muestra
+  // (archetype + findings + verdicts) para que no contradiga la pantalla.
+  const diagAiParams = {
+    archetype: diagLayout.archetype,
+    findings: diagnosis.slice(0, 3).map(d => ({ category: d.category, severity: d.severity, text: d.text })),
+    verdicts: verdictItems.filter(v => v.pct != null).map(v => ({ label: v.label, pct: Math.round(v.pct * 10) / 10 })),
+    months_tracked: globalMonthly.length,
+    missing_prices: [],
+  }
+
   return (
     <div className="page-shell space-y-8">
       <PageHeader
@@ -1939,6 +2045,25 @@ function InsightsDesktop({ _embeddedTab }) {
         </div>
       )}
 
+      {/* ── Desde tu última visita — el gancho de retención ─────────────────── */}
+      {visitDelta && !visitDelta.isFirstVisit && (
+        <section className="bg-white dark:bg-bg-1 border border-line rounded p-4">
+          <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+            <p className="eyebrow">Desde tu última visita</p>
+            {visitDelta.sinceLabel && (
+              <span className="text-[11px] font-mono uppercase tracking-caps text-ink-3">{visitDelta.sinceLabel}</span>
+            )}
+          </div>
+          <DeltaSinceVisit delta={visitDelta} />
+        </section>
+      )}
+
+      {/* ── Tu lectura personalizada (IA) — arriba del tablero ───────────────── */}
+      <DiagnosticoSummaryBlock params={diagAiParams} />
+
+      {/* Veredicto ARRIBA para el conservador AR / cripto (su pregunta central). */}
+      {verdictFirst && verdictNode}
+
       {/* ── KPI strip overview (V2) ─────────────────────────────────────────── */}
       {(() => {
         const lastRow = chartData[chartData.length - 1] || {}
@@ -1962,20 +2087,9 @@ function InsightsDesktop({ _embeddedTab }) {
       })()}
 
       {/* Veredicto vs alternativas argentinas — de-buried: reusa las comparaciones
-          flow-matched ya computadas (vsPlazoFijo / vsDolar) + retorno real vs inflación. */}
-      <ArAlternativesVerdict
-        items={[
-          { key: 'plazo_fijo', label: 'Plazo fijo UVA', pct: vsPlazoFijo?.pct ?? null },
-          { key: 'dolar', label: 'Dólar', pct: vsDolar?.pct ?? null },
-          {
-            key: 'inflacion',
-            label: 'Inflación',
-            pct: (portfolioReturnArsPctRaw != null && isFinite(portfolioReturnArsPctRaw) && inflationCumArsWindow?.cumPct != null)
-              ? ((1 + portfolioReturnArsPctRaw / 100) / (1 + inflationCumArsWindow.cumPct / 100) - 1) * 100
-              : null,
-          },
-        ]}
-      />
+          flow-matched ya computadas. Si el arquetipo lo priorizó, ya se mostró
+          arriba (verdictFirst); si no, va acá, después del KPI. */}
+      {!verdictFirst && verdictNode}
 
       {/* ══════════════════════════════════════════════════════════════════════
           HERO — Diagnóstico con divulgación progresiva (2026-06-12).
@@ -2164,8 +2278,8 @@ function InsightsDesktop({ _embeddedTab }) {
 
       {/* Drawdown curve (underwater chart) — visualiza la profundidad
           y duración de las caídas sobre el rendimiento ajustado por flujos.
-          Visible en desktop y mobile (paridad de features — la diferencia
-          plataforma es de layout, no de contenido). */}
+          El motor la suprime sin ≥2 meses de serie (no placeholder). */}
+      {showDrawdown && (
       <AskAIAbout
         topic="insights.drawdown"
         params={{ window_days: 365 }}
@@ -2224,6 +2338,7 @@ function InsightsDesktop({ _embeddedTab }) {
         )}
       </div>
       </AskAIAbout>
+      )}
 
       {/* ── Atribución del crecimiento — mercado vs aportes ─────────────────── */}
       {discipline && discipline.total !== 0 && (
@@ -2865,77 +2980,14 @@ function InsightsDesktop({ _embeddedTab }) {
           )}
         </div>
 
-        {plan.can('insights.distribucion_activo') ? (
-          <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
-            <h2 className="font-semibold text-ink-0 mb-4">Por activo</h2>
-            {assetPieData.length === 0 ? (
-              <p className="text-ink-3 text-sm text-center py-8">—</p>
-            ) : (
-              <div className="space-y-3">
-                {assetPieData.map((d, i) => {
-                  const p = (d.value / totalPortfolio) * 100
-                  return (
-                    <div key={d.name}>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span className="text-ink-1">{d.name}</span>
-                        <span className="text-ink-3 tabular">{amt(d.value)} · {p.toFixed(1)}%</span>
-                      </div>
-                      <div className="h-2 bg-bg-2 dark:bg-bg-2/40 rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${p}%`, background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                      </div>
-                    </div>
-                  )
-                })}
-                {assetPieData[0] && assetPieData[0].value / totalPortfolio > 0.6 && (
-                  <p className="text-xs text-rendi-warn pt-2 flex items-start gap-1">
-                    <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
-                    Concentración elevada en {assetPieData[0].name} ({((assetPieData[0].value / totalPortfolio) * 100).toFixed(0)}%).
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        ) : (
-          <LockedSection.Placeholder
-            feature="insights.distribucion_activo"
-            title="Distribución por activo"
-            description="Visualizá cómo se reparte tu capital entre cada activo individual con concentración y alertas. Disponible en Rendi Pro."
-            source="insights_distribucion_activo"
-            className="min-h-[260px] flex flex-col items-center justify-center"
-          />
-        )}
-      </div>
-
-      {/* Distribución por tipo de activo (cripto / acción / CEDEAR / cash) */}
-      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
-        <div className="flex items-center gap-1.5 mb-4">
-          <h2 className="font-semibold text-ink-0">Distribución por tipo de activo</h2>
-          <InfoTooltip>
-            <p className="font-semibold text-ink-0">Cómo se calcula</p>
-            <p>Clasificación automática por ticker y broker:</p>
-            <p className="text-ink-3">• Cripto: tickers conocidos (BTC, ETH, SOL, etc.).</p>
-            <p className="text-ink-3">• CEDEAR/Acciones AR: posiciones en brokers locales.</p>
-            <p className="text-ink-3">• Acciones/ETFs: posiciones en brokers USD que no son cripto.</p>
-            <p className="text-ink-3">• Cash: posiciones marcadas como efectivo.</p>
-          </InfoTooltip>
+        {/* Composición POR ACTIVO — estándar para todos (antes Pro-gated). Cada
+            activo con su % del total, incluye cash. Reemplaza al viejo "Por
+            activo" gateado y al duplicado "Distribución por tipo" (ese cruce
+            por clase ya vive en el Perfil del inversor). */}
+        <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+          <h2 className="font-semibold text-ink-0 mb-4">Por activo</h2>
+          <CompositionByAsset rows={compositionRows} />
         </div>
-        {assetTypeBreakdown.length === 0 ? (
-          <p className="text-ink-3 text-sm text-center py-6">—</p>
-        ) : (
-          <div className="space-y-3">
-            {assetTypeBreakdown.map((d, i) => (
-              <div key={d.type}>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-ink-1">{d.type}</span>
-                  <span className="text-ink-3 tabular">{amt(d.value)} · {d.sharePct.toFixed(1)}%</span>
-                </div>
-                <div className="h-2 bg-bg-2 dark:bg-bg-2/40 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${d.sharePct}%`, background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
       </Section>
 

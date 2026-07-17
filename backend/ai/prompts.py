@@ -306,6 +306,11 @@ _FREE_FOCUS = {
         "Mejor y peor activo.",
         "Performance vs benchmarks si están en el packet.",
     ],
+    "insights.summary": [
+        "Un resumen de lo que se desprende del diagnóstico de tu cartera (concentración, exposición, riesgo, comportamiento).",
+        "Los 2-3 puntos más salientes de `top_findings` + de `verdicts` (le ganás/perdés a inflación/plazo fijo/dólar/S&P), conectados.",
+        "Sin inventar números: performance SOLO desde `verdicts`. NUNCA cites twr_pct_low_confidence (número no confiable). Si no hay historial suficiente (archetype 'new'/'empty'), decilo y contá qué se desbloquea.",
+    ],
     "insights.evolution": [
         "Mejor / peor mes y consistency_pct.",
         "TWR compoundeado del período.",
@@ -887,6 +892,45 @@ def render_insights_prompt(tier: str = "pro") -> str:
             "No predecir dirección futura.",
             "Si benchmarks son None, decirlo — no inventar comparación.",
             "No repetir el mismo número/ticker en dos sections distintas — densidad sobre redundancia.",
+        ],
+    )
+
+
+def render_insights_summary_prompt(tier: str = "pro") -> str:
+    view = "Tu lectura personalizada del Diagnóstico (SÍNTESIS conectada de toda la cartera — no un dato suelto, una lectura arriba del tablero)"
+    pkt = (
+        "archetype (empty/new/crypto/conservador_ar/completo), context "
+        "(months_tracked, n_positions, missing_prices, total_equity_usd), "
+        "exposure (cash/ar/us/crypto %), current_holdings_top (posiciones ABIERTAS "
+        "por market value), realized_attribution (trades CERRADOS), drawdown, "
+        "trades stats, vs_benchmarks (SOLO returns propios del bench), "
+        "twr_pct_low_confidence (NO citar), top_findings (diagnósticos ya "
+        "rankeados que el user ve), verdicts (le ganás/perdés a inflación/plazo "
+        "fijo/dólar/S&P — YA computados y mostrados)."
+    )
+    free = _maybe_free("insights.summary", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "SINTETIZÁ: elegí los 2-3 puntos que más importan para ESTE user (de top_findings + verdicts + exposure/concentración) y armá UNA lectura conectada. El tldr es el hallazgo #1, no un resumen genérico.",
+            "CONECTÁ: un hallazgo suele explicarse por otro. Ej: concentración alta en current_holdings_top[0] + drawdown reciente + cash bajo → la caída se explica por la concentración, no por mala suerte.",
+            "PERFORMANCE SOLO desde `verdicts`: 'le ganás a la inflación (+X%)' / 'quedaste debajo del S&P' se dice citando verdicts.*.pct. NUNCA con twr_pct_low_confidence ni inventando un %.",
+            "Adaptá al archetype: 'new'/'empty' → describí la foto de hoy (composición, cash) y qué se desbloquea con historial, sin narrar performance inexistente. 'conservador_ar' → foco inflación/renta fija, no métricas de trading. 'crypto' → concentración por coin y volatilidad.",
+        ],
+        insight_examples=[
+            "Le ganás a la inflación (+6%) pero el diagnóstico marca dos cosas que van juntas: NVDA es el 28% de la cartera y explica casi todo el resultado, y tenés 45% en cash sin desplegar. La cartera funciona mientras NVDA acompañe; el cash es el mayor freno pendiente.",
+            "Recién arrancás: 60% en cash y el resto en tres CEDEARs. Con esto se lee la foto de hoy, no todavía un diagnóstico de performance — eso se prende con un par de meses de historial. Lo que ya se ve: estás muy líquido, con margen para entrar de a poco.",
+        ],
+        pitfalls=[
+            "NUNCA cites twr_pct_low_confidence como número ('tu cartera hizo X%'). Para performance usá SOLO verdicts. Si verdicts está vacío, no afirmes performance.",
+            "NO inferir riesgo presente desde realized_attribution (trades cerrados). Concentración/exposición = current_holdings_top + exposure.",
+            "Si archetype 'new'/'empty' o months_tracked<2 → NO narres performance ni benchmarks como si hubiera historial; describí composición y qué falta.",
+            "Si hay missing_prices, aclaralo ('N activos a costo — valuación parcial'), no lo escondas.",
+            "NO card-por-card ni repetir literal los findings: es UNA lectura conectada, máximo 2-3 sections.",
+            "No 'deberías'/'te conviene'. Tono descriptivo-causal.",
         ],
     )
 

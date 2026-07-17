@@ -32,6 +32,7 @@ from .builders.profile_card import build as build_profile_card
 from .builders.profile_summary import build as build_profile_summary
 from .builders.metrics_pro_card import build as build_metrics_pro_card
 from .builders.insights import build as build_insights
+from .builders.insights_summary import build as build_insights_summary
 from .builders.insights_evolution import build as build_insights_evolution
 from .builders.insights_drawdown import build as build_insights_drawdown
 from .builders.insights_attribution import build as build_insights_attribution
@@ -68,6 +69,7 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "profile.summary": (build_profile_summary, prompts.render_profile_summary_prompt),
     "metrics_pro.card": (build_metrics_pro_card, prompts.render_metrics_pro_card_prompt),
     "insights": (build_insights, prompts.render_insights_prompt),
+    "insights.summary": (build_insights_summary, prompts.render_insights_summary_prompt),
     "insights.evolution": (build_insights_evolution, prompts.render_insights_evolution_prompt),
     "insights.drawdown": (build_insights_drawdown, prompts.render_insights_drawdown_prompt),
     "insights.attribution": (build_insights_attribution, prompts.render_insights_attribution_prompt),
