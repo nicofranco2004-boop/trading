@@ -24,6 +24,49 @@ describe('concentration_extreme', () => {
       totalPortfolio: 10000,
     })).toBe(null)
   })
+
+  it('clampa ~101% (divergencia de valuación) a 100% y lo muestra', () => {
+    const out = fire('concentration_extreme', {
+      pieData: [{ name: 'SID', value: 10100 }, { name: 'AAPL', value: 50 }],
+      totalPortfolio: 10000,   // Σ holdings > total por-broker → 101%
+    })
+    expect(out).toMatch(/SID/)
+    expect(out).toMatch(/100%/)
+    expect(out).not.toMatch(/101%/)
+  })
+
+  it('suprime valores absurdos (>110%, ej. bono per-100 mal valuado)', () => {
+    expect(fire('concentration_extreme', {
+      pieData: [{ name: 'AL30', value: 68900 }],
+      totalPortfolio: 10000,   // 689%
+    })).toBe(null)
+  })
+})
+
+describe('concentration_top3', () => {
+  it('cuenta dinámica: un solo activo → "1 activo" (no "3 activos")', () => {
+    const out = fire('concentration_top3', {
+      concentration: { top3: [{ asset: 'SID', value: 10000 }], sharePct: 100, totalAssets: 1 },
+    })
+    expect(out).toMatch(/1 activo:/)
+    expect(out).toMatch(/SID/)
+    expect(out).not.toMatch(/activos/)
+  })
+  it('tres activos → "3 activos"', () => {
+    const out = fire('concentration_top3', {
+      concentration: {
+        top3: [{ asset: 'AAPL', value: 5000 }, { asset: 'SID', value: 3000 }, { asset: 'KO', value: 1000 }],
+        sharePct: 90, totalAssets: 5,
+      },
+    })
+    expect(out).toMatch(/3 activos:/)
+    expect(out).toMatch(/AAPL, SID, KO/)
+  })
+  it('no dispara si la concentración top-3 es baja (<80%)', () => {
+    expect(fire('concentration_top3', {
+      concentration: { top3: [{ asset: 'A', value: 1 }], sharePct: 50, totalAssets: 4 },
+    })).toBe(null)
+  })
 })
 
 describe('growth_from_deposits', () => {

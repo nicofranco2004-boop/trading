@@ -25,6 +25,7 @@ import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
+import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { lookupHistoricalDolar } from '../utils/fx'
@@ -327,11 +328,15 @@ function InsightsDesktop({ _embeddedTab }) {
 
   const assetPieData = (() => {
     if (!positions.length || totalPortfolio <= 0) return []
+    const arsBrokerNames = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
     const valuesByAsset = {}
     for (const p of positions) {
       if (p.is_cash) continue
       const val = holdingValueUsd(p)   // clamp anti-distorsión incluido (fuente única)
-      const k = (p.asset || '').toUpperCase()
+      // Contexto AR/BYMA: colapsamos la especie a su canónico (la pata pesos 'SI' y la
+      // dólar 'SID' del CEDEAR de CSN → UN activo). Espeja Calidad de cartera.
+      const onBA = arsBrokerNames.has(p.broker) || isArUsdBroker(p.broker) || costInPesos(p)
+      const k = onBA ? cedearEspecieBase(p.asset) : (p.asset || '').toUpperCase()
       valuesByAsset[k] = (valuesByAsset[k] || 0) + val
     }
     return Object.entries(valuesByAsset)
@@ -1348,7 +1353,9 @@ function InsightsDesktop({ _embeddedTab }) {
     const top3Sum = top3.reduce((s, x) => s + x.value, 0)
     concentration = {
       top3,
-      sharePct: (top3Sum / totalPortfolio) * 100,
+      // La concentración no puede superar el 100%; un leve excedente (~101%) es
+      // divergencia de valuación/redondeo (Σ holdings vs total por-broker) → clamp.
+      sharePct: Math.min((top3Sum / totalPortfolio) * 100, 100),
       totalAssets: assetPieData.length,
     }
   }

@@ -67,9 +67,10 @@ export const DIAGNOSTIC_GENERATORS = [
       // distorsionado (cash muy negativo, o una valuación que no cierra) → no mostramos
       // un número absurdo (ej. 689%). El clamp de holdingValueUsd ya evita el caso más
       // común (bono con precio per-100/no reconocido), esto es el cinturón de seguridad.
-      if (!isFinite(sharePct) || sharePct < 50 || sharePct > 100.5) return null
-      const impact = sharePct * 0.2
-      return `**${top.name}** representa el **${sharePct.toFixed(0)}%** de tu cartera. Una caída del 20% en ese activo se traduce en **−${impact.toFixed(1)}%** sobre el total.`
+      if (!isFinite(sharePct) || sharePct < 50 || sharePct > 110) return null
+      const shownPct = Math.min(sharePct, 100)   // ~101% por redondeo de valuación → 100
+      const impact = shownPct * 0.2
+      return `**${top.name}** representa el **${shownPct.toFixed(0)}%** de tu cartera. Una caída del 20% en ese activo se traduce en **−${impact.toFixed(1)}%** sobre el total.`
     },
   },
   {
@@ -90,8 +91,10 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'warn',
     generate: ({ concentration }) => {
       if (!concentration || concentration.sharePct < 80) return null
-      const names = concentration.top3.map(t => t.asset).join(', ')
-      return `El **${concentration.sharePct.toFixed(0)}%** de la cartera está concentrado en 3 activos: **${names}**.`
+      const top = concentration.top3 || []
+      const n = top.length
+      const names = top.map(t => t.asset).join(', ')
+      return `El **${concentration.sharePct.toFixed(0)}%** de la cartera está concentrado en ${n} activo${n === 1 ? '' : 's'}: **${names}**.`
     },
   },
   {
