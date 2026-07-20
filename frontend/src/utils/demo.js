@@ -2996,10 +2996,19 @@ export function handleDemoRequest(method, path, body) {
     return _buildDemoAISummary(body?.ticker)
   }
 
-  // ── AI chat: respuesta hardcodeada explicando el demo
+  // ── AI chat: respuestas canned ESTRUCTURADAS (bloque ---RENDI---) para que
+  //    el demo muestre el diseño nuevo (veredicto + tarjetas + repreguntas).
   if (basePath === '/ai/chat') {
+    const _q = ((body?.messages || []).filter(m => m.role === 'user').pop()?.content || '').toLowerCase()
+    if (_q.includes('riesgo') || _q.includes('concentr') || _q.includes('sesgo')) {
+      return {
+        tier: 'pro',
+        reply: 'Tu mayor riesgo hoy es la concentración: NVDA pesa el 28% de la cartera y explicó dos tercios de la suba del mes. Si corrige 15%, el golpe directo al portfolio es de ~4 puntos. El segundo factor es el cash (~45% entre USDT y ARS), que te protege de una corrección pero también explica la mayor parte del gap contra el S&P.\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)\n---RENDI---{"verdict":"Ojo acá","tone":"warn","headline":"NVDA concentra el 28% — una corrección suya te pega ~4 puntos directos.","stats":[{"l":"Mayor posición","v":"NVDA · 28%","t":"warn"},{"l":"Si corrige 15%","v":"−4,2 pp","t":"neg"},{"l":"Cash sin invertir","v":"~45%","t":"warn"}],"followups":["¿Qué pasa si NVDA corrige 25%?","¿Me conviene rotar algo de NVDA?","¿Cómo despliego el cash gradualmente?"],"sources":["12 posiciones","3 brokers","snapshot demo"]}',
+      }
+    }
     return {
-      reply: 'Estás en modo demo. Para usar el coach con tu portfolio real, creá una cuenta gratis y subí tu CSV.',
+      tier: 'pro',
+      reply: 'La cartera demo vale US$ 41.416 y acumula +13,4% de ganancia no realizada. El motor es NVDA (28% del portfolio, +9,1% en el mes) — aportó dos tercios de la suba. INTC fue el mejor trade cerrado del año (+148%) y lo único que frena el rendimiento agregado es el cash: ~45% entre USDT y ARS que no está trabajando.\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)\n---RENDI---{"verdict":"Buen momento","tone":"pos","headline":"La cartera vale US$ 41.416, +13,4% no realizado, con NVDA de motor.","stats":[{"l":"Valor hoy","v":"US$ 41.416","t":"neutral"},{"l":"P&L no realizado","v":"+13,4%","t":"pos"},{"l":"Mayor posición","v":"NVDA · 28%","t":"warn"}],"followups":["¿Qué riesgos detectás en mi cartera?","¿Cómo evalúo mi win rate?","¿Cómo vengo contra el S&P 500?"],"sources":["12 posiciones","3 brokers","snapshot demo"]}',
     }
   }
 

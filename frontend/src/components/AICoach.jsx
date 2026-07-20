@@ -50,6 +50,21 @@ const DEFAULT_SUGGESTED = [
 // imports de React; ver B-14 del audit IA #2 — el regex viejo mutilaba
 // aritmética con asteriscos).
 import { stripMarkdown } from '../utils/stripMarkdown'
+import { parseStructured } from '../utils/aiStructured'
+
+// Tonos del bloque estructurado (veredicto pill + valores de las tarjetas).
+const VERDICT_TONE = {
+  pos:     'bg-rendi-pos/10 text-rendi-pos',
+  warn:    'bg-rendi-warn/10 text-rendi-warn',
+  neg:     'bg-rendi-neg/10 text-rendi-neg',
+  neutral: 'bg-bg-2 text-ink-1',
+}
+const STAT_TONE = {
+  pos:     'text-rendi-pos',
+  warn:    'text-rendi-warn',
+  neg:     'text-rendi-neg',
+  neutral: 'text-ink-0',
+}
 
 // fullHeight: modo página (/ai) — sin card-shell ni header propio (la página
 // pone su chrome), mensajes flex-1 que llenan el alto disponible.
@@ -378,24 +393,70 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         )}
 
         {/* Mensajes — user: burbuja violeta a la derecha; asistente: avatar ✦ +
-            bloque de texto limpio sin burbuja (clean pass 2026-07). */}
-        {messages.map((m, i) => (
-          m.role === 'user' ? (
-            <div key={i} className="flex justify-end">
-              <div className="max-w-[80%] bg-data-violet/12 border border-data-violet/30 text-ink-0 rounded-2xl rounded-br-md px-4 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap">
-                {m.content}
+            respuesta ESTRUCTURADA (veredicto + titular + prosa + tarjetas +
+            fuentes + repreguntas) cuando el modelo emite el bloque ---RENDI---;
+            fallback transparente a texto plano si no viene (clean pass 2026-07). */}
+        {messages.map((m, i) => {
+          if (m.role === 'user') {
+            return (
+              <div key={i} className="flex justify-end">
+                <div className="max-w-[80%] bg-data-violet/12 border border-data-violet/30 text-ink-0 rounded-2xl rounded-br-md px-4 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap">
+                  {m.content}
+                </div>
               </div>
-            </div>
-          ) : (
+            )
+          }
+          const { prose, meta } = parseStructured(m.content)
+          const isLastMsg = i === messages.length - 1
+          return (
             <div key={i} className="flex items-start gap-3">
               <div className="w-7 h-7 rounded-lg grid place-items-center text-white text-[12px] flex-none mt-0.5"
                 style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
-              <div className="flex-1 min-w-0 text-[14.5px] text-ink-1 leading-relaxed whitespace-pre-wrap pt-0.5">
-                {m.content}
+              <div className="flex-1 min-w-0 pt-0.5">
+                {meta?.verdict && (
+                  <span className={`inline-block text-[11.5px] font-bold px-2.5 py-1 rounded-full mb-2 ${VERDICT_TONE[meta.tone] || VERDICT_TONE.neutral}`}>
+                    {meta.verdict}
+                  </span>
+                )}
+                {meta?.headline && (
+                  <p className="text-[15.5px] font-semibold text-ink-0 leading-snug mb-1.5">{meta.headline}</p>
+                )}
+                <div className="text-[14.5px] text-ink-1 leading-relaxed whitespace-pre-wrap">{prose}</div>
+                {meta?.stats?.length > 0 && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3">
+                    {meta.stats.map((s, k) => (
+                      <div key={k} className="bg-bg-1 border border-line rounded-xl px-3 py-2.5">
+                        <div className="text-[11px] text-ink-3 font-medium mb-1">{s.l}</div>
+                        <div className={`text-[15px] font-semibold num tabular ${STAT_TONE[s.t] || STAT_TONE.neutral}`}>{s.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {meta?.sources?.length > 0 && (
+                  <div className="flex items-center gap-1.5 mt-2.5 flex-wrap text-[11px] text-ink-3">
+                    <span>Basado en</span>
+                    {meta.sources.map((s, k) => (
+                      <span key={k} className="bg-bg-1 border border-line/60 rounded-full px-2 py-0.5">{s}</span>
+                    ))}
+                  </div>
+                )}
+                {/* Repreguntas del modelo — solo en el último mensaje, y solo
+                    para tiers con chat libre (Free mandaría texto no-whitelisted
+                    → 403; su prompt tampoco las pide). */}
+                {isLastMsg && !loading && !sending && canChatFree && meta?.followups?.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-3">
+                    {meta.followups.map((f, k) => (
+                      <button key={k} type="button" onClick={() => send(f)}
+                        className="text-[12.5px] px-3 py-1.5 border border-data-violet/30 text-data-violet hover:bg-data-violet/10 rounded-full transition text-left">
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )
-        ))}
+        })}
 
         {loading && (
           <div className="flex justify-start">

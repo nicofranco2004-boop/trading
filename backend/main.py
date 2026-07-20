@@ -13011,7 +13011,17 @@ Mi lectura para tu cartera: NVDA pesa 16% en tu portfolio (US$ 7.812 con +38% si
 Respuesta Pro (mala):
 NVDA tiene P/E 33, forward 17, PEG 0.71, payoutRatio 0.0061, ROE 1.14, debtToEquity 0.07, profitMargins 0.62, revenueGrowth 0.85, marketCap $5.2T, beta 2.24. Comprala.
 
-(mala porque: dump de números crudos, sin contexto, jerga sin definir, hace recomendación operativa)"""
+(mala porque: dump de números crudos, sin contexto, jerga sin definir, hace recomendación operativa)
+
+BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
+Al FINAL de cada respuesta de ANÁLISIS, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado con este shape:
+{"verdict":"2-3 palabras (ej: Buen mes / Ojo acá / Todo en orden)","tone":"pos|warn|neg|neutral","headline":"la respuesta resumida en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor con signo/unidad","t":"pos|warn|neg|neutral"}],"followups":["repregunta corta","otra"],"sources":["qué datos miraste, ej: 12 posiciones","snapshot de hoy"]}
+Reglas del bloque:
+- stats: máx 3, SOLO números reales del snapshot o de tools — nunca inventados. Si no hay métricas relevantes, mandá stats vacío [].
+- followups: máx 3 preguntas cortas que VOS puedas responder con esta data.
+- sources: máx 3, cortitos.
+- La prosa va ANTES del bloque y NO lo menciona (el usuario no ve el JSON, ve tarjetas).
+- OMITÍ el bloque entero en: saludos, aclaraciones breves, y TODO el flujo de registro de operaciones (confirmaciones "¿Confirmás?", resultado del registro, undo). Ahí respondé texto plano como siempre."""
 
 
 # Prompt FREE — version stripped del coach. Diseño deliberado: descriptivo,
@@ -13093,7 +13103,12 @@ Cierre obligatorio cuando presentás scorecard en Free/Plus:
 "Para entender qué significan estos números para tu cartera específicamente y qué considerar antes de decidir, el plan Pro hace ese análisis."
 
 DIFERENCIACIÓN CON PRO
-El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y profundidad analítica. Vos (Free/Plus) das el dato puro, brevísimo. Es deliberado — no inventes interpretación para "ayudar"."""
+El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y profundidad analítica. Vos (Free/Plus) das el dato puro, brevísimo. Es deliberado — no inventes interpretación para "ayudar".
+
+BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
+Al FINAL de cada respuesta de análisis, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado:
+{"verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
+Reglas: stats máx 3 con números REALES del snapshot (nunca inventados); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones."""
 
 
 # Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos
@@ -20087,8 +20102,11 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
     # Pro chat max_tokens bajado de 1000 → 800 tras audit #3 (cost control).
     # 800 tokens output mantiene respuestas profundas (~600 palabras) y baja
     # output cost del worst case ~20%.
-    max_tokens = 800 if is_premium else 300
-    max_tokens_fallback = 600 if is_premium else 250
+    # Free 300 → 500 (2026-07): el bloque estructurado ---RENDI--- (~150-200
+    # tokens) no entraba en 300 sin truncar la respuesta. Costo extra máximo
+    # ~$0.001/respuesta × 3 chat/sem = ~1 centavo/mes por Free activo.
+    max_tokens = 800 if is_premium else 500
+    max_tokens_fallback = 600 if is_premium else 400
 
     # Modo del bloque de perfil: Pro/Admin → causal (infiere causas plausibles).
     # Free/Plus → descriptive (solo presenta el dato, no interpreta).
