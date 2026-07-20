@@ -517,3 +517,52 @@ describe('helpers', () => {
     expect(a).toBe(b)
   })
 })
+
+// ─── Métricas como diagnósticos (ex "Métricas Pro") ─────────────────────────
+describe('generadores de métricas (proMetrics)', () => {
+  const gen = (id) => DIAGNOSTIC_GENERATORS.find(g => g.id === id)
+  const full = {
+    cagr: { cagr: 0.18, totalGrowth: 0.2, months: 12 },
+    volatility: 0.22,
+    sharpe: { sharpe: 1.4, returnAnnual: 0.2, rfAnnual: 0.045, months: 8 },
+    sortino: { sortino: 1.9, downsideDev: 0.1, months: 8 },
+    alphaBeta: { beta: 1.15, alphaAnnual: 0.03, rSquared: 0.6, months: 8 },
+    infoRatio: { infoRatio: 0.7, activeReturn: 0.05, trackingError: 0.07 },
+    calmar: { calmar: 2.1 },
+  }
+
+  it('cada métrica fires con proMetrics completo y menciona su valor', () => {
+    expect(gen('metric_cagr').generate({ proMetrics: full })).toContain('+18.0%')
+    expect(gen('metric_volatility').generate({ proMetrics: full })).toContain('22.0%')
+    expect(gen('metric_sharpe').generate({ proMetrics: full })).toContain('1.40')
+    expect(gen('metric_sortino').generate({ proMetrics: full })).toContain('1.90')
+    expect(gen('metric_beta').generate({ proMetrics: full })).toContain('1.15')
+    expect(gen('metric_alpha').generate({ proMetrics: full })).toContain('+3.0%')
+    expect(gen('metric_info_ratio').generate({ proMetrics: full })).toContain('0.70')
+    expect(gen('metric_calmar').generate({ proMetrics: full })).toContain('2.10')
+  })
+
+  it('todas son severidad info (viven en el tier Diagnóstico)', () => {
+    for (const id of ['metric_cagr','metric_volatility','metric_sharpe','metric_sortino','metric_beta','metric_alpha','metric_info_ratio','metric_calmar']) {
+      expect(gen(id).severity).toBe('info')
+    }
+  })
+
+  it('no fires sin proMetrics ni con campos null/NaN', () => {
+    for (const id of ['metric_cagr','metric_volatility','metric_sharpe','metric_beta','metric_calmar']) {
+      expect(gen(id).generate({})).toBeNull()
+      expect(gen(id).generate({ proMetrics: null })).toBeNull()
+    }
+    expect(gen('metric_volatility').generate({ proMetrics: { volatility: NaN } })).toBeNull()
+    expect(gen('metric_sharpe').generate({ proMetrics: { sharpe: { sharpe: Infinity } } })).toBeNull()
+    expect(gen('metric_beta').generate({ proMetrics: { alphaBeta: null } })).toBeNull()
+    expect(gen('metric_cagr').generate({ proMetrics: { cagr: { cagr: 0.1, months: 1 } } })).toBeNull()  // <2 meses
+  })
+
+  it('selectDiagnostics las incluye cuando proMetrics está', () => {
+    const fired = selectDiagnostics({ proMetrics: full }, 999)
+    const ids = fired.map(f => f.id)
+    expect(ids).toContain('metric_sharpe')
+    expect(ids).toContain('metric_volatility')
+  })
+})

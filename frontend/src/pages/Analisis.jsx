@@ -6,23 +6,19 @@
 // fácil si la decisión de fusionar no funciona en producción.
 //
 // Tabs:
-//   • Diagnóstico    → contenido de /insights (cards de diagnóstico arriba,
+//   • Diagnóstico    → contenido de /insights (grilla 3×3 de diagnósticos,
 //                      benchmarks, comparativa) — la narrativa "qué te dice
-//                      el sistema sobre tu performance"
-//   • Métricas Pro   → /insights pero scrolleado a la sección de métricas
-//                      Pro (Sharpe, Sortino, Alpha, IR, Vol, Beta)
+//                      el sistema sobre tu performance". Las métricas de
+//                      riesgo/retorno (Sharpe, Sortino, Alpha, IR, Vol, Beta,
+//                      CAGR, Calmar) que antes tenían pestaña propia ("Métricas
+//                      Pro") ahora son generadores de diagnóstico y entran a la
+//                      misma grilla — por eso pasamos de 5 tabs a 4.
 //   • Comportamiento → contenido completo de /comportamiento (12 sesgos)
 //   • Reportes       → contenido completo de /reportes (timeline mensual)
-//
-// Nota técnica: Insights.jsx tiene TANTO el diagnóstico arriba como las
-// métricas Pro adentro. Para separarlos en 2 tabs distintos sin tocar
-// Insights.jsx, usamos un hash en la URL (`#metrics`) y scroll auto. Eso
-// permite mostrar el mismo componente pero scrolleado a la sección
-// relevante. Phase 2 (si vale la pena) sería partir Insights en 2 sub-pages.
 
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom'
-import { Compass, TrendingUp, Brain, BarChart3, UserRound } from 'lucide-react'
+import { Compass, Brain, BarChart3, UserRound } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import { track } from '../utils/track'
 
@@ -34,7 +30,6 @@ const Reports = lazy(() => import('./Reports'))
 
 const TABS = [
   { id: 'diagnostico',    label: 'Diagnóstico',         icon: Compass,    desc: 'Lo que te dice el sistema sobre tu performance' },
-  { id: 'metricas',       label: 'Métricas',            icon: TrendingUp, desc: 'Sharpe, Sortino, Alpha, IR, Volatilidad, Beta' },
   { id: 'perfil',         label: 'Perfil del inversor', icon: UserRound,  desc: 'Test + cruce con tu cartera real' },
   { id: 'comportamiento', label: 'Comportamiento',      icon: Brain,      desc: 'Sesgos detectados sobre tu historial' },
   { id: 'reportes',       label: 'Reportes',            icon: BarChart3,  desc: 'Performance mensual y timeline' },
@@ -48,7 +43,7 @@ export default function Analisis() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  // Tab desde URL (?tab=metricas). Default = diagnostico. Inválidos caen al default.
+  // Tab desde URL (?tab=comportamiento). Default = diagnostico. Inválidos caen al default.
   const urlTab = searchParams.get('tab')
   const initialTab = urlTab && VALID_TAB_IDS.has(urlTab) ? urlTab : DEFAULT_TAB
   const [tab, setTab] = useState(initialTab)
@@ -118,7 +113,6 @@ export default function Analisis() {
       {/* Tab content — lazy boundary por tab (cada uno es un chunk separado) */}
       <Suspense fallback={<div className="text-center py-20 text-ink-3 text-sm">Cargando…</div>}>
         {tab === 'diagnostico' && <Insights _embeddedTab="diagnostico" />}
-        {tab === 'metricas' && <Insights _embeddedTab="metricas" />}
         {tab === 'perfil' && (
           // El TEST se migró a Configuración › Test de inversor. Acá queda sólo
           // el cruce cartera-vs-perfil declarado. Si el test no está completo,

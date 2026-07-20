@@ -844,6 +844,108 @@ export const DIAGNOSTIC_GENERATORS = [
       return `${idleBrokers.length === 1 ? 'Tu broker' : 'Tus brokers'} ${list} ${idleBrokers.length === 1 ? 'tiene' : 'tienen'} cash sin invertir por **${fmtUsd(total)}** total. Si la tesis era esperar oportunidad, considerá si el costo de oportunidad lo justifica.`
     },
   },
+
+  // ─── Métricas de riesgo/retorno (ex "Métricas Pro" — ahora diagnósticos
+  // normales dentro de la grilla). Cada una fires si computeProMetrics la pudo
+  // calcular (≥3 meses para stats; ≥6 para alpha/beta/IR vs S&P). Todas
+  // severidad 'info' → viven en el tier "Diagnóstico". ────────────────────────
+  {
+    id: 'metric_cagr',
+    category: 'Performance',
+    severity: 'info',
+    generate: ({ proMetrics }) => {
+      const c = proMetrics?.cagr
+      if (!c || c.cagr == null || !isFinite(c.cagr) || (c.months || 0) < 2) return null
+      const pct = (c.cagr * 100).toFixed(1)
+      return `Tu CAGR anualizado es **${c.cagr >= 0 ? '+' : ''}${pct}%**. Es el ritmo de crecimiento compuesto de tu cartera proyectado a un año, sobre ${c.months} ${c.months === 1 ? 'mes' : 'meses'} de historial.`
+    },
+  },
+  {
+    id: 'metric_volatility',
+    category: 'Riesgo',
+    severity: 'info',
+    generate: ({ proMetrics }) => {
+      const v = proMetrics?.volatility
+      if (v == null || !isFinite(v)) return null
+      const pct = (v * 100).toFixed(1)
+      const band = v < 0.10 ? 'baja (perfil conservador)'
+        : v < 0.20 ? 'moderada (similar a equities diversificadas)'
+        : v < 0.40 ? 'alta (cartera concentrada o sectorial)'
+        : 'muy alta (cripto / especulativo)'
+      return `Tu volatilidad anualizada es **${pct}%** — ${band}. Mide cuánto varían tus retornos mes a mes; el S&P 500 ronda 15-18%.`
+    },
+  },
+  {
+    id: 'metric_sharpe',
+    category: 'Performance',
+    severity: 'info',
+    generate: ({ proMetrics }) => {
+      const s = proMetrics?.sharpe
+      if (!s || s.sharpe == null || !isFinite(s.sharpe)) return null
+      const band = s.sharpe < 0 ? 'negativo — no compensaste el riesgo tomado'
+        : s.sharpe < 1 ? 'aceptable' : s.sharpe < 2 ? 'bueno' : 'excelente'
+      return `Tu Sharpe ratio es **${s.sharpe.toFixed(2)}** (${band}). Mide el retorno por unidad de riesgo total; por encima de 1 se considera bueno.`
+    },
+  },
+  {
+    id: 'metric_sortino',
+    category: 'Performance',
+    severity: 'info',
+    generate: ({ proMetrics }) => {
+      const s = proMetrics?.sortino
+      if (!s || s.sortino == null || !isFinite(s.sortino)) return null
+      return `Tu Sortino ratio es **${s.sortino.toFixed(2)}**. Como el Sharpe pero penalizando solo la volatilidad a la BAJA — más justo si tenés meses muy buenos que inflan el desvío total.`
+    },
+  },
+  {
+    id: 'metric_beta',
+    category: 'Riesgo',
+    severity: 'info',
+    generate: ({ proMetrics }) => {
+      const ab = proMetrics?.alphaBeta
+      if (!ab || ab.beta == null || !isFinite(ab.beta)) return null
+      const val = ab.beta.toFixed(2)
+      const band = ab.beta > 1.2 ? 'más volátil que el mercado'
+        : ab.beta < 0 ? 'te movés en contra del mercado (hedge)'
+        : ab.beta < 0.8 ? 'más defensiva que el mercado'
+        : 'te movés parecido al mercado'
+      return `Tu beta vs S&P 500 es **${val}** — ${band}. Por cada 1% que se mueve el S&P, tu cartera se mueve ~${val}% (en promedio histórico).`
+    },
+  },
+  {
+    id: 'metric_alpha',
+    category: 'Performance',
+    severity: 'info',
+    generate: ({ proMetrics }) => {
+      const ab = proMetrics?.alphaBeta
+      if (!ab || ab.alphaAnnual == null || !isFinite(ab.alphaAnnual)) return null
+      const pos = ab.alphaAnnual >= 0
+      const pct = (ab.alphaAnnual * 100).toFixed(1)
+      return `Tu alpha anualizado vs S&P 500 es **${pos ? '+' : ''}${pct}%**. Es el rendimiento ${pos ? 'por encima' : 'por debajo'} de lo que explicaría tu beta — ${pos ? 'el valor que agregaste vos' : 'quedaste corto vs el riesgo de mercado que tomaste'}.`
+    },
+  },
+  {
+    id: 'metric_info_ratio',
+    category: 'Performance',
+    severity: 'info',
+    generate: ({ proMetrics }) => {
+      const ir = proMetrics?.infoRatio
+      if (!ir || ir.infoRatio == null || !isFinite(ir.infoRatio)) return null
+      return `Tu Information Ratio es **${ir.infoRatio.toFixed(2)}**. Mide qué tan CONSISTENTE fue tu exceso de retorno sobre el S&P 500 (no solo cuánto, sino qué tan estable) — por encima de 0.5 es sólido.`
+    },
+  },
+  {
+    id: 'metric_calmar',
+    category: 'Performance',
+    severity: 'info',
+    generate: ({ proMetrics }) => {
+      const c = proMetrics?.calmar
+      if (!c || c.calmar == null || !isFinite(c.calmar)) return null
+      const band = c.calmar < 0 ? 'negativo (CAGR negativo)'
+        : c.calmar < 1 ? 'moderado' : c.calmar < 3 ? 'bueno' : 'excelente'
+      return `Tu Calmar ratio es **${c.calmar.toFixed(2)}** (${band}). Es tu retorno anualizado dividido por tu peor caída — cuánto rendiste por cada unidad de "dolor" (drawdown) sufrido.`
+    },
+  },
 ]
 
 // ─── Selector ───────────────────────────────────────────────────────────────
