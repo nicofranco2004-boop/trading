@@ -1,38 +1,25 @@
-// Sidebar — navegación lateral colapsable (V2).
+// Sidebar — navegación lateral colapsable (V3).
 // ═══════════════════════════════════════════════════════════════════════════
-// Patrón Linear/Stripe: dos estados (220px expandida / 56px colapsada a iconos),
-// toggle con hamburguesa, preferencia persistida en localStorage.
+// Reestructura 2026-07: de links planos a 3 secciones ACORDEÓN que se despliegan
+// al tocarlas (menos ruido, más aire). Afuera del acordeón, siempre visibles:
+// Alertas e Importar (acciones a mano, no escondidas). Rendi AI arriba; utilidades
+// (Guía / Config / Recomendaciones) + cuenta abajo.
 //
-// Estructura:
-// • Ancho dinámico via CSS variable --sidebar-w (consumida por main en App.jsx)
-// • Items agrupados en 3 secciones lógicas (Análisis / Data / Personal)
-// • Activo: text-ink-0 + barra vertical 2px signal verde
-// • Tooltips nativos (title attr) cuando está colapsada
-// • Footer: Configuración + user info + theme toggle + logout
+// Dos estados de ancho (igual que antes):
+// • Expandida (220px): acordeón con labels.
+// • Colapsada (56px): íconos planos de cada destino (el acordeón no aplica).
+//   Preferencia persistida en localStorage.
 //
-// Mobile: no responsive en V2. Vendrá design mobile-only aparte.
+// La sección de la ruta activa se abre sola. Acordeón de a uno (abrir una cierra
+// las demás). Mobile: design aparte.
 
 import { useEffect, useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import {
-  Home as HomeIcon, LineChart, Briefcase, List, Settings, LogOut,
-  Sun, Moon, Compass, Shield, Bell, Upload, Menu, Sparkles,
-  MessageCircle, BookOpen, Gauge,
+  Briefcase, List, Wallet, LineChart, Activity, Newspaper, Compass, TrendingUp,
+  Gauge, Bell, Upload, BookOpen, Settings, MessageCircle, Sparkles, Shield,
+  Sun, Moon, LogOut, Menu, ChevronRight,
 } from 'lucide-react'
-// NOTA: Sparkles se mantiene importado porque lo usa el botón del Coach IA.
-// Restructure 2026-05-27: sidebar de 11 → 6 items para reducir ruido visual.
-// - Dashboard salió del nav (fusionado en Cartera /posiciones).
-// - Comportamiento + Reportes salieron (fusionados en Análisis /analisis con tabs).
-// - Insights renombrado a "Análisis" (más claro qué es).
-// - "Importar CSV" se mantiene como item separado para descubrimiento (decisión
-//   del user — la carga de CSV es un job crítico que tiene que estar visible).
-//   Renombrado de "Importes" → "Importar CSV" 2026-06-01 (Importes confundía,
-//   parecía referirse a "importes" $ — Importar es claramente la acción y CSV
-//   precisa el formato).
-// - Wrapped quedó fuera desde antes (futuro trigger anual de diciembre).
-// - Perfil de inversor pasó a ser una TAB de Análisis (el test es input y las
-//   cards de cruce son output — viven juntos). Grupo "Personal" del sidebar
-//   eliminado entero.
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
@@ -44,40 +31,67 @@ const SIDEBAR_W_EXPANDED = '220px'
 const SIDEBAR_W_COLLAPSED = '56px'
 const LS_KEY = 'rendi_sidebar_collapsed'
 
-// Sidebar restructurado — 6 items en 2 grupos lógicos.
-// • Tu portfolio: lo que pasa con tu plata (estática + flujos)
-// • Análisis: contexto y entendimiento (fusiona Insights/Comportamiento/
-//             Reportes/Perfil del inversor)
-//
-// Objetivos se integra como tab dentro de Cartera. Perfil de inversor se
-// integra como tab dentro de Análisis. Nada de "Personal" como grupo aparte.
+// ── 3 secciones acordeón ──────────────────────────────────────────────────
+// • Tu Cartera: lo que tenés y moviste (lo que navegás seguido).
+// • Mercado:    qué pasa afuera (el pulso del día + las noticias).
+// • Análisis:   entender e interpretar (performance + calidad de tenencias).
+// NOTA: el ítem "Rendimiento" (/analisis) se llamaba "Análisis"; se renombró
+// para no chocar con el nombre del grupo. Si preferís, volvé a "Análisis" o
+// "Diagnóstico".
 const GROUPS = [
   {
-    label: 'Tu cartera',
+    id: 'cartera', label: 'Tu Cartera', icon: Wallet,
     items: [
-      { to: '/',            label: 'Mercado',       icon: LineChart },
-      { to: '/posiciones',  label: 'Cartera',       icon: Briefcase },
-      { to: '/operaciones', label: 'Movimientos',   icon: List },
-      { to: '/imports',     label: 'Importar CSV',  icon: Upload },
+      { to: '/posiciones',  label: 'Cartera',      icon: Briefcase },
+      { to: '/operaciones', label: 'Movimientos',  icon: List },
     ],
   },
   {
-    label: 'Analytics',
+    id: 'mercado', label: 'Mercado', icon: LineChart,
     items: [
-      { to: '/analisis',    label: 'Análisis',      icon: Compass },
+      { to: '/',          label: 'Resumen',   icon: Activity },
+      { to: '/novedades', label: 'Novedades', icon: Newspaper },
+    ],
+  },
+  {
+    id: 'analisis', label: 'Análisis', icon: Compass,
+    items: [
+      { to: '/analisis',     label: 'Rendimiento',        icon: TrendingUp },
       { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge },
-      { to: '/novedades',   label: 'Novedades',     icon: Bell },
     ],
   },
 ]
+
+// Sueltos — siempre visibles, fuera del acordeón (acciones a mano).
+const LOOSE = [
+  { to: '/alertas', label: 'Alertas',  icon: Bell,    dot: true },
+  { to: '/imports', label: 'Importar', icon: Upload },
+]
+
+const ALL_LEAVES = GROUPS.flatMap(g => g.items)
+
+// ¿La ruta actual cae dentro de este `to`? '/' es exacto; el resto por prefijo.
+function matchPath(pathname, to) {
+  if (to === '/') return pathname === '/'
+  return pathname === to || pathname.startsWith(to + '/')
+}
 
 export default function Sidebar() {
   const { user, logout } = useAuth()
   const { dark, toggle } = useTheme()
   const coachDrawer = useCoachDrawer()
+  const location = useLocation()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
-  // Modal de recomendaciones. Trigger desde el footer del sidebar.
   const [recomOpen, setRecomOpen] = useState(false)
+
+  // Grupo de la ruta activa (para abrirlo solo).
+  const activeGroupId = GROUPS.find(g => g.items.some(it => matchPath(location.pathname, it.to)))?.id
+  const [openGroup, setOpenGroup] = useState(activeGroupId || 'cartera')
+
+  // Al navegar a una ruta de otro grupo, abrir ese grupo.
+  useEffect(() => {
+    if (activeGroupId) setOpenGroup(activeGroupId)
+  }, [activeGroupId])
 
   // Persistir + setear CSS var consumida por <main> (margin dinámico)
   useEffect(() => {
@@ -88,16 +102,15 @@ export default function Sidebar() {
     )
   }, [collapsed])
 
-  const allGroups = [
-    // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.
-    ...GROUPS.map(g => ({
-      ...g,
-      items: g.items.filter(it => !it.adminOnly || user?.is_admin),
-    })),
-    ...(user?.is_admin
-      ? [{ label: 'Admin', items: [{ to: '/admin', label: 'Admin', icon: Shield }] }]
-      : []),
-  ]
+  // Clases compartidas de una fila-link con ícono (colapsada o utilidad).
+  const rowCls = ({ isActive }) =>
+    `relative flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
+      isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
+    }`
+
+  const ActiveBar = () => (
+    <span aria-hidden className="absolute left-0 top-1 bottom-1 w-0.5 bg-data-violet rounded-full" />
+  )
 
   return (
     <>
@@ -107,15 +120,9 @@ export default function Sidebar() {
     >
       {/* Top: logo + toggle hamburguesa */}
       <div className="flex items-center h-14 border-b border-line flex-shrink-0 px-2">
-        <NavLink
-          to="/"
-          className="flex items-center gap-2.5 flex-1 px-2 overflow-hidden"
-          title={collapsed ? 'Rendi' : undefined}
-        >
+        <NavLink to="/" className="flex items-center gap-2.5 flex-1 px-2 overflow-hidden" title={collapsed ? 'Rendi' : undefined}>
           <RendiLogo size={40} />
-          {!collapsed && (
-            <span className="font-semibold text-xl tracking-tight text-ink-0">rendi</span>
-          )}
+          {!collapsed && <span className="font-semibold text-xl tracking-tight text-ink-0">rendi</span>}
         </NavLink>
         <button
           onClick={() => setCollapsed(c => !c)}
@@ -129,125 +136,132 @@ export default function Sidebar() {
 
       {/* Navegación */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-2">
-        {/* Coach IA — botón especial que abre drawer (no navega).
-            Va arriba de todo con su propio bloque visualmente diferenciado
-            (acento violet) para que se note como feature distintivo. */}
+        {/* Rendi AI — botón especial que abre drawer (no navega). */}
         <div className="mb-3">
           {!collapsed && (
-            <p className="px-2.5 mb-1 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">
-              Asistente
-            </p>
+            <p className="px-2.5 mb-1 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">Asistente</p>
           )}
           <button
             type="button"
             onClick={() => coachDrawer.open()}
-            title={collapsed ? 'Coach IA' : undefined}
+            title={collapsed ? 'Rendi AI' : undefined}
             className={`relative w-full flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors text-data-violet hover:bg-data-violet/10`}
           >
             <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-            {!collapsed && <span>Coach IA</span>}
+            {!collapsed && <span>Rendi AI</span>}
           </button>
         </div>
 
-        {allGroups.map((group, gi) => (
-          <div key={group.label} className={gi > 0 ? 'mt-4' : ''}>
-            {!collapsed && (
-              <p className="px-2.5 mb-1 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">
-                {group.label}
-              </p>
-            )}
-            {collapsed && gi > 0 && (
-              <div className="border-t border-line/40 my-2 mx-1" aria-hidden="true" />
-            )}
-            <div className="space-y-0.5">
-              {group.items.map(({ to, label, icon: Icon }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  end={to === '/'}
-                  title={collapsed ? label : undefined}
-                  onMouseEnter={() => prefetchRoute(to)}
-                  onFocus={() => prefetchRoute(to)}
-                  className={({ isActive }) =>
-                    `relative flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'text-ink-0 bg-bg-2'
-                        : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
-                    }`
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
-                      {!collapsed && <span>{label}</span>}
-                      {isActive && !collapsed && (
-                        <span
-                          aria-hidden
-                          className="absolute left-0 top-1 bottom-1 w-0.5 bg-data-violet rounded-full"
-                        />
-                      )}
-                      {isActive && collapsed && (
-                        <span
-                          aria-hidden
-                          className="absolute left-0 top-1 bottom-1 w-0.5 bg-data-violet rounded-full"
-                        />
-                      )}
-                    </>
-                  )}
-                </NavLink>
-              ))}
-            </div>
+        {collapsed ? (
+          /* ── Colapsada: íconos planos de cada destino (sin acordeón) ── */
+          <div className="space-y-0.5">
+            {ALL_LEAVES.map(({ to, label, icon: Icon }) => (
+              <NavLink key={to} to={to} end={to === '/'} title={label}
+                onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
+                className={rowCls}>
+                {({ isActive }) => (<><Icon size={14} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}</>)}
+              </NavLink>
+            ))}
           </div>
-        ))}
+        ) : (
+          /* ── Expandida: 3 secciones acordeón ── */
+          <div className="space-y-1">
+            {GROUPS.map((group) => {
+              const isOpen = openGroup === group.id
+              const GroupIcon = group.icon
+              return (
+                <div key={group.id}>
+                  <button
+                    type="button"
+                    onClick={() => setOpenGroup(o => (o === group.id ? null : group.id))}
+                    aria-expanded={isOpen}
+                    className={`w-full flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-sm text-sm font-semibold transition-colors ${
+                      isOpen ? 'text-ink-0' : 'text-ink-1 hover:text-ink-0 hover:bg-bg-1'
+                    }`}
+                  >
+                    <GroupIcon size={15} strokeWidth={1.75} aria-hidden="true"
+                      className={isOpen ? 'text-data-violet' : 'text-ink-2'} />
+                    <span className="flex-1 text-left">{group.label}</span>
+                    <ChevronRight size={14} strokeWidth={2}
+                      className={`text-ink-3 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
+                  </button>
+                  <div className={`overflow-hidden transition-all duration-200 ease-out ${isOpen ? 'max-h-40 opacity-100' : 'max-h-0 opacity-0'}`}>
+                    <div className="pt-0.5 pb-1 space-y-0.5">
+                      {group.items.map(({ to, label, icon: Icon }) => (
+                        <NavLink key={to} to={to} end={to === '/'} title={label}
+                          onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
+                          className={({ isActive }) =>
+                            `relative flex items-center gap-2.5 pl-9 pr-2 py-1.5 rounded-sm text-sm transition-colors ${
+                              isActive ? 'text-ink-0 bg-bg-2 font-medium' : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
+                            }`}>
+                          {({ isActive }) => (<><Icon size={14} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}<span>{label}</span></>)}
+                        </NavLink>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </nav>
 
-      {/* Footer: guía + configuración + recomendaciones + user + toggle + logout */}
+      {/* Footer: sueltos (Alertas / Importar) + utilidades + cuenta */}
       <div className="border-t border-line px-2 py-2 flex-shrink-0">
-        {/* Guía — manual completo de uso. Linkeada acá para que esté siempre
-            accesible sin ocupar lugar en el nav principal (es referencia, no
-            navegación frecuente). */}
-        <NavLink
-          to="/guia"
-          title={collapsed ? 'Guía' : undefined}
-          onMouseEnter={() => prefetchRoute('/guia')}
-          onFocus={() => prefetchRoute('/guia')}
+        {/* Sueltos — siempre visibles, tinta más fuerte que las utilidades */}
+        {LOOSE.map(({ to, label, icon: Icon, dot }) => (
+          <NavLink key={to} to={to} title={collapsed ? label : undefined}
+            onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
+            className={({ isActive }) =>
+              `relative flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
+                isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-1 hover:text-ink-0 hover:bg-bg-1'
+              }`}>
+            {({ isActive }) => (
+              <>
+                <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span className="flex-1">{label}</span>}
+                {dot && (
+                  <span aria-hidden
+                    className={`w-1.5 h-1.5 rounded-full bg-data-violet ${collapsed ? 'absolute top-1.5 right-1.5' : ''}`}
+                    style={collapsed ? undefined : { boxShadow: '0 0 0 3px rgba(139,125,255,0.12)' }} />
+                )}
+                {isActive && <ActiveBar />}
+              </>
+            )}
+          </NavLink>
+        ))}
+
+        <div className="border-t border-line/40 my-1.5 mx-1" aria-hidden="true" />
+
+        {user?.is_admin && (
+          <NavLink to="/admin" title={collapsed ? 'Admin' : undefined} className={rowCls}>
+            {({ isActive }) => (<><Shield size={14} strokeWidth={1.75} aria-hidden="true" />{!collapsed && <span>Admin</span>}{isActive && <ActiveBar />}</>)}
+          </NavLink>
+        )}
+
+        <NavLink to="/guia" title={collapsed ? 'Guía' : undefined}
+          onMouseEnter={() => prefetchRoute('/guia')} onFocus={() => prefetchRoute('/guia')}
           className={({ isActive }) =>
             `flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
-              isActive
-                ? 'text-ink-0 bg-bg-2'
-                : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
-            }`
-          }
-        >
+              isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1 hover:bg-bg-1'
+            }`}>
           <BookOpen size={14} strokeWidth={1.75} aria-hidden="true" />
           {!collapsed && <span>Guía</span>}
         </NavLink>
 
-        <NavLink
-          to="/config"
-          title={collapsed ? 'Configuración' : undefined}
-          onMouseEnter={() => prefetchRoute('/config')}
-          onFocus={() => prefetchRoute('/config')}
+        <NavLink to="/config" title={collapsed ? 'Configuración' : undefined}
+          onMouseEnter={() => prefetchRoute('/config')} onFocus={() => prefetchRoute('/config')}
           className={({ isActive }) =>
             `flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
-              isActive
-                ? 'text-ink-0 bg-bg-2'
-                : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
-            }`
-          }
-        >
+              isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1 hover:bg-bg-1'
+            }`}>
           <Settings size={14} strokeWidth={1.75} aria-hidden="true" />
           {!collapsed && <span>Configuración</span>}
         </NavLink>
 
-        {/* Recomendaciones — abre modal in-app. Tono violet sutil para que se
-            distinga de "Configuración" sin ser invasivo. */}
-        <button
-          type="button"
-          onClick={() => setRecomOpen(true)}
+        <button type="button" onClick={() => setRecomOpen(true)}
           title={collapsed ? 'Recomendaciones' : 'Mandanos una recomendación'}
-          className={`w-full flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors text-ink-2 hover:text-data-violet hover:bg-data-violet/[0.06]`}
-        >
+          className={`w-full flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors text-ink-3 hover:text-data-violet hover:bg-data-violet/[0.06]`}>
           <MessageCircle size={14} strokeWidth={1.75} aria-hidden="true" />
           {!collapsed && <span>Recomendaciones</span>}
         </button>
@@ -255,72 +269,48 @@ export default function Sidebar() {
         {/* User row: nombre + badge de plan (solo expandida) */}
         {user && !collapsed && (
           <div className="px-1 mt-1 mb-1 flex items-center gap-1.5 min-w-0">
-            <span className="flex-1 text-[11px] text-ink-3 truncate font-mono" title={user.name}>
-              {user.name}
-            </span>
+            <span className="flex-1 text-[11px] text-ink-3 truncate font-mono" title={user.name}>{user.name}</span>
             <PlanBadge tier={user.tier} />
           </div>
         )}
 
         {/* Action buttons: theme + logout (siempre visibles) */}
         <div className={`flex items-center gap-1 ${collapsed ? 'flex-col mt-1' : 'px-1'}`}>
-          {/* En modo colapsado, solo el badge mini centrado arriba */}
           {user && collapsed && (
-            <div title={`Plan ${user.tier || 'free'}`} className="mb-1">
-              <PlanBadge tier={user.tier} compact />
-            </div>
+            <div title={`Plan ${user.tier || 'free'}`} className="mb-1"><PlanBadge tier={user.tier} compact /></div>
           )}
-          <button
-            onClick={toggle}
+          <button onClick={toggle}
             className="p-1.5 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-1 transition-colors"
-            title={dark ? 'Modo claro' : 'Modo oscuro'}
-            aria-label={dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
-          >
-            {dark
-              ? <Sun size={13} strokeWidth={1.75} aria-hidden="true" />
-              : <Moon size={13} strokeWidth={1.75} aria-hidden="true" />}
+            title={dark ? 'Modo claro' : 'Modo oscuro'} aria-label={dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}>
+            {dark ? <Sun size={13} strokeWidth={1.75} aria-hidden="true" /> : <Moon size={13} strokeWidth={1.75} aria-hidden="true" />}
           </button>
-          <button
-            onClick={logout}
+          <button onClick={logout}
             className="p-1.5 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-1 transition-colors"
-            title="Cerrar sesión"
-            aria-label="Cerrar sesión"
-          >
+            title="Cerrar sesión" aria-label="Cerrar sesión">
             <LogOut size={13} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
       </div>
     </aside>
 
-    {/* Modal recomendaciones — fuera del aside porque usa fixed inset-0 */}
     <RecommendationsModal open={recomOpen} onClose={() => setRecomOpen(false)} />
     </>
   )
 }
 
 // ─── PlanBadge ───────────────────────────────────────────────────────────────
-// Mini badge tier-aware. Compact=true muestra solo un dot pequeño (modo
-// colapsado de la sidebar). Default muestra label corto + color.
 function PlanBadge({ tier, compact = false }) {
   const t = tier || 'free'
   const styles = {
-    free:  { label: 'FREE',  bg: 'bg-bg-2',                 text: 'text-ink-2',         dot: 'bg-ink-3' },
-    plus:  { label: 'PLUS',  bg: 'bg-data-cyan/15',         text: 'text-data-cyan',     dot: 'bg-data-cyan' },
-    pro:   { label: 'PRO',   bg: 'bg-data-violet/15',       text: 'text-data-violet',   dot: 'bg-data-violet' },
-    admin: { label: 'ADMIN', bg: 'bg-rendi-pos/15',         text: 'text-rendi-pos',     dot: 'bg-rendi-pos' },
+    free:  { label: 'FREE',  bg: 'bg-bg-2',           text: 'text-ink-2',       dot: 'bg-ink-3' },
+    plus:  { label: 'PLUS',  bg: 'bg-data-cyan/15',   text: 'text-data-cyan',   dot: 'bg-data-cyan' },
+    pro:   { label: 'PRO',   bg: 'bg-data-violet/15', text: 'text-data-violet', dot: 'bg-data-violet' },
+    admin: { label: 'ADMIN', bg: 'bg-rendi-pos/15',   text: 'text-rendi-pos',   dot: 'bg-rendi-pos' },
   }
   const s = styles[t] || styles.free
-  if (compact) {
-    return (
-      <span className={`inline-block w-1.5 h-1.5 rounded-full ${s.dot}`} aria-label={`Plan ${s.label}`} />
-    )
-  }
+  if (compact) return <span className={`inline-block w-1.5 h-1.5 rounded-full ${s.dot}`} aria-label={`Plan ${s.label}`} />
   return (
-    <span
-      className={`shrink-0 inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${s.bg} ${s.text}`}
-      aria-label={`Plan actual: ${s.label}`}
-    >
-      {s.label}
-    </span>
+    <span className={`shrink-0 inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${s.bg} ${s.text}`}
+      aria-label={`Plan actual: ${s.label}`}>{s.label}</span>
   )
 }

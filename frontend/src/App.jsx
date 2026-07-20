@@ -42,6 +42,7 @@ const Insights = lazy(() => import('./pages/Insights'))
 const Admin = lazy(() => import('./pages/Admin'))
 const Goals = lazy(() => import('./pages/Goals'))
 const Imports = lazy(() => import('./pages/Imports'))
+const Alertas = lazy(() => import('./pages/Alertas'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Novedades = lazy(() => import('./pages/Novedades'))
 const FirstInsight = lazy(() => import('./pages/FirstInsight'))
@@ -177,6 +178,9 @@ function AppRoutes() {
       {/* /objetivos sigue siendo redirect a /posiciones?tab=objetivos arriba */}
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
+      <Route path="/alertas" element={<Alertas />} />
+      {/* Back-compat: las alertas vivían en Config › Notificaciones */}
+      <Route path="/config/notificaciones" element={<Navigate to="/alertas" replace />} />
       <Route path="/bienvenida" element={<FirstInsight />} />
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/admin" element={<Admin />} />

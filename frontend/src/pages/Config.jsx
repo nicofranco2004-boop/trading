@@ -17,7 +17,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2,
   CheckCircle2, AlertCircle, Trash2, UserRound, CreditCard, ArrowLeftRight,
-  Bell, LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check, ClipboardList,
+  LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check, ClipboardList,
 } from 'lucide-react'
 import { api } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
@@ -33,7 +33,6 @@ import { whatsappUrl, SUPPORT_WHATSAPP_DISPLAY } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 import InvestorProfileForm from '../components/InvestorProfileForm'
-import AlertsManager from '../components/alerts/AlertsManager'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -44,18 +43,11 @@ const TABS = [
   { id: 'test',           label: 'Test de inversor', icon: ClipboardList,  sub: 'Contexto para el Coach IA' },
   { id: 'planes',         label: 'Planes',           icon: CreditCard,     sub: 'Tu plan y uso de IA' },
   { id: 'fx',             label: 'Tipos de cambio',  icon: ArrowLeftRight, sub: 'Moneda de valuación y cotizaciones' },
-  { id: 'notificaciones', label: 'Notificaciones',   icon: Bell,           sub: 'Alertas de precio y variación' },
   { id: 'soporte',        label: 'Soporte',          icon: LifeBuoy,       sub: 'WhatsApp y ayuda' },
 ]
 const VALID_TAB_IDS = new Set(TABS.map(t => t.id))
 const DEFAULT_TAB = 'cuenta'
 const TAB_LABEL = Object.fromEntries(TABS.map(t => [t.id, t.label]))
-
-// Avisos "Próximamente" de la sección Notificaciones (placeholder Fase A).
-const NOTIF_SOON = [
-  { icon: Mail,          title: 'Resumen semanal por email',  desc: 'Cómo rindió tu cartera + lo que pasó en el mercado' },
-  { icon: CalendarClock, title: 'Eventos de tu cartera',      desc: 'Dividendos, pagos de bonos, splits, cauciones' },
-]
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -483,38 +475,6 @@ export default function Config() {
     )
   }
 
-  function renderNotificaciones() {
-    // Prefill desde el menú de una posición: /config?tab=notificaciones&new=MSFT.BA&ccy=ARS
-    const newSym = searchParams.get('new')
-    const prefill = newSym ? { symbol: newSym, currency: searchParams.get('ccy') || undefined } : undefined
-    return (
-      <div className="space-y-4">
-        <AlertsManager plan={plan} prefill={prefill} />
-        {/* Lo que todavía viene */}
-        <Panel padding="none">
-          <header className="px-4 py-2.5 border-b border-line/40 flex items-center justify-between">
-            <h3 className="text-xs font-medium text-ink-2">Próximamente</h3>
-            <Pill tone="off">Pronto</Pill>
-          </header>
-          <div>
-            {NOTIF_SOON.map((s, i) => {
-              const Icon = s.icon
-              return (
-                <div key={s.title} className={`flex items-center gap-3 px-4 py-3 opacity-70 ${i > 0 ? 'border-t border-line/30' : ''}`}>
-                  <Icon size={16} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-ink-1">{s.title}</div>
-                    <div className="text-xs text-ink-3 mt-0.5">{s.desc}</div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </Panel>
-      </div>
-    )
-  }
-
   function renderSoporte() {
     return (
       <Panel padding="none">
@@ -569,7 +529,6 @@ export default function Config() {
       case 'test':           return renderPerfil()
       case 'planes':         return renderPlanes()
       case 'fx':             return renderFx()
-      case 'notificaciones': return renderNotificaciones()
       case 'soporte':        return renderSoporte()
       case 'cuenta':
       default:               return renderCuenta()

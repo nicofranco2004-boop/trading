@@ -496,13 +496,13 @@ function PositionsDesktop() {
     // aunque se haya comprado en un broker AR (donde priceSymbol daría 'BTC.BA',
     // que no cotiza y dejaba la alerta muerta).
     if (isCrypto(p.asset)) {
-      navigate(`/config?tab=notificaciones&new=${encodeURIComponent(p.asset)}&ccy=USD`)
+      navigate(`/alertas?new=${encodeURIComponent(p.asset)}&ccy=USD`)
       return
     }
     const arsRail = costInPesos(p) || p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)
     const sym = priceSymbol(p.asset, arsRail, p.asset_type)
     const ccy = arsRail ? 'ARS' : 'USD'
-    navigate(`/config?tab=notificaciones&new=${encodeURIComponent(sym)}&ccy=${ccy}`)
+    navigate(`/alertas?new=${encodeURIComponent(sym)}&ccy=${ccy}`)
   }
 
   // Callback del AddPositionFlow cuando el user selecciona un ticker. Trae el
