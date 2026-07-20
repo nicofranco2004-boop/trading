@@ -223,6 +223,21 @@ export function costBasisRate(p, currentRate, costBasis = 'today') {
   return (costBasis === 'purchase' && p?.tc_compra > 0) ? p.tc_compra : currentRate
 }
 
+/**
+ * lotMissingPurchaseRate — en modo 'purchase', ¿este lote NO tiene tc_compra
+ * registrado y por eso cae silenciosamente al dólar de hoy? (compras previas al
+ * fix del importador, o lotes cripto/USD donde no se estampa). Sirve para marcar
+ * la celda con un badge "TC?" y no dar a entender que ya refleja la devaluación.
+ * Solo aplica a lotes cuyo COSTO está en pesos (los de costo USD/cripto no usan
+ * tc_compra) y solo en modo 'purchase'. En 'today' siempre es false.
+ */
+export function lotMissingPurchaseRate(p, costBasis = 'today') {
+  if (costBasis !== 'purchase') return false
+  if (p?.is_cash) return false
+  if (costInUsd(p) || isCrypto(p?.asset)) return false
+  return !(p?.tc_compra > 0)
+}
+
 export function pesoLotUsd(p, prices, tcCedear, costBasis = 'today') {
   const investedUsd = ((p.invested || 0) + (p.commissions || 0)) / costBasisRate(p, tcCedear, costBasis)
   const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
@@ -286,35 +301,48 @@ export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue, c
   const qty = p.quantity || 0
   const invested = p.invested || 0
   const isAR = broker?.currency === 'ARS'
-  let valueUsd, investedUsd
+  // investedUsd = costo DISPLAY (puede ir al tc_compra en modo 'purchase').
+  // guardCost   = costo SIEMPRE a hoy (mode-independent): es el denominador del
+  //   guard anti-distorsión y la base del fallback sin precio. Espeja a
+  //   computeBrokerValue, que guardea contra el costo nativo (nunca el ruteado):
+  //   si el guard usara el investedUsd inflado por tc_compra, un precio basura
+  //   (bono per-100 ×100) que a hoy se rechaza podría colarse en modo 'purchase'.
+  //   En modo 'today' guardCost === investedUsd → byte-idéntico.
+  let valueUsd, investedUsd, guardCost
   if (costInPesos(p) && !isAR) {
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
     investedUsd = invested / costBasisRate(p, cedearRate, costBasis)
+    guardCost = invested / cedearRate
     valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : investedUsd
   } else if (costInUsd(p) && isAR) {
     // Espejo: lote de costo USD en un broker ARS (bono/ON/FCI-USD, CEDEAR-MEP) →
     // costo YA en USD (sin ÷MEP), valor por tipo (usdLotValue). Sin esto, la rama
     // isAR de abajo dividía el costo USD por el blue → la fila colapsaba a ~0.
+    // El costo ya está en USD reales → el modo no lo toca (guardCost = investedUsd).
     const u = usdLotValue(p, prices, cedearRate)
     investedUsd = u.investedUsd
+    guardCost = u.investedUsd
     valueUsd = u.valueUsd
   } else if (isAR) {
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
     investedUsd = invested / costBasisRate(p, tcBlue, costBasis)
+    guardCost = invested / tcBlue
     valueUsd = priceArs != null ? (priceArs * qty) / tcBlue : investedUsd
   } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null) {
     // .BA÷MEP decidido por el PADRE (isArUsdBroker/currency), NO por isArStock: una
     // acción AR en un broker USD extranjero real (Schwab) es su ADR NYSE en USD, no
     // el .BA local. Espeja _byma del backend. (isAR/costInPesos cubren el caso AR.)
     const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-    investedUsd = invested
+    investedUsd = invested   // costo ya en USD (broker USD) → el modo no aplica
+    guardCost = invested
     valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : invested
   } else {
     const priceUsd = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)]
     investedUsd = invested
+    guardCost = invested
     valueUsd = priceUsd != null ? priceUsd * qty : invested
   }
-  if (!trustMktValue(valueUsd, investedUsd, p.asset_type, p.price_override != null)) {
+  if (!trustMktValue(valueUsd, guardCost, p.asset_type, p.price_override != null)) {
     valueUsd = investedUsd
   }
   return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd }

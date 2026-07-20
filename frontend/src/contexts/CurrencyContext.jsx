@@ -21,6 +21,7 @@ const CurrencyContext = createContext(null)
 
 const STORAGE_KEY = 'rendi_display_currency'
 const VAL_STORAGE_KEY = 'rendi_valuation_dollar'   // 'mep' | 'ccl'
+const CB_STORAGE_KEY = 'rendi_cost_basis'          // 'today' | 'purchase'
 const DEFAULT_TC_BLUE = 1415
 
 /**
@@ -64,6 +65,23 @@ export function CurrencyProvider({ children }) {
       return localStorage.getItem(VAL_STORAGE_KEY) === 'ccl' ? 'ccl' : 'mep'
     } catch {
       return 'mep'
+    }
+  })
+
+  // "Costo en dólares" — con qué dólar contamos lo INVERTIDO en un lote en pesos:
+  //   • 'today'    (default) → el dólar de hoy, igual que el valor (FX-neutral): el
+  //     P&L USD refleja solo cómo rindió el activo.
+  //   • 'purchase' → el tc_compra del lote (los dólares que realmente pusiste): el
+  //     P&L incluye la devaluación del peso desde que compraste.
+  // SOLO afecta el COSTO (columna Invertido USD) de lotes en pesos; el valor de
+  // mercado siempre va al dólar de hoy. Preferencia de display per-device, igual
+  // que el dólar de valuación — NO viaja al backend ni a la IA (que razonan a hoy).
+  const [costBasis, setCostBasisRaw] = useState(() => {
+    if (typeof window === 'undefined') return 'today'
+    try {
+      return localStorage.getItem(CB_STORAGE_KEY) === 'purchase' ? 'purchase' : 'today'
+    } catch {
+      return 'today'
     }
   })
 
@@ -114,6 +132,12 @@ export function CurrencyProvider({ children }) {
     try { localStorage.setItem(VAL_STORAGE_KEY, norm) } catch {}
   }
 
+  function setCostBasis(next) {
+    const norm = next === 'purchase' ? 'purchase' : 'today'
+    setCostBasisRaw(norm)
+    try { localStorage.setItem(CB_STORAGE_KEY, norm) } catch {}
+  }
+
   function toggle() {
     setCurrency(currency === 'ARS' ? 'USD' : 'ARS')
   }
@@ -130,9 +154,10 @@ export function CurrencyProvider({ children }) {
       isArs: currency === 'ARS', isUsd: currency === 'USD',
       tcBlue, setTcBlue,
       valuationDollar, setValuationDollar,
+      costBasis, setCostBasis,
       dolar,
     }),
-    [currency, tcBlue, valuationDollar, dolar],
+    [currency, tcBlue, valuationDollar, costBasis, dolar],
   )
 
   return <CurrencyContext.Provider value={value}>{children}</CurrencyContext.Provider>
@@ -147,6 +172,7 @@ export const useCurrency = () => {
       isArs: false, isUsd: true,
       tcBlue: DEFAULT_TC_BLUE, setTcBlue: () => {},
       valuationDollar: 'mep', setValuationDollar: () => {},
+      costBasis: 'today', setCostBasis: () => {},
       dolar: null,
     }
   }

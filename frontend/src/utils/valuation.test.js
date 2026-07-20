@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -808,4 +808,57 @@ describe('valueEquityLot — modo purchase (rama costInPesos y rama isAR)', () =
     const p = valueEquityLot(arsLot, arsBroker(), { 'GGAL.BA': 12_000 }, TCB, TCB, 'purchase')
     expect(p.investedUsd).toBeCloseTo(90_000 / TC1)
   })
+})
+
+describe('valueEquityLot — el guard NO se afloja en purchase (bono per-100, tc_compra viejo)', () => {
+  // Bono en broker ARS con tc_compra MUY viejo (30) vs hoy (TCB=1000). Un precio en
+  // convención per-100 infla el valor ~×120. El guard debe RECHAZARLO en AMBOS modos:
+  // usa el costo de HOY como denominador, no el ruteado (que en purchase lo aflojaría
+  // de mult 120 → 3,6 y dejaría pasar el precio basura → +8.667 USD fantasma).
+  const bond = pos({ broker: 'Cocos', asset: 'ON123', asset_type: 'ON', currency: 'ARS',
+                     invested: 100_000, quantity: 100, tc_compra: 30 })
+  const prices = { 'ON123.BA': 120_000 }
+  const t = valueEquityLot(bond, arsBroker(), prices, TCB, TCB, 'today')
+  const p = valueEquityLot(bond, arsBroker(), prices, TCB, TCB, 'purchase')
+  it('today: guard rechaza → valor = costo, P&L 0', () => {
+    expect(t.valueUsd).toBeCloseTo(t.investedUsd)
+    expect(t.pnlUsd).toBeCloseTo(0)
+  })
+  it('purchase: guard TAMBIÉN rechaza (no afloja por tc_compra) → P&L 0', () => {
+    expect(p.valueUsd).toBeCloseTo(p.investedUsd)
+    expect(p.pnlUsd).toBeCloseTo(0)
+  })
+  it('el invertido display refleja el tc_compra (dólares reales), no el de hoy', () => {
+    expect(p.investedUsd).toBeCloseTo(100_000 / 30)
+    expect(t.investedUsd).toBeCloseTo(100_000 / TCB)
+  })
+})
+
+describe('valueEquityLot / computeBrokerValue — sin precio: P&L 0 en ambos modos', () => {
+  const lot = pos({ broker: 'Cocos', asset: 'ZZZ', currency: 'ARS',
+                    invested: 90_000, quantity: 10, tc_compra: TC1 })
+  const noPrices = {}
+  it('valueEquityLot: pnl 0 en today y en purchase (fila sin cotización)', () => {
+    const t = valueEquityLot(lot, arsBroker(), noPrices, TCB, TCB, 'today')
+    const p = valueEquityLot(lot, arsBroker(), noPrices, TCB, TCB, 'purchase')
+    expect(t.pnlUsd).toBeCloseTo(0)
+    expect(p.pnlUsd).toBeCloseTo(0)
+  })
+  it('computeBrokerValue: sin precio, pnlUsd y pnlArs 0 en purchase', () => {
+    const r = computeBrokerValue([lot], noPrices, arsBroker(), TCB, TCB, null, 'purchase')
+    expect(r.pnlUsd).toBeCloseTo(0)
+    expect(r.pnlArs).toBeCloseTo(0)
+  })
+})
+
+describe('lotMissingPurchaseRate — badge TC? (purchase + lote peso sin tc_compra)', () => {
+  const pesoNoTc   = pos({ asset: 'GGAL', currency: 'ARS', invested: 1000, tc_compra: null })
+  const pesoWithTc = pos({ asset: 'GGAL', currency: 'ARS', invested: 1000, tc_compra: TC1 })
+  const usdLot     = pos({ asset: 'AAPL', currency: 'USD', invested: 1000, tc_compra: null })
+  const cash       = pos({ asset: 'ARS',  currency: 'ARS', is_cash: true, tc_compra: null })
+  it('today → nunca marca', () => expect(lotMissingPurchaseRate(pesoNoTc, 'today')).toBe(false))
+  it('purchase + peso sin tc → marca', () => expect(lotMissingPurchaseRate(pesoNoTc, 'purchase')).toBe(true))
+  it('purchase + peso CON tc → no marca', () => expect(lotMissingPurchaseRate(pesoWithTc, 'purchase')).toBe(false))
+  it('purchase + lote USD → no marca (el modo no aplica al costo en USD)', () => expect(lotMissingPurchaseRate(usdLot, 'purchase')).toBe(false))
+  it('purchase + cash → no marca', () => expect(lotMissingPurchaseRate(cash, 'purchase')).toBe(false))
 })
