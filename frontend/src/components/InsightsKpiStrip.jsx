@@ -66,7 +66,7 @@ export default function InsightsKpiStrip({
   const wrTotal = winRate?.total ?? 0
 
   return (
-    <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
       <KpiCell
         label="Findings detectados"
         value={totalFindings}
@@ -120,12 +120,12 @@ function KpiCell({ label, value, sub, tone, hero }) {
     tone === 'warn' ? 'text-rendi-warn' :
     'text-ink-0'
   return (
-    <div className="px-4 py-3 border-r border-line/40 last:border-r-0 flex-1 min-w-[150px]">
-      <div className="text-[9px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
-      <div className={`mt-2 font-medium tabular num leading-none ${hero ? 'text-3xl tracking-tight' : 'text-2xl'} ${valueColor}`}>
+    <div className="rounded-xl border border-line bg-bg-1 px-4 py-4">
+      <div className="text-[12.5px] text-ink-2 font-medium leading-tight">{label}</div>
+      <div className={`mt-3 font-semibold tabular num leading-none ${hero ? 'text-[30px] tracking-tight' : 'text-[26px]'} ${valueColor}`}>
         {value}
       </div>
-      <div className="text-[10px] font-mono text-ink-3 mt-1.5 leading-none truncate">{sub}</div>
+      <div className="text-[12px] text-ink-3 mt-2.5 leading-snug">{sub}</div>
     </div>
   )
 }

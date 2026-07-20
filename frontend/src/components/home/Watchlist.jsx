@@ -89,7 +89,7 @@ export default function Watchlist() {
       <div className="flex items-baseline justify-between mb-2">
         <Eyebrow>Watchlist</Eyebrow>
         {items.length > 0 && (
-          <span className="text-[10px] text-ink-3 font-mono">{items.length} tickers</span>
+          <span className="text-[12px] text-ink-3">{items.length} tickers</span>
         )}
       </div>
 

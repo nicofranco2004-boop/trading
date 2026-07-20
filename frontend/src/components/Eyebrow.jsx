@@ -1,5 +1,6 @@
-// Eyebrow — kicker uppercase mono para arriba de títulos y secciones.
-// Estándar visual v2: tracking 0.12em, font-mono, text-ink-3 default.
+// Eyebrow — kicker para arriba de títulos y secciones.
+// Clean pass 2026-07: de mono-MAYÚSCULA-micro (look terminal) a sans legible
+// sentence-case. El mono queda reservado para NÚMEROS; los labels son texto.
 //
 // Uso:
 //   <Eyebrow>Performance</Eyebrow>
@@ -16,7 +17,7 @@ const TONE = {
 
 export default function Eyebrow({ children, tone = 'default', className = '' }) {
   return (
-    <span className={`font-mono text-[11px] sm:text-xs uppercase tracking-label font-medium ${TONE[tone] || TONE.default} ${className}`}>
+    <span className={`text-[13px] font-semibold ${TONE[tone] || TONE.default} ${className}`}>
       {children}
     </span>
   )

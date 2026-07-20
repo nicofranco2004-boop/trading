@@ -181,9 +181,9 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
         <button
           key={m.key}
           onClick={() => setMarket(m.key)}
-          className={`px-2 py-1 text-[11px] rounded-sm transition-colors font-mono uppercase tracking-caps ${
+          className={`px-3 py-1.5 text-[12.5px] rounded-md transition-colors font-medium ${
             market === m.key
-              ? 'bg-bg-2 text-ink-0 font-medium'
+              ? 'bg-bg-2 text-ink-0'
               : 'text-ink-2 hover:text-ink-0'
           }`}
         >
@@ -198,7 +198,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
   return (
     <>
       <div className="flex items-center justify-between mb-2">
-        <div className="text-[11px] uppercase tracking-label text-ink-2 font-mono font-medium">
+        <div className="text-[13px] text-ink-2 font-medium">
           {MARKETS.find(m => m.key === market)?.label || market} · {blocks.length} activos
         </div>
         {Tabs}

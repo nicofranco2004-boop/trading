@@ -2033,7 +2033,7 @@ function InsightsDesktop({ _embeddedTab }) {
           <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
             <p className="eyebrow">Desde tu última visita</p>
             {visitDelta.sinceLabel && (
-              <span className="text-[11px] font-mono uppercase tracking-caps text-ink-3">{visitDelta.sinceLabel}</span>
+              <span className="text-[12.5px] text-ink-3 font-medium">{visitDelta.sinceLabel}</span>
             )}
           </div>
           <DeltaSinceVisit delta={visitDelta} />
@@ -2187,7 +2187,7 @@ function InsightsDesktop({ _embeddedTab }) {
         {/* Selector de benchmark — segunda fila debajo del título.
             Opciones cambian según moneda (USD vs ARS). Persisted en localStorage. */}
         <div className="flex items-center gap-2 flex-wrap mb-4 -mt-1">
-          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mr-1">
+          <span className="text-[13px] text-ink-2 font-medium mr-1">
             Comparar contra:
           </span>
           {benchmarkOptions.map(opt => (
@@ -2839,7 +2839,7 @@ function FeaturedFinding({ d }) {
       <div className={`rounded-lg border p-5 ${tone}`}>
         <div className="flex items-center gap-2 mb-3">
           <HeroIcon size={16} strokeWidth={2} className="flex-shrink-0" />
-          <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
+          <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${sev.badgeCls}`}>
             {sev.label}
           </span>
         </div>
@@ -2888,7 +2888,7 @@ function DiagnosisCard({ d, onDismiss }) {
       <div className="bg-white dark:bg-bg-1 p-5 flex flex-col h-full">
         {dismissBtn}
         <div className="flex items-center gap-2 mb-3">
-          <span className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border border-data-violet/30 bg-data-violet/10 text-data-violet">
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-data-violet/30 bg-data-violet/10 text-data-violet">
             <Lock size={9} strokeWidth={2.5} aria-hidden="true" /> Métrica · Plus
           </span>
         </div>
@@ -2935,7 +2935,7 @@ function DiagnosisCard({ d, onDismiss }) {
             angostas; reserva la banda del ✦ flotante con max-width. */}
         {dismissBtn}
         <div className="flex items-center gap-2 mb-3">
-          <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
+          <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${sev.badgeCls}`}>
             {sev.label}
           </span>
         </div>
@@ -3620,7 +3620,7 @@ function AllocationRow({ label, buckets, tone = 'muted' }) {
   return (
     <div>
       <div className="flex items-baseline justify-between mb-0.5">
-        <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">{label}</span>
+        <span className="text-[13px] text-ink-2 font-medium">{label}</span>
         <span className="text-[10px] font-mono text-ink-3 tabular">
           {buckets.cash}/{buckets.fixed_income}/{buckets.equity}{buckets.alternative > 0 ? `/${buckets.alternative}` : ''}
         </span>

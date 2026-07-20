@@ -1,10 +1,8 @@
-// IndicesStrip — strip horizontal de índices (V2).
-// Cada item: label uppercase mono + valor tabular + delta diario.
-// Bordes compartidos en lugar de cards individuales (más denso, más operativo).
+// IndicesStrip — strip horizontal de índices (clean pass 2026-07).
+// Cards con gap y aire: label sans + valor grande tabular + delta con flecha.
 
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
-import Eyebrow from '../Eyebrow'
 
 function fmtPct(p) {
   if (p == null) return '—'
@@ -51,26 +49,24 @@ export default function IndicesStrip() {
     return <div className="text-xs text-rendi-neg">No pudimos cargar los índices: {err}</div>
   }
 
+  // Clean pass 2026-07: cards con gap (antes: grilla con hairlines divide-x,
+  // look planilla). Label sans, número grande, variación con flecha.
   return (
-    <div className="rounded border border-line bg-bg-1 overflow-hidden">
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 divide-x divide-y sm:divide-y-0 divide-line">
-        {items.map(it => {
-          const positive = (it.change_pct ?? 0) >= 0
-          return (
-            <div key={it.symbol} className="px-4 py-3">
-              <Eyebrow>{it.label}</Eyebrow>
-              <div className="mt-1 flex items-baseline gap-2">
-                <span className="text-base font-medium text-ink-0 num tabular leading-tight">
-                  {fmtPrice(it.price, it.kind)}
-                </span>
-              </div>
-              <div className={`mt-0.5 text-[11px] font-mono tabular ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {fmtPct(it.change_pct)}
-              </div>
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      {items.map(it => {
+        const positive = (it.change_pct ?? 0) >= 0
+        return (
+          <div key={it.symbol} className="rounded-xl border border-line bg-bg-1 px-4 py-3.5">
+            <div className="text-[12.5px] text-ink-2 font-medium leading-tight">{it.label}</div>
+            <div className="mt-2 text-[19px] font-semibold text-ink-0 num tabular leading-none">
+              {fmtPrice(it.price, it.kind)}
             </div>
-          )
-        })}
-      </div>
+            <div className={`mt-1.5 text-[12.5px] font-semibold tabular num ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+              {positive ? '▲ ' : '▼ '}{fmtPct(it.change_pct)}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
