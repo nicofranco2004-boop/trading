@@ -385,6 +385,11 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
 // ════════════════════════════════════════════════════════════════════════════
 function Step1AssetType({ categories, universe, holdings = [], suggestions = [], onPick, onPickAsset, onPickSymbol }) {
   const [query, setQuery] = useState('')
+  // `engaged` = el user tocó el buscador. Recién ahí mostramos "En tu cartera" +
+  // "Sugeridos"; antes de eso (apenas elegido el broker) mostramos solo las
+  // categorías. Una vez activo, se mantiene (no se resetea en blur para no cortar
+  // el click sobre una sugerencia).
+  const [engaged, setEngaged] = useState(false)
   const q = query.trim().toLowerCase()
   const searching = q.length > 0
 
@@ -408,6 +413,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
+            onFocus={() => setEngaged(true)}
             placeholder="Buscar cualquier activo — ticker o nombre (AAPL, Bitcoin, GGAL…)"
             autoComplete="off"
             spellCheck="false"
@@ -450,7 +456,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
         ) : (
           <div>
             {/* En tu cartera — lo primero: los activos que ya tenés en este broker */}
-            {holdings.length > 0 && (
+            {engaged && holdings.length > 0 && (
               <div className="border-b border-line/50 dark:border-line/40">
                 <p className="px-5 pt-3 pb-1 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">En tu cartera</p>
                 <ul className="divide-y divide-line/50 dark:divide-line/40">
@@ -469,7 +475,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
             )}
 
             {/* Sugeridos — populares que todavía no tenés acá */}
-            {suggestions.length > 0 && (
+            {engaged && suggestions.length > 0 && (
               <div className="border-b border-line/50 dark:border-line/40">
                 <p className="px-5 pt-3 pb-1 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">Sugeridos</p>
                 <ul className="divide-y divide-line/50 dark:divide-line/40">
@@ -489,7 +495,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
 
             {/* Explorá por categoría */}
             <div className="p-5">
-              {(holdings.length > 0 || suggestions.length > 0) && (
+              {engaged && (holdings.length > 0 || suggestions.length > 0) && (
                 <p className="mb-3 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">O explorá por categoría</p>
               )}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
