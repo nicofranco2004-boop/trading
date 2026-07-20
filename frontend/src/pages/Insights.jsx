@@ -1644,7 +1644,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // portfolio y emite un bullet solo si su condición aplica. Cada día se
   // muestran los más relevantes (severidad alta primero) con una rotación
   // estable dentro del día para dar variedad sin perder lo importante.
-  const diagnosis = selectDiagnostics({
+  const diagnosisPool = selectDiagnostics({
     // Diagnósticos de concentración por activo (concentration_extreme/high/few_assets)
     // necesitan datos por instrumento, no por broker. brokerPieData se usa solo para
     // diagnósticos que filtran por moneda del broker (high_ars_exposure).
@@ -1687,7 +1687,10 @@ function InsightsDesktop({ _embeddedTab }) {
     unrealizedPnl,        // P&L abierto
     globalMonthly,        // meses globales para streak/consistency
     commissionsStats,     // { total, count, avgPerTrade, pctOfGrossWin } — costos de operar
-  }, 12)
+  }, 999)  // pool COMPLETO: la grilla adaptativa rota/reemplaza sobre todos los
+           // aplicables; el KPI/featured usan diagnosis.slice(0,12) abajo.
+  // Vista capada (12) para el KPI strip y el featured — no cambia su comportamiento.
+  const diagnosisTop = diagnosisPool.slice(0, 12)
 
   // ── Qué explica tu resultado: principales contribuyentes ──────────────────
   // Reusa assetContribFull (computeAssetContribution) para que esta sección y
@@ -1965,7 +1968,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // Solo en la tab Diagnóstico (Métricas/Perfil son el mismo componente con
   // otro _embeddedTab; sin este guard pisarían la huella de "última visita").
   const { delta: visitDelta } = showDiagnostico
-    ? lastVisit.record({ valueUsd: totalPortfolio, findingIds: diagnosis.map(d => d.id) })
+    ? lastVisit.record({ valueUsd: totalPortfolio, findingIds: diagnosisPool.map(d => d.id) })
     : { delta: null }
 
   const diagLayout = buildDiagnosticoLayout({
@@ -1975,8 +1978,8 @@ function InsightsDesktop({ _embeddedTab }) {
     cryptoSharePct,
     rentaFijaSharePct,
     hasMissingPrices,
-    diagnosisCount: diagnosis.length,
-    hasFeatured: diagnosis.some(d => d.severity === 'urgent' || d.severity === 'warn'),
+    diagnosisCount: diagnosisPool.length,
+    hasFeatured: diagnosisPool.some(d => d.severity === 'urgent' || d.severity === 'warn'),
     hasVerdicts,
     hasContributors: topContribPos.length + topContribNeg.length > 0,
     hasComposition: compositionRows.length > 0,
@@ -1998,7 +2001,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // (archetype + findings + verdicts) para que no contradiga la pantalla.
   const diagAiParams = {
     archetype: diagLayout.archetype,
-    findings: diagnosis.slice(0, 3).map(d => ({ category: d.category, severity: d.severity, text: d.text })),
+    findings: diagnosisTop.slice(0, 3).map(d => ({ category: d.category, severity: d.severity, text: d.text })),
     verdicts: verdictItems.filter(v => v.pct != null).map(v => ({ label: v.label, pct: Math.round(v.pct * 10) / 10 })),
     months_tracked: globalMonthly.length,
     missing_prices: [...new Set(missingPriceTickers)].slice(0, 12),
@@ -2077,7 +2080,7 @@ function InsightsDesktop({ _embeddedTab }) {
         const benchmarkLabel = benchmarkKey
         return (
           <InsightsKpiStrip
-            diagnosis={diagnosis}
+            diagnosis={diagnosisTop}
             assetPieData={assetPieData}
             drawdownTwrr={drawdownTwrr}
             winRate={winRate}
@@ -2101,8 +2104,8 @@ function InsightsDesktop({ _embeddedTab }) {
           Cantidad visible por tier: Free N (gateado), Plus/Pro todas.
           Ver <DiagnosisSection> para la lógica completa.
           ══════════════════════════════════════════════════════════════════════ */}
-      {diagnosis.length > 0 && (
-        <DiagnosisSection diagnosis={diagnosis} plan={plan} />
+      {diagnosisPool.length > 0 && (
+        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${user?.email ?? 'anon'}`} />
       )}
 
       {/* ── Composición por activo — estándar, incluye cash. Movida arriba
@@ -3169,32 +3172,49 @@ function diagnosisShortTitle(d) {
 // conservamos el patrón previo (grilla recortada + BlurredList con CTA upgrade)
 // para no regalar el contenido pago. El acordeón con TODO el detalle es para
 // usuarios con acceso completo (Plus/Pro).
-function DiagnosisSection({ diagnosis, plan }) {
-  // Estado del acordeón — Set de keys de sección expandidas. "atencion" abierta
-  // por defecto; "positivo" colapsada. Declarado antes de cualquier early
-  // return para respetar las Rules of Hooks.
-  const [expandedSections, setExpandedSections] = useState(() => new Set(['atencion']))
+// Persistencia del "no me interesa" — Set de ids de diagnósticos descartados
+// por user, en localStorage. Al agotar un tier, se resetean SOLO sus ids (cicla).
+const DIAG_DISMISS_PREFIX = 'rendi_diag_dismissed_'
+function readDismissed(key) {
+  try {
+    const raw = localStorage.getItem(DIAG_DISMISS_PREFIX + key)
+    return new Set(raw ? JSON.parse(raw) : [])
+  } catch { return new Set() }
+}
+function writeDismissed(key, set) {
+  try { localStorage.setItem(DIAG_DISMISS_PREFIX + key, JSON.stringify([...set])) } catch { /* modo privado */ }
+}
+
+// Tiers de display por SEVERIDAD (no por categoría): la card ya muestra su badge.
+const DIAG_TIERS = [
+  { key: 'atencion',    match: d => d.severity === 'urgent' || d.severity === 'warn' },
+  { key: 'diagnostico', match: d => d.severity === 'info' },
+  { key: 'positivo',    match: d => d.severity === 'positive' },
+]
+
+function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
+  // dismissed + collapsed ANTES de cualquier early return (Rules of Hooks).
+  const [dismissed, setDismissed] = useState(() => readDismissed(userKey))
+  const [collapsed, setCollapsed] = useState(false)  // abierto por defecto
 
   if (!diagnosis || diagnosis.length === 0) return null
 
-  // ── GATE Free ──────────────────────────────────────────────────────────────
-  // Mismo comportamiento que antes: N observaciones visibles + resto blureado.
-  // Mantenemos el destacado arriba también para Free (es la #1 que ya verían).
   const visibleLimit = plan.limit('insights_diagnostic_visible')
   const isLimited = !plan.hasFullAccess && typeof visibleLimit === 'number'
 
-  // Hallazgo destacado: primer urgent/warn del orden priorizado; si no hay
-  // ninguno de atención, el primero del array.
+  // Hallazgo destacado: primer urgent/warn; si no hay, el primero del pool.
   const featured = diagnosis.find(d => d.severity === 'urgent' || d.severity === 'warn')
     || diagnosis[0]
   const rest = diagnosis.filter(d => d.id !== featured.id)
 
   if (isLimited) {
-    // Free: destacado + grilla recortada + BlurredList (CTA upgrade). Sin
-    // acordeón (el detalle completo es pago).
-    const balanced = pickBalancedDiagnosis(rest, 6)
+    // Free: destacado + grilla recortada + BlurredList (CTA upgrade). Capamos a
+    // los top-12 (como antes del pool completo) para NO cambiar la superficie de
+    // monetización: el "desbloqueá N observaciones" no se infla al pool entero.
+    const restCapped = rest.slice(0, 12)
+    const balanced = pickBalancedDiagnosis(restCapped, 6)
     const balancedIds = new Set(balanced.map(d => d.id))
-    const allRest = rest.filter(d => !balancedIds.has(d.id))
+    const allRest = restCapped.filter(d => !balancedIds.has(d.id))
     const visible = balanced.slice(0, visibleLimit)
     const hidden = [...balanced.slice(visibleLimit), ...allRest]
     return (
@@ -3220,49 +3240,79 @@ function DiagnosisSection({ diagnosis, plan }) {
     )
   }
 
-  // ── Acceso completo: destacado + acordeón con TODO el resto ─────────────────
-  const attention = rest.filter(d => d.severity !== 'positive')
-  const positive = rest.filter(d => d.severity === 'positive')
-
-  const toggleSection = (key) =>
-    setExpandedSections(prev => {
+  // ── Acceso completo: grilla 3×3 ADAPTATIVA — 3 atención · 3 diagnóstico ·
+  // 3 positivo, todo junto y abierto. "No me interesa" descarta y trae otra del
+  // mismo tier; al agotar el tier, vuelve a la primera (cicla). ──────────────
+  const dismiss = (id, tierPoolIds) => {
+    setDismissed(prev => {
       const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
+      next.add(id)
+      // Ciclo por-tier: si ya no quedan suficientes para llenar la fila (3, o el
+      // total del tier si es menor), reseteamos SUS ids → vuelve a la primera.
+      const undismissedCount = tierPoolIds.filter(pid => !next.has(pid)).length
+      if (undismissedCount < Math.min(3, tierPoolIds.length)) tierPoolIds.forEach(pid => next.delete(pid))
+      writeDismissed(userKey, next)
       return next
     })
+  }
 
-  const groups = [
-    { key: 'atencion', title: 'Requiere atención', items: attention },
-    { key: 'positivo', title: 'Lo que va bien',    items: positive },
-  ]
+  const tierRows = DIAG_TIERS.map(tier => {
+    const pool = rest.filter(tier.match)          // candidatos del tier (sin el featured)
+    if (pool.length === 0) return null
+    const poolIds = pool.map(d => d.id)
+    const undismissed = pool.filter(d => !dismissed.has(d.id))
+    // Mostramos los no-descartados si alcanzan para llenar la fila; si no,
+    // mostramos el pool completo (vista ciclada). La fila siempre tiene min(3, N).
+    const effective = undismissed.length >= Math.min(3, pool.length) ? undismissed : pool
+    const shown = effective.slice(0, 3)
+    // "No me interesa" solo si hay MÁS de 3 → hay un 4º real para traer.
+    return { key: tier.key, shown, poolIds, canRotate: pool.length > 3 }
+  }).filter(Boolean)
+
+  if (tierRows.length === 0) {
+    return (
+      <section id="diagnostico" className="scroll-mt-20 space-y-4">
+        <FeaturedFinding d={featured} />
+      </section>
+    )
+  }
 
   return (
     <section id="diagnostico" className="scroll-mt-20 space-y-4">
       <FeaturedFinding d={featured} />
-
-      {groups.map(group => {
-        if (group.items.length === 0) return null
-        const open = expandedSections.has(group.key)
-        // Preview colapsado: títulos cortos de cada card (mismo parseo que
-        // DiagnosisCard: 1ª oración del texto, sin markdown). AccordionSection
-        // los une con " · " y trunca a una línea.
-        const previewItems = group.items.map(diagnosisShortTitle)
-        return (
-          <AccordionSection
-            key={group.key}
-            title={group.title}
-            count={group.items.length}
-            previewItems={previewItems}
-            open={open}
-            onToggle={() => toggleSection(group.key)}
-          >
-            <DiagnosisGrid items={group.items} />
-          </AccordionSection>
-        )
-      })}
+      <div className="border border-line/70 dark:border-line rounded-lg bg-white/40 dark:bg-bg-1/40 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setCollapsed(c => !c)}
+          aria-expanded={!collapsed}
+          className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-left group cursor-pointer hover:bg-bg-2/60 dark:hover:bg-bg-2/30 transition-colors"
+        >
+          <h3 className="font-semibold text-ink-0 group-hover:text-rendi-accent transition-colors">Diagnóstico de tu cartera</h3>
+          <span className="flex items-center gap-1.5 text-xs text-ink-2">
+            {collapsed ? 'Ver' : 'Ocultar'}
+            {collapsed ? <ChevronDown size={16} strokeWidth={2} /> : <ChevronUp size={16} strokeWidth={2} />}
+          </span>
+        </button>
+        {!collapsed && (
+          <div className="px-4 pb-4 space-y-4">
+            {tierRows.map(row => (
+              <div key={row.key} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {row.shown.map(d => (
+                  <DiagnosisCard
+                    key={d.id}
+                    d={d}
+                    onDismiss={row.canRotate ? () => dismiss(d.id, row.poolIds) : undefined}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   )
 }
+
 
 // FeaturedFinding — el hallazgo #1 ("Lo que más importa"), destacado con borde
 // de realce + ícono de alerta. Reusa SEVERITY_BADGE/ctaForCategory/DiagnosticText
@@ -3332,7 +3382,7 @@ function DiagnosisGrid({ items }) {
   )
 }
 
-function DiagnosisCard({ d }) {
+function DiagnosisCard({ d, onDismiss }) {
   const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
   const cta = ctaForCategory(d.category)
   // Parse del text: primera oración = título, resto = contexto.
@@ -3368,23 +3418,29 @@ function DiagnosisCard({ d }) {
             <DiagnosticText text={context} />
           </p>
         )}
-        {cta && (
-          cta.href.startsWith('#') ? (
-            <a
-              href={cta.href}
-              className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
+        <div className="mt-4 flex items-center justify-between gap-2">
+          {cta ? (
+            cta.href.startsWith('#') ? (
+              <a href={cta.href} className="inline-flex items-center gap-1 text-xs text-rendi-accent hover:underline">
+                {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+              </a>
+            ) : (
+              <Link to={cta.href} className="inline-flex items-center gap-1 text-xs text-rendi-accent hover:underline">
+                {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
+              </Link>
+            )
+          ) : <span />}
+          {onDismiss && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); e.preventDefault(); onDismiss() }}
+              className="text-[11px] text-ink-3 hover:text-ink-1 transition-colors whitespace-nowrap flex-shrink-0"
+              title="Ocultar este análisis y mostrar otro"
             >
-              {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-            </a>
-          ) : (
-            <Link
-              to={cta.href}
-              className="inline-flex items-center gap-1 mt-4 text-xs text-rendi-accent hover:underline self-start"
-            >
-              {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
-            </Link>
-          )
-        )}
+              No me interesa
+            </button>
+          )}
+        </div>
       </div>
     </AskAIAbout>
   )
