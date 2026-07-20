@@ -1142,6 +1142,9 @@ def init_db():
             -- (cap 6/sem). Pro desbloquea chat libre (cap 60/sem). Agregada en
             -- migración post-launch de chat tiered.
             chat_count INTEGER NOT NULL DEFAULT 0,
+            -- diag_dismiss_count: "No me interesa" del diagnóstico (cuota Free
+            -- 2/sem → upsell a Plus; plus/pro/admin ilimitado).
+            diag_dismiss_count INTEGER NOT NULL DEFAULT 0,
             cost_usd_cents INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
@@ -1613,6 +1616,9 @@ def init_db():
     ai_usage_cols = _table_cols(conn, 'ai_usage_daily')
     if ai_usage_cols and 'chat_count' not in ai_usage_cols:
         conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN chat_count INTEGER NOT NULL DEFAULT 0")
+    # Migración: ai_usage_daily.diag_dismiss_count (cuota del "No me interesa").
+    if ai_usage_cols and 'diag_dismiss_count' not in ai_usage_cols:
+        conn.execute("ALTER TABLE ai_usage_daily ADD COLUMN diag_dismiss_count INTEGER NOT NULL DEFAULT 0")
 
     # Migración: columna broker en import_normalized_tx (agregada después de la
     # versión inicial de las tablas).
@@ -19909,6 +19915,57 @@ def _chat_quota_429(tier: str, usage: dict) -> HTTPException:
             },
         },
     )
+
+
+@app.post("/api/diagnostics/dismiss")
+def diagnostics_dismiss(request: Request, uid: int = Depends(get_current_user)):
+    """Registra un "No me interesa" del diagnóstico contra la cuota semanal.
+
+    Free: 2/sem (rolling 7d) → al pasarse, 429 con upgrade payload a Plus. El
+    frontend solo pega acá para usuarios Free; paid rota localmente sin server.
+    plus/pro/admin: ilimitado (reserve_diag_dismiss devuelve ok sin descontar).
+
+    La acción visual (rotación de la tile) la hace el frontend — este endpoint
+    solo lleva la cuenta y decide si permitir. No toca el LLM (barato).
+    """
+    from ai import quota
+    # Rate-limit defensivo (barato, pero evita ráfagas de un script).
+    _check_rate_limit(request, max_calls=30, window_seconds=60, suffix=f"diag_dismiss:{uid}")
+    conn = get_db()
+    try:
+        tier = quota.get_tier(conn, uid)
+        ok, usage = quota.reserve_diag_dismiss(conn, uid)
+        if not ok:
+            limit = usage.get("diag_dismiss_limit")
+            # No prometemos una fecha exacta: usage['resets_on'] es cross-tipo
+            # (mín. de CUALQUIER actividad de la ventana) → puede adelantar la
+            # fecha real en que se libera un slot de dismiss. Mensaje genérico.
+            msg = (f"Usaste tus {limit} personalizaciones del diagnóstico de esta "
+                   f"semana. Se van liberando en los próximos días — o pasate a "
+                   f"Plus y descartá sin límite.")
+            raise HTTPException(
+                429,
+                detail={
+                    "error": "diag_dismiss_quota_exceeded",
+                    "message": msg,
+                    "usage": usage,
+                    "upgrade": {
+                        "available": True,
+                        "current_tier": tier,
+                        "target_tier": "plus",
+                        "resets_on": usage.get("resets_on"),
+                        "benefits": [
+                            "Personalizá tu diagnóstico sin límite (descartá lo que no te sirve)",
+                            "Hasta 3 brokers (vs 1 en Free)",
+                            "Reportes históricos + Export CSV",
+                            "3× más Chat con el Coach IA",
+                        ],
+                    },
+                },
+            )
+        return {"ok": True, "usage": usage}
+    finally:
+        conn.close()
 
 
 @app.post("/api/ai/chat")
