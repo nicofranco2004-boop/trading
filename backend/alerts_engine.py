@@ -87,26 +87,29 @@ def _holding_symbols(conn, uid: int) -> list:
 # ─── Lógica de condición ──────────────────────────────────────────────────────
 
 def condition_met(kind: str, direction: str, threshold: float,
-                  price, change_pct):
-    """¿La alerta está CUMPLIDA ahora? Devuelve True/False, o None si no hay
-    dato para decidir (precio/quote ausente → NO disparar, no adivinar)."""
+                  price, change_pct=None):
+    """price_target: ¿cumplida ahora? True/False, o None si no hay precio (→ NO
+    disparar, no adivinar). pct_move usa pct_move_side (umbrales asimétricos)."""
     if kind == "price_target":
-        if price is None:
+        if price is None or threshold is None:
             return None
         if direction == "above":
             return price >= threshold
         if direction == "below":
             return price <= threshold
-        return None  # 'either' no aplica a price_target
-    if kind == "pct_move":
-        if change_pct is None:
-            return None
-        mag = abs(threshold)
-        if direction == "above":
-            return change_pct >= mag
-        if direction == "below":
-            return change_pct <= -mag
-        return abs(change_pct) >= mag  # either
+    return None
+
+
+def pct_move_side(change_pct, up_pct, down_pct):
+    """pct_move con umbrales asimétricos en UNA alerta: devuelve qué lado
+    disparó ('up' | 'down') o None. Ej: up_pct=3, down_pct=2 → dispara si
+    subió ≥3% O cayó ≥2%. Cualquiera de los dos puede ser None (solo un lado)."""
+    if change_pct is None:
+        return None
+    if up_pct is not None and change_pct >= up_pct:
+        return "up"
+    if down_pct is not None and change_pct <= -abs(down_pct):
+        return "down"
     return None
 
 
@@ -161,12 +164,12 @@ def _compose_message(alert, symbol, price, change_pct) -> str:
 
 
 def _pct_desc(alert) -> str:
-    mag = abs(alert["threshold"])
-    if alert["direction"] == "above":
-        return f"sube ≥ {mag:.0f}%"
-    if alert["direction"] == "below":
-        return f"cae ≥ {mag:.0f}%"
-    return f"se mueve ≥ {mag:.0f}%"
+    parts = []
+    if alert["up_pct"] is not None:
+        parts.append(f"sube ≥ {abs(alert['up_pct']):.0f}%")
+    if alert["down_pct"] is not None:
+        parts.append(f"cae ≥ {abs(alert['down_pct']):.0f}%")
+    return " o ".join(parts) if parts else "se mueve"
 
 
 # ─── Entrega ──────────────────────────────────────────────────────────────────
@@ -288,11 +291,11 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                              (new_active, a["id"]))
             elif not a["armed"] and not met:
                 conn.execute("UPDATE alerts SET armed=1 WHERE id=?", (a["id"],))  # re-arma
-        else:  # pct_move — anti-spam por cooldown per (alerta, símbolo)
+        else:  # pct_move — umbral asimétrico + anti-spam por cooldown per (alerta, símbolo)
             quote = quotes.get(sym)
             change = quote.get("change_pct") if quote else None
-            met = condition_met("pct_move", a["direction"], a["threshold"], None, change)
-            if not met:
+            side = pct_move_side(change, a["up_pct"], a["down_pct"])
+            if not side:
                 continue
             if _recently_fired(conn, a["id"], sym, a["cooldown_min"], now):
                 continue

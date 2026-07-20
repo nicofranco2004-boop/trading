@@ -1071,8 +1071,10 @@ def init_db():
             kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move'
             symbol TEXT,                        -- riel-aware; NULL = todas las tenencias
             scope TEXT NOT NULL DEFAULT 'ticker',-- 'ticker' | 'holdings'
-            direction TEXT NOT NULL DEFAULT 'either', -- 'above' | 'below' | 'either'
-            threshold REAL NOT NULL,            -- precio objetivo o % (10, -5)
+            direction TEXT NOT NULL DEFAULT 'either', -- price_target: 'above'|'below'
+            threshold REAL,                     -- price_target: precio objetivo
+            up_pct REAL,                        -- pct_move: dispara si sube ≥ up_pct%
+            down_pct REAL,                      -- pct_move: dispara si cae ≥ down_pct%
             currency TEXT,                      -- 'ARS' | 'USD' (riel del umbral)
             baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close'|'cost'|'set_price'
             channel TEXT NOT NULL DEFAULT 'both',-- 'push' | 'email' | 'both'
@@ -23510,7 +23512,9 @@ class AlertCreateIn(BaseModel):
     symbol: Optional[str] = Field(None, max_length=24)  # requerido si scope='ticker'
     scope: str = Field('ticker', max_length=12)         # 'ticker' | 'holdings'
     direction: str = Field('above', max_length=8)       # 'above' | 'below' | 'either'
-    threshold: float = Field(..., gt=0, le=1e12)        # precio objetivo o % (magnitud)
+    threshold: Optional[float] = Field(None, gt=0, le=1e12)  # price_target: precio objetivo
+    up_pct: Optional[float] = Field(None, gt=0, le=100000)   # pct_move: dispara si sube ≥ up_pct%
+    down_pct: Optional[float] = Field(None, gt=0, le=100000) # pct_move: dispara si cae ≥ down_pct%
     currency: Optional[str] = Field(None, max_length=8)  # 'ARS' | 'USD'
     baseline: str = Field('prev_close', max_length=16)
     channel: str = Field('both', max_length=8)          # 'push' | 'email' | 'both'
@@ -23621,18 +23625,27 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         # Validación cross-field por tipo.
         symbol = data.symbol
         currency = data.currency
+        up_pct = down_pct = None
+        threshold = data.threshold
         if data.kind == "price_target":
             if data.scope != "ticker" or not symbol:
                 raise HTTPException(400, "Una alerta de precio necesita un ticker.")
             if data.direction not in ("above", "below"):
                 raise HTTPException(400, "Dirección inválida para precio objetivo (above/below).")
+            if not (threshold and threshold > 0):
+                raise HTTPException(400, "Ingresá el precio objetivo.")
             if not currency:
                 currency = "ARS" if symbol.endswith(".BA") else "USD"
-        else:  # pct_move
+        else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
             if data.scope == "holdings":
                 symbol = None
+            up_pct = data.up_pct if (data.up_pct and data.up_pct > 0) else None
+            down_pct = data.down_pct if (data.down_pct and data.down_pct > 0) else None
+            if up_pct is None and down_pct is None:
+                raise HTTPException(400, "Poné al menos un umbral: sube y/o baja X%.")
+            threshold = None  # pct_move no usa threshold
 
         # Edge-trigger inicial: armamos solo si HOY todavía no está cumplida
         # (así no dispara al toque de crearla si el precio ya pasó el umbral).
@@ -23640,16 +23653,16 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         current_price = None
         if data.kind == "price_target":
             current_price = _ae.price_for_alert(symbol)
-            met = _ae.condition_met("price_target", data.direction, data.threshold,
+            met = _ae.condition_met("price_target", data.direction, threshold,
                                     current_price, None)
             armed = 0 if met else 1
 
         cur = conn.execute(
             """INSERT INTO alerts
-               (user_id, kind, symbol, scope, direction, threshold, currency,
-                baseline, channel, repeat, cooldown_min, armed, active, note)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
-            (uid, data.kind, symbol, data.scope, data.direction, data.threshold,
+               (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
+                currency, baseline, channel, repeat, cooldown_min, armed, active, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+            (uid, data.kind, symbol, data.scope, data.direction, threshold, up_pct, down_pct,
              currency, data.baseline, data.channel, data.repeat, data.cooldown_min,
              armed, data.note),
         )

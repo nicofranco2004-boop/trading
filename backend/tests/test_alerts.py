@@ -33,14 +33,15 @@ def clean(monkeypatch):
 
 def _mk_alert(conn, **kw):
     d = dict(user_id=1, kind="price_target", symbol="AAPL", scope="ticker",
-             direction="above", threshold=200.0, currency="USD", baseline="prev_close",
+             direction="above", threshold=200.0, up_pct=None, down_pct=None,
+             currency="USD", baseline="prev_close",
              channel="push", repeat="once", cooldown_min=360, armed=1, active=1)
     d.update(kw)
     cur = conn.execute(
-        """INSERT INTO alerts (user_id,kind,symbol,scope,direction,threshold,currency,
-           baseline,channel,repeat,cooldown_min,armed,active)
-           VALUES (:user_id,:kind,:symbol,:scope,:direction,:threshold,:currency,
-           :baseline,:channel,:repeat,:cooldown_min,:armed,:active)""", d)
+        """INSERT INTO alerts (user_id,kind,symbol,scope,direction,threshold,up_pct,down_pct,
+           currency,baseline,channel,repeat,cooldown_min,armed,active)
+           VALUES (:user_id,:kind,:symbol,:scope,:direction,:threshold,:up_pct,:down_pct,
+           :currency,:baseline,:channel,:repeat,:cooldown_min,:armed,:active)""", d)
     conn.commit()
     return cur.lastrowid
 
@@ -60,13 +61,17 @@ def test_condition_price_target():
     assert ae.condition_met("price_target", "above", 200, None, None) is None
 
 
-def test_condition_pct_move():
-    assert ae.condition_met("pct_move", "below", 5, None, -6) is True
-    assert ae.condition_met("pct_move", "below", 5, None, -3) is False
-    assert ae.condition_met("pct_move", "above", 10, None, 12) is True
-    assert ae.condition_met("pct_move", "either", 10, None, -12) is True
-    assert ae.condition_met("pct_move", "either", 10, None, 4) is False
-    assert ae.condition_met("pct_move", "below", 5, None, None) is None
+def test_pct_move_side_asymmetric():
+    # umbrales asimétricos en una alerta: sube ≥3% o cae ≥2%
+    assert ae.pct_move_side(4, 3, 2) == "up"
+    assert ae.pct_move_side(-2.5, 3, 2) == "down"
+    assert ae.pct_move_side(1, 3, 2) is None       # dentro de la banda
+    assert ae.pct_move_side(-1.5, 3, 2) is None
+    # un solo lado
+    assert ae.pct_move_side(-6, None, 5) == "down"
+    assert ae.pct_move_side(-6, 5, None) is None    # solo mira subas
+    assert ae.pct_move_side(12, 10, None) == "up"
+    assert ae.pct_move_side(None, 3, 2) is None     # sin quote → no dispara
 
 
 # ── Gating por plan ──────────────────────────────────────────────────────────
@@ -141,7 +146,7 @@ def test_price_target_no_fire_on_none_price(clean, monkeypatch):
 
 def test_pct_move_cooldown(clean, monkeypatch):
     conn = clean
-    _mk_alert(conn, kind="pct_move", direction="below", threshold=5, symbol="AAPL",
+    _mk_alert(conn, kind="pct_move", down_pct=5, threshold=None, symbol="AAPL",
               cooldown_min=360)
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 90, "change_pct": -7.0}})
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
@@ -155,13 +160,14 @@ def test_pct_move_cooldown(clean, monkeypatch):
 
 def test_pct_move_holdings_scope_expands(clean, monkeypatch):
     conn = clean
+    # asimétrico: sube ≥10% o cae ≥5%
     _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None,
-              direction="below", threshold=5, cooldown_min=360)
+              up_pct=10, down_pct=5, threshold=None, cooldown_min=360)
     monkeypatch.setattr(ae, "_holding_symbols", lambda conn, uid: ["AAPL", "MSFT", "KO"])
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {
-        "AAPL": {"price": 90, "change_pct": -8.0},   # cae → dispara
-        "MSFT": {"price": 400, "change_pct": -2.0},  # no cae lo suficiente
-        "KO":   {"price": 60, "change_pct": -6.0},   # cae → dispara
+        "AAPL": {"price": 90, "change_pct": -8.0},   # cae ≥5 → dispara (down)
+        "MSFT": {"price": 400, "change_pct": 3.0},   # ni sube 10 ni cae 5 → no
+        "KO":   {"price": 60, "change_pct": 11.0},   # sube ≥10 → dispara (up)
     })
     res = ae.evaluate_alerts(conn, only_user=1)
     assert res["fired"] == 2

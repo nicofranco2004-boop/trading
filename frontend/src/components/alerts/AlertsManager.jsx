@@ -22,7 +22,9 @@ const EMPTY_FORM = {
   symbol: '',
   currency: 'USD',
   direction: 'above',
-  threshold: '',
+  threshold: '',      // price_target
+  up_pct: '',         // pct_move: sube ≥ up_pct%
+  down_pct: '',       // pct_move: cae ≥ down_pct%
   channel: 'both',
   repeat: 'once',
 }
@@ -45,10 +47,11 @@ function describeAlert(a) {
     const arrow = a.direction === 'above' ? '≥' : '≤'
     return `${sym} ${arrow} ${fmtPrice(a.threshold, a.currency)}`
   }
-  const mag = Math.abs(a.threshold)
-  const verb = a.direction === 'above' ? 'sube' : a.direction === 'below' ? 'cae' : 'se mueve'
   const who = a.scope === 'holdings' ? 'Alguna de mis acciones' : sym
-  return `${who} ${verb} ≥ ${mag}%`
+  const parts = []
+  if (a.up_pct != null) parts.push(`sube ≥ ${Math.abs(a.up_pct)}%`)
+  if (a.down_pct != null) parts.push(`cae ≥ ${Math.abs(a.down_pct)}%`)
+  return `${who}: ${parts.join(' o ') || 'se mueve'}`
 }
 
 export default function AlertsManager({ plan, prefill }) {
@@ -74,32 +77,33 @@ export default function AlertsManager({ plan, prefill }) {
   function pickKind(kind) {
     if (kind === 'pct_move' && !canPct) { setUpsell(true); return }
     setUpsell(false)
-    setForm(f => ({
-      ...f,
-      kind,
-      // defaults sensatos por tipo
-      direction: kind === 'pct_move' ? 'below' : 'above',
-      threshold: '',
-    }))
+    setForm(f => ({ ...f, kind, direction: 'above', threshold: '', up_pct: '', down_pct: '' }))
   }
 
   async function submit(e) {
     e.preventDefault()
     setErr(null)
+    const isPct = form.kind === 'pct_move'
+    const up = parseFloat(form.up_pct), down = parseFloat(form.down_pct)
     const thr = parseFloat(form.threshold)
-    if (!(thr > 0)) { setErr('Ingresá un valor mayor a 0.'); return }
-    if (form.kind === 'price_target' && !form.symbol.trim()) { setErr('Elegí un ticker.'); return }
-    if (form.kind === 'pct_move' && form.scope === 'ticker' && !form.symbol.trim()) { setErr('Elegí un ticker o "toda mi cartera".'); return }
+
+    if (isPct) {
+      if (!(up > 0) && !(down > 0)) { setErr('Poné al menos un umbral: sube y/o baja X%.'); return }
+      if (form.scope === 'ticker' && !form.symbol.trim()) { setErr('Elegí un ticker o "toda mi cartera".'); return }
+    } else {
+      if (!(thr > 0)) { setErr('Ingresá el precio objetivo.'); return }
+      if (!form.symbol.trim()) { setErr('Elegí un ticker.'); return }
+    }
 
     const payload = {
       kind: form.kind,
-      scope: form.kind === 'pct_move' ? form.scope : 'ticker',
-      symbol: (form.kind === 'pct_move' && form.scope === 'holdings') ? null : form.symbol.trim().toUpperCase(),
-      direction: form.direction,
-      threshold: thr,
-      currency: form.currency,
+      scope: isPct ? form.scope : 'ticker',
+      symbol: (isPct && form.scope === 'holdings') ? null : form.symbol.trim().toUpperCase(),
       channel: form.channel,
       repeat: form.repeat,
+      ...(isPct
+        ? { up_pct: up > 0 ? up : undefined, down_pct: down > 0 ? down : undefined }
+        : { direction: form.direction, threshold: thr, currency: form.currency }),
     }
     setBusy(true)
     try {
@@ -198,30 +202,31 @@ export default function AlertsManager({ plan, prefill }) {
             </div>
           )}
 
-          {/* Dirección + umbral */}
-          <div className="flex gap-2 items-center">
-            {form.kind === 'price_target' ? (
-              <>
+          {/* Umbral */}
+          {form.kind === 'price_target' ? (
+            <>
+              <div className="flex gap-2 items-center">
                 <SegBtn active={form.direction === 'above'} onClick={() => setField('direction', 'above')} label="Sube a" icon={TrendingUp} />
                 <SegBtn active={form.direction === 'below'} onClick={() => setField('direction', 'below')} label="Baja a" icon={TrendingDown} />
-              </>
-            ) : (
-              <>
-                <SegBtn active={form.direction === 'below'} onClick={() => setField('direction', 'below')} label="Cae" icon={TrendingDown} />
-                <SegBtn active={form.direction === 'above'} onClick={() => setField('direction', 'above')} label="Sube" icon={TrendingUp} />
-                <SegBtn active={form.direction === 'either'} onClick={() => setField('direction', 'either')} label="Cualquiera" />
-              </>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="number" step="any" min="0" value={form.threshold}
-              onChange={e => setField('threshold', e.target.value)}
-              placeholder={form.kind === 'price_target' ? 'Precio' : '% (ej. 10)'}
-              className="flex-1 text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none"
-            />
-            <span className="text-xs text-ink-3 w-8">{form.kind === 'price_target' ? (form.currency === 'ARS' ? '$' : 'US$') : '%'}</span>
-          </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" step="any" min="0" value={form.threshold}
+                  onChange={e => setField('threshold', e.target.value)}
+                  placeholder="Precio"
+                  className="flex-1 text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none"
+                />
+                <span className="text-xs text-ink-3 w-8">{form.currency === 'ARS' ? '$' : 'US$'}</span>
+              </div>
+            </>
+          ) : (
+            // pct_move: umbrales asimétricos en una sola alerta. Completá uno o ambos.
+            <div className="space-y-2">
+              <p className="text-[11px] text-ink-3">Completá uno o los dos (podés poner valores distintos)</p>
+              <PctInput icon={TrendingUp} label="Sube más de" value={form.up_pct} onChange={v => setField('up_pct', v)} />
+              <PctInput icon={TrendingDown} label="Baja más de" value={form.down_pct} onChange={v => setField('down_pct', v)} />
+            </div>
+          )}
 
           {/* Canal + repetición */}
           <div className="flex gap-2 flex-wrap">
@@ -307,6 +312,23 @@ function TypeBtn({ active, onClick, icon: Icon, label, locked }) {
       <Icon size={14} /> {label}
       {locked && <Pill tone="info">Plus</Pill>}
     </button>
+  )
+}
+
+function PctInput({ icon: Icon, label, value, onChange }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="inline-flex items-center gap-1.5 text-xs text-ink-2 w-28 flex-shrink-0">
+        <Icon size={13} /> {label}
+      </span>
+      <input
+        type="number" step="any" min="0" value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="—"
+        className="flex-1 text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none"
+      />
+      <span className="text-xs text-ink-3 w-6">%</span>
+    </div>
   )
 }
 
