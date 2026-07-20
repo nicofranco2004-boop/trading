@@ -566,3 +566,30 @@ describe('generadores de métricas (proMetrics)', () => {
     expect(ids).toContain('metric_volatility')
   })
 })
+
+// Regresión: los generadores de drawdown leían `drawdown.maxPct`, pero el objeto
+// que arma Insights.jsx tiene `.max` → NUNCA fireaban. Ahora leen `.max`.
+describe('generadores de drawdown (leen drawdown.max, no .maxPct)', () => {
+  it('at_highs fires con un drawdown recuperado (max negativo, current ~0)', () => {
+    const out = findGen('at_highs').generate({ drawdown: { current: 0, max: -15 } })
+    expect(out).toBeTruthy()
+    expect(out).toMatch(/máximos históricos/i)
+    expect(out).toMatch(/15\.0%/)
+  })
+
+  it('at_highs NO fires si no hubo drawdown histórico relevante (max > -3)', () => {
+    expect(findGen('at_highs').generate({ drawdown: { current: 0, max: -1 } })).toBeNull()
+  })
+
+  it('drawdown_recovery fires tras recuperar un drawdown profundo', () => {
+    const out = findGen('drawdown_recovery').generate({ drawdown: { current: -2, max: -20 } })
+    expect(out).toBeTruthy()
+    expect(out).toMatch(/Recuperaste/)
+    expect(out).toMatch(/-20\.0%/)
+  })
+
+  it('ambos toleran drawdown null sin fires', () => {
+    expect(findGen('at_highs').generate({ drawdown: null })).toBeNull()
+    expect(findGen('drawdown_recovery').generate({ drawdown: null })).toBeNull()
+  })
+})

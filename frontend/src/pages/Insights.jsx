@@ -24,7 +24,7 @@ import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
 import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
-import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
+import { ChevronDown, ChevronUp, Sparkles, X } from 'lucide-react'
 import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/format'
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -61,6 +61,7 @@ import {
   lookupMonthly,
 } from '../utils/benchmarkSim'
 import { selectDiagnostics } from '../utils/diagnostics'
+import { resolveTierShown, computeDismiss } from '../utils/diagnosticsRotation'
 import { computeProMetrics } from '../utils/insightsMetrics'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
@@ -2107,7 +2108,7 @@ function InsightsDesktop({ _embeddedTab }) {
           Ver <DiagnosisSection> para la lógica completa.
           ══════════════════════════════════════════════════════════════════════ */}
       {diagnosisPool.length > 0 && (
-        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${user?.email ?? 'anon'}`} />
+        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${(user?.email || 'anon').toLowerCase()}`} />
       )}
 
       {/* ── Composición por activo — estándar, incluye cash. Movida arriba
@@ -2652,18 +2653,30 @@ function diagnosisShortTitle(d) {
 // conservamos el patrón previo (grilla recortada + BlurredList con CTA upgrade)
 // para no regalar el contenido pago. El acordeón con TODO el detalle es para
 // usuarios con acceso completo (Plus/Pro).
-// Persistencia del "no me interesa" — Set de ids de diagnósticos descartados
-// por user, en localStorage. Al agotar un tier, se resetean SOLO sus ids (cicla).
+// Persistencia del "no me interesa" — en localStorage guardamos DOS cosas por
+// user: (1) `dismissed`, el Set de ids que el user marcó como "no me interesa"
+// (skip-list para elegir reemplazos); (2) `slots`, las ids VISIBLES por tier en
+// orden — así al descartar UNA tile reemplazamos sólo ESA (identidad de slot
+// estable) y en un refresh se ven las mismas 3. Al agotar un tier, se resetean
+// SOLO sus ids descartadas (cicla y vuelve a la primera).
 const DIAG_DISMISS_PREFIX = 'rendi_diag_dismissed_'
-function readDismissed(key) {
+function readDiagState(key) {
   try {
     const raw = localStorage.getItem(DIAG_DISMISS_PREFIX + key)
-    return new Set(raw ? JSON.parse(raw) : [])
-  } catch { return new Set() }
+    if (!raw) return { dismissed: new Set(), slots: {} }
+    const parsed = JSON.parse(raw)
+    // Formato viejo: array plano de ids descartadas (sin slots).
+    if (Array.isArray(parsed)) return { dismissed: new Set(parsed), slots: {} }
+    return { dismissed: new Set(parsed.dismissed || []), slots: parsed.slots || {} }
+  } catch { return { dismissed: new Set(), slots: {} } }
 }
-function writeDismissed(key, set) {
-  try { localStorage.setItem(DIAG_DISMISS_PREFIX + key, JSON.stringify([...set])) } catch { /* modo privado */ }
+function writeDiagState(key, dismissed, slots) {
+  try {
+    localStorage.setItem(DIAG_DISMISS_PREFIX + key, JSON.stringify({ dismissed: [...dismissed], slots }))
+  } catch { /* modo privado */ }
 }
+// resolveTierShown / computeDismiss viven en utils/diagnosticsRotation.js (puros
+// + testeados). Acá sólo los conectamos al estado del componente.
 
 // Tiers de display por SEVERIDAD (no por categoría): la card ya muestra su badge.
 const DIAG_TIERS = [
@@ -2673,8 +2686,10 @@ const DIAG_TIERS = [
 ]
 
 function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
-  // dismissed + collapsed ANTES de cualquier early return (Rules of Hooks).
-  const [dismissed, setDismissed] = useState(() => readDismissed(userKey))
+  // state ({dismissed, slots}) + collapsed ANTES de cualquier early return
+  // (Rules of Hooks). `slots` = ids visibles por tier → reemplazo por-slot estable.
+  const [state, setState] = useState(() => readDiagState(userKey))
+  const { dismissed, slots } = state
   const [collapsed, setCollapsed] = useState(false)  // abierto por defecto
 
   if (!diagnosis || diagnosis.length === 0) return null
@@ -2723,16 +2738,22 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
   // ── Acceso completo: grilla 3×3 ADAPTATIVA — 3 atención · 3 diagnóstico ·
   // 3 positivo, todo junto y abierto. "No me interesa" descarta y trae otra del
   // mismo tier; al agotar el tier, vuelve a la primera (cicla). ──────────────
-  const dismiss = (id, tierPoolIds) => {
-    setDismissed(prev => {
-      const next = new Set(prev)
-      next.add(id)
-      // Ciclo por-tier: si ya no quedan suficientes para llenar la fila (3, o el
-      // total del tier si es menor), reseteamos SUS ids → vuelve a la primera.
-      const undismissedCount = tierPoolIds.filter(pid => !next.has(pid)).length
-      if (undismissedCount < Math.min(3, tierPoolIds.length)) tierPoolIds.forEach(pid => next.delete(pid))
-      writeDismissed(userKey, next)
-      return next
+  // Descarta la tile `id` del tier y la REEMPLAZA en su lugar (los otros 2 slots
+  // quedan intactos). El reemplazo es el 1er candidato del pool que no esté ya
+  // visible ni descartado; si el tier se agotó, ciclamos (limpiamos sus ids
+  // descartadas) y traemos la 1ª no visible. `rest` es puro de props → seguro en
+  // el updater.
+  const dismiss = (tierKey, id) => {
+    setState(prev => {
+      const tier = DIAG_TIERS.find(t => t.key === tierKey)
+      const pool = rest.filter(tier.match)      // `rest` es puro de props → seguro en el updater
+      const poolIds = pool.map(d => d.id)
+      const current = resolveTierShown(pool, poolIds, prev.slots[tierKey], prev.dismissed)
+      const { nextShown, nextDismissed } = computeDismiss(pool, poolIds, current, id, prev.dismissed)
+      if (nextShown === current && nextDismissed === prev.dismissed) return prev  // no-op
+      const nextSlots = { ...prev.slots, [tierKey]: nextShown }
+      writeDiagState(userKey, nextDismissed, nextSlots)
+      return { dismissed: nextDismissed, slots: nextSlots }
     })
   }
 
@@ -2740,13 +2761,11 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
     const pool = rest.filter(tier.match)          // candidatos del tier (sin el featured)
     if (pool.length === 0) return null
     const poolIds = pool.map(d => d.id)
-    const undismissed = pool.filter(d => !dismissed.has(d.id))
-    // Mostramos los no-descartados si alcanzan para llenar la fila; si no,
-    // mostramos el pool completo (vista ciclada). La fila siempre tiene min(3, N).
-    const effective = undismissed.length >= Math.min(3, pool.length) ? undismissed : pool
-    const shown = effective.slice(0, 3)
+    const byId = new Map(pool.map(d => [d.id, d]))
+    const shown = resolveTierShown(pool, poolIds, slots[tier.key], dismissed)
+      .map(sid => byId.get(sid)).filter(Boolean)
     // "No me interesa" solo si hay MÁS de 3 → hay un 4º real para traer.
-    return { key: tier.key, shown, poolIds, canRotate: pool.length > 3 }
+    return { key: tier.key, shown, canRotate: pool.length > 3 }
   }).filter(Boolean)
 
   if (tierRows.length === 0) {
@@ -2781,7 +2800,7 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
                   <DiagnosisCard
                     key={d.id}
                     d={d}
-                    onDismiss={row.canRotate ? () => dismiss(d.id, row.poolIds) : undefined}
+                    onDismiss={row.canRotate ? () => dismiss(row.key, d.id) : undefined}
                   />
                 ))}
               </div>
@@ -2885,6 +2904,21 @@ function DiagnosisCard({ d, onDismiss }) {
       className="h-full"
     >
       <div className="bg-white dark:bg-bg-1 p-5 flex flex-col h-full">
+        {/* "No me interesa" en su PROPIA línea, ARRIBA del badge (como lo pidió
+            el user). En su propia fila nunca compite por ancho con el badge ni
+            se corta en cards angostas (~149px en tablet/laptop con sidebar).
+            Sin uppercase → más angosto; envuelve como último recurso. Tinte de
+            acento + X para que el user lo detecte. */}
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); onDismiss() }}
+            className="self-start inline-flex items-center gap-1 max-w-[calc(100%_-_1.5rem)] mb-2.5 text-[10px] font-medium leading-tight px-2 py-0.5 rounded-sm border border-rendi-accent/30 bg-rendi-accent/10 text-[#1857B8] dark:text-rendi-accent hover:bg-rendi-accent/20 hover:border-rendi-accent/50 transition-colors"
+            title="Ocultar este análisis y mostrar otro del mismo tipo"
+          >
+            <X size={11} strokeWidth={2.25} aria-hidden="true" className="flex-shrink-0" /> No me interesa
+          </button>
+        )}
         <div className="flex items-center gap-2 mb-3">
           <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
             {sev.label}
@@ -2898,9 +2932,9 @@ function DiagnosisCard({ d, onDismiss }) {
             <DiagnosticText text={context} />
           </p>
         )}
-        <div className="mt-4 flex items-center justify-between gap-2">
-          {cta ? (
-            cta.href.startsWith('#') ? (
+        {cta && (
+          <div className="mt-4 flex items-center">
+            {cta.href.startsWith('#') ? (
               <a href={cta.href} className="inline-flex items-center gap-1 text-xs text-rendi-accent hover:underline">
                 {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
               </a>
@@ -2908,19 +2942,9 @@ function DiagnosisCard({ d, onDismiss }) {
               <Link to={cta.href} className="inline-flex items-center gap-1 text-xs text-rendi-accent hover:underline">
                 {cta.label} <ArrowRight size={11} strokeWidth={1.75} />
               </Link>
-            )
-          ) : <span />}
-          {onDismiss && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); e.preventDefault(); onDismiss() }}
-              className="text-[11px] text-ink-3 hover:text-ink-1 transition-colors whitespace-nowrap flex-shrink-0"
-              title="Ocultar este análisis y mostrar otro"
-            >
-              No me interesa
-            </button>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     </AskAIAbout>
   )

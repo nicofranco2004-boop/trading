@@ -253,9 +253,9 @@ export const DIAGNOSTIC_GENERATORS = [
     category: 'Performance',
     severity: 'positive',
     generate: ({ drawdown }) => {
-      if (!drawdown || drawdown.current < -1 || drawdown.maxPct == null) return null
-      if (drawdown.maxPct > -3) return null  // sin drawdown histórico relevante, no es noticia
-      return `Tu portfolio está en máximos históricos. Recuperado de un drawdown previo del **${Math.abs(drawdown.maxPct).toFixed(1)}%**.`
+      if (!drawdown || drawdown.current < -1 || drawdown.max == null) return null
+      if (drawdown.max > -3) return null  // sin drawdown histórico relevante, no es noticia
+      return `Tu portfolio está en máximos históricos. Recuperado de un drawdown previo del **${Math.abs(drawdown.max).toFixed(1)}%**.`
     },
   },
 
@@ -318,18 +318,10 @@ export const DIAGNOSTIC_GENERATORS = [
   // inversor" (que eliminamos para evitar duplicación con el tab
   // "Comportamiento" del nav). Ahora rotan como observaciones del
   // diagnóstico principal.
-  {
-    id: 'best_trade_celebration',
-    category: 'Comportamiento',
-    severity: 'positive',
-    generate: ({ bestWorstOp }) => {
-      if (!bestWorstOp || !bestWorstOp.best) return null
-      const b = bestWorstOp.best
-      if (!b.pnl_usd || b.pnl_usd <= 0) return null
-      const asset = b.asset || 'tu mejor operación'
-      return `Tu mejor operación cerrada fue **${asset}** con **${fmtUsd(b.pnl_usd)}** de ganancia. Identificá qué hiciste bien ahí — replicar buenas decisiones es tan útil como evitar las malas.`
-    },
-  },
+  // (Se removió 'best_trade_celebration': era redundante con 'best_realized_op'
+  //  más abajo — mismo dato bestWorstOp.best, mismo mensaje "Tu mejor operación
+  //  cerrada fue…" → mostraba dos cards positivas casi idénticas. Se conserva
+  //  'best_realized_op', que tiene umbral mínimo (>50) para evitar ruido.)
   {
     id: 'winrate_balanced_summary',
     category: 'Comportamiento',
@@ -724,13 +716,13 @@ export const DIAGNOSTIC_GENERATORS = [
     category: 'Performance',
     severity: 'positive',
     generate: ({ drawdown }) => {
-      if (!drawdown || drawdown.maxPct == null || drawdown.current == null) return null
+      if (!drawdown || drawdown.max == null || drawdown.current == null) return null
       // Si tuvo un drawdown profundo (≤ -10%) y se recuperó (current > -3%)
-      if (drawdown.maxPct > -10) return null
+      if (drawdown.max > -10) return null
       if (drawdown.current < -3) return null
-      const recovered = Math.abs(drawdown.maxPct) - Math.abs(drawdown.current)
+      const recovered = Math.abs(drawdown.max) - Math.abs(drawdown.current)
       if (recovered < 5) return null
-      return `Recuperaste **${recovered.toFixed(1)}** puntos de un drawdown que llegó a **${drawdown.maxPct.toFixed(1)}%**. Tu portfolio mostró resiliencia — el peor momento ya pasó y se sostuvo la disciplina.`
+      return `Recuperaste **${recovered.toFixed(1)}** puntos de un drawdown que llegó a **${drawdown.max.toFixed(1)}%**. Tu portfolio mostró resiliencia — el peor momento ya pasó y se sostuvo la disciplina.`
     },
   },
 
