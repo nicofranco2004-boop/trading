@@ -32,6 +32,19 @@ const EMPTY_FORM = {
   repeat: 'once',
 }
 
+// Parseo tolerante al formato argentino: coma decimal + punto de miles, y también
+// formato US. '0,01'→0.01 · '10,5'→10.5 · '9.000'→9000 · '380.5'→380.5 · '1.234,56'→1234.56
+function parseNum(v) {
+  let s = String(v == null ? '' : v).trim().replace(/\s/g, '')
+  if (!s) return NaN
+  if (s.includes(',')) {
+    s = s.replace(/\./g, '').replace(',', '.')     // coma = decimal (puntos = miles)
+  } else if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
+    s = s.replace(/\./g, '')                        // solo puntos en grupos de 3 = miles
+  }
+  return parseFloat(s)
+}
+
 function fmtPrice(v, ccy) {
   if (v == null) return '—'
   if ((ccy || '').toUpperCase() === 'ARS') return '$' + Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })
@@ -88,8 +101,8 @@ export default function AlertsManager({ plan, prefill }) {
     e.preventDefault()
     setErr(null)
     const isPct = form.kind === 'pct_move'
-    const up = parseFloat(form.up_pct), down = parseFloat(form.down_pct)
-    const thr = parseFloat(form.threshold)
+    const up = parseNum(form.up_pct), down = parseNum(form.down_pct)
+    const thr = parseNum(form.threshold)
 
     if (isPct) {
       if (!(up > 0) && !(down > 0)) { setErr('Poné al menos un umbral: sube y/o baja X%.'); return }
@@ -229,7 +242,7 @@ export default function AlertsManager({ plan, prefill }) {
               </div>
               <div className="flex items-center gap-2">
                 <input
-                  type="number" step="any" min="0" value={form.threshold}
+                  type="text" inputMode="decimal" value={form.threshold}
                   onChange={e => setField('threshold', e.target.value)}
                   placeholder="Precio"
                   className="flex-1 text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none"
@@ -344,7 +357,7 @@ function PctInput({ icon: Icon, label, value, onChange }) {
         <Icon size={13} /> {label}
       </span>
       <input
-        type="number" step="any" min="0" value={value}
+        type="text" inputMode="decimal" value={value}
         onChange={e => onChange(e.target.value)}
         placeholder="—"
         className="flex-1 text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none"
