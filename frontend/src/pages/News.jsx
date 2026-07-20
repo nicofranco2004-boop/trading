@@ -301,7 +301,7 @@ export default function News({ embedded = false }) {
         <NewsGrid news={visibleNews} tab={tab} onTagClick={setTagFilter} />
       )}
 
-      <p className="mt-6 text-[10px] text-ink-3 font-mono leading-snug tracking-wider uppercase">
+      <p className="mt-6 text-[12px] text-ink-3 leading-snug font-medium">
         Fuente · Google News RSS · click para abrir el artículo original
       </p>
     </div>
@@ -323,7 +323,7 @@ function NewsGrid({ news, tab, onTagClick }) {
       {groups.map(g => (
         <div key={g.label} className="space-y-2">
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-mono uppercase tracking-wider text-ink-3">{g.label}</span>
+            <span className="text-[12.5px] text-ink-3 font-medium">{g.label}</span>
             <span className="h-px flex-1 bg-line" />
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -379,7 +379,7 @@ function NewsFeatured({ news, tab, onTagClick }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-rendi-accent">
+            <span className="text-[12.5px] tracking-[0.18em] text-rendi-accent font-medium">
               Destacada
             </span>
             {tab === 'portfolio' && ticker && (
@@ -395,7 +395,7 @@ function NewsFeatured({ news, tab, onTagClick }) {
               · {formatNewsDate(published_at)}
             </span>
             {sentiment && sentiment !== 'neutral' && (
-              <span className={`inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider ${sm.text}`}>
+              <span className={`inline-flex items-center gap-1 text-[12.5px] ${sm.text} font-medium`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${sm.dot}`} />{sm.label}
               </span>
             )}
@@ -465,11 +465,11 @@ function NewsTile({ news, tab, onTagClick }) {
         )}
         <span className="ml-auto flex items-center gap-1.5">
           {sentiment && sentiment !== 'neutral' && (
-            <span className={`inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider ${sm.text}`}>
+            <span className={`inline-flex items-center gap-1 text-[12.5px] ${sm.text} font-medium`}>
               <span className={`w-1.5 h-1.5 rounded-full ${sm.dot}`} />{sm.label}
             </span>
           )}
-          <span className="text-[9px] font-mono text-ink-3 tracking-wider uppercase">
+          <span className="text-[12.5px] text-ink-3 font-medium">
             {formatNewsDate(published_at)}
           </span>
         </span>

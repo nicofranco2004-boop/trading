@@ -382,7 +382,7 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
 
               {preview && (
                 <div className="rounded-md border border-rendi-accent/30 bg-rendi-accent/[0.05] p-3 text-sm">
-                  <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">Estimación a {form.plazo_dias} días</div>
+                  <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Estimación a {form.plazo_dias} días</div>
                   <div className="grid grid-cols-2 gap-y-1.5">
                     <span className="text-ink-3">Tasa del período</span><span className="text-right text-ink-0 font-medium tabular">{pct(preview.tasaPeriodo)}</span>
                     <span className="text-ink-3">Interés</span><span className="text-right text-ink-0 font-medium tabular">{money(preview.interes)}</span>

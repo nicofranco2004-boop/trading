@@ -27,7 +27,7 @@ export default function Pill({ children, tone = 'default', dot = false, classNam
   const t = TONE[tone] || TONE.default
   return (
     <span
-      className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm border ${t.border} ${t.bg} ${t.text} font-mono text-[10px] uppercase tracking-caps font-medium ${className}`}
+      className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm border ${t.border} ${t.bg} ${t.text} text-[12px] font-medium ${className}`}
     >
       {dot && <span className={`w-1.5 h-1.5 rounded-full ${t.dot}`} aria-hidden="true" />}
       {children}

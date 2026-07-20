@@ -141,7 +141,7 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
                 <span className="font-mono text-sm font-semibold text-ink-0 tabular">{t.symbol}</span>
                 <span className="text-xs text-ink-3 truncate">{t.name}</span>
               </span>
-              <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3 flex-shrink-0">
+              <span className="text-[12px] text-ink-3 flex-shrink-0 font-medium">
                 {TYPE_LABEL[t.type] || t.type}
               </span>
             </button>

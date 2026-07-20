@@ -250,7 +250,7 @@ function OperationsDesktop() {
             <ExportCsvButton resource="operations" source="operations_header" variant="compact" />
             <button
               onClick={openAdd}
-              className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors"
+              className="inline-flex items-center gap-1.5 text-xs bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors font-medium"
             >
               <Plus size={12} strokeWidth={2} /> Nueva operación
             </button>
@@ -364,13 +364,13 @@ function OperationsDesktop() {
               {filtersActive && (
                 <button
                   onClick={() => { setFilterAsset(''); setFilterBroker('all'); setFilterResult('all'); setFilterYear('all') }}
-                  className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition-colors"
+                  className="inline-flex items-center gap-1 text-[12.5px] text-ink-2 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition-colors font-medium"
                 >
                   <X size={11} strokeWidth={1.75} /> Limpiar
                 </button>
               )}
             </div>
-            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 tabular">
+            <span className="text-[12.5px] text-ink-2 tabular font-medium">
               {filteredOps.length} de {ops.length}
             </span>
           </div>
@@ -403,7 +403,7 @@ function OperationsDesktop() {
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-line text-[11px] font-mono uppercase tracking-label text-ink-2">
+              <tr className="border-b border-line text-[12.5px] text-ink-2 font-medium">
                 <th className="text-left px-4 py-2.5 font-medium">Fecha</th>
                 <th className="text-left px-3 py-2.5 font-medium">Broker</th>
                 <th className="text-left px-3 py-2.5 font-medium">Activo</th>
@@ -425,7 +425,7 @@ function OperationsDesktop() {
                     title="Aún no hay operaciones registradas"
                     description="Las ventas realizadas desde Posiciones quedan registradas automáticamente con su P&L realizado. También podés agregar operaciones manualmente."
                     action={
-                      <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-caps bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors">
+                      <button onClick={openAdd} className="inline-flex items-center gap-1.5 text-xs bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors font-medium">
                         <Plus size={12} strokeWidth={2} /> Agregar manualmente
                       </button>
                     }
@@ -465,7 +465,7 @@ function OperationsDesktop() {
 
         {/* Paginación — oculta en modo agrupado (mismo criterio que MovementsView). */}
         {!grouped && filteredOps.length > PAGE_SIZE && (
-          <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-line text-[11px] font-mono uppercase tracking-caps text-ink-3">
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-line text-[12.5px] text-ink-3 font-medium">
             <span className="tabular">
               {currentPage * PAGE_SIZE + 1}–{Math.min((currentPage + 1) * PAGE_SIZE, filteredOps.length)} de {filteredOps.length}
             </span>
@@ -519,9 +519,9 @@ function KpiCell({ label, value, sub, tone, first }) {
     'text-ink-0'
   return (
     <div className={`px-4 py-3 flex-1 min-w-[140px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
+      <div className="text-[12.5px] text-ink-2 leading-none font-medium">{label}</div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{value}</div>
-      <div className="text-[11px] font-mono text-ink-2 mt-1.5 leading-none truncate uppercase tracking-caps">{sub}</div>
+      <div className="text-[12.5px] text-ink-2 mt-1.5 leading-none truncate font-medium">{sub}</div>
     </div>
   )
 }
@@ -529,7 +529,7 @@ function KpiCell({ label, value, sub, tone, first }) {
 function FilterPill({ label, value, onChange, options }) {
   return (
     <label className="inline-flex items-center gap-1.5 text-xs">
-      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">{label}</span>
+      <span className="text-[12.5px] text-ink-2 font-medium">{label}</span>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -560,7 +560,7 @@ function TradeRow({ op, histMoney, onEdit, onDelete, indent = false }) {
       </td>
       <td className={`px-3 py-2 text-xs text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.broker}</td>
       <td className={`px-3 py-2 text-sm font-medium text-ink-0 ${indent ? 'opacity-75' : ''}`}>{op.asset}</td>
-      <td className={`px-3 py-2 text-[11px] font-mono uppercase tracking-caps text-ink-3 ${indent ? 'opacity-75' : ''}`}>{prettyOpType(op.op_type)}</td>
+      <td className={`px-3 py-2 text-[12.5px] text-ink-3 ${indent ? 'opacity-75' : ''} font-medium`}>{prettyOpType(op.op_type)}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.quantity ?? '—'}</td>
@@ -642,7 +642,7 @@ function TradeGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
       </td>
       {/* # trades — ocupa Activo … Cant. */}
       <td className="px-3 py-2.5 text-ink-2" colSpan={5}>
-        <span className="font-mono uppercase tracking-caps text-[11px]">
+        <span className="text-[12.5px] font-medium">
           {count} {count === 1 ? 'trade' : 'trades'}
         </span>
       </td>
@@ -654,7 +654,7 @@ function TradeGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
         </span>
       </td>
       {/* Resto (P&L % · acciones · flecha) — hint del P&L */}
-      <td className="px-3 py-2.5 text-ink-3 text-[10px] font-mono uppercase tracking-caps text-right" colSpan={3}>
+      <td className="px-3 py-2.5 text-ink-3 text-[12px] text-right font-medium" colSpan={3}>
         {hasPnl ? 'P&L total' : ''}
       </td>
     </tr>
@@ -665,7 +665,7 @@ function TradeGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
 
 function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
   const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2'
-  const labelClass = 'block text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1'
+  const labelClass = 'block text-[12.5px] text-ink-2 mb-1 font-medium'
   return (
     <Modal title={mode === 'edit' ? 'Editar operación' : 'Nueva operación'} onClose={onClose}>
       <div className="space-y-3">
@@ -730,14 +730,14 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
             <input type="number" step="any" value={form.commissions} onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))} className={inputClass} placeholder="0" />
           </div>
         </div>
-        <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-tight">
+        <p className="text-[12.5px] text-ink-2 leading-tight font-medium">
           Atajo: si solo querés registrar la ganancia/pérdida (sin precios ni cantidad), completá únicamente P&L USD.
         </p>
         <div className="flex justify-end gap-2 pt-2">
-          <button onClick={onClose} className="text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-3 py-1.5 transition-colors">
+          <button onClick={onClose} className="text-[12.5px] text-ink-3 hover:text-ink-0 px-3 py-1.5 transition-colors font-medium">
             Cancelar
           </button>
-          <button onClick={onSave} className="text-[11px] font-mono uppercase tracking-caps bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors">
+          <button onClick={onSave} className="text-[12.5px] bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors font-medium">
             Guardar
           </button>
         </div>
@@ -1032,7 +1032,7 @@ function MovementsView() {
           <select
             value={filterBroker}
             onChange={e => setFilterBroker(e.target.value)}
-            className="text-[11px] font-mono uppercase tracking-caps bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2"
+            className="text-[12.5px] bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2 font-medium"
           >
             <option value="all">Todos los brokers</option>
             {brokersAvailable.map(b => <option key={b} value={b}>{b}</option>)}
@@ -1042,7 +1042,7 @@ function MovementsView() {
           <select
             value={filterYear}
             onChange={e => setFilterYear(e.target.value)}
-            className="text-[11px] font-mono uppercase tracking-caps bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2"
+            className="text-[12.5px] bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-ink-2 font-medium"
           >
             <option value="all">Todos los años</option>
             {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
@@ -1066,7 +1066,7 @@ function MovementsView() {
       ) : (
         <div className="border border-line rounded overflow-x-auto bg-bg-1">
           <table className="w-full text-sm">
-            <thead className="bg-bg-2 text-ink-3 font-mono uppercase text-[10px] tracking-caps">
+            <thead className="bg-bg-2 text-ink-3 text-[12px] font-medium">
               <tr>
                 <th className="text-left px-3 py-2">Fecha</th>
                 <th className="text-left px-3 py-2">Tipo</th>
@@ -1305,7 +1305,7 @@ function MovementGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
       </td>
       {/* # movimientos — bajo "Activo" */}
       <td className="px-3 py-2.5 text-ink-2 text-xs" colSpan={3}>
-        <span className="font-mono uppercase tracking-caps text-[11px]">
+        <span className="text-[12.5px] font-medium">
           {count} {count === 1 ? 'movimiento' : 'movimientos'}
         </span>
       </td>
@@ -1317,7 +1317,7 @@ function MovementGroupRow({ group, groupBy, isOpen, onToggle, fmtPnl }) {
         </span>
       </td>
       {/* Notas — hint del P&L */}
-      <td className="px-3 py-2.5 text-ink-3 text-[10px] font-mono uppercase tracking-caps">
+      <td className="px-3 py-2.5 text-ink-3 text-[12px] font-medium">
         {hasPnl ? 'P&L realizado' : ''}
       </td>
     </tr>

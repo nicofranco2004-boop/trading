@@ -46,7 +46,7 @@ export default function InsightDelDiaHero() {
       <div className="bg-bg-1 border border-line/60 rounded-lg p-4 mb-5">
         <div className="flex items-center gap-2 mb-1.5">
           <Brain size={14} strokeWidth={1.75} className="text-ink-3" />
-          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Insight del día</span>
+          <span className="text-[12.5px] text-ink-2 font-medium">Insight del día</span>
         </div>
         <p className="text-xs text-ink-2 leading-relaxed">
           Necesitamos más historial para detectar patrones. Cargá al menos 5 operaciones cerradas.
@@ -68,7 +68,7 @@ export default function InsightDelDiaHero() {
         <div className="flex items-center justify-between gap-2 mb-2.5">
           <div className="flex items-center gap-2 min-w-0">
             <Icon size={13} strokeWidth={1.75} className={`${tone.accent} flex-shrink-0`} />
-            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 truncate">
+            <span className="text-[12.5px] text-ink-2 truncate font-medium">
               Insight del día · {card.code.replace(/_/g, ' ')}
             </span>
           </div>
@@ -84,7 +84,7 @@ export default function InsightDelDiaHero() {
 
         {card.value_label && (
           <div className="bg-bg-1 border border-line/40 rounded-sm p-2.5 mb-3">
-            <div className="text-[9px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1">
+            <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
               Indicador
             </div>
             <div className={`text-sm font-medium tabular leading-none ${tone.accent}`}>
@@ -96,13 +96,13 @@ export default function InsightDelDiaHero() {
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-line/30">
           <Link
             to="/comportamiento"
-            className="text-[10px] font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 inline-flex items-center gap-1"
+            className="text-[12px] text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 font-medium"
           >
             Ver los 12 detectores <ChevronRight size={10} strokeWidth={1.75} />
           </Link>
           <button
             onClick={() => setShareCard(card)}
-            className="text-[10px] font-mono uppercase tracking-caps text-rendi-pos hover:text-rendi-pos/80"
+            className="text-[12px] text-rendi-pos hover:text-rendi-pos/80 font-medium"
           >
             Compartir
           </button>

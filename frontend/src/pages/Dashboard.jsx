@@ -958,7 +958,7 @@ export default function Dashboard() {
                       boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
                       fontFamily: 'JetBrains Mono'
                     }}
-                    labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.12em' }}
+                    labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'font-medium', letterSpacing: '0.12em' }}
                     itemStyle={{ color: '#F4F4F0', fontSize: 12, padding: '2px 0' }}
                     formatter={(v, name) => {
                       // Audit fix C1: data ya está en la currency target.
@@ -1146,17 +1146,17 @@ function VarCell({ label, data, fmtSigned, note = null, first = false, pctHero =
   const subTone = pos ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
   return (
     <div className={`px-5 py-3 min-w-[150px] ${first ? '' : 'border-l border-line/50'}`}>
-      <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-none">{label}</div>
+      <div className="text-[12.5px] text-ink-2 leading-none font-medium">{label}</div>
       {pctHero ? (
         <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${toneCls}`}>{pctSigned(data.pct)}</div>
       ) : (
         <>
           <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${toneCls}`}>{fmtSigned(data.usd)}</div>
-          <div className={`text-[11px] font-mono mt-1.5 leading-none uppercase tracking-caps ${subTone}`}>{pctSigned(data.pct)}</div>
+          <div className={`text-[12.5px] mt-1.5 leading-none ${subTone} font-medium`}>{pctSigned(data.pct)}</div>
         </>
       )}
       {note && (
-        <div className="text-[11px] font-mono text-ink-2 mt-1 leading-none uppercase tracking-caps truncate">{note}</div>
+        <div className="text-[12.5px] text-ink-2 mt-1 leading-none truncate font-medium">{note}</div>
       )}
     </div>
   )
@@ -1170,11 +1170,11 @@ function KpiCell({ label, value, sub, tone, first, info, infoAlign = 'right' }) 
   return (
     <div className={`px-4 py-3 flex-1 min-w-[160px] ${first ? '' : 'border-l border-line/50'}`}>
       <div className="flex items-center gap-1 leading-none">
-        <div className="text-[11px] font-mono uppercase tracking-label text-ink-2">{label}</div>
+        <div className="text-[12.5px] text-ink-2 font-medium">{label}</div>
         {info && <InfoTooltip size={11} align={infoAlign}>{info}</InfoTooltip>}
       </div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{value}</div>
-      <div className="text-[11px] font-mono text-ink-2 mt-1.5 leading-none truncate uppercase tracking-caps">{sub}</div>
+      <div className="text-[12.5px] text-ink-2 mt-1.5 leading-none truncate font-medium">{sub}</div>
     </div>
   )
 }

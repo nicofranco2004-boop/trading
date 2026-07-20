@@ -67,7 +67,7 @@ export default function Blog() {
 
       <main className="max-w-3xl mx-auto px-6 py-12 md:py-16">
         <section className="mb-12">
-          <p className="font-mono text-[11px] uppercase tracking-caps text-data-violet mb-3">Blog de Rendi</p>
+          <p className="text-[12.5px] text-data-violet mb-3 font-medium">Blog de Rendi</p>
           <h1 className="text-3xl md:text-4xl font-semibold tracking-tight mb-4 text-ink-0">
             Aprende a invertir mejor desde Argentina
           </h1>
@@ -86,7 +86,7 @@ export default function Blog() {
                   to={`/blog/${p.slug}`}
                   className="block border border-line/60 hover:border-line-3 hover:bg-bg-1/40 rounded-lg p-6 transition-colors group"
                 >
-                  <div className="flex items-center gap-3 text-xs text-ink-3 font-mono uppercase tracking-caps mb-3">
+                  <div className="flex items-center gap-3 text-xs text-ink-3 mb-3 font-medium">
                     <span className="text-data-violet">{p.category}</span>
                     <span>·</span>
                     <span className="inline-flex items-center gap-1">

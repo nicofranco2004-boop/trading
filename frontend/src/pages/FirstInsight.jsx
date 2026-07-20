@@ -203,7 +203,7 @@ export default function FirstInsight() {
       <div className="text-center pt-8 pb-6">
         <div className="inline-flex items-center gap-2 mb-3 text-data-violet">
           <Sparkles size={16} strokeWidth={1.75} />
-          <span className="text-xs font-mono uppercase tracking-caps">Primer reporte</span>
+          <span className="text-xs font-medium">Primer reporte</span>
         </div>
         <h1 className="display-heading mb-3">Bienvenido a Rendi.</h1>
         <p className="text-ink-2 text-sm max-w-md mx-auto leading-relaxed">

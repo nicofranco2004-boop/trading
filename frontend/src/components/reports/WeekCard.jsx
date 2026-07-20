@@ -85,7 +85,7 @@ export default function WeekCard({ week }) {
 function Stat({ label, value }) {
   return (
     <div className="rounded-sm bg-bg-3/40 px-2 py-1.5">
-      <div className="text-ink-3 uppercase tracking-wider text-[9px]">{label}</div>
+      <div className="text-ink-3 text-[12.5px] font-medium">{label}</div>
       <div className="text-ink-1 font-mono tabular text-[11px]">{value}</div>
     </div>
   )

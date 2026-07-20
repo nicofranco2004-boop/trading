@@ -217,7 +217,7 @@ export default function DateInput({ value, onChange, min, max, className = '', p
           {/* Días de la semana */}
           <div className="grid grid-cols-7 gap-1 mb-1">
             {DAYS.map((d, i) => (
-              <div key={i} className="text-[10px] font-bold text-ink-3 text-center py-1 uppercase tracking-wider">
+              <div key={i} className="text-[12px] font-bold text-ink-3 text-center py-1">
                 {d}
               </div>
             ))}

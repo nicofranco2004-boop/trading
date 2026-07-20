@@ -324,7 +324,7 @@ export default function AlertsManager({ plan, prefill }) {
       {/* Feed de disparos recientes */}
       {events.length > 0 && (
         <div className="border-t border-line/40">
-          <div className="px-4 py-2 text-[11px] uppercase tracking-wider text-ink-3 flex items-center gap-2">
+          <div className="px-4 py-2 text-[12.5px] text-ink-3 flex items-center gap-2 font-medium">
             Últimos avisos {unseen.length > 0 && <Pill tone="info">{unseen.length} nuevos</Pill>}
           </div>
           {events.slice(0, 6).map(ev => (

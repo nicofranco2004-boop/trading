@@ -258,7 +258,7 @@ export default function MobileSearch() {
 function SectionHeader({ label, count }) {
   return (
     <div className="px-3 pt-3 pb-2 flex items-baseline justify-between">
-      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+      <span className="text-[12.5px] text-ink-2 font-medium">
         {label}
       </span>
       <span className="text-[10px] font-mono tabular text-ink-3">
@@ -281,7 +281,7 @@ function SearchRow({ ticker, highlight, onPick, onAdd, adding, inWatchlist }) {
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-semibold text-ink-0 truncate">{ticker.symbol}</span>
             {ticker.fromUser && (
-              <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos">
+              <span className="text-[12.5px] text-rendi-pos font-medium">
                 Tuya
               </span>
             )}

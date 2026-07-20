@@ -2225,7 +2225,7 @@ function InsightsDesktop({ _embeddedTab }) {
               <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.6} strokeDasharray="2 4" />
               <Tooltip
                 contentStyle={{ background: '#0E1218', border: '1px solid #262E40', borderRadius: 6, fontSize: 12 }}
-                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'uppercase' }}
+                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'font-medium' }}
                 formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : '—', '']}
               />
               <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontFamily: 'JetBrains Mono' }} />
@@ -2291,7 +2291,7 @@ function InsightsDesktop({ _embeddedTab }) {
               <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.6} />
               <Tooltip
                 contentStyle={{ background: '#0E1218', border: '1px solid #262E40', borderRadius: 6, fontSize: 12 }}
-                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'uppercase' }}
+                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'font-medium' }}
                 formatter={(v) => [`${v.toFixed(2)}%`, 'Drawdown']}
               />
               <Area type="monotone" dataKey="ddPct" stroke="#FF5360" strokeWidth={1.5} fill="url(#ddGrad)" dot={false} />
@@ -2410,7 +2410,7 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
   if (disabled || benchmarkValue == null || delta == null) {
     return (
       <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
-        <p className="text-xs uppercase tracking-wider font-semibold text-ink-3">{label}</p>
+        <p className="text-xs font-semibold text-ink-3">{label}</p>
         <p className="text-sm text-ink-3 mt-2">{disabledHint || 'Datos insuficientes para calcular.'}</p>
       </div>
     )
@@ -2420,7 +2420,7 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
   const accentText = gano ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
     <div className={`bg-white dark:bg-bg-2/60 border ${accentBorder} rounded-xl shadow-sm dark:shadow-none p-5`}>
-      <p className="text-xs uppercase tracking-wider font-semibold text-ink-3">{label}</p>
+      <p className="text-xs font-semibold text-ink-3">{label}</p>
       <p className={`text-2xl font-bold tabular mt-2 ${accentText}`}>
         {gano ? '+' : '-'}{amt(Math.abs(delta.delta))}
       </p>
@@ -2441,14 +2441,14 @@ function InflationCard({ inflation }) {
   if (!inflation) {
     return (
       <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
-        <p className="text-xs uppercase tracking-wider font-semibold text-ink-3">Inflación AR</p>
+        <p className="text-xs font-semibold text-ink-3">Inflación AR</p>
         <p className="text-sm text-ink-3 mt-2">No hay datos de IPC suficientes para el período seleccionado.</p>
       </div>
     )
   }
   return (
     <div className="bg-white dark:bg-bg-1 border border-rendi-warn/30 rounded p-5">
-      <p className="text-xs uppercase tracking-wider font-semibold text-ink-3">Inflación AR (período)</p>
+      <p className="text-xs font-semibold text-ink-3">Inflación AR (período)</p>
       <p className="text-2xl font-bold tabular mt-2 text-rendi-warn">
         +{inflation.cumPct.toFixed(1)}%
       </p>
@@ -2551,7 +2551,7 @@ function ContribList({ tone, title, items, fmt }) {
     <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
       <div className="flex items-center gap-2 mb-3 text-ink-3">
         {isPos ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-        <span className="text-xs font-semibold uppercase tracking-wider">{title}</span>
+        <span className="text-xs font-semibold">{title}</span>
       </div>
       {items.length === 0 ? (
         <p className="text-sm text-ink-3">Sin contribuciones significativas.</p>
@@ -2990,7 +2990,7 @@ function AlertBanner({ level, category, title, text }) {
       <Icon size={16} className={`${s.iconColor} flex-shrink-0 mt-0.5`} strokeWidth={2.2} />
       <div className="text-sm leading-snug flex-1 min-w-0">
         {category && (
-          <span className={`inline-block text-[9px] font-semibold uppercase tracking-[0.1em] px-1.5 py-0.5 rounded border mr-2 align-middle ${s.badge}`}>
+          <span className={`inline-block text-[12.5px] font-semibold tracking-[0.1em] px-1.5 py-0.5 rounded border mr-2 align-middle ${s.badge}`}>
             {category}
           </span>
         )}
@@ -3008,7 +3008,7 @@ function InsightCard({ icon, title, children, accent, tooltip }) {
     }`}>
       <div className="flex items-center gap-2 mb-3 text-ink-3">
         {icon}
-        <span className="text-xs font-medium uppercase tracking-wide flex-1">{title}</span>
+        <span className="text-xs font-medium flex-1">{title}</span>
         {tooltip && <InfoTooltip>{tooltip}</InfoTooltip>}
       </div>
       {children}
@@ -3045,7 +3045,7 @@ function ProfileInvestorBlock({
       <div className="bg-white dark:bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
         <div className="flex items-center gap-2 text-ink-3">
           <UserRound size={18} />
-          <span className="text-xs font-medium uppercase tracking-wide">Completá tu test de inversor</span>
+          <span className="text-xs font-medium">Completá tu test de inversor</span>
         </div>
         <p className="text-sm text-ink-1 leading-snug max-w-xl">
           El test de inversor define tu perfil (conservador / moderado / agresivo)

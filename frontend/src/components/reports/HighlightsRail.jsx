@@ -36,7 +36,7 @@ export default function HighlightsRail({ highlights }) {
               <Icon size={14} strokeWidth={1.75} className={style.icon} />
             </span>
             <div className="flex flex-col min-w-0">
-              <span className="text-[11px] uppercase tracking-label text-ink-2 leading-tight font-mono">
+              <span className="text-[12.5px] text-ink-2 leading-tight font-medium">
                 {h.label}
               </span>
               <span className="text-xs font-mono text-ink-1 truncate" title={h.value_label}>

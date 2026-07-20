@@ -140,7 +140,7 @@ export default function Sidebar() {
         {/* Rendi AI — botón especial que abre drawer (no navega). */}
         <div className="mb-6">
           {!collapsed && (
-            <p className="px-3 mb-2 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">Asistente</p>
+            <p className="px-3 mb-2 text-[12.5px] text-ink-2 font-medium">Asistente</p>
           )}
           <button
             type="button"

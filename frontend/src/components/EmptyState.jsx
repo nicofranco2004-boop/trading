@@ -35,7 +35,7 @@ export default function EmptyState({
         </div>
       )}
       {eyebrow && (
-        <p className={`text-[10px] font-mono uppercase tracking-caps mb-1.5 ${TONE_CLASS[tone] || TONE_CLASS.default}`}>
+        <p className={`text-[12px] mb-1.5 ${TONE_CLASS[tone] || TONE_CLASS.default} font-medium`}>
           {eyebrow}
         </p>
       )}

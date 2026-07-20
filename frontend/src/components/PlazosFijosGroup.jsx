@@ -85,7 +85,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
 
   const Header = (
     <div className="flex items-center justify-between mb-2">
-      <h2 className="text-sm font-mono uppercase tracking-caps text-ink-2 flex items-center gap-2">
+      <h2 className="text-sm text-ink-2 flex items-center gap-2 font-medium">
         <Landmark size={14} aria-hidden="true" /> Plazos fijos{pfs.length > 0 ? ` (${pfs.length})` : ''}
       </h2>
       <button

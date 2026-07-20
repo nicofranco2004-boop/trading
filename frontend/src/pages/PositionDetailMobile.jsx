@@ -80,7 +80,7 @@ export default function PositionDetailMobile() {
         <div className="text-rendi-neg text-sm mb-4">{error || 'Posición no disponible.'}</div>
         <button
           onClick={() => navigate(-1)}
-          className="text-xs font-mono uppercase tracking-caps text-data-blue hover:text-rendi-accent"
+          className="text-xs text-data-blue hover:text-rendi-accent font-medium"
         >
           ← Volver
         </button>
@@ -193,7 +193,7 @@ export default function PositionDetailMobile() {
         <AssetLogo asset={p.asset} isCash={!!p.is_cash} size={28} />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-ink-0 leading-none truncate">{fciLabel(p.asset)}</div>
-          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mt-1">
+          <div className="text-[12.5px] text-ink-2 leading-none mt-1 font-medium">
             {p.broker}
           </div>
         </div>
@@ -206,7 +206,7 @@ export default function PositionDetailMobile() {
         subtitle={`${fciLabel(p.asset)} · ${p.broker}`}
       >
         <section className="px-4 pt-5 pb-3">
-          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">
+          <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">
             Valor actual
           </div>
           <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
@@ -236,7 +236,7 @@ export default function PositionDetailMobile() {
           subtitle={`Precio reciente · ${fciLabel(p.asset)}`}
         >
           <section className="px-4 mb-5">
-            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+            <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
               Precio · últimos 30 días
             </div>
             <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
@@ -248,7 +248,7 @@ export default function PositionDetailMobile() {
 
       {/* Stats */}
       <section className="px-4 mb-5">
-        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+        <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
           Detalle
         </div>
         <div className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
@@ -313,7 +313,7 @@ export default function PositionDetailMobile() {
         subtitle={`Historial · ${fciLabel(p.asset)}`}
       >
         <section className="px-4 mb-5">
-          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
             Operaciones de este activo · {operations.length}
           </div>
           <ul className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">

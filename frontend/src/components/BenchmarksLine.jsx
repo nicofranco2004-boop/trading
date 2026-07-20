@@ -102,7 +102,7 @@ export default function BenchmarksLine({ monthly, bench, totalPortfolio, classNa
         .{' '}
         <Link
           to="/insights"
-          className="font-mono uppercase tracking-caps text-[11px] text-ink-2 hover:text-ink-0 inline-flex items-center gap-0.5 ml-1 transition-colors"
+          className="text-[12.5px] text-ink-2 hover:text-ink-0 inline-flex items-center gap-0.5 ml-1 transition-colors font-medium"
         >
           Ver detalle <ArrowRight size={11} strokeWidth={1.75} />
         </Link>

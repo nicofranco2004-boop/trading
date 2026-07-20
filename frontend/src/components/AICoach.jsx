@@ -307,7 +307,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
             <h2 className="font-semibold text-ink-0">
               Coach IA
               {canChatFree && (
-                <span className="ml-2 text-[9px] font-mono uppercase tracking-caps text-data-violet border border-data-violet/40 bg-data-violet/5 px-1.5 py-0.5 rounded-sm align-middle">
+                <span className="ml-2 text-[12.5px] text-data-violet border border-data-violet/40 bg-data-violet/5 px-1.5 py-0.5 rounded-sm align-middle font-medium">
                   Pro · libre
                 </span>
               )}
@@ -412,7 +412,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
       {availableQuestions.length > 0 && (
         <div className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40">
           <div className="flex items-center justify-between mb-2">
-            <p className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+            <p className="text-[12.5px] text-ink-2 font-medium">
               {messages.length === 0 ? 'Preguntas sugeridas' : 'Otra pregunta'}
             </p>
             <span className="text-[10px] font-mono text-ink-3 tabular">
@@ -488,7 +488,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
           </p>
           <a
             href="/planes"
-            className="text-[10px] font-mono uppercase tracking-caps text-data-violet hover:underline whitespace-nowrap"
+            className="text-[12px] text-data-violet hover:underline whitespace-nowrap font-medium"
           >
             Ver Pro →
           </a>

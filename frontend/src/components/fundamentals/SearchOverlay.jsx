@@ -30,7 +30,7 @@ export default function SearchOverlay({ onSelect, onClose, compareWith = null })
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 pt-3.5 pb-2">
-          <span className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          <span className="text-[12px] text-ink-3 font-medium">
             {compareWith ? `Comparar ${compareWith} con…` : 'Buscar activo'}
           </span>
           <button onClick={onClose} className="text-ink-3 hover:text-ink-0 p-1 -mr-1" aria-label="Cerrar">

@@ -120,7 +120,7 @@ export default function AssetQuickView({ symbol, onClose }) {
                 <div className="text-2xl font-mono tabular text-ink-0">
                   {fmtPrice(quote.price)}
                 </div>
-                <div className="text-[10px] text-ink-3 uppercase tracking-wider mt-0.5">
+                <div className="text-[12px] text-ink-3 mt-0.5 font-medium">
                   Último precio
                 </div>
               </div>

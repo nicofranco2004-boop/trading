@@ -264,9 +264,9 @@ function ReportsFreeTeaser({ yearGroups }) {
         <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
           <div className="flex items-center gap-2">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
-            <span className="text-[11px] font-mono uppercase tracking-label text-ink-0">Tu último mes</span>
+            <span className="text-[12.5px] text-ink-0 font-medium">Tu último mes</span>
           </div>
-          <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Vista previa Free</span>
+          <span className="text-[12.5px] text-ink-2 font-medium">Vista previa Free</span>
         </header>
         <MonthCard month={lastMonth.month} defaultExpanded={true} />
       </div>
@@ -296,7 +296,7 @@ function PeriodTabs({ value, onChange }) {
   const tabs = ['day', 'week', 'month', 'year']
   return (
     <div className="flex items-center gap-2 mb-4">
-      <span className="text-[11px] font-mono uppercase tracking-label text-ink-2 mr-1">Período</span>
+      <span className="text-[12.5px] text-ink-2 mr-1 font-medium">Período</span>
       <div className="inline-flex bg-bg-2 border border-line rounded-sm p-0.5">
         {tabs.map(t => (
           <button
@@ -385,7 +385,7 @@ function MonthDisclosure({ items, loading, broker, expandedKey, onToggle }) {
         <div className="space-y-2">
           <button
             onClick={() => setShowMore(v => !v)}
-            className="w-full text-center text-[11px] font-mono uppercase tracking-label text-data-violet bg-data-violet/5 border border-dashed border-data-violet/30 rounded-md py-2 transition-colors hover:bg-data-violet/10"
+            className="w-full text-center text-[12.5px] text-data-violet bg-data-violet/5 border border-dashed border-data-violet/30 rounded-md py-2 transition-colors hover:bg-data-violet/10 font-medium"
           >
             {showMore ? '▴ Ocultar meses anteriores' : `▾ Ver más meses · ${priors.length} de ${currentYear}`}
           </button>
@@ -419,7 +419,7 @@ function PeriodRow({ period, expanded, onToggle }) {
             {period.period_label}
           </span>
           {period.is_current && (
-            <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm">
+            <span className="text-[12.5px] text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm font-medium">
               En curso
             </span>
           )}
@@ -429,7 +429,7 @@ function PeriodRow({ period, expanded, onToggle }) {
             </span>
           )}
           {empty && (
-            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+            <span className="text-[12.5px] text-ink-2 font-medium">
               Sin actividad
             </span>
           )}
@@ -712,12 +712,12 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
         <div className="flex items-center gap-3 flex-wrap">
           <h3 className="text-lg font-semibold text-ink-0 tracking-tight">{period.period_label}</h3>
           {period.is_current && (
-            <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm">
+            <span className="text-[12.5px] text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 py-0.5 rounded-sm font-medium">
               En curso
             </span>
           )}
           {isFlat && (
-            <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 border border-line/60 px-1.5 py-0.5 rounded-sm">
+            <span className="text-[12.5px] text-ink-3 border border-line/60 px-1.5 py-0.5 rounded-sm font-medium">
               Sin movimientos
             </span>
           )}
@@ -764,7 +764,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {heroList.map((k, i) => (
             <div key={i} className="border border-line rounded-lg bg-bg-1 px-4 py-3">
-              <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1.5">{k.label}</div>
+              <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">{k.label}</div>
               <div className={`text-xl font-semibold tabular ${
                 k.tone === 'pos' ? 'text-rendi-pos' : k.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
               }`}>{k.value}</div>
@@ -777,7 +777,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       {/* Segundo nivel — dos narrativas separadas: Trading vs Cartera */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <div className="border border-line rounded-lg bg-bg-1 p-4">
-          <div className="text-[11px] font-mono uppercase tracking-label text-data-violet mb-2">Trading · cómo operaste</div>
+          <div className="text-[12.5px] text-data-violet mb-2 font-medium">Trading · cómo operaste</div>
           {(bestOp || worstOp || tradingList.length > 0) ? (
             <div>
               {tradingList.filter(k => k.label === 'Win rate').map((k, i) => (
@@ -795,7 +795,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
           )}
         </div>
         <div className="border border-line rounded-lg bg-bg-1 p-4">
-          <div className="text-[11px] font-mono uppercase tracking-label text-rendi-accent mb-2">Cartera · qué movió tu plata</div>
+          <div className="text-[12.5px] text-rendi-accent mb-2 font-medium">Cartera · qué movió tu plata</div>
           <div>
             {bestMover && (
               <KVRow label={bestMover.delta_usd >= 0 ? 'Mejor activo' : 'Menor caída'}
@@ -822,7 +822,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       {/* Detalle técnico — colapsado (deltas, valores, insights, breakdown) */}
       <div className="border border-line rounded-lg bg-bg-1 overflow-hidden">
         <button onClick={() => setShowTech(v => !v)} className="w-full px-4 py-2.5 flex items-center justify-between text-left">
-          <span className="text-[11px] font-mono uppercase tracking-label text-ink-2">Ver detalle técnico</span>
+          <span className="text-[12.5px] text-ink-2 font-medium">Ver detalle técnico</span>
           {showTech ? <ChevronUp size={14} strokeWidth={1.75} className="text-ink-3" /> : <ChevronDown size={14} strokeWidth={1.75} className="text-ink-3" />}
         </button>
         {showTech && (
@@ -831,7 +831,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
               <div className="grid grid-cols-2 md:grid-cols-3 divide-x divide-y md:divide-y-0 divide-line/40">
                 {tecnicoList.map((k, i) => (
                   <div key={i} className="px-4 py-3 min-w-0">
-                    <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 mb-1.5">{k.label}</div>
+                    <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">{k.label}</div>
                     <div className={`text-sm font-medium tabular truncate ${
                       k.tone === 'pos' ? 'text-rendi-pos' : k.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
                     }`}>{k.value}</div>

@@ -306,7 +306,7 @@ export default function Admin() {
             Usuarios ({searchActive ? `${displayed.length} resultado${displayed.length === 1 ? '' : 's'}` : users.length})
           </h2>
           {affected.length > 0 && !searchActive && (
-            <span className="ml-1 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide">
+            <span className="ml-1 inline-flex items-center gap-1 text-[12px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold">
               <AlertTriangle size={10} /> {affected.length} a restaurar
             </span>
           )}
@@ -345,8 +345,8 @@ export default function Admin() {
                   <td className="px-3 py-2 text-ink-3 font-mono text-xs">{u.id}</td>
                   <td className="px-3 py-2 font-medium text-ink-0">
                     {u.email}
-                    {u.is_admin && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold uppercase tracking-wide">admin</span>}
-                    {!u.approved && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
+                    {u.is_admin && <span className="ml-2 text-[12px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold">admin</span>}
+                    {!u.approved && <span className="ml-2 text-[12px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
                   </td>
                   <td className="px-3 py-2 text-ink-2">{u.name || '—'}</td>
                   <td className="px-3 py-2"><PlanBadge plan={u.plan} affected={u.billing_affected} creditActive={u.credit_active} daysRemaining={u.days_remaining} /></td>
@@ -895,7 +895,7 @@ function GiftPlanPanel({ toast }) {
                       <td className="px-2 py-1 text-right tabular text-ink-2">{r.activity}</td>
                       <td className="px-2 py-1">
                         {r.has_gift
-                          ? <span className="text-emerald-600 dark:text-emerald-400 uppercase font-semibold">{r.tier}</span>
+                          ? <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{r.tier}</span>
                           : <span className="text-amber-600 dark:text-amber-400" title="Sin comp activo — no recibió el regalo">{r.tier || 'free'} ⚠</span>}
                       </td>
                       <td className="px-2 py-1">
@@ -950,7 +950,7 @@ function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
   if (affected) {
     return (
       <span
-        className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wide"
+        className="inline-flex items-center gap-1 text-[12px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold"
         title="Tiene crédito vigente pero el tier quedó en free — restaurable"
       >
         <AlertTriangle size={10} /> afectado
@@ -967,7 +967,7 @@ function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
   const showDays = creditActive && plan !== 'free' && plan !== 'admin' && daysRemaining != null
   const lowDays = showDays && daysRemaining <= 5
   return (
-    <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ${cls}`}>
+    <span className={`inline-flex items-center text-[12px] px-1.5 py-0.5 rounded font-semibold ${cls}`}>
       {plan || 'free'}
       {showDays ? (
         <span
@@ -1501,7 +1501,7 @@ function CurrencyBackfillPanel({ toast }) {
           {/* Cuentas que el guard NO aplica: siguen en gigante tras corregir (over/under) */}
           {preview.needs_review?.length > 0 && (
             <div className="border border-rose-500/30 rounded-md bg-rose-500/5 p-3 space-y-1.5">
-              <p className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 uppercase tracking-wide">
+              <p className="text-[12.5px] font-semibold text-rose-600 dark:text-rose-400">
                 ⛔ {preview.needs_review.length} cuenta(s) NO se aplican — siguen en gigante tras corregir (revisar aparte)
               </p>
               <div className="max-h-40 overflow-y-auto">
@@ -1530,7 +1530,7 @@ function CurrencyBackfillPanel({ toast }) {
           {/* ⭐ verificación humana del blocker: qué fondos toca la regla FCI */}
           {fciFunds.length > 0 && (
             <div className="border border-amber-500/30 rounded-md bg-amber-500/5 p-3 space-y-1.5">
-              <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wide">
+              <p className="text-[12.5px] font-semibold text-amber-700 dark:text-amber-400">
                 ⚠️ Fondos FCI convertidos a ARS — ¿son TODOS money-market peso?
               </p>
               <div className="max-h-40 overflow-y-auto">
@@ -1777,7 +1777,7 @@ function ConversionPanel({ data }) {
           <Sparkles size={16} className="text-data-violet" />
           <h2 className="font-semibold text-ink-0">Conversión Pro</h2>
         </div>
-        <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+        <span className="text-[12.5px] text-ink-2 font-medium">
           {totalEvents} eventos totales · {data.last_30d_total} en 30 días
         </span>
       </div>
@@ -1896,7 +1896,7 @@ function ConversionPanel({ data }) {
 function ConvCell({ label, value, hint }) {
   return (
     <div className="border border-line/40 rounded-sm bg-bg-1/40 px-3 py-2.5">
-      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none">{label}</div>
+      <div className="text-[12.5px] text-ink-2 leading-none font-medium">{label}</div>
       <div className="mt-1.5 text-xl font-medium tabular num leading-none text-ink-0">{value}</div>
       <div className="text-[10px] text-ink-3 mt-1 truncate">{hint}</div>
     </div>

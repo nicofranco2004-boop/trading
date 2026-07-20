@@ -523,7 +523,7 @@ export default function Config() {
       <Panel padding="none">
         <div className="px-4 py-3 border-b border-line/40 flex items-center justify-between">
           <h2 className="text-sm font-medium text-ink-0">Soporte</h2>
-          <span className="text-[10px] text-ink-3 uppercase tracking-wider">WhatsApp directo</span>
+          <span className="text-[12px] text-ink-3 font-medium">WhatsApp directo</span>
         </div>
         <div className="px-4 py-4 flex items-center justify-between gap-4 flex-wrap">
           <div className="min-w-0">
@@ -633,7 +633,7 @@ export default function Config() {
           />
           <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] gap-6 items-start">
             <nav className="md:sticky md:top-4 flex flex-col gap-0.5" aria-label="Secciones de configuración">
-              <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 px-2.5 pt-0.5 pb-2 select-none">Secciones</div>
+              <div className="text-[12px] text-ink-3 px-2.5 pt-0.5 pb-2 select-none font-medium">Secciones</div>
               {TABS.map(t => {
                 const Icon = t.icon
                 const active = activeSection === t.id
@@ -711,7 +711,7 @@ function PlanHeroFree({ usage }) {
         {/* Left: tier badge + headline */}
         <div className="flex-1 min-w-[240px]">
           <div className="flex items-center gap-2 mb-1.5">
-            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Plan actual</span>
+            <span className="text-[12.5px] text-ink-2 font-medium">Plan actual</span>
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps bg-bg-2 text-ink-2">
               FREE
             </span>
@@ -727,7 +727,7 @@ function PlanHeroFree({ usage }) {
         {/* Middle: usage strip compacto */}
         <div className="min-w-[180px]">
           <div className="flex items-baseline justify-between gap-3 mb-1">
-            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Uso IA</span>
+            <span className="text-[12.5px] text-ink-2 font-medium">Uso IA</span>
             <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
           </div>
           <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
@@ -892,11 +892,11 @@ function PlanHeroPro({ tier = 'pro', usage }) {
     <section className={`border rounded-lg p-5 flex items-center gap-5 flex-wrap ${containerStyle}`}>
       <div className="flex-1 min-w-[240px]">
         <div className="flex items-center gap-2 mb-1.5">
-          <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Plan actual</span>
+          <span className="text-[12.5px] text-ink-2 font-medium">Plan actual</span>
           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-sm font-mono text-[9px] font-medium tracking-caps ${badgeStyle}`}>
             {tierLabel}
           </span>
-          <span className={`inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-caps ${statusPill.textCls}`}>
+          <span className={`inline-flex items-center gap-1 text-[12px] ${statusPill.textCls} font-medium`}>
             <span className={`w-1.5 h-1.5 rounded-full ${statusPill.dotCls}`} />
             {statusPill.label}
           </span>
@@ -907,7 +907,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
 
       <div className="min-w-[180px]">
         <div className="flex items-baseline justify-between gap-3 mb-1">
-          <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Uso IA</span>
+          <span className="text-[12.5px] text-ink-2 font-medium">Uso IA</span>
           <span className="font-mono text-xs text-ink-1 tabular">{count} / {limit}</span>
         </div>
         <div className="h-1.5 bg-bg-2 rounded-full overflow-hidden mb-1">
@@ -926,7 +926,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
       {hasCredit && anchorPlan && anchorPeriod && (
         <div className="min-w-[180px] border-l border-line/40 pl-5">
           <div className="flex items-baseline justify-between gap-3 mb-1">
-            <span className="font-mono text-[11px] uppercase tracking-caps text-ink-2">Crédito</span>
+            <span className="text-[12.5px] text-ink-2 font-medium">Crédito</span>
             <span className="font-mono text-xs text-ink-1 tabular">
               {Math.round(creditDays)} días
             </span>
@@ -1135,14 +1135,14 @@ function PlanHeroAdmin({ usage }) {
   return (
     <section className="border border-rendi-pos/30 bg-rendi-pos/[0.04] rounded-lg px-5 py-3.5 flex items-center gap-3 flex-wrap">
       <Zap size={14} strokeWidth={1.75} className="text-rendi-pos flex-shrink-0" />
-      <span className="font-mono text-[10px] uppercase tracking-caps text-rendi-pos">Plan ADMIN</span>
+      <span className="text-[12px] text-rendi-pos font-medium">Plan ADMIN</span>
       <span className="text-sm text-ink-1 flex-1 min-w-[200px]">
         Acceso interno sin tope. {count > 0 ? `Usaste ${count} análisis IA en los últimos 7 días.` : 'Sin uso de IA reciente.'}
       </span>
       <button
         type="button"
         onClick={() => navigate('/planes')}
-        className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 transition-colors"
+        className="inline-flex items-center gap-1.5 text-[12.5px] text-ink-3 hover:text-ink-0 transition-colors font-medium"
       >
         Ver planes →
       </button>

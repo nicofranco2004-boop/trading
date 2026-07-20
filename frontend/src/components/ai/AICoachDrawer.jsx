@@ -118,7 +118,7 @@ export default function AICoachDrawer() {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-line bg-bg-2/40">
           <div>
-            <div className="text-[10px] font-mono uppercase tracking-caps text-data-violet">Coach IA</div>
+            <div className="text-[12px] text-data-violet font-medium">Coach IA</div>
             <div className="text-sm font-medium text-ink-0">Preguntas con contexto de tu cartera</div>
           </div>
           <button

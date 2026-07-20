@@ -35,7 +35,7 @@ export default function Terminos() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
-        <p className="font-mono text-[11px] uppercase tracking-caps text-ink-2 mb-2">Legal</p>
+        <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Términos y Condiciones</h1>
         <p className="text-sm text-ink-3 mb-4">Última actualización: 3 de junio de 2026</p>
 

@@ -35,7 +35,7 @@ export default function AnalystConsensus({ analysts }) {
     <div className="bg-bg-1 border border-line rounded p-4">
       <div className="flex items-center gap-2 mb-3">
         <Users size={15} strokeWidth={1.75} className="text-ink-3" />
-        <p className="text-[10px] font-mono uppercase tracking-caps text-ink-2">
+        <p className="text-[12px] text-ink-2 font-medium">
           Consenso de analistas
         </p>
       </div>
@@ -55,7 +55,7 @@ export default function AnalystConsensus({ analysts }) {
         </div>
 
         <div className="text-right">
-          <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3">
+          <p className="text-[12px] text-ink-3 font-medium">
             Precio objetivo
           </p>
           <div className="flex items-center justify-end gap-2 mt-0.5">

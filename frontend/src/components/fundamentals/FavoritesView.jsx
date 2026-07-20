@@ -112,7 +112,7 @@ export default function FavoritesView({ watchlist, onOpenTicker }) {
 function AxisMini({ label, read }) {
   return (
     <div>
-      <p className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">{label}</p>
+      <p className="text-[12px] text-ink-3 mb-1 font-medium">{label}</p>
       {read ? <Pill tone={AXIS_PILL[read.tone]}>{read.label}</Pill> : <span className="text-[11px] text-ink-3">—</span>}
     </div>
   )

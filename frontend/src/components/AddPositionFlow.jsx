@@ -234,7 +234,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-ink-0 text-sm leading-tight truncate">{b.name}</h3>
-                  <p className="text-[10px] font-mono text-ink-3 mt-1 uppercase tracking-[0.12em]">{b.currency}</p>
+                  <p className="text-[12px] text-ink-3 mt-1 tracking-[0.12em] font-medium">{b.currency}</p>
                 </div>
               </div>
             </button>
@@ -265,7 +265,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
           {hasBrokers && (
             <div className="flex items-center gap-3 my-4">
               <div className="flex-1 h-px bg-line" />
-              <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">o</span>
+              <span className="text-[12px] tracking-[0.12em] text-ink-3 font-medium">o</span>
               <div className="flex-1 h-px bg-line" />
             </div>
           )}
@@ -311,7 +311,7 @@ function Step1AssetType({ categories, onPick }) {
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-ink-0 text-sm leading-tight">{cat.label}</h3>
                   <p className="text-xs text-ink-2 mt-1 leading-snug">{cat.hint}</p>
-                  <p className="text-[10px] font-mono text-ink-3 mt-2 uppercase tracking-[0.12em]">
+                  <p className="text-[12px] text-ink-3 mt-2 tracking-[0.12em] font-medium">
                     {cat.freeText ? 'Entrada libre' : `${cat.list.length} ${cat.list.length === 1 ? 'opción' : 'opciones'}`}
                   </p>
                 </div>
@@ -395,7 +395,7 @@ function Step2TickerPicker({ category, onPick }) {
                     <p className="font-semibold text-ink-0 text-sm tabular flex items-center gap-2">
                       {t.s}
                       {t._sub && (
-                        <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-bg-3 text-ink-2 border border-line">
+                        <span className="text-[12.5px] tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-bg-3 text-ink-2 border border-line font-medium">
                           {t._sub}
                         </span>
                       )}
@@ -436,7 +436,7 @@ function StepLetraPicker({ onPick }) {
   return (
     <div className="flex-1 flex flex-col min-h-0 p-5 gap-4">
       <div>
-        <label className="block text-xs text-ink-3 font-mono uppercase tracking-[0.12em] mb-2">Ticker de la letra</label>
+        <label className="block text-xs text-ink-3 tracking-[0.12em] mb-2 font-medium">Ticker de la letra</label>
         <input
           ref={inputRef}
           type="text"
@@ -446,7 +446,7 @@ function StepLetraPicker({ onPick }) {
           placeholder="T30A7, S31O5, X18J5…"
           autoComplete="off"
           spellCheck="false"
-          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm font-mono text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition uppercase"
+          className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm px-3 py-2.5 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition font-medium"
         />
         {upper && (
           <p className={`text-xs mt-2 ${valid ? 'text-rendi-pos' : 'text-rendi-warn'}`}>
@@ -548,11 +548,11 @@ function StepFciPicker({ list, onPick }) {
                       <p className="text-xs text-ink-2 truncate">{g.emisor}</p>
                     </div>
                     {single ? (
-                      <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3 flex-shrink-0">
+                      <span className="text-[12px] tracking-[0.12em] text-ink-3 flex-shrink-0 font-medium">
                         Clase {g.classes[0].cls || '—'}
                       </span>
                     ) : (
-                      <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3 flex items-center gap-1 flex-shrink-0">
+                      <span className="text-[12px] tracking-[0.12em] text-ink-3 flex items-center gap-1 flex-shrink-0 font-medium">
                         {g.classes.length} clases {isOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                       </span>
                     )}

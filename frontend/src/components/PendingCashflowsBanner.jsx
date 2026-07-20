@@ -107,7 +107,7 @@ function PendingItem({ item, broker, onConfirm, onSkip }) {
           <span className="text-[10px] font-mono text-ink-2 normal-case">
             · {item.broker}
           </span>
-          <span className={`text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-bg-3 border border-line ${kindColor} flex items-center gap-1`}>
+          <span className={`text-[12.5px] tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-bg-3 border border-line ${kindColor} flex items-center gap-1 font-medium`}>
             <KindIcon size={9} strokeWidth={1.75} />
             {kindLabel}
           </span>

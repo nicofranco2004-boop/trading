@@ -137,10 +137,11 @@ body {
     @apply border-b border-line/30;
   }
 
-  /* Label uppercase mono — patrón "specimen sheet" para etiquetas de KPIs.
-     v2: tracking 0.12em (más compacto que 0.18 editorial), tamaño 10-11 px. */
+  /* Label de KPI / header de tabla.
+     Clean pass 2026-07: sans sentence-case legible (antes mono uppercase micro,
+     look terminal). El nombre `label-mono` se mantiene por compat de clases. */
   .label-mono {
-    @apply font-mono text-[11px] sm:text-xs uppercase tracking-label text-ink-2 font-medium;
+    @apply text-[12px] text-ink-2 font-medium;
   }
 
   /* Eyebrow — kicker pequeño arriba de un título o sección.

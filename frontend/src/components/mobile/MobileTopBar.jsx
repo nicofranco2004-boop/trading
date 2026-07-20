@@ -60,7 +60,7 @@ export default function MobileTopBar({ onRefresh }) {
           }}
         >
           <div
-            className="flex items-center gap-2 text-data-cyan text-[10px] font-mono uppercase tracking-caps"
+            className="flex items-center gap-2 text-data-cyan text-[12px] font-medium"
             style={{ transform: `rotate(${isRefreshing ? 360 : progress * 180}deg)`, transition: isRefreshing ? 'transform 600ms linear infinite' : 'none' }}
           >
             <RefreshCcw size={14} strokeWidth={1.75} className={isRefreshing ? 'animate-spin' : ''} />
@@ -108,7 +108,7 @@ export default function MobileTopBar({ onRefresh }) {
                 const positive = change >= 0
                 return (
                   <li key={sym} className="flex items-center gap-1.5 text-[10px] font-mono">
-                    <span className="text-ink-3 uppercase tracking-caps">{label}</span>
+                    <span className="text-ink-3 font-medium">{label}</span>
                     <span className={positive ? 'text-rendi-pos tabular' : 'text-rendi-neg tabular'}>
                       {positive ? '+' : '−'}{Math.abs(change).toFixed(2)}%
                     </span>

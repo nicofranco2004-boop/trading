@@ -866,7 +866,7 @@ export default function PositionsMobile() {
       <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-2">
         <div className="flex items-baseline justify-between mb-2 gap-2">
           <div className="min-w-0">
-            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none mb-1">
+            <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
               Cartera total
             </div>
             <div className="text-xl font-medium tabular text-ink-0 leading-none">
@@ -895,7 +895,7 @@ export default function PositionsMobile() {
                 aria-label="Actualizando precios"
               />
             )}
-            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+            <span className="text-[12.5px] text-ink-2 font-medium">
               {visibleCount} pos
             </span>
             <button
@@ -1427,10 +1427,10 @@ function BrokerFilterChip({ active, onClick, label, currency }) {
 function ColumnHeader({ currency, totalCurrency = 'USD' }) {
   const code = String(currency || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
   const totalCode = String(totalCurrency || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
-  const numCls = 'flex flex-col items-end text-[9px] font-mono uppercase tracking-caps text-ink-3 leading-tight'
+  const numCls = 'flex flex-col items-end text-[12.5px] text-ink-3 leading-tight font-medium'
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_56px_64px_76px] gap-1.5 items-end px-3 py-1.5 bg-bg-1/50 border-b border-line/20">
-      <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 self-end">Activo</span>
+      <span className="text-[12.5px] text-ink-3 self-end font-medium">Activo</span>
       <span className={numCls}><span>Var. día</span><span className="text-ink-3/60">{code}</span></span>
       <span className={numCls}><span>{'P&L'}</span><span className="text-ink-3/60">{code}</span></span>
       <span className={numCls}><span>Total</span><span className="text-ink-3/60">{totalCode}</span></span>
@@ -1474,7 +1474,7 @@ const BrokerSection = memo(function BrokerSection({
             <span className={`text-sm font-semibold ${color.text} truncate`}>
               {broker.name}
             </span>
-            <span className={`text-[9px] font-mono uppercase tracking-caps px-1.5 py-0.5 rounded-sm ${color.bg} ${color.text} border ${color.border} flex-shrink-0`}>
+            <span className={`text-[12.5px] px-1.5 py-0.5 rounded-sm ${color.bg} ${color.text} border ${color.border} flex-shrink-0 font-medium`}>
               {broker.currency}
             </span>
           </div>
@@ -1482,7 +1482,7 @@ const BrokerSection = memo(function BrokerSection({
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-sm font-semibold tabular text-ink-0">
             {compactValue(displayCurrency === 'ARS' ? totalUsd * tcBlue : totalUsd, displayCurrency)}
-            <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3 ml-1">
+            <span className="text-[12.5px] text-ink-3 ml-1 font-medium">
               {displayCurrency}
             </span>
           </span>
@@ -1757,7 +1757,7 @@ const PositionRow = memo(function PositionRow({ p, showDetail, displayCurrency =
         <div className="text-[13px] font-medium tabular text-ink-0 leading-none">
           <FlashValue value={p.valueUsd}>{compactValue(displayCurrency === 'ARS' ? p.valueUsd * tcBlue : p.valueUsd, displayCurrency)}</FlashValue>
         </div>
-        <div className="text-[9px] font-mono uppercase tracking-caps text-ink-2 leading-none mt-1">
+        <div className="text-[12.5px] text-ink-2 leading-none mt-1 font-medium">
           {displayCurrency}
         </div>
       </div>

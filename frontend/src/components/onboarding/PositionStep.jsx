@@ -81,7 +81,7 @@ function ModeSelector({ setMode, onBack, navigate, onSkip }) {
             <div className="flex-1 min-w-0">
               <h3 className="text-base font-medium text-ink-0 mb-1 flex items-center gap-2">
                 Importar CSV
-                <span className="text-[9px] font-mono uppercase tracking-caps text-data-violet bg-data-violet/15 px-1.5 py-0.5 rounded">recomendado</span>
+                <span className="text-[12.5px] text-data-violet bg-data-violet/15 px-1.5 py-0.5 rounded font-medium">recomendado</span>
               </h3>
               <p className="text-sm text-ink-2 leading-relaxed">
                 Subís el archivo que te da tu broker. Detectamos formato automático (Cocos, Schwab, Binance, Bull Market) y mapeamos todas tus posiciones de una.
@@ -238,7 +238,7 @@ function ManualForm({ onNext, onBack }) {
       <div className="space-y-4 max-w-md mx-auto">
         {/* Broker — antes era un paso aparte; ahora se elige/crea acá inline */}
         <div>
-          <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+          <label className="block text-[12.5px] text-ink-2 mb-2 font-medium">
             / broker
           </label>
           <div className="flex flex-wrap gap-1.5 mb-2">
@@ -284,7 +284,7 @@ function ManualForm({ onNext, onBack }) {
         </div>
         {/* Ticker */}
         <div>
-          <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+          <label className="block text-[12.5px] text-ink-2 mb-2 font-medium">
             / ticker
           </label>
           <input
@@ -306,7 +306,7 @@ function ManualForm({ onNext, onBack }) {
         {/* Cantidad + Precio en 2 cols */}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+            <label className="block text-[12.5px] text-ink-2 mb-2 font-medium">
               / cantidad
             </label>
             <input
@@ -321,7 +321,7 @@ function ManualForm({ onNext, onBack }) {
             />
           </div>
           <div>
-            <label className="block text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+            <label className="block text-[12.5px] text-ink-2 mb-2 font-medium">
               / precio promedio
             </label>
             <input

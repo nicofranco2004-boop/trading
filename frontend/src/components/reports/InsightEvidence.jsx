@@ -113,11 +113,11 @@ function DepositsDriveEvidence({ ev, fmtUsd }) {
       </div>
       <div className="grid grid-cols-2 gap-2 text-[11px]">
         <div>
-          <div className="text-ink-3 uppercase tracking-wider text-[9px]">Aportaste</div>
+          <div className="text-ink-3 text-[12.5px] font-medium">Aportaste</div>
           <div className="font-mono tabular text-ink-1">{fmtUsd(deps)}</div>
         </div>
         <div>
-          <div className="text-ink-3 uppercase tracking-wider text-[9px]">Mercado</div>
+          <div className="text-ink-3 text-[12.5px] font-medium">Mercado</div>
           <div className={`font-mono tabular ${market >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
             {fmtUsd(market)}
           </div>
@@ -168,11 +168,11 @@ function RealizedVsUnrealizedEvidence({ ev, fmtUsd }) {
   return (
     <div className="grid grid-cols-2 gap-2 text-[11px]">
       <div className="rounded-sm bg-rendi-pos/[0.08] px-2 py-1.5 border border-rendi-pos/20">
-        <div className="text-ink-3 uppercase tracking-wider text-[9px]">Realizado</div>
+        <div className="text-ink-3 text-[12.5px] font-medium">Realizado</div>
         <div className="font-mono tabular text-rendi-pos">{fmtUsd(ev.realized)}</div>
       </div>
       <div className="rounded-sm bg-rendi-neg/[0.08] px-2 py-1.5 border border-rendi-neg/20">
-        <div className="text-ink-3 uppercase tracking-wider text-[9px]">No realizado</div>
+        <div className="text-ink-3 text-[12.5px] font-medium">No realizado</div>
         <div className="font-mono tabular text-rendi-neg">{fmtUsd(ev.unrealized)}</div>
       </div>
     </div>
@@ -183,14 +183,14 @@ function ReversalEvidence({ ev }) {
   return (
     <div className="flex items-center justify-around text-[11px]">
       <div className="text-center">
-        <div className="text-ink-3 uppercase tracking-wider text-[9px]">Mes anterior</div>
+        <div className="text-ink-3 text-[12.5px] font-medium">Mes anterior</div>
         <div className={`font-mono tabular text-base ${ev.prior_delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
           {fmtPct(ev.prior_delta)}
         </div>
       </div>
       <span className="text-ink-3 text-base" aria-hidden="true">→</span>
       <div className="text-center">
-        <div className="text-ink-3 uppercase tracking-wider text-[9px]">Este mes</div>
+        <div className="text-ink-3 text-[12.5px] font-medium">Este mes</div>
         <div className={`font-mono tabular text-base ${ev.current_delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
           {fmtPct(ev.current_delta)}
         </div>
@@ -211,11 +211,11 @@ function DividendHeavyEvidence({ ev, fmtUsd }) {
       </div>
       <div className="grid grid-cols-2 gap-2 text-[11px]">
         <div>
-          <div className="text-ink-3 uppercase tracking-wider text-[9px]">Dividendos</div>
+          <div className="text-ink-3 text-[12.5px] font-medium">Dividendos</div>
           <div className="font-mono tabular text-ink-1">{fmtUsd(ev.dividends_interest)}</div>
         </div>
         <div>
-          <div className="text-ink-3 uppercase tracking-wider text-[9px]">Trading</div>
+          <div className="text-ink-3 text-[12.5px] font-medium">Trading</div>
           <div className="font-mono tabular text-ink-1">
             {fmtUsd((ev.total_realized || 0) - (ev.dividends_interest || 0))}
           </div>
@@ -249,11 +249,11 @@ function HighTurnoverEvidence({ ev }) {
   return (
     <div className="grid grid-cols-2 gap-2 text-[11px]">
       <div>
-        <div className="text-ink-3 uppercase tracking-wider text-[9px]">Este período</div>
+        <div className="text-ink-3 text-[12.5px] font-medium">Este período</div>
         <div className="font-mono tabular text-ink-1">{ev.value} trades</div>
       </div>
       <div>
-        <div className="text-ink-3 uppercase tracking-wider text-[9px]">Promedio</div>
+        <div className="text-ink-3 text-[12.5px] font-medium">Promedio</div>
         <div className="font-mono tabular text-ink-2">{ev.avg?.toFixed(1)}</div>
       </div>
     </div>

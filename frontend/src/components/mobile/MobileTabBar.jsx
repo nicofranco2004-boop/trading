@@ -64,7 +64,7 @@ export default function MobileTabBar() {
             >
               <Plus size={20} strokeWidth={2} className="text-white" />
             </span>
-            <span className="absolute bottom-1 text-[9px] font-mono uppercase tracking-caps text-ink-3">
+            <span className="absolute bottom-1 text-[12.5px] text-ink-3 font-medium">
               Acciones
             </span>
           </button>
@@ -99,7 +99,7 @@ function TabItem({ to, label, icon: Icon }) {
       {({ isActive }) => (
         <>
           <Icon size={18} strokeWidth={1.75} />
-          <span className="font-mono uppercase tracking-caps text-[10px]">{label}</span>
+          <span className="text-[12px] font-medium">{label}</span>
           {isActive && (
             <span
               aria-hidden

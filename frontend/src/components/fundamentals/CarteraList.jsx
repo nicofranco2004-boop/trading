@@ -241,7 +241,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
             <div role="table" className="divide-y divide-line">
               <div role="row" className="hidden sm:grid grid-cols-[1.7fr_0.7fr_0.9fr_0.9fr_0.8fr] gap-3 px-4 py-2.5">
                 {['Activo', 'Peso', 'Negocio', 'Precio hoy', 'Tu P&L'].map((h, i) => (
-                  <span key={h} className={`text-[10px] font-mono uppercase tracking-caps text-ink-3 ${i === 4 ? 'text-right' : ''}`}>{h}</span>
+                  <span key={h} className={`text-[12px] text-ink-3 ${i === 4 ? 'text-right' : ''} font-medium`}>{h}</span>
                 ))}
               </div>
               {holdings.map(h => (
@@ -254,7 +254,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
 
       {followed.length > 0 && (
         <div className="space-y-3">
-          <p className="text-[11px] font-mono uppercase tracking-caps text-ink-3">Que seguís</p>
+          <p className="text-[12.5px] text-ink-3 font-medium">Que seguís</p>
           <Panel padding="none">
             <div role="table" className="divide-y divide-line">
               {followed.map(base => (

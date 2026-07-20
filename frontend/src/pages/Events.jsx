@@ -485,7 +485,7 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
     <div className="bg-bg-1 border border-line rounded mb-4 p-3 sm:p-4">
       <div className="flex items-center justify-between mb-2">
         <p className="label-mono">{useImpact ? 'Distribución · por impacto' : 'Distribución'}</p>
-        <p className="text-[10px] font-mono text-ink-3 tracking-wider uppercase">
+        <p className="text-[12px] text-ink-3 font-medium">
           {windowDays} días · {events.length} {events.length === 1 ? 'evento' : 'eventos'}
         </p>
       </div>
@@ -505,7 +505,7 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
                 {/* Tooltip propio (instantáneo) — qué activos caen en esta barra. */}
                 {b.total > 0 && (
                   <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-20 min-w-[130px] bg-bg-3 border border-line-2 rounded px-2.5 py-1.5 shadow-lg">
-                    <div className="text-[9px] font-mono uppercase tracking-wider text-ink-3 mb-1 whitespace-nowrap">{b.label}</div>
+                    <div className="text-[12.5px] text-ink-3 mb-1 whitespace-nowrap font-medium">{b.label}</div>
                     <div className="flex flex-col gap-0.5">
                       {b.items.slice(0, 6).map((it, i) => (
                         <div key={i} className="flex items-center gap-1.5 text-[11px] whitespace-nowrap">
@@ -532,7 +532,7 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
           })}
         </div>
         {/* Etiquetas de inicio / mitad / fin */}
-        <div className="flex justify-between mt-1 text-[9px] font-mono text-ink-3 tracking-wider uppercase">
+        <div className="flex justify-between mt-1 text-[12.5px] text-ink-3 font-medium">
           <span>Hoy</span>
           <span>+{Math.round(windowDays / 2)}d</span>
           <span>+{windowDays}d</span>
@@ -672,7 +672,7 @@ function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd, tickerShar
       {groups.map(g => (
         <div key={g.label}>
           <div className="px-4 py-1.5 bg-bg-2/30 border-b border-line/50 flex items-center gap-2">
-            <span className="text-[11px] font-mono uppercase tracking-wider text-ink-3">{g.label}</span>
+            <span className="text-[12.5px] text-ink-3 font-medium">{g.label}</span>
             <span className="text-[11px] font-mono text-ink-3/70">· {g.events.length}</span>
           </div>
           <ul className="divide-y divide-line/40">
@@ -740,7 +740,7 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd, tickerShares 
     <li className="grid grid-cols-[64px_1fr_auto] md:grid-cols-[80px_180px_100px_1fr_140px_80px_96px] gap-3 px-4 py-3 items-center hover:bg-bg-2/40 transition-colors">
       {/* Fecha — countdown + fecha corta abajo */}
       <div className="flex flex-col">
-        <span className={`text-xs font-mono font-semibold uppercase tracking-wider ${dateTone}`}>
+        <span className={`text-xs font-semibold ${dateTone}`}>
           {countdownLabel}
         </span>
         <span className="text-[10px] font-mono text-ink-3 mt-0.5">
@@ -805,7 +805,7 @@ function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd, tickerShares 
         {tab === 'portfolio' && impactPct != null && impactPct > 0.0001 ? (
           <span className="text-rendi-accent">{pct(impactPct)}</span>
         ) : tab === 'popular' && inPortfolio ? (
-          <span className="text-rendi-accent text-[10px] tracking-wider uppercase">SÍ</span>
+          <span className="text-rendi-accent text-[12px] font-medium">SÍ</span>
         ) : (
           <span className="text-ink-3">—</span>
         )}

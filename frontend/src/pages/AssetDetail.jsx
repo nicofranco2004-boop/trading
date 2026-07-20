@@ -214,7 +214,7 @@ export default function AssetDetail() {
       {/* Hero: valor + P&L total */}
       <AskAIAbout topic="position" params={{ asset }} subtitle={`${name} · todos los lotes`}>
         <section className="mb-5">
-          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5">
+          <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">
             Valor actual {agg.brokerCount > 1 && `· ${agg.brokerCount} brokers`}
           </div>
           <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
@@ -236,7 +236,7 @@ export default function AssetDetail() {
       {/* Chart 30d */}
       {agg.lots.length > 0 && (
         <section className="mb-5">
-          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">Precio · últimos 30 días</div>
+          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Precio · últimos 30 días</div>
           <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
             <AssetMiniChart symbol={symbolFor(agg.lots[0], brokers)} />
           </div>
@@ -245,7 +245,7 @@ export default function AssetDetail() {
 
       {/* Stats de operatoria */}
       <section className="mb-5">
-        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">Tu operatoria en {asset}</div>
+        <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu operatoria en {asset}</div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           <StatCell label="Costo promedio" value={agg.avgCostUsd != null ? `$${agg.avgCostUsd.toFixed(2)}` : '—'} sub="por unidad (USD)" />
           <StatCell label="Cantidad" value={agg.qty ? formatQty(agg.qty) : '—'} sub={`${agg.lots.length} lote${agg.lots.length !== 1 ? 's' : ''} abierto${agg.lots.length !== 1 ? 's' : ''}`} />
@@ -273,13 +273,13 @@ export default function AssetDetail() {
       {agg.lots.length > 0 && (
         <section className="mb-5">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">Lotes abiertos · orden FIFO</div>
+            <div className="text-[12.5px] text-ink-2 font-medium">Lotes abiertos · orden FIFO</div>
             <div className="text-[10px] font-mono text-ink-3">el más viejo se vende primero</div>
           </div>
           <div className="bg-bg-1 border border-line/60 rounded-lg overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-[10px] font-mono uppercase tracking-caps text-ink-3 border-b border-line/40">
+                <tr className="text-[12px] text-ink-3 border-b border-line/40 font-medium">
                   <th scope="col" className="text-left font-normal px-3 py-2">Fecha</th>
                   <th scope="col" className="text-left font-normal px-3 py-2 hidden sm:table-cell">Broker</th>
                   <th scope="col" className="text-right font-normal px-3 py-2">Cantidad</th>
@@ -292,7 +292,7 @@ export default function AssetDetail() {
                   const lotPct = lot.investedUsd > 0 ? lot.pnlUsd / lot.investedUsd : null
                   return (
                     <tr key={lot.id ?? i} className={i > 0 ? 'border-t border-line/30' : ''}>
-                      <td className="px-3 py-2.5 text-ink-1">{lot.entry_date || '—'}{i === 0 && <span className="ml-1.5 text-[9px] font-mono uppercase tracking-caps text-rendi-warn">próximo</span>}</td>
+                      <td className="px-3 py-2.5 text-ink-1">{lot.entry_date || '—'}{i === 0 && <span className="ml-1.5 text-[12.5px] text-rendi-warn font-medium">próximo</span>}</td>
                       <td className="px-3 py-2.5 text-ink-3 text-xs hidden sm:table-cell">{lot.broker}</td>
                       <td className="px-3 py-2.5 text-right tabular text-ink-1">{formatQty(lot.quantity)}</td>
                       <td className="px-3 py-2.5 text-right tabular text-ink-3">${Math.round(lot.investedUsd).toLocaleString('en-US')}</td>
@@ -312,7 +312,7 @@ export default function AssetDetail() {
       {operations.length > 0 && (
         <AskAIAbout topic="position.lots" params={{ asset }} subtitle={`Historial · ${name}`}>
           <section className="mb-5">
-            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">Historial · {operations.length} operacion{operations.length !== 1 ? 'es' : ''}</div>
+            <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Historial · {operations.length} operacion{operations.length !== 1 ? 'es' : ''}</div>
             <ul className="bg-bg-1 border border-line/60 rounded-lg overflow-hidden">
               {operations.map((op, i) => {
                 const isClosed = op.pnl_usd != null
@@ -330,7 +330,7 @@ export default function AssetDetail() {
                       )}
                     </div>
                     {isClosed && (
-                      <span className={`text-[9px] font-mono uppercase tracking-caps px-1.5 py-0.5 rounded-sm border ${win ? 'text-rendi-pos border-rendi-pos/30 bg-rendi-pos/10' : 'text-rendi-neg border-rendi-neg/30 bg-rendi-neg/10'}`}>
+                      <span className={`text-[12.5px] px-1.5 py-0.5 rounded-sm border ${win ? 'text-rendi-pos border-rendi-pos/30 bg-rendi-pos/10' : 'text-rendi-neg border-rendi-neg/30 bg-rendi-neg/10'} font-medium`}>
                         {win ? 'ganada' : 'perdida'}
                       </span>
                     )}
@@ -375,7 +375,7 @@ function BackBar({ onBack, asset, name, brokerCount }) {
       <AssetLogo asset={asset} size={32} />
       <div className="min-w-0">
         <div className="text-base font-semibold text-ink-0 leading-tight truncate">{name}</div>
-        <div className="text-[11px] font-mono uppercase tracking-caps text-ink-3 leading-none mt-0.5">
+        <div className="text-[12.5px] text-ink-3 leading-none mt-0.5 font-medium">
           {asset}{brokerCount > 1 ? ` · ${brokerCount} brokers` : ''}
         </div>
       </div>
@@ -387,7 +387,7 @@ function StatCell({ label, value, sub, tone }) {
   const toneCls = tone == null ? 'text-ink-0' : colorClass(tone)
   return (
     <div className="bg-bg-1 border border-line/60 rounded-lg px-3 py-2.5 min-w-0">
-      <div className="text-[10px] font-mono uppercase tracking-caps text-ink-3 mb-1">{label}</div>
+      <div className="text-[12px] text-ink-3 mb-1 font-medium">{label}</div>
       <div className={`text-base font-medium tabular truncate ${toneCls}`}>{value}</div>
       {sub && <div className="text-[10px] text-ink-3 mt-0.5 truncate" title={sub}>{sub}</div>}
     </div>

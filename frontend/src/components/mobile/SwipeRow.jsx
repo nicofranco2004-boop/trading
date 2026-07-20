@@ -148,7 +148,7 @@ export default function SwipeRow({ actions = [], onTap, children, className = ''
                 onClick={(e) => { e.stopPropagation(); handleActionClick(a) }}
                 tabIndex={open ? 0 : -1}
                 aria-label={a.label}
-                className={`flex flex-col items-center justify-center gap-1 text-[10px] font-mono uppercase tracking-caps active:opacity-80 transition-opacity ${TONE_CLASS[a.tone] || TONE_CLASS.neutral}`}
+                className={`flex flex-col items-center justify-center gap-1 text-[12px] active:opacity-80 transition-opacity ${TONE_CLASS[a.tone] || TONE_CLASS.neutral} font-medium`}
                 style={{ width: ACTION_W }}
               >
                 {Icon && <Icon size={16} strokeWidth={1.75} />}

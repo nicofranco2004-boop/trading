@@ -41,7 +41,7 @@ export default function NewsTagBadge({ tag, size = 'sm', onClick }) {
   const sizeClasses = size === 'lg'
     ? 'text-[10px] px-2 py-0.5'
     : 'text-[9px] px-1.5 py-0.5'
-  const baseClasses = `font-mono uppercase tracking-[0.12em] rounded-sm border inline-flex items-center ${sizeClasses} ${meta.classes}`
+  const baseClasses = `tracking-[0.12em] rounded-sm border inline-flex items-center ${sizeClasses} ${meta.classes} font-medium`
   if (onClick) {
     return (
       <button

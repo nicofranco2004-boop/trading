@@ -80,7 +80,7 @@ export default function WallbitConnect({ onSynced, onlyWhenConnected = false }) 
           </p>
         </div>
         {connected && (
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/[0.08] px-2 py-1 rounded-sm shrink-0">
+          <span className="inline-flex items-center gap-1.5 text-[12.5px] text-rendi-pos border border-rendi-pos/30 bg-rendi-pos/[0.08] px-2 py-1 rounded-sm shrink-0 font-medium">
             <CheckCircle2 size={12} /> Conectado
           </span>
         )}
@@ -139,11 +139,11 @@ export default function WallbitConnect({ onSynced, onlyWhenConnected = false }) 
             )}
           </span>
           <button onClick={sync} disabled={busy === 'sync'}
-            className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50">
+            className="inline-flex items-center gap-1.5 text-[12.5px] border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50 font-medium">
             {busy === 'sync' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Sincronizar ahora
           </button>
           <button onClick={disconnect} disabled={busy === 'disconnect'}
-            className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-caps border border-rendi-neg/30 bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50">
+            className="inline-flex items-center gap-1.5 text-[12.5px] border border-rendi-neg/30 bg-rendi-neg/[0.08] hover:bg-rendi-neg/15 text-rendi-neg px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50 font-medium">
             {busy === 'disconnect' ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Desconectar
           </button>
         </div>

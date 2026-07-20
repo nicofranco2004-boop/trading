@@ -78,7 +78,7 @@ export default function DateField({ value, onChange, min }) {
             </button>
           </div>
           <div className="grid grid-cols-7 mb-1">
-            {DOW.map((d, i) => <div key={i} className="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3 text-center py-1">{d}</div>)}
+            {DOW.map((d, i) => <div key={i} className="text-[12px] tracking-[0.12em] text-ink-3 text-center py-1 font-medium">{d}</div>)}
           </div>
           <div className="grid grid-cols-7 gap-0.5">
             {cells.map((d, i) => {

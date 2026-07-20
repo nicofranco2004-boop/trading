@@ -40,7 +40,7 @@ export default function AnalysisCard({
               <section key={i} className="space-y-1.5">
                 <div className="flex items-center gap-1.5">
                   <Icon size={11} strokeWidth={1.75} className={tone.iconCls} />
-                  <h3 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 leading-none">
+                  <h3 className="text-[12.5px] text-ink-2 leading-none font-medium">
                     {s.title}
                   </h3>
                 </div>
@@ -57,7 +57,7 @@ export default function AnalysisCard({
           dentro de un FollowUpBlock (hideFollowUps=true) y si hay handler. */}
       {!hideFollowUps && Array.isArray(result.follow_ups) && result.follow_ups.length > 0 && (
         <div className="pt-3 border-t border-line/40">
-          <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">
             Profundizar
           </div>
           <div className="flex flex-wrap gap-1.5">

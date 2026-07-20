@@ -133,7 +133,7 @@ export default function InvestorProfileForm() {
           y cuantas más respondas, más insights de perfil desbloqueás. Se guarda automáticamente.
           Las respuestas no se comparten — solo viajan al prompt de la IA cuando le hablás.
         </p>
-        <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 whitespace-nowrap">
+        <span className="text-[12.5px] text-ink-2 whitespace-nowrap font-medium">
           {answered}/{QUESTIONS.length} respondidas
           {saveState.justSaved && (
             <span className="ml-2 inline-flex items-center gap-1 text-rendi-pos">
@@ -149,7 +149,7 @@ export default function InvestorProfileForm() {
         <div className="space-y-4">
           {QUESTIONS.map(q => (
             <fieldset key={q.id} className="border-t border-line/30 pt-3 first:border-t-0 first:pt-0">
-              <legend className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1">
+              <legend className="text-[12.5px] text-ink-2 mb-1 font-medium">
                 {q.label}
               </legend>
               {q.hint && (

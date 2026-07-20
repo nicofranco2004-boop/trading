@@ -95,7 +95,7 @@ export default function UpgradePromoCard({
       <div className="flex items-start gap-2">
         <Sparkles size={14} strokeWidth={1.75} className="text-data-violet mt-0.5 flex-shrink-0" />
         <div className="flex-1 min-w-0">
-          <p className="text-[10px] font-mono uppercase tracking-caps text-data-violet leading-none mb-1">
+          <p className="text-[12px] text-data-violet leading-none mb-1 font-medium">
             Llegaste al límite del plan {currentLabel}
           </p>
           <h3 className="text-sm font-medium text-ink-0 leading-snug">

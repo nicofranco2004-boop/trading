@@ -1379,7 +1379,7 @@ function PositionsDesktop() {
         <button
           type="button"
           onClick={() => setShowAllLots(v => !v)}
-          className={`inline-flex items-center gap-1 text-xs font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-md border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'}`}
+          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
           title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
         >
           <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
@@ -1387,7 +1387,7 @@ function PositionsDesktop() {
         <button
           type="button"
           onClick={toggleCompact}
-          className={`inline-flex items-center gap-1 text-xs font-mono uppercase tracking-caps px-2.5 py-1.5 rounded-md border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'}`}
+          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
           title="Compacta las filas para ver más columnas sin scrollear de costado."
         >
           <RowsIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {compact ? 'Cómodo' : 'Compacto'}
@@ -1396,7 +1396,7 @@ function PositionsDesktop() {
           <button
             type="button"
             onClick={() => { setFilterAsset(''); setFilterBroker('all') }}
-            className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-caps text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition"
+            className="inline-flex items-center gap-1 text-[12.5px] text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition font-medium"
           >
             <X size={12} strokeWidth={1.75} aria-hidden="true" /> Limpiar
           </button>
@@ -1628,10 +1628,10 @@ function PositionsDesktop() {
                                       {p.asset}
                                     </button>
                                   )}
-                                  {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                  {!!p.is_cash && <span className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5 font-medium"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                   {isBond && (
                                     <span
-                                      className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5"
+                                      className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5 font-medium"
                                       title="Bono / Obligación Negociable"
                                     >
                                       <Coins size={9} strokeWidth={1.5} /> BONO
@@ -1640,7 +1640,7 @@ function PositionsDesktop() {
                                   {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
                                   {lotMissingPurchaseRate(p, costBasis, true) && (
                                     <span
-                                      className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30"
+                                      className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30 font-medium"
                                       title="Sin tipo de cambio de compra registrado — este lote usa el dólar de hoy para el costo en USD. Editá la posición para cargarlo."
                                     >
                                       TC?
@@ -1741,7 +1741,7 @@ function PositionsDesktop() {
                   <tfoot>
                     <tr className="border-t-2 border-line-2 bg-bg-2/40">
                       {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
-                      <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2 uppercase tracking-wider">TOTAL</td>
+                      <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2">TOTAL</td>
                       <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtArs(r.invArs)}</td>
                       {showDetail && <td className="px-3 py-2.5 text-xs text-ink-3">—</td>}
                       {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>}
@@ -1837,10 +1837,10 @@ function PositionsDesktop() {
                                     {p.asset}
                                   </button>
                                 )}
-                                {!!p.is_cash && <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                {!!p.is_cash && <span className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5 font-medium"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                 {isBond && (
                                   <span
-                                    className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5"
+                                    className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5 font-medium"
                                     title="Bono / Obligación Negociable"
                                   >
                                     <Coins size={9} strokeWidth={1.5} /> BONO
@@ -1939,7 +1939,7 @@ function PositionsDesktop() {
                 <tfoot>
                   <tr className="border-t-2 border-line-2 bg-bg-2/30">
                     {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
-                    <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2 uppercase tracking-wider">TOTAL</td>
+                    <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2">TOTAL</td>
                     <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>
                     <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.value)}</td>
                     <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>
@@ -2150,7 +2150,7 @@ function PositionsDesktop() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-0.5">
                             <span className="text-sm font-semibold text-ink-0">{fciLabel(p.asset)}</span>
-                            <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded">
+                            <span className="text-[12.5px] text-ink-2 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded font-medium">
                               {p.broker}
                             </span>
                           </div>
@@ -2512,7 +2512,7 @@ function ConvertModal({ form, setForm, tcBlue, onClose, onConfirm }) {
 function FilterPill({ label, value, onChange, options }) {
   return (
     <label className="inline-flex items-center gap-1.5 text-xs">
-      <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">{label}</span>
+      <span className="text-[12.5px] text-ink-2 font-medium">{label}</span>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -2727,7 +2727,7 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSer
                 <p className="text-sm font-semibold text-ink-0">
                   {formatBondType(meta.type)} · {meta.issuer}
                   {meta.governingLaw && (
-                    <span className="ml-1.5 text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2">
+                    <span className="ml-1.5 text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 font-medium">
                       Ley {meta.governingLaw === 'Argentina' ? 'AR' : 'NY'}
                     </span>
                   )}
@@ -2926,7 +2926,7 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSer
                 Calendario futuro · {remaining.length} {remaining.length === 1 ? 'pago' : 'pagos'} hasta {meta?.maturity}
               </p>
               <div className="border border-line/60 rounded-sm overflow-hidden">
-                <div className="bg-bg-2/40 px-3 py-1 grid grid-cols-12 gap-2 text-[10px] uppercase tracking-wider text-ink-3 font-mono">
+                <div className="bg-bg-2/40 px-3 py-1 grid grid-cols-12 gap-2 text-[12px] text-ink-3 font-medium">
                   <div className="col-span-3">Fecha</div>
                   <div className="col-span-3 text-right">Cupón</div>
                   <div className="col-span-3 text-right">Amort.</div>
@@ -2969,7 +2969,7 @@ function BondDetailRow({ p, colSpan, summary, isARS, currentPrice, tcMep, cerSer
         {/* Historial */}
         {ops.length > 0 && (
           <div className="mt-4 border border-line rounded-sm overflow-hidden">
-            <div className="bg-bg-2/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-2">
+            <div className="bg-bg-2/60 px-3 py-1.5 text-[12px] font-semibold text-ink-2">
               Historial de cobranzas · {ops.length} {ops.length === 1 ? 'pago' : 'pagos'}
             </div>
             <div className="max-h-48 overflow-y-auto divide-y divide-line/50">
@@ -3072,7 +3072,7 @@ export function SellModal({ form, setForm, positions, tcBlue, onClose, onConfirm
 
         {/* Lotes FIFO */}
         <div className="border border-line rounded-lg overflow-hidden">
-          <div className="bg-bg-2 px-3 py-1.5 text-[10px] font-semibold text-ink-3 uppercase tracking-wide">
+          <div className="bg-bg-2 px-3 py-1.5 text-[12px] font-semibold text-ink-3">
             Lotes · orden de cierre FIFO
           </div>
           <div className="max-h-32 overflow-y-auto divide-y divide-line dark:divide-line">
@@ -3219,7 +3219,7 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
         <span>{label}</span>
         {autoCalculated && (
           <span
-            className="inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-caps text-data-violet bg-data-violet/10 border border-data-violet/30 px-1.5 py-0.5 rounded"
+            className="inline-flex items-center gap-1 text-[12.5px] text-data-violet bg-data-violet/10 border border-data-violet/30 px-1.5 py-0.5 rounded font-medium"
             title="Se calcula solo a partir de los otros dos campos. Editalo si querés sobrescribirlo."
           >
             <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -3415,7 +3415,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
         {bondMeta && (
           <div className="px-3 py-2.5 rounded bg-rendi-accent/[0.06] border border-rendi-accent/25">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-[9px] font-mono uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30">
+              <span className="text-[12.5px] tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 font-medium">
                 Bono
               </span>
               <span className="text-xs font-semibold text-ink-0">{formatBondType(bondMeta.type)} · {bondMeta.issuer}</span>
@@ -3447,7 +3447,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
                 <Wallet size={14} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
                 <span className="text-sm text-ink-0 font-medium truncate">{form.broker || '—'}</span>
                 {selectedBrokerCurrency && (
-                  <span className="ml-auto text-[10px] font-mono uppercase tracking-caps text-ink-3">{selectedBrokerCurrency}</span>
+                  <span className="ml-auto text-[12px] text-ink-3 font-medium">{selectedBrokerCurrency}</span>
                 )}
               </div>
             ) : (

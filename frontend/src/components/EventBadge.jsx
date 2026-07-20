@@ -30,7 +30,7 @@ export default function EventBadge({ eventType, size = 'sm' }) {
     ? 'text-[10px] px-2 py-0.5'
     : 'text-[9px] px-1.5 py-0.5'
   return (
-    <span className={`font-mono uppercase tracking-[0.12em] rounded-sm border inline-flex items-center gap-1 ${sizeClasses} ${classes}`}>
+    <span className={`tracking-[0.12em] rounded-sm border inline-flex items-center gap-1 ${sizeClasses} ${classes} font-medium`}>
       {label}
     </span>
   )

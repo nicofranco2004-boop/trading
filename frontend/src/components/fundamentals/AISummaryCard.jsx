@@ -126,7 +126,7 @@ export default function AISummaryCard({ ticker }) {
 
           {Array.isArray(summary.pros) && summary.pros.length > 0 && (
             <div>
-              <p className="text-[10px] font-mono uppercase tracking-caps text-rendi-pos mb-2">
+              <p className="text-[12px] text-rendi-pos mb-2 font-medium">
                 Lo mejor
               </p>
               <ul className="space-y-1.5">
@@ -142,7 +142,7 @@ export default function AISummaryCard({ ticker }) {
 
           {Array.isArray(summary.cons) && summary.cons.length > 0 && (
             <div>
-              <p className="text-[10px] font-mono uppercase tracking-caps text-rendi-warn mb-2">
+              <p className="text-[12px] text-rendi-warn mb-2 font-medium">
                 Ojo con esto
               </p>
               <ul className="space-y-1.5">

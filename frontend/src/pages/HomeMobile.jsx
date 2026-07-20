@@ -292,7 +292,7 @@ export default function HomeMobile() {
       <section className="px-4 pt-5 pb-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+            <div className="text-[12.5px] text-ink-2 font-medium">
               Tu cartera
             </div>
             <button
@@ -312,7 +312,7 @@ export default function HomeMobile() {
           />
         </div>
         {totals.pct != null && (
-          <div className={`text-[10px] font-mono uppercase tracking-caps tabular mb-1.5 ${colorClass(totals.pct)}`}>
+          <div className={`text-[12px] tabular mb-1.5 ${colorClass(totals.pct)} font-medium`}>
             {pctSigned(totals.pct)} histórico
           </div>
         )}
@@ -341,7 +341,7 @@ export default function HomeMobile() {
           <div className="bg-bg-1 border border-line/40 rounded-lg p-3">
             <div className="flex items-baseline justify-between mb-1.5">
               <div className="flex items-center gap-1.5">
-                <span className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+                <span className="text-[12.5px] text-ink-2 font-medium">
                   Últimos 30 días
                 </span>
                 <span className={`inline-flex items-center gap-0.5 text-xs font-medium tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
@@ -428,12 +428,12 @@ export default function HomeMobile() {
       {/* ── 3. Hoy en tu cartera ───────────────────────────────────── */}
       <section className="px-4 mb-5">
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2">
+          <h2 className="text-[12.5px] text-ink-2 font-medium">
             Hoy en tu cartera
           </h2>
           <Link
             to="/posiciones"
-            className="text-[11px] font-mono uppercase tracking-caps text-ink-2 hover:text-ink-0 inline-flex items-center gap-1"
+            className="text-[12.5px] text-ink-2 hover:text-ink-0 inline-flex items-center gap-1 font-medium"
           >
             Ver todas <ArrowRight size={11} strokeWidth={1.75} />
           </Link>
@@ -443,7 +443,7 @@ export default function HomeMobile() {
 
       {/* ── 4. Heatmap S&P ─────────────────────────────────────────── */}
       <section className="px-4 mb-5">
-        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+        <h2 className="text-[12.5px] text-ink-2 mb-2 font-medium">
           S&P 500 hoy
         </h2>
         <Heatmap defaultMarket="sp500" />
@@ -451,7 +451,7 @@ export default function HomeMobile() {
 
       {/* ── 5. Movers del día ──────────────────────────────────────── */}
       <section className="px-4 mb-5">
-        <h2 className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-2">
+        <h2 className="text-[12.5px] text-ink-2 mb-2 font-medium">
           Movers del día
         </h2>
         <MoversRail market="sp500" />
@@ -490,7 +490,7 @@ function KpiCell({ label, value, sub, tone, subTone, bordered, leftBorder, topBo
     : 'text-ink-3'
   return (
     <div className={`px-3 py-3 ${leftBorder ? 'border-l border-line/40' : ''} ${topBorder ? 'border-t border-line/40' : ''}`}>
-      <div className="text-[11px] font-mono uppercase tracking-caps text-ink-2 mb-1.5 leading-none">
+      <div className="text-[12.5px] text-ink-2 mb-1.5 leading-none font-medium">
         {label}
       </div>
       <div className={`text-base font-medium tabular leading-none ${valueColor}`}>
