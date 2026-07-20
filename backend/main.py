@@ -23745,12 +23745,13 @@ def alerts_events_seen(uid: int = Depends(get_current_user)):
         conn.close()
 
 
-@app.post("/api/alerts/evaluate")
+@app.api_route("/api/alerts/evaluate", methods=["GET", "POST"])
 def alerts_evaluate(request: Request):
     """Evalúa TODAS las alertas activas y dispara las que cruzaron. Lo pega un
     cron externo cada ~10 min (cron-job.org / UptimeRobot) — el mismo ping
-    despierta la app en Railway. Auth: header X-Cron-Token o ?token= contra
-    ALERTS_CRON_TOKEN. Sin token configurado → 503 (endpoint cerrado)."""
+    despierta la app en Railway. Acepta GET y POST (los crons simples pegan GET
+    por default). Auth: header X-Cron-Token o ?token= contra ALERTS_CRON_TOKEN
+    — sigue cerrado sin token. Sin token configurado → 503 (endpoint cerrado)."""
     expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
     if not expected:
         raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
