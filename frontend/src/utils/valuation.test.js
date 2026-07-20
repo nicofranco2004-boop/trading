@@ -869,6 +869,20 @@ describe('lotMissingPurchaseRate — badge TC? (purchase + lote de costo peso si
   it('purchase + lote USD en broker ARS → no marca (costo ya en USD)', () => expect(lotMissingPurchaseRate(usdLot, 'purchase', true)).toBe(false))
 })
 
+describe('computeBrokerValue — valueArs/invArs son 0 para brokers USD (trampa del hero ARS)', () => {
+  // Documenta por qué el hero en display ARS se calcula con Σvalue×tcBlue (totalsToday),
+  // NO con Σ r.valueArs: un broker USD acumula value/invested pero deja valueArs/invArs
+  // en 0 → sumar invArs dropearía toda la tenencia en dólares (fue un BLOCKER real).
+  const usdPos = pos({ broker: 'Schwab', asset: 'AAPL', currency: 'USD', quantity: 10, invested: 2000 })
+  const r = computeBrokerValue([usdPos], { AAPL: 250 }, usdBroker('Schwab'), TCB, TCB, null, 'today')
+  it('value/invested en USD pero valueArs/invArs quedan en 0', () => {
+    expect(r.value).toBeCloseTo(2500)
+    expect(r.invested).toBeCloseTo(2000)
+    expect(r.valueArs).toBe(0)
+    expect(r.invArs).toBe(0)
+  })
+})
+
 describe('computeBrokerValue — agregado DCA multi-lote: invertido USD purchase suma POR LOTE', () => {
   // Dos compras de GGAL a distinto tc_compra. El invertido USD en purchase debe ser
   // Σ(invested_i / tc_i), independiente del orden — NO Σinvested / tc del primer lote.

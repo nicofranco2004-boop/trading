@@ -1117,20 +1117,32 @@ function PositionsDesktop() {
   // IMPORTANTE: useMemo va ANTES del early return — los hooks deben llamarse
   // en el mismo orden en cada render (rules of hooks).
   const totals = useMemo(() => {
-    let value = 0, invested = 0, valueArs = 0, invArs = 0
+    let value = 0, invested = 0
     for (const b of brokers) {
       const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis)
       value += r.value || 0
       invested += r.invested || 0
-      // Pesos NATIVOS (mode-independent) — para el hero/headers en display ARS: el
-      // peso no tiene "dólar de compra", así que sus cifras no cambian con el modo.
-      valueArs += r.valueArs || 0
-      invArs += r.invArs || 0
     }
     const pnl = value - invested
     const pct = invested > 0 ? pnl / invested : 0
-    return { value, invested, pnl, pct, valueArs, invArs }
+    return { value, invested, pnl, pct }
   }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto, costBasis])
+
+  // Totales en modo 'today' (mode-independent) para el hero en display ARS: el peso
+  // no tiene "dólar de compra", así que su Invertido/P&L no cambian con el toggle.
+  // Se calcula a 'today' y se convierte ×tcBlue → captura TODO el portfolio (incluidos
+  // los brokers USD, que en pesos van a USD×dólar-de-hoy). NO uso r.valueArs/r.invArs:
+  // computeBrokerValue solo los acumula para brokers ARS (0 para USD) → dropearía las
+  // tenencias en dólares. El hero en display USD usa `totals` (que sí refleja el modo).
+  const totalsToday = useMemo(() => {
+    let value = 0, invested = 0
+    for (const b of brokers) {
+      const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, 'today')
+      value += r.value || 0
+      invested += r.invested || 0
+    }
+    return { value, invested }
+  }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto])
 
   // Delta vs último snapshot guardado. Se llama "variación diaria" cuando
   // dayDiff === 1, pero si el usuario no abrió la app durante varios días
@@ -1171,13 +1183,11 @@ function PositionsDesktop() {
   const heroInvested = totals.invested + pfInvestedUsd
   const heroPnl = heroValue - heroInvested
   const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
-  // Totales NATIVOS en pesos para el display ARS (mode-independent — el peso no tiene
-  // "dólar de compra"). Reconcilian con los headers de broker y las filas en pesos.
-  // PF: la pata ARS es nativa, la USD se pasa a pesos al dólar de hoy.
-  const pfValueArs = (pfTotals.ARS?.valor || 0) + (pfTotals.USD?.valor || 0) * tcBlue
-  const pfInvestedArs = (pfTotals.ARS?.capital || 0) + (pfTotals.USD?.capital || 0) * tcBlue
-  const heroValueArs = totals.valueArs + pfValueArs
-  const heroInvestedArs = totals.invArs + pfInvestedArs
+  // Hero en display ARS: cifras mode-INDEPENDENT (pesos nativos + tenencias USD al
+  // dólar de hoy), a partir del total 'today' ×tcBlue. Incluye PF. Así ARS-nativo
+  // queda nativo y USD queda USD×hoy, sin filtrar el modo ni dropear brokers USD.
+  const heroValueArs = (totalsToday.value + pfValueUsd) * tcBlue
+  const heroInvestedArs = (totalsToday.invested + pfInvestedUsd) * tcBlue
   const heroPnlArs = heroValueArs - heroInvestedArs
   const heroPctArs = heroInvestedArs > 0 ? heroPnlArs / heroInvestedArs : 0
   // Cifras del hero según el display: ARS → nativas (mode-independent); USD → reflejan
