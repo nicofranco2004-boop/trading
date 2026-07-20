@@ -85,3 +85,23 @@ def test_only_benchmark_own_returns_kept():
     vb = pkt["vs_benchmarks"]
     assert set(vb.keys()) == {"sp500_pct", "inflation_ar_pct"}
     assert "delta_sp500_pp" not in vb
+
+
+def test_n_positions_is_real_count_not_top3():
+    """Blocking del audit: n_positions = conteo REAL de holdings, no len(top-3)."""
+    conn = _conn()  # ya tiene NVDA
+    for t in ("AAPL", "MSFT", "GOOG", "AMZN", "META"):
+        conn.execute(
+            "INSERT INTO positions (user_id,asset,broker,quantity,invested,is_cash,currency,asset_type) "
+            "VALUES (1,?,'Schwab',10,1000,0,'USD','stock')", (t,)
+        )
+    conn.commit()
+    pkt = build(conn, 1)
+    assert len(pkt["current_holdings_top"]) <= 3          # display capado a 3
+    assert pkt["context"]["n_positions"] == 6             # pero el conteo es real
+
+
+def test_months_tracked_infinity_guarded():
+    """int(float('inf')) lanza OverflowError (no ValueError) → guard isfinite."""
+    pkt = build(_conn(), 1, months_tracked=float("inf"))
+    assert pkt["context"]["months_tracked"] is None

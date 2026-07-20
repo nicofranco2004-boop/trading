@@ -101,12 +101,25 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     }
 
     # Contexto para el modo onboarding + flags de calidad.
-    n_positions = len(base.get("current_holdings_top") or [])
+    # CONTEO REAL de holdings — NO el largo de current_holdings_top (capado a
+    # top-3): mandarle n_positions=3 a la IA la haría narrar "con solo 3
+    # posiciones tu cartera está poco diversificada", contradiciendo la card de
+    # composición que muestra todas. Contamos activos distintos no-cash.
+    try:
+        row = conn.execute(
+            "SELECT COUNT(DISTINCT asset) AS c FROM positions "
+            "WHERE user_id=? AND is_cash=0 AND quantity>0", (user_id,)
+        ).fetchone()
+        n_positions = int(row["c"]) if row and row["c"] is not None else len(base.get("current_holdings_top") or [])
+    except Exception:  # noqa: BLE001
+        n_positions = len(base.get("current_holdings_top") or [])
     # months_tracked lo manda el frontend (globalMonthly.length); si no vino,
-    # lo dejamos None (el prompt no asume historial).
+    # lo dejamos None (el prompt no asume historial). isfinite: int(inf) lanza
+    # OverflowError (no ValueError) → guarda explícita ante un body crafteado.
     months_tracked = kwargs.get("months_tracked")
     try:
-        months_tracked = int(months_tracked) if months_tracked is not None else None
+        mt = float(months_tracked) if months_tracked is not None else None
+        months_tracked = int(mt) if (mt is not None and math.isfinite(mt)) else None
     except (TypeError, ValueError):
         months_tracked = None
 

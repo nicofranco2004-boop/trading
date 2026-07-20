@@ -1781,7 +1781,6 @@ function InsightsDesktop({ _embeddedTab }) {
   // van arriba del fold para que el usuario las vea apenas entra; el resto
   // va dentro de "Análisis avanzado" para no abrumar.
   const criticalAlerts = alerts.filter(a => a.level === 'danger')
-  const otherAlerts = alerts.filter(a => a.level !== 'danger')
 
   const aiSnapshot = {
     summary: {
@@ -1844,11 +1843,12 @@ function InsightsDesktop({ _embeddedTab }) {
   // Banner: faltan precios → muchos cálculos quedan en cost basis (P&L = 0).
   // Detectamos esto preguntando si hay alguna posición no-cash sin precio
   // resuelto (override o fetch). Si sí, mostramos warning visible.
-  const hasMissingPrices = positions.some(p => {
-    if (p.is_cash) return false
-    if (p.price_override != null) return false
-    return prices[p.asset] == null && prices[priceSymbol(p.asset, true)] == null
-  })
+  const missingPriceTickers = positions
+    .filter(p => !p.is_cash && p.price_override == null &&
+      prices[p.asset] == null && prices[priceSymbol(p.asset, true)] == null)
+    .map(p => String(p.asset || '').toUpperCase())
+    .filter(Boolean)
+  const hasMissingPrices = missingPriceTickers.length > 0
 
   // Helper de moneda activa: convierte un monto USD al ARS actual cuando el
   // toggle global está en ARS. Las métricas son globales (no las podemos
@@ -1942,7 +1942,10 @@ function InsightsDesktop({ _embeddedTab }) {
       .sort((a, b) => b.value - a.value)
     const TOP = 7
     if (rows.length <= TOP) return rows.map(({ value, ...r }) => r)
-    const tailPct = rows.slice(TOP).reduce((s, r) => s + r.pct, 0)
+    // Cola: sumamos VALORES crudos y redondeamos una vez (sumar %-ya-redondeados
+    // daba 0% con muchas posiciones chicas → escondía cartera real).
+    const tailValue = rows.slice(TOP).reduce((s, r) => s + r.value, 0)
+    const tailPct = Math.round((tailValue / total) * 100)
     return [...rows.slice(0, TOP).map(({ value, ...r }) => r), { name: `Otros ${rows.length - TOP} activos`, pct: tailPct, cash: false }]
   })()
 
@@ -1998,7 +2001,7 @@ function InsightsDesktop({ _embeddedTab }) {
     findings: diagnosis.slice(0, 3).map(d => ({ category: d.category, severity: d.severity, text: d.text })),
     verdicts: verdictItems.filter(v => v.pct != null).map(v => ({ label: v.label, pct: Math.round(v.pct * 10) / 10 })),
     months_tracked: globalMonthly.length,
-    missing_prices: [],
+    missing_prices: [...new Set(missingPriceTickers)].slice(0, 12),
   }
 
   return (
