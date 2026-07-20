@@ -11,7 +11,6 @@ import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
 import DemoBanner from './components/DemoBanner'
 import SupportWhatsAppFab from './components/SupportWhatsAppFab'
-import AICoachDrawer from './components/ai/AICoachDrawer'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import { trackPageView } from './utils/analytics'
@@ -43,6 +42,7 @@ const Admin = lazy(() => import('./pages/Admin'))
 const Goals = lazy(() => import('./pages/Goals'))
 const Imports = lazy(() => import('./pages/Imports'))
 const Alertas = lazy(() => import('./pages/Alertas'))
+const RendiAI = lazy(() => import('./pages/RendiAI'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Novedades = lazy(() => import('./pages/Novedades'))
 const FirstInsight = lazy(() => import('./pages/FirstInsight'))
@@ -179,6 +179,7 @@ function AppRoutes() {
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
       <Route path="/alertas" element={<Alertas />} />
+      <Route path="/ai" element={<RendiAI />} />
       {/* Back-compat: las alertas vivían en Config › Notificaciones */}
       <Route path="/config/notificaciones" element={<Navigate to="/alertas" replace />} />
       <Route path="/bienvenida" element={<FirstInsight />} />
@@ -325,9 +326,8 @@ export default function App() {
                   importa para los ads) era invisible en analytics. */}
               <RouteTracker />
               <Layout />
-              {/* Drawer global del Coach IA — mounted una vez al nivel de App,
-                  cualquier componente lo abre via useCoachDrawer().open() */}
-              <AICoachDrawer />
+              {/* Rendi AI vive en /ai (página propia) — el drawer lateral se
+                  retiró (clean pass 2026-07). useCoachDrawer().open() navega. */}
             </div>
           </CoachDrawerProvider>
           </PrivacyProvider>

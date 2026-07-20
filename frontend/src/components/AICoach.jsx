@@ -51,7 +51,9 @@ const DEFAULT_SUGGESTED = [
 // aritmética con asteriscos).
 import { stripMarkdown } from '../utils/stripMarkdown'
 
-export default function AICoach({ snapshot, suggested, autoAsk }) {
+// fullHeight: modo página (/ai) — sin card-shell ni header propio (la página
+// pone su chrome), mensajes flex-1 que llenan el alto disponible.
+export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = false }) {
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const canChatFree = isPro || isAdmin  // chat libre = solo Pro/Admin
   const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 12) : DEFAULT_SUGGESTED
@@ -296,8 +298,11 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
   const availableQuestions = SUGGESTED.filter(q => !askedQuestions.has(q))
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col">
-      {/* Header */}
+    <div className={fullHeight
+      ? 'flex flex-col h-full min-h-0'
+      : 'bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col'}>
+      {/* Header — solo en modo embebido; la página /ai trae su propio chrome */}
+      {!fullHeight && (
       <div className="flex items-center justify-between px-4 py-3 border-b border-line/70 dark:border-line/40">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-sm bg-bg-3 border border-line">
@@ -341,6 +346,7 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
           )}
         </div>
       </div>
+      )}
 
       {/* Mensajes */}
       <div
@@ -350,28 +356,45 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
           // pegado al fondo si está a menos de 80px del final
           stickToBottomRef.current = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80
         }}
-        className="flex-1 overflow-y-auto px-4 py-3 space-y-3 max-h-[420px] min-h-[180px]"
+        className={`overflow-y-auto px-4 py-3 space-y-4 ${
+          messages.length === 0 && fullHeight
+            ? ''                                     /* vacío: hero+chips juntos, sin estirar */
+            : 'flex-1'
+        } ${fullHeight ? 'min-h-0' : 'max-h-[420px] min-h-[180px]'}`}
       >
+        {/* Empty state — hero de bienvenida (clean pass 2026-07) */}
         {messages.length === 0 && !loading && (
-          <div className="text-center py-2">
-            <p className="text-sm text-ink-2 mb-3">
-              Elegí una pregunta para que la analice con tu data:
+          <div className="text-center pt-6 pb-2">
+            <div className="w-12 h-12 rounded-2xl mx-auto grid place-items-center text-white text-xl"
+              style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
+            <p className="text-[22px] font-semibold text-ink-0 tracking-tight mt-3 mb-1.5">
+              ¿Qué querés saber de tu plata?
+            </p>
+            <p className="text-[13.5px] text-ink-2 max-w-md mx-auto">
+              Respondo mirando tus posiciones, tu historial y el mercado de hoy.
+              También puedo <b className="text-ink-1">registrar operaciones</b> si me las dictás.
             </p>
           </div>
         )}
 
+        {/* Mensajes — user: burbuja violeta a la derecha; asistente: avatar ✦ +
+            bloque de texto limpio sin burbuja (clean pass 2026-07). */}
         {messages.map((m, i) => (
-          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                m.role === 'user'
-                  ? 'bg-rendi-accent/15 border border-rendi-accent/30 text-ink-0 rounded-br-sm font-medium'
-                  : 'bg-bg-2 dark:bg-bg-2 text-ink-0 rounded-bl-sm'
-              }`}
-            >
-              {m.content}
+          m.role === 'user' ? (
+            <div key={i} className="flex justify-end">
+              <div className="max-w-[80%] bg-data-violet/12 border border-data-violet/30 text-ink-0 rounded-2xl rounded-br-md px-4 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap">
+                {m.content}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div key={i} className="flex items-start gap-3">
+              <div className="w-7 h-7 rounded-lg grid place-items-center text-white text-[12px] flex-none mt-0.5"
+                style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
+              <div className="flex-1 min-w-0 text-[14.5px] text-ink-1 leading-relaxed whitespace-pre-wrap pt-0.5">
+                {m.content}
+              </div>
+            </div>
+          )
         ))}
 
         {loading && (
@@ -409,23 +432,34 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
 
       {/* Chips de preguntas — siempre visibles abajo, NO hay input libre.
           Scrolleable cuando son muchas (Insights genera hasta 12 data-driven). */}
-      {availableQuestions.length > 0 && (
-        <div className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-[12.5px] text-ink-2 font-medium">
-              {messages.length === 0 ? 'Preguntas sugeridas' : 'Otra pregunta'}
-            </p>
-            <span className="text-[10px] font-mono text-ink-3 tabular">
-              {availableQuestions.length} disponibles
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1.5 max-h-[160px] overflow-y-auto pr-1">
+      {availableQuestions.length > 0 && messages.length === 0 && (
+        /* Estado inicial: chips como CARDS en grilla (clean pass 2026-07) */
+        <div className="px-4 pb-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[240px] overflow-y-auto pr-1">
             {availableQuestions.map(q => (
               <button
                 key={q}
                 onClick={() => send(q)}
                 disabled={loading || sending}
-                className="text-xs px-3 py-1.5 bg-bg-2 hover:bg-bg-3 dark:bg-bg-2 dark:hover:bg-bg-3 border border-line text-ink-1 rounded-full transition disabled:opacity-40 disabled:cursor-not-allowed text-left"
+                className="flex items-start gap-2.5 text-left bg-bg-1 hover:bg-bg-2 border border-line hover:border-data-violet/40 rounded-xl px-3.5 py-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <span className="w-6 h-6 rounded-lg bg-data-violet/12 text-data-violet grid place-items-center flex-none text-[11px]">✦</span>
+                <span className="text-[13px] text-ink-1 font-medium leading-snug">{q}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {availableQuestions.length > 0 && messages.length > 0 && (
+        /* Con conversación en curso: chips compactos como repreguntas */
+        <div className="border-t border-line/40 px-4 py-2.5">
+          <div className="flex flex-wrap gap-1.5 max-h-[104px] overflow-y-auto pr-1">
+            {availableQuestions.map(q => (
+              <button
+                key={q}
+                onClick={() => send(q)}
+                disabled={loading || sending}
+                className="text-[12.5px] px-3 py-1.5 border border-data-violet/30 text-data-violet hover:bg-data-violet/10 rounded-full transition disabled:opacity-40 disabled:cursor-not-allowed text-left"
               >
                 {q}
               </button>
@@ -451,32 +485,42 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
           registrar operaciones dictadas ("compré 2000 USD de BTC a 65.000").
           El gate del contenido es server-side (whitelist + intención de
           registro) — acá solo cambia el placeholder por tier. */}
-      <form
-        onSubmit={handleFreeSubmit}
-        className="border-t border-line/70 dark:border-line/40 px-3 py-2.5 bg-bg-1/40 flex items-center gap-2"
-      >
-        <input
-          type="text"
-          value={freeText}
-          onChange={e => setFreeText(e.target.value)}
-          disabled={loading || sending}
-          placeholder={canChatFree
-            ? 'Preguntale lo que quieras sobre tu cartera…'
-            : 'Registrá: "compré 2000 USD de BTC" o "deposité 600.000 pesos en Balanz"'}
-          className="flex-1 bg-bg-2 dark:bg-bg-2/60 border border-line text-sm text-ink-0 placeholder:text-ink-3 rounded-sm px-3 py-2 focus:outline-none focus:border-data-violet/60 disabled:opacity-50"
-          maxLength={500}
-          aria-label={canChatFree ? 'Pregunta libre al coach IA' : 'Registrar una operación con el coach IA'}
-        />
-        <button
-          type="submit"
-          disabled={loading || sending || !freeText.trim()}
-          className="bg-data-violet hover:bg-data-violet/90 text-white rounded-sm p-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center"
-          title="Enviar"
-          aria-label="Enviar"
+      <div className="border-t border-line/40 px-4 py-3 mt-auto">
+        <form
+          onSubmit={handleFreeSubmit}
+          className="flex items-center gap-2.5 bg-bg-1 border border-line focus-within:border-data-violet/50 rounded-2xl pl-4 pr-2 py-1.5 transition-colors"
         >
-          <Send size={14} strokeWidth={2} />
-        </button>
-      </form>
+          <input
+            type="text"
+            value={freeText}
+            onChange={e => setFreeText(e.target.value)}
+            disabled={loading || sending}
+            placeholder={canChatFree
+              ? 'Preguntale a Rendi AI sobre tu cartera…'
+              : 'Registrá: "compré 2000 USD de BTC" o "deposité 600.000 pesos en Balanz"'}
+            className="flex-1 bg-transparent text-[14px] text-ink-0 placeholder:text-ink-3 py-2 focus:outline-none disabled:opacity-50"
+            maxLength={500}
+            aria-label={canChatFree ? 'Pregunta libre a Rendi AI' : 'Registrar una operación con Rendi AI'}
+          />
+          <button
+            type="submit"
+            disabled={loading || sending || !freeText.trim()}
+            className="bg-data-violet hover:bg-data-violet/90 text-white rounded-xl w-9 h-9 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center flex-none"
+            title="Enviar"
+            aria-label="Enviar"
+          >
+            <Send size={15} strokeWidth={2} />
+          </button>
+        </form>
+        <div className="flex items-center justify-between mt-2 px-1 text-[11.5px] text-ink-3">
+          <span>Rendi AI puede equivocarse — no es asesoramiento financiero.</span>
+          {usage && usage.chat_limit > 0 && (
+            <span className="tabular num" title={usage.resets_on ? `Se renueva el ${usage.resets_on}` : 'Cuota semanal'}>
+              {Math.max(0, usage.chat_limit - usage.chat_count)} consultas restantes
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* Upsell Free/Plus → Pro: visible cuando NO tiene chat libre. Muestra
           qué desbloquea Pro sin ser intrusivo (un slot debajo de los chips). */}
@@ -495,9 +539,6 @@ export default function AICoach({ snapshot, suggested, autoAsk }) {
         </div>
       )}
 
-      <p className="text-[10px] text-ink-3 px-3 py-1.5 text-center border-t border-line/40">
-        Claude Haiku · Observaciones orientativas. No constituyen asesoramiento financiero.
-      </p>
     </div>
   )
 }
