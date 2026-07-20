@@ -394,6 +394,17 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
                 if p != 0:
                     tx.quantity = round(a / p, 8)
 
+            # tc de la compra (ARS/USD) para la vista "costo al dólar de la
+            # compra": del CSV (columna 'tc'), o derivado monto_ARS/monto_usd.
+            # Solo lotes en pesos (currency ARS) — el guard evita el tc≈1
+            # espurio cuando el fallback de arriba igualó gross_amount=usd_amount
+            # en un lote USD. Solo BUY crea fila en positions.
+            if tc and tc > 0:
+                tx.tc_compra = tc
+            elif ((currency or "").upper() == "ARS"
+                  and tx.gross_amount and usd_amount and usd_amount > 0):
+                tx.tc_compra = round(tx.gross_amount / usd_amount, 8)
+
         # Para FX usamos los campos específicos (ars_amount = gross_amount, usd_amount, tc)
         # y los exponemos vía gross_amount (ARS) y unit_price (TC) por compactness;
         # el persister los lee así.

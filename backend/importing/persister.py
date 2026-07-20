@@ -422,7 +422,9 @@ def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
            invested, tc_compra, price_override, notes, entry_date, commissions, currency, asset_type)
            VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)""",
         (uid, tx.broker, tx.asset_symbol, unit if unit > 0 else None, qty,
-         invested, None, None, tx.notes, tx.date, fees, lot_currency,
+         invested,
+         (tx.tc_compra if (tx.tc_compra and tx.tc_compra > 0) else None),
+         None, tx.notes, tx.date, fees, lot_currency,
          (tx.asset_type or None)),
     )
     position_id = cur.lastrowid

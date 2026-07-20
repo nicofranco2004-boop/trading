@@ -1589,7 +1589,8 @@ def init_db():
             notes TEXT,
             created_position_id INTEGER,
             created_operation_id INTEGER,
-            transfer_out INTEGER NOT NULL DEFAULT 0
+            transfer_out INTEGER NOT NULL DEFAULT 0,
+            tc_compra REAL
         );
         CREATE INDEX IF NOT EXISTS idx_import_norm_batch
             ON import_normalized_tx(batch_id);
@@ -1645,6 +1646,14 @@ def init_db():
     norm_cols = _table_cols(conn, 'import_normalized_tx')
     if norm_cols and 'transfer_out' not in norm_cols:
         conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN transfer_out INTEGER NOT NULL DEFAULT 0")
+
+    # Migración (2026-07-13): tc_compra (ARS/USD de la compra) en
+    # import_normalized_tx, para que sobreviva la rehidratación del confirm y
+    # llegue a positions.tc_compra. Alimenta la vista "costo al dólar de la
+    # compra". DEFAULT NULL → cero cambio para data vieja (cae a hoy).
+    norm_cols = _table_cols(conn, 'import_normalized_tx')
+    if norm_cols and 'tc_compra' not in norm_cols:
+        conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN tc_compra REAL")
 
     # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
     # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.

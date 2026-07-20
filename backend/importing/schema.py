@@ -244,6 +244,12 @@ class NormalizedTx:
     # siendo tuyo, solo se fue del exchange).
     transfer_out: bool = False
 
+    # Tipo de cambio de la COMPRA (ARS por USD). Solo se setea en BUY de un lote
+    # en pesos (del CSV, columna 'tc', o derivado monto_ARS/monto_usd). Alimenta
+    # la vista "costo al dólar de la compra" (dólares reales invertidos) sin
+    # tocar el modelo FX-neutral por defecto. NULL = sin dato → cae a hoy.
+    tc_compra: Optional[float] = None
+
     def to_db_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
