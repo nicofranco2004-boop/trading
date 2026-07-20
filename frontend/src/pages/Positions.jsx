@@ -492,6 +492,13 @@ function PositionsDesktop() {
   // USD para el resto), espejo de la lógica de valuación (priceSymbol).
   function openAlertForPosition(p) {
     if (!p || p.is_cash) return
+    // Cripto SIEMPRE por su ticker pelado en USD (BTC→BTC-USD); nunca .BA —
+    // aunque se haya comprado en un broker AR (donde priceSymbol daría 'BTC.BA',
+    // que no cotiza y dejaba la alerta muerta).
+    if (isCrypto(p.asset)) {
+      navigate(`/config?tab=notificaciones&new=${encodeURIComponent(p.asset)}&ccy=USD`)
+      return
+    }
     const arsRail = costInPesos(p) || p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)
     const sym = priceSymbol(p.asset, arsRail, p.asset_type)
     const ccy = arsRail ? 'ARS' : 'USD'

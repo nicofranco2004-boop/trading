@@ -147,7 +147,7 @@ def test_price_target_no_fire_on_none_price(clean, monkeypatch):
 def test_pct_move_cooldown(clean, monkeypatch):
     conn = clean
     _mk_alert(conn, kind="pct_move", down_pct=5, threshold=None, symbol="AAPL",
-              cooldown_min=360)
+              cooldown_min=360, repeat="always")
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 90, "change_pct": -7.0}})
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
     # segunda evaluación inmediata: dentro del cooldown → no re-dispara
@@ -162,7 +162,7 @@ def test_pct_move_holdings_scope_expands(clean, monkeypatch):
     conn = clean
     # asimétrico: sube ≥10% o cae ≥5%
     _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None,
-              up_pct=10, down_pct=5, threshold=None, cooldown_min=360)
+              up_pct=10, down_pct=5, threshold=None, cooldown_min=360, repeat="always")
     monkeypatch.setattr(ae, "_holding_symbols", lambda conn, uid: ["AAPL", "MSFT", "KO"])
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {
         "AAPL": {"price": 90, "change_pct": -8.0},   # cae ≥5 → dispara (down)
@@ -173,3 +173,58 @@ def test_pct_move_holdings_scope_expands(clean, monkeypatch):
     assert res["fired"] == 2
     fired_syms = {e["symbol"] for e in _events(conn)}
     assert fired_syms == {"AAPL", "KO"}
+
+
+# ── Fixes del audit ──────────────────────────────────────────────────────────
+
+def test_norm_sym_crypto():
+    # cripto en broker AR llega como 'BTC.BA' → se normaliza a 'BTC' (BTC-USD)
+    assert ae._norm_sym("BTC.BA") == "BTC"
+    assert ae._norm_sym("ETH.BA") == "ETH"
+    # NO toca CEDEARs ni tickers normales
+    assert ae._norm_sym("AAPL.BA") == "AAPL.BA"
+    assert ae._norm_sym("AAPL") == "AAPL"
+    assert ae._norm_sym("BTC") == "BTC"
+
+
+def test_crypto_holdings_resolves(clean, monkeypatch):
+    # Plus con cripto comprada en Cocos (broker AR): build_price_symbols da 'BTC.BA'.
+    # El motor debe normalizar a 'BTC' y disparar (antes quedaba muerta).
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None,
+              up_pct=5, down_pct=5, threshold=None, repeat="always")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda conn, uid: ["BTC.BA"])
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"BTC": {"price": 65000, "change_pct": 6.0}})
+    res = ae.evaluate_alerts(conn, only_user=1)
+    assert res["fired"] == 1
+    assert _events(conn)[0]["symbol"] == "BTC"   # normalizado, no BTC.BA
+
+
+def test_pct_move_once_deactivates(clean, monkeypatch):
+    # 'una vez' en pct_move: dispara y se APAGA (antes re-disparaba tras el cooldown).
+    conn = clean
+    _mk_alert(conn, kind="pct_move", down_pct=3, threshold=None, symbol="AAPL",
+              repeat="once", cooldown_min=360)
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": {"price": 90, "change_pct": -5.0}})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert conn.execute("SELECT active FROM alerts").fetchone()["active"] == 0
+    # aunque envejezca el evento más allá del cooldown, NO re-dispara (inactiva)
+    old = (datetime.utcnow() - timedelta(hours=8)).isoformat()
+    conn.execute("UPDATE alert_events SET fired_at=?", (old,)); conn.commit()
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def test_pct_move_once_holdings_fires_once_then_stops(clean, monkeypatch):
+    # holdings 'once': dispara el/los que se movieron este ciclo y se apaga.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None,
+              down_pct=5, threshold=None, repeat="once")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda conn, uid: ["AAPL", "KO"])
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {
+        "AAPL": {"price": 90, "change_pct": -8.0},
+        "KO":   {"price": 60, "change_pct": -6.0},
+    })
+    ae.evaluate_alerts(conn, only_user=1)
+    assert conn.execute("SELECT active FROM alerts").fetchone()["active"] == 0
+    # próximo ciclo: inactiva → 0 disparos
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0

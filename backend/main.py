@@ -23647,15 +23647,24 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
                 raise HTTPException(400, "Poné al menos un umbral: sube y/o baja X%.")
             threshold = None  # pct_move no usa threshold
 
-        # Edge-trigger inicial: armamos solo si HOY todavía no está cumplida
-        # (así no dispara al toque de crearla si el precio ya pasó el umbral).
+        # Cripto en broker AR llega como 'BTC.BA' (no cotiza así) → guardar 'BTC'.
+        if symbol:
+            symbol = _ae._norm_sym(symbol)
+
+        # Edge-trigger inicial + probe de resolución: sondeamos el precio del
+        # símbolo (cualquier riel). Si no resuelve (typo / ticker inexistente),
+        # devolvemos resolved=False para que la UI avise — no bloqueamos (yfinance
+        # puede fallar transitoriamente y el símbolo ser válido).
         armed = 1
         current_price = None
-        if data.kind == "price_target":
+        resolved = True
+        if symbol:  # ticker-scope (price_target siempre; pct_move de un activo)
             current_price = _ae.price_for_alert(symbol)
-            met = _ae.condition_met("price_target", data.direction, threshold,
-                                    current_price, None)
-            armed = 0 if met else 1
+            resolved = current_price is not None
+            if data.kind == "price_target":
+                met = _ae.condition_met("price_target", data.direction, threshold,
+                                        current_price, None)
+                armed = 0 if met else 1
 
         cur = conn.execute(
             """INSERT INTO alerts
@@ -23669,7 +23678,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         aid = cur.lastrowid
         conn.commit()
         return {"ok": True, "id": aid, "armed": bool(armed),
-                "current_price": current_price}
+                "current_price": current_price, "resolved": resolved}
     finally:
         conn.close()
 

@@ -15,6 +15,9 @@ import Panel from '../Panel'
 import Pill from '../Pill'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useAlerts } from '../../hooks/useAlerts'
+import { POPULAR_TICKERS } from '../../utils/tickers'
+
+const TICKER_SUGGESTIONS = POPULAR_TICKERS.map(t => t.symbol)
 
 const EMPTY_FORM = {
   kind: 'price_target',
@@ -69,6 +72,7 @@ export default function AlertsManager({ plan, prefill }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [upsell, setUpsell] = useState(false)
+  const [warnSym, setWarnSym] = useState(null)   // ticker que no resolvió precio
 
   const push = usePushNotifications()
 
@@ -109,13 +113,12 @@ export default function AlertsManager({ plan, prefill }) {
     try {
       const res = await create(payload)
       setShowForm(false)
+      // Ticker que no resolvió precio (typo / símbolo inexistente) → avisamos.
+      setWarnSym(res && res.resolved === false && payload.symbol ? payload.symbol : null)
       setForm(EMPTY_FORM)
       // Si eligió push/ambos y no dio permiso todavía, lo invitamos.
       if ((form.channel === 'push' || form.channel === 'both') && push && !push.subscribed && push.supported) {
         push.subscribe?.()
-      }
-      if (res?.current_price != null && form.kind === 'price_target') {
-        setErr(null)
       }
     } catch (e2) {
       if (e2?.status === 403 && e2?.payload?.upgrade) {
@@ -166,6 +169,17 @@ export default function AlertsManager({ plan, prefill }) {
         </div>
       )}
 
+      {/* Aviso: el ticker no resolvió precio (posible typo) */}
+      {warnSym && (
+        <div className="mx-4 mt-3 rounded-sm border border-rendi-warn/30 bg-rendi-warn/5 px-3 py-2.5 flex items-start gap-2.5">
+          <div className="flex-1 min-w-0 text-xs text-ink-1">
+            No encontramos el precio de <span className="font-medium">{displaySym(warnSym)}</span> ahora.
+            Si el símbolo es correcto, la alerta va a funcionar igual; si fue un error, borrala y creala de nuevo.
+          </div>
+          <button onClick={() => setWarnSym(null)} className="text-ink-3 hover:text-ink-1"><X size={14} /></button>
+        </div>
+      )}
+
       {/* Formulario */}
       {showForm && (
         <form onSubmit={submit} className="px-4 py-3.5 border-b border-line/40 space-y-3">
@@ -190,8 +204,12 @@ export default function AlertsManager({ plan, prefill }) {
                 value={form.symbol}
                 onChange={e => setField('symbol', e.target.value.toUpperCase())}
                 placeholder="Ticker (ej. AAPL, MSFT.BA, GGAL)"
+                list="alert-tickers"
                 className="flex-1 text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none"
               />
+              <datalist id="alert-tickers">
+                {TICKER_SUGGESTIONS.map(s => <option key={s} value={s} />)}
+              </datalist>
               {form.kind === 'price_target' && (
                 <select value={form.currency} onChange={e => setField('currency', e.target.value)}
                   className="text-sm bg-bg-2 border border-line rounded-sm px-2 py-2 text-ink-1 outline-none">

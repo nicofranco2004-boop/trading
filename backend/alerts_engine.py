@@ -84,6 +84,32 @@ def _holding_symbols(conn, uid: int) -> list:
         return []
 
 
+# ─── Normalización de símbolo (cripto) ───────────────────────────────────────
+
+_CRYPTO = None
+
+def _crypto_symbols() -> set:
+    global _CRYPTO
+    if _CRYPTO is None:
+        try:
+            import main
+            _CRYPTO = set(getattr(main, "CRYPTO_SYMBOLS", None)
+                          or getattr(main, "CRYPTO_YF", {}).keys())
+        except Exception:
+            _CRYPTO = set()
+    return _CRYPTO
+
+
+def _norm_sym(sym):
+    """Cripto en broker AR se representa como 'BTC.BA' (build_price_symbols), pero
+    NO cotiza así en yfinance. La valuamos por 'BTC' (→ BTC-USD, riel USD). Sin
+    esto una alerta de cripto comprada en Cocos/Balanz nunca resolvía precio.
+    Todo lo demás pasa igual."""
+    if sym and sym.endswith(".BA") and sym[:-3] in _crypto_symbols():
+        return sym[:-3]
+    return sym
+
+
 # ─── Lógica de condición ──────────────────────────────────────────────────────
 
 def condition_met(kind: str, direction: str, threshold: float,
@@ -263,10 +289,11 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
             if uid not in holdings_cache:
                 holdings_cache[uid] = _holding_symbols(conn, uid)
             for sym in holdings_cache[uid]:
+                sym = _norm_sym(sym)   # cripto AR: BTC.BA → BTC
                 units.append((a, sym))
                 (quote_syms if a["kind"] == "pct_move" else price_syms).add(sym)
         else:
-            sym = a["symbol"]
+            sym = _norm_sym(a["symbol"])
             if not sym:
                 continue
             units.append((a, sym))
@@ -276,7 +303,10 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     quotes = _quotes_for(list(quote_syms)) if quote_syms else {}
 
     fired = 0
+    deactivated: set = set()   # alertas 'once' de pct_move ya disparadas este ciclo
     for a, sym in units:
+        if a["id"] in deactivated:
+            continue
         if a["kind"] == "price_target":
             price = prices.get(sym)
             met = condition_met("price_target", a["direction"], a["threshold"], price, None)
@@ -301,6 +331,10 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                 continue
             _fire(conn, a, sym, (quote or {}).get("price"), change, now)
             fired += 1
+            if a["repeat"] == "once":
+                # "una vez" = avisar y apagar (antes re-disparaba tras el cooldown).
+                conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
+                deactivated.add(a["id"])
 
     conn.execute(
         "UPDATE alerts SET last_evaluated_at=? WHERE active=1"
