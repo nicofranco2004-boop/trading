@@ -59,8 +59,10 @@ export default function ResetPassword() {
           : (data.detail?.error || 'No pudimos restablecer la contraseña.')
         throw new Error(msg)
       }
-      // Backend nos devuelve un token nuevo → auto-login
-      login(data.token, data.name)
+      // Backend nos devuelve un token nuevo → auto-login. Pasamos email (si el
+      // backend lo incluye) para que user.email esté disponible ya en esta
+      // sesión — sin él, el estado por-usuario de la app cae a la clave 'anon'.
+      login(data.token, data.name, { email: data.email })
       navigate('/')
     } catch (ex) {
       setError(ex.message)

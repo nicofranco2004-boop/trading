@@ -202,7 +202,7 @@ export default function Login() {
         navigate(`/verify-email?email=${encodeURIComponent(data.email || cleanEmail)}`)
         return
       }
-      login(data.token, data.name, { is_admin: !!data.is_admin })
+      login(data.token, data.name, { is_admin: !!data.is_admin, email: data.email || cleanEmail })
       navigate('/')
     } catch (err) {
       setError(err.message)

@@ -134,6 +134,7 @@ export default function VerifyEmail() {
       login(data.token, data.name, {
         is_admin: !!data.is_admin,
         id: data.user_id || data.id,
+        email: data.email || email,
         event_type: 'sign_up',
       })
       const skippedBefore = (() => {
