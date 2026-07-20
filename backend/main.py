@@ -23834,23 +23834,41 @@ def alerts_evaluate(request: Request):
         conn.close()
 
 
+# Guarda anti-doble-corrida del snapshot por cron: el job itera TODOS los usuarios
+# (minutos), así que corre en un thread de fondo. Si llega otro ping mientras uno
+# está corriendo (retry del cron, doble disparo), lo saltamos en vez de encimar dos
+# corridas que contenderían por el lock de escritura.
+_snapshot_cron_lock = threading.Lock()
+_snapshot_cron_running = False
+
+
+def _run_daily_snapshot_bg():
+    global _snapshot_cron_running
+    try:
+        _run_daily_snapshot_job()   # wrapper existente: corre + loguea + captura errores
+    finally:
+        with _snapshot_cron_lock:
+            _snapshot_cron_running = False
+
+
 @app.api_route("/api/snapshots/run-cron", methods=["GET", "POST"])
 def snapshots_run_cron(request: Request):
-    """Toma el snapshot diario de la cartera de TODOS los usuarios (valuación
+    """Dispara el snapshot diario de la cartera de TODOS los usuarios (valuación
     server-side; NO requiere que el user entre a la app). Mismo motor que el
     scheduler in-process (run_daily_snapshot), pero disparado por un cron EXTERNO
-    para que no dependa de que el proceso de Railway esté despierto a esa hora — el
-    scheduler interno se saltea la ventana si el proceso está frío, y ahí la
-    "variación diaria" termina siendo de varios días.
+    para que no dependa de que el proceso de Railway esté despierto — el scheduler
+    interno se saltea la ventana si el proceso está frío, y ahí la "variación diaria"
+    termina siendo de varios días.
+
+    El job tarda (itera todos los users + fetch de precios), MÁS que el timeout del
+    gateway/cron → lo corremos en un thread de fondo y devolvemos 200 al instante
+    ({"status":"started"}); el resultado (o el abort fail-closed sin MEP) va a los
+    logs. Idempotente: el snapshot es UPSERT por (user_id, date) → re-correr pisa, no
+    duplica. Si ya hay una corrida en curso, devuelve {"status":"already_running"}.
 
     Lo pega un cron externo (cron-job.org) 1x/día ~03:00 UTC, después del cierre de
-    NYSE/BCBA (closing prices ya establecidos). Idempotente: el snapshot es UPSERT
-    por (user_id, date) → re-correr el mismo día PISA la fila (no duplica), así que
-    es seguro reintentar si una corrida falla. Fail-closed: si no resuelve el MEP,
-    aborta y devuelve 503 (valuar con FX stale corrompería la serie).
-
-    Auth: header X-Cron-Token o ?token= contra SNAPSHOT_CRON_TOKEN. Sin token
-    configurado → 503 (endpoint cerrado)."""
+    NYSE/BCBA. Auth: header X-Cron-Token o ?token= contra SNAPSHOT_CRON_TOKEN. Sin
+    token configurado → 503 (endpoint cerrado)."""
     expected = (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip()
     if not expected:
         raise HTTPException(503, "Snapshot cron no configurado (falta SNAPSHOT_CRON_TOKEN).")
@@ -23858,17 +23876,13 @@ def snapshots_run_cron(request: Request):
            or request.query_params.get("token") or "").strip()
     if got != expected:
         raise HTTPException(401, "Token inválido.")
-    result = run_daily_snapshot(
-        db_path=DB_PATH,
-        fetch_tc_blue=_get_blue_for_scheduler,
-        crypto_yf=CRYPTO_YF,
-        fetch_tc_mep=_get_mep_for_scheduler,
-    )
-    if not result.get("ok"):
-        # Abort total (blue/MEP no resolvió → fail-closed). 503 para que el cron lo
-        # marque como fallo (y reintente en el próximo ciclo) en vez de un OK silencioso.
-        raise HTTPException(503, f"Snapshot abortado: {result.get('reason')}")
-    return result
+    global _snapshot_cron_running
+    with _snapshot_cron_lock:
+        if _snapshot_cron_running:
+            return {"ok": True, "status": "already_running"}
+        _snapshot_cron_running = True
+    threading.Thread(target=_run_daily_snapshot_bg, daemon=True).start()
+    return {"ok": True, "status": "started"}
 
 
 # ─── Push notifications (Sprint M4) ──────────────────────────────────────────
