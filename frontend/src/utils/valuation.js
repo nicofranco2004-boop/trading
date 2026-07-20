@@ -210,9 +210,23 @@ export function holdingHasReliableFundamentals(p, arsBrokerNames) {
  * filas, detalle, Dashboard, Insights/IA, Renta Fija) conviertan igual.
  * Usar solo cuando costInPesos(p) es true.
  */
-export function pesoLotUsd(p, prices, tcCedear) {
-  const investedUsd = ((p.invested || 0) + (p.commissions || 0)) / tcCedear
+/**
+ * costBasisRate — el dólar con el que se convierte el COSTO (invested) de un lote
+ * en pesos a USD, según el modo elegido por el usuario ("Costo en dólares"):
+ *   • 'today'    (default) → el rate actual (MEP/blue): modelo FX-neutral, costo y
+ *     valor al mismo dólar → el P&L USD refleja solo el rendimiento del activo.
+ *   • 'purchase' → el tc_compra del lote (los dólares que realmente puso): incluye
+ *     la devaluación. Fallback al rate de hoy si el lote no tiene tc_compra (>0) →
+ *     nunca divide por cero ni colapsa el lote. SOLO afecta el COSTO, nunca el valor.
+ */
+export function costBasisRate(p, currentRate, costBasis = 'today') {
+  return (costBasis === 'purchase' && p?.tc_compra > 0) ? p.tc_compra : currentRate
+}
+
+export function pesoLotUsd(p, prices, tcCedear, costBasis = 'today') {
+  const investedUsd = ((p.invested || 0) + (p.commissions || 0)) / costBasisRate(p, tcCedear, costBasis)
   const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
+  // el VALOR siempre va a HOY (tcCedear) en ambos modos — no aplicar costBasisRate acá
   const valueUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : investedUsd
   return { investedUsd, valueUsd, priceUsd: priceArs != null ? priceArs / tcCedear : null }
 }
@@ -268,14 +282,14 @@ export function usdLotValue(p, prices, cedearRate) {
  * holding-first de "Calidad de cartera" valúe IGUAL que la ficha del activo.
  * Usar solo con posiciones equity/CEDEAR (la cripto/cash van por otra matriz).
  */
-export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue) {
+export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue, costBasis = 'today') {
   const qty = p.quantity || 0
   const invested = p.invested || 0
   const isAR = broker?.currency === 'ARS'
   let valueUsd, investedUsd
   if (costInPesos(p) && !isAR) {
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
-    investedUsd = invested / cedearRate
+    investedUsd = invested / costBasisRate(p, cedearRate, costBasis)
     valueUsd = priceArs != null ? (priceArs / cedearRate) * qty : investedUsd
   } else if (costInUsd(p) && isAR) {
     // Espejo: lote de costo USD en un broker ARS (bono/ON/FCI-USD, CEDEAR-MEP) →
@@ -286,7 +300,7 @@ export function valueEquityLot(p, broker, prices, tcBlue, cedearRate = tcBlue) {
     valueUsd = u.valueUsd
   } else if (isAR) {
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    investedUsd = invested / tcBlue
+    investedUsd = invested / costBasisRate(p, tcBlue, costBasis)
     valueUsd = priceArs != null ? (priceArs * qty) / tcBlue : investedUsd
   } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null) {
     // .BA÷MEP decidido por el PADRE (isArUsdBroker/currency), NO por isArStock: una
@@ -379,7 +393,7 @@ export function buildPriceSymbols(positions, brokers) {
   return [...syms]
 }
 
-export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue, tcCripto = null) {
+export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearRate = tcBlue, tcCripto = null, costBasis = 'today') {
   const bpos = allPositions.filter(p => p.broker === broker.name)
   const arUsd = isArUsdBroker(broker.name)
   let value = 0, invested = 0
@@ -398,7 +412,7 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
     // en pesos se contaba como dólares (invertido inflado ~MEP×) y el guard de
     // confianza comparaba USD vs pesos (rechazaba el precio e inflaba el valor).
     if (!p.is_cash && broker.currency !== 'ARS' && costInPesos(p)) {
-      const invUsd = realCost / cedearRate
+      const invUsd = realCost / costBasisRate(p, cedearRate, costBasis)
       invArs   += realCost
       invested += invUsd
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
@@ -446,8 +460,10 @@ export function computeBrokerValue(allPositions, prices, broker, tcBlue, cedearR
         // el que muestra el broker. Cash y holdings usan el MISMO rate (MEP).
         // Antes valuábamos acá al blue y el total quedaba ~2% por debajo del broker.
         // FX-phantom fix: invested y value usan el MISMO rate (MEP), así se mueven
-        // juntos y solo aparece P&L cuando el activo realmente rinde.
-        const invUsd = realCost / cedearRate
+        // juntos y solo aparece P&L cuando el activo realmente rinde. En modo
+        // 'purchase' el COSTO va al tc_compra del lote (dólares reales invertidos);
+        // el valor sigue a cedearRate → el P&L absorbe la devaluación.
+        const invUsd = realCost / costBasisRate(p, cedearRate, costBasis)
         invested += invUsd
 
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]

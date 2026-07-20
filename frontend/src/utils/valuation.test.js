@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -735,5 +735,77 @@ describe('computeBrokerValue — ON con override per-100 cae a costo (no infla l
   const r = computeBrokerValue([sxc2o], {}, balanz, 1200)
   it('el valor no se va a ~$388k: cae a costo', () => {
     expect(r.value).toBeCloseTo(3900, 2)
+  })
+})
+
+// ─── Modo costBasis: 'today' (FX-neutral, default) vs 'purchase' (dólar de compra) ──
+describe('costBasisRate — chokepoint del divisor del costo', () => {
+  it("today → siempre el rate actual (aunque haya tc_compra)", () => {
+    expect(costBasisRate(pos({ tc_compra: TC1 }), TCB, 'today')).toBe(TCB)
+  })
+  it("purchase con tc_compra>0 → el tc de la compra", () => {
+    expect(costBasisRate(pos({ tc_compra: TC1 }), TCB, 'purchase')).toBe(TC1)
+  })
+  it("purchase sin tc_compra (NULL) → fallback al rate de hoy (no-breaking)", () => {
+    expect(costBasisRate(pos({ tc_compra: null }), TCB, 'purchase')).toBe(TCB)
+    expect(costBasisRate(pos({ tc_compra: 0 }), TCB, 'purchase')).toBe(TCB)
+  })
+  it("default (sin 3er arg) = today", () => {
+    expect(costBasisRate(pos({ tc_compra: TC1 }), TCB)).toBe(TCB)
+  })
+})
+
+describe('pesoLotUsd — modo purchase cambia el COSTO, no el valor', () => {
+  const p = { ...pos({ asset: 'AMZN', asset_type: 'CEDEAR', currency: 'ARS',
+                        invested: 100_000, quantity: 40, tc_compra: TC1 }) }
+  const prices = { 'AMZN.BA': 3000 }
+  const today  = pesoLotUsd(p, prices, TCB, 'today')
+  const purch  = pesoLotUsd(p, prices, TCB, 'purchase')
+  it('today: invested = 100.000/TCB', () => expect(today.investedUsd).toBeCloseTo(100_000 / TCB))
+  it('purchase: invested = 100.000/TC1 (dólares reales)', () => expect(purch.investedUsd).toBeCloseTo(100_000 / TC1))
+  it('el VALOR es idéntico en ambos modos (siempre a hoy)', () => expect(purch.valueUsd).toBeCloseTo(today.valueUsd))
+  it('→ el P&L USD cambia entre modos', () => {
+    const pnlToday = today.valueUsd - today.investedUsd
+    const pnlPurch = purch.valueUsd - purch.investedUsd
+    expect(pnlPurch).not.toBeCloseTo(pnlToday)
+  })
+})
+
+describe('computeBrokerValue — modo purchase sobre lote ARS con tc_compra', () => {
+  const p = pos({ broker: 'Cocos', asset: 'GGAL', currency: 'ARS',
+                  invested: 90_000, quantity: 10, tc_compra: TC1 })
+  const prices = { 'GGAL.BA': 12_000 }
+  const today  = computeBrokerValue([p], prices, arsBroker(), TCB, TCB, null, 'today')
+  const purch  = computeBrokerValue([p], prices, arsBroker(), TCB, TCB, null, 'purchase')
+  it('today: invested USD = 90.000/TCB', () => expect(today.invested).toBeCloseTo(90_000 / TCB))
+  it('purchase: invested USD = 90.000/TC1', () => expect(purch.invested).toBeCloseTo(90_000 / TC1))
+  it('el valor USD NO cambia', () => expect(purch.value).toBeCloseTo(today.value))
+  it('el invertido en ARS NO cambia (moneda base)', () => expect(purch.invArs).toBeCloseTo(today.invArs))
+})
+
+describe('fallback NULL — purchase sin tc_compra == today (no-breaking)', () => {
+  const p = pos({ broker: 'Cocos', asset: 'GGAL', currency: 'ARS',
+                  invested: 90_000, quantity: 10, tc_compra: null })
+  const prices = { 'GGAL.BA': 12_000 }
+  const today  = computeBrokerValue([p], prices, arsBroker(), TCB, TCB, null, 'today')
+  const purch  = computeBrokerValue([p], prices, arsBroker(), TCB, TCB, null, 'purchase')
+  it('invested USD idéntico (cae a hoy)', () => expect(purch.invested).toBeCloseTo(today.invested))
+})
+
+describe('valueEquityLot — modo purchase (rama costInPesos y rama isAR)', () => {
+  const cedearUsdAcct = pos({ broker: 'Bal · USD', asset: 'AMZN', asset_type: 'CEDEAR',
+                              currency: 'ARS', invested: 100_000, quantity: 40, tc_compra: TC1 })
+  it('rama costInPesos !isAR: purchase usa tc_compra', () => {
+    const t = valueEquityLot(cedearUsdAcct, usdBroker('Bal · USD'), { 'AMZN.BA': 3000 }, TCB, TCB, 'today')
+    const p = valueEquityLot(cedearUsdAcct, usdBroker('Bal · USD'), { 'AMZN.BA': 3000 }, TCB, TCB, 'purchase')
+    expect(p.investedUsd).toBeCloseTo(100_000 / TC1)
+    expect(t.investedUsd).toBeCloseTo(100_000 / TCB)
+    expect(p.valueUsd).toBeCloseTo(t.valueUsd)
+  })
+  const arsLot = pos({ broker: 'Cocos', asset: 'GGAL', currency: 'ARS',
+                       invested: 90_000, quantity: 10, tc_compra: TC1 })
+  it('rama isAR: purchase usa tc_compra', () => {
+    const p = valueEquityLot(arsLot, arsBroker(), { 'GGAL.BA': 12_000 }, TCB, TCB, 'purchase')
+    expect(p.investedUsd).toBeCloseTo(90_000 / TC1)
   })
 })
