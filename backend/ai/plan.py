@@ -36,6 +36,7 @@ FEATURE_IDS = {
     "reportes.historicos",          # Meses históricos en Reportes (Free ve teaser último)
     "export.csv",                   # Export CSV de operaciones / posiciones / monthly
     "tax.helper",                   # Tax helper AFIP (próximamente, todavía no construido)
+    "alerts.pct_move",              # Alertas de % sobre la cartera ("cae/sube X%") — Plus+
 }
 
 # Límites + accesos por tier.
@@ -46,6 +47,7 @@ PLAN_LIMITS = {
         "brokers_max": 1,
         "insights_diagnostic_visible": 3,
         "behavioral_tags_visible": 3,
+        "alerts_max": 3,                           # solo precio objetivo (pct_move = Plus+)
         "can_access": {
             "ai.followup": False,
             "ai.hub": False,                       # próximamente
@@ -54,6 +56,7 @@ PLAN_LIMITS = {
             "reportes.historicos": False,
             "export.csv": False,
             "tax.helper": False,                   # próximamente (no construido)
+            "alerts.pct_move": False,              # el desbloqueo de funcionalidad = Plus
         },
     },
     # Plus — tier intermedio. Captura users que necesitan multi-broker,
@@ -64,6 +67,7 @@ PLAN_LIMITS = {
         "brokers_max": 3,
         "insights_diagnostic_visible": 6,
         "behavioral_tags_visible": 6,
+        "alerts_max": 25,                          # desbloquea alertas de % sobre la cartera
         "can_access": {
             "ai.followup": False,                  # Pro-only
             "ai.hub": False,                       # Pro-only
@@ -72,12 +76,14 @@ PLAN_LIMITS = {
             "reportes.historicos": True,
             "export.csv": True,
             "tax.helper": False,                   # Pro-only (cuando exista)
+            "alerts.pct_move": True,               # ★ el desbloqueo Free→Plus
         },
     },
     "pro": {
         "brokers_max": None,
         "insights_diagnostic_visible": None,
         "behavioral_tags_visible": None,
+        "alerts_max": None,                        # sin tope (Pro no tiene límites de cantidad)
         "can_access": {
             "ai.followup": True,
             "ai.hub": False,                       # próximamente (todavía no liberado)
@@ -86,12 +92,14 @@ PLAN_LIMITS = {
             "reportes.historicos": True,
             "export.csv": True,
             "tax.helper": False,                   # próximamente (todavía no construido)
+            "alerts.pct_move": True,
         },
     },
     "admin": {
         "brokers_max": None,
         "insights_diagnostic_visible": None,
         "behavioral_tags_visible": None,
+        "alerts_max": None,
         "can_access": {
             "ai.followup": True,
             "ai.hub": True,                        # admin ve todo, incluso flags en desarrollo
@@ -100,6 +108,7 @@ PLAN_LIMITS = {
             "reportes.historicos": True,
             "export.csv": True,
             "tax.helper": True,                    # admin ve todo, incluso si Pro no lo tiene aún
+            "alerts.pct_move": True,
         },
     },
 }
@@ -160,6 +169,40 @@ def check_broker_quota(conn, user_id: int) -> tuple[bool, dict]:
     }
 
 
+def _count_alerts(conn, user_id: int) -> int:
+    """COUNT de alertas del user. Si la tabla `alerts` no existe todavía
+    (DB parcial de un test, o schema viejo pre-migración) → 0 (fail-open)."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM alerts WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return int(row["c"] or 0) if row else 0
+    except Exception:
+        return 0
+
+
+def check_alert_quota(conn, user_id: int) -> tuple[bool, dict]:
+    """¿Puede el user crear una alerta nueva? Mismo patrón que check_broker_quota.
+
+    Free = 3 alertas (solo precio objetivo). Plus = 25 (+ alertas de %).
+    Pro/Admin = sin tope. Grandfather-aware (si ya tiene más que el tope por
+    un downgrade, no puede crear más pero conserva las existentes)."""
+    tier = quota.get_tier(conn, user_id)
+    limits = PLAN_LIMITS.get(tier, PLAN_LIMITS["free"])
+    limit = limits.get("alerts_max")
+
+    current = _count_alerts(conn, user_id)
+
+    if limit is None:
+        return True, {"tier": tier, "current_count": current, "limit": None,
+                      "can_create": True, "grandfather": False}
+    can_create = current < limit
+    return can_create, {
+        "tier": tier, "current_count": current, "limit": limit,
+        "can_create": can_create, "grandfather": current > limit,
+    }
+
+
 def get_plan_features(conn, user_id: int) -> dict:
     """Resuelve TODOS los flags + límites del tier del user para el frontend.
 
@@ -181,6 +224,10 @@ def get_plan_features(conn, user_id: int) -> dict:
     brokers_max = limits["brokers_max"]
     brokers_can_create = brokers_max is None or current_brokers < brokers_max
 
+    alerts_max = limits.get("alerts_max")
+    current_alerts = _count_alerts(conn, user_id)
+    alerts_can_create = alerts_max is None or current_alerts < alerts_max
+
     return {
         "tier": tier,
         "limits": {
@@ -190,6 +237,9 @@ def get_plan_features(conn, user_id: int) -> dict:
             "brokers_grandfather": brokers_max is not None and current_brokers > brokers_max,
             "insights_diagnostic_visible": limits["insights_diagnostic_visible"],
             "behavioral_tags_visible": limits["behavioral_tags_visible"],
+            "alerts_max": alerts_max,
+            "alerts_current": current_alerts,
+            "alerts_can_create": alerts_can_create,
         },
         "access": dict(limits["can_access"]),
     }

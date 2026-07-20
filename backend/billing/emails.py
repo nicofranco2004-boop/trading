@@ -559,6 +559,34 @@ def send_welcome_free(*, to: str, user_name: str) -> bool:
                  from_addr=_from_support())
 
 
+def send_alert_email(*, to: str, user_name: str = "", heading: str,
+                     detail: str, cta_path: str = "/config?tab=notificaciones") -> bool:
+    """Email transaccional de una alerta de precio disparada.
+
+    `heading` = título corto (ej. 'MSFT tocó US$200') — también es el asunto.
+    `detail` = línea explicativa. No-reply (es automático, no soporte)."""
+    name = (user_name or "").strip()
+    hi = f"Hola {name}, " if name else ""
+    url = f"{APP_URL}{cta_path}"
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{html.escape(heading)}</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
+        {hi}{html.escape(detail)}
+      </p>
+      <div style="text-align:center;margin:24px 0;">
+        <a href="{url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
+          Ver en Rendi
+        </a>
+      </div>
+      <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:16px 0 0;">
+        Recibís este aviso porque configuraste una alerta en Rendi. Podés editarla o
+        apagarla desde Configuración › Notificaciones.
+      </p>
+    """
+    text = f"{heading}\n\n{hi}{detail}\n\nVer en Rendi: {url}\n\n— Rendi"
+    return _send(to, heading, _wrap_html(body_html), text, from_addr=_from_noreply())
+
+
 def send_reengagement(*, to: str, user_name: str = "") -> bool:
     """Re-engagement para usuarios verificados que se registraron pero casi no
     cargaron nada (≤1 operación). Tono lite, sin presión. Replies → soporte@.

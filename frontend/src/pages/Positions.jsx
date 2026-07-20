@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
+import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff, Bell } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -485,6 +485,17 @@ function PositionsDesktop() {
       entry_date: today(),
     })
     setModal('add')
+  }
+
+  // "Crear alerta" desde el menú de la posición → abre Config › Notificaciones con
+  // el ticker precargado en su RIEL (.BA/ARS para CEDEARs y brokers AR·USD, pelado/
+  // USD para el resto), espejo de la lógica de valuación (priceSymbol).
+  function openAlertForPosition(p) {
+    if (!p || p.is_cash) return
+    const arsRail = costInPesos(p) || p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)
+    const sym = priceSymbol(p.asset, arsRail, p.asset_type)
+    const ccy = arsRail ? 'ARS' : 'USD'
+    navigate(`/config?tab=notificaciones&new=${encodeURIComponent(sym)}&ccy=${ccy}`)
   }
 
   // Callback del AddPositionFlow cuando el user selecciona un ticker. Trae el
@@ -1640,7 +1651,7 @@ function PositionsDesktop() {
                                   subtitle={`${p.asset} · ${p.broker}`}
                                 />
                               )}
-                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openBuy: openBuyForPosition, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
+                              <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openBuy: openBuyForPosition, openSell, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                             </div>
                           </td>
                         </tr>
@@ -1838,7 +1849,7 @@ function PositionsDesktop() {
                                 subtitle={`${p.asset} · ${p.broker}`}
                               />
                             )}
-                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openBuy: openBuyForPosition, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
+                            <ActionMenu items={buildPositionMenu(p, { openEdit, openAdd, openBuy: openBuyForPosition, openSell, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                           </div>
                         </td>
                       </tr>
@@ -2478,7 +2489,7 @@ function sortBrokersForDisplay(brokers) {
   return out
 }
 
-function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
+function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, openAlert, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
   // Fila AGREGADA (varios lotes del mismo ticker): editar/eliminar son POR LOTE
   // (la posición agregada es sintética, no un registro real — no hay un único id
   // que editar, y promediar rompería el costo FIFO y las fechas de compra).
@@ -2488,6 +2499,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, del, openC
     return [
       { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
       { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
+      { label: 'Crear alerta',    icon: <Bell size={13} />,         onClick: () => openAlert(p) },
       { divider: true },
       // Un solo control de lotes: expande (donde se edita/elimina cada lote) y,
       // ya desplegado, colapsa. Sin "Ver lotes" aparte (era redundante).
@@ -2526,6 +2538,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, del, openC
       { divider: true },
       { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
       { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
+      { label: 'Crear alerta',    icon: <Bell size={13} />,         onClick: () => openAlert(p) },
       { divider: true },
       { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
       { label: 'Eliminar',        icon: <Trash2 size={13} />,       onClick: () => del(p.id), danger: true },
@@ -2534,6 +2547,7 @@ function buildPositionMenu(p, { openEdit, openAdd, openBuy, openSell, del, openC
   return [
     { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
     { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
+    { label: 'Crear alerta',    icon: <Bell size={13} />,         onClick: () => openAlert(p) },
     { divider: true },
     { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
     { label: 'Eliminar',        icon: <Trash2 size={13} />,       onClick: () => del(p.id), danger: true },

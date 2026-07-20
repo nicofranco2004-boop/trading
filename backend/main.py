@@ -1050,6 +1050,60 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
     """)
 
+    # ─── Alertas personalizadas (precio objetivo + % de movimiento) ───────────
+    # Dos tipos:
+    #   • price_target: avisar cuando `symbol` cruza `threshold` en `direction`
+    #     (above/below). El símbolo se guarda en su RIEL (ej. 'MSFT.BA' → ARS,
+    #     'MSFT' → USD); `currency` desambigua para el display.
+    #   • pct_move: avisar cuando un activo se mueve `threshold`% vs `baseline`
+    #     (prev_close por ahora). `scope='holdings'` (symbol NULL) evalúa TODAS
+    #     las tenencias del user; `scope='ticker'` un símbolo puntual.
+    #
+    # `armed` = estado del edge-trigger: la alerta dispara SOLO en el cruce
+    # (armed=1 → 0), no mientras el precio sigue del lado disparado. `repeat`
+    # decide el re-armado: 'once' (queda inactiva), 'daily' (se re-arma al día
+    # siguiente), 'always' (se re-arma al cruzar de vuelta). `cooldown_min`
+    # evita re-disparos ruidosos. NUNCA se dispara con precio stale/None.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move'
+            symbol TEXT,                        -- riel-aware; NULL = todas las tenencias
+            scope TEXT NOT NULL DEFAULT 'ticker',-- 'ticker' | 'holdings'
+            direction TEXT NOT NULL DEFAULT 'either', -- 'above' | 'below' | 'either'
+            threshold REAL NOT NULL,            -- precio objetivo o % (10, -5)
+            currency TEXT,                      -- 'ARS' | 'USD' (riel del umbral)
+            baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close'|'cost'|'set_price'
+            channel TEXT NOT NULL DEFAULT 'both',-- 'push' | 'email' | 'both'
+            repeat TEXT NOT NULL DEFAULT 'once',-- 'once' | 'daily' | 'always'
+            cooldown_min INTEGER NOT NULL DEFAULT 360,
+            armed INTEGER NOT NULL DEFAULT 1,   -- edge-trigger state
+            active INTEGER NOT NULL DEFAULT 1,
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            last_evaluated_at TEXT,
+            last_fired_at TEXT,
+            last_fired_price REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
+        CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
+
+        CREATE TABLE IF NOT EXISTS alert_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            symbol TEXT,
+            fired_at TEXT DEFAULT (datetime('now')),
+            price REAL,
+            message TEXT,
+            delivered_push INTEGER NOT NULL DEFAULT 0,
+            delivered_email INTEGER NOT NULL DEFAULT 0,
+            seen INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_alert_events_user ON alert_events(user_id, fired_at DESC);
+    """)
+
     # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
     # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
     #   Mismo packet → mismo análisis durante 24h, sin nuevo call a LLM.
@@ -23442,6 +23496,251 @@ def watchlist_remove(symbol: str, uid: int = Depends(get_current_user)):
                 (uid, sym),
             )
         return {"ok": True, "symbol": sym}
+    finally:
+        conn.close()
+
+
+# ─── Alertas personalizadas (precio objetivo + % de movimiento) ──────────────
+# CRUD + endpoint de evaluación (lo pega un cron externo cada N min). Ver la
+# lógica del motor en alerts_engine.py y el schema en init_db().
+
+
+class AlertCreateIn(BaseModel):
+    kind: str = Field(..., max_length=20)              # 'price_target' | 'pct_move'
+    symbol: Optional[str] = Field(None, max_length=24)  # requerido si scope='ticker'
+    scope: str = Field('ticker', max_length=12)         # 'ticker' | 'holdings'
+    direction: str = Field('above', max_length=8)       # 'above' | 'below' | 'either'
+    threshold: float = Field(..., gt=0, le=1e12)        # precio objetivo o % (magnitud)
+    currency: Optional[str] = Field(None, max_length=8)  # 'ARS' | 'USD'
+    baseline: str = Field('prev_close', max_length=16)
+    channel: str = Field('both', max_length=8)          # 'push' | 'email' | 'both'
+    repeat: str = Field('once', max_length=8)           # 'once' | 'daily' | 'always'
+    cooldown_min: int = Field(360, ge=0, le=100000)
+    note: Optional[str] = Field(None, max_length=200)
+
+    @field_validator('kind')
+    @classmethod
+    def _v_kind(cls, v):
+        if v not in ('price_target', 'pct_move'):
+            raise ValueError('kind inválido')
+        return v
+
+    @field_validator('scope')
+    @classmethod
+    def _v_scope(cls, v):
+        if v not in ('ticker', 'holdings'):
+            raise ValueError('scope inválido')
+        return v
+
+    @field_validator('direction')
+    @classmethod
+    def _v_dir(cls, v):
+        if v not in ('above', 'below', 'either'):
+            raise ValueError('direction inválido')
+        return v
+
+    @field_validator('channel')
+    @classmethod
+    def _v_chan(cls, v):
+        if v not in ('push', 'email', 'both'):
+            raise ValueError('channel inválido')
+        return v
+
+    @field_validator('repeat')
+    @classmethod
+    def _v_rep(cls, v):
+        if v not in ('once', 'daily', 'always'):
+            raise ValueError('repeat inválido')
+        return v
+
+    @field_validator('symbol')
+    @classmethod
+    def _v_sym(cls, v):
+        if v is None:
+            return None
+        v = v.strip().upper()
+        return v or None
+
+
+class AlertUpdateIn(BaseModel):
+    active: Optional[bool] = None
+    threshold: Optional[float] = Field(None, gt=0, le=1e12)
+    direction: Optional[str] = Field(None, max_length=8)
+    channel: Optional[str] = Field(None, max_length=8)
+    repeat: Optional[str] = Field(None, max_length=8)
+    cooldown_min: Optional[int] = Field(None, ge=0, le=100000)
+    note: Optional[str] = Field(None, max_length=200)
+
+
+def _alert_row_to_dict(r) -> dict:
+    d = dict(r)
+    d["active"] = bool(d.get("active"))
+    d["armed"] = bool(d.get("armed"))
+    return d
+
+
+@app.get("/api/alerts")
+def alerts_list(uid: int = Depends(get_current_user)):
+    """Alertas del user + los últimos disparos (feed in-app)."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM alerts WHERE user_id=? ORDER BY created_at DESC", (uid,)
+        ).fetchall()
+        events = conn.execute(
+            """SELECT id, alert_id, symbol, fired_at, price, message, seen
+                 FROM alert_events WHERE user_id=? ORDER BY fired_at DESC LIMIT 30""",
+            (uid,),
+        ).fetchall()
+        return {
+            "items": [_alert_row_to_dict(r) for r in rows],
+            "events": [dict(e) for e in events],
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/alerts")
+def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
+    """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
+    (pct_move = Plus+). Arma el edge-trigger según el precio actual."""
+    import alerts_engine as _ae
+    from ai import plan as _plan
+    conn = get_db()
+    try:
+        allowed, info = _plan.check_alert_quota(conn, uid)
+        if not allowed:
+            raise HTTPException(403, {
+                "error": "Llegaste al límite de alertas de tu plan.",
+                "quota": info, "upgrade": True})
+        if data.kind == "pct_move" and not _plan.can_access(conn, uid, "alerts.pct_move"):
+            raise HTTPException(403, {
+                "error": "Las alertas de variación (%) son de Rendi Plus.",
+                "feature": "alerts.pct_move", "upgrade": True})
+
+        # Validación cross-field por tipo.
+        symbol = data.symbol
+        currency = data.currency
+        if data.kind == "price_target":
+            if data.scope != "ticker" or not symbol:
+                raise HTTPException(400, "Una alerta de precio necesita un ticker.")
+            if data.direction not in ("above", "below"):
+                raise HTTPException(400, "Dirección inválida para precio objetivo (above/below).")
+            if not currency:
+                currency = "ARS" if symbol.endswith(".BA") else "USD"
+        else:  # pct_move
+            if data.scope == "ticker" and not symbol:
+                raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
+            if data.scope == "holdings":
+                symbol = None
+
+        # Edge-trigger inicial: armamos solo si HOY todavía no está cumplida
+        # (así no dispara al toque de crearla si el precio ya pasó el umbral).
+        armed = 1
+        current_price = None
+        if data.kind == "price_target":
+            current_price = _ae.price_for_alert(symbol)
+            met = _ae.condition_met("price_target", data.direction, data.threshold,
+                                    current_price, None)
+            armed = 0 if met else 1
+
+        cur = conn.execute(
+            """INSERT INTO alerts
+               (user_id, kind, symbol, scope, direction, threshold, currency,
+                baseline, channel, repeat, cooldown_min, armed, active, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+            (uid, data.kind, symbol, data.scope, data.direction, data.threshold,
+             currency, data.baseline, data.channel, data.repeat, data.cooldown_min,
+             armed, data.note),
+        )
+        aid = cur.lastrowid
+        conn.commit()
+        return {"ok": True, "id": aid, "armed": bool(armed),
+                "current_price": current_price}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/alerts/{alert_id}")
+def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_current_user)):
+    """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
+    re-arma el edge-trigger."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM alerts WHERE id=? AND user_id=?", (alert_id, uid)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Alerta no encontrada.")
+        sets, params = [], []
+        for col in ("threshold", "cooldown_min", "note"):
+            val = getattr(data, col)
+            if val is not None:
+                sets.append(f"{col}=?"); params.append(val)
+        for col in ("direction", "channel", "repeat"):
+            val = getattr(data, col)
+            if val is not None:
+                sets.append(f"{col}=?"); params.append(val)
+        if data.active is not None:
+            sets.append("active=?"); params.append(1 if data.active else 0)
+            # Reactivar o editar → re-armar para que vuelva a poder disparar.
+            sets.append("armed=1")
+        elif data.threshold is not None or data.direction is not None:
+            sets.append("armed=1")
+        if not sets:
+            return {"ok": True, "unchanged": True}
+        params.append(alert_id)
+        with conn:
+            conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/alerts/{alert_id}")
+def alerts_delete(alert_id: int, uid: int = Depends(get_current_user)):
+    """Borra una alerta (y sus eventos)."""
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
+            conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
+                         (alert_id, uid))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/alerts/events/seen")
+def alerts_events_seen(uid: int = Depends(get_current_user)):
+    """Marca los eventos de alerta como vistos (apaga el badge in-app)."""
+    conn = get_db()
+    try:
+        with conn:
+            conn.execute("UPDATE alert_events SET seen=1 WHERE user_id=? AND seen=0", (uid,))
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/alerts/evaluate")
+def alerts_evaluate(request: Request):
+    """Evalúa TODAS las alertas activas y dispara las que cruzaron. Lo pega un
+    cron externo cada ~10 min (cron-job.org / UptimeRobot) — el mismo ping
+    despierta la app en Railway. Auth: header X-Cron-Token o ?token= contra
+    ALERTS_CRON_TOKEN. Sin token configurado → 503 (endpoint cerrado)."""
+    expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
+    got = (request.headers.get("x-cron-token")
+           or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+    import alerts_engine as _ae
+    conn = get_db()
+    try:
+        result = _ae.evaluate_alerts(conn)
+        return {"ok": True, **result}
     finally:
         conn.close()
 

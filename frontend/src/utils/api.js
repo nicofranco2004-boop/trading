@@ -244,6 +244,7 @@ export const api = {
   get: (path, opts) => req('GET', path, undefined, opts),
   post: (path, body) => req('POST', path, body),
   put: (path, body) => req('PUT', path, body),
+  patch: (path, body) => req('PATCH', path, body),
   delete: (path, body) => req('DELETE', path, body),
   upload,
   getBlob,
