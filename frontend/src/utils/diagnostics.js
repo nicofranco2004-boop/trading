@@ -845,6 +845,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_cagr',
     category: 'Performance',
     severity: 'info',
+    // GRATIS (no premium): CAGR es tu retorno anualizado — métrica básica de tu
+    // propia cartera. Las ajustadas por riesgo (Sharpe/Sortino/…) sí son Plus.
     generate: ({ proMetrics }) => {
       const c = proMetrics?.cagr
       if (!c || c.cagr == null || !isFinite(c.cagr) || (c.months || 0) < 2) return null
@@ -856,6 +858,7 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_volatility',
     category: 'Riesgo',
     severity: 'info',
+    // GRATIS (no premium): volatilidad = cuánto oscila tu cartera, métrica básica.
     generate: ({ proMetrics }) => {
       const v = proMetrics?.volatility
       if (v == null || !isFinite(v)) return null
@@ -871,6 +874,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_sharpe',
     category: 'Performance',
     severity: 'info',
+    premium: true,
+    lockedLabel: 'Tu Sharpe ratio',
     generate: ({ proMetrics }) => {
       const s = proMetrics?.sharpe
       if (!s || s.sharpe == null || !isFinite(s.sharpe)) return null
@@ -883,6 +888,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_sortino',
     category: 'Performance',
     severity: 'info',
+    premium: true,
+    lockedLabel: 'Tu Sortino ratio',
     generate: ({ proMetrics }) => {
       const s = proMetrics?.sortino
       if (!s || s.sortino == null || !isFinite(s.sortino)) return null
@@ -893,6 +900,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_beta',
     category: 'Riesgo',
     severity: 'info',
+    premium: true,
+    lockedLabel: 'Tu beta vs S&P 500',
     generate: ({ proMetrics }) => {
       const ab = proMetrics?.alphaBeta
       if (!ab || ab.beta == null || !isFinite(ab.beta)) return null
@@ -908,6 +917,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_alpha',
     category: 'Performance',
     severity: 'info',
+    premium: true,
+    lockedLabel: 'Tu alpha vs S&P 500',
     generate: ({ proMetrics }) => {
       const ab = proMetrics?.alphaBeta
       if (!ab || ab.alphaAnnual == null || !isFinite(ab.alphaAnnual)) return null
@@ -920,6 +931,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_info_ratio',
     category: 'Performance',
     severity: 'info',
+    premium: true,
+    lockedLabel: 'Tu Information Ratio',
     generate: ({ proMetrics }) => {
       const ir = proMetrics?.infoRatio
       if (!ir || ir.infoRatio == null || !isFinite(ir.infoRatio)) return null
@@ -930,6 +943,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_calmar',
     category: 'Performance',
     severity: 'info',
+    premium: true,
+    lockedLabel: 'Tu Calmar ratio',
     generate: ({ proMetrics }) => {
       const c = proMetrics?.calmar
       if (!c || c.calmar == null || !isFinite(c.calmar)) return null
@@ -960,7 +975,17 @@ export function selectDiagnostics(data, maxBullets = 5, today = new Date()) {
     let text
     try { text = gen.generate(data) } catch (_) { text = null }
     if (!text) continue
-    fired.push({ id: gen.id, category: gen.category, severity: gen.severity, text })
+    const item = { id: gen.id, category: gen.category, severity: gen.severity, text }
+    // Métricas de riesgo (premium): para Free se muestran como TEASER bloqueado
+    // — solo el título + "desbloqueá con Plus", sin el valor. La tarjeta sigue
+    // en la grilla (y es descartable) → gancho de conversión. Plus+ ve el número.
+    if (gen.premium && data.isFree) {
+      item.locked = true
+      item.lockedLabel = gen.lockedLabel || 'Métrica avanzada'
+      item.unlockTier = 'plus'
+      item.text = item.lockedLabel   // el card usa esto como título; NO expone el valor
+    }
+    fired.push(item)
   }
 
   if (fired.length === 0) return []

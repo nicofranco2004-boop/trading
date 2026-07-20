@@ -27,6 +27,7 @@ def _make_db():
             analyses_count INTEGER DEFAULT 0,
             hub_queries_count INTEGER DEFAULT 0,
             chat_count INTEGER NOT NULL DEFAULT 0,
+            diag_dismiss_count INTEGER NOT NULL DEFAULT 0,
             cost_usd_cents INTEGER DEFAULT 0,
             PRIMARY KEY (user_id, date)
         );
@@ -366,3 +367,67 @@ def test_get_today_usage_aliases_current_usage():
     a = quota.get_today_usage(conn, 2)
     b = quota.get_current_usage(conn, 2)
     assert a == b
+
+
+# ── diag_dismiss (cuota del "No me interesa") ────────────────────────────────
+
+def test_diag_dismiss_usage_shape_free():
+    """Free arranca en 0/2 restantes 2."""
+    conn = _make_db()
+    u = quota.get_current_usage(conn, 2)
+    assert u["diag_dismiss_count"] == 0
+    assert u["diag_dismiss_limit"] == 2
+    assert u["diag_dismiss_remaining"] == 2
+
+
+def test_diag_dismiss_unlimited_for_paid():
+    """plus/pro/admin → limit None, remaining None (ilimitado)."""
+    conn = _make_db()
+    conn.execute("UPDATE users SET tier='plus' WHERE id=2")
+    u = quota.get_current_usage(conn, 2)
+    assert u["diag_dismiss_limit"] is None
+    assert u["diag_dismiss_remaining"] is None
+
+
+def test_reserve_diag_dismiss_free_caps_at_2():
+    """Free: las 2 primeras reservan OK, la 3ª rebota."""
+    conn = _make_db()
+    ok1, u1 = quota.reserve_diag_dismiss(conn, 2)
+    ok2, u2 = quota.reserve_diag_dismiss(conn, 2)
+    ok3, u3 = quota.reserve_diag_dismiss(conn, 2)
+    assert ok1 and ok2
+    assert not ok3                      # cap alcanzado
+    assert u2["diag_dismiss_count"] == 2
+    assert u2["diag_dismiss_remaining"] == 0
+    assert u3["diag_dismiss_count"] == 2  # la 3ª NO incrementó
+
+
+def test_reserve_diag_dismiss_unlimited_never_blocks():
+    """paid: reserva siempre OK y NO descuenta (no ensucia el contador)."""
+    conn = _make_db()
+    conn.execute("UPDATE users SET tier='pro' WHERE id=2")
+    for _ in range(10):
+        ok, u = quota.reserve_diag_dismiss(conn, 2)
+        assert ok
+    assert u["diag_dismiss_count"] == 0   # ilimitado no registra
+
+
+def test_reserve_diag_dismiss_isolates_users():
+    """La cuota de un user no afecta a otro."""
+    conn = _make_db()
+    quota.reserve_diag_dismiss(conn, 2)
+    quota.reserve_diag_dismiss(conn, 2)
+    ok_other, u_other = quota.reserve_diag_dismiss(conn, 3)
+    assert ok_other
+    assert u_other["diag_dismiss_count"] == 1
+
+
+def test_can_diag_dismiss():
+    """can_diag_dismiss refleja el estado sin descontar."""
+    conn = _make_db()
+    allowed, u = quota.can_diag_dismiss(conn, 2)
+    assert allowed and u["diag_dismiss_count"] == 0  # read-only, no incrementa
+    quota.reserve_diag_dismiss(conn, 2)
+    quota.reserve_diag_dismiss(conn, 2)
+    allowed2, _ = quota.can_diag_dismiss(conn, 2)
+    assert not allowed2

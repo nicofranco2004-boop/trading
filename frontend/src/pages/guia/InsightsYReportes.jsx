@@ -53,8 +53,8 @@ export default function InsightsYReportes() {
       </p>
 
       <p>
-        <strong>Free</strong> ve 3 cards (las básicas). <strong>Plus y Pro</strong>{' '}
-        ven las 5 + diagnósticos completos.
+        <strong>Free</strong> ve el diagnóstico completo, con las métricas de riesgo
+        (Sharpe, Sortino, alfa…) bloqueadas. <strong>Plus y Pro</strong> las desbloquean.
       </p>
 
       <h2>Reportes históricos</h2>

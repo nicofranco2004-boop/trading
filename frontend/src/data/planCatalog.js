@@ -18,7 +18,7 @@ export const FREE_FEATURES = {
     { label: 'Dashboard completo con 4 KPIs + curva de evolución' },
     { label: 'Posiciones, Operaciones, Wrapped anual y Objetivos' },
     { label: 'Insights con TWR, benchmarks (S&P, inflación AR, dólar) y drawdown' },
-    { label: '3 observaciones diagnósticas + 3 detectores de comportamiento' },
+    { label: 'Diagnóstico completo + 3 detectores de comportamiento', sub: 'Con CAGR y volatilidad; personalizalo 2×/sem con “No me interesa” (métricas ajustadas por riesgo con Plus)' },
     { label: 'Coach IA con 12 preguntas guiadas (taster)' },
     { label: 'Reportes: vista previa del último mes' },
   ],
@@ -34,9 +34,9 @@ export const FREE_FEATURES = {
 export const PLUS_FEATURES = {
   essentials: [
     { label: 'Todo lo del Free' },
-    { label: 'Diagnóstico de Insights completo con 6 observaciones' },
+    { label: 'Personalizá el diagnóstico sin límite', sub: '“No me interesa” ilimitado (Free: 2/semana)' },
     { label: '6 detectores de comportamiento visibles (de 12 disponibles)' },
-    { label: 'Métricas de riesgo avanzadas (5)', sub: 'Volatilidad, beta, Sharpe, Sortino y CAGR' },
+    { label: 'Métricas de riesgo desbloqueadas', sub: 'Sharpe, Sortino, beta, alfa, Information Ratio y Calmar (en Free se ven bloqueadas; CAGR y volatilidad ya vienen gratis)' },
     { label: 'Distribución por activo desbloqueada' },
     { label: 'Reportes históricos completos (todos los meses)' },
     { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
@@ -47,9 +47,9 @@ export const PLUS_FEATURES = {
     items: [
       'Hasta 3 brokers (3× más)',
       '3× más Chat Coach IA (9 vs 3 /sem)',
-      '6 observaciones de diagnóstico (2× más)',
+      'Personalizá el diagnóstico sin límite (Free: 2/sem)',
+      'Métricas de riesgo desbloqueadas (Sharpe, Sortino, alfa, Calmar…)',
       '6 detectores de comportamiento (2× más)',
-      'Métricas de riesgo: Sharpe, Sortino, volatilidad y más',
       'Reportes históricos + Export CSV',
     ],
   },
@@ -70,8 +70,6 @@ export const PRO_FEATURES = {
     { label: 'Memoria persistente del Coach', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
     { label: 'Brokers ilimitados' },
     { label: '12 detectores de comportamiento completos' },
-    { label: 'Diagnóstico de Insights ilimitado' },
-    { label: 'Métricas exclusivas: Alpha, Information Ratio y Calmar', sub: 'Rendimiento ajustado por riesgo de mercado y drawdown' },
   ],
   diff: {
     title: 'Vs Plus',
@@ -80,7 +78,6 @@ export const PRO_FEATURES = {
       'Chat libre del Coach (vs 12 preguntas guiadas)',
       'IA con causalidad y memoria persistente',
       'Comportamiento completo (12 vs 6) + brokers ilimitados',
-      'Métricas exclusivas: Alpha, Information Ratio y Calmar',
     ],
   },
   quotas: [

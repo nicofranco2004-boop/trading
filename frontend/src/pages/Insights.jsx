@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 import {
@@ -22,13 +22,14 @@ import ArAlternativesVerdict from '../components/ArAlternativesVerdict'
 import Card from '../components/Card'
 import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
-import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
-import { ChevronDown, ChevronUp, Sparkles, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Sparkles, X, Lock } from 'lucide-react'
 import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS } from '../utils/format'
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
+import UpgradeModal from '../components/plan/UpgradeModal'
+import { track } from '../utils/track'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
 import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
@@ -108,35 +109,6 @@ function ctaForCategory(cat) {
   // Fallback genérico en lugar de null — preferible que TODAS las cards
   // tengan CTA visible para mantener la simetría visual del audit.
   return map[cat] || { label: 'Ver detalle', href: '#diagnostico' }
-}
-
-// Balanced picker — toma 1 de cada nivel (urgent / warn / positive) si
-// existen, antes de repetir el mismo nivel. Garantiza variedad visual:
-// el usuario ve 'Riesgo alto + Atención + Insight positivo' en lugar de
-// 3 urgentes seguidas. Si falta algún nivel, rellena con la severidad
-// más alta disponible (round-robin entre los buckets restantes).
-function pickBalancedDiagnosis(diagnosis, n = 3) {
-  const buckets = ['urgent', 'warn', 'positive', 'info'].map(
-    sev => diagnosis.filter(d => d.severity === sev)
-  )
-  const picked = []
-  const seen = new Set()
-  let pass = 0
-  while (picked.length < n) {
-    let added = false
-    for (const bucket of buckets) {
-      if (picked.length >= n) break
-      const item = bucket[pass]
-      if (item && !seen.has(item.id)) {
-        picked.push(item)
-        seen.add(item.id)
-        added = true
-      }
-    }
-    if (!added) break
-    pass++
-  }
-  return picked
 }
 
 export default function Insights({ _embeddedTab }) {
@@ -1688,6 +1660,7 @@ function InsightsDesktop({ _embeddedTab }) {
     globalMonthly,        // meses globales para streak/consistency
     commissionsStats,     // { total, count, avgPerTrade, pctOfGrossWin } — costos de operar
     proMetrics,           // vol/beta/sharpe/sortino/alpha/IR/CAGR/calmar (ex Métricas Pro)
+    isFree: plan.isFree,  // Free ve las métricas BLOQUEADAS (teaser → upsell Plus)
   }, 999)  // pool COMPLETO: la grilla adaptativa rota/reemplaza sobre todos los
            // aplicables; el KPI/featured usan diagnosis.slice(0,12) abajo.
   // Vista capada (12) para el KPI strip y el featured — no cambia su comportamiento.
@@ -2628,31 +2601,20 @@ function diagnosisShortTitle(d) {
   return parts[0] + (parts.length > 1 ? '.' : '')
 }
 
-// ─── DiagnosisSection — Diagnóstico con divulgación progresiva ───────────────
-// (2026-06-12) Reemplaza la grilla densa de hasta 6 cards + toggle "Ver N más"
-// por: 1 hallazgo DESTACADO arriba ("Lo que más importa") + el resto agrupado
-// en 2 secciones colapsables (acordeón), reusando <DiagnosisGrid>/<DiagnosisCard>
-// y el mismo <AccordionSection> del bloque Perfil.
+// ─── DiagnosisSection — Diagnóstico como grilla 3×3 adaptativa ───────────────
+// 1 hallazgo DESTACADO arriba ("Lo que más importa") + grilla 3×3 por SEVERIDAD
+// (3 atención · 3 diagnóstico · 3 positivo), todo abierto, con "No me interesa"
+// por card (reemplazo por-slot + ciclo, ver utils/diagnosticsRotation.js).
 //
 // El array `diagnosis` ya viene priorizado desde selectDiagnostics():
-// SEVERITY_RANK = urgent(0) < warn(1) < positive(2) < info(3), con tie-break
-// estable por día. Es decir: diagnosis[0] es siempre el de mayor prioridad.
+// SEVERITY_RANK = urgent(0) < warn(1) < positive(2) < info(3), tie-break estable
+// por día → diagnosis[0] es el de mayor prioridad. El destacado es el primer
+// urgent/warn (o diagnosis[0] si no hay atención); se EXCLUYE de la grilla.
 //
-// Clasificación atención vs "va bien": el ÚNICO campo de tipo/severidad en la
-// data es `severity` ∈ {urgent, warn, positive, info}. Lo usamos así:
-//   • "Requiere atención" → severity ≠ 'positive' (urgent/warn/info). Abierta
-//     por defecto. Son desvíos/alertas/observaciones neutras a revisar.
-//   • "Lo que va bien"    → severity === 'positive'. Colapsada por defecto.
-//
-// Hallazgo destacado: el primer 'urgent' o 'warn' del orden ya priorizado (=
-// el primer item de atención real). Si no hay ninguno de atención, caemos al
-// primer item del array (diagnosis[0]). Se EXCLUYE de la grilla de abajo para
-// no duplicarlo.
-//
-// Gating: para tier Free (plan limitado) NO mostramos el acordeón completo —
-// conservamos el patrón previo (grilla recortada + BlurredList con CTA upgrade)
-// para no regalar el contenido pago. El acordeón con TODO el detalle es para
-// usuarios con acceso completo (Plus/Pro).
+// Gating (monetización): TODOS los tiers ven la grilla completa. El gancho a
+// Plus ya no es "cuántos diagnósticos ves" sino "cuántas veces personalizás":
+// el "No me interesa" tiene cuota semanal (Free 2/sem, server-side; plus/pro/
+// admin ilimitado). Al agotarla, el dismiss abre el UpgradeModal a Plus.
 // Persistencia del "no me interesa" — en localStorage guardamos DOS cosas por
 // user: (1) `dismissed`, el Set de ids que el user marcó como "no me interesa"
 // (skip-list para elegir reemplazos); (2) `slots`, las ids VISIBLES por tier en
@@ -2691,62 +2653,45 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
   const [state, setState] = useState(() => readDiagState(userKey))
   const { dismissed, slots } = state
   const [collapsed, setCollapsed] = useState(false)  // abierto por defecto
+  // Cuota semanal del "No me interesa" (solo Free). ddUsage = usage del backend
+  // para el hint "N/2 esta semana"; upsell = payload del 429 → UpgradeModal.
+  const [ddUsage, setDdUsage] = useState(null)
+  const [upsell, setUpsell] = useState(null)
+  const inflightRef = useRef(new Set())  // ids con un POST de dismiss en vuelo (anti doble-click)
+  const isFree = !!plan.isFree
+
+  // Free: traer el uso una vez al montar para mostrar el contador restante.
+  useEffect(() => {
+    if (!isFree) return
+    let alive = true
+    api.get('/ai/usage')
+      .then(u => { if (alive) setDdUsage(u) })
+      .catch(() => {})  // el hint es opcional; si falla, no se muestra
+    return () => { alive = false }
+  }, [isFree])
 
   if (!diagnosis || diagnosis.length === 0) return null
 
-  const visibleLimit = plan.limit('insights_diagnostic_visible')
-  const isLimited = !plan.hasFullAccess && typeof visibleLimit === 'number'
+  // Todos los tiers ven la grilla 3×3 completa (antes era Pro/Admin only). El
+  // gancho a Plus ya no es "cuántos diagnósticos ves" sino "cuántas veces podés
+  // personalizarla con No me interesa" (Free 2/sem, Plus+ ilimitado).
 
-  // Hallazgo destacado: primer urgent/warn; si no hay, el primero del pool.
-  const featured = diagnosis.find(d => d.severity === 'urgent' || d.severity === 'warn')
+  // Hallazgo destacado: primer urgent/warn; si no hay, el primero del pool. NO
+  // debería ser una métrica bloqueada (teaser) → preferimos un hallazgo real.
+  const featured = diagnosis.find(d => (d.severity === 'urgent' || d.severity === 'warn') && !d.locked)
+    || diagnosis.find(d => !d.locked)
     || diagnosis[0]
   const rest = diagnosis.filter(d => d.id !== featured.id)
 
-  if (isLimited) {
-    // Free: destacado + grilla recortada + BlurredList (CTA upgrade). Capamos a
-    // los top-12 (como antes del pool completo) para NO cambiar la superficie de
-    // monetización: el "desbloqueá N observaciones" no se infla al pool entero.
-    const restCapped = rest.slice(0, 12)
-    const balanced = pickBalancedDiagnosis(restCapped, 6)
-    const balancedIds = new Set(balanced.map(d => d.id))
-    const allRest = restCapped.filter(d => !balancedIds.has(d.id))
-    const visible = balanced.slice(0, visibleLimit)
-    const hidden = [...balanced.slice(visibleLimit), ...allRest]
-    return (
-      <section id="diagnostico" className="scroll-mt-20 space-y-4">
-        <FeaturedFinding d={featured} />
-        {visible.length > 0 && (
-          <div>
-            <p className="eyebrow mb-3">Más observaciones</p>
-            <DiagnosisGrid items={visible} />
-          </div>
-        )}
-        {hidden.length > 0 && (
-          <LockedSection.BlurredList
-            feature="insights.diagnostic.full"
-            hiddenCount={hidden.length}
-            noun="observaciones"
-            source="insights_diagnostic"
-          >
-            <DiagnosisGrid items={hidden.slice(0, 6)} />
-          </LockedSection.BlurredList>
-        )}
-      </section>
-    )
-  }
-
-  // ── Acceso completo: grilla 3×3 ADAPTATIVA — 3 atención · 3 diagnóstico ·
-  // 3 positivo, todo junto y abierto. "No me interesa" descarta y trae otra del
-  // mismo tier; al agotar el tier, vuelve a la primera (cicla). ──────────────
-  // Descarta la tile `id` del tier y la REEMPLAZA en su lugar (los otros 2 slots
-  // quedan intactos). El reemplazo es el 1er candidato del pool que no esté ya
-  // visible ni descartado; si el tier se agotó, ciclamos (limpiamos sus ids
-  // descartadas) y traemos la 1ª no visible. `rest` es puro de props → seguro en
-  // el updater.
-  const dismiss = (tierKey, id) => {
+  // ── Grilla 3×3 ADAPTATIVA — 3 atención · 3 diagnóstico · 3 positivo, todo
+  // junto y abierto. "No me interesa" descarta y trae otra del mismo tier; al
+  // agotar el tier, vuelve a la primera (cicla). ────────────────────────────
+  // applyDismiss: la rotación LOCAL (reemplaza SOLO la tile tocada; los otros 2
+  // slots quedan intactos). `rest` es puro de props → seguro en el updater.
+  const applyDismiss = (tierKey, id) => {
     setState(prev => {
       const tier = DIAG_TIERS.find(t => t.key === tierKey)
-      const pool = rest.filter(tier.match)      // `rest` es puro de props → seguro en el updater
+      const pool = rest.filter(tier.match)
       const poolIds = pool.map(d => d.id)
       const current = resolveTierShown(pool, poolIds, prev.slots[tierKey], prev.dismissed)
       const { nextShown, nextDismissed } = computeDismiss(pool, poolIds, current, id, prev.dismissed)
@@ -2755,6 +2700,43 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
       writeDiagState(userKey, nextDismissed, nextSlots)
       return { dismissed: nextDismissed, slots: nextSlots }
     })
+  }
+
+  // dismiss: para Free, descuenta la cuota semanal server-side ANTES de rotar.
+  //  - 200 → rota + actualiza el contador.
+  //  - 429 de CUOTA (detail.error === 'diag_dismiss_quota_exceeded') → upsell a
+  //    Plus (no rota).
+  //  - 429 de rate-limit (detail string) → no rota, no modal (respeta el límite).
+  //  - Error de red / 5xx → fail-open (rota igual, no castigamos por conexión).
+  // Paid → rota directo (ilimitado, sin round-trip). Guard anti doble-click: un
+  // 2º click sobre la MISMA tile mientras hay un POST en vuelo se ignora (si no,
+  // gasta 2 de las 2 cuotas semanales por 1 sola rotación).
+  const dismiss = async (tierKey, id) => {
+    if (!isFree) { applyDismiss(tierKey, id); return }
+    const key = `${tierKey}:${id}`
+    if (inflightRef.current.has(key)) return
+    inflightRef.current.add(key)
+    try {
+      const res = await api.post('/diagnostics/dismiss')  // { ok, usage }
+      if (res?.usage) setDdUsage(res.usage)
+      applyDismiss(tierKey, id)
+    } catch (err) {
+      const detail = err?.status === 429 ? err.payload?.detail : null
+      if (detail && typeof detail === 'object' && detail.error === 'diag_dismiss_quota_exceeded') {
+        if (detail.usage) setDdUsage(detail.usage)
+        setUpsell(detail)
+        track('feature_blocked_clicked', {
+          feature: 'insights.diagnostic.dismiss', source: 'insights_diagnostic_dismiss',
+        })
+        // NO rota — la tile queda; el user ve el modal.
+      } else if (err?.status === 429) {
+        // rate-limit (u otro 429 sin payload de cuota) → no rota, no modal.
+      } else {
+        applyDismiss(tierKey, id)  // fail-open ante error de red / 5xx
+      }
+    } finally {
+      inflightRef.current.delete(key)
+    }
   }
 
   const tierRows = DIAG_TIERS.map(tier => {
@@ -2794,6 +2776,14 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
         </button>
         {!collapsed && (
           <div className="px-4 pb-4 space-y-4">
+            {/* Hint de cuota (solo Free): cuántas personalizaciones usó esta
+                semana + gancho a Plus. Solo si hay algún tier rotable (botón). */}
+            {isFree && ddUsage?.diag_dismiss_limit != null && tierRows.some(r => r.canRotate) && (
+              <p className="text-xs text-ink-3">
+                Usaste <span className="text-ink-1 font-medium">{ddUsage.diag_dismiss_count}/{ddUsage.diag_dismiss_limit}</span> personalizaciones (“No me interesa”) esta semana.{' '}
+                <Link to="/planes" className="text-rendi-accent hover:underline">Con Plus, sin límite.</Link>
+              </p>
+            )}
             {tierRows.map(row => (
               <div key={row.key} className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {row.shown.map(d => (
@@ -2808,6 +2798,16 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
           </div>
         )}
       </div>
+      {upsell && (
+        <UpgradeModal
+          title="Personalizá tu diagnóstico sin límite"
+          message={upsell.message}
+          feature="insights.diagnostic.dismiss"
+          source="insights_diagnostic_dismiss"
+          benefits={upsell.upgrade?.benefits}
+          onClose={() => setUpsell(null)}
+        />
+      )}
     </section>
   )
 }
@@ -2867,22 +2867,48 @@ function FeaturedFinding({ d }) {
   )
 }
 
-// Grid de tarjetas accionables (audit pattern). Container con bg-line +
-// gap-px crea los divisores 1px sin pelear con first-child en wraps.
-// Funciona con cualquier número de items: 1, 3, 4, 6...
-function DiagnosisGrid({ items }) {
-  if (!items || items.length === 0) return null
-  return (
-    <div className="bg-bg-2 dark:bg-line border border-line rounded overflow-hidden">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-px">
-        {items.map(d => <DiagnosisCard key={d.id} d={d} />)}
-      </div>
-    </div>
-  )
-}
-
 function DiagnosisCard({ d, onDismiss }) {
   const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
+  // Botón "No me interesa" — compartido entre la card normal y la bloqueada.
+  const dismissBtn = onDismiss ? (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); e.preventDefault(); onDismiss() }}
+      className="self-start inline-flex items-center gap-1 max-w-[calc(100%_-_1.5rem)] mb-2.5 text-[10px] font-medium leading-tight px-2 py-0.5 rounded-sm border border-rendi-accent/30 bg-rendi-accent/10 text-[#1857B8] dark:text-rendi-accent hover:bg-rendi-accent/20 hover:border-rendi-accent/50 transition-colors"
+      title="Ocultar este análisis y mostrar otro del mismo tipo"
+    >
+      <X size={11} strokeWidth={2.25} aria-hidden="true" className="flex-shrink-0" /> No me interesa
+    </button>
+  ) : null
+
+  // Métrica bloqueada (Free): mostramos el TÍTULO + "desbloqueá con Plus", SIN el
+  // valor → teaser de conversión. Sigue siendo descartable ("No me interesa").
+  if (d.locked) {
+    return (
+      <div className="bg-white dark:bg-bg-1 p-5 flex flex-col h-full">
+        {dismissBtn}
+        <div className="flex items-center gap-2 mb-3">
+          <span className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border border-data-violet/30 bg-data-violet/10 text-data-violet">
+            <Lock size={9} strokeWidth={2.5} aria-hidden="true" /> Métrica · Plus
+          </span>
+        </div>
+        <p className="text-sm font-medium leading-snug text-ink-0 mb-2">{d.lockedLabel}</p>
+        <p className="text-xs text-ink-2 leading-relaxed flex-1">
+          Métrica de riesgo avanzada. Desbloqueala con Plus para ver el valor y qué significa para tu cartera.
+        </p>
+        <div className="mt-4">
+          <Link
+            to="/planes"
+            onClick={() => track('feature_blocked_clicked', { feature: 'insights.metric.locked', source: 'insights_metric_locked' })}
+            className="inline-flex items-center gap-1 text-xs font-medium text-data-violet hover:underline"
+          >
+            Desbloqueá con Plus <ArrowRight size={11} strokeWidth={1.75} />
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
   const cta = ctaForCategory(d.category)
   // Parse del text: primera oración = título, resto = contexto.
   // Quitamos markdown bold para que el LLM reciba texto plano limpio.
@@ -2904,21 +2930,10 @@ function DiagnosisCard({ d, onDismiss }) {
       className="h-full"
     >
       <div className="bg-white dark:bg-bg-1 p-5 flex flex-col h-full">
-        {/* "No me interesa" en su PROPIA línea, ARRIBA del badge (como lo pidió
-            el user). En su propia fila nunca compite por ancho con el badge ni
-            se corta en cards angostas (~149px en tablet/laptop con sidebar).
-            Sin uppercase → más angosto; envuelve como último recurso. Tinte de
-            acento + X para que el user lo detecte. */}
-        {onDismiss && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); e.preventDefault(); onDismiss() }}
-            className="self-start inline-flex items-center gap-1 max-w-[calc(100%_-_1.5rem)] mb-2.5 text-[10px] font-medium leading-tight px-2 py-0.5 rounded-sm border border-rendi-accent/30 bg-rendi-accent/10 text-[#1857B8] dark:text-rendi-accent hover:bg-rendi-accent/20 hover:border-rendi-accent/50 transition-colors"
-            title="Ocultar este análisis y mostrar otro del mismo tipo"
-          >
-            <X size={11} strokeWidth={2.25} aria-hidden="true" className="flex-shrink-0" /> No me interesa
-          </button>
-        )}
+        {/* "No me interesa" ARRIBA del badge (dismissBtn compartido). En su
+            propia fila no compite por ancho con el badge ni se corta en cards
+            angostas; reserva la banda del ✦ flotante con max-width. */}
+        {dismissBtn}
         <div className="flex items-center gap-2 mb-3">
           <span className={`text-[10px] font-mono uppercase tracking-[0.12em] px-2 py-0.5 rounded-sm border ${sev.badgeCls}`}>
             {sev.label}

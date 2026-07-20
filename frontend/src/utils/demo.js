@@ -2634,6 +2634,15 @@ function _buildDemoAISummary(rawTicker) {
 // Recibe (method, path) y devuelve la respuesta. null = no hay mock → la
 // llamada real se ejecuta (no debería pasar pero por defensa).
 
+// Contador de "No me interesa" del demo (cuota Free 2/sem). El frontend solo
+// pega al endpoint para Free; este contador simula el server. Se resetea al
+// recargar la página.
+let _demoDiagDismissCount = 0
+
+// Estado del badge de alertas en el demo: arranca con 1 evento SIN VER (para
+// mostrar el puntito violeta del sidebar); al entrar a /alertas se marca visto.
+let _demoAlertsSeen = false
+
 export function handleDemoRequest(method, path, body) {
   // Normalizar query string fuera del match base
   const [basePath, query] = path.split('?')
@@ -2818,6 +2827,24 @@ export function handleDemoRequest(method, path, body) {
       const year = parseInt(yearStr, 10) || new Date().getFullYear()
       return WRAPPED(year)
     }
+    // ── Alertas — una alerta de precio + un evento disparado (sin ver hasta
+    //    que el user entra a /alertas) para showcasear el badge del sidebar.
+    if (basePath === '/alerts') {
+      const firedAt = new Date(Date.now() - 90 * 60 * 1000)  // hace ~1.5h
+        .toISOString().slice(0, 19).replace('T', ' ')
+      return {
+        items: [
+          { id: 1, kind: 'price_target', symbol: 'AAPL', direction: 'above',
+            threshold: 180, currency: 'USD', active: 1, armed: 0,
+            last_fired_at: firedAt, last_fired_price: 182.5 },
+        ],
+        events: [
+          { id: 1, alert_id: 1, symbol: 'AAPL', fired_at: firedAt, price: 182.5,
+            message: 'AAPL superó tu objetivo de US$180 (llegó a US$182,5)',
+            seen: _demoAlertsSeen ? 1 : 0 },
+        ],
+      }
+    }
     // ── AI v2 endpoints — usage + topics ────────────────────────────────
     if (basePath === '/ai/usage') {
       // En demo simulamos un user "Pro" para que vea respuestas premium
@@ -2839,6 +2866,10 @@ export function handleDemoRequest(method, path, body) {
         hub_queries_count: 0,
         hub_queries_limit: 60,
         hub_queries_remaining: 60,
+        // Pro → "No me interesa" ilimitado (limit/remaining null).
+        diag_dismiss_count: 0,
+        diag_dismiss_limit: null,
+        diag_dismiss_remaining: null,
         resets_on: nextMonday,
         week_starts_on: nextMonday,
       }
@@ -3042,6 +3073,35 @@ export function handleDemoRequest(method, path, body) {
   // Invalidar cache → no-op (los mocks son determinísticos, no hay cache)
   if (method === 'DELETE' && basePath.startsWith('/ai/cache/')) {
     return { deleted: 0 }
+  }
+
+  // Marcar alertas como vistas → apaga el badge del sidebar en el demo.
+  if (method === 'POST' && basePath === '/alerts/events/seen') {
+    _demoAlertsSeen = true
+    return { ok: true }
+  }
+
+  // "No me interesa" del diagnóstico (cuota Free 2/sem). El frontend solo pega
+  // acá para Free (paid rota local). El demo actual es tier 'pro' → NO se llama
+  // (queda dormido). Si algún día se hace un demo Free, este mock simula la
+  // cuota: 2 OK, la 3ª → 429 con upgrade payload. Contador se resetea al recargar.
+  if (method === 'POST' && basePath === '/diagnostics/dismiss') {
+    _demoDiagDismissCount += 1
+    const limit = 2
+    if (_demoDiagDismissCount > limit) {
+      return { __demoHttpError: { status: 429, payload: { detail: {
+        error: 'diag_dismiss_quota_exceeded',
+        message: `Usaste tus ${limit} personalizaciones del diagnóstico de esta semana. Con Plus las descartás sin límite.`,
+        usage: { tier: 'free', diag_dismiss_count: limit, diag_dismiss_limit: limit, diag_dismiss_remaining: 0 },
+        upgrade: { available: true, current_tier: 'free', target_tier: 'plus', resets_on: null, benefits: [
+          'Personalizá tu diagnóstico sin límite (descartá lo que no te sirve)',
+          'Hasta 3 brokers (vs 1 en Free)',
+          'Reportes históricos + Export CSV',
+          '3× más Chat con el Coach IA',
+        ] },
+      } } } }
+    }
+    return { ok: true, usage: { tier: 'free', diag_dismiss_count: _demoDiagDismissCount, diag_dismiss_limit: limit, diag_dismiss_remaining: limit - _demoDiagDismissCount } }
   }
 
   // Default: 200 ok silencioso para no romper handlers no mapeados

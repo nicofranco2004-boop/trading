@@ -72,6 +72,10 @@ LIMITS = {
         # (whitelist en el endpoint /api/ai/chat). No pueden tipear libre.
         # Free=3 (taster — engancha pero empuja a upgrade), Plus=9 (3× Free).
         "chat_per_week": 3,
+        # diag_dismiss_per_week: cuántos "No me interesa" del diagnóstico puede
+        # descartar por ventana 7d. Free ve la grilla completa pero puede
+        # personalizarla solo 2×/sem → al pasarse, upsell a Plus. None = ∞.
+        "diag_dismiss_per_week": 2,
     },
     # Plus diferencial IA: 3× más chat que Free (9 vs 3). Mismos análisis 6
     # (que se cachean 24h → uso efectivo similar). Plus es upgrade de
@@ -81,6 +85,7 @@ LIMITS = {
         "analyses_per_week": 6,
         "hub_queries_per_week": 0,
         "chat_per_week": 9,             # 3× Free
+        "diag_dismiss_per_week": None,  # ilimitado (el diferencial vs Free)
     },
     "pro": {
         "analyses_per_week": 60,        # 10× Free
@@ -90,11 +95,13 @@ LIMITS = {
         # de la cuota = 16 chats/sem promedio, 40 deja headroom 2.5×.
         # Worst case proyectado: ~$3.50/Pro/mes (chat + analyses + hub).
         "chat_per_week": 40,
+        "diag_dismiss_per_week": None,  # ilimitado
     },
     "admin": {
         "analyses_per_week": 1000,
         "hub_queries_per_week": 1000,
         "chat_per_week": 1000,
+        "diag_dismiss_per_week": None,  # ilimitado
     },
 }
 
@@ -194,21 +201,26 @@ def get_current_usage(conn, user_id: int) -> dict:
 
     # SQL hace el cálculo de resets_on directamente con date(MIN(date), '+7 days')
     # para evitar dependencias del módulo `date` de Python (más limpio + testeable).
-    # COALESCE(chat_count, 0) defensa por si la columna no existe aún en DBs
-    # legacy que no corrieron migración (init_db lo agrega en el próximo boot).
+    # COALESCE(SUM(col), 0) convierte el NULL del SUM sobre 0 filas en 0 (NO
+    # protege de una columna inexistente — eso falla al preparar el SELECT). Las
+    # columnas chat_count/diag_dismiss_count las garantiza init_db (CREATE + ALTER
+    # al boot) antes de servir requests.
     row = conn.execute(
         """SELECT COALESCE(SUM(analyses_count), 0) AS a,
                   COALESCE(SUM(hub_queries_count), 0) AS h,
                   COALESCE(SUM(chat_count), 0) AS c,
+                  COALESCE(SUM(diag_dismiss_count), 0) AS d,
                   date(MIN(date), '+7 days') AS resets_on
              FROM ai_usage_daily
             WHERE user_id = ? AND date >= ?
-              AND (analyses_count > 0 OR hub_queries_count > 0 OR chat_count > 0)""",
+              AND (analyses_count > 0 OR hub_queries_count > 0 OR chat_count > 0
+                   OR diag_dismiss_count > 0)""",
         (user_id, window_start.isoformat()),
     ).fetchone()
     analyses = int(row["a"] or 0) if row else 0
     hub = int(row["h"] or 0) if row else 0
     chat = int(row["c"] or 0) if row else 0
+    diag_dismiss = int(row["d"] or 0) if row else 0
     resets_on = row["resets_on"] if row else None
 
     tier = get_tier(conn, user_id)
@@ -216,6 +228,8 @@ def get_current_usage(conn, user_id: int) -> dict:
     a_limit = limits["analyses_per_week"]
     h_limit = limits["hub_queries_per_week"]
     c_limit = limits.get("chat_per_week", 0)
+    # diag_dismiss_per_week puede ser None (ilimitado en plus/pro/admin).
+    dd_limit = limits.get("diag_dismiss_per_week")
 
     return {
         "tier": tier,
@@ -229,6 +243,9 @@ def get_current_usage(conn, user_id: int) -> dict:
         "chat_count": chat,
         "chat_limit": c_limit,
         "chat_remaining": max(0, c_limit - chat),
+        "diag_dismiss_count": diag_dismiss,
+        "diag_dismiss_limit": dd_limit,  # None = ilimitado
+        "diag_dismiss_remaining": None if dd_limit is None else max(0, dd_limit - diag_dismiss),
         "resets_on": resets_on,
         "window_starts_on": window_start.isoformat(),
         # Alias back-compat para callers viejos.
@@ -366,3 +383,44 @@ def record_chat_cost(conn, user_id: int, cost_usd_cents: int = 0) -> None:
                  cost_usd_cents = cost_usd_cents + excluded.cost_usd_cents""",
             (user_id, today, cost_usd_cents),
         )
+
+
+def can_diag_dismiss(conn, user_id: int) -> tuple[bool, dict]:
+    """(allowed, usage) para el "No me interesa" del diagnóstico. Ilimitado
+    (remaining None) → siempre True."""
+    usage = get_current_usage(conn, user_id)
+    rem = usage["diag_dismiss_remaining"]
+    return (rem is None or rem > 0), usage
+
+
+def reserve_diag_dismiss(conn, user_id: int) -> tuple[bool, dict]:
+    """Reserva ATÓMICA de 1 "No me interesa" del diagnóstico (mismo patrón que
+    reserve_chat, sin refund — no hay LLM detrás, la acción es instantánea).
+
+    Tiers con límite None (plus/pro/admin) → siempre permitido, no descuenta.
+    Free (cap 2/sem) → conteo + incremento en UN statement (el WHERE re-verifica
+    el cap dentro de la transacción serializada de SQLite → sin race).
+
+    Devuelve (ok, usage). ok=False → el endpoint responde 429 con upgrade payload.
+    """
+    tier = get_tier(conn, user_id)
+    limit = LIMITS[tier].get("diag_dismiss_per_week")
+    if limit is None:  # ilimitado
+        return True, get_current_usage(conn, user_id)
+    today = date.today()
+    window_start = _window_start(today).isoformat()
+    with conn:
+        cur = conn.execute(
+            """INSERT INTO ai_usage_daily (user_id, date, diag_dismiss_count, cost_usd_cents)
+               SELECT ?, ?, 1, 0
+                WHERE (SELECT COALESCE(SUM(diag_dismiss_count), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 diag_dismiss_count = diag_dismiss_count + 1
+               WHERE (SELECT COALESCE(SUM(diag_dismiss_count), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?""",
+            (user_id, today.isoformat(), user_id, window_start, limit,
+             user_id, window_start, limit),
+        )
+        ok = cur.rowcount > 0
+    return ok, get_current_usage(conn, user_id)

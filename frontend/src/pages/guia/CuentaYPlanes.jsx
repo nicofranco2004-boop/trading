@@ -45,7 +45,7 @@ export default function CuentaYPlanes() {
         <li>1 broker.</li>
         <li>Dashboard completo + 4 KPIs + curva de evolución.</li>
         <li>Posiciones, Operaciones, Wrapped anual, Objetivos.</li>
-        <li>3 cards de Insights (las básicas).</li>
+        <li>Diagnóstico completo (con CAGR y volatilidad; las métricas ajustadas por riesgo —Sharpe, Sortino…— con Plus); personalizalo 2×/semana con “No me interesa”.</li>
         <li>3 detectores de comportamiento.</li>
         <li>6 análisis IA + 3 chat por semana (Coach IA limitado a 12 preguntas guiadas).</li>
         <li>Reportes: solo último mes.</li>
@@ -55,7 +55,7 @@ export default function CuentaYPlanes() {
       <ul>
         <li>Todo lo de Free.</li>
         <li>Hasta 3 brokers.</li>
-        <li>Insights completo: 6 observaciones, distribución por activo desbloqueada.</li>
+        <li>Métricas de riesgo desbloqueadas (Sharpe, Sortino, alfa, Calmar…) + personalización ilimitada del diagnóstico; distribución por activo.</li>
         <li>6 detectores de comportamiento visibles.</li>
         <li>Reportes históricos completos (todos los meses).</li>
         <li>Export CSV consolidado para tu contador.</li>
@@ -72,7 +72,6 @@ export default function CuentaYPlanes() {
         <li>Follow-ups: profundizá cualquier análisis.</li>
         <li>Memoria persistente del Coach: los hechos que aclarás se respetan entre sesiones.</li>
         <li>12 detectores de comportamiento completos.</li>
-        <li>Diagnóstico de Insights ilimitado.</li>
       </ul>
 
       <p>

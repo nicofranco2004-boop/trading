@@ -5,6 +5,7 @@ import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
 import { PrivacyProvider } from './contexts/PrivacyContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
+import { AlertsProvider } from './contexts/AlertsContext'
 import Sidebar from './components/Sidebar'
 import { PageSkeleton } from './components/Skeleton'
 import MobileTabBar from './components/mobile/MobileTabBar'
@@ -276,7 +277,7 @@ function Layout() {
   // montado mientras carga el chunk de la nueva ruta. Sin parpadeo en la nav.
   if (isMobile) {
     return (
-      <>
+      <AlertsProvider>
         <MobileTopBar />
         <main className="min-h-screen">
           <DemoBanner />
@@ -286,13 +287,16 @@ function Layout() {
         </main>
         <MobileTabBar />
         <SupportWhatsAppFab />
-      </>
+      </AlertsProvider>
     )
   }
 
   // ─── Desktop shell ─────────────────────────────────────────────────────
+  // AlertsProvider envuelve el shell autenticado → el Sidebar lee unseenCount
+  // para el badge y /alertas lo marca visto. Sólo para usuarios logueados
+  // (queda tras el gate `if (!user)`), así useAlerts nunca fetchea sin sesión.
   return (
-    <>
+    <AlertsProvider>
       <Sidebar />
       {/* main content shifteado dinámicamente por --sidebar-w
           (la sidebar setea esta CSS var según expandida/colapsada) */}
@@ -306,7 +310,7 @@ function Layout() {
         </Suspense>
       </main>
       <SupportWhatsAppFab />
-    </>
+    </AlertsProvider>
   )
 }
 
