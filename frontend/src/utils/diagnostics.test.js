@@ -565,6 +565,38 @@ describe('generadores de métricas (proMetrics)', () => {
     expect(ids).toContain('metric_sharpe')
     expect(ids).toContain('metric_volatility')
   })
+
+  it('las 8 métricas están marcadas premium con lockedLabel', () => {
+    for (const id of ['metric_cagr','metric_volatility','metric_sharpe','metric_sortino','metric_beta','metric_alpha','metric_info_ratio','metric_calmar']) {
+      expect(gen(id).premium).toBe(true)
+      expect(typeof gen(id).lockedLabel).toBe('string')
+    }
+  })
+
+  it('isFree=true → métricas BLOQUEADAS: título sin valor + unlockTier plus', () => {
+    const fired = selectDiagnostics({ proMetrics: full, isFree: true }, 999)
+    const sharpe = fired.find(f => f.id === 'metric_sharpe')
+    expect(sharpe.locked).toBe(true)
+    expect(sharpe.unlockTier).toBe('plus')
+    expect(sharpe.lockedLabel).toBe('Tu Sharpe ratio')
+    expect(sharpe.text).toBe('Tu Sharpe ratio')  // el card usa esto como título
+    expect(sharpe.text).not.toMatch(/\d/)          // NO expone el valor
+  })
+
+  it('isFree=false → métricas normales con valor, sin locked', () => {
+    const fired = selectDiagnostics({ proMetrics: full, isFree: false }, 999)
+    const sharpe = fired.find(f => f.id === 'metric_sharpe')
+    expect(sharpe.locked).toBeUndefined()
+    expect(sharpe.text).toMatch(/Sharpe ratio es/)
+    expect(sharpe.text).toMatch(/1\.40/)
+  })
+
+  it('los diagnósticos NO-premium nunca se bloquean, aunque sea Free', () => {
+    const fired = selectDiagnostics({ proMetrics: full, isFree: true }, 999)
+    for (const f of fired) {
+      if (!f.id.startsWith('metric_')) expect(f.locked).toBeFalsy()
+    }
+  })
 })
 
 // Regresión: los generadores de drawdown leían `drawdown.maxPct`, pero el objeto

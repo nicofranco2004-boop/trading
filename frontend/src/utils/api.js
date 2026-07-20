@@ -35,6 +35,15 @@ async function req(method, path, body, opts) {
         err.demoBlocked = true
         throw err
       }
+      // Error HTTP simulado (ej. 429 de cuota) — mismo shape que buildHttpError
+      // (err.status + err.payload) para que los callers lo traten como el real.
+      if (mock && mock.__demoHttpError) {
+        const e = mock.__demoHttpError
+        const err = new Error(e.message || `HTTP ${e.status}`)
+        err.status = e.status
+        err.payload = e.payload
+        throw err
+      }
       return mock
     }
   }
