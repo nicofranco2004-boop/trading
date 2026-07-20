@@ -5,8 +5,9 @@
 // Alertas e Importar (acciones a mano, no escondidas). Rendi AI arriba; utilidades
 // (Guía / Config / Recomendaciones) + cuenta abajo.
 //
-// Dos estados de ancho (igual que antes):
-// • Expandida (220px): acordeón con labels.
+// Espaciado GENEROSO a propósito (filas altas, texto grande): llena el alto y
+// evita el vacío negro. Dos estados de ancho:
+// • Expandida (248px): acordeón con labels.
 // • Colapsada (56px): íconos planos de cada destino (el acordeón no aplica).
 //   Preferencia persistida en localStorage.
 //
@@ -27,7 +28,7 @@ import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { prefetchRoute } from '../utils/routePrefetch'
 import RecommendationsModal from './RecommendationsModal'
 
-const SIDEBAR_W_EXPANDED = '220px'
+const SIDEBAR_W_EXPANDED = '248px'
 const SIDEBAR_W_COLLAPSED = '56px'
 const LS_KEY = 'rendi_sidebar_collapsed'
 
@@ -102,14 +103,14 @@ export default function Sidebar() {
     )
   }, [collapsed])
 
-  // Clases compartidas de una fila-link con ícono (colapsada o utilidad).
+  // Clases de una fila-link con ícono (colapsada / utilidad). Generosa.
   const rowCls = ({ isActive }) =>
-    `relative flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
+    `relative flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[13.5px] font-medium transition-colors ${
       isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
     }`
 
   const ActiveBar = () => (
-    <span aria-hidden className="absolute left-0 top-1 bottom-1 w-0.5 bg-data-violet rounded-full" />
+    <span aria-hidden className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-data-violet rounded-full" />
   )
 
   return (
@@ -130,42 +131,42 @@ export default function Sidebar() {
           title={collapsed ? 'Expandir menú' : 'Colapsar menú'}
           aria-label={collapsed ? 'Expandir menú' : 'Colapsar menú'}
         >
-          <Menu size={14} strokeWidth={1.75} aria-hidden="true" />
+          <Menu size={15} strokeWidth={1.75} aria-hidden="true" />
         </button>
       </div>
 
       {/* Navegación */}
-      <nav className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-2">
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden py-5 px-2.5">
         {/* Rendi AI — botón especial que abre drawer (no navega). */}
-        <div className="mb-3">
+        <div className="mb-6">
           {!collapsed && (
-            <p className="px-2.5 mb-1 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">Asistente</p>
+            <p className="px-3 mb-2 font-mono text-[11px] uppercase tracking-label text-ink-2 font-medium">Asistente</p>
           )}
           <button
             type="button"
             onClick={() => coachDrawer.open()}
             title={collapsed ? 'Rendi AI' : undefined}
-            className={`relative w-full flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors text-data-violet hover:bg-data-violet/10`}
+            className={`relative w-full flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[14.5px] font-medium transition-colors text-data-violet hover:bg-data-violet/10`}
           >
-            <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
+            <Sparkles size={18} strokeWidth={1.75} aria-hidden="true" />
             {!collapsed && <span>Rendi AI</span>}
           </button>
         </div>
 
         {collapsed ? (
           /* ── Colapsada: íconos planos de cada destino (sin acordeón) ── */
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             {ALL_LEAVES.map(({ to, label, icon: Icon }) => (
               <NavLink key={to} to={to} end={to === '/'} title={label}
                 onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
                 className={rowCls}>
-                {({ isActive }) => (<><Icon size={14} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}</>)}
+                {({ isActive }) => (<><Icon size={16} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}</>)}
               </NavLink>
             ))}
           </div>
         ) : (
           /* ── Expandida: 3 secciones acordeón ── */
-          <div className="space-y-1">
+          <div className="space-y-3">
             {GROUPS.map((group) => {
               const isOpen = openGroup === group.id
               const GroupIcon = group.icon
@@ -175,26 +176,26 @@ export default function Sidebar() {
                     type="button"
                     onClick={() => setOpenGroup(o => (o === group.id ? null : group.id))}
                     aria-expanded={isOpen}
-                    className={`w-full flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-sm text-sm font-semibold transition-colors ${
+                    className={`w-full flex items-center gap-3 pl-3 pr-2.5 py-3.5 rounded-md text-[15px] font-semibold transition-colors ${
                       isOpen ? 'text-ink-0' : 'text-ink-1 hover:text-ink-0 hover:bg-bg-1'
                     }`}
                   >
-                    <GroupIcon size={15} strokeWidth={1.75} aria-hidden="true"
+                    <GroupIcon size={18} strokeWidth={1.75} aria-hidden="true"
                       className={isOpen ? 'text-data-violet' : 'text-ink-2'} />
                     <span className="flex-1 text-left">{group.label}</span>
-                    <ChevronRight size={14} strokeWidth={2}
+                    <ChevronRight size={16} strokeWidth={2}
                       className={`text-ink-3 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
                   </button>
-                  <div className={`overflow-hidden transition-all duration-200 ease-out ${isOpen ? 'max-h-40 opacity-100' : 'max-h-0 opacity-0'}`}>
-                    <div className="pt-0.5 pb-1 space-y-0.5">
+                  <div className={`overflow-hidden transition-all duration-200 ease-out ${isOpen ? 'max-h-60 opacity-100' : 'max-h-0 opacity-0'}`}>
+                    <div className="pt-1 pb-1.5 space-y-1">
                       {group.items.map(({ to, label, icon: Icon }) => (
                         <NavLink key={to} to={to} end={to === '/'} title={label}
                           onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
                           className={({ isActive }) =>
-                            `relative flex items-center gap-2.5 pl-9 pr-2 py-1.5 rounded-sm text-sm transition-colors ${
+                            `relative flex items-center gap-3 pl-11 pr-2.5 py-2.5 rounded-md text-[14px] transition-colors ${
                               isActive ? 'text-ink-0 bg-bg-2 font-medium' : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
                             }`}>
-                          {({ isActive }) => (<><Icon size={14} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}<span>{label}</span></>)}
+                          {({ isActive }) => (<><Icon size={16} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}<span>{label}</span></>)}
                         </NavLink>
                       ))}
                     </div>
@@ -207,22 +208,22 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer: sueltos (Alertas / Importar) + utilidades + cuenta */}
-      <div className="border-t border-line px-2 py-2 flex-shrink-0">
+      <div className="border-t border-line px-2.5 py-3 flex-shrink-0">
         {/* Sueltos — siempre visibles, tinta más fuerte que las utilidades */}
         {LOOSE.map(({ to, label, icon: Icon, dot }) => (
           <NavLink key={to} to={to} title={collapsed ? label : undefined}
             onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
             className={({ isActive }) =>
-              `relative flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
+              `relative flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[14px] font-medium transition-colors ${
                 isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-1 hover:text-ink-0 hover:bg-bg-1'
               }`}>
             {({ isActive }) => (
               <>
-                <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
+                <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
                 {!collapsed && <span className="flex-1">{label}</span>}
                 {dot && (
                   <span aria-hidden
-                    className={`w-1.5 h-1.5 rounded-full bg-data-violet ${collapsed ? 'absolute top-1.5 right-1.5' : ''}`}
+                    className={`w-2 h-2 rounded-full bg-data-violet ${collapsed ? 'absolute top-1.5 right-1.5' : ''}`}
                     style={collapsed ? undefined : { boxShadow: '0 0 0 3px rgba(139,125,255,0.12)' }} />
                 )}
                 {isActive && <ActiveBar />}
@@ -231,45 +232,45 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
-        <div className="border-t border-line/40 my-1.5 mx-1" aria-hidden="true" />
+        <div className="border-t border-line/40 my-2 mx-1" aria-hidden="true" />
 
         {user?.is_admin && (
           <NavLink to="/admin" title={collapsed ? 'Admin' : undefined} className={rowCls}>
-            {({ isActive }) => (<><Shield size={14} strokeWidth={1.75} aria-hidden="true" />{!collapsed && <span>Admin</span>}{isActive && <ActiveBar />}</>)}
+            {({ isActive }) => (<><Shield size={16} strokeWidth={1.75} aria-hidden="true" />{!collapsed && <span>Admin</span>}{isActive && <ActiveBar />}</>)}
           </NavLink>
         )}
 
         <NavLink to="/guia" title={collapsed ? 'Guía' : undefined}
           onMouseEnter={() => prefetchRoute('/guia')} onFocus={() => prefetchRoute('/guia')}
           className={({ isActive }) =>
-            `flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
+            `flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[13.5px] font-medium transition-colors ${
               isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1 hover:bg-bg-1'
             }`}>
-          <BookOpen size={14} strokeWidth={1.75} aria-hidden="true" />
+          <BookOpen size={16} strokeWidth={1.75} aria-hidden="true" />
           {!collapsed && <span>Guía</span>}
         </NavLink>
 
         <NavLink to="/config" title={collapsed ? 'Configuración' : undefined}
           onMouseEnter={() => prefetchRoute('/config')} onFocus={() => prefetchRoute('/config')}
           className={({ isActive }) =>
-            `flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors ${
+            `flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[13.5px] font-medium transition-colors ${
               isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1 hover:bg-bg-1'
             }`}>
-          <Settings size={14} strokeWidth={1.75} aria-hidden="true" />
+          <Settings size={16} strokeWidth={1.75} aria-hidden="true" />
           {!collapsed && <span>Configuración</span>}
         </NavLink>
 
         <button type="button" onClick={() => setRecomOpen(true)}
           title={collapsed ? 'Recomendaciones' : 'Mandanos una recomendación'}
-          className={`w-full flex items-center gap-2.5 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2'} py-1.5 rounded-sm text-sm font-medium transition-colors text-ink-3 hover:text-data-violet hover:bg-data-violet/[0.06]`}>
-          <MessageCircle size={14} strokeWidth={1.75} aria-hidden="true" />
+          className={`w-full flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[13.5px] font-medium transition-colors text-ink-3 hover:text-data-violet hover:bg-data-violet/[0.06]`}>
+          <MessageCircle size={16} strokeWidth={1.75} aria-hidden="true" />
           {!collapsed && <span>Recomendaciones</span>}
         </button>
 
         {/* User row: nombre + badge de plan (solo expandida) */}
         {user && !collapsed && (
-          <div className="px-1 mt-1 mb-1 flex items-center gap-1.5 min-w-0">
-            <span className="flex-1 text-[11px] text-ink-3 truncate font-mono" title={user.name}>{user.name}</span>
+          <div className="px-1 mt-2 mb-1 flex items-center gap-1.5 min-w-0">
+            <span className="flex-1 text-[11.5px] text-ink-3 truncate font-mono" title={user.name}>{user.name}</span>
             <PlanBadge tier={user.tier} />
           </div>
         )}
@@ -282,12 +283,12 @@ export default function Sidebar() {
           <button onClick={toggle}
             className="p-1.5 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-1 transition-colors"
             title={dark ? 'Modo claro' : 'Modo oscuro'} aria-label={dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}>
-            {dark ? <Sun size={13} strokeWidth={1.75} aria-hidden="true" /> : <Moon size={13} strokeWidth={1.75} aria-hidden="true" />}
+            {dark ? <Sun size={14} strokeWidth={1.75} aria-hidden="true" /> : <Moon size={14} strokeWidth={1.75} aria-hidden="true" />}
           </button>
           <button onClick={logout}
             className="p-1.5 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-1 transition-colors"
             title="Cerrar sesión" aria-label="Cerrar sesión">
-            <LogOut size={13} strokeWidth={1.75} aria-hidden="true" />
+            <LogOut size={14} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
       </div>
