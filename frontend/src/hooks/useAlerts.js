@@ -1,5 +1,5 @@
 // useAlerts — CRUD de alertas personalizadas (precio objetivo + % de movimiento).
-// Fuente: /api/alerts (GET items+events, POST crear, PATCH editar/pausar,
+// Fuente: /alerts (GET items+events, POST crear, PATCH editar/pausar,
 // DELETE borrar). El backend gatea por cantidad (plan) y por capacidad
 // (pct_move = Plus+); create() propaga el error 403 con payload {upgrade} para
 // que la UI muestre el upsell.
@@ -15,7 +15,7 @@ export function useAlerts() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await api.get('/api/alerts')
+      const res = await api.get('/alerts')
       setItems(res.items || [])
       setEvents(res.events || [])
       setError(null)
@@ -29,18 +29,18 @@ export function useAlerts() {
   useEffect(() => { refresh() }, [refresh])
 
   const create = useCallback(async (payload) => {
-    const res = await api.post('/api/alerts', payload)  // throws en 403 (upsell)
+    const res = await api.post('/alerts', payload)  // throws en 403 (upsell)
     await refresh()
     return res
   }, [refresh])
 
   const update = useCallback(async (id, patch) => {
-    await api.patch(`/api/alerts/${id}`, patch)
+    await api.patch(`/alerts/${id}`, patch)
     await refresh()
   }, [refresh])
 
   const remove = useCallback(async (id) => {
-    await api.delete(`/api/alerts/${id}`)
+    await api.delete(`/alerts/${id}`)
     await refresh()
   }, [refresh])
 
