@@ -1067,7 +1067,19 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
 
 
 def _read_tc_blue(conn, uid: int) -> float:
-    """Lee tc_blue de la config del usuario, default 1415.0 si falta o es inválido."""
+    """Blue con el que el persister convierte ARS→USD (cash/monthly_entries) al
+    aplicar un batch. Preferimos el blue LIVE (mismo dolarapi que el display) y
+    solo caemos al config si el caché está frío. Mismo criterio que
+    pipeline._read_user_tc_blue — así el import no depende de un tc_blue guardado
+    que en cuentas viejas quedaba stale (~143 de 2021) e inflaba el 'aportado'
+    ~10× con pérdida fantasma. Late-import de main para evitar circular."""
+    try:
+        import main as _main
+        live = _main._display_blue(conn, uid)
+        if live and float(live) > 0:
+            return float(live)
+    except Exception:
+        pass
     row = conn.execute(
         "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
     ).fetchone()

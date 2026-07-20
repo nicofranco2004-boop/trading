@@ -30,9 +30,26 @@ MAX_ROWS = 10_000
 
 
 def _read_user_tc_blue(conn, uid: int) -> float:
-    """Lee tc_blue de la config del user. Replicado acá (no importado de main.py)
-    para evitar circular dependency entre pipeline ↔ main. Mismo default y
-    fallback que `main._user_tc_blue`."""
+    """Blue con el que se estampa `gross_amount_usd` de los flujos ARS al importar.
+
+    Preferimos el blue LIVE (el MISMO dolarapi que ve el usuario en pantalla) y
+    solo caemos al `tc_blue` guardado en config si el caché live está frío.
+
+    ⚠️ Antes usábamos SOLO el config, que en cuentas viejas quedaba stale (ej.
+    ~143 de 2021, nunca actualizado tras el rail live). Resultado: depósitos en
+    pesos estampados a un dólar ~10× chico → "capital aportado" inflado y pérdida
+    fantasma, aunque el dólar de display fuera correcto (dos fuentes distintas).
+    `_display_blue` ya trae el blue del caché de dolarapi con fallback al config,
+    así que el import queda alineado con el resto de la app. Late-import de main
+    para no romper el circular pipeline ↔ main al nivel de módulo."""
+    try:
+        import main as _main
+        live = _main._display_blue(conn, uid)
+        if live and float(live) > 0:
+            return float(live)
+    except Exception:
+        pass
+    # Fallback (import de main falló / caché frío): tc_blue del config, default 1415.
     row = conn.execute(
         "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
     ).fetchone()
@@ -933,6 +950,10 @@ def load_session_for_confirm(conn, *, uid: int, session_id: str
             quantity=r["quantity"],
             unit_price=r["unit_price"],
             gross_amount=r["gross_amount"],
+            # Fase 4: preservar el USD stamped en el round-trip a la DB. Sin esto
+            # el persister lo veía None y reconvertía a tc_blue runtime (drift, y
+            # con un tc_blue stale → "capital aportado" fantasma). El stamp manda.
+            gross_amount_usd=(r["gross_amount_usd"] if "gross_amount_usd" in r.keys() else None),
             fees=r["fees"] or 0.0,
             taxes=r["taxes"] or 0.0,
             currency=r["currency"],
