@@ -66,7 +66,7 @@ export default function WallbitConnect({ onSynced, onlyWhenConnected = false }) 
   }
 
   return (
-    <div className="mb-4 border border-line rounded bg-bg-1 px-4 py-3.5">
+    <div className="mb-4 border border-line rounded-xl bg-bg-1 px-4 py-3.5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0">
           <h2 className="text-sm font-medium text-ink-1 flex items-center gap-2">

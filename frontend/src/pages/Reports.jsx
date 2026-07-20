@@ -260,7 +260,7 @@ function ReportsFreeTeaser({ yearGroups }) {
 
   return (
     <div className="space-y-3">
-      <div className="border border-line rounded bg-bg-1 overflow-hidden">
+      <div className="border border-line rounded-xl bg-bg-1 overflow-hidden">
         <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
           <div className="flex items-center gap-2">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />

@@ -28,7 +28,7 @@ export default function TopNewsCard() {
   if (!loaded || news.length === 0) return null
 
   return (
-    <div className="bg-white dark:bg-bg-1 border border-line rounded overflow-hidden">
+    <div className="bg-white dark:bg-bg-1 border border-line rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-line bg-bg-2/40 dark:bg-bg-2/40 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Newspaper size={14} strokeWidth={1.75} className="text-rendi-accent" />

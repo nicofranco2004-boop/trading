@@ -212,7 +212,7 @@ export default function FirstInsight() {
       </div>
 
       {/* Valor del portfolio */}
-      <div className="border border-line rounded bg-bg-1 px-6 py-8 mb-4">
+      <div className="border border-line rounded-xl bg-bg-1 px-6 py-8 mb-4">
         <div className="text-xs text-ink-3 mb-1">Valor de tu cartera</div>
         <div className="text-5xl font-medium tabular num text-ink-0 tracking-tight">
           {fmtUsd(stats.value)}

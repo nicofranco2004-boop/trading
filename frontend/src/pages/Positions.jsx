@@ -1211,7 +1211,7 @@ function PositionsDesktop() {
             no existe — ahora el flow vive acá en Posiciones. */}
         <BrokerManager brokers={brokers} onChange={loadAll} />
 
-        <div className="bg-bg-1 border border-line rounded mt-6">
+        <div className="bg-bg-1 border border-line rounded-xl mt-6">
           <EmptyState
             title="Sumá tu primer broker"
             description='Apretá "+ Agregar broker" arriba para empezar. Después vas a poder cargar posiciones, importar CSV o sumar más cuentas.'
@@ -1552,7 +1552,7 @@ function PositionsDesktop() {
         // ── ARS broker ─────────────────────────────────────────────────────
         if (isARS) {
           return (
-            <div key={broker.id} className="bg-bg-1 border border-line rounded overflow-hidden mb-6">
+            <div key={broker.id} className="bg-bg-1 border border-line rounded-xl overflow-hidden mb-6">
               {Header}
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -1767,7 +1767,7 @@ function PositionsDesktop() {
 
         // ── USD broker ─────────────────────────────────────────────────────
         return (
-          <div key={broker.id} className="bg-bg-1 border border-line rounded overflow-hidden mb-6">
+          <div key={broker.id} className="bg-bg-1 border border-line rounded-xl overflow-hidden mb-6">
             {Header}
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -1964,7 +1964,7 @@ function PositionsDesktop() {
           coincidencias). El grupo de Plazos Fijos sigue mostrándose debajo —
           es una clase de activo aparte y no entra en el filtro de posiciones. */}
       {isFiltering && visibleBrokerCount === 0 && (
-        <div className="bg-bg-1 border border-line rounded mb-6">
+        <div className="bg-bg-1 border border-line rounded-xl mb-6">
           <EmptyState
             title="Sin coincidencias"
             description="Ninguna posición coincide con los filtros. Probá limpiar la búsqueda o elegir otro broker."

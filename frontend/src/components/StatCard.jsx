@@ -78,8 +78,8 @@ export default function StatCard({
     : isCell
     ? 'kpi-cell py-2'  // cell con divisor 1px vertical, sin caja
     : isPrimary
-    ? 'bg-bg-1 border border-line rounded p-5 sm:p-6'  // card grande sutil
-    : 'bg-bg-1 border border-line rounded p-3 sm:p-4'  // card chica (legacy)
+    ? 'bg-bg-1 border border-line rounded-xl p-5 sm:p-6'  // card grande sutil
+    : 'bg-bg-1 border border-line rounded-xl p-3 sm:p-4'  // card chica (legacy)
 
   // ─── Label común a todos los tonos ──────────────────────────────────────
   const labelCls = 'label-mono mb-1.5'

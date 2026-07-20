@@ -686,7 +686,7 @@ export default function Dashboard() {
       {/* ══════════════════════════════════════════════════════════════════════
           KPI STRIP V2 — celdas densas mono caps + divisor 1px (audit pattern).
           ══════════════════════════════════════════════════════════════════════ */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap mb-8">
+      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-8">
         <KpiCell
           first
           label="Capital aportado"
@@ -818,7 +818,7 @@ export default function Dashboard() {
           </div>
           {/* Mini-strip compacto (no full-width) con el mismo lenguaje visual que
               el strip de KPIs de arriba — label mono caps + valor text-2xl + %. */}
-          <div className="inline-flex flex-wrap border border-line rounded bg-bg-1">
+          <div className="inline-flex flex-wrap border border-line rounded-xl bg-bg-1">
             {[
               dailyVar && {
                 key: 'd',
@@ -923,16 +923,17 @@ export default function Dashboard() {
                       <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid stroke="#1B2230" strokeOpacity={0.6} strokeDasharray="2 4" vertical={false} />
+                  <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} strokeDasharray="2 4" vertical={false} />
                   <XAxis
                     dataKey="label"
-                    tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    tick={{ fill: '#7C8698', fontSize: 12 }}
                     axisLine={false}
                     tickLine={false}
-                    minTickGap={28}
+                    minTickGap={40}
+                    dy={4}
                   />
                   <YAxis
-                    tick={{ fill: '#8B8D8A', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    tick={{ fill: '#7C8698', fontSize: 12 }}
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={v => {
@@ -951,15 +952,14 @@ export default function Dashboard() {
                   <Tooltip
                     cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
                     contentStyle={{
-                      background: '#101218',
-                      border: '1px solid #2C3142',
-                      borderRadius: 10,
-                      padding: '10px 12px',
-                      boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
-                      fontFamily: 'JetBrains Mono'
+                      background: '#10151F',
+                      border: '1px solid #262E40',
+                      borderRadius: 12,
+                      padding: '10px 14px',
+                      boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)',
                     }}
-                    labelStyle={{ color: '#8B8D8A', fontSize: 10, marginBottom: 6, textTransform: 'font-medium', letterSpacing: '0.12em' }}
-                    itemStyle={{ color: '#F4F4F0', fontSize: 12, padding: '2px 0' }}
+                    labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 5 }}
+                    itemStyle={{ color: '#F4F4F0', fontSize: 12.5, padding: '2px 0' }}
                     formatter={(v, name) => {
                       // Audit fix C1: data ya está en la currency target.
                       // Solo formateamos. Mismo valor que el axis.
@@ -1221,7 +1221,7 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcBlue = 1
   if (items.length === 0) return null
 
   return (
-    <div className="border border-line rounded bg-bg-1 p-4">
+    <div className="border border-line rounded-xl bg-bg-1 p-4">
       <div className="flex items-baseline justify-between mb-3">
         <h3 className="text-sm font-medium text-ink-0">Composición</h3>
         <span className="text-xs text-ink-3">{items.length} {items.length === 1 ? 'activo' : 'activos'}</span>
@@ -1292,7 +1292,7 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcBlue = 1 }) {
   if (top.length === 0) return null
 
   return (
-    <div className="border border-line rounded bg-bg-1 overflow-hidden">
+    <div className="border border-line rounded-xl bg-bg-1 overflow-hidden">
       <header className="flex items-baseline justify-between px-4 py-3 border-b border-line">
         <h3 className="text-sm font-medium text-ink-0">Principales posiciones</h3>
         <span className="text-xs text-ink-3">Top 5 por valor</span>

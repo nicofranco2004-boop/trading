@@ -284,7 +284,7 @@ export default function Events({ embedded = false }) {
       )}
 
       {/* KPI Strip — 3 celdas con divisores. Padding más chico en mobile. */}
-      <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-3 divide-x divide-line">
+      <div className="bg-bg-1 border border-line rounded-xl mb-4 grid grid-cols-3 divide-x divide-line">
         <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} />
       </div>
 
@@ -482,7 +482,7 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
   const maxMetric = Math.max(1e-9, ...buckets.map(metric))
 
   return (
-    <div className="bg-bg-1 border border-line rounded mb-4 p-3 sm:p-4">
+    <div className="bg-bg-1 border border-line rounded-xl mb-4 p-3 sm:p-4">
       <div className="flex items-center justify-between mb-2">
         <p className="label-mono">{useImpact ? 'Distribución · por impacto' : 'Distribución'}</p>
         <p className="text-[12px] text-ink-3 font-medium">
@@ -623,7 +623,7 @@ function formatBucketLabel(date, bucketSize) {
 
 function EventTableSkeleton() {
   return (
-    <div className="bg-bg-1 border border-line rounded overflow-hidden">
+    <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
       <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
         <div className="label-mono">Fecha</div>
         <div className="label-mono">Activo</div>
@@ -658,7 +658,7 @@ function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd, tickerShar
   const groups = useMemo(() => groupByRecency(events), [events])
 
   return (
-    <div className="bg-bg-1 border border-line rounded overflow-hidden">
+    <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
       {/* Header — pinned, label-mono columns */}
       <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px_96px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
         <div className="label-mono">Fecha</div>

@@ -1549,7 +1549,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
         </div>
         <div className="flex flex-wrap gap-1.5">
           {headers.map(h => (
-            <span key={h} className="text-xs bg-white dark:bg-bg-2 border border-line rounded px-2 py-0.5 font-mono">
+            <span key={h} className="text-xs bg-white dark:bg-bg-2 border border-line rounded-xl px-2 py-0.5 font-mono">
               {h}
             </span>
           ))}

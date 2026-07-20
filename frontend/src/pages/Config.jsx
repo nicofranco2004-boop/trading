@@ -412,7 +412,7 @@ export default function Config() {
             Mismo state global que el riel de Cartera/Análisis: cambiarlo acá lo
             cambia en toda la app. */}
         <section>
-          <div className="border border-line rounded bg-bg-1 px-4 py-3.5">
+          <div className="border border-line rounded-xl bg-bg-1 px-4 py-3.5">
             <div className="min-w-0 mb-3">
               <h2 className="text-sm font-medium text-ink-1">Moneda de valuación</h2>
               <p className="text-xs text-ink-3 mt-0.5">
@@ -428,7 +428,7 @@ export default function Config() {
             per-device; espeja el patrón del riel de moneda). Solo afecta la columna
             INV. USD de la Cartera; el valor de mercado siempre va al dólar de hoy. */}
         <section>
-          <div className="border border-line rounded bg-bg-1 px-4 py-3.5">
+          <div className="border border-line rounded-xl bg-bg-1 px-4 py-3.5">
             <div className="min-w-0 mb-3">
               <h2 className="text-sm font-medium text-ink-1">Costo en dólares</h2>
               <p className="text-xs text-ink-3 mt-0.5">
@@ -482,7 +482,7 @@ export default function Config() {
               </button>
             </span>
           </div>
-          <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+          <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
             <FxCell
               first
               label="Blue"

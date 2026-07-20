@@ -4,6 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import {
   PieChart, Pie, Cell, Legend, Tooltip, LineChart, Line,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
+  ComposedChart,
 } from 'recharts'
 import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target, Layers, Clock, Stethoscope, BarChart3, Scale, PiggyBank, Wallet, CircleDollarSign, Building2, BarChart2, UserRound, Droplets } from 'lucide-react'
 import StatCard from '../components/StatCard'
@@ -1862,7 +1863,7 @@ function InsightsDesktop({ _embeddedTab }) {
           title="Insights"
           subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         />
-        <div className="border border-line rounded bg-bg-1 px-6 py-12 text-center max-w-2xl mx-auto">
+        <div className="border border-line rounded-xl bg-bg-1 px-6 py-12 text-center max-w-2xl mx-auto">
           <Activity size={28} strokeWidth={1.5} className="mx-auto mb-3 text-ink-3" />
           <h2 className="text-base font-medium text-ink-0 mb-1.5">Todavía no podemos analizar tu cartera</h2>
           <p className="text-sm text-ink-2 leading-relaxed mb-4 max-w-md mx-auto">
@@ -2029,7 +2030,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
       {/* ── Desde tu última visita — el gancho de retención ─────────────────── */}
       {visitDelta && !visitDelta.isFirstVisit && (
-        <section className="bg-white dark:bg-bg-1 border border-line rounded p-4">
+        <section className="bg-white dark:bg-bg-1 border border-line rounded-xl p-4">
           <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
             <p className="eyebrow">Desde tu última visita</p>
             {visitDelta.sinceLabel && (
@@ -2088,7 +2089,7 @@ function InsightsDesktop({ _embeddedTab }) {
           (era "Por activo" en Distribución, gateada Pro). El cruce por CLASE
           de activo vive ahora en el Perfil del inversor. ──────────────────── */}
       {compositionRows.length > 0 && (
-        <section className="bg-white dark:bg-bg-1 border border-line rounded p-4 sm:p-5">
+        <section className="bg-white dark:bg-bg-1 border border-line rounded-xl p-4 sm:p-5">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <p className="eyebrow">Composición por activo</p>
             <span className="text-xs text-ink-2">
@@ -2127,7 +2128,7 @@ function InsightsDesktop({ _embeddedTab }) {
         params={{ window_days: 365 }}
         subtitle="Tu trayectoria mensual"
       >
-      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+      <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
         <div className="flex items-start justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">
@@ -2218,21 +2219,30 @@ function InsightsDesktop({ _embeddedTab }) {
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={320}>
-            <LineChart data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
-              <CartesianGrid stroke="#1B2230" strokeOpacity={0.6} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} minTickGap={30} />
-              <YAxis tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} />
-              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.6} strokeDasharray="2 4" />
+            {/* Clean pass 2026-07: área con gradiente bajo la línea principal,
+                grilla suave solo horizontal, ejes sans, benchmark punteado,
+                tooltip estilo card. ComposedChart para mezclar Area + Line. */}
+            <ComposedChart data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="portGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#21D07A" stopOpacity={0.20} />
+                  <stop offset="100%" stopColor="#21D07A" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${v}%`} width={44} />
+              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.5} strokeDasharray="2 4" />
               <Tooltip
-                contentStyle={{ background: '#0E1218', border: '1px solid #262E40', borderRadius: 6, fontSize: 12 }}
-                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'font-medium' }}
+                contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px', boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
+                labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
                 formatter={(v) => [v != null ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : '—', '']}
               />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontFamily: 'JetBrains Mono' }} />
-              <Line type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2.25} dot={{ r: 2.5 }} />
-              <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#E8B14A" strokeWidth={1.5} strokeDasharray="6 4" dot={{ r: 2, fill: '#E8B14A' }} />
-              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.5} dot={false} />
-            </LineChart>
+              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }} />
+              <Area type="monotone" dataKey={`${userName} P/L total`} stroke="#21D07A" strokeWidth={2.5} fill="url(#portGrad)" dot={false} activeDot={{ r: 4 }} />
+              <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="#E8B14A" strokeWidth={1.5} strokeDasharray="2 5" dot={false} />
+              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? '#46C6E0' : '#8B7DFF'} strokeWidth={1.75} strokeDasharray="5 5" dot={false} />
+            </ComposedChart>
           </ResponsiveContainer>
         )}
       </div>
@@ -2247,7 +2257,7 @@ function InsightsDesktop({ _embeddedTab }) {
         params={{ window_days: 365 }}
         subtitle="Drawdown de la cartera"
       >
-      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
+      <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5 mt-6">
         <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
           <div className="flex items-center gap-1.5">
             <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
@@ -2285,16 +2295,16 @@ function InsightsDesktop({ _embeddedTab }) {
                   <stop offset="100%" stopColor="#FF5360" stopOpacity={0.35} />
                 </linearGradient>
               </defs>
-              <CartesianGrid stroke="#1B2230" strokeOpacity={0.6} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} minTickGap={28} />
-              <YAxis tick={{ fill: '#9CA3B5', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} />
-              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.6} />
+              <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+              <YAxis tick={{ fill: '#7C8698', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} domain={['auto', 0]} width={44} />
+              <ReferenceLine y={0} stroke="#3A4256" strokeOpacity={0.5} />
               <Tooltip
-                contentStyle={{ background: '#0E1218', border: '1px solid #262E40', borderRadius: 6, fontSize: 12 }}
-                labelStyle={{ color: '#E6EAF2', fontFamily: 'JetBrains Mono', fontSize: 10, textTransform: 'font-medium' }}
+                contentStyle={{ background: '#10151F', border: '1px solid #262E40', borderRadius: 12, fontSize: 12.5, padding: '10px 14px', boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
+                labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 4 }}
                 formatter={(v) => [`${v.toFixed(2)}%`, 'Drawdown']}
               />
-              <Area type="monotone" dataKey="ddPct" stroke="#FF5360" strokeWidth={1.5} fill="url(#ddGrad)" dot={false} />
+              <Area type="monotone" dataKey="ddPct" stroke="#FF5360" strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
             </AreaChart>
           </ResponsiveContainer>
         )}
@@ -2332,7 +2342,7 @@ function InsightsDesktop({ _embeddedTab }) {
           de una sola porción que no aporta). ─────────────────────────────── */}
       {pieData.length >= 2 && (
         <Section title="Distribución por broker" subtitle="Cómo se reparte tu capital entre brokers.">
-          <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+          <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-ink-0">Por broker</h2>
               {brokerConcentration && (
@@ -2409,7 +2419,7 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
   // Verde si gano al benchmark, rojo si pierdo.
   if (disabled || benchmarkValue == null || delta == null) {
     return (
-      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+      <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
         <p className="text-xs font-semibold text-ink-3">{label}</p>
         <p className="text-sm text-ink-3 mt-2">{disabledHint || 'Datos insuficientes para calcular.'}</p>
       </div>
@@ -2440,7 +2450,7 @@ function InflationCard({ inflation }) {
   // para mantener poder de compra.
   if (!inflation) {
     return (
-      <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+      <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
         <p className="text-xs font-semibold text-ink-3">Inflación AR</p>
         <p className="text-sm text-ink-3 mt-2">No hay datos de IPC suficientes para el período seleccionado.</p>
       </div>
@@ -2476,7 +2486,7 @@ function PerformanceAttribution({ discipline, amt }) {
   const pnlPositive = pnl >= 0
 
   return (
-    <div className="bg-white dark:bg-bg-1 border border-line rounded p-5 mt-6">
+    <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5 mt-6">
       <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
         <div className="flex items-center gap-1.5">
           <h2 className="font-semibold text-ink-0">Atribución del crecimiento</h2>
@@ -2548,7 +2558,7 @@ function ContribList({ tone, title, items, fmt }) {
   const isPos = tone === 'positive'
   const accentText = isPos ? 'text-rendi-pos' : 'text-rendi-neg'
   return (
-    <div className="bg-white dark:bg-bg-1 border border-line rounded p-5">
+    <div className="bg-white dark:bg-bg-1 border border-line rounded-xl p-5">
       <div className="flex items-center gap-2 mb-3 text-ink-3">
         {isPos ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
         <span className="text-xs font-semibold">{title}</span>

@@ -84,7 +84,7 @@ export default function AssetQuickView({ symbol, onClose }) {
     >
       <div
         onClick={e => e.stopPropagation()}
-        className="bg-bg-1 border border-line rounded shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto"
+        className="bg-bg-1 border border-line rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto"
       >
         <header className="flex items-center justify-between px-4 py-3 border-b border-line/40">
           <div className="flex items-center gap-2 min-w-0">

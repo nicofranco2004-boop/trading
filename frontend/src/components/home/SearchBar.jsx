@@ -219,7 +219,7 @@ export default function SearchBar() {
     <>
       <div ref={containerRef} className="relative w-full max-w-[420px]">
         {/* INPUT */}
-        <div className="flex items-center gap-2 bg-bg-2 border border-line rounded px-3 py-2 focus-within:border-ink-2 transition-colors">
+        <div className="flex items-center gap-2 bg-bg-2 border border-line rounded-xl px-3 py-2 focus-within:border-ink-2 transition-colors">
           <Search size={14} className="text-ink-3 flex-shrink-0" strokeWidth={1.75} aria-hidden="true" />
           <input
             ref={inputRef}
@@ -244,7 +244,7 @@ export default function SearchBar() {
 
         {/* DROPDOWN */}
         {open && (
-          <div className="absolute top-full right-0 mt-1 w-[min(640px,calc(100vw-2rem))] bg-bg-1 border border-line rounded shadow-2xl z-50 overflow-hidden">
+          <div className="absolute top-full right-0 mt-1 w-[min(640px,calc(100vw-2rem))] bg-bg-1 border border-line rounded-xl shadow-2xl z-50 overflow-hidden">
             {/* HEADER: filtros + counter */}
             <div className="px-3 py-2 border-b border-line/60 flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-center gap-1 flex-wrap">

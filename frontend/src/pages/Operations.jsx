@@ -291,7 +291,7 @@ function OperationsDesktop() {
       {tab === 'trades' && (
       <>
       {/* KPI strip denso */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap mb-4">
+      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-4">
         <KpiCell
           first
           label="P&L Realizado"
@@ -995,7 +995,7 @@ function MovementsView() {
   return (
     <>
       {/* KPI strip adaptativo */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap mb-4">
+      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-4">
         {kpis.map((k, i) => (
           <KpiCell key={k.label} first={i === 0} label={k.label} value={k.value} sub={k.sub} tone={k.tone} />
         ))}
@@ -1064,7 +1064,7 @@ function MovementsView() {
           description="No se encontraron movimientos con los filtros aplicados."
         />
       ) : (
-        <div className="border border-line rounded overflow-x-auto bg-bg-1">
+        <div className="border border-line rounded-xl overflow-x-auto bg-bg-1">
           <table className="w-full text-sm">
             <thead className="bg-bg-2 text-ink-3 text-[12px] font-medium">
               <tr>

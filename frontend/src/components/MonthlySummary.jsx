@@ -670,7 +670,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           <div className="space-y-4">
 
             {modal === 'next' && (
-              <div className="flex items-start gap-2 bg-bg-2 border border-line rounded px-3 py-2.5 text-sm text-ink-1">
+              <div className="flex items-start gap-2 bg-bg-2 border border-line rounded-xl px-3 py-2.5 text-sm text-ink-1">
                 <ChevronRight size={15} strokeWidth={1.5} className="text-ink-2 mt-0.5 flex-shrink-0" />
                 <span>
                   Capital inicial heredado del cierre de {MONTHS[form.month - 2 < 0 ? 11 : form.month - 2]} ·
@@ -829,7 +829,7 @@ function ConciliationBanner({ live, entries }) {
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-bg-2 border border-line rounded p-3">
+        <div className="bg-bg-2 border border-line rounded-xl p-3">
           <div className="flex items-center gap-1.5 text-[12px] font-semibold tracking-[0.18em] text-ink-2">
             <span className="live-dot" aria-hidden />
             Valor actual (live)

@@ -103,7 +103,7 @@ export default function PerformanceCalendar({ yearGroups }) {
   return (
     <section className="mb-6 space-y-3">
       {/* ── KPI strip ── */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
         <KpiCell
           first
           label="P&L Realizado · 12M"
@@ -128,7 +128,7 @@ export default function PerformanceCalendar({ yearGroups }) {
       </div>
 
       {/* ── Calendar heatmap ── */}
-      <div className="border border-line rounded bg-bg-1 overflow-hidden">
+      <div className="border border-line rounded-xl bg-bg-1 overflow-hidden">
         <header className="flex items-center justify-between px-4 py-2.5 border-b border-line">
           <div className="flex items-center gap-2">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />

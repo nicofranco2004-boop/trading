@@ -226,7 +226,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
             <button
               key={b.id ?? b.name}
               onClick={() => onPick(b)}
-              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded-xl p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
             >
               <div className="flex items-center gap-3">
                 <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
@@ -271,7 +271,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
           )}
           <button
             onClick={onPlazoFijo}
-            className="w-full text-left bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+            className="w-full text-left bg-bg-2/40 border border-line rounded-xl p-4 hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
           >
             <div className="flex items-center gap-3">
               <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
@@ -302,7 +302,7 @@ function Step1AssetType({ categories, onPick }) {
             <button
               key={cat.id}
               onClick={() => onPick(cat)}
-              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded-xl p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
             >
               <div className="flex items-start gap-3">
                 <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">

@@ -158,7 +158,7 @@ export default function Behavioral() {
       />
 
       {/* KPI strip de resumen */}
-      <div className="border border-line rounded bg-bg-1 flex flex-wrap">
+      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
         <SummaryCell first label="Sesgos detectados" value={data?.summary?.total_detected ?? 0} tone={data?.summary?.total_detected > 0 ? 'warn' : 'pos'} />
         <SummaryCell label="Severidad alta"  value={data?.summary?.total_high ?? 0}    tone={data?.summary?.total_high > 0 ? 'neg' : null} />
         <SummaryCell label="Severidad media" value={data?.summary?.total_medium ?? 0}  tone={data?.summary?.total_medium > 0 ? 'warn' : null} />
@@ -169,7 +169,7 @@ export default function Behavioral() {
       {/* Empty state si no hay data */}
       {allInsufficient && (
         <div className="space-y-6">
-          <div className="border border-line rounded bg-bg-1 px-6 py-8 text-center max-w-2xl mx-auto">
+          <div className="border border-line rounded-xl bg-bg-1 px-6 py-8 text-center max-w-2xl mx-auto">
             <Brain size={28} strokeWidth={1.5} className="mx-auto mb-3 text-ink-3" />
             <h2 className="text-base font-medium text-ink-0 mb-1.5">Necesitamos más historial</h2>
             <p className="text-sm text-ink-2 leading-relaxed mb-4 max-w-md mx-auto">
@@ -253,7 +253,7 @@ function BehavioralCard({ card, onClick }) {
 
   if (card.insufficient_data) {
     return (
-      <div className="border border-line rounded bg-bg-1 p-4 opacity-70 h-full">
+      <div className="border border-line rounded-xl bg-bg-1 p-4 opacity-70 h-full">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <Icon size={14} strokeWidth={1.75} className="text-ink-3" />

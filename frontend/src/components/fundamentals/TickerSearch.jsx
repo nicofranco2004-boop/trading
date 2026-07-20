@@ -105,7 +105,7 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
 
   return (
     <div ref={containerRef} className="relative">
-      <div className="flex items-center gap-2 bg-bg-2 border border-line rounded px-3 py-2.5 focus-within:border-data-violet/60 transition-colors">
+      <div className="flex items-center gap-2 bg-bg-2 border border-line rounded-xl px-3 py-2.5 focus-within:border-data-violet/60 transition-colors">
         <Search size={16} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
         <input
           ref={inputRef}

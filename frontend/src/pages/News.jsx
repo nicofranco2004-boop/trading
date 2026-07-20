@@ -198,7 +198,7 @@ export default function News({ embedded = false }) {
       )}
 
       {/* KPI strip */}
-      <div className="bg-bg-1 border border-line rounded mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
+      <div className="bg-bg-1 border border-line rounded-xl mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
         <KpiCell label="Noticias" value={kpi.total} sub={tab === 'portfolio' ? 'tu cartera' : 'mercado'} />
         <KpiCell
           label={tab === 'portfolio' ? 'Tickers' : 'Fuentes'}
@@ -364,7 +364,7 @@ function NewsFeatured({ news, tab, onTagClick }) {
   const sm = sentimentMeta(sentiment)
   const wLabel = weightLabel(weight_pct)
   return (
-    <div className="group relative bg-bg-1 border border-line rounded hover:border-rendi-accent/40 transition">
+    <div className="group relative bg-bg-1 border border-line rounded-xl hover:border-rendi-accent/40 transition">
     <a
       href={safeExternalUrl(url)}
       target="_blank"
@@ -515,7 +515,7 @@ function NewsTile({ news, tab, onTagClick }) {
 
 function NewsTileSkeleton() {
   return (
-    <div className="bg-bg-1 border border-line rounded p-3.5 animate-pulse">
+    <div className="bg-bg-1 border border-line rounded-xl p-3.5 animate-pulse">
       <div className="h-3 w-20 bg-bg-3 rounded mb-3" />
       <div className="h-4 w-full bg-bg-3 rounded mb-2" />
       <div className="h-4 w-3/4 bg-bg-3 rounded mb-3" />
