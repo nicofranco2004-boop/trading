@@ -549,3 +549,34 @@ export function inferType(asset) {
   if (hit) return hit.type
   return 'stock_us'
 }
+
+// ─── Tipos de activo: vocabulario + estilo del badge, definidos UNA sola vez ──
+// Fuente de verdad para el "cartelito" que muestra cada resultado de búsqueda
+// en toda la app (Registrar compra, Mercado, Alertas, etc.). Antes cada
+// buscador tenía su propio label/color; centralizarlo acá garantiza que un
+// CEDEAR se vea igual en los 5 lugares.
+// `type` ∈ crypto | stock_us | stock_ar | cedear | etf | bond | index | fci.
+export const ASSET_TYPE_META = {
+  crypto:   { label: 'Cripto',    cls: 'bg-amber-500/15 border-amber-500/30 text-amber-600 dark:text-amber-400' },
+  stock_us: { label: 'Acción US', cls: 'bg-blue-500/15 border-blue-500/30 text-blue-600 dark:text-blue-400' },
+  stock_ar: { label: 'Acción AR', cls: 'bg-sky-500/15 border-sky-500/30 text-sky-600 dark:text-sky-400' },
+  cedear:   { label: 'CEDEAR',    cls: 'bg-violet-500/15 border-violet-500/30 text-violet-600 dark:text-violet-400' },
+  etf:      { label: 'ETF',       cls: 'bg-emerald-500/15 border-emerald-500/30 text-emerald-600 dark:text-emerald-400' },
+  bond:     { label: 'Bono',      cls: 'bg-slate-500/15 border-slate-500/30 text-slate-600 dark:text-slate-300' },
+  index:    { label: 'Índice',    cls: 'bg-rose-500/15 border-rose-500/30 text-rose-600 dark:text-rose-400' },
+  fci:      { label: 'FCI',       cls: 'bg-amber-500/15 border-amber-500/30 text-amber-600 dark:text-amber-400' },
+}
+
+// Devuelve { label, cls } para un tipo, o null si es desconocido.
+export function assetTypeMeta(type) {
+  return ASSET_TYPE_META[type] || null
+}
+
+// Mapea el id de categoría del flujo "Registrar compra" al tipo de activo.
+// (Las listas de tickers.js están agrupadas por categoría; el tipo se deriva
+// de qué lista salió el item.)
+export const CATEGORY_TO_TYPE = {
+  crypto: 'crypto', stocks: 'stock_us', cedears: 'cedear', etfs: 'etf',
+  bonds: 'bond', ar_lider: 'stock_ar', ar_gen: 'stock_ar', indices: 'index',
+  fci: 'fci',
+}

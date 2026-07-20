@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, X, Search as SearchIcon, Star, ChevronRight, Plus, Check } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
+import AssetTypeBadge from '../components/AssetTypeBadge'
 import { api } from '../utils/api'
 import { useToast } from '../components/Toast'
 import { track } from '../utils/track'
@@ -278,8 +279,9 @@ function SearchRow({ ticker, highlight, onPick, onAdd, adding, inWatchlist }) {
       <button onClick={onPick} className="flex items-center gap-3 flex-1 min-w-0 text-left">
         <AssetLogo asset={ticker.symbol} size={28} />
         <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-1.5">
+          <div className="flex items-center gap-1.5">
             <span className="text-sm font-semibold text-ink-0 truncate">{ticker.symbol}</span>
+            <AssetTypeBadge type={ticker.type} />
             {ticker.fromUser && (
               <span className="text-[9px] font-mono uppercase tracking-caps text-rendi-pos">
                 Tuya

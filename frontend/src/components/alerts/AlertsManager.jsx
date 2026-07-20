@@ -5,19 +5,18 @@
 // El backend gatea por cantidad y por capacidad; acá reflejamos el gate en la UI
 // (el tipo % aparece bloqueado con badge Plus para Free) y mostramos el upsell si
 // el POST devuelve 403.
-import { useState } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Bell, Plus, Trash2, TrendingUp, TrendingDown, Target, Mail, Smartphone,
-  X, Check, Zap, Sparkles,
+  X, Check, Zap, Sparkles, Search,
 } from 'lucide-react'
 import Panel from '../Panel'
 import Pill from '../Pill'
+import AssetResultRow from '../AssetResultRow'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useAlerts } from '../../hooks/useAlerts'
 import { POPULAR_TICKERS } from '../../utils/tickers'
-
-const TICKER_SUGGESTIONS = POPULAR_TICKERS.map(t => t.symbol)
 
 const EMPTY_FORM = {
   kind: 'price_target',
@@ -213,16 +212,11 @@ export default function AlertsManager({ plan, prefill }) {
           {/* Ticker (salvo pct_move + holdings) */}
           {!(form.kind === 'pct_move' && form.scope === 'holdings') && (
             <div className="flex gap-2">
-              <input
+              <TickerCombobox
                 value={form.symbol}
-                onChange={e => setField('symbol', e.target.value.toUpperCase())}
+                onChange={v => setField('symbol', v)}
                 placeholder="Ticker (ej. AAPL, MSFT.BA, GGAL)"
-                list="alert-tickers"
-                className="flex-1 text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none"
               />
-              <datalist id="alert-tickers">
-                {TICKER_SUGGESTIONS.map(s => <option key={s} value={s} />)}
-              </datalist>
               {form.kind === 'price_target' && (
                 <select value={form.currency} onChange={e => setField('currency', e.target.value)}
                   className="text-sm bg-bg-2 border border-line rounded-sm px-2 py-2 text-ink-1 outline-none">
@@ -337,6 +331,69 @@ export default function AlertsManager({ plan, prefill }) {
         </div>
       )}
     </Panel>
+  )
+}
+
+// Combobox de ticker con las mismas tarjetas (logo + ticker + nombre + badge de
+// tipo) que el resto de los buscadores de la app. Sigue permitiendo tipear un
+// ticker manual que no esté en la lista (las alertas aceptan cualquier símbolo).
+function TickerCombobox({ value, onChange, placeholder }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef(null)
+
+  const results = useMemo(() => {
+    const q = (value || '').trim().toUpperCase()
+    if (!q) return POPULAR_TICKERS.slice(0, 8)
+    const starts = [], contains = []
+    for (const t of POPULAR_TICKERS) {
+      const s = t.symbol.toUpperCase()
+      if (s.startsWith(q)) starts.push(t)
+      else if (s.includes(q) || (t.name || '').toUpperCase().includes(q)) contains.push(t)
+    }
+    return [...starts, ...contains].slice(0, 8)
+  }, [value])
+
+  useEffect(() => {
+    function onDoc(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
+
+  function choose(sym) {
+    onChange(sym)
+    setOpen(false)
+  }
+
+  return (
+    <div ref={wrapRef} className="relative flex-1">
+      <div className="relative">
+        <Search size={14} strokeWidth={1.75} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" />
+        <input
+          value={value}
+          onChange={e => { onChange(e.target.value.toUpperCase()); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          autoComplete="off"
+          spellCheck="false"
+          className="w-full text-sm bg-bg-2 border border-line rounded-sm pl-8 pr-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none"
+        />
+      </div>
+      {open && results.length > 0 && (
+        <div className="absolute z-30 left-0 right-0 mt-1 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
+          {results.map(t => (
+            <AssetResultRow
+              key={t.symbol}
+              symbol={t.symbol}
+              name={t.name}
+              type={t.type}
+              onClick={() => choose(t.symbol)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
