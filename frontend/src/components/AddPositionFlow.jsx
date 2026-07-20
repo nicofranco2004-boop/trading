@@ -390,8 +390,17 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
   // categorías. Una vez activo, se mantiene (no se resetea en blur para no cortar
   // el click sobre una sugerencia).
   const [engaged, setEngaged] = useState(false)
+  const inputRef = useRef(null)
   const q = query.trim().toLowerCase()
   const searching = q.length > 0
+
+  // Salir de la búsqueda: limpia el texto, colapsa las sugerencias y vuelve a la
+  // vista de categorías.
+  function exitSearch() {
+    setQuery('')
+    setEngaged(false)
+    inputRef.current?.blur()
+  }
 
   // Buscador GENERAL: filtra el universo entero por ticker o nombre. Cap a 40
   // resultados para no renderizar miles de filas (el usuario refina escribiendo).
@@ -410,6 +419,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
         <div className="relative">
           <Search size={14} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" aria-hidden="true" />
           <input
+            ref={inputRef}
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
@@ -417,8 +427,20 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
             placeholder="Buscar cualquier activo — ticker o nombre (AAPL, Bitcoin, GGAL…)"
             autoComplete="off"
             spellCheck="false"
-            className="w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 pr-3 py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition"
+            className={`w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 ${engaged ? 'pr-9' : 'pr-3'} py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition`}
           />
+          {engaged && (
+            <button
+              type="button"
+              onMouseDown={e => e.preventDefault()}
+              onClick={exitSearch}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+              aria-label="Salir de la búsqueda y volver a las categorías"
+              title="Volver a las categorías"
+            >
+              <X size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          )}
         </div>
         {searching && (
           <p className="text-xs text-ink-3 font-mono mt-2">
