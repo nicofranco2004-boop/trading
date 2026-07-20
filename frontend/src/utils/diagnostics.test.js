@@ -566,14 +566,17 @@ describe('generadores de métricas (proMetrics)', () => {
     expect(ids).toContain('metric_volatility')
   })
 
-  it('las 8 métricas están marcadas premium con lockedLabel', () => {
-    for (const id of ['metric_cagr','metric_volatility','metric_sharpe','metric_sortino','metric_beta','metric_alpha','metric_info_ratio','metric_calmar']) {
+  it('las 6 métricas ajustadas por riesgo son premium; CAGR + vol NO', () => {
+    for (const id of ['metric_sharpe','metric_sortino','metric_beta','metric_alpha','metric_info_ratio','metric_calmar']) {
       expect(gen(id).premium).toBe(true)
       expect(typeof gen(id).lockedLabel).toBe('string')
     }
+    // Gratis para todos: CAGR (retorno anualizado) y volatilidad.
+    expect(gen('metric_cagr').premium).toBeUndefined()
+    expect(gen('metric_volatility').premium).toBeUndefined()
   })
 
-  it('isFree=true → métricas BLOQUEADAS: título sin valor + unlockTier plus', () => {
+  it('isFree=true → métricas premium BLOQUEADAS: título sin valor + unlockTier plus', () => {
     const fired = selectDiagnostics({ proMetrics: full, isFree: true }, 999)
     const sharpe = fired.find(f => f.id === 'metric_sharpe')
     expect(sharpe.locked).toBe(true)
@@ -583,7 +586,18 @@ describe('generadores de métricas (proMetrics)', () => {
     expect(sharpe.text).not.toMatch(/\d/)          // NO expone el valor
   })
 
-  it('isFree=false → métricas normales con valor, sin locked', () => {
+  it('isFree=true → CAGR y volatilidad NO se bloquean (gratis, con valor)', () => {
+    const fired = selectDiagnostics({ proMetrics: full, isFree: true }, 999)
+    const cagr = fired.find(f => f.id === 'metric_cagr')
+    const vol = fired.find(f => f.id === 'metric_volatility')
+    expect(cagr.locked).toBeFalsy()
+    expect(cagr.text).toMatch(/CAGR anualizado es/)
+    expect(cagr.text).toMatch(/18\.0%/)   // muestra el valor
+    expect(vol.locked).toBeFalsy()
+    expect(vol.text).toMatch(/22\.0%/)
+  })
+
+  it('isFree=false → métricas premium con valor, sin locked', () => {
     const fired = selectDiagnostics({ proMetrics: full, isFree: false }, 999)
     const sharpe = fired.find(f => f.id === 'metric_sharpe')
     expect(sharpe.locked).toBeUndefined()
@@ -594,7 +608,10 @@ describe('generadores de métricas (proMetrics)', () => {
   it('los diagnósticos NO-premium nunca se bloquean, aunque sea Free', () => {
     const fired = selectDiagnostics({ proMetrics: full, isFree: true }, 999)
     for (const f of fired) {
-      if (!f.id.startsWith('metric_')) expect(f.locked).toBeFalsy()
+      if (f.id !== 'metric_sharpe' && f.id !== 'metric_sortino' && f.id !== 'metric_beta'
+          && f.id !== 'metric_alpha' && f.id !== 'metric_info_ratio' && f.id !== 'metric_calmar') {
+        expect(f.locked).toBeFalsy()
+      }
     }
   })
 })

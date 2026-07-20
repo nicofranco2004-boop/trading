@@ -45,7 +45,7 @@ export default function CuentaYPlanes() {
         <li>1 broker.</li>
         <li>Dashboard completo + 4 KPIs + curva de evolución.</li>
         <li>Posiciones, Operaciones, Wrapped anual, Objetivos.</li>
-        <li>Diagnóstico completo, con las métricas de riesgo bloqueadas (personalizalo 2×/semana con “No me interesa”).</li>
+        <li>Diagnóstico completo (con CAGR y volatilidad; las métricas ajustadas por riesgo —Sharpe, Sortino…— con Plus); personalizalo 2×/semana con “No me interesa”.</li>
         <li>3 detectores de comportamiento.</li>
         <li>6 análisis IA + 3 chat por semana (Coach IA limitado a 12 preguntas guiadas).</li>
         <li>Reportes: solo último mes.</li>

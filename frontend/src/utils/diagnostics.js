@@ -845,8 +845,8 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_cagr',
     category: 'Performance',
     severity: 'info',
-    premium: true,
-    lockedLabel: 'Tu CAGR anualizado',
+    // GRATIS (no premium): CAGR es tu retorno anualizado — métrica básica de tu
+    // propia cartera. Las ajustadas por riesgo (Sharpe/Sortino/…) sí son Plus.
     generate: ({ proMetrics }) => {
       const c = proMetrics?.cagr
       if (!c || c.cagr == null || !isFinite(c.cagr) || (c.months || 0) < 2) return null
@@ -858,8 +858,7 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'metric_volatility',
     category: 'Riesgo',
     severity: 'info',
-    premium: true,
-    lockedLabel: 'Tu volatilidad anualizada',
+    // GRATIS (no premium): volatilidad = cuánto oscila tu cartera, métrica básica.
     generate: ({ proMetrics }) => {
       const v = proMetrics?.volatility
       if (v == null || !isFinite(v)) return null
