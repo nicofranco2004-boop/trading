@@ -25,6 +25,7 @@ import { track } from '../utils/track'
 import { useIsMobile } from '../hooks/useIsMobile'
 import PageHeader from '../components/PageHeader'
 import CurrencyRail from '../components/CurrencyRail'
+import { useCurrency } from '../contexts/CurrencyContext'
 import Panel from '../components/Panel'
 import Pill from '../components/Pill'
 import ImportWizard from '../components/import/ImportWizard'
@@ -112,6 +113,7 @@ const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 export default function Config() {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
+  const { costBasis, setCostBasis } = useCurrency()
   const isMobile = useIsMobile()
   const [searchParams, setSearchParams] = useSearchParams()
   const [delState, setDelState] = useState({ loading: false, error: '' })
@@ -419,6 +421,46 @@ export default function Config() {
               </p>
             </div>
             <CurrencyRail />
+          </div>
+        </section>
+
+        {/* Costo en dólares — con qué dólar se cuenta lo invertido (solo display,
+            per-device; espeja el patrón del riel de moneda). Solo afecta la columna
+            INV. USD de la Cartera; el valor de mercado siempre va al dólar de hoy. */}
+        <section>
+          <div className="border border-line rounded bg-bg-1 px-4 py-3.5">
+            <div className="min-w-0 mb-3">
+              <h2 className="text-sm font-medium text-ink-1">Costo en dólares</h2>
+              <p className="text-xs text-ink-3 mt-0.5">
+                Con qué dólar contamos lo que invertiste. <b>Dólar de hoy</b> (default): tu
+                ganancia en USD refleja solo cómo rindió el activo. <b>Dólar de la compra</b>:
+                incluye la devaluación del peso desde que compraste. Solo cambia la columna
+                <b> Invertido (USD)</b> de la Cartera — el valor de mercado no se toca.
+              </p>
+            </div>
+            <div className="inline-flex rounded-md border border-line overflow-hidden">
+              {[
+                { id: 'today', label: 'Dólar de hoy' },
+                { id: 'purchase', label: 'Dólar de la compra' },
+              ].map(opt => {
+                const active = (costBasis || 'today') === opt.id
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setCostBasis(opt.id)}
+                    className={`px-3.5 py-2 text-xs font-medium transition-colors ${
+                      active
+                        ? 'bg-rendi-accent text-white'
+                        : 'bg-bg-1 text-ink-2 hover:text-ink-0 hover:bg-bg-2'
+                    } ${opt.id === 'purchase' ? 'border-l border-line' : ''}`}
+                    aria-pressed={active}
+                  >
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
         </section>
 

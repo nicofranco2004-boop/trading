@@ -37,7 +37,8 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate } from '../utils/valuation'
+import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
@@ -78,7 +79,7 @@ function brokerColor(name) {
 
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
-  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar } = useCurrency()
+  const { currency, toggle: toggleCurrency, setTcBlue: publishTcBlue, valuationDollar, costBasis } = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
   const toast = useToast()
@@ -510,6 +511,11 @@ export default function PositionsMobile() {
       // MEP de Balanz); ARS broker → blue; lote en PESOS (currency='ARS') alojado en
       // cuenta USD → MEP (tcCedear); USD-nativo (incluida la acción US en broker USD)
       // → tal cual (última rama). Es también el fallback de valor cuando no hay precio.
+      // Costo a HOY (mode-independent): base del guard anti-distorsión, del fallback
+      // de valor sin precio, y de las magnitudes en PESOS de un broker ARS (el P&L y
+      // el % en pesos NO dependen del "dólar de compra"). El costo DISPLAY en USD del
+      // modo 'purchase' se calcula aparte abajo (investedUsdDisplay), solo para las
+      // figuras en dólares. Así el modo nunca toca el valor ni las cifras en pesos.
       let investedUsd = isAR && costInUsd(p) ? invested
         : isAR ? invested / tcBlue
         : costInPesos(p) ? invested / tcCedear
@@ -602,10 +608,27 @@ export default function PositionsMobile() {
       const isExch = exchangeBrokerSet.has(p.broker)
       const f = isAR ? 1 : cryptoBrokerFactor(p.asset, isExch, p.price_override != null, tcCripto, tcCedear)
       if (f !== 1) { valueUsd *= f; investedUsd *= f }
-      const pnlUsd = valueUsd - investedUsd
-      const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
-      // P&L en la moneda local del broker (ARS para brokers en pesos, USD resto).
-      const pnlLocal = isAR ? pnlUsd * tcBlue : pnlUsd
+      // Costo DISPLAY en USD del modo elegido: en 'purchase' los lotes en pesos van al
+      // tc_compra del lote (los USD que realmente puso). Solo para lotes CON precio
+      // confiable: sin cotización el P&L es 0 en cualquier vista → no inventamos
+      // "pérdida por devaluación" sobre algo que no cotiza. f escala igual que
+      // investedUsd. En 'today' investedUsdDisplay === investedUsd (byte-idéntico).
+      const investedUsdDisplay = !priceTrusted ? investedUsd
+        : (isAR && costInUsd(p)) ? invested * f
+        : isAR ? (invested / costBasisRate(p, tcBlue, costBasis)) * f
+        : costInPesos(p) ? (invested / costBasisRate(p, tcCedear, costBasis)) * f
+        : invested * f
+      // Regla del modo: las cifras en PESOS de un broker ARS son NATIVAS (el peso no
+      // tiene "dólar de compra") → se derivan del costo de HOY (investedUsd). Las
+      // cifras en USD reflejan el modo (investedUsdDisplay). En un broker USD el P&L
+      // principal ES en USD → refleja el modo directamente.
+      const pnlUsd = valueUsd - investedUsdDisplay        // P&L USD (refleja el modo)
+      const pnlUsdToday = valueUsd - investedUsd          // P&L USD a hoy (base de las cifras en pesos)
+      const pnlPct = isAR
+        ? (investedUsd > 0 ? pnlUsdToday / investedUsd : 0)            // % en pesos, nativo
+        : (investedUsdDisplay > 0 ? pnlUsd / investedUsdDisplay : 0)   // % en USD, refleja el modo
+      // P&L en la moneda local del broker: ARS → P&L en pesos NATIVO; USD → P&L USD del modo.
+      const pnlLocal = isAR ? pnlUsdToday * tcBlue : pnlUsd
 
       // ─── Variación diaria de mercado (precio hoy vs cierre anterior) ────────
       // Montos en la MISMA moneda local que el precio: ARS para .BA, USD resto.
@@ -652,11 +675,15 @@ export default function PositionsMobile() {
         }
       }
       return {
-        ...p, valueUsd, investedUsd, priceLocal, pnlUsd, pnlPct, pnlLocal,
+        // investedUsd expuesto = el DISPLAY (refleja el modo) para consumidores como
+        // RentaFijaSections; investedUsdToday se carga aparte para la derivación de las
+        // cifras en pesos al re-agregar por ticker.
+        ...p, valueUsd, investedUsd: investedUsdDisplay, investedUsdToday: investedUsd,
+        priceLocal, pnlUsd, pnlUsdToday, pnlPct, pnlLocal,
         dayVarLocal, dayVarUsd, dayVarPct, isAR,
       }
     })
-  }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcBlue, tcCedear, tcCripto])
+  }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcBlue, tcCedear, tcCripto, costBasis])
 
   // Filtro de búsqueda libre (asset o broker name)
   const filteredBySearch = useMemo(() => {
@@ -715,12 +742,18 @@ export default function PositionsMobile() {
       const totalQty = lots.reduce((s, x) => s + (x.quantity || 0), 0)
       const totalInv = lots.reduce((s, x) => s + (x.invested || 0), 0)
       const valueUsd = lots.reduce((s, x) => s + (x.valueUsd || 0), 0)
-      // Reusa el costo USD ya resuelto por lote (costo por moneda del LOTE, no de
-      // la cuenta) en vez de recomputarlo por broker.
+      // Reusa el costo USD ya resuelto por lote (costo por moneda del LOTE, no de la
+      // cuenta) en vez de recomputarlo por broker. investedUsd = DISPLAY (modo);
+      // investedUsdToday = a hoy, base de las cifras en pesos (nativas). Misma regla
+      // que el memo por-lote: pesos de un broker ARS nativos, USD reflejan el modo.
       const investedUsd = lots.reduce((s, x) => s + (x.investedUsd || 0), 0)
+      const investedUsdToday = lots.reduce((s, x) => s + (x.investedUsdToday ?? x.investedUsd ?? 0), 0)
       const pnlUsd = valueUsd - investedUsd
-      const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
-      const pnlLocal = isAR ? pnlUsd * tcBlue : pnlUsd
+      const pnlUsdToday = valueUsd - investedUsdToday
+      const pnlPct = isAR
+        ? (investedUsdToday > 0 ? pnlUsdToday / investedUsdToday : 0)
+        : (investedUsd > 0 ? pnlUsd / investedUsd : 0)
+      const pnlLocal = isAR ? pnlUsdToday * tcBlue : pnlUsd
       // Var. día agregada: solo si algún lote la tiene (símbolo con cierre
       // anterior). Sumamos los montos de los lotes que la tienen; el % se
       // recalcula sobre el valor de mercado de ayer (valor hoy − var. día).
@@ -738,7 +771,7 @@ export default function PositionsMobile() {
         invested: totalInv,
         buy_price: totalQty > 0 ? totalInv / totalQty : null,
         price_override: null,
-        valueUsd, pnlUsd, pnlPct, pnlLocal,
+        valueUsd, investedUsd, investedUsdToday, pnlUsd, pnlUsdToday, pnlPct, pnlLocal,
         dayVarLocal, dayVarUsd, dayVarPct,
         _isAgg: true, _lotCount: lots.length, _lots: lots,
       })

@@ -23,7 +23,7 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { inferType } from '../utils/tickers'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -31,7 +31,7 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Devuelve { valueUsd, investedUsd, pnlUsd, priceLocal } para UN lote.
-function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
+function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto, costBasis = 'today' }) {
   const broker = brokers.find(b => b.name === p.broker)
   const isAR = broker?.currency === 'ARS'
   const qty = p.quantity || 0
@@ -44,10 +44,13 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
   // (tcCedear): costo Y valor a USD por el mismo rate, no el costo en pesos como dólares.
   if (costInPesos(p) && !isAR) {
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
-    const investedUsd = invested / tcCedear
+    // Costo DISPLAY (modo 'purchase' → tc_compra); guardCost = costo a hoy, denominador
+    // del guard (mode-independent, así 'purchase' no afloja el filtro anti-distorsión).
+    const investedUsd = invested / costBasisRate(p, tcCedear, costBasis)
+    const guardCost = invested / tcCedear
     const priceLocal = priceArs != null ? priceArs / tcCedear : null
     const mkt = priceLocal != null ? priceLocal * qty : investedUsd
-    const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
+    const valueUsd = trustMktValue(mkt, guardCost, p.asset_type, p.price_override != null) ? mkt : investedUsd
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
   // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
@@ -61,9 +64,10 @@ function valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto }) {
   }
   if (isAR) {
     const priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    const investedUsd = invested / tcBlue
+    const investedUsd = invested / costBasisRate(p, tcBlue, costBasis)   // display (modo)
+    const guardCost = invested / tcBlue                                  // hoy (guard)
     const mkt = priceLocal != null ? (priceLocal * qty) / tcBlue : investedUsd
-    const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
+    const valueUsd = trustMktValue(mkt, guardCost, p.asset_type, p.price_override != null) ? mkt : investedUsd
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
   }
   if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null && !isCrypto(p.asset)) {
@@ -96,7 +100,7 @@ export default function AssetDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
   const asset = (ticker || '').toUpperCase()
-  const { valuationDollar } = useCurrency()
+  const { valuationDollar, costBasis } = useCurrency()
 
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -140,7 +144,7 @@ export default function AssetDetail() {
     const openLots = positions.filter(p => !p.is_cash)
     let valueUsd = 0, investedUsd = 0, qty = 0
     const lots = openLots.map(p => {
-      const v = valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto })
+      const v = valueLot(p, { brokers, prices, tcBlue, tcCedear, tcCripto, costBasis })
       valueUsd += v.valueUsd; investedUsd += v.investedUsd; qty += (p.quantity || 0)
       return { ...p, ...v }
     }).sort((a, b) => (a.entry_date || '').localeCompare(b.entry_date || '')) // FIFO: viejo primero
@@ -163,7 +167,7 @@ export default function AssetDetail() {
       tradesCount: closed.length,
       brokerCount: new Set(openLots.map(p => p.broker)).size,
     }
-  }, [positions, operations, brokers, prices, tcBlue, tcCedear, tcCripto])
+  }, [positions, operations, brokers, prices, tcBlue, tcCedear, tcCripto, costBasis])
 
   const type = inferType(asset)
   const hasFundamentals = type === 'stock_us' || type === 'cedear'

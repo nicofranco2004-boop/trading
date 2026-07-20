@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -25,7 +25,7 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 export default function PositionDetailMobile() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { valuationDollar } = useCurrency()
+  const { valuationDollar, costBasis } = useCurrency()
   const [position, setPosition] = useState(null)
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
@@ -107,12 +107,17 @@ export default function PositionDetailMobile() {
     // Lote en PESOS (currency='ARS') en una cuenta USD: costo Y valor a USD por el
     // dólar-MEP (.BA ÷ tcCedear), igual que un CEDEAR. NO contar los pesos como
     // dólares (inflaba invertido/P&L). pesoLotUsd suma commissions al costo.
-    const u = pesoLotUsd(p, prices, tcCedear)
+    const u = pesoLotUsd(p, prices, tcCedear)   // valor + costo a HOY (guard/fallback)
     // Guard anti-distorsión: un ×100 (bono per-100) o colisión de ticker cae a costo.
-    valueUsd = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null) ? u.valueUsd : u.investedUsd
+    // Guardea con el costo de HOY (u.investedUsd) → 'purchase' no afloja el guard.
+    const priced = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null)
+    // Costo DISPLAY del modo: solo con precio confiable (sin precio el P&L es 0 → el
+    // modo no aplica, no inventamos pérdida por devaluación). En 'today' === u.investedUsd.
+    const investedUsdDisplay = priced ? pesoLotUsd(p, prices, tcCedear, costBasis).investedUsd : u.investedUsd
+    valueUsd = priced ? u.valueUsd : investedUsdDisplay
     priceLocal = u.priceUsd
-    pnlUsd = valueUsd - u.investedUsd
-    pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
+    pnlUsd = valueUsd - investedUsdDisplay
+    pnlPct = investedUsdDisplay > 0 ? pnlUsd / investedUsdDisplay : 0
   } else if (costInUsd(p) && isAR) {
     // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
     // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
@@ -126,14 +131,16 @@ export default function PositionDetailMobile() {
     pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
   } else if (isAR) {
     priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    const investedUsd = invested / tcBlue
-    // mkt y cost comparados en la MISMA moneda (ARS): un bono per-100 (×100) o
-    // colisión de ticker cae a costo (P&L 0 para esta posición).
+    const investedUsd = invested / tcBlue   // hoy
+    // mkt y cost comparados en la MISMA moneda (ARS, nativo → mode-independent): un
+    // bono per-100 (×100) o colisión de ticker cae a costo (P&L 0 para esta posición).
     const mktArs = priceLocal != null ? priceLocal * qty : null
     const trustArs = mktArs != null && trustMktValue(mktArs, invested, p.asset_type, p.price_override != null)
-    valueUsd = trustArs ? mktArs / tcBlue : investedUsd
-    pnlUsd = valueUsd - investedUsd
-    pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : 0
+    // Costo DISPLAY del modo: solo con precio confiable. En 'today' === investedUsd.
+    const investedUsdDisplay = trustArs ? invested / costBasisRate(p, tcBlue, costBasis) : investedUsd
+    valueUsd = trustArs ? mktArs / tcBlue : investedUsdDisplay
+    pnlUsd = valueUsd - investedUsdDisplay
+    pnlPct = investedUsdDisplay > 0 ? pnlUsd / investedUsdDisplay : 0
   } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
     // Instrumento BYMA en broker USD (CEDEAR o acción AR en un sub-broker "· USD"):
     // precio LOCAL .BA (ARS) → USD via MEP, no el ticker US (que vale 15-100× más,
