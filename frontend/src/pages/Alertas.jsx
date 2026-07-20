@@ -4,14 +4,21 @@
 // lugar en el nav (ítem "Alertas" del sidebar) en vez de estar enterradas en
 // Configuración. El componente (AlertsManager) es el mismo — solo cambia dónde
 // vive. Prefill vía ?new=&ccy= (desde el menú de una posición).
+import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import AlertsManager from '../components/alerts/AlertsManager'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { useAlertsContext } from '../contexts/AlertsContext'
 
 export default function Alertas() {
   const plan = usePlanFeatures()
+  const { markSeen } = useAlertsContext()
   const [searchParams] = useSearchParams()
+
+  // Al entrar a Alertas, marcar los eventos como vistos → apaga el puntito del
+  // sidebar (idempotente: no-op en el backend si no hay nada sin ver).
+  useEffect(() => { markSeen() }, [markSeen])
   // Prefill desde el menú de una posición: /alertas?new=MSFT.BA&ccy=ARS
   const newSym = searchParams.get('new')
   const prefill = newSym

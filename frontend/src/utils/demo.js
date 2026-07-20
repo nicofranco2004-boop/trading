@@ -2639,6 +2639,10 @@ function _buildDemoAISummary(rawTicker) {
 // recargar la página.
 let _demoDiagDismissCount = 0
 
+// Estado del badge de alertas en el demo: arranca con 1 evento SIN VER (para
+// mostrar el puntito violeta del sidebar); al entrar a /alertas se marca visto.
+let _demoAlertsSeen = false
+
 export function handleDemoRequest(method, path, body) {
   // Normalizar query string fuera del match base
   const [basePath, query] = path.split('?')
@@ -2822,6 +2826,24 @@ export function handleDemoRequest(method, path, body) {
       const yearStr = basePath.slice('/wrapped/'.length).split('?')[0]
       const year = parseInt(yearStr, 10) || new Date().getFullYear()
       return WRAPPED(year)
+    }
+    // ── Alertas — una alerta de precio + un evento disparado (sin ver hasta
+    //    que el user entra a /alertas) para showcasear el badge del sidebar.
+    if (basePath === '/alerts') {
+      const firedAt = new Date(Date.now() - 90 * 60 * 1000)  // hace ~1.5h
+        .toISOString().slice(0, 19).replace('T', ' ')
+      return {
+        items: [
+          { id: 1, kind: 'price_target', symbol: 'AAPL', direction: 'above',
+            threshold: 180, currency: 'USD', active: 1, armed: 0,
+            last_fired_at: firedAt, last_fired_price: 182.5 },
+        ],
+        events: [
+          { id: 1, alert_id: 1, symbol: 'AAPL', fired_at: firedAt, price: 182.5,
+            message: 'AAPL superó tu objetivo de US$180 (llegó a US$182,5)',
+            seen: _demoAlertsSeen ? 1 : 0 },
+        ],
+      }
     }
     // ── AI v2 endpoints — usage + topics ────────────────────────────────
     if (basePath === '/ai/usage') {
@@ -3051,6 +3073,12 @@ export function handleDemoRequest(method, path, body) {
   // Invalidar cache → no-op (los mocks son determinísticos, no hay cache)
   if (method === 'DELETE' && basePath.startsWith('/ai/cache/')) {
     return { deleted: 0 }
+  }
+
+  // Marcar alertas como vistas → apaga el badge del sidebar en el demo.
+  if (method === 'POST' && basePath === '/alerts/events/seen') {
+    _demoAlertsSeen = true
+    return { ok: true }
   }
 
   // "No me interesa" del diagnóstico (cuota Free 2/sem). El frontend solo pega
