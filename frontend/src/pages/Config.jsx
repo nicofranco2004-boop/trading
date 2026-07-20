@@ -434,8 +434,9 @@ export default function Config() {
               <p className="text-xs text-ink-3 mt-0.5">
                 Con qué dólar contamos lo que invertiste. <b>Dólar de hoy</b> (default): tu
                 ganancia en USD refleja solo cómo rindió el activo. <b>Dólar de la compra</b>:
-                incluye la devaluación del peso desde que compraste. Solo cambia la columna
-                <b> Invertido (USD)</b> de la Cartera — el valor de mercado no se toca.
+                incluye la devaluación del peso desde que compraste. Cambia el <b>Invertido</b> y
+                el <b>P&L en dólares</b> de la Cartera; el valor de mercado y las cifras en pesos
+                no se tocan.
               </p>
             </div>
             <div className="inline-flex rounded-md border border-line overflow-hidden">

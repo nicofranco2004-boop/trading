@@ -851,14 +851,36 @@ describe('valueEquityLot / computeBrokerValue — sin precio: P&L 0 en ambos mod
   })
 })
 
-describe('lotMissingPurchaseRate — badge TC? (purchase + lote peso sin tc_compra)', () => {
+describe('lotMissingPurchaseRate — badge TC? (purchase + lote de costo peso sin tc_compra)', () => {
   const pesoNoTc   = pos({ asset: 'GGAL', currency: 'ARS', invested: 1000, tc_compra: null })
   const pesoWithTc = pos({ asset: 'GGAL', currency: 'ARS', invested: 1000, tc_compra: TC1 })
   const usdLot     = pos({ asset: 'AAPL', currency: 'USD', invested: 1000, tc_compra: null })
   const cash       = pos({ asset: 'ARS',  currency: 'ARS', is_cash: true, tc_compra: null })
+  const nullCcy    = pos({ asset: 'AAPL', currency: null,  invested: 1000, tc_compra: null })
   it('today → nunca marca', () => expect(lotMissingPurchaseRate(pesoNoTc, 'today')).toBe(false))
   it('purchase + peso sin tc → marca', () => expect(lotMissingPurchaseRate(pesoNoTc, 'purchase')).toBe(true))
   it('purchase + peso CON tc → no marca', () => expect(lotMissingPurchaseRate(pesoWithTc, 'purchase')).toBe(false))
   it('purchase + lote USD → no marca (el modo no aplica al costo en USD)', () => expect(lotMissingPurchaseRate(usdLot, 'purchase')).toBe(false))
   it('purchase + cash → no marca', () => expect(lotMissingPurchaseRate(cash, 'purchase')).toBe(false))
+  // Broker-aware: un lote de moneda sin marcar NO se rutea en un broker USD (cae a
+  // USD-nativo) → no marca; pero en un broker ARS SÍ se rutea (path nativo) → marca.
+  it('purchase + moneda-null en broker USD → no marca (no se rutea)', () => expect(lotMissingPurchaseRate(nullCcy, 'purchase', false)).toBe(false))
+  it('purchase + moneda-null en broker ARS → marca (path nativo ruteado)', () => expect(lotMissingPurchaseRate(nullCcy, 'purchase', true)).toBe(true))
+  it('purchase + lote USD en broker ARS → no marca (costo ya en USD)', () => expect(lotMissingPurchaseRate(usdLot, 'purchase', true)).toBe(false))
+})
+
+describe('computeBrokerValue — agregado DCA multi-lote: invertido USD purchase suma POR LOTE', () => {
+  // Dos compras de GGAL a distinto tc_compra. El invertido USD en purchase debe ser
+  // Σ(invested_i / tc_i), independiente del orden — NO Σinvested / tc del primer lote.
+  // computeBrokerValue itera por-lote (es la referencia de reconciliación del subtotal).
+  const lotA = pos({ broker: 'Cocos', asset: 'GGAL', currency: 'ARS', quantity: 10, invested: 100_000, tc_compra: 200 })
+  const lotB = pos({ broker: 'Cocos', asset: 'GGAL', currency: 'ARS', quantity: 10, invested: 100_000, tc_compra: 1000 })
+  const prices = { 'GGAL.BA': 12_000 }
+  const expected = 100_000 / 200 + 100_000 / 1000   // 500 + 100 = 600 USD
+  it('invertido USD purchase = Σ(inv_i/tc_i), no depende del orden', () => {
+    const r1 = computeBrokerValue([lotA, lotB], prices, arsBroker(), TCB, TCB, null, 'purchase')
+    const r2 = computeBrokerValue([lotB, lotA], prices, arsBroker(), TCB, TCB, null, 'purchase')
+    expect(r1.invested).toBeCloseTo(expected)
+    expect(r2.invested).toBeCloseTo(expected)
+  })
 })

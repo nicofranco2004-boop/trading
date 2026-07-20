@@ -1048,7 +1048,11 @@ export default function PositionsMobile() {
           </div>
           <div className="px-4 pb-2">
             <RentaFijaSections positions={enriched}
-              valuePos={p => ({ valueUsd: p.valueUsd, investedUsd: p.investedUsd, pnlUsd: p.pnlUsd, pnlPct: p.pnlPct })}
+              valuePos={p => ({ valueUsd: p.valueUsd, investedUsd: p.investedUsd, pnlUsd: p.pnlUsd,
+                // % en USD (refleja el modo), consistente con el $ de la fila y el
+                // total de sección; NO el % nativo en pesos (p.pnlPct) que en 'purchase'
+                // contradiría el $ USD. Espeja el desktop (valuePos re-computa pnlUsd/invUsd).
+                pnlPct: p.investedUsd > 0 ? p.pnlUsd / p.investedUsd : 0 })}
               brokers={brokers} displayCurrency={currency} tcBlue={tcBlue} onChanged={loadAll} />
             <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
           </div>

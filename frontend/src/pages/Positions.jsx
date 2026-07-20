@@ -29,7 +29,7 @@ import {
 } from '../utils/bondSchedule'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -859,6 +859,10 @@ function PositionsDesktop() {
       buy_price: totalQty > 0 ? totalInv / totalQty : null,
       price_override: overrides.length === 1 ? overrides[0] : null,
       tc_compra: lots[0].tc_compra,
+      // _lots: los lotes reales, para rutear el costo USD POR LOTE (cada uno a su
+      // tc_compra) en modo 'purchase' — dividir el costo sumado por UN solo tc_compra
+      // daría un invertido USD erróneo y dependiente del orden de los lotes.
+      _lots: lots,
       entry_date: dates[0] || null,
     }
   }
@@ -913,6 +917,19 @@ function PositionsDesktop() {
     return rows
   }
 
+  // Costo USD ruteado por el modo (columna INV. USD). Para un agregado multi-lote
+  // suma POR LOTE (cada uno a su tc_compra) — sin esto, en 'purchase' dividir el costo
+  // sumado por el tc_compra del primer lote da un invertido erróneo y dependiente del
+  // orden, y no reconcilia con el subtotal del broker (que itera por-lote). En 'today'
+  // Σ(cost_i/rate) === Σcost/rate → byte-idéntico.
+  function routedInvUsd(p, rate) {
+    const lots = p._lots
+    if (lots && lots.length) {
+      return lots.reduce((s, l) => s + ((l.invested || 0) + (l.commissions || 0)) / costBasisRate(l, rate, costBasis), 0)
+    }
+    return ((p.invested || 0) + (p.commissions || 0)) / costBasisRate(p, rate, costBasis)
+  }
+
   function calcUSDT(p) {
     if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null, investedUsd: p.invested }
     // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
@@ -922,8 +939,9 @@ function PositionsDesktop() {
     if (costInPesos(p)) {
       // Costo DISPLAY: en modo 'purchase' va al tc_compra del lote (los USD que
       // realmente puso); en 'today' al MEP (byte-idéntico). El VALOR (línea abajo)
-      // siempre va al MEP de hoy. No hay guard en esta rama → sin flip.
-      const realCost = ((p.invested || 0) + (p.commissions || 0)) / costBasisRate(p, tcCedear, costBasis)
+      // siempre va al MEP de hoy. No hay guard en esta rama → sin flip. Multi-lote:
+      // suma por-lote (routedInvUsd), no divide el costo sumado por un solo tc_compra.
+      const realCost = routedInvUsd(p, tcCedear)
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
       if (priceArs == null) return { value: null, pnl: null, pnlPct: null, price: null, investedUsd: realCost }
       const value = (priceArs * p.quantity) / tcCedear
@@ -995,7 +1013,7 @@ function PositionsDesktop() {
     // Guardea con realCostArs (pesos NATIVOS, mode-independent) → el modo 'purchase'
     // nunca afloja el guard. La columna INV USD (invUsd) sí va al tc_compra.
     if (!trustMktValue(valueArs, realCostArs, p.asset_type, p.price_override != null)) {
-      const invUsd = realCostArs / costBasisRate(p, tcBlue, costBasis)
+      const invUsd = routedInvUsd(p, tcBlue)
       return { valueArs: realCostArs, valueUsd: invUsd, pnlArs: 0, pnlUsd: 0, pnlPct: 0, priceArs: null, invUsd }
     }
     const pnlArs = valueArs - realCostArs
@@ -1003,7 +1021,8 @@ function PositionsDesktop() {
     // Costo USD de la columna INV USD: en modo 'today' al blue actual (FX-neutral,
     // el default histórico); en 'purchase' al tc_compra del lote (los USD reales
     // invertidos → el P&L USD absorbe la devaluación). El valor sigue al blue de hoy.
-    const invUsd = realCostArs / costBasisRate(p, tcBlue, costBasis)
+    // Multi-lote: suma por-lote (routedInvUsd), no divide el costo sumado por un tc.
+    const invUsd = routedInvUsd(p, tcBlue)
     const pnlUsd = valueUsd - invUsd
     return { valueArs, valueUsd, pnlArs, pnlUsd, pnlPct: realCostArs > 0 ? pnlArs / realCostArs : 0, priceArs, invUsd }
   }
@@ -1019,7 +1038,7 @@ function PositionsDesktop() {
       // Tomar el costo de calcARS (invUsd): para un lote costInUsd el costo YA está
       // en USD y NO debe dividirse por el blue (sino P&L% explota en Renta Fija). El
       // fallback ÷tcBlue solo aplica a lotes ARS (calcARS omite invUsd sin precio).
-      const invUsd = c.invUsd ?? (((p.invested || 0) + (p.commissions || 0)) / costBasisRate(p, tcBlue, costBasis))
+      const invUsd = c.invUsd ?? routedInvUsd(p, tcBlue)
       const valueUsd = c.valueUsd != null ? c.valueUsd : invUsd
       const pnlUsd = valueUsd - invUsd
       return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
@@ -1098,15 +1117,19 @@ function PositionsDesktop() {
   // IMPORTANTE: useMemo va ANTES del early return — los hooks deben llamarse
   // en el mismo orden en cada render (rules of hooks).
   const totals = useMemo(() => {
-    let value = 0, invested = 0
+    let value = 0, invested = 0, valueArs = 0, invArs = 0
     for (const b of brokers) {
       const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis)
       value += r.value || 0
       invested += r.invested || 0
+      // Pesos NATIVOS (mode-independent) — para el hero/headers en display ARS: el
+      // peso no tiene "dólar de compra", así que sus cifras no cambian con el modo.
+      valueArs += r.valueArs || 0
+      invArs += r.invArs || 0
     }
     const pnl = value - invested
     const pct = invested > 0 ? pnl / invested : 0
-    return { value, invested, pnl, pct }
+    return { value, invested, pnl, pct, valueArs, invArs }
   }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto, costBasis])
 
   // Delta vs último snapshot guardado. Se llama "variación diaria" cuando
@@ -1148,6 +1171,20 @@ function PositionsDesktop() {
   const heroInvested = totals.invested + pfInvestedUsd
   const heroPnl = heroValue - heroInvested
   const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
+  // Totales NATIVOS en pesos para el display ARS (mode-independent — el peso no tiene
+  // "dólar de compra"). Reconcilian con los headers de broker y las filas en pesos.
+  // PF: la pata ARS es nativa, la USD se pasa a pesos al dólar de hoy.
+  const pfValueArs = (pfTotals.ARS?.valor || 0) + (pfTotals.USD?.valor || 0) * tcBlue
+  const pfInvestedArs = (pfTotals.ARS?.capital || 0) + (pfTotals.USD?.capital || 0) * tcBlue
+  const heroValueArs = totals.valueArs + pfValueArs
+  const heroInvestedArs = totals.invArs + pfInvestedArs
+  const heroPnlArs = heroValueArs - heroInvestedArs
+  const heroPctArs = heroInvestedArs > 0 ? heroPnlArs / heroInvestedArs : 0
+  // Cifras del hero según el display: ARS → nativas (mode-independent); USD → reflejan
+  // el modo (en 'purchase' el invertido/P&L en USD absorben la devaluación).
+  const isArsDisp = displayCurrency === 'ARS'
+  const heroPnlDisp = isArsDisp ? heroPnlArs : heroPnl
+  const heroPctDisp = isArsDisp ? heroPctArs : heroPct
 
   if (brokers.length === 0) {
     return (
@@ -1271,7 +1308,7 @@ function PositionsDesktop() {
           label="Tu cartera hoy"
           value={
             <span className="inline-flex items-end gap-3">
-              <PrivacyMask><FlashValue value={heroValue}><AnimatedNumber value={heroValue} format={(n) => displayCurrency === 'ARS' ? fmtArs(n * tcBlue) : fmtUsd(n)} /></FlashValue></PrivacyMask>
+              <PrivacyMask><FlashValue value={isArsDisp ? heroValueArs : heroValue}><AnimatedNumber value={isArsDisp ? heroValueArs : heroValue} format={(n) => isArsDisp ? fmtArs(n) : fmtUsd(n)} /></FlashValue></PrivacyMask>
               <button onClick={togglePrivacy} className="mb-2 text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
                 {hidden ? <EyeOff size={22} strokeWidth={1.5} /> : <Eye size={22} strokeWidth={1.5} />}
               </button>
@@ -1280,20 +1317,20 @@ function PositionsDesktop() {
           sub={
             <span className="inline-flex items-center gap-3 flex-wrap">
               <span className="text-ink-2">P&L no realizado</span>
-              <span className={`inline-flex items-center gap-1 font-semibold ${heroPnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {heroPnl >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
-                {hidden ? '••••••' : (displayCurrency === 'ARS'
-                  ? `ARS ${ars(Math.abs(heroPnl * tcBlue))}`
+              <span className={`inline-flex items-center gap-1 font-semibold ${heroPnlDisp >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                {heroPnlDisp >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
+                {hidden ? '••••••' : (isArsDisp
+                  ? `ARS ${ars(Math.abs(heroPnlArs))}`
                   : `USD ${usd(Math.abs(heroPnl))}`)}
               </span>
-              <span className={`tabular ${heroPnl >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
-                ({pctSigned(heroPct)})
+              <span className={`tabular ${heroPnlDisp >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
+                ({pctSigned(heroPctDisp)})
               </span>
             </span>
           }
           hint={hidden ? undefined : (
-            displayCurrency === 'ARS'
-              ? `Invertido ARS ${ars(heroInvested * tcBlue)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
+            isArsDisp
+              ? `Invertido ARS ${ars(heroInvestedArs)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
               : `Invertido USD ${usd(heroInvested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
           )}
         />
@@ -1431,8 +1468,13 @@ function PositionsDesktop() {
         // ── Header (compartido) ────────────────────────────────────────────
         // Eyebrow 'Broker' + nombre prominente · badges discretos · métricas
         // inline · acciones a la derecha. Patrón specimen sheet del audit.
-        const headerPnlUsd = r.pnlUsd
-        const headerPnlPct = r.invested > 0 ? r.pnlUsd / r.invested : 0
+        // Broker ARS: el P&L del header es NATIVO en pesos (monto, signo, color y %),
+        // mode-independent — consistente con Valor/Inv en pesos de arriba y con el %
+        // nativo de cada fila. Broker USD: todo en USD (refleja el modo en 'purchase').
+        const headerPnlAmt = isARS ? r.pnlArs : r.pnlUsd
+        const headerPnlPct = isARS
+          ? (r.invArs > 0 ? r.pnlArs / r.invArs : 0)
+          : (r.invested > 0 ? r.pnlUsd / r.invested : 0)
         const Header = (
           <div className="flex flex-col gap-3 px-4 sm:px-5 py-4 border-b border-line">
             <div className="flex items-start justify-between flex-wrap gap-3">
@@ -1488,9 +1530,9 @@ function PositionsDesktop() {
                 <span className="label-mono mr-1.5">Inv</span>
                 {hidden ? '••••••' : (isARS ? fmtArs(r.invArs) : fmtUsd(r.invested))}
               </span>
-              <span className={`${colorClass(headerPnlUsd)} font-medium`}>
+              <span className={`${colorClass(headerPnlAmt)} font-medium`}>
                 <span className="label-mono mr-1.5 text-ink-2">P&L</span>
-                {hidden ? '••••••' : `${headerPnlUsd >= 0 ? '+' : '−'}${isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(headerPnlUsd))}`}`}
+                {hidden ? '••••••' : `${headerPnlAmt >= 0 ? '+' : '−'}${isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(r.pnlUsd))}`}`}
                 <span className="ml-1 opacity-80">({pctSigned(headerPnlPct)})</span>
               </span>
             </div>
@@ -1586,10 +1628,10 @@ function PositionsDesktop() {
                                     </span>
                                   )}
                                   {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
-                                  {!p.is_cash && (!p.tc_compra || p.tc_compra <= 0) && (
+                                  {lotMissingPurchaseRate(p, costBasis, true) && (
                                     <span
                                       className="text-[9px] font-mono uppercase tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30"
-                                      title="Falta el tipo de cambio de compra. El P&L en USD se aproxima con el blue actual — editá la posición para mayor precisión."
+                                      title="Sin tipo de cambio de compra registrado — este lote usa el dólar de hoy para el costo en USD. Editá la posición para cargarlo."
                                     >
                                       TC?
                                     </span>
@@ -1635,7 +1677,7 @@ function PositionsDesktop() {
                           <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{`ARS ${ars(c.priceArs)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                           <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : fmtArs(p.invested)}</td>
                           {showDetail && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
-                          {showDetail && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : <>{fmtUsd(c.invUsd)}<TcMissingBadge p={p} costBasis={costBasis} /></>) : '—'}</td>}
+                          {showDetail && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : fmtUsd(c.invUsd)) : '—'}</td>}
                           <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.valueArs != null ? <FlashValue value={c.value}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
                           <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlArs)} ${pnlBg}`} title={pnlTooltip}>
                             {hidden ? '••••••' : (adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—')}

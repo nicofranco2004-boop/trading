@@ -228,13 +228,20 @@ export function costBasisRate(p, currentRate, costBasis = 'today') {
  * registrado y por eso cae silenciosamente al dólar de hoy? (compras previas al
  * fix del importador, o lotes cripto/USD donde no se estampa). Sirve para marcar
  * la celda con un badge "TC?" y no dar a entender que ya refleja la devaluación.
- * Solo aplica a lotes cuyo COSTO está en pesos (los de costo USD/cripto no usan
- * tc_compra) y solo en modo 'purchase'. En 'today' siempre es false.
+ *
+ * Solo aplica a lotes cuyo COSTO efectivamente se rutea por costBasisRate (los de
+ * costo USD/cripto no usan tc_compra → el badge mentiría). El costo está en pesos
+ * cuando: costInPesos (lote ARS en cualquier broker) O es un lote nativo de un
+ * broker ARS que no es de costo USD (isArsBroker && !costInUsd). Por eso hace falta
+ * el contexto del broker: un lote de moneda sin marcar en un broker USD NO se rutea.
+ * Solo en modo 'purchase'; en 'today' siempre es false.
  */
-export function lotMissingPurchaseRate(p, costBasis = 'today') {
+export function lotMissingPurchaseRate(p, costBasis = 'today', isArsBroker = false) {
   if (costBasis !== 'purchase') return false
   if (p?.is_cash) return false
-  if (costInUsd(p) || isCrypto(p?.asset)) return false
+  if (isCrypto(p?.asset)) return false
+  const costIsPesos = costInPesos(p) || (isArsBroker && !costInUsd(p))
+  if (!costIsPesos) return false
   return !(p?.tc_compra > 0)
 }
 
