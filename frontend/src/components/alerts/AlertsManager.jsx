@@ -252,6 +252,10 @@ export default function AlertsManager({ plan, prefill }) {
             <SegBtn active={form.channel === 'push'} onClick={() => setField('channel', 'push')} label="Push" icon={Smartphone} />
             <SegBtn active={form.channel === 'email'} onClick={() => setField('channel', 'email')} label="Email" icon={Mail} />
           </div>
+          <p className="text-[11px] text-ink-3 -mt-1">
+            El email siempre llega. El push es un extra para desktop y Android
+            {push && push.supported === false ? ' — en iPhone, agregá Rendi a tu inicio' : ''}.
+          </p>
           <div className="flex gap-2">
             <SegBtn active={form.repeat === 'once'} onClick={() => setField('repeat', 'once')} label="Una vez" />
             <SegBtn active={form.repeat === 'always'} onClick={() => setField('repeat', 'always')} label="Siempre" />
