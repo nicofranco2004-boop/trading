@@ -6073,7 +6073,7 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_cu
 
 class PositionIn(BaseModel):
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=48)  # 48 para símbolos FCI: 'FCI:FIMA-PREMIUM-A'
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)  # MAX_STR (100): FCI y nombres largos (compra y venta comparten límite)
     is_cash: bool = False
     buy_price: Optional[float] = Field(None, ge=0)
     quantity: Optional[float] = Field(None, ge=0)
@@ -7689,7 +7689,7 @@ class BondCashflowIn(BaseModel):
     Todo atómico.
     """
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     flow_type: str = Field(..., max_length=20)  # 'coupon' | 'amortization'
     amount: float = Field(..., gt=0, le=1e12)
     date: str = Field(..., max_length=10)
@@ -7994,7 +7994,7 @@ def _cash_asset_for_currency(currency: str) -> str:
 class BondCashflowSkipIn(BaseModel):
     """Marca una cobranza teórica como "no aplica" para no sugerirla más."""
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     date: str = Field(..., max_length=10)
     reason: Optional[str] = Field(None, max_length=200)
 
@@ -8427,7 +8427,7 @@ def _finite(v: Optional[float]) -> Optional[float]:
 class SellIn(BaseModel):
     """Venta FIFO: cierra posiciones del par (broker, asset) en orden de entry_date asc."""
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     quantity: float = Field(..., gt=0, le=_FINITE_BOUND)
     exit_price: float = Field(..., ge=0, le=_FINITE_BOUND)
     date: Optional[str] = Field(None, max_length=10)
@@ -8911,7 +8911,7 @@ _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 class OperationIn(BaseModel):
     date: str = Field(..., max_length=10)
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     op_type: Optional[str] = Field(None, max_length=MAX_STR)
     entry_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
     exit_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
