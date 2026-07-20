@@ -20,6 +20,7 @@ import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, B
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
   BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF, CATEGORY_TO_TYPE,
+  POPULAR_TICKERS, inferType,
 } from '../utils/tickers'
 import { isLetraTicker } from '../utils/sections'
 import { api } from '../utils/api'
@@ -68,6 +69,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
   const [chosenBroker, setChosenBroker] = useState(initialBroker || null)
   const [categoryId, setCategoryId] = useState(null)
   const [fciList, setFciList] = useState([])
+  const [holdings, setHoldings] = useState([])   // posiciones del user (para "En tu cartera")
   const current = SEQ[stepIdx]
 
   // El catálogo de FCI es dinámico (viene del backend); el resto de categorías
@@ -79,6 +81,25 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
         if (alive) setFciList((rows || []).map(r => ({
           s: r.symbol, n: r.display_name, _sub: r.emisor, _moneda: r.moneda,
         })))
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  // Tenencias del user → para mostrar "En tu cartera" primero al abrir el buscador.
+  useEffect(() => {
+    let alive = true
+    api.get('/positions')
+      .then(d => {
+        if (!alive) return
+        setHoldings((d || [])
+          .filter(p => !p.is_cash && p.asset)
+          .map(p => ({
+            symbol: String(p.asset).toUpperCase(),
+            name: p.asset,
+            broker: p.broker,
+            quantity: Number(p.quantity || 0),
+          })))
       })
       .catch(() => {})
     return () => { alive = false }
@@ -120,6 +141,50 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
     return (cat.list || []).map(t => ({ ...t, _catId: cat.id, _type: type }))
   }), [categories])
 
+  // Un mismo símbolo puede vivir en 2 categorías (AAPL como Acción US y como
+  // CEDEAR). Al elegir una tenencia/sugerencia resolvemos a qué categoría rutear:
+  // en un broker ARS preferimos el CEDEAR; en uno USD, la acción. Si no está en
+  // ninguna lista (bono/letra/FCI suelto), devolvemos catId indefinido (el
+  // backend infiere el tipo del broker).
+  function resolvePick(symbol, name) {
+    const sym = (symbol || '').toUpperCase()
+    const matches = universe.filter(u => (u.s || '').toUpperCase() === sym)
+    if (!matches.length) return { s: symbol, n: name, _catId: undefined, _type: inferType(symbol) }
+    if (matches.length === 1) return matches[0]
+    const wantCedear = brokerCurrency === 'ARS'
+    return matches.find(m => (m._catId === 'cedears') === wantCedear) || matches[0]
+  }
+
+  // Tenencias en el broker elegido, agregadas por símbolo (varios lotes → 1 fila).
+  const brokerHoldings = useMemo(() => {
+    if (!chosenBroker) return []
+    const map = new Map()
+    for (const h of holdings) {
+      if (h.broker !== chosenBroker) continue
+      const prev = map.get(h.symbol)
+      if (prev) prev.quantity += h.quantity
+      else map.set(h.symbol, { ...h })
+    }
+    return [...map.values()]
+  }, [holdings, chosenBroker])
+
+  // Sugeridos: tickers populares que se pueden agregar en este broker y que el
+  // user todavía NO tiene acá. Recortado a 6 para no tapar las categorías.
+  const suggestions = useMemo(() => {
+    const held = new Set(brokerHoldings.map(h => h.symbol))
+    const out = []
+    for (const p of POPULAR_TICKERS) {
+      const sym = (p.symbol || '').toUpperCase()
+      if (held.has(sym)) continue
+      const r = resolvePick(sym, p.name)
+      if (!r._catId) continue           // no addable en este broker (fuera de las listas)
+      if (out.some(o => o.symbol === sym)) continue
+      out.push({ symbol: sym, name: p.name, type: r._type, _pick: r })
+      if (out.length >= 6) break
+    }
+    return out
+  }, [brokerHoldings, universe, brokerCurrency])
+
   // Esc cierra el flow desde cualquier step (a11y standard)
   useEffect(() => {
     function onKey(e) { if (e.key === 'Escape') onClose() }
@@ -137,6 +202,12 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
   }
   function selectTicker(t, catId = categoryId) {
     onAssetSelected({ asset: t.s, name: t.n, category: catId, broker: chosenBroker })
+  }
+  // Elegir una tenencia o sugerencia (por símbolo): resolvemos la categoría y
+  // vamos derecho al form.
+  function selectBySymbol(symbol, name) {
+    const r = resolvePick(symbol, name)
+    selectTicker(r, r._catId)
   }
   function back() {
     setStepIdx(i => {
@@ -170,8 +241,11 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
           <Step1AssetType
             categories={categories}
             universe={universe}
+            holdings={brokerHoldings}
+            suggestions={suggestions}
             onPick={selectCategory}
             onPickAsset={t => selectTicker(t, t._catId)}
+            onPickSymbol={selectBySymbol}
           />
         )}
         {current === 'ticker' && (
@@ -309,7 +383,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 1 — Asset Type Picker (grid de categorías)
 // ════════════════════════════════════════════════════════════════════════════
-function Step1AssetType({ categories, universe, onPick, onPickAsset }) {
+function Step1AssetType({ categories, universe, holdings = [], suggestions = [], onPick, onPickAsset, onPickSymbol }) {
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
   const searching = q.length > 0
@@ -374,31 +448,75 @@ function Step1AssetType({ categories, universe, onPick, onPickAsset }) {
             </ul>
           )
         ) : (
-          <div className="p-5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {categories.map(cat => {
-                const Icon = cat.icon
-                return (
-                  <button
-                    key={cat.id}
-                    onClick={() => onPick(cat)}
-                    className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
-                        <Icon size={18} strokeWidth={1.5} aria-hidden="true" />
+          <div>
+            {/* En tu cartera — lo primero: los activos que ya tenés en este broker */}
+            {holdings.length > 0 && (
+              <div className="border-b border-line/50 dark:border-line/40">
+                <p className="px-5 pt-3 pb-1 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">En tu cartera</p>
+                <ul className="divide-y divide-line/50 dark:divide-line/40">
+                  {holdings.map(h => (
+                    <li key={`hold:${h.symbol}`}>
+                      <AssetResultRow
+                        symbol={h.symbol}
+                        name={h.name}
+                        type={inferType(h.symbol)}
+                        onClick={() => onPickSymbol(h.symbol, h.name)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Sugeridos — populares que todavía no tenés acá */}
+            {suggestions.length > 0 && (
+              <div className="border-b border-line/50 dark:border-line/40">
+                <p className="px-5 pt-3 pb-1 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">Sugeridos</p>
+                <ul className="divide-y divide-line/50 dark:divide-line/40">
+                  {suggestions.map(s => (
+                    <li key={`sug:${s.symbol}`}>
+                      <AssetResultRow
+                        symbol={s.symbol}
+                        name={s.name}
+                        type={s.type}
+                        onClick={() => onPickSymbol(s.symbol, s.name)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Explorá por categoría */}
+            <div className="p-5">
+              {(holdings.length > 0 || suggestions.length > 0) && (
+                <p className="mb-3 text-[10px] font-mono uppercase tracking-[0.12em] text-ink-3">O explorá por categoría</p>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {categories.map(cat => {
+                  const Icon = cat.icon
+                  return (
+                    <button
+                      key={cat.id}
+                      onClick={() => onPick(cat)}
+                      className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
+                          <Icon size={18} strokeWidth={1.5} aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="font-semibold text-ink-0 text-sm leading-tight">{cat.label}</h3>
+                          <p className="text-xs text-ink-2 mt-1 leading-snug">{cat.hint}</p>
+                          <p className="text-[10px] font-mono text-ink-3 mt-2 uppercase tracking-[0.12em]">
+                            {cat.freeText ? 'Entrada libre' : `${cat.list.length} ${cat.list.length === 1 ? 'opción' : 'opciones'}`}
+                          </p>
+                        </div>
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <h3 className="font-semibold text-ink-0 text-sm leading-tight">{cat.label}</h3>
-                        <p className="text-xs text-ink-2 mt-1 leading-snug">{cat.hint}</p>
-                        <p className="text-[10px] font-mono text-ink-3 mt-2 uppercase tracking-[0.12em]">
-                          {cat.freeText ? 'Entrada libre' : `${cat.list.length} ${cat.list.length === 1 ? 'opción' : 'opciones'}`}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-                )
-              })}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         )}
