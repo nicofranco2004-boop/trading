@@ -818,6 +818,21 @@ def init_db():
     if news_cols and 'tags' not in news_cols:
         conn.execute("ALTER TABLE news ADD COLUMN tags TEXT")
         conn.commit()
+    # Migración 2026-07-22 (noticias en español): purgar el backlog de noticias
+    # en INGLÉS cacheadas por el código anterior — sin esto dominan el feed
+    # durante días (se ordena por published_at y el backlog EN es más denso).
+    # Identificables sin ambigüedad: los queries viejos eran "{TICKER} stock" y
+    # los feeds EN de Investing (www.investing.com). El código nuevo nunca
+    # persiste con esos query_source (el fallback EN se guarda bajo el query
+    # "{TICKER} acciones"), así que esto es idempotente y no borra nada nuevo.
+    if news_cols:
+        _purged = conn.execute(
+            "DELETE FROM news WHERE query_source LIKE '% stock' "
+            "OR query_source LIKE '%www.investing.com%'"
+        ).rowcount
+        if _purged:
+            log.info("news migración es: purgadas %d noticias EN del cache", _purged)
+        conn.commit()
     if news_cols and 'sentiment' not in news_cols:
         conn.execute("ALTER TABLE news ADD COLUMN sentiment TEXT")
         conn.commit()
