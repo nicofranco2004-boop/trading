@@ -512,10 +512,17 @@ function PositionsDesktop() {
     setModal('add')
   }
   function openEdit(p) {
+    // Muchas posiciones (imports) tienen buy_price null/0 en la DB: la grilla
+    // deriva el precio de invested/quantity, pero el form mostraba 0 → para
+    // editar solo los nominales había que re-buscar el precio. Mismo fallback
+    // que la grilla, redondeado para que el input quede editable.
+    const fallbackPrice = (!p.is_cash && !p.buy_price && p.quantity > 0 && p.invested > 0)
+      ? +(p.invested / p.quantity).toFixed(6)
+      : null
     setForm({
       ...p,
       is_cash: !!p.is_cash,
-      buy_price: p.buy_price ?? '',
+      buy_price: (p.buy_price || fallbackPrice) ?? '',
       quantity: p.quantity ?? '',
       invested: p.invested ?? '',
       tc_compra: p.tc_compra ?? '',
