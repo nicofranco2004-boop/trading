@@ -192,21 +192,18 @@ def _compose_message(alert, symbol, price, change_pct) -> str:
         thr = _fmt(alert["threshold"], alert["currency"])
         cur = _fmt(price, alert["currency"])
         if alert["direction"] == "above":
-            return f"{sym} alcanzó {cur} (tu alerta: ≥ {thr})"
-        return f"{sym} bajó a {cur} (tu alerta: ≤ {thr})"
-    # pct_move
+            return f"{sym} alcanzó {cur}"
+        return f"{sym} bajó a {cur}"
+    # pct_move — título limpio, sin el detalle de umbrales (va en el cuerpo del mail).
     verbo = "subió" if (change_pct or 0) >= 0 else "cayó"
-    cuando = "desde tu referencia" if (alert["baseline"] or "prev_close") == "set_price" else "hoy"
-    return f"{sym} {verbo} {abs(change_pct):.1f}% {cuando} (tu alerta: {_pct_desc(alert)})"
+    cuando = "desde tu alerta" if (alert["baseline"] or "prev_close") == "set_price" else "hoy"
+    return f"{sym} {verbo} {_fmt_pct(change_pct)}% {cuando}"
 
 
-def _pct_desc(alert) -> str:
-    parts = []
-    if alert["up_pct"] is not None:
-        parts.append(f"sube ≥ {abs(alert['up_pct']):.0f}%")
-    if alert["down_pct"] is not None:
-        parts.append(f"cae ≥ {abs(alert['down_pct']):.0f}%")
-    return " o ".join(parts) if parts else "se mueve"
+def _fmt_pct(v) -> str:
+    """% limpio: 3.0 → '3', 3.2 → '3.2' (sin decimales de más en el título)."""
+    v = abs(v or 0)
+    return f"{v:.0f}" if abs(v - round(v)) < 0.05 else f"{v:.1f}"
 
 
 # ─── Entrega ──────────────────────────────────────────────────────────────────
