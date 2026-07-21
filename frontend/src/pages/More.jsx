@@ -24,7 +24,8 @@ const GROUPS = [
   {
     label: 'Tu portfolio',
     items: [
-      { to: '/posiciones',  label: 'Cartera',      icon: List,   sub: 'Posiciones, evolución, objetivos' },
+      { to: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard, sub: 'Evolución, composición y heatmap' },
+      { to: '/posiciones',  label: 'Cartera',      icon: List,   sub: 'Tus tenencias y objetivos' },
       { to: '/operaciones', label: 'Movimientos',  icon: List,   sub: 'Trades + depósitos + dividendos' },
       { to: '/imports',     label: 'Importar CSV', icon: Upload, sub: 'Subí CSVs de tus brokers' },
       { to: '/alertas',     label: 'Alertas',      icon: BellRing, sub: 'Avisos de precio y variación' },
@@ -33,15 +34,10 @@ const GROUPS = [
   {
     label: 'Análisis',
     items: [
-      { to: '/analisis',     label: 'Análisis',     icon: Brain, sub: 'Diagnóstico, métricas, sesgos' },
-      { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge, sub: 'Calidad de tus tenencias + buscador' },
-      { to: '/novedades',    label: 'Novedades',    icon: Bell,  sub: 'Noticias + eventos' },
-    ],
-  },
-  {
-    label: 'Personal',
-    items: [
-      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound, sub: 'Contexto para el Coach IA' },
+      { to: '/analisis',        label: 'Métricas',           icon: Brain,     sub: 'Diagnóstico, comportamiento, reportes' },
+      { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge,     sub: 'Calidad de tus tenencias + buscador' },
+      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound, sub: 'Tu perfil declarado vs. tu cartera' },
+      { to: '/novedades',       label: 'Novedades',          icon: Bell,      sub: 'Noticias + eventos' },
     ],
   },
 ]

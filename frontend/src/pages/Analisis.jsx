@@ -18,21 +18,21 @@
 
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom'
-import { Compass, Brain, BarChart3, UserRound } from 'lucide-react'
+import { Compass, Brain, BarChart3 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import { track } from '../utils/track'
 
 const Insights = lazy(() => import('./Insights'))
 const Behavioral = lazy(() => import('./Behavioral'))
 const Reports = lazy(() => import('./Reports'))
-// El test de inversor (PerfilInversor) se migró a Configuración › Test de
-// inversor. Acá, la tab Perfil muestra sólo el cruce cartera-vs-perfil.
+// El "Perfil de inversor" (cruce cartera-vs-perfil declarado) salió de acá a su
+// propia página/ítem del sidebar (/perfil-inversor). Este nav se llama ahora
+// "Métricas" en el sidebar. El test/cuestionario vive en Config › Test de inversor.
 
 const TABS = [
-  { id: 'diagnostico',    label: 'Diagnóstico',         icon: Compass,    desc: 'Lo que te dice el sistema sobre tu performance' },
-  { id: 'perfil',         label: 'Perfil del inversor', icon: UserRound,  desc: 'Test + cruce con tu cartera real' },
-  { id: 'comportamiento', label: 'Comportamiento',      icon: Brain,      desc: 'Sesgos detectados sobre tu historial' },
-  { id: 'reportes',       label: 'Reportes',            icon: BarChart3,  desc: 'Performance mensual y timeline' },
+  { id: 'diagnostico',    label: 'Diagnóstico',    icon: Compass,    desc: 'Lo que te dice el sistema sobre tu performance' },
+  { id: 'comportamiento', label: 'Comportamiento', icon: Brain,      desc: 'Sesgos detectados sobre tu historial' },
+  { id: 'reportes',       label: 'Reportes',       icon: BarChart3,  desc: 'Performance mensual y timeline' },
 ]
 
 const VALID_TAB_IDS = new Set(TABS.map(t => t.id))
@@ -42,6 +42,12 @@ export default function Analisis() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const location = useLocation()
+
+  // Back-compat: el "Perfil de inversor" salió de las tabs a su propia página.
+  // Los links viejos (?tab=perfil) redirigen a /perfil-inversor.
+  useEffect(() => {
+    if (searchParams.get('tab') === 'perfil') navigate('/perfil-inversor', { replace: true })
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Tab desde URL (?tab=comportamiento). Default = diagnostico. Inválidos caen al default.
   const urlTab = searchParams.get('tab')
@@ -76,8 +82,8 @@ export default function Analisis() {
     <div className="page-shell-wide">
       <PageHeader
         eyebrow="Tu análisis"
-        title="Análisis"
-        subtitle="Diagnóstico, métricas, sesgos y reportes de tu cartera — todo en un lugar."
+        title="Métricas"
+        subtitle="Diagnóstico, comportamiento y reportes de tu cartera — todo en un lugar."
       />
 
       {/* Tab strip — filled pills con violet en la activa. Mismo diseño que
@@ -113,13 +119,6 @@ export default function Analisis() {
       {/* Tab content — lazy boundary por tab (cada uno es un chunk separado) */}
       <Suspense fallback={<div className="text-center py-20 text-ink-3 text-sm">Cargando…</div>}>
         {tab === 'diagnostico' && <Insights _embeddedTab="diagnostico" />}
-        {tab === 'perfil' && (
-          // El TEST se migró a Configuración › Test de inversor. Acá queda sólo
-          // el cruce cartera-vs-perfil declarado. Si el test no está completo,
-          // ProfileInvestorBlock (dentro de Insights) muestra un CTA para
-          // completarlo en /config.
-          <Insights _embeddedTab="perfil" />
-        )}
         {tab === 'comportamiento' && <Behavioral />}
         {tab === 'reportes' && <Reports />}
       </Suspense>

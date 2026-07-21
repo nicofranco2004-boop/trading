@@ -57,6 +57,7 @@ const Analisis = lazy(() => import('./pages/Analisis'))
 const Fundamentals = lazy(() => import('./pages/Fundamentals'))
 const AssetDetail = lazy(() => import('./pages/AssetDetail'))
 const Cartera = lazy(() => import('./pages/Cartera'))
+const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
 const More = lazy(() => import('./pages/More'))
 const Planes = lazy(() => import('./pages/Planes'))
 // BillingReturn exporta 3 componentes — Vite los dedupea en un solo chunk
@@ -159,8 +160,9 @@ function AppRoutes() {
       <Route path="/analisis" element={<Analisis />} />
       <Route path="/fundamentals" element={<Fundamentals />} />
       <Route path="/activo/:ticker" element={<AssetDetail />} />
-      {/* Redirects de rutas viejas al wrapper consolidado, preservando query */}
-      <Route path="/dashboard"       element={<Navigate to="/posiciones?tab=evolucion"   replace />} />
+      {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
+          principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
+      <Route path="/dashboard"       element={<Dashboard />} />
       <Route path="/objetivos"       element={<Navigate to="/posiciones?tab=objetivos"   replace />} />
       <Route path="/insights"        element={<Navigate to="/analisis?tab=diagnostico"   replace />} />
       <Route path="/comportamiento"  element={<Navigate to="/analisis?tab=comportamiento" replace />} />
@@ -172,10 +174,11 @@ function AppRoutes() {
       <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />
       <Route path="/operaciones" element={<Operations />} />
       <Route path="/config" element={<Config />} />
-      {/* El test de inversor se migró a Configuración › Test de inversor
-          (2026-07-14). El URL viejo /perfil-inversor redirige ahí para que
-          bookmarks externos y el menú "Más" de mobile lleven al test. */}
-      <Route path="/perfil-inversor" element={<Navigate to="/config?tab=test" replace />} />
+      {/* Perfil de inversor = el CRUCE "perfil declarado vs. tu cartera real"
+          (ítem propio del sidebar en "Análisis"; antes era un tab de /analisis).
+          El TEST/cuestionario sigue en Configuración › Test de inversor; esta
+          página tiene el CTA para completarlo. */}
+      <Route path="/perfil-inversor" element={<PerfilInversor />} />
       {/* /objetivos sigue siendo redirect a /posiciones?tab=objetivos arriba */}
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
