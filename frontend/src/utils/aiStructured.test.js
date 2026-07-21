@@ -56,3 +56,55 @@ describe('parseStructured', () => {
     expect(r.meta).toBe(null)
   })
 })
+
+describe('blocks (catálogo visual)', () => {
+  const wrap = (blocks) => parseStructured(`p\n${RENDI_DELIM}${JSON.stringify({ verdict: 'Ok', blocks })}`)
+
+  it('compare/alloc/scenario/table/actions válidos pasan', () => {
+    const r = wrap([
+      { type: 'compare', items: [{ l: 'Vos', v: '+18%', pct: 92 }, { l: 'S&P', v: '+15%', pct: 76 }] },
+      { type: 'actions', items: [{ label: 'Ver atribución', to: '/analisis' }] },
+    ])
+    expect(r.meta.blocks).toHaveLength(2)
+    expect(r.meta.blocks[0].type).toBe('compare')
+    expect(r.meta.blocks[1].items[0].to).toBe('/analisis')
+  })
+
+  it('máximo 2 bloques por respuesta', () => {
+    const r = wrap([
+      { type: 'scenario', if: 'a', then: 'b', tone: 'neg' },
+      { type: 'scenario', if: 'c', then: 'd', tone: 'pos' },
+      { type: 'scenario', if: 'e', then: 'f', tone: 'pos' },
+    ])
+    expect(r.meta.blocks).toHaveLength(2)
+  })
+
+  it('tipo desconocido se ignora (forward-compat)', () => {
+    const r = wrap([{ type: 'hologram3d', data: [1, 2] }, { type: 'scenario', if: 'a', then: 'b' }])
+    expect(r.meta.blocks).toHaveLength(1)
+    expect(r.meta.blocks[0].type).toBe('scenario')
+  })
+
+  it('actions: rutas externas / no-whitelisted / javascript: se descartan', () => {
+    const r = wrap([{ type: 'actions', items: [
+      { label: 'Malicioso', to: 'https://evil.com' },
+      { label: 'Proto', to: 'javascript:alert(1)' },
+      { label: 'No listada', to: '/admin' },
+      { label: 'Ok', to: '/alertas?new=NVDA' },
+    ] }])
+    expect(r.meta.blocks).toHaveLength(1)
+    expect(r.meta.blocks[0].items).toEqual([{ label: 'Ok', to: '/alertas?new=NVDA' }])
+  })
+
+  it('table: caps 4 cols × 5 filas', () => {
+    const r = wrap([{ type: 'table', cols: ['a', 'b', 'c', 'd', 'e', 'f'], rows: Array.from({ length: 9 }, () => ['x', '1', '2', '3', '4', '5']) }])
+    expect(r.meta.blocks[0].cols).toHaveLength(4)
+    expect(r.meta.blocks[0].rows).toHaveLength(5)
+    expect(r.meta.blocks[0].rows[0]).toHaveLength(4)
+  })
+
+  it('compare con <2 items no renderiza', () => {
+    const r = wrap([{ type: 'compare', items: [{ l: 'Solo', v: '+1%' }] }])
+    expect(r.meta.blocks).toHaveLength(0)
+  })
+})

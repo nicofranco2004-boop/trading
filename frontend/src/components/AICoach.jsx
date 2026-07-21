@@ -51,6 +51,7 @@ const DEFAULT_SUGGESTED = [
 // aritmética con asteriscos).
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
+import AIBlocks from './ai/AIBlocks'
 
 // Tonos del bloque estructurado (veredicto pill + valores de las tarjetas).
 const VERDICT_TONE = {
@@ -422,6 +423,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                   <p className="text-[15.5px] font-semibold text-ink-0 leading-snug mb-1.5">{meta.headline}</p>
                 )}
                 <div className="text-[14.5px] text-ink-1 leading-relaxed whitespace-pre-wrap">{prose}</div>
+                {meta?.blocks?.length > 0 && <AIBlocks blocks={meta.blocks} />}
                 {meta?.stats?.length > 0 && (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3">
                     {meta.stats.map((s, k) => (

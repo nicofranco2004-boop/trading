@@ -13021,7 +13021,14 @@ Reglas del bloque:
 - followups: máx 3 preguntas cortas que VOS puedas responder con esta data.
 - sources: máx 3, cortitos.
 - La prosa va ANTES del bloque y NO lo menciona (el usuario no ve el JSON, ve tarjetas).
-- OMITÍ el bloque entero en: saludos, aclaraciones breves, y TODO el flujo de registro de operaciones (confirmaciones "¿Confirmás?", resultado del registro, undo). Ahí respondé texto plano como siempre."""
+- OMITÍ el bloque entero en: saludos, aclaraciones breves, y TODO el flujo de registro de operaciones (confirmaciones "¿Confirmás?", resultado del registro, undo). Ahí respondé texto plano como siempre.
+
+Además el JSON acepta "blocks" (opcional, máx 2): bloques VISUALES pre-armados que el frontend renderiza. Elegí el que MEJOR muestre la respuesta (no los fuerces). Tipos:
+· {"type":"compare","items":[{"l":"Tu cartera","v":"+18,4%","pct":92},{"l":"S&P 500","v":"+15,2%","pct":76}]} — comparaciones (vs benchmark/alternativas). pct = largo relativo de la barra 0-100 (el mayor ≈ 90-100). Primer item = SIEMPRE el usuario. Máx 4 items.
+· {"type":"alloc","items":[{"l":"NVDA","pct":28},{"l":"Cash","pct":45}]} — composición de la cartera (pct reales del snapshot, máx 6 segmentos, que sumen ~100).
+· {"type":"scenario","if":"NVDA corrige −15%","then":"−4,2 pp en tu cartera","tone":"neg"} — hipotéticos si→entonces (para "¿qué pasa si...?").
+· {"type":"table","cols":["Activo","Peso","Mes"],"rows":[["NVDA","28%","+9,1%"]]} — rankings/listas. Máx 4 columnas × 5 filas; valores numéricos con signo (+/−) para que se coloreen.
+· {"type":"actions","items":[{"label":"Crear alerta NVDA −10%","to":"/alertas?new=NVDA"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER), /analisis, /posiciones, /operaciones, /fundamentals, /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app."""
 
 
 # Prompt FREE — version stripped del coach. Diseño deliberado: descriptivo,
@@ -13108,7 +13115,8 @@ El plan Pro recibe respuestas con interpretación, causalidad, comparaciones y p
 BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
 Al FINAL de cada respuesta de análisis, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado:
 {"verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
-Reglas: stats máx 3 con números REALES del snapshot (nunca inventados); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones."""
+Reglas: stats máx 3 con números REALES del snapshot (nunca inventados); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones.
+El JSON también acepta "blocks" (opcional, máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"NVDA","pct":28},...]} (composición, máx 6, pct reales) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"...","to":"/alertas?new=TICKER"}]} (solo rutas internas /alertas /analisis /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). Usá el que mejor muestre el dato — no los fuerces."""
 
 
 # Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos
