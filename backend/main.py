@@ -12883,7 +12883,7 @@ ANTI-SPAM DE TOOLS:
 
 ESTILO RIOPLATENSE
 Vos, tenés, querés. Tono cercano pero profesional. Sin emojis.
-CORTO: 2-4 oraciones por defecto, salvo que pidan explícitamente "explicame en detalle".
+CORTO: 2-4 oraciones por defecto, salvo que pidan explícitamente "explicame en detalle" — e incluso ahí, MÁXIMO ~200 palabras de prosa. Los números finos (pesos por posición, listas de P&L por activo, rankings) NO se enumeran en la prosa: van en las stats y blocks del BLOQUE ESTRUCTURADO del final, que la UI muestra como tarjetas. La prosa nunca puede crecer tanto que el bloque final no entre en la respuesta.
 NO uses markdown (sin bold con asteriscos, sin listas con guión, sin headers con numeral). Escribí en prosa fluida con saltos de línea naturales. La UI no renderiza markdown. ÚNICA EXCEPCIÓN: la línea ---RENDI--- del BLOQUE ESTRUCTURADO final NO es markdown — es un marcador técnico para la UI y va siempre que la respuesta sea de análisis.
 Directo cuando está eufórico ("buen mes, pero un mes no es sistema"). Empático cuando está en rojo real ("32% duele, entiendo. Pero la decisión que viene no se toma desde ahí").
 Separá la persona de la decisión: "los números muestran X" en vez de "estás haciendo mal".
@@ -19748,6 +19748,19 @@ _HAIKU_PRICE = {
 }
 
 
+def _warn_if_truncated(resp_obj, tier: str, uid: int, stage: str) -> None:
+    """Respuesta cortada por max_tokens → la prosa se comió el presupuesto y el
+    bloque ---RENDI--- del final no llegó (bug reportado 2026-07: el chat se
+    cortaba a mitad de palabra y las tarjetas no aparecían nunca). Este log
+    permite monitorear en Railway si el budget de prosa del prompt alcanza o
+    hay que volver a subir max_tokens."""
+    try:
+        if getattr(resp_obj, "stop_reason", None) == "max_tokens":
+            log.warning("ai_chat respuesta TRUNCADA por max_tokens tier=%s uid=%s stage=%s", tier, uid, stage)
+    except Exception:
+        pass
+
+
 def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str) -> int:
     """Estima costo de un response del LLM y loggea cache hit/create.
 
@@ -20159,14 +20172,18 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_current_use
             )
 
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
-    # Pro chat max_tokens bajado de 1000 → 800 tras audit #3 (cost control).
-    # 800 tokens output mantiene respuestas profundas (~600 palabras) y baja
-    # output cost del worst case ~20%.
+    # Pro chat max_tokens: 1000 → 800 (audit #3 cost control) → 1200 (2026-07,
+    # bug reportado por Nico): con 800, las preguntas amplias ("¿cómo está mi
+    # portfolio?") generaban prosa larga que se comía TODO el presupuesto → la
+    # respuesta se cortaba a mitad de palabra y el bloque ---RENDI--- del FINAL
+    # no entraba NUNCA. 1200 da headroom (+400 out ≈ +$0.002/resp worst case);
+    # el budget de prosa del prompt (ESTILO: máx ~200 palabras) es la primera
+    # línea de defensa, esto es la red.
     # Free 300 → 500 (2026-07): el bloque estructurado ---RENDI--- (~150-200
     # tokens) no entraba en 300 sin truncar la respuesta. Costo extra máximo
     # ~$0.001/respuesta × 3 chat/sem = ~1 centavo/mes por Free activo.
-    max_tokens = 800 if is_premium else 500
-    max_tokens_fallback = 600 if is_premium else 400
+    max_tokens = 1200 if is_premium else 500
+    max_tokens_fallback = 800 if is_premium else 400
 
     # Modo del bloque de perfil: Pro/Admin → causal (infiere causas plausibles).
     # Free/Plus → descriptive (solo presenta el dato, no interpreta).
@@ -20450,6 +20467,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         _ep = _pending_summary_epilogue(uid, state["synth_text"])
                         if _ep:
                             yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
+                        _warn_if_truncated(resp, tier, uid, "stream_final")
                         cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final")
                         _record_chat_quota(uid, cost_cents)
                         _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
@@ -20490,6 +20508,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 _ep = _pending_summary_epilogue(uid, state["synth_text"])
                 if _ep:
                     yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
+                _warn_if_truncated(resp, tier, uid, "stream_fallback")
                 cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback")
                 _record_chat_quota(uid, cost_cents)
                 _maybe_refund_trade_turn(uid, _turn_flags, reserved=not _free_continuation)
@@ -20571,6 +20590,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # cache_read cae a 0, el costo se multiplica por ~10× y solo
                 # nos enteramos por la factura mensual de Anthropic).
                 usage_obj = getattr(response, "usage", None)
+                _warn_if_truncated(response, tier, uid, "json_final")
                 cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "final")
                 # Registrar consumo de cuota (solo en éxito — si falló no descontamos).
                 try:
@@ -20622,6 +20642,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
         )
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
         usage_obj = getattr(response, "usage", None)
+        _warn_if_truncated(response, tier, uid, "json_fallback")
         cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "fallback")
         try:
             conn2 = get_db()
