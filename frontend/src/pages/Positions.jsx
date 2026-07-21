@@ -1525,7 +1525,7 @@ function PositionsDesktop() {
                 <button
                   onClick={() => toggleDetail(broker.name)}
                   className="flex items-center gap-1 text-[11px] text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition"
-                  title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar invertido, tipo de cambio, P&L en USD y variación diaria'}
+                  title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar invertido, tipo de cambio y P&L en USD'}
                 >
                   {showDetail ? <ChevronUp size={12} strokeWidth={1.5} /> : <ChevronDown size={12} strokeWidth={1.5} />}
                   {showDetail ? 'Ocultar detalle' : 'Detalle'}
@@ -1579,7 +1579,7 @@ function PositionsDesktop() {
                       <th className={thClass}>Valor</th>
                       <th className={thClass}>P&L</th>
                       {showDetail && <th className={thClass}>P&L USD</th>}
-                      {showDetail && <th className={thClass}>Var. día</th>}
+                      <th className={thClass}>Var. día</th>
                       <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
@@ -1609,7 +1609,7 @@ function PositionsDesktop() {
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       const dvArs = dvFor(p, true)
                       const expanded = isBond && !isLot && expandedBonds.has(bondKey)
-                      const arsColSpan = showDetail ? 13 : 8
+                      const arsColSpan = showDetail ? 13 : 9
                       const pnlTooltip = (isBond && pnlContrib !== 0)
                         ? `P&L = mark-to-market (${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlContrib))} de ganancia realizada (cupones + parte de ganancia de amorts). Cash total cobrado: ARS ${ars(cobranzasCash)}.`
                         : undefined
@@ -1711,18 +1711,16 @@ function PositionsDesktop() {
                             </span>
                           </td>
                           {showDetail && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{hidden ? '••••••' : (c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—')}</td>}
-                          {showDetail && (
-                            <td className={`${tdClass} tabular`}>
-                              {dvArs ? (
-                                <div className="leading-tight">
-                                  <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}ARS {ars(Math.abs(dvArs.amount))}</div>
-                                  <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
-                                </div>
-                              ) : (
-                                <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
-                              )}
-                            </td>
-                          )}
+                          <td className={`${tdClass} tabular`}>
+                            {dvArs ? (
+                              <div className="leading-tight">
+                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}ARS {ars(Math.abs(dvArs.amount))}</div>
+                                <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
+                              </div>
+                            ) : (
+                              <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
+                            )}
+                          </td>
                           <td className={tdClassStickyRight}>
                             <div className="flex items-center gap-1 justify-end">
                               {!p.is_cash && (
@@ -1771,13 +1769,11 @@ function PositionsDesktop() {
                         </span>
                       </td>
                       {showDetail && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>}
-                      {showDetail && (
-                        <td className="px-3 py-2.5 text-xs font-bold tabular">
-                          {brokerHasDay
-                            ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}`}</span>
-                            : <span className="text-ink-3">—</span>}
-                        </td>
-                      )}
+                      <td className="px-3 py-2.5 text-xs font-bold tabular">
+                        {brokerHasDay
+                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}`}</span>
+                          : <span className="text-ink-3">—</span>}
+                      </td>
                       <td />
                     </tr>
                   </tfoot>
@@ -1803,7 +1799,7 @@ function PositionsDesktop() {
                     {showDetail && <th className={thClass}>Invertido</th>}
                     <th className={thClass}>Valor</th>
                     <th className={thClass}>P&L</th>
-                    {showDetail && <th className={thClass}>Var. día</th>}
+                    <th className={thClass}>Var. día</th>
                     <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>
@@ -1922,18 +1918,16 @@ function PositionsDesktop() {
                             )}
                           </span>
                         </td>
-                        {showDetail && (
-                          <td className={`${tdClass} tabular`}>
-                            {dvUsd ? (
-                              <div className="leading-tight">
-                                <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}USD {usd(Math.abs(dvUsd.amount))}</div>
-                                <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
-                              </div>
-                            ) : (
-                              <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
-                            )}
-                          </td>
-                        )}
+                        <td className={`${tdClass} tabular`}>
+                          {dvUsd ? (
+                            <div className="leading-tight">
+                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}USD {usd(Math.abs(dvUsd.amount))}</div>
+                              <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
+                            </div>
+                          ) : (
+                            <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
+                          )}
+                        </td>
                         <td className={tdClassStickyRight}>
                           <div className="flex items-center gap-1 justify-end">
                             {!p.is_cash && (
@@ -1950,7 +1944,7 @@ function PositionsDesktop() {
                       {expanded && (
                         <BondDetailRow
                           p={p}
-                          colSpan={showDetail ? 10 : 8}
+                          colSpan={showDetail ? 10 : 9}
                           summary={bondSummary}
                           isARS={false}
                           currentPrice={c.price}
@@ -1979,13 +1973,11 @@ function PositionsDesktop() {
                         )}
                       </span>
                     </td>
-                    {showDetail && (
-                      <td className="px-3 py-2.5 text-xs font-bold tabular">
-                        {brokerHasDay
-                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`}</span>
-                          : <span className="text-ink-3">—</span>}
-                      </td>
-                    )}
+                    <td className="px-3 py-2.5 text-xs font-bold tabular">
+                      {brokerHasDay
+                        ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`}</span>
+                        : <span className="text-ink-3">—</span>}
+                    </td>
                     <td />
                   </tr>
                 </tfoot>
