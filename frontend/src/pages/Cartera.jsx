@@ -65,6 +65,10 @@ export default function Cartera() {
 
   useEffect(() => {
     const current = searchParams.get('tab') || DEFAULT_TAB
+    // Los valores legacy del Dashboard los maneja el redirect de arriba — sin
+    // este guard, este efecto corre después del navigate('/dashboard') del
+    // mount y lo pisa reescribiendo la URL a /posiciones (race de efectos).
+    if (current === 'evolucion' || current === 'composicion') return
     if (current !== tab) {
       const next = new URLSearchParams(searchParams)
       if (tab === DEFAULT_TAB) next.delete('tab')
