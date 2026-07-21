@@ -110,6 +110,16 @@ def _norm_sym(sym):
     return sym
 
 
+def _market_open_now(now) -> bool:
+    """Aproximado: L-V, ~13:00–21:00 UTC (cubre US 9:30–16 ET + BYMA 11–17 ART).
+    Las alertas de acciones/CEDEARs/bonos SOLO disparan en esta ventana — así no
+    saltan de madrugada/finde sobre el `change_pct` congelado del último cierre.
+    Cripto no pasa por acá (opera 24/7)."""
+    if now.weekday() >= 5:      # 5=sábado, 6=domingo
+        return False
+    return 13 <= now.hour < 21
+
+
 # ─── Lógica de condición ──────────────────────────────────────────────────────
 
 def condition_met(kind: str, direction: str, threshold: float,
@@ -186,7 +196,8 @@ def _compose_message(alert, symbol, price, change_pct) -> str:
         return f"{sym} bajó a {cur} (tu alerta: ≤ {thr})"
     # pct_move
     verbo = "subió" if (change_pct or 0) >= 0 else "cayó"
-    return f"{sym} {verbo} {abs(change_pct):.1f}% hoy (tu alerta: {_pct_desc(alert)})"
+    cuando = "desde tu referencia" if (alert["baseline"] or "prev_close") == "set_price" else "hoy"
+    return f"{sym} {verbo} {abs(change_pct):.1f}% {cuando} (tu alerta: {_pct_desc(alert)})"
 
 
 def _pct_desc(alert) -> str:
@@ -279,11 +290,19 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
         return {"alerts": 0, "evaluated": 0, "fired": 0}
 
     # Expandir a unidades (alerta, símbolo). holdings-scope → cada tenencia.
+    # Qué precio necesita cada una: price_target y pct_move "Desde ahora"
+    # (set_price) usan el precio actual; pct_move "En el día" usa el change_pct.
+    def _wants_price(a):
+        if a["kind"] == "price_target":
+            return True
+        return a["scope"] != "holdings" and (a["baseline"] or "prev_close") == "set_price"
+
     units: list = []          # [(alert_row, symbol)]
-    price_syms: set = set()   # necesitan precio actual (price_target)
-    quote_syms: set = set()   # necesitan change_pct (pct_move)
+    price_syms: set = set()
+    quote_syms: set = set()
     holdings_cache: dict = {}
     for a in alerts:
+        bucket = price_syms if _wants_price(a) else quote_syms
         if a["scope"] == "holdings":
             uid = a["user_id"]
             if uid not in holdings_cache:
@@ -291,48 +310,70 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
             for sym in holdings_cache[uid]:
                 sym = _norm_sym(sym)   # cripto AR: BTC.BA → BTC
                 units.append((a, sym))
-                (quote_syms if a["kind"] == "pct_move" else price_syms).add(sym)
+                bucket.add(sym)
         else:
             sym = _norm_sym(a["symbol"])
             if not sym:
                 continue
             units.append((a, sym))
-            (quote_syms if a["kind"] == "pct_move" else price_syms).add(sym)
+            bucket.add(sym)
 
     prices = _prices_for(list(price_syms)) if price_syms else {}
     quotes = _quotes_for(list(quote_syms)) if quote_syms else {}
 
+    market_open = _market_open_now(now)
     fired = 0
     deactivated: set = set()   # alertas 'once' de pct_move ya disparadas este ciclo
     for a, sym in units:
         if a["id"] in deactivated:
             continue
+        # Acciones/CEDEARs/bonos: solo disparan en horario de mercado (evita saltos
+        # de madrugada sobre precios congelados). Cripto: 24/7.
+        tradeable = (sym in _crypto_symbols()) or market_open
+
         if a["kind"] == "price_target":
             price = prices.get(sym)
             met = condition_met("price_target", a["direction"], a["threshold"], price, None)
             if met is None:
                 continue  # sin precio → no adivinar
-            if a["armed"] and met:
+            if a["armed"] and met and tradeable:
                 _fire(conn, a, sym, price, None, now)
                 fired += 1
-                # once → inactiva; recurrente → desarma hasta que vuelva a cruzar
                 new_active = 0 if a["repeat"] == "once" else 1
                 conn.execute("UPDATE alerts SET armed=0, active=? WHERE id=?",
                              (new_active, a["id"]))
             elif not a["armed"] and not met:
-                conn.execute("UPDATE alerts SET armed=1 WHERE id=?", (a["id"],))  # re-arma
-        else:  # pct_move — umbral asimétrico + anti-spam por cooldown per (alerta, símbolo)
-            quote = quotes.get(sym)
-            change = quote.get("change_pct") if quote else None
+                conn.execute("UPDATE alerts SET armed=1 WHERE id=?", (a["id"],))  # re-arma (cualquier hora)
+        else:  # pct_move
+            base = a["baseline"] or "prev_close"
+            if a["scope"] != "holdings" and base == "set_price":
+                # "Desde ahora": % vs el precio ancla (re-anclado al crear/reactivar).
+                price = prices.get(sym)
+                anchor = a["anchor_price"]
+                if price is None or not anchor:
+                    continue
+                change = (price - anchor) / anchor * 100.0
+                fire_price = price
+            else:
+                # "En el día": movimiento vs el cierre previo.
+                quote = quotes.get(sym)
+                change = quote.get("change_pct") if quote else None
+                fire_price = (quote or {}).get("price")
             side = pct_move_side(change, a["up_pct"], a["down_pct"])
             if not side:
                 continue
-            if _recently_fired(conn, a["id"], sym, a["cooldown_min"], now):
-                continue
-            _fire(conn, a, sym, (quote or {}).get("price"), change, now)
+            if not tradeable:
+                continue   # no disparar con el % congelado fuera de hora
+            if base != "set_price" and _recently_fired(conn, a["id"], sym, a["cooldown_min"], now):
+                continue   # cooldown = anti-spam de "En el día"; set_price dedup-ea re-anclando
+            _fire(conn, a, sym, fire_price, change, now)
             fired += 1
+            if base == "set_price" and a["repeat"] != "once" and fire_price:
+                # "Siempre" + "Desde ahora" = avisar CADA X%: re-anclar al precio
+                # actual → el próximo disparo se mide desde acá.
+                conn.execute("UPDATE alerts SET anchor_price=? WHERE id=?",
+                             (fire_price, a["id"]))
             if a["repeat"] == "once":
-                # "una vez" = avisar y apagar (antes re-disparaba tras el cooldown).
                 conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
                 deactivated.add(a["id"])
 

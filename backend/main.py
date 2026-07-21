@@ -1076,7 +1076,8 @@ def init_db():
             up_pct REAL,                        -- pct_move: dispara si sube ≥ up_pct%
             down_pct REAL,                      -- pct_move: dispara si cae ≥ down_pct%
             currency TEXT,                      -- 'ARS' | 'USD' (riel del umbral)
-            baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close'|'cost'|'set_price'
+            baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close' (día) | 'set_price' (desde ahora)
+            anchor_price REAL,                  -- pct_move set_price: precio de referencia (se re-ancla)
             channel TEXT NOT NULL DEFAULT 'both',-- 'push' | 'email' | 'both'
             repeat TEXT NOT NULL DEFAULT 'once',-- 'once' | 'daily' | 'always'
             cooldown_min INTEGER NOT NULL DEFAULT 360,
@@ -1105,6 +1106,12 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_alert_events_user ON alert_events(user_id, fired_at DESC);
     """)
+
+    # Migración: anchor_price para el modo "Desde ahora" (la tabla alerts ya existe
+    # en prod sin esta columna → CREATE IF NOT EXISTS no la agrega).
+    _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+    if _alert_cols and 'anchor_price' not in _alert_cols:
+        conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
 
     # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
     # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
@@ -23693,6 +23700,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         currency = data.currency
         up_pct = down_pct = None
         threshold = data.threshold
+        baseline = "prev_close"
         if data.kind == "price_target":
             if data.scope != "ticker" or not symbol:
                 raise HTTPException(400, "Una alerta de precio necesita un ticker.")
@@ -23707,6 +23715,9 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
             if data.scope == "holdings":
                 symbol = None
+                baseline = "prev_close"   # toda la cartera = solo "en el día"
+            else:
+                baseline = "set_price" if data.baseline == "set_price" else "prev_close"
             up_pct = data.up_pct if (data.up_pct and data.up_pct > 0) else None
             down_pct = data.down_pct if (data.down_pct and data.down_pct > 0) else None
             if up_pct is None and down_pct is None:
@@ -23723,6 +23734,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         # puede fallar transitoriamente y el símbolo ser válido).
         armed = 1
         current_price = None
+        anchor_price = None
         resolved = True
         if symbol:  # ticker-scope (price_target siempre; pct_move de un activo)
             current_price = _ae.price_for_alert(symbol)
@@ -23731,20 +23743,23 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
                 met = _ae.condition_met("price_target", data.direction, threshold,
                                         current_price, None)
                 armed = 0 if met else 1
+            elif baseline == "set_price":
+                anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
         cur = conn.execute(
             """INSERT INTO alerts
                (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
-                currency, baseline, channel, repeat, cooldown_min, armed, active, note)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                currency, baseline, anchor_price, channel, repeat, cooldown_min, armed, active, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (uid, data.kind, symbol, data.scope, data.direction, threshold, up_pct, down_pct,
-             currency, data.baseline, data.channel, data.repeat, data.cooldown_min,
+             currency, baseline, anchor_price, data.channel, data.repeat, data.cooldown_min,
              armed, data.note),
         )
         aid = cur.lastrowid
         conn.commit()
         return {"ok": True, "id": aid, "armed": bool(armed),
-                "current_price": current_price, "resolved": resolved}
+                "current_price": current_price, "resolved": resolved,
+                "anchor_price": anchor_price, "baseline": baseline}
     finally:
         conn.close()
 
@@ -23752,7 +23767,8 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
 @app.patch("/api/alerts/{alert_id}")
 def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_current_user)):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
-    re-arma el edge-trigger."""
+    re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
+    import alerts_engine as _ae
     conn = get_db()
     try:
         row = conn.execute(
@@ -23773,6 +23789,13 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_cur
             sets.append("active=?"); params.append(1 if data.active else 0)
             # Reactivar o editar → re-armar para que vuelva a poder disparar.
             sets.append("armed=1")
+            # Reactivar una alerta "Desde ahora" → re-anclar al precio actual, así el
+            # % se cuenta desde acá y no re-dispara sobre el movimiento que ya pasó.
+            if (data.active and row["kind"] == "pct_move"
+                    and (row["baseline"] or "") == "set_price" and row["symbol"]):
+                _px = _ae.price_for_alert(row["symbol"])
+                if _px is not None:
+                    sets.append("anchor_price=?"); params.append(_px)
         elif data.threshold is not None or data.direction is not None:
             sets.append("armed=1")
         if not sets:
