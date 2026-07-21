@@ -19,6 +19,14 @@ describe('parseStructured', () => {
     expect(r.meta.followups).toEqual(['¿Y en el año?'])
   })
 
+  it('drift del modelo: delimitador con espacios o guiones extra igual parsea', () => {
+    const spaced = parseStructured(`La respuesta.\n--- RENDI ---\n${META}`)
+    expect(spaced.prose).toBe('La respuesta.')
+    expect(spaced.meta.verdict).toBe('Buen mes')
+    const dashes = parseStructured(`La respuesta.\n----RENDI----\n${META}`)
+    expect(dashes.meta.verdict).toBe('Buen mes')
+  })
+
   it('streaming: delimitador parcial al final NO se muestra como texto', () => {
     const r = parseStructured('La respuesta.\n---REN')
     expect(r.prose).toBe('La respuesta.')

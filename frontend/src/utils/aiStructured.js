@@ -11,15 +11,25 @@
 
 export const RENDI_DELIM = '---RENDI---'
 
+// Tolerancia a drift del modelo: "--- RENDI ---", "----RENDI----", etc.
+// El delimitador canónico sigue siendo RENDI_DELIM (es lo que pide el prompt).
+const DELIM_RE = /-{3,}\s*RENDI\s*-{3,}/
+
 const TONES = new Set(['pos', 'warn', 'neg', 'neutral'])
 
 /** parseStructured(text) → { prose, meta|null }. Nunca lanza. */
 export function parseStructured(text) {
   if (!text) return { prose: text || '', meta: null }
-  const i = text.indexOf(RENDI_DELIM)
-  if (i === -1) return { prose: trimPartialDelim(text), meta: null }
+  let i = text.indexOf(RENDI_DELIM)
+  let dlen = RENDI_DELIM.length
+  if (i === -1) {
+    const m = text.match(DELIM_RE)
+    if (!m) return { prose: trimPartialDelim(text), meta: null }
+    i = m.index
+    dlen = m[0].length
+  }
   const prose = text.slice(0, i).trimEnd()
-  const tail = text.slice(i + RENDI_DELIM.length)
+  const tail = text.slice(i + dlen)
   let meta = null
   try {
     // Tolerante: el JSON puede venir con espacios/saltos alrededor, o cortado
