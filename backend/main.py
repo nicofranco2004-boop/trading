@@ -4306,6 +4306,26 @@ def _refresh_events_for_tickers(conn, tickers: list):
         _events_fetched_at[ticker] = now
 
 
+@app.get("/api/events/earnings-expectations")
+def earnings_expectations(symbol: str, uid: int = Depends(get_current_user)):
+    """Expectativas del consenso para el próximo earnings de un ticker.
+
+    Reusa el fetcher + cache del chat tool get_earnings_history (yfinance):
+    EPS esperado (avg/high/low del consenso), últimos quarters con surprise %
+    y promedio. La UI de Eventos lo pide on-demand al expandir una card de
+    earnings — el cache TTL por kind evita repegarle a yfinance por cada click.
+    Si el ticker no es una equity con earnings (cripto/ETF/bono) devuelve
+    available=False y el frontend simplemente no muestra el panel."""
+    ticker = (symbol or "").strip().upper()[:15]
+    if not ticker or not _SYMBOL_RE.match(ticker):
+        raise HTTPException(status_code=400, detail="Símbolo inválido.")
+    try:
+        return _yf_fetch_cached(ticker, "earnings", _yf_earnings_fetcher)
+    except Exception as ex:
+        log.warning("earnings-expectations failed for %s: %s", ticker, ex)
+        return {"available": False, "reason": "No pudimos traer las expectativas ahora."}
+
+
 @app.get("/api/events/portfolio")
 def get_portfolio_events(
     days: int = 90,

@@ -19,7 +19,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSearchParams } from 'react-router-dom'
-import { Calendar, Filter, AlertCircle, Eye, Sparkles } from 'lucide-react'
+import {
+  Calendar, Filter, AlertCircle, Eye, Sparkles,
+  BarChart3, CircleDollarSign, Landmark, ReceiptText, ChevronRight, Loader2,
+} from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import AssetLogo from '../components/AssetLogo'
@@ -338,9 +341,9 @@ export default function Events({ embedded = false }) {
         />
       )}
 
-      {/* Tabla densa — la lista principal. */}
+      {/* Agenda por día (clean pass 2026-07) — reemplaza la tabla densa. */}
       {!loading && visibleEvents.length > 0 && (
-        <EventTable
+        <EventAgenda
           events={visibleEvents}
           tab={tab}
           tickerValueUsd={tickerValueUsd}
@@ -652,193 +655,225 @@ function EventTableSkeleton() {
 }
 
 
-function EventTable({ events, tab, tickerValueUsd, portfolioTotalUsd, tickerShares }) {
-  // Agrupamos por cercanía (Esta semana / 2 semanas / Más adelante) para dar
-  // ritmo a la lista en vez de un muro plano ordenado por fecha.
-  const groups = useMemo(() => groupByRecency(events), [events])
+// ─── Agenda por día (clean pass 2026-07) ────────────────────────────────────
+// Reemplaza la tabla densa: eventos agrupados por FECHA con riel de días a la
+// izquierda y cards con aire. Earnings expandibles → expectativas del consenso
+// (fetch on-demand a /events/earnings-expectations, cache server-side).
 
+function groupByDay(events) {
+  const sorted = [...events].sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || ''))
+  const map = new Map()
+  for (const ev of sorted) {
+    const k = ev.eventDate || 'sin-fecha'
+    if (!map.has(k)) map.set(k, [])
+    map.get(k).push(ev)
+  }
+  return [...map.entries()].map(([date, evs]) => ({ date, events: evs }))
+}
+
+const WEEKDAYS = ['DOM', 'LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB']
+const MONTHS_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+
+function dayRail(dateStr) {
+  const d = daysUntil(dateStr)
+  const dt = dateStr ? new Date(`${dateStr}T12:00:00`) : null
+  const sub = dt && !isNaN(dt) ? `${dt.getDate()} ${MONTHS_SHORT[dt.getMonth()]}` : '—'
+  if (d === 0) return { top: 'HOY', sub, today: true }
+  if (d === 1) return { top: 'MAÑANA', sub, today: false }
+  const top = dt && !isNaN(dt) ? WEEKDAYS[dt.getDay()] : '—'
+  return { top, sub, today: false }
+}
+
+// Ícono + tono por tipo de evento (lucide, sin emojis — pedido de producto).
+function eventIconMeta(eventType) {
+  if (eventType === 'earnings')    return { Icon: BarChart3,        cls: 'bg-data-violet/12 text-data-violet' }
+  if (eventType === 'ex_dividend') return { Icon: CircleDollarSign, cls: 'bg-rendi-pos/10 text-rendi-pos' }
+  if (eventType === 'macro')       return { Icon: Landmark,         cls: 'bg-data-cyan/10 text-data-cyan' }
+  if (eventType?.startsWith('bond_')) return { Icon: ReceiptText,   cls: 'bg-rendi-warn/10 text-rendi-warn' }
+  return { Icon: Calendar, cls: 'bg-bg-2 text-ink-2' }
+}
+
+function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, tickerShares }) {
+  const groups = useMemo(() => groupByDay(events), [events])
   return (
-    <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
-      {/* Header — pinned, label-mono columns */}
-      <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px_96px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
-        <div className="label-mono">Fecha</div>
-        <div className="label-mono">Activo</div>
-        <div className="label-mono">Tipo</div>
-        <div className="label-mono">Detalle</div>
-        <div className="label-mono text-right">Monto</div>
-        <div className="label-mono text-right">{tab === 'portfolio' ? 'Impact' : 'Cartera'}</div>
-        <div className="label-mono text-right" title="Analizar"></div>
-      </div>
-      {groups.map(g => (
-        <div key={g.label}>
-          <div className="px-4 py-1.5 bg-bg-2/30 border-b border-line/50 flex items-center gap-2">
-            <span className="text-[12.5px] text-ink-3 font-medium">{g.label}</span>
-            <span className="text-[11px] font-mono text-ink-3/70">· {g.events.length}</span>
+    <div>
+      {groups.map(g => {
+        const rail = dayRail(g.date)
+        return (
+          <div key={g.date} className="grid gap-4" style={{ gridTemplateColumns: '72px 1fr' }}>
+            <div className="text-right pt-4">
+              <div className={`text-[12px] font-bold ${rail.today ? 'text-data-violet' : 'text-ink-0'}`}>{rail.top}</div>
+              <div className="text-[11.5px] text-ink-3">{rail.sub}</div>
+            </div>
+            <div className="flex flex-col gap-2.5 border-l-2 border-line/40 pl-4 py-2 pb-5">
+              {g.events.map((ev, i) => (
+                <AgendaCard
+                  key={`${ev.ticker}:${ev.eventType}:${ev.eventDate}:${i}`}
+                  event={ev}
+                  tab={tab}
+                  tickerValueUsd={tickerValueUsd}
+                  portfolioTotalUsd={portfolioTotalUsd}
+                  tickerShares={tickerShares}
+                />
+              ))}
+            </div>
           </div>
-          <ul className="divide-y divide-line/40">
-            {g.events.map((ev, i) => (
-              <EventRow
-                key={`${ev.ticker}:${ev.eventType}:${ev.eventDate}:${i}`}
-                event={ev}
-                tab={tab}
-                tickerValueUsd={tickerValueUsd}
-                portfolioTotalUsd={portfolioTotalUsd}
-                tickerShares={tickerShares}
-              />
-            ))}
-          </ul>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
 
-function groupByRecency(events) {
-  const sorted = [...events].sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || ''))
-  const week = [], twoWeek = [], later = []
-  for (const ev of sorted) {
-    const d = daysUntil(ev.eventDate)
-    if (d != null && d <= 7) week.push(ev)
-    else if (d != null && d <= 14) twoWeek.push(ev)
-    else later.push(ev)
-  }
-  return [
-    { label: 'Esta semana', events: week },
-    { label: 'Próximas 2 semanas', events: twoWeek },
-    { label: 'Más adelante', events: later },
-  ].filter(g => g.events.length > 0)
-}
-
-function EventRow({ event, tab, tickerValueUsd, portfolioTotalUsd, tickerShares }) {
+function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, tickerShares }) {
   const { ticker, eventType, eventDate, confirmed, inPortfolio, details } = event
   const isMacro = isMacroEvent(event)
   const cobro = tab === 'portfolio' ? eventCobro(event, tickerShares) : null
-  const country = details?.country
-  const macroTitle = details?.title
-
   const impactPct = (tab === 'portfolio' && tickerValueUsd && portfolioTotalUsd > 0)
     ? (tickerValueUsd.get(ticker) || 0) / portfolioTotalUsd
     : null
+  const days = daysUntil(eventDate)
+  const whenLabel = days == null ? shortDate(eventDate)
+    : days === 0 ? 'hoy' : days === 1 ? 'mañana' : `en ${days} días`
 
-  const daysToEvent = daysUntil(eventDate)
-  // dateTone con guard explícito para null/NaN (eventDate inválido).
-  const dateTone =
-    daysToEvent == null    ? 'text-ink-3' :
-    daysToEvent === 0      ? 'text-rendi-accent' :
-    daysToEvent <= 1       ? 'text-ink-0' :
-                             'text-ink-2'
-  const countdownLabel =
-    daysToEvent == null    ? '—' :
-    daysToEvent === 0      ? 'HOY' :
-    daysToEvent === 1      ? 'MAÑANA' :
-                             `+${daysToEvent}D`
+  // Expandible: solo earnings (expectativas del consenso vía yfinance).
+  const expandable = eventType === 'earnings'
+  const [open, setOpen] = useState(false)
+  const { Icon, cls } = eventIconMeta(eventType)
 
-  const amountNode = renderAmount(event)
-  const detailNode = renderDetail(event)
+  const title = eventType === 'earnings' ? `Earnings de ${ticker}`
+    : eventType === 'ex_dividend' ? `Ex-dividendo de ${ticker}`
+    : isMacro ? (details?.title || ticker)
+    : eventType?.startsWith('bond_') ? `${eventType === 'bond_maturity' ? 'Vencimiento' : 'Pago'} de ${ticker}`
+    : ticker
+
+  // Sub-línea: detalle + lo personal (cuánto te toca) en cyan.
+  const detail = renderDetail(event)
+  const shares = tickerShares?.get?.(ticker) || null
+  const personal = cobro?.amount != null
+    ? `tenés ${formatCompact(cobro.shares || shares || 0)} nominales → ~+${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`
+    : (tab === 'portfolio' && shares && impactPct != null && impactPct > 0.0001)
+      ? `tenés ${formatCompact(shares)} nominales (${pct(impactPct)} de tu cartera)`
+      : (tab === 'popular' && inPortfolio) ? 'está en tu cartera' : null
 
   return (
-    <li className="grid grid-cols-[64px_1fr_auto] md:grid-cols-[80px_180px_100px_1fr_140px_80px_96px] gap-3 px-4 py-3 items-center hover:bg-bg-2/40 transition-colors">
-      {/* Fecha — countdown + fecha corta abajo */}
-      <div className="flex flex-col">
-        <span className={`text-xs font-semibold ${dateTone}`}>
-          {countdownLabel}
-        </span>
-        <span className="text-[10px] font-mono text-ink-3 mt-0.5">
-          {shortDate(eventDate)}
-        </span>
-      </div>
-
-      {/* Activo: logo + ticker — en mobile ocupa el resto del row */}
-      <div className="flex items-center gap-2.5 min-w-0">
+    <div className={`bg-bg-1 border border-line rounded-xl overflow-hidden transition-colors ${expandable ? 'cursor-pointer hover:border-ink-3/60' : ''}`}>
+      <div
+        className="px-4 py-3 flex items-center gap-3"
+        onClick={expandable ? () => setOpen(o => !o) : undefined}
+        role={expandable ? 'button' : undefined}
+        aria-expanded={expandable ? open : undefined}
+      >
         {isMacro ? (
-          <div className="w-7 h-7 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-base flex-shrink-0">
-            {countryFlag(country)}
+          <div className={`w-9 h-9 rounded-xl grid place-items-center flex-none ${cls}`}>
+            <Icon size={17} strokeWidth={1.75} aria-hidden="true" />
           </div>
         ) : (
-          <AssetLogo asset={ticker} size={28} />
+          <AssetLogo asset={ticker} size={36} />
         )}
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="font-semibold text-ink-0 text-sm tabular truncate">
-              {isMacro ? macroTitle || ticker : ticker}
-            </span>
-            {tab === 'popular' && inPortfolio && (
-              <span title="En tu cartera" className="text-rendi-accent shrink-0">
-                <Eye size={11} strokeWidth={2} />
-              </span>
-            )}
+        <div className="flex-1 min-w-0">
+          <div className="text-[14px] font-semibold text-ink-0 truncate">
+            {title}
+            {!confirmed && <span className="ml-1.5 text-[11px] text-ink-3 font-normal">· est.</span>}
           </div>
-          {/* En mobile mostramos tipo + detalle aquí, en desktop van en columnas */}
-          <div className="md:hidden flex items-center gap-2 mt-0.5 text-[11px] text-ink-2 font-mono">
-            <EventBadge eventType={eventType} />
-            <span className="truncate">{detailNode}</span>
+          <div className="text-[12.5px] text-ink-3 truncate">
+            {detail}
+            {personal && <b className="text-data-cyan font-semibold">{detail ? ' · ' : ''}{personal}</b>}
+          </div>
+        </div>
+        {!isMacro && (
+          <span onClick={e => e.stopPropagation()}>
+            <InlineAIButton
+              topic="events.item"
+              params={{ ticker, event_type: eventType, event_date: eventDate, details: typeof details === 'string' ? details : (details?.title || '') }}
+              subtitle={`${ticker} · ${eventType}`}
+              label="Analizar"
+            />
+          </span>
+        )}
+        <span className="flex-none text-[11.5px] font-bold text-data-violet bg-data-violet/12 rounded-full px-2.5 py-1 whitespace-nowrap">
+          {whenLabel}
+        </span>
+        {expandable && (
+          <ChevronRight size={15} strokeWidth={2} className={`flex-none text-ink-3 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+        )}
+      </div>
+      {expandable && open && <EarningsExpectations symbol={ticker} />}
+    </div>
+  )
+}
+
+// Panel de expectativas del consenso (on-demand al expandir). Si el backend
+// no tiene datos (cripto/ETF/red caída) el panel dice eso y listo — nunca
+// inventamos números.
+function EarningsExpectations({ symbol }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    let cancelled = false
+    api.get(`/events/earnings-expectations?symbol=${encodeURIComponent(symbol)}`)
+      .then(d => { if (!cancelled) { setData(d); setLoading(false) } })
+      .catch(() => { if (!cancelled) { setData(null); setLoading(false) } })
+    return () => { cancelled = true }
+  }, [symbol])
+
+  if (loading) {
+    return (
+      <div className="border-t border-line/40 bg-bg-2/40 px-4 py-4 flex items-center gap-2 text-[12.5px] text-ink-3">
+        <Loader2 size={13} className="animate-spin" aria-hidden="true" /> Buscando expectativas del consenso…
+      </div>
+    )
+  }
+  if (!data?.available) {
+    return (
+      <div className="border-t border-line/40 bg-bg-2/40 px-4 py-3 text-[12.5px] text-ink-3">
+        Sin datos de consenso disponibles para este activo.
+      </div>
+    )
+  }
+  const est = data.next_earnings_estimates
+  const quarters = (data.last_quarters || []).slice(0, 4)
+  return (
+    <div className="border-t border-line/40 bg-bg-2/40 px-4 py-4">
+      <p className="text-[11px] font-bold text-ink-3 mb-2.5">QUÉ ESPERA EL CONSENSO DE ANALISTAS</p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+        <div className="bg-bg-1 border border-line/50 rounded-xl px-3 py-2.5">
+          <div className="text-[11px] text-ink-3 mb-1">EPS esperado</div>
+          <div className="text-[15px] font-semibold text-ink-0 num tabular">
+            {est?.eps_average != null ? `US$ ${est.eps_average}` : '—'}
+          </div>
+          {est?.eps_low != null && est?.eps_high != null && (
+            <div className="text-[11px] text-ink-3 mt-0.5 num">rango {est.eps_low} – {est.eps_high}</div>
+          )}
+        </div>
+        <div className="bg-bg-1 border border-line/50 rounded-xl px-3 py-2.5">
+          <div className="text-[11px] text-ink-3 mb-1">Próximo reporte</div>
+          <div className="text-[15px] font-semibold text-ink-0">
+            {data.next_earnings_date ? String(data.next_earnings_date).slice(0, 10) : '—'}
+          </div>
+        </div>
+        <div className="bg-bg-1 border border-line/50 rounded-xl px-3 py-2.5">
+          <div className="text-[11px] text-ink-3 mb-1">Surprise prom. últimos 4Q</div>
+          <div className={`text-[15px] font-semibold num tabular ${data.surprise_avg_last_4q_pct > 0 ? 'text-rendi-pos' : data.surprise_avg_last_4q_pct < 0 ? 'text-rendi-neg' : 'text-ink-0'}`}>
+            {data.surprise_avg_last_4q_pct != null ? `${data.surprise_avg_last_4q_pct > 0 ? '+' : ''}${data.surprise_avg_last_4q_pct}%` : '—'}
           </div>
         </div>
       </div>
-
-      {/* Tipo — solo desktop */}
-      <div className="hidden md:flex items-center">
-        <EventBadge eventType={eventType} />
-      </div>
-
-      {/* Detalle — solo desktop */}
-      <div className="hidden md:block text-[12px] text-ink-2 font-mono leading-snug truncate">
-        {detailNode}
-        {!confirmed && <span className="ml-1 text-ink-3 opacity-70">· est.</span>}
-      </div>
-
-      {/* Monto — cobro estimado total si sabemos tus acciones; si no, el
-          monto por acción / teórico. */}
-      <div className="hidden md:block text-right text-sm font-mono tabular">
-        {cobro?.amount != null ? (
-          <div className="leading-tight">
-            <span className="text-rendi-pos">+{cobro.currency === 'USD' ? '$' : `${cobro.currency} `}{formatCompact(cobro.amount)}</span>
-            {cobro.shares ? (
-              <div className="text-[10px] text-ink-3">{formatCompact(cobro.shares)} acc</div>
-            ) : null}
-          </div>
-        ) : amountNode}
-      </div>
-
-      {/* Impact / Cartera — sólo desktop, sólo si aplica */}
-      <div className="hidden md:block text-right text-xs font-mono">
-        {tab === 'portfolio' && impactPct != null && impactPct > 0.0001 ? (
-          <span className="text-rendi-accent">{pct(impactPct)}</span>
-        ) : tab === 'popular' && inPortfolio ? (
-          <span className="text-rendi-accent text-[12px] font-medium">SÍ</span>
-        ) : (
-          <span className="text-ink-3">—</span>
-        )}
-      </div>
-
-      {/* Mobile: monto + impact en una fila pegada al ticker */}
-      <div className="md:hidden col-start-2 -mt-1 flex items-center justify-end gap-2 text-xs font-mono tabular">
-        {cobro?.amount != null
-          ? <span className="text-rendi-pos">+{cobro.currency === 'USD' ? '$' : `${cobro.currency} `}{formatCompact(cobro.amount)}</span>
-          : amountNode}
-        {tab === 'portfolio' && impactPct != null && impactPct > 0.0001 && (
-          <span className="text-rendi-accent">· {pct(impactPct)}</span>
-        )}
-      </div>
-
-      {/* Botón ✦ — análisis del evento individual. Solo si no es macro
-          (no tenemos contexto de portfolio para macros). */}
-      <div className="row-start-1 row-span-2 md:row-auto md:col-start-7 flex items-start md:items-center justify-end">
-        {!isMacro && (
-          <InlineAIButton
-            topic="events.item"
-            params={{
-              ticker,
-              event_type: eventType,
-              event_date: eventDate,
-              details: typeof details === 'string' ? details : (details?.title || ''),
-            }}
-            subtitle={`${ticker} · ${eventType}`}
-            label="Analizar"
-          />
-        )}
-      </div>
-    </li>
+      {quarters.length > 0 && (
+        <div className="flex items-center gap-1.5 mt-3 flex-wrap text-[12px] text-ink-2">
+          <span>Últimos trimestres:</span>
+          {quarters.map((q, i) => {
+            const s = q.surprise_pct
+            if (s == null) return null
+            const beat = s >= 0
+            return (
+              <span key={i} className={`text-[10.5px] font-bold rounded-full px-2 py-0.5 ${beat ? 'text-rendi-pos bg-rendi-pos/10' : 'text-rendi-neg bg-rendi-neg/10'}`}>
+                {beat ? 'Beat' : 'Miss'} {s > 0 ? '+' : ''}{s}%
+              </span>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }
 

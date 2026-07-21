@@ -2745,6 +2745,22 @@ export function handleDemoRequest(method, path, body) {
     }
     if (basePath === '/events/portfolio') return { events: EVENTS_PORTFOLIO }
     if (basePath === '/events/popular')   return { events: EVENTS_POPULAR }
+    // Expectativas de earnings (panel expandible de la agenda de Eventos)
+    if (basePath === '/events/earnings-expectations') {
+      return {
+        available: true,
+        ticker: 'DEMO',
+        next_earnings_date: '2026-07-26',
+        next_earnings_estimates: { eps_average: 0.93, eps_low: 0.85, eps_high: 1.02 },
+        last_quarters: [
+          { date: '2026-04', eps_estimate: 0.85, eps_actual: 0.9, surprise_pct: 6.1 },
+          { date: '2026-01', eps_estimate: 0.78, eps_actual: 0.85, surprise_pct: 9.2 },
+          { date: '2025-10', eps_estimate: 0.71, eps_actual: 0.74, surprise_pct: 4.0 },
+          { date: '2025-07', eps_estimate: 0.68, eps_actual: 0.67, surprise_pct: -1.8 },
+        ],
+        surprise_avg_last_4q_pct: 4.4,
+      }
+    }
     if (basePath === '/news/portfolio')   return { news: NEWS_PORTFOLIO, count: NEWS_PORTFOLIO.length }
     if (basePath === '/news/market')      return { news: NEWS_MARKET, count: NEWS_MARKET.length }
     if (basePath === '/prices') {

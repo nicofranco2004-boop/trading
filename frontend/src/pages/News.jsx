@@ -197,17 +197,8 @@ export default function News({ embedded = false }) {
         </div>
       )}
 
-      {/* KPI strip */}
-      <div className="bg-bg-1 border border-line rounded-xl mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
-        <KpiCell label="Noticias" value={kpi.total} sub={tab === 'portfolio' ? 'tu cartera' : 'mercado'} />
-        <KpiCell
-          label={tab === 'portfolio' ? 'Tickers' : 'Fuentes'}
-          value={tab === 'portfolio' ? kpi.uniqueTickers : kpi.uniqueSources}
-          sub={tab === 'portfolio' ? 'con noticias' : 'distintas'}
-        />
-        <KpiCell label="Hoy" value={kpi.todayCount} sub="< 24h" tone={kpi.todayCount > 0 ? 'accent' : 'neutral'} />
-        <KpiCell label="Última" value={kpi.lastRelative} sub={kpi.lastSource || '—'} />
-      </div>
+      {/* Clean pass 2026-07: el KPI strip (grilla con divisores, look planilla)
+          se retiró — el conteo vive en el briefing y el feed habla solo. */}
 
       {/* Chips de filtro por ticker — sólo "Para ti" */}
       {tab === 'portfolio' && portfolioTickers.length > 1 && (
@@ -265,10 +256,10 @@ export default function News({ embedded = false }) {
           <button
             key={o.l}
             onClick={() => setSentimentFilter(o.v)}
-            className={`inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-1 rounded-sm border transition ${
+            className={`inline-flex items-center gap-1.5 text-[12.5px] font-medium px-3 py-1.5 rounded-full border transition ${
               sentimentFilter === o.v
                 ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40'
-                : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3 hover:text-ink-1'
+                : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0'
             }`}
           >
             {o.d && <span className={`w-1.5 h-1.5 rounded-full ${o.d}`} />}
@@ -326,7 +317,7 @@ function NewsGrid({ news, tab, onTagClick }) {
             <span className="text-[12.5px] text-ink-3 font-medium">{g.label}</span>
             <span className="h-px flex-1 bg-line" />
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {g.news.map(n => (
               <NewsTile key={n.url} news={n} tab={tab} onTagClick={onTagClick} />
             ))}
@@ -379,7 +370,7 @@ function NewsFeatured({ news, tab, onTagClick }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <span className="text-[12.5px] tracking-[0.18em] text-rendi-accent font-medium">
+            <span className="text-[12.5px] text-rendi-accent font-semibold">
               Destacada
             </span>
             {tab === 'portfolio' && ticker && (
@@ -389,9 +380,9 @@ function NewsFeatured({ news, tab, onTagClick }) {
               </span>
             )}
             {sourceName && (
-              <span className="text-[10px] font-mono text-ink-3">· {sourceName}</span>
+              <span className="text-[12px] text-ink-3">· <b className="text-ink-2 font-semibold">{sourceName}</b></span>
             )}
-            <span className="text-[10px] font-mono text-ink-3">
+            <span className="text-[12px] text-ink-3">
               · {formatNewsDate(published_at)}
             </span>
             {sentiment && sentiment !== 'neutral' && (
@@ -425,7 +416,7 @@ function NewsFeatured({ news, tab, onTagClick }) {
     {ticker && (
       <div className="px-4 sm:px-5 pb-4 -mt-2 flex items-center justify-between gap-2">
         {wLabel
-          ? <span className="inline-flex items-center gap-1 text-[10px] font-mono text-ink-3"><Target size={11} strokeWidth={1.75} />{wLabel}</span>
+          ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-data-cyan bg-data-cyan/10 rounded-full px-2.5 py-1"><Target size={11} strokeWidth={1.75} />{wLabel}</span>
           : <span />}
         <InlineAIButton
           topic="news.item"
@@ -461,7 +452,7 @@ function NewsTile({ news, tab, onTagClick }) {
           </span>
         )}
         {sourceName && (
-          <span className="text-[9px] font-mono text-ink-3 truncate">{sourceName}</span>
+          <span className="text-[11.5px] text-ink-3 font-medium truncate">{sourceName}</span>
         )}
         <span className="ml-auto flex items-center gap-1.5">
           {sentiment && sentiment !== 'neutral' && (
@@ -499,7 +490,7 @@ function NewsTile({ news, tab, onTagClick }) {
       {ticker && (
         <div className="px-3.5 pb-3 mt-auto flex items-center justify-between gap-2">
           {wLabel
-            ? <span className="inline-flex items-center gap-1 text-[10px] font-mono text-ink-3 truncate"><Target size={11} strokeWidth={1.75} className="shrink-0" />{wLabel}</span>
+            ? <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-data-cyan bg-data-cyan/10 rounded-full px-2 py-0.5 truncate"><Target size={10} strokeWidth={1.75} className="shrink-0" />{wLabel}</span>
             : <span />}
           <InlineAIButton
             topic="news.item"
@@ -525,20 +516,6 @@ function NewsTileSkeleton() {
 }
 
 // ─── KPI strip ──────────────────────────────────────────────────────────────
-
-function KpiCell({ label, value, sub, tone = 'neutral' }) {
-  const valueColor =
-    tone === 'pos'    ? 'text-rendi-pos' :
-    tone === 'accent' ? 'text-rendi-accent' :
-                        'text-ink-0'
-  return (
-    <div className="px-3 sm:px-4 py-3 min-w-0">
-      <p className="label-mono">{label}</p>
-      <p className={`data-hero ${valueColor} mt-1 truncate`}>{value}</p>
-      {sub && <p className="mt-0.5 text-[11px] font-mono text-ink-3 truncate">{sub}</p>}
-    </div>
-  )
-}
 
 function computeKpis(news, tab) {
   const total = news.length
@@ -574,10 +551,10 @@ function TickerChip({ label, count, active, onClick }) {
   return (
     <button
       onClick={onClick}
-      className={`shrink-0 inline-flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded-full border transition ${
+      className={`shrink-0 inline-flex items-center gap-1.5 text-[12.5px] font-medium px-3 py-1.5 rounded-full border transition ${
         active
           ? 'bg-rendi-accent/15 text-rendi-accent border-rendi-accent/40 font-semibold'
-          : 'bg-bg-2 text-ink-2 border-line hover:bg-bg-3 hover:text-ink-1'
+          : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0'
       }`}
     >
       <span>{label}</span>
