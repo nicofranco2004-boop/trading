@@ -13077,12 +13077,14 @@ Reglas del bloque:
 - La prosa va ANTES del bloque y NO lo menciona (el usuario no ve el JSON, ve tarjetas).
 - OMITÍ el bloque entero en: saludos, aclaraciones breves, y TODO el flujo de registro de operaciones (confirmaciones "¿Confirmás?", resultado del registro, undo). Ahí respondé texto plano como siempre.
 
-Además el JSON acepta "blocks" (máx 2): bloques VISUALES pre-armados que el frontend renderiza. En respuestas de ANÁLISIS incluí CASI SIEMPRE 1-2 — son el cuerpo de la respuesta (la prosa es solo el titular + tu lectura): todo lo que sea lista/ranking va en "table", toda comparación va en "compare", toda composición va en "alloc" — NUNCA enumerado en prosa. Tipos:
+Además el JSON acepta "blocks" (máx 2): bloques VISUALES pre-armados que el frontend renderiza. En respuestas de ANÁLISIS incluí CASI SIEMPRE 1-2 — son el cuerpo de la respuesta (la prosa es solo el titular + tu lectura): todo lo que sea lista/ranking va en "table", toda comparación va en "compare", toda composición va en "alloc" — NUNCA enumerado en prosa. Cada block acepta "title" opcional (máx 40 chars, contextual: "Tu cartera vs S&P · YTD" mejor que "Comparación"). Tipos:
 · {"type":"compare","items":[{"l":"Tu cartera","v":"+18,4%","pct":92},{"l":"S&P 500","v":"+15,2%","pct":76}]} — comparaciones (vs benchmark/alternativas). pct = largo relativo de la barra 0-100 (el mayor ≈ 90-100). Primer item = SIEMPRE el usuario. Máx 4 items.
 · {"type":"alloc","items":[{"l":"NVDA","pct":28},{"l":"Cash","pct":45}]} — composición de la cartera (pct reales del snapshot, máx 6 segmentos, que sumen ~100).
 · {"type":"scenario","if":"NVDA corrige −15%","then":"−4,2 pp en tu cartera","tone":"neg"} — hipotéticos si→entonces (para "¿qué pasa si...?").
 · {"type":"table","cols":["Activo","Peso","Mes"],"rows":[["NVDA","28%","+9,1%"]]} — rankings/listas. Máx 4 columnas × 5 filas; valores numéricos con signo (+/−) para que se coloreen.
-· {"type":"actions","items":[{"label":"Crear alerta NVDA −10%","to":"/alertas?new=NVDA"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER), /analisis, /posiciones, /operaciones, /fundamentals, /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app."""
+· {"type":"actions","items":[{"label":"Crear alerta NVDA −10%","to":"/alertas?new=NVDA"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER), /analisis, /posiciones, /operaciones, /fundamentals, /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app.
+
+RECETA — "¿cómo viene/está mi portfolio?" (la pregunta más común, cuidala): prosa de 3-4 oraciones — estado general, qué lo explica, y LO más notable (riesgo, concentración o racha; UNO, no una lista). stats = el retorno del período, el versus benchmark (si summary.benchmarks está) y el dato saliente. blocks ideales: "compare" con los números REALES de summary.benchmarks (tu cartera vs S&P 500 e inflación) + "alloc" con la composición, o "actions" si detectaste algo accionable. Las posiciones NUNCA una por una en la prosa — para eso está la tabla."""
 
 
 # Prompt FREE — version stripped del coach. Diseño deliberado: descriptivo,

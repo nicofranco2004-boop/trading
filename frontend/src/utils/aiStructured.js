@@ -88,22 +88,26 @@ function sanitizeMeta(m) {
     : []
 
   // Bloques visuales (catálogo V1). Tipo desconocido → se ignora (forward-compat).
+  // `title` opcional (≤40) — la card lo muestra como encabezado; sin él, el
+  // renderer cae al genérico del tipo ("Comparación", "Composición", …).
   const blocks = []
   if (Array.isArray(m.blocks)) {
     for (const b of m.blocks.slice(0, 4)) {
       if (!b || typeof b !== 'object') continue
+      const title = str(b.title, 40)
+      const withTitle = (obj) => (title ? { ...obj, title } : obj)
       if (b.type === 'compare' && Array.isArray(b.items)) {
         const items = b.items
           .filter(it => it && str(it.l, 30) && str(it.v, 20))
           .slice(0, 4)
           .map(it => ({ l: str(it.l, 30), v: str(it.v, 20), pct: num(it.pct, 0, 100) }))
-        if (items.length >= 2) blocks.push({ type: 'compare', items })
+        if (items.length >= 2) blocks.push(withTitle({ type: 'compare', items }))
       } else if (b.type === 'alloc' && Array.isArray(b.items)) {
         const items = b.items
           .filter(it => it && str(it.l, 24) && num(it.pct, 0, 100) != null)
           .slice(0, 6)
           .map(it => ({ l: str(it.l, 24), pct: num(it.pct, 0, 100) }))
-        if (items.length >= 2) blocks.push({ type: 'alloc', items })
+        if (items.length >= 2) blocks.push(withTitle({ type: 'alloc', items }))
       } else if (b.type === 'scenario' && str(b.if, 60) && str(b.then, 60)) {
         blocks.push({ type: 'scenario', if: str(b.if, 60), then: str(b.then, 60), tone: TONES.has(b.tone) ? b.tone : 'neutral' })
       } else if (b.type === 'table' && Array.isArray(b.cols) && Array.isArray(b.rows)) {
@@ -112,13 +116,13 @@ function sanitizeMeta(m) {
           .filter(r => Array.isArray(r))
           .slice(0, 5)
           .map(r => r.slice(0, cols.length).map(c => String(c ?? '').slice(0, 24)))
-        if (cols.length >= 2 && rows.length >= 1) blocks.push({ type: 'table', cols, rows })
+        if (cols.length >= 2 && rows.length >= 1) blocks.push(withTitle({ type: 'table', cols, rows }))
       } else if (b.type === 'actions' && Array.isArray(b.items)) {
         const items = b.items
           .map(it => (it && str(it.label, 60) && safeRoute(it.to) ? { label: str(it.label, 60), to: safeRoute(it.to) } : null))
           .filter(Boolean)
           .slice(0, 3)
-        if (items.length >= 1) blocks.push({ type: 'actions', items })
+        if (items.length >= 1) blocks.push(withTitle({ type: 'actions', items }))
       }
       if (blocks.length >= 2) break   // máx 2 bloques por respuesta (regla de diseño)
     }

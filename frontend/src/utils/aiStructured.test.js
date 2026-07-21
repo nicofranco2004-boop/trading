@@ -111,6 +111,15 @@ describe('blocks (catálogo visual)', () => {
     expect(r.meta.blocks[0].rows[0]).toHaveLength(4)
   })
 
+  it('title opcional: pasa sanitizado (≤40), ausente no agrega la clave', () => {
+    const r = wrap([{ type: 'compare', title: '  Tu cartera vs S&P · YTD  ', items: [{ l: 'Vos', v: '+3%' }, { l: 'S&P', v: '+10%' }] }])
+    expect(r.meta.blocks[0].title).toBe('Tu cartera vs S&P · YTD')
+    const long = wrap([{ type: 'alloc', title: 'x'.repeat(80), items: [{ l: 'A', pct: 60 }, { l: 'B', pct: 40 }] }])
+    expect(long.meta.blocks[0].title).toHaveLength(40)
+    const none = wrap([{ type: 'alloc', items: [{ l: 'A', pct: 60 }, { l: 'B', pct: 40 }] }])
+    expect('title' in none.meta.blocks[0]).toBe(false)
+  })
+
   it('compare con <2 items no renderiza', () => {
     const r = wrap([{ type: 'compare', items: [{ l: 'Solo', v: '+1%' }] }])
     expect(r.meta.blocks).toHaveLength(0)

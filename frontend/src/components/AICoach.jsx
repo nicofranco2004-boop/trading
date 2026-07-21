@@ -15,7 +15,7 @@
 // el tono research-note.
 
 import { useState, useRef, useEffect } from 'react'
-import { Sparkles, AlertCircle, RotateCcw, Send, Lock } from 'lucide-react'
+import { Sparkles, AlertCircle, RotateCcw, Send, Lock, TrendingUp, TrendingDown, AlertTriangle, Activity } from 'lucide-react'
 import { api } from '../utils/api'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { trackEvent } from '../utils/analytics'
@@ -54,18 +54,19 @@ import { parseStructured } from '../utils/aiStructured'
 import { loadChatSession, saveChatSession, clearChatSession, sendWindow } from '../utils/chatSession'
 import AIBlocks from './ai/AIBlocks'
 
-// Tonos del bloque estructurado (veredicto pill + valores de las tarjetas).
-const VERDICT_TONE = {
-  pos:     'bg-rendi-pos/10 text-rendi-pos',
-  warn:    'bg-rendi-warn/10 text-rendi-warn',
-  neg:     'bg-rendi-neg/10 text-rendi-neg',
-  neutral: 'bg-bg-2 text-ink-1',
+// Tonos del bloque estructurado (v2: veredicto = banda con ícono y gradiente
+// lateral; stats = cards con lavado de color y barra izquierda por tono).
+const VERDICT_BAND = {
+  pos:     { wash: 'from-rendi-pos/10',  ic: 'bg-rendi-pos/10 text-rendi-pos',   label: 'text-rendi-pos',  Icon: TrendingUp },
+  warn:    { wash: 'from-rendi-warn/10', ic: 'bg-rendi-warn/10 text-rendi-warn', label: 'text-rendi-warn', Icon: AlertTriangle },
+  neg:     { wash: 'from-rendi-neg/10',  ic: 'bg-rendi-neg/10 text-rendi-neg',   label: 'text-rendi-neg',  Icon: TrendingDown },
+  neutral: { wash: 'from-bg-2',          ic: 'bg-bg-2 text-ink-2',               label: 'text-ink-2',      Icon: Activity },
 }
 const STAT_TONE = {
-  pos:     'text-rendi-pos',
-  warn:    'text-rendi-warn',
-  neg:     'text-rendi-neg',
-  neutral: 'text-ink-0',
+  pos:     { v: 'text-rendi-pos',  wash: 'from-rendi-pos/10',  bar: 'bg-rendi-pos' },
+  warn:    { v: 'text-rendi-warn', wash: 'from-rendi-warn/10', bar: 'bg-rendi-warn' },
+  neg:     { v: 'text-rendi-neg',  wash: 'from-rendi-neg/10',  bar: 'bg-rendi-neg' },
+  neutral: { v: 'text-ink-0',      wash: '',                    bar: '' },
 }
 
 // fullHeight: modo página (/ai) — sin card-shell ni header propio (la página
@@ -426,26 +427,41 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
               <div className="w-7 h-7 rounded-lg grid place-items-center text-white text-[12px] flex-none mt-0.5"
                 style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
               <div className="flex-1 min-w-0 pt-0.5">
-                {meta?.verdict && (
-                  <span className={`inline-block text-[11.5px] font-bold px-2.5 py-1 rounded-full mb-2 ${VERDICT_TONE[meta.tone] || VERDICT_TONE.neutral}`}>
-                    {meta.verdict}
-                  </span>
-                )}
-                {meta?.headline && (
-                  <p className="text-[15.5px] font-semibold text-ink-0 leading-snug mb-1.5">{meta.headline}</p>
-                )}
+                {(meta?.verdict || meta?.headline) && (() => {
+                  const band = VERDICT_BAND[meta.tone] || VERDICT_BAND.neutral
+                  const BandIcon = band.Icon
+                  return (
+                    <div className={`flex items-center gap-3 rounded-xl border border-line px-3.5 py-2.5 mb-3 bg-gradient-to-r ${band.wash} to-transparent`}>
+                      <span className={`w-8 h-8 rounded-lg grid place-items-center flex-none ${band.ic}`}>
+                        <BandIcon size={16} strokeWidth={1.75} aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0">
+                        {meta.verdict && (
+                          <div className={`text-[10.5px] font-bold tracking-[0.07em] uppercase ${band.label}`}>{meta.verdict}</div>
+                        )}
+                        {meta.headline && (
+                          <div className="text-[14px] font-semibold text-ink-0 leading-snug">{meta.headline}</div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
                 <div className="text-[14.5px] text-ink-1 leading-relaxed whitespace-pre-wrap">{prose}</div>
-                {meta?.blocks?.length > 0 && <AIBlocks blocks={meta.blocks} />}
                 {meta?.stats?.length > 0 && (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3">
-                    {meta.stats.map((s, k) => (
-                      <div key={k} className="bg-bg-1 border border-line rounded-xl px-3 py-2.5">
-                        <div className="text-[11px] text-ink-3 font-medium mb-1">{s.l}</div>
-                        <div className={`text-[15px] font-semibold num tabular ${STAT_TONE[s.t] || STAT_TONE.neutral}`}>{s.v}</div>
-                      </div>
-                    ))}
+                    {meta.stats.map((s, k) => {
+                      const t = STAT_TONE[s.t] || STAT_TONE.neutral
+                      return (
+                        <div key={k} className={`relative overflow-hidden bg-bg-1 border border-line rounded-xl px-3.5 py-3 ${t.wash ? `bg-gradient-to-b ${t.wash} to-transparent` : ''}`}>
+                          {t.bar && <span className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-r ${t.bar}`} aria-hidden />}
+                          <div className="text-[11px] text-ink-2 font-semibold mb-1.5">{s.l}</div>
+                          <div className={`text-[17px] font-bold num tabular leading-tight ${t.v}`}>{s.v}</div>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
+                {meta?.blocks?.length > 0 && <AIBlocks blocks={meta.blocks} />}
                 {meta?.sources?.length > 0 && (
                   <div className="flex items-center gap-1.5 mt-2.5 flex-wrap text-[11px] text-ink-3">
                     <span>Basado en</span>
