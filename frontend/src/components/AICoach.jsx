@@ -51,6 +51,7 @@ const DEFAULT_SUGGESTED = [
 // aritmética con asteriscos).
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
+import { loadChatSession, saveChatSession, clearChatSession, sendWindow } from '../utils/chatSession'
 import AIBlocks from './ai/AIBlocks'
 
 // Tonos del bloque estructurado (veredicto pill + valores de las tarjetas).
@@ -73,7 +74,11 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const canChatFree = isPro || isAdmin  // chat libre = solo Pro/Admin
   const SUGGESTED = (suggested && suggested.length > 0) ? suggested.slice(0, 12) : DEFAULT_SUGGESTED
-  const [messages, setMessages] = useState([])
+  // La conversación PERSISTE al navegar (pedido de Nico: ir al Dashboard y
+  // volver sin perder el chat). Se hidrata del sessionStorage y solo se borra
+  // con "Nueva conversación" / "Nuevo" (reset). Ver utils/chatSession.js —
+  // al modelo viaja solo la ventana final (sendWindow), el costo no crece.
+  const [messages, setMessages] = useState(() => loadChatSession())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [freeText, setFreeText] = useState('')
@@ -99,6 +104,10 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const abortRef = useRef(null)
   useEffect(() => () => { abortRef.current?.abort() }, [])
 
+  // Persistir la conversación en cada cambio (incluye los deltas del
+  // streaming — barato: sessionStorage síncrono sobre ~40 mensajes máx).
+  useEffect(() => { saveChatSession(messages) }, [messages])
+
   // Cargar cuota inicial — solo lectura, sin gating front (el server tiene la
   // verdad). Si falla, no rompemos UX — el server devolverá 429 si excede.
   useEffect(() => {
@@ -119,13 +128,14 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
     }
   }, [messages, loading])
 
-  // Auto-envío de pregunta pre-cargada (ej. CTA del Coach en FirstInsight
-  // post-import). Se dispara una sola vez al montar, cuando ya hay snapshot y
-  // no hubo mensajes. El drawer remonta AICoach en cada apertura → el ref de
-  // "ya enviado" se resetea solo. La pregunta debe estar whitelisted o 403.
+  // Auto-envío de pregunta pre-cargada (ej. botón ✦ "Analizar" de otra
+  // pantalla). Se dispara una sola vez al montar, cuando ya hay snapshot.
+  // Con la conversación persistida, la pregunta se APPENDEA al chat en curso
+  // (antes exigía messages.length === 0 → el deep-link se perdía si volvías
+  // con una conversación restaurada). La pregunta debe estar whitelisted o 403.
   const autoAskedRef = useRef(false)
   useEffect(() => {
-    if (autoAsk && snapshot && !autoAskedRef.current && messages.length === 0) {
+    if (autoAsk && snapshot && !autoAskedRef.current) {
       autoAskedRef.current = true
       send(autoAsk)
     }
@@ -197,7 +207,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       // Marcar Coach IA como "descubierto" — usado por OnboardingChecklist
       // en Home para detectar que el user ya probó el chat.
       markAIDiscovered()
-      const res = await api.chatStream({ messages: newMessages, snapshot }, { onDelta, onReset, signal: ctrl.signal })
+      // Al modelo va SOLO la ventana final (cost cap) — en pantalla queda todo.
+      const res = await api.chatStream({ messages: sendWindow(newMessages), snapshot }, { onDelta, onReset, signal: ctrl.signal })
       // Edge: el stream cerró sin emitir texto → mostrar algo en vez de nada.
       if (!assistantAdded) {
         setMessages(m => [...m, { role: 'assistant', content: stripMarkdown(acc) || '…' }])
@@ -301,6 +312,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
     // Abortar el stream en curso ANTES de limpiar: sin esto, los deltas del
     // stream viejo re-poblaban una burbuja fantasma sobre el chat nuevo.
     abortRef.current?.abort()
+    clearChatSession()
     setMessages([])
     setError(null)
     setUpgradeInfo(null)

@@ -20267,6 +20267,19 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # (chat conversacional real).
     if is_premium:
         incoming = [m.model_dump() for m in data.messages]
+        # Cost cap de historial (2026-07): la conversación ahora PERSISTE en el
+        # cliente (no se borra al navegar) — al LLM viaja SOLO la ventana final
+        # para que el input por turno no crezca con chats largos. El cliente ya
+        # manda recortado (utils/chatSession.sendWindow); esto es la verdad
+        # server-side. La ventana arranca en un mensaje 'user' (requisito de la
+        # API de Anthropic + ahí se inyecta el contexto del snapshot).
+        _MAX_HISTORY = 12
+        if len(incoming) > _MAX_HISTORY:
+            incoming = incoming[-_MAX_HISTORY:]
+        while incoming and incoming[0].get("role") != "user":
+            incoming.pop(0)
+        if not incoming:
+            incoming = [{"role": "user", "content": last_user_msg}]
     else:
         # Free/Plus: one-shot. Mandamos al LLM SOLO el mensaje validado.
         incoming = [{"role": "user", "content": last_user_msg}]

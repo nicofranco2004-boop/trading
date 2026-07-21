@@ -16,6 +16,7 @@ import { Loader2, AlertCircle, Plus } from 'lucide-react'
 import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { api } from '../utils/api'
+import { clearChatSession } from '../utils/chatSession'
 
 export default function RendiAI() {
   const { initialQuestion, consumeInitialQuestion } = useCoachDrawer()
@@ -24,7 +25,9 @@ export default function RendiAI() {
   const [error, setError] = useState(null)
   const snapshotRef = useRef(null)
   const [refreshTick, setRefreshTick] = useState(0)
-  // Remount de AICoach = conversación nueva (el chat es stateless server-side).
+  // Remount de AICoach = conversación nueva. La conversación PERSISTE al
+  // navegar (sessionStorage, ver utils/chatSession) — por eso acá, además del
+  // remount, hay que BORRAR la persistida (sin eso el remount la restaura).
   const [convKey, setConvKey] = useState(0)
   // La pregunta inicial se consume UNA vez (sino un remount la re-enviaría).
   const autoAskRef = useRef(null)
@@ -98,7 +101,7 @@ export default function RendiAI() {
           )}
           <button
             type="button"
-            onClick={() => setConvKey(k => k + 1)}
+            onClick={() => { clearChatSession(); setConvKey(k => k + 1) }}
             className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-ink-2 hover:text-ink-0 border border-line hover:border-ink-3 rounded-lg px-3 py-1.5 transition-colors"
           >
             <Plus size={13} strokeWidth={2} aria-hidden="true" /> Nueva conversación
