@@ -4465,10 +4465,13 @@ MARKET_NEWS_QUERIES = [
 # Codes documentados:
 #   news_25  → Stock market (acciones)
 #   news_285 → Economic indicators (macro)
+
+# Clean pass 2026-07 (pedido de Nico): noticias EN ESPAÑOL por default.
+# Los feeds en inglés de Investing se retiraron — el mercado/macro sale de las
+# ediciones es.investing.com. El fallback a inglés queda solo para tickers de
+# portfolio con poca cobertura en español (ver _refresh_news_query).
 INVESTING_FEEDS = [
     # (url, category, lang)
-    ("https://www.investing.com/rss/news_25.rss",  "market", "en"),
-    ("https://www.investing.com/rss/news_285.rss", "macro",  "en"),
     ("https://es.investing.com/rss/news_25.rss",   "market", "es"),
     ("https://es.investing.com/rss/news_285.rss",  "macro",  "es"),
 ]
@@ -4978,8 +4981,16 @@ def _refresh_news_query(conn, query: str, lang: str, category: str, limit: int =
     """Refresca el cache de Google News para un query dado. Idempotente.
 
     Delega a _persist_news_items con source='google_news_rss'.
+
+    Clean pass 2026-07: español-first. Si el query es en español y Google trae
+    POCAS notas (<3 — tickers chicos sin cobertura en medios hispanos),
+    complementamos con la variante en inglés ("{TICKER} stock") para que ese
+    ticker no quede sin noticias. El dedup por external_id evita duplicados.
     """
     items = _fetch_google_news_rss(query, lang=lang, limit=limit)
+    if lang == "es" and len(items) < 3 and query.endswith(" acciones"):
+        fallback_q = query[: -len(" acciones")] + " stock"
+        items = items + _fetch_google_news_rss(fallback_q, lang="en", limit=limit - len(items))
     return _persist_news_items(conn, items, 'google_news_rss', category, query)
 
 
@@ -5270,13 +5281,14 @@ def get_portfolio_news(
         if not tickers:
             return {'news': [], 'count': 0}
 
-        # Build queries batch (cap a 20 para no martillar Google) + paralelo
+        # Build queries batch (cap a 20 para no martillar Google) + paralelo.
+        # Clean pass 2026-07: TODO en español ("{TICKER} acciones", es-419/AR)
+        # — antes los tickers US iban en inglés y el feed quedaba mezclado.
+        # Si un ticker tiene poca cobertura en español, _refresh_news_query
+        # cae a inglés para ese query (el feed nunca queda vacío).
         queries_batch = []
         for ticker in tickers[:20]:
-            is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
-            lang = "es" if is_ar else "en"
-            query = f"{ticker} {'acciones' if is_ar else 'stock'}"
-            queries_batch.append((query, lang, 'portfolio'))
+            queries_batch.append((f"{ticker} acciones", "es", 'portfolio'))
 
         # SWR per-ticker: si tenemos news para AL MENOS un ticker del user,
         # refresh en background y devolvemos lo que hay. Si NINGÚN ticker
@@ -17631,14 +17643,12 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
 
         conn = get_db()
         try:
-            # Sembrar (o refrescar) por cada ticker — sigue el mismo patrón que
-            # /api/news/portfolio: query "{TICKER} stock" (en/es según AR/US).
+            # Sembrar (o refrescar) por cada ticker — mismo patrón que
+            # /api/news/portfolio: español para todos ("{TICKER} acciones"),
+            # con fallback a inglés dentro de _refresh_news_query.
             specs = []
             for ticker in valid:
-                is_ar = (ticker in POPULAR_TICKERS_AR_ADR) or (ticker in AR_BONDS_DATA912)
-                lang = "es" if is_ar else "en"
-                q = f"{ticker} {'acciones' if is_ar else 'stock'}"
-                specs.append((q, lang, 'portfolio'))
+                specs.append((f"{ticker} acciones", "es", 'portfolio'))
 
             try:
                 # max_wait=4s: este tool corre dentro del chat IA (timeout SDK
