@@ -15,14 +15,14 @@ export default function RangeTabs({ value, onChange, ranges = RANGES, size = 'md
   const padX = size === 'sm' ? 'px-2.5' : 'px-3'
   const text = size === 'sm' ? 'text-[11px]' : 'text-xs'
   return (
-    <div className="inline-flex bg-bg-2 dark:bg-bg-2/60 p-0.5 rounded-lg">
+    <div className="inline-flex bg-bg-2 dark:bg-bg-2/60 p-0.5 rounded-full">
       {ranges.map(r => {
         const active = value === r.id
         return (
           <button
             key={r.id}
             onClick={() => onChange(r.id)}
-            className={`${padX} ${padY} ${text} rounded-md font-semibold tracking-wide transition-colors ${
+            className={`${padX} ${padY} ${text} rounded-full font-semibold tracking-wide transition-colors ${
               active
                 ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
                 : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'

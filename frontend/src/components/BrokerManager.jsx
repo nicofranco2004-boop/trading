@@ -253,9 +253,10 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
 // ─── BrokerCard ─────────────────────────────────────────────────────────────
 // Card con métricas nativas del broker: ARS muestra pesos, USD/USDT dólares —
 // espejo del header de cada grupo en la grilla de abajo. Sin `totals` (o
-// broker vacío) la card degrada a nombre + moneda.
+// broker vacío) la card degrada a nombre + moneda. Exportada para que el
+// Dashboard use la MISMA pieza (sin acciones: onEdit/onDelete opcionales).
 
-function BrokerCard({ broker, totals, hidden, onEdit, onDelete }) {
+export function BrokerCard({ broker, totals, hidden, onEdit, onDelete }) {
   const isARS = broker.currency === 'ARS'
   const value = totals ? (isARS ? totals.valueArs : totals.value) : null
   const inv = totals ? (isARS ? totals.invArs : totals.invested) : 0
@@ -269,24 +270,30 @@ function BrokerCard({ broker, totals, hidden, onEdit, onDelete }) {
           <span className="text-sm font-semibold text-ink-0 truncate">{broker.name}</span>
           <Pill tone={currencyTone(broker.currency)}>{broker.currency}</Pill>
         </div>
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-          <button
-            onClick={onEdit}
-            className="p-1 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
-            title={`Editar ${broker.name}`}
-            aria-label={`Editar ${broker.name}`}
-          >
-            <Pencil size={11} strokeWidth={1.75} />
-          </button>
-          <button
-            onClick={onDelete}
-            className="p-1 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-2 transition-colors"
-            title={`Eliminar ${broker.name}`}
-            aria-label={`Eliminar ${broker.name}`}
-          >
-            <Trash2 size={11} strokeWidth={1.75} />
-          </button>
-        </div>
+        {(onEdit || onDelete) && (
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+            {onEdit && (
+              <button
+                onClick={onEdit}
+                className="p-1 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+                title={`Editar ${broker.name}`}
+                aria-label={`Editar ${broker.name}`}
+              >
+                <Pencil size={11} strokeWidth={1.75} />
+              </button>
+            )}
+            {onDelete && (
+              <button
+                onClick={onDelete}
+                className="p-1 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-2 transition-colors"
+                title={`Eliminar ${broker.name}`}
+                aria-label={`Eliminar ${broker.name}`}
+              >
+                <Trash2 size={11} strokeWidth={1.75} />
+              </button>
+            )}
+          </div>
+        )}
       </div>
       {hasData ? (
         <>

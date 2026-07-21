@@ -49,11 +49,11 @@ export default function UpcomingEventsCard({ positions }) {
         <div className="flex items-center gap-2">
           <Calendar size={14} strokeWidth={1.75} className="text-rendi-accent" />
           <span className="text-sm font-semibold text-ink-0">Próximos eventos</span>
-          <span className="text-[10px] text-ink-3 font-mono">· próximos {WINDOW_DAYS} días</span>
+          <span className="text-[11px] text-ink-3">· próximos {WINDOW_DAYS} días</span>
         </div>
         <Link
           to="/novedades?tab=eventos"
-          className="text-[11px] text-rendi-accent hover:text-rendi-accent/80 font-mono inline-flex items-center gap-0.5"
+          className="text-[11.5px] font-medium text-rendi-accent hover:text-rendi-accent/80 inline-flex items-center gap-0.5"
         >
           Ver todos <ArrowRight size={11} strokeWidth={1.75} />
         </Link>
@@ -73,42 +73,44 @@ function EventRow({ event }) {
     <li className="px-4 py-2.5 flex items-center gap-3 hover:bg-bg-2 dark:hover:bg-bg-2/40">
       <AssetLogo asset={ticker} size={28} />
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap mb-0.5">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-semibold text-ink-0 text-sm tabular">{ticker}</span>
           <EventBadge eventType={eventType} />
         </div>
-        <p className="text-[11px] text-ink-2 font-mono">
-          {formatRelativeDate(eventDate)}
-          {!confirmed && <span className="text-ink-3 opacity-70"> · estimado</span>}
-        </p>
+        <RowAmount event={event} />
       </div>
-      <RowAmount event={event} />
+      <span className="text-[11px] font-medium text-ink-2 bg-bg-2 border border-line/60 rounded-full px-2 py-0.5 whitespace-nowrap shrink-0">
+        {formatRelativeDate(eventDate)}
+        {!confirmed && <span className="text-ink-3"> · est.</span>}
+      </span>
     </li>
   )
 }
 
+// Sub-línea de contexto: para cobros (bonos, dividendos) va en cyan — es el
+// "qué significa para vos" (mismo código de color que la agenda de Novedades).
 function RowAmount({ event }) {
   const { eventType, details } = event
   if (eventType.startsWith('bond_') && details?.total != null) {
     const currency = details.currency || 'USD'
     return (
-      <span className="text-xs font-semibold text-rendi-pos tabular shrink-0">
-        +{currency} {details.total.toFixed(2)}
-      </span>
+      <p className="text-[11.5px] text-data-cyan tabular mt-0.5">
+        cobrás ~+{currency} {details.total.toFixed(2)}
+      </p>
     )
   }
   if (eventType === 'ex_dividend' && details?.dividend_per_share != null) {
     return (
-      <span className="text-xs font-semibold text-rendi-pos tabular shrink-0">
+      <p className="text-[11.5px] text-data-cyan tabular mt-0.5">
         ${details.dividend_per_share}/acción
-      </span>
+      </p>
     )
   }
   if (eventType === 'earnings' && details?.eps_estimate != null) {
     return (
-      <span className="text-xs text-ink-2 tabular shrink-0">
-        EPS est. ${details.eps_estimate}
-      </span>
+      <p className="text-[11.5px] text-ink-2 tabular mt-0.5">
+        EPS esperado ${details.eps_estimate}
+      </p>
     )
   }
   return null
