@@ -14,6 +14,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { Search, X, CornerDownLeft, ArrowUp, ArrowDown, Plus, Check } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
+import AssetTypeBadge from '../AssetTypeBadge'
 import AssetQuickView from './AssetQuickView'
 import { notifyWatchlistChanged, subscribeWatchlistChanged } from '../../utils/watchlistEvents'
 import { POPULAR_TICKERS, CEDEAR_SEARCH, AR_STOCK_SEARCH, US_SEARCH, inferType } from '../../utils/tickers'
@@ -397,6 +398,7 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
         <div className="flex items-baseline gap-2 flex-wrap">
           <span className="text-sm font-mono text-ink-0">{ticker.symbol}</span>
           <span className="text-xs text-ink-2 truncate">{ticker.name}</span>
+          <AssetTypeBadge type={ticker.type} className="self-center" />
           {ticker.exchange && (
             <span className="text-[12.5px] text-ink-2 font-medium">
               · {ticker.exchange}

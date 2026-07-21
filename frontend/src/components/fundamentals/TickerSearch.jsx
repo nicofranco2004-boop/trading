@@ -10,18 +10,10 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { Search, CornerDownLeft } from 'lucide-react'
 import { POPULAR_TICKERS } from '../../utils/tickers'
+import AssetLogo from '../AssetLogo'
+import AssetTypeBadge from '../AssetTypeBadge'
 
 const MAX_RESULTS = 8
-
-// Etiqueta corta del tipo, para diferenciar visualmente cripto/bono/etc.
-const TYPE_LABEL = {
-  stock_us: 'Acción US',
-  stock_ar: 'Acción AR',
-  cedear: 'CEDEAR',
-  bond: 'Bono',
-  crypto: 'Cripto',
-  etf: 'ETF',
-}
 
 function filterTickers(q) {
   const query = (q || '').trim().toUpperCase()
@@ -105,7 +97,7 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
 
   return (
     <div ref={containerRef} className="relative">
-      <div className="flex items-center gap-2 bg-bg-2 border border-line rounded-xl px-3 py-2.5 focus-within:border-data-violet/60 transition-colors">
+      <div className="flex items-center gap-2 bg-bg-2 border border-line rounded px-3 py-2.5 focus-within:border-data-violet/60 transition-colors">
         <Search size={16} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
         <input
           ref={inputRef}
@@ -137,13 +129,14 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
                 i === highlight ? 'bg-bg-1' : 'hover:bg-bg-1'
               }`}
             >
-              <span className="flex items-baseline gap-2 min-w-0">
-                <span className="font-mono text-sm font-semibold text-ink-0 tabular">{t.symbol}</span>
-                <span className="text-xs text-ink-3 truncate">{t.name}</span>
+              <span className="flex items-center gap-2 min-w-0">
+                <AssetLogo asset={t.symbol} size={28} className="flex-shrink-0" />
+                <span className="flex items-baseline gap-2 min-w-0">
+                  <span className="font-mono text-sm font-semibold text-ink-0 tabular">{t.symbol}</span>
+                  <span className="text-xs text-ink-3 truncate">{t.name}</span>
+                </span>
               </span>
-              <span className="text-[12px] text-ink-3 flex-shrink-0 font-medium">
-                {TYPE_LABEL[t.type] || t.type}
-              </span>
+              <AssetTypeBadge type={t.type} />
             </button>
           ))}
         </div>

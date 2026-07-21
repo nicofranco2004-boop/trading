@@ -100,6 +100,22 @@ class CurrencyLotsTest(unittest.TestCase):
         }, headers=self._hdr())
         self.assertEqual(r.status_code, 400, r.text)  # no puede vender 8 USD si tiene 5
 
+    def test_sell_accepts_long_fci_asset_name(self):
+        """Regresión (reporte de usuario): los FCI tienen nombres largos (>20
+        chars). Antes SellIn capaba `asset` en 20 → se podían registrar COMPRAS
+        (PositionIn permitía 48) pero NO VENTAS. Ahora ambos usan MAX_STR (100)."""
+        long_name = "FIMA RENTA EN PESOS PLUS CLASE A ACUMULACION"  # 44 chars
+        self.assertGreater(len(long_name), 20)
+        buy = self._add(broker="Cocos", asset=long_name, quantity=100,
+                        buy_price=1500, currency="ARS")
+        self.assertIn(buy.status_code, (200, 201), buy.text)
+        sell = self.client.post("/api/positions/sell", json={
+            "broker": "Cocos", "asset": long_name, "quantity": 40,
+            "exit_price": 1600, "currency": "ARS",
+        }, headers=self._hdr())
+        self.assertNotEqual(sell.status_code, 422, sell.text)  # antes: 422 (asset > 20)
+        self.assertIn(sell.status_code, (200, 201), sell.text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,11 +19,12 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp, FileText, ArrowRight } from 'lucide-react'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
-  BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF,
+  BONDS_AR_SOV_USD, BONDS_AR_CER, BONDS_AR_ONS, BONDS_US_ETF, CATEGORY_TO_TYPE,
+  POPULAR_TICKERS, inferType,
 } from '../utils/tickers'
 import { isLetraTicker } from '../utils/sections'
 import { api } from '../utils/api'
-import AssetLogo from './AssetLogo'
+import AssetResultRow from './AssetResultRow'
 
 const _MONTH_NAMES = { E:'ene', F:'feb', M:'mar', A:'abr', Y:'may', J:'jun', L:'jul', G:'ago', S:'sep', O:'oct', N:'nov', D:'dic' }
 function decodeLetraDate(sym) {
@@ -68,6 +69,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
   const [chosenBroker, setChosenBroker] = useState(initialBroker || null)
   const [categoryId, setCategoryId] = useState(null)
   const [fciList, setFciList] = useState([])
+  const [holdings, setHoldings] = useState([])   // posiciones del user (para "En tu cartera")
   const current = SEQ[stepIdx]
 
   // El catálogo de FCI es dinámico (viene del backend); el resto de categorías
@@ -79,6 +81,25 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
         if (alive) setFciList((rows || []).map(r => ({
           s: r.symbol, n: r.display_name, _sub: r.emisor, _moneda: r.moneda,
         })))
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  // Tenencias del user → para mostrar "En tu cartera" primero al abrir el buscador.
+  useEffect(() => {
+    let alive = true
+    api.get('/positions')
+      .then(d => {
+        if (!alive) return
+        setHoldings((d || [])
+          .filter(p => !p.is_cash && p.asset)
+          .map(p => ({
+            symbol: String(p.asset).toUpperCase(),
+            name: p.asset,
+            broker: p.broker,
+            quantity: Number(p.quantity || 0),
+          })))
       })
       .catch(() => {})
     return () => { alive = false }
@@ -110,6 +131,60 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
   // (importa para FCI, que se llena async después del fetch).
   const category = categories.find(c => c.id === categoryId) || null
 
+  // Universo aplanado para el BUSCADOR GENERAL del step de tipo: junta todos los
+  // items de todas las categorías (respeta el filtro de FCI por moneda del
+  // broker, que ya viene aplicado en `categories`). Cada item lleva su categoría
+  // de origen (`_catId`) y su tipo (`_type`) para el badge y para rutear la
+  // selección directo al form sin pasar por el paso de categoría.
+  const universe = useMemo(() => categories.flatMap(cat => {
+    const type = CATEGORY_TO_TYPE[cat.id] || null
+    return (cat.list || []).map(t => ({ ...t, _catId: cat.id, _type: type }))
+  }), [categories])
+
+  // Un mismo símbolo puede vivir en 2 categorías (AAPL como Acción US y como
+  // CEDEAR). Al elegir una tenencia/sugerencia resolvemos a qué categoría rutear:
+  // en un broker ARS preferimos el CEDEAR; en uno USD, la acción. Si no está en
+  // ninguna lista (bono/letra/FCI suelto), devolvemos catId indefinido (el
+  // backend infiere el tipo del broker).
+  function resolvePick(symbol, name) {
+    const sym = (symbol || '').toUpperCase()
+    const matches = universe.filter(u => (u.s || '').toUpperCase() === sym)
+    if (!matches.length) return { s: symbol, n: name, _catId: undefined, _type: inferType(symbol) }
+    if (matches.length === 1) return matches[0]
+    const wantCedear = brokerCurrency === 'ARS'
+    return matches.find(m => (m._catId === 'cedears') === wantCedear) || matches[0]
+  }
+
+  // Tenencias en el broker elegido, agregadas por símbolo (varios lotes → 1 fila).
+  const brokerHoldings = useMemo(() => {
+    if (!chosenBroker) return []
+    const map = new Map()
+    for (const h of holdings) {
+      if (h.broker !== chosenBroker) continue
+      const prev = map.get(h.symbol)
+      if (prev) prev.quantity += h.quantity
+      else map.set(h.symbol, { ...h })
+    }
+    return [...map.values()]
+  }, [holdings, chosenBroker])
+
+  // Sugeridos: tickers populares que se pueden agregar en este broker y que el
+  // user todavía NO tiene acá. Recortado a 6 para no tapar las categorías.
+  const suggestions = useMemo(() => {
+    const held = new Set(brokerHoldings.map(h => h.symbol))
+    const out = []
+    for (const p of POPULAR_TICKERS) {
+      const sym = (p.symbol || '').toUpperCase()
+      if (held.has(sym)) continue
+      const r = resolvePick(sym, p.name)
+      if (!r._catId) continue           // no addable en este broker (fuera de las listas)
+      if (out.some(o => o.symbol === sym)) continue
+      out.push({ symbol: sym, name: p.name, type: r._type, _pick: r })
+      if (out.length >= 6) break
+    }
+    return out
+  }, [brokerHoldings, universe, brokerCurrency])
+
   // Esc cierra el flow desde cualquier step (a11y standard)
   useEffect(() => {
     function onKey(e) { if (e.key === 'Escape') onClose() }
@@ -125,8 +200,14 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
     setCategoryId(cat.id)
     setStepIdx(i => i + 1)
   }
-  function selectTicker(t) {
-    onAssetSelected({ asset: t.s, name: t.n, category: categoryId, broker: chosenBroker })
+  function selectTicker(t, catId = categoryId) {
+    onAssetSelected({ asset: t.s, name: t.n, category: catId, broker: chosenBroker })
+  }
+  // Elegir una tenencia o sugerencia (por símbolo): resolvemos la categoría y
+  // vamos derecho al form.
+  function selectBySymbol(symbol, name) {
+    const r = resolvePick(symbol, name)
+    selectTicker(r, r._catId)
   }
   function back() {
     setStepIdx(i => {
@@ -156,7 +237,17 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
           onClose={onClose}
         />
         {current === 'broker' && <StepBrokerPicker brokers={brokers} onPick={selectBroker} onPlazoFijo={onPlazoFijo} onCreateBroker={onCreateBroker} />}
-        {current === 'type' && <Step1AssetType categories={categories} onPick={selectCategory} />}
+        {current === 'type' && (
+          <Step1AssetType
+            categories={categories}
+            universe={universe}
+            holdings={brokerHoldings}
+            suggestions={suggestions}
+            onPick={selectCategory}
+            onPickAsset={t => selectTicker(t, t._catId)}
+            onPickSymbol={selectBySymbol}
+          />
+        )}
         {current === 'ticker' && (
           category?.id === 'fci'
             ? <StepFciPicker list={category.list} onPick={selectTicker} />
@@ -226,7 +317,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
             <button
               key={b.id ?? b.name}
               onClick={() => onPick(b)}
-              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded-xl p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
             >
               <div className="flex items-center gap-3">
                 <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
@@ -271,7 +362,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
           )}
           <button
             onClick={onPlazoFijo}
-            className="w-full text-left bg-bg-2/40 border border-line rounded-xl p-4 hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+            className="w-full text-left bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 transition-colors focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
           >
             <div className="flex items-center gap-3">
               <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
@@ -292,33 +383,171 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 1 — Asset Type Picker (grid de categorías)
 // ════════════════════════════════════════════════════════════════════════════
-function Step1AssetType({ categories, onPick }) {
+function Step1AssetType({ categories, universe, holdings = [], suggestions = [], onPick, onPickAsset, onPickSymbol }) {
+  const [query, setQuery] = useState('')
+  // `engaged` = el user tocó el buscador. Recién ahí mostramos "En tu cartera" +
+  // "Sugeridos"; antes de eso (apenas elegido el broker) mostramos solo las
+  // categorías. Una vez activo, se mantiene (no se resetea en blur para no cortar
+  // el click sobre una sugerencia).
+  const [engaged, setEngaged] = useState(false)
+  const inputRef = useRef(null)
+  const q = query.trim().toLowerCase()
+  const searching = q.length > 0
+
+  // Salir de la búsqueda: limpia el texto, colapsa las sugerencias y vuelve a la
+  // vista de categorías.
+  function exitSearch() {
+    setQuery('')
+    setEngaged(false)
+    inputRef.current?.blur()
+  }
+
+  // Buscador GENERAL: filtra el universo entero por ticker o nombre. Cap a 40
+  // resultados para no renderizar miles de filas (el usuario refina escribiendo).
+  const RESULT_CAP = 40
+  const results = useMemo(() => {
+    if (!q) return []
+    return universe
+      .filter(t => t.s.toLowerCase().includes(q) || (t.n || '').toLowerCase().includes(q))
+      .slice(0, RESULT_CAP)
+  }, [q, universe])
+
   return (
-    <div className="overflow-y-auto flex-1 p-5">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {categories.map(cat => {
-          const Icon = cat.icon
-          return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Buscador general — arriba de las categorías, busca en TODO el universo */}
+      <div className="px-5 py-3 border-b border-line bg-bg-2/40 dark:bg-bg-2/30 flex-shrink-0">
+        <div className="relative">
+          <Search size={14} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" aria-hidden="true" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onFocus={() => setEngaged(true)}
+            placeholder="Buscar cualquier activo — ticker o nombre (AAPL, Bitcoin, GGAL…)"
+            autoComplete="off"
+            spellCheck="false"
+            className={`w-full bg-white dark:bg-bg-1 border border-line rounded-sm pl-9 ${engaged ? 'pr-9' : 'pr-3'} py-2 text-sm text-ink-0 placeholder-ink-3 focus:outline-none focus:border-rendi-accent/60 focus:ring-2 focus:ring-rendi-accent/20 transition`}
+          />
+          {engaged && (
             <button
-              key={cat.id}
-              onClick={() => onPick(cat)}
-              className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded-xl p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+              type="button"
+              onMouseDown={e => e.preventDefault()}
+              onClick={exitSearch}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+              aria-label="Salir de la búsqueda y volver a las categorías"
+              title="Volver a las categorías"
             >
-              <div className="flex items-start gap-3">
-                <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
-                  <Icon size={18} strokeWidth={1.5} aria-hidden="true" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-semibold text-ink-0 text-sm leading-tight">{cat.label}</h3>
-                  <p className="text-xs text-ink-2 mt-1 leading-snug">{cat.hint}</p>
-                  <p className="text-[12px] text-ink-3 mt-2 tracking-[0.12em] font-medium">
-                    {cat.freeText ? 'Entrada libre' : `${cat.list.length} ${cat.list.length === 1 ? 'opción' : 'opciones'}`}
-                  </p>
-                </div>
-              </div>
+              <X size={14} strokeWidth={2} aria-hidden="true" />
             </button>
+          )}
+        </div>
+        {searching && (
+          <p className="text-xs text-ink-3 font-mono mt-2">
+            {results.length}{results.length === RESULT_CAP ? '+' : ''} {results.length === 1 ? 'resultado' : 'resultados'} · o elegí una categoría abajo
+          </p>
+        )}
+      </div>
+
+      <div className="overflow-y-auto flex-1">
+        {searching ? (
+          results.length === 0 ? (
+            <div className="p-8 text-center text-sm text-ink-2">
+              Sin resultados para <span className="font-mono">"{query}"</span>.
+              <br />Probá con el ticker o entrá a una categoría.
+            </div>
+          ) : (
+            <ul className="divide-y divide-line/50 dark:divide-line/40">
+              {results.map(t => {
+                const isFci = t._catId === 'fci'
+                return (
+                  <li key={`${t._catId}:${t.s}`}>
+                    <AssetResultRow
+                      symbol={t.s}
+                      title={isFci ? t.n : undefined}
+                      name={isFci ? undefined : t.n}
+                      sub={isFci ? t._sub : (t._catId === 'bonds' ? t._sub : undefined)}
+                      type={t._type}
+                      onClick={() => onPickAsset(t)}
+                    />
+                  </li>
+                )
+              })}
+            </ul>
           )
-        })}
+        ) : (
+          <div>
+            {/* En tu cartera — lo primero: los activos que ya tenés en este broker */}
+            {engaged && holdings.length > 0 && (
+              <div className="border-b border-line/50 dark:border-line/40">
+                <p className="px-5 pt-3 pb-1 text-[12px] tracking-[0.12em] text-ink-3 font-medium">En tu cartera</p>
+                <ul className="divide-y divide-line/50 dark:divide-line/40">
+                  {holdings.map(h => (
+                    <li key={`hold:${h.symbol}`}>
+                      <AssetResultRow
+                        symbol={h.symbol}
+                        name={h.name}
+                        type={inferType(h.symbol)}
+                        onClick={() => onPickSymbol(h.symbol, h.name)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Sugeridos — populares que todavía no tenés acá */}
+            {engaged && suggestions.length > 0 && (
+              <div className="border-b border-line/50 dark:border-line/40">
+                <p className="px-5 pt-3 pb-1 text-[12px] tracking-[0.12em] text-ink-3 font-medium">Sugeridos</p>
+                <ul className="divide-y divide-line/50 dark:divide-line/40">
+                  {suggestions.map(s => (
+                    <li key={`sug:${s.symbol}`}>
+                      <AssetResultRow
+                        symbol={s.symbol}
+                        name={s.name}
+                        type={s.type}
+                        onClick={() => onPickSymbol(s.symbol, s.name)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Explorá por categoría */}
+            <div className="p-5">
+              {engaged && (holdings.length > 0 || suggestions.length > 0) && (
+                <p className="mb-3 text-[12px] tracking-[0.12em] text-ink-3 font-medium">O explorá por categoría</p>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {categories.map(cat => {
+                  const Icon = cat.icon
+                  return (
+                    <button
+                      key={cat.id}
+                      onClick={() => onPick(cat)}
+                      className="text-left bg-bg-2/40 dark:bg-bg-2/40 border border-line rounded p-4 hover:border-rendi-accent/40 dark:hover:border-rendi-accent/40 transition-colors group focus:outline-none focus:ring-2 focus:ring-rendi-accent/40"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="flex-shrink-0 w-9 h-9 rounded-sm bg-bg-3 border border-line flex items-center justify-center text-rendi-accent">
+                          <Icon size={18} strokeWidth={1.5} aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="font-semibold text-ink-0 text-sm leading-tight">{cat.label}</h3>
+                          <p className="text-xs text-ink-2 mt-1 leading-snug">{cat.hint}</p>
+                          <p className="text-[12px] text-ink-3 mt-2 tracking-[0.12em] font-medium">
+                            {cat.freeText ? 'Entrada libre' : `${cat.list.length} ${cat.list.length === 1 ? 'opción' : 'opciones'}`}
+                          </p>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -386,23 +615,13 @@ function Step2TickerPicker({ category, onPick }) {
           <ul className="divide-y divide-line/50 dark:divide-line/40">
             {filtered.map(t => (
               <li key={t.s}>
-                <button
+                <AssetResultRow
+                  symbol={t.s}
+                  name={t.n}
+                  sub={t._sub}
+                  type={CATEGORY_TO_TYPE[category.id] || null}
                   onClick={() => onPick(t)}
-                  className="w-full flex items-center gap-3 px-5 py-3 hover:bg-bg-2 dark:hover:bg-bg-2/40 transition-colors text-left focus:outline-none focus:bg-bg-2 dark:focus:bg-bg-2/40"
-                >
-                  <AssetLogo asset={t.s} size={32} />
-                  <div className="min-w-0 flex-1">
-                    <p className="font-semibold text-ink-0 text-sm tabular flex items-center gap-2">
-                      {t.s}
-                      {t._sub && (
-                        <span className="text-[12.5px] tracking-[0.12em] px-1.5 py-0.5 rounded-sm bg-bg-3 text-ink-2 border border-line font-medium">
-                          {t._sub}
-                        </span>
-                      )}
-                    </p>
-                    <p className="text-xs text-ink-2 truncate">{t.n}</p>
-                  </div>
-                </button>
+                />
               </li>
             ))}
           </ul>

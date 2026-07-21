@@ -25,6 +25,7 @@ import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
+import { useAlertsContext } from '../contexts/AlertsContext'
 import { prefetchRoute } from '../utils/routePrefetch'
 import RecommendationsModal from './RecommendationsModal'
 
@@ -63,9 +64,11 @@ const GROUPS = [
   },
 ]
 
-// Sueltos — siempre visibles, fuera del acordeón (acciones a mano).
+// Sueltos — siempre visibles, fuera del acordeón (acciones a mano). El puntito
+// de "Alertas" ya NO es estático: se muestra sólo si hay eventos sin ver
+// (unseenCount), ver el render abajo.
 const LOOSE = [
-  { to: '/alertas', label: 'Alertas',  icon: Bell,    dot: true },
+  { to: '/alertas', label: 'Alertas',  icon: Bell },
   { to: '/imports', label: 'Importar', icon: Upload },
 ]
 
@@ -82,6 +85,7 @@ export default function Sidebar() {
   const { dark, toggle } = useTheme()
   const coachDrawer = useCoachDrawer()
   const location = useLocation()
+  const { unseenCount = 0 } = useAlertsContext()  // badge de alertas sin ver
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
 
@@ -210,7 +214,11 @@ export default function Sidebar() {
       {/* Footer: sueltos (Alertas / Importar) + utilidades + cuenta */}
       <div className="border-t border-line px-2.5 py-3 flex-shrink-0">
         {/* Sueltos — siempre visibles, tinta más fuerte que las utilidades */}
-        {LOOSE.map(({ to, label, icon: Icon, dot }) => (
+        {LOOSE.map(({ to, label, icon: Icon }) => {
+          // Puntito violeta sólo en Alertas y sólo si hay eventos SIN VER. Al
+          // entrar a /alertas se marcan vistos (AlertsContext.markSeen) → se apaga.
+          const showDot = to === '/alertas' && unseenCount > 0
+          return (
           <NavLink key={to} to={to} title={collapsed ? label : undefined}
             onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
             className={({ isActive }) =>
@@ -221,8 +229,8 @@ export default function Sidebar() {
               <>
                 <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
                 {!collapsed && <span className="flex-1">{label}</span>}
-                {dot && (
-                  <span aria-hidden
+                {showDot && (
+                  <span aria-hidden title="Tenés alertas sin ver"
                     className={`w-2 h-2 rounded-full bg-data-violet ${collapsed ? 'absolute top-1.5 right-1.5' : ''}`}
                     style={collapsed ? undefined : { boxShadow: '0 0 0 3px rgba(139,125,255,0.12)' }} />
                 )}
@@ -230,7 +238,8 @@ export default function Sidebar() {
               </>
             )}
           </NavLink>
-        ))}
+          )
+        })}
 
         <div className="border-t border-line/40 my-2 mx-1" aria-hidden="true" />
 

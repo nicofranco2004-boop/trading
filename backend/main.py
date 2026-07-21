@@ -1076,7 +1076,8 @@ def init_db():
             up_pct REAL,                        -- pct_move: dispara si sube ≥ up_pct%
             down_pct REAL,                      -- pct_move: dispara si cae ≥ down_pct%
             currency TEXT,                      -- 'ARS' | 'USD' (riel del umbral)
-            baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close'|'cost'|'set_price'
+            baseline TEXT DEFAULT 'prev_close', -- pct_move: 'prev_close' (día) | 'set_price' (desde ahora)
+            anchor_price REAL,                  -- pct_move set_price: precio de referencia (se re-ancla)
             channel TEXT NOT NULL DEFAULT 'both',-- 'push' | 'email' | 'both'
             repeat TEXT NOT NULL DEFAULT 'once',-- 'once' | 'daily' | 'always'
             cooldown_min INTEGER NOT NULL DEFAULT 360,
@@ -1105,6 +1106,12 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_alert_events_user ON alert_events(user_id, fired_at DESC);
     """)
+
+    # Migración: anchor_price para el modo "Desde ahora" (la tabla alerts ya existe
+    # en prod sin esta columna → CREATE IF NOT EXISTS no la agrega).
+    _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+    if _alert_cols and 'anchor_price' not in _alert_cols:
+        conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
 
     # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
     # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
@@ -6105,7 +6112,7 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_cu
 
 class PositionIn(BaseModel):
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=48)  # 48 para símbolos FCI: 'FCI:FIMA-PREMIUM-A'
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)  # MAX_STR (100): FCI y nombres largos (compra y venta comparten límite)
     is_cash: bool = False
     buy_price: Optional[float] = Field(None, ge=0)
     quantity: Optional[float] = Field(None, ge=0)
@@ -7721,7 +7728,7 @@ class BondCashflowIn(BaseModel):
     Todo atómico.
     """
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     flow_type: str = Field(..., max_length=20)  # 'coupon' | 'amortization'
     amount: float = Field(..., gt=0, le=1e12)
     date: str = Field(..., max_length=10)
@@ -8026,7 +8033,7 @@ def _cash_asset_for_currency(currency: str) -> str:
 class BondCashflowSkipIn(BaseModel):
     """Marca una cobranza teórica como "no aplica" para no sugerirla más."""
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     date: str = Field(..., max_length=10)
     reason: Optional[str] = Field(None, max_length=200)
 
@@ -8459,7 +8466,7 @@ def _finite(v: Optional[float]) -> Optional[float]:
 class SellIn(BaseModel):
     """Venta FIFO: cierra posiciones del par (broker, asset) en orden de entry_date asc."""
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     quantity: float = Field(..., gt=0, le=_FINITE_BOUND)
     exit_price: float = Field(..., ge=0, le=_FINITE_BOUND)
     date: Optional[str] = Field(None, max_length=10)
@@ -8943,7 +8950,7 @@ _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 class OperationIn(BaseModel):
     date: str = Field(..., max_length=10)
     broker: str = Field(..., min_length=1, max_length=MAX_STR)
-    asset: str = Field(..., min_length=1, max_length=20)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     op_type: Optional[str] = Field(None, max_length=MAX_STR)
     entry_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
     exit_price: Optional[float] = Field(None, ge=0, le=_FINITE_BOUND)
@@ -23749,6 +23756,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         currency = data.currency
         up_pct = down_pct = None
         threshold = data.threshold
+        baseline = "prev_close"
         if data.kind == "price_target":
             if data.scope != "ticker" or not symbol:
                 raise HTTPException(400, "Una alerta de precio necesita un ticker.")
@@ -23763,6 +23771,9 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
             if data.scope == "holdings":
                 symbol = None
+                baseline = "prev_close"   # toda la cartera = solo "en el día"
+            else:
+                baseline = "set_price" if data.baseline == "set_price" else "prev_close"
             up_pct = data.up_pct if (data.up_pct and data.up_pct > 0) else None
             down_pct = data.down_pct if (data.down_pct and data.down_pct > 0) else None
             if up_pct is None and down_pct is None:
@@ -23779,6 +23790,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
         # puede fallar transitoriamente y el símbolo ser válido).
         armed = 1
         current_price = None
+        anchor_price = None
         resolved = True
         if symbol:  # ticker-scope (price_target siempre; pct_move de un activo)
             current_price = _ae.price_for_alert(symbol)
@@ -23787,20 +23799,23 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
                 met = _ae.condition_met("price_target", data.direction, threshold,
                                         current_price, None)
                 armed = 0 if met else 1
+            elif baseline == "set_price":
+                anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
         cur = conn.execute(
             """INSERT INTO alerts
                (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
-                currency, baseline, channel, repeat, cooldown_min, armed, active, note)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                currency, baseline, anchor_price, channel, repeat, cooldown_min, armed, active, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (uid, data.kind, symbol, data.scope, data.direction, threshold, up_pct, down_pct,
-             currency, data.baseline, data.channel, data.repeat, data.cooldown_min,
+             currency, baseline, anchor_price, data.channel, data.repeat, data.cooldown_min,
              armed, data.note),
         )
         aid = cur.lastrowid
         conn.commit()
         return {"ok": True, "id": aid, "armed": bool(armed),
-                "current_price": current_price, "resolved": resolved}
+                "current_price": current_price, "resolved": resolved,
+                "anchor_price": anchor_price, "baseline": baseline}
     finally:
         conn.close()
 
@@ -23808,7 +23823,8 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_current_user)):
 @app.patch("/api/alerts/{alert_id}")
 def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_current_user)):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
-    re-arma el edge-trigger."""
+    re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
+    import alerts_engine as _ae
     conn = get_db()
     try:
         row = conn.execute(
@@ -23829,6 +23845,13 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_cur
             sets.append("active=?"); params.append(1 if data.active else 0)
             # Reactivar o editar → re-armar para que vuelva a poder disparar.
             sets.append("armed=1")
+            # Reactivar una alerta "Desde ahora" → re-anclar al precio actual, así el
+            # % se cuenta desde acá y no re-dispara sobre el movimiento que ya pasó.
+            if (data.active and row["kind"] == "pct_move"
+                    and (row["baseline"] or "") == "set_price" and row["symbol"]):
+                _px = _ae.price_for_alert(row["symbol"])
+                if _px is not None:
+                    sets.append("anchor_price=?"); params.append(_px)
         elif data.threshold is not None or data.direction is not None:
             sets.append("armed=1")
         if not sets:
@@ -23888,6 +23911,57 @@ def alerts_evaluate(request: Request):
         return {"ok": True, **result}
     finally:
         conn.close()
+
+
+# Guarda anti-doble-corrida del snapshot por cron: el job itera TODOS los usuarios
+# (minutos), así que corre en un thread de fondo. Si llega otro ping mientras uno
+# está corriendo (retry del cron, doble disparo), lo saltamos en vez de encimar dos
+# corridas que contenderían por el lock de escritura.
+_snapshot_cron_lock = threading.Lock()
+_snapshot_cron_running = False
+
+
+def _run_daily_snapshot_bg():
+    global _snapshot_cron_running
+    try:
+        _run_daily_snapshot_job()   # wrapper existente: corre + loguea + captura errores
+    finally:
+        with _snapshot_cron_lock:
+            _snapshot_cron_running = False
+
+
+@app.api_route("/api/snapshots/run-cron", methods=["GET", "POST"])
+def snapshots_run_cron(request: Request):
+    """Dispara el snapshot diario de la cartera de TODOS los usuarios (valuación
+    server-side; NO requiere que el user entre a la app). Mismo motor que el
+    scheduler in-process (run_daily_snapshot), pero disparado por un cron EXTERNO
+    para que no dependa de que el proceso de Railway esté despierto — el scheduler
+    interno se saltea la ventana si el proceso está frío, y ahí la "variación diaria"
+    termina siendo de varios días.
+
+    El job tarda (itera todos los users + fetch de precios), MÁS que el timeout del
+    gateway/cron → lo corremos en un thread de fondo y devolvemos 200 al instante
+    ({"status":"started"}); el resultado (o el abort fail-closed sin MEP) va a los
+    logs. Idempotente: el snapshot es UPSERT por (user_id, date) → re-correr pisa, no
+    duplica. Si ya hay una corrida en curso, devuelve {"status":"already_running"}.
+
+    Lo pega un cron externo (cron-job.org) 1x/día ~03:00 UTC, después del cierre de
+    NYSE/BCBA. Auth: header X-Cron-Token o ?token= contra SNAPSHOT_CRON_TOKEN. Sin
+    token configurado → 503 (endpoint cerrado)."""
+    expected = (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(503, "Snapshot cron no configurado (falta SNAPSHOT_CRON_TOKEN).")
+    got = (request.headers.get("x-cron-token")
+           or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+    global _snapshot_cron_running
+    with _snapshot_cron_lock:
+        if _snapshot_cron_running:
+            return {"ok": True, "status": "already_running"}
+        _snapshot_cron_running = True
+    threading.Thread(target=_run_daily_snapshot_bg, daemon=True).start()
+    return {"ok": True, "status": "started"}
 
 
 # ─── Push notifications (Sprint M4) ──────────────────────────────────────────

@@ -8,7 +8,10 @@ import {
   CEDEARS_LIST,
   ARG_LIDER,
   ARG_GENERAL,
+  CATEGORY_TO_TYPE,
 } from '../utils/tickers'
+import AssetLogo from './AssetLogo'
+import AssetTypeBadge from './AssetTypeBadge'
 
 // Categorías unificadas (mismas para ARS y USDT — el usuario filtra como quiera)
 const CATEGORIES = [
@@ -37,16 +40,6 @@ function buildAll() {
   return out
 }
 const ALL_LIST = buildAll()
-
-const COLOR_CLASS = {
-  amber:   'bg-amber-500/15 text-amber-600 dark:text-amber-400',
-  blue:    'bg-blue-500/15 text-blue-600 dark:text-blue-400',
-  violet:  'bg-violet-500/15 text-violet-600 dark:text-violet-400',
-  cyan:    'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400',
-  rose:    'bg-rose-500/15 text-rose-600 dark:text-rose-400',
-  emerald: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
-  teal:    'bg-teal-500/15 text-teal-600 dark:text-teal-400',
-}
 
 export default function TickerSearch({ value, onChange, currency = 'ARS', placeholder, className = '' }) {
   const [open, setOpen] = useState(false)
@@ -199,38 +192,31 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
                 Sin resultados para "<span className="font-mono">{query}</span>"
               </div>
             )}
-            {filtered.map((item, i) => {
-              const catDef = CATEGORIES.find(c => c.id === item._cat)
-              const colorClass = catDef ? COLOR_CLASS[catDef.color] : ''
-              return (
-                <button
-                  key={`${item._cat}-${item.s}-${i}`}
-                  type="button"
-                  data-idx={i}
-                  onMouseEnter={() => setHighlightIdx(i)}
-                  onClick={() => pick(item.s)}
-                  className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between gap-3 transition border-l-2 ${
-                    highlightIdx === i
-                      ? 'bg-rendi-accent/10 border-rendi-accent'
-                      : 'border-transparent hover:bg-bg-2 dark:hover:bg-bg-2'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <span className="font-mono font-semibold text-sm text-ink-0 dark:text-white shrink-0 w-20 truncate">
-                      {item.s}
-                    </span>
-                    <span className="text-xs text-ink-3 truncate">
-                      {item.n}
-                    </span>
-                  </div>
-                  {catDef && (
-                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${colorClass}`}>
-                      {catDef.cat}
-                    </span>
-                  )}
-                </button>
-              )
-            })}
+            {filtered.map((item, i) => (
+              <button
+                key={`${item._cat}-${item.s}-${i}`}
+                type="button"
+                data-idx={i}
+                onMouseEnter={() => setHighlightIdx(i)}
+                onClick={() => pick(item.s)}
+                className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between gap-3 transition border-l-2 ${
+                  highlightIdx === i
+                    ? 'bg-rendi-accent/10 border-rendi-accent'
+                    : 'border-transparent hover:bg-bg-2 dark:hover:bg-bg-2'
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <AssetLogo asset={item.s} size={28} className="flex-shrink-0" />
+                  <span className="font-mono font-semibold text-sm text-ink-0 dark:text-white shrink-0 truncate max-w-[8rem]">
+                    {item.s}
+                  </span>
+                  <span className="text-xs text-ink-3 truncate">
+                    {item.n}
+                  </span>
+                </div>
+                <AssetTypeBadge type={CATEGORY_TO_TYPE[item._cat]} />
+              </button>
+            ))}
             {showManual && (
               <button
                 type="button"
