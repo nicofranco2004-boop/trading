@@ -5,7 +5,6 @@ import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import StatCard from '../components/StatCard'
 import { useToast } from '../components/Toast'
 import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
@@ -1118,14 +1117,16 @@ function PositionsDesktop() {
   // en el mismo orden en cada render (rules of hooks).
   const totals = useMemo(() => {
     let value = 0, invested = 0
+    const byBroker = {}
     for (const b of brokers) {
       const r = computeBrokerValue(positions, prices, b, tcBlue, tcCedear, tcCripto, costBasis)
+      byBroker[b.name] = r
       value += r.value || 0
       invested += r.invested || 0
     }
     const pnl = value - invested
     const pct = invested > 0 ? pnl / invested : 0
-    return { value, invested, pnl, pct }
+    return { value, invested, pnl, pct, byBroker }
   }, [brokers, positions, prices, tcBlue, tcCedear, tcCripto, costBasis])
 
   // Totales en modo 'today' (mode-independent) para el hero en display ARS: el peso
@@ -1312,47 +1313,46 @@ function PositionsDesktop() {
           Phase A: respeta el toggle global USD/ARS — los pesos siguen al user
           a través de todas las pantallas.
           ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mb-4">
-        <StatCard
-          tone="hero"
-          label="Tu cartera hoy"
-          value={
-            <span className="inline-flex items-end gap-3">
-              <PrivacyMask><FlashValue value={isArsDisp ? heroValueArs : heroValue}><AnimatedNumber value={isArsDisp ? heroValueArs : heroValue} format={(n) => isArsDisp ? fmtArs(n) : fmtUsd(n)} /></FlashValue></PrivacyMask>
-              <button onClick={togglePrivacy} className="mb-2 text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
-                {hidden ? <EyeOff size={22} strokeWidth={1.5} /> : <Eye size={22} strokeWidth={1.5} />}
-              </button>
+      <div className="mb-5 bg-bg-1 border border-line rounded-xl px-5 sm:px-6 py-5">
+        <p className="eyebrow mb-2">Tu cartera hoy</p>
+        <div className="flex items-end gap-3">
+          <span className="text-[30px] sm:text-[34px] leading-none font-semibold text-ink-0 tabular">
+            <PrivacyMask><FlashValue value={isArsDisp ? heroValueArs : heroValue}><AnimatedNumber value={isArsDisp ? heroValueArs : heroValue} format={(n) => isArsDisp ? fmtArs(n) : fmtUsd(n)} /></FlashValue></PrivacyMask>
+          </span>
+          <button onClick={togglePrivacy} className="mb-0.5 text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
+            {hidden ? <EyeOff size={20} strokeWidth={1.5} /> : <Eye size={20} strokeWidth={1.5} />}
+          </button>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap mt-3.5 text-[12.5px]">
+          <span
+            className={`inline-flex items-center gap-1.5 font-medium tabular rounded-full px-2.5 py-1 ${heroPnlDisp >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}
+            title="P&L no realizado"
+          >
+            {heroPnlDisp >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
+            {hidden ? '••••••' : (isArsDisp
+              ? `${heroPnlArs >= 0 ? '+' : '−'}ARS ${ars(Math.abs(heroPnlArs))}`
+              : `${heroPnl >= 0 ? '+' : '−'}USD ${usd(Math.abs(heroPnl))}`)}
+            <span className="opacity-80">· {pctSigned(heroPctDisp)}</span>
+          </span>
+          {!hidden && (
+            <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
+              <span className="text-ink-3">Invertido</span>
+              {isArsDisp ? `ARS ${ars(heroInvestedArs)}` : `USD ${usd(heroInvested)}`}
             </span>
-          }
-          sub={
-            <span className="inline-flex items-center gap-3 flex-wrap">
-              <span className="text-ink-2">P&L no realizado</span>
-              <span className={`inline-flex items-center gap-1 font-semibold ${heroPnlDisp >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {heroPnlDisp >= 0 ? <TrendingUp size={14} strokeWidth={1.5} /> : <TrendingDown size={14} strokeWidth={1.5} />}
-                {hidden ? '••••••' : (isArsDisp
-                  ? `ARS ${ars(Math.abs(heroPnlArs))}`
-                  : `USD ${usd(Math.abs(heroPnl))}`)}
-              </span>
-              <span className={`tabular ${heroPnlDisp >= 0 ? 'text-rendi-pos/80' : 'text-rendi-neg/80'}`}>
-                ({pctSigned(heroPctDisp)})
-              </span>
-            </span>
-          }
-          hint={hidden ? undefined : (
-            isArsDisp
-              ? `Invertido ARS ${ars(heroInvestedArs)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
-              : `Invertido USD ${usd(heroInvested)} · ${brokers.length} ${brokers.length === 1 ? 'broker' : 'brokers'} activos`
           )}
-        />
+          <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
+            {brokers.length} {brokers.length === 1 ? 'broker activo' : 'brokers activos'}
+          </span>
+        </div>
       </div>
 
       {/* Banner de variación diaria deshabilitado — requiere snapshots
           confiables (cron server-side) que aún no están implementados. */}
 
-      {/* Broker chips + agregar (movido desde /config). Va debajo del hero
+      {/* Broker cards + agregar (movido desde /config). Va debajo del hero
           KPI y antes del breakdown detallado por broker para que el user
-          vea sus cuentas conectadas de un vistazo. */}
-      <BrokerManager brokers={brokers} onChange={loadAll} />
+          vea sus cuentas conectadas de un vistazo, con valor y P&L nativos. */}
+      <BrokerManager brokers={brokers} onChange={loadAll} totals={totals.byBroker} hidden={hidden} />
 
       {/* ─── Barra de filtros + orden ─────────────────────────────────────
           Buscar activo · filtrar por broker (Todos | uno) · ordenar dentro de
@@ -1366,7 +1366,7 @@ function PositionsDesktop() {
             onChange={e => setFilterAsset(e.target.value)}
             placeholder="Buscar activo…"
             aria-label="Buscar activo"
-            className="bg-bg-2 border border-line rounded-sm pl-8 pr-2 py-1.5 text-xs text-ink-1 placeholder:text-ink-3 focus:outline-none focus:border-ink-2 w-44"
+            className="bg-bg-2 border border-line rounded-full pl-8 pr-3 py-1.5 text-xs text-ink-1 placeholder:text-ink-3 focus:outline-none focus:border-ink-2 w-44"
           />
         </div>
         <FilterPill
@@ -1379,7 +1379,7 @@ function PositionsDesktop() {
         <button
           type="button"
           onClick={() => setShowAllLots(v => !v)}
-          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
+          className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
           title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
         >
           <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
@@ -1387,7 +1387,7 @@ function PositionsDesktop() {
         <button
           type="button"
           onClick={toggleCompact}
-          className={`inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
+          className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
           title="Compacta las filas para ver más columnas sin scrollear de costado."
         >
           <RowsIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {compact ? 'Cómodo' : 'Compacto'}
@@ -1488,20 +1488,19 @@ function PositionsDesktop() {
         const Header = (
           <div className="flex flex-col gap-3 px-4 sm:px-5 py-4 border-b border-line">
             <div className="flex items-start justify-between flex-wrap gap-3">
-              <div className="min-w-0">
-                <p className="eyebrow mb-1 flex items-center gap-2">
-                  {isSubBroker && (
-                    <span className="text-ink-3 select-none" title={`Sub-broker de ${parentName}`}>└─</span>
-                  )}
-                  Broker · {isARS ? 'ARS' : 'USD'}
-                  {isSubBroker && (
-                    <span className="text-ink-3 normal-case tracking-normal" title="Creado automáticamente al convertir ARS a USD">
-                      sub-broker
-                    </span>
-                  )}
-                  {isARS && <span className="text-ink-3 normal-case tracking-normal">· TC MEP {tcBlue}</span>}
-                </p>
-                <h3 className={`text-lg font-semibold leading-tight ${color.text}`}>{broker.name}</h3>
+              <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                {isSubBroker && (
+                  <span className="text-ink-3 select-none text-sm" title={`Sub-broker de ${parentName}`}>└─</span>
+                )}
+                <h3 className={`text-base font-semibold leading-tight ${color.text}`}>{broker.name}</h3>
+                <span className={`text-[10.5px] font-semibold tracking-wide rounded-full px-2 py-0.5 ${isARS ? 'bg-rendi-warn/10 text-rendi-warn' : 'bg-data-cyan/10 text-data-cyan'}`}>
+                  {isARS ? 'ARS' : 'USD'}
+                </span>
+                {isSubBroker && (
+                  <span className="text-[10.5px] rounded-full px-2 py-0.5 bg-bg-2 text-ink-3" title="Creado automáticamente al convertir ARS a USD">
+                    sub-broker
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {/* Para brokers ARS sin sub-broker USD: ofrecemos crearlo
@@ -1519,7 +1518,7 @@ function PositionsDesktop() {
                 <button
                   onClick={() => toggleDetail(broker.name)}
                   className="flex items-center gap-1 text-[11px] text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition"
-                  title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar tipo de cambio, conversiones y detalles adicionales'}
+                  title={showDetail ? 'Ocultar columnas auxiliares' : 'Mostrar invertido, tipo de cambio, P&L en USD y variación diaria'}
                 >
                   {showDetail ? <ChevronUp size={12} strokeWidth={1.5} /> : <ChevronDown size={12} strokeWidth={1.5} />}
                   {showDetail ? 'Ocultar detalle' : 'Detalle'}
@@ -1529,22 +1528,26 @@ function PositionsDesktop() {
                 </button>
               </div>
             </div>
-            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-xs sm:text-sm tabular">
-              <span>
-                <span className="label-mono mr-1.5">Valor</span>
+            <div className="flex flex-wrap items-center gap-2 text-[12px] tabular">
+              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2">
+                <span className="text-ink-3">Valor</span>
                 <span className="font-semibold text-ink-0">
                   {hidden ? '••••••' : (isARS ? fmtArs(r.valueArs) : fmtUsd(r.value))}
                 </span>
               </span>
-              <span className="text-ink-2">
-                <span className="label-mono mr-1.5">Inv</span>
+              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
+                <span className="text-ink-3">Invertido</span>
                 {hidden ? '••••••' : (isARS ? fmtArs(r.invArs) : fmtUsd(r.invested))}
               </span>
-              <span className={`${colorClass(headerPnlAmt)} font-medium`}>
-                <span className="label-mono mr-1.5 text-ink-2">P&L</span>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium ${headerPnlAmt >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
                 {hidden ? '••••••' : `${headerPnlAmt >= 0 ? '+' : '−'}${isARS ? `ARS ${ars(Math.abs(r.pnlArs))}` : `USD ${usd(Math.abs(r.pnlUsd))}`}`}
-                <span className="ml-1 opacity-80">({pctSigned(headerPnlPct)})</span>
+                <span className="opacity-80">· {pctSigned(headerPnlPct)}</span>
               </span>
+              {isARS && (
+                <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-3">
+                  TC MEP <span className="text-ink-2">{tcBlue}</span>
+                </span>
+              )}
             </div>
           </div>
         )
@@ -1562,15 +1565,14 @@ function PositionsDesktop() {
                       <th className={thClass}>30D</th>
                       <th className={thClass}>Cantidad</th>
                       <th className={thClass}>Precio prom.</th>
-                      <th className={thClass}>Precio actual</th>
-                      <th className={thClass}>Invertido</th>
+                      <th className={thClass}>Actual</th>
+                      {showDetail && <th className={thClass}>Invertido</th>}
                       {showDetail && <th className={thClass}>TC Compra</th>}
                       {showDetail && <th className={thClass}>Inv. USD</th>}
                       <th className={thClass}>Valor</th>
                       <th className={thClass}>P&L</th>
                       {showDetail && <th className={thClass}>P&L USD</th>}
-                      <th className={thClass}>P&L %</th>
-                      <th className={thClass}>Var. día</th>
+                      {showDetail && <th className={thClass}>Var. día</th>}
                       <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
@@ -1597,11 +1599,10 @@ function PositionsDesktop() {
                       const adjPnlPct = (isBond && adjPnlArs != null && p.invested > 0)
                         ? adjPnlArs / p.invested
                         : c.pnlPct
-                      const pnlBg = adjPnlArs == null ? '' : adjPnlArs > 0 ? 'bg-rendi-pos/[0.06]' : adjPnlArs < 0 ? 'bg-rendi-neg/[0.06]' : ''
                       const avgPriceArs = (!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null
                       const dvArs = dvFor(p, true)
                       const expanded = isBond && !isLot && expandedBonds.has(bondKey)
-                      const arsColSpan = showDetail ? 14 : 11
+                      const arsColSpan = showDetail ? 13 : 8
                       const pnlTooltip = (isBond && pnlContrib !== 0)
                         ? `P&L = mark-to-market (${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlContrib))} de ganancia realizada (cupones + parte de ganancia de amorts). Cash total cobrado: ARS ${ars(cobranzasCash)}.`
                         : undefined
@@ -1685,28 +1686,36 @@ function PositionsDesktop() {
                           <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—'}</td>
                           <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{`ARS ${ars(c.priceArs)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
-                          <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : fmtArs(p.invested)}</td>
+                          {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : fmtArs(p.invested)}</td>}
                           {showDetail && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
                           {showDetail && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : fmtUsd(c.invUsd)) : '—'}</td>}
                           <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.valueArs != null ? <FlashValue value={c.value}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
-                          <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlArs)} ${pnlBg}`} title={pnlTooltip}>
-                            {hidden ? '••••••' : (adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—')}
-                            {!hidden && isBond && pnlContrib !== 0 && (
-                              <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
-                            )}
+                          <td className={`${tdClass} tabular`} title={pnlTooltip}>
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className={`font-semibold ${colorClass(adjPnlArs)}`}>
+                                {hidden ? '••••••' : (adjPnlArs != null ? `${adjPnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(adjPnlArs))}` : '—')}
+                              </span>
+                              {adjPnlPct != null && (
+                                <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${adjPnlPct >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(adjPnlPct)}</span>
+                              )}
+                              {!hidden && isBond && pnlContrib !== 0 && (
+                                <span className="text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
+                              )}
+                            </span>
                           </td>
                           {showDetail && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{hidden ? '••••••' : (c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—')}</td>}
-                          <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
-                          <td className={`${tdClass} tabular`}>
-                            {dvArs ? (
-                              <div className="leading-tight">
-                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}ARS {ars(Math.abs(dvArs.amount))}</div>
-                                <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
-                              </div>
-                            ) : (
-                              <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
-                            )}
-                          </td>
+                          {showDetail && (
+                            <td className={`${tdClass} tabular`}>
+                              {dvArs ? (
+                                <div className="leading-tight">
+                                  <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}ARS {ars(Math.abs(dvArs.amount))}</div>
+                                  <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
+                                </div>
+                              ) : (
+                                <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
+                              )}
+                            </td>
+                          )}
                           <td className={tdClassStickyRight}>
                             <div className="flex items-center gap-1 justify-end">
                               {!p.is_cash && (
@@ -1740,22 +1749,28 @@ function PositionsDesktop() {
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 border-line-2 bg-bg-2/40">
-                      {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
+                      {/* Activo + 30D + Cantidad + Precio prom + Actual collapsed (colSpan=5) */}
                       <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2">TOTAL</td>
-                      <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtArs(r.invArs)}</td>
+                      {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtArs(r.invArs)}</td>}
                       {showDetail && <td className="px-3 py-2.5 text-xs text-ink-3">—</td>}
                       {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>}
                       <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtArs(r.valueArs)}</td>
-                      <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlArs)}`}>{hidden ? '••••••' : `${r.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlArs))}`}</td>
+                      <td className="px-3 py-2.5 text-xs tabular">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className={`font-bold ${colorClass(r.pnlArs)}`}>{hidden ? '••••••' : `${r.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(r.pnlArs))}`}</span>
+                          {r.invArs > 0 && (
+                            <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${r.pnlArs >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(r.pnlArs / r.invArs)}</span>
+                          )}
+                        </span>
+                      </td>
                       {showDetail && <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>}
-                      <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
-                        {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
-                      </td>
-                      <td className="px-3 py-2.5 text-xs font-bold tabular">
-                        {brokerHasDay
-                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}`}</span>
-                          : <span className="text-ink-3">—</span>}
-                      </td>
+                      {showDetail && (
+                        <td className="px-3 py-2.5 text-xs font-bold tabular">
+                          {brokerHasDay
+                            ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}`}</span>
+                            : <span className="text-ink-3">—</span>}
+                        </td>
+                      )}
                       <td />
                     </tr>
                   </tfoot>
@@ -1777,12 +1792,11 @@ function PositionsDesktop() {
                     <th className={thClass}>30D</th>
                     <th className={thClass}>Cantidad</th>
                     <th className={thClass}>Precio prom.</th>
-                    <th className={thClass}>Precio actual</th>
-                    <th className={thClass}>Invertido</th>
+                    <th className={thClass}>Actual</th>
+                    {showDetail && <th className={thClass}>Invertido</th>}
                     <th className={thClass}>Valor</th>
                     <th className={thClass}>P&L</th>
-                    <th className={thClass}>P&L %</th>
-                    <th className={thClass}>Var. día</th>
+                    {showDetail && <th className={thClass}>Var. día</th>}
                     <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>
@@ -1805,7 +1819,6 @@ function PositionsDesktop() {
                     const adjPnlPct = (isBond && adjPnl != null && adjPnlCost > 0)
                       ? adjPnl / adjPnlCost
                       : c.pnlPct
-                    const pnlBg = adjPnl == null ? '' : adjPnl > 0 ? 'bg-rendi-pos/[0.06]' : adjPnl < 0 ? 'bg-rendi-neg/[0.06]' : ''
                     const avgPrice = (!p.is_cash && p.quantity > 0)
                       ? (p.buy_price ?? (p.invested ? p.invested / p.quantity : null))
                       : null
@@ -1847,6 +1860,7 @@ function PositionsDesktop() {
                                   </span>
                                 )}
                                 {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
+                                {!hidden && <TcMissingBadge p={p} costBasis={costBasis} />}
                               </div>
                               <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
                                 <span>{isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha')}</span>
@@ -1886,25 +1900,33 @@ function PositionsDesktop() {
                         <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? fmtUsd(avgPrice) : '—'}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
-                        <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : <>{fmtUsd(c.investedUsd ?? p.invested)}<TcMissingBadge p={p} costBasis={costBasis} /></>}</td>
+                        {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : fmtUsd(c.investedUsd ?? p.invested)}</td>}
                         <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
-                        <td className={`${tdClass} font-bold tabular ${colorClass(adjPnl)} ${pnlBg}`} title={pnlTooltip}>
-                          {hidden ? '••••••' : (adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—')}
-                          {!hidden && isBond && pnlContrib !== 0 && (
-                            <span className="ml-1 text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
-                          )}
+                        <td className={`${tdClass} tabular`} title={pnlTooltip}>
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className={`font-semibold ${colorClass(adjPnl)}`}>
+                              {hidden ? '••••••' : (adjPnl != null ? `${adjPnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(adjPnl))}` : '—')}
+                            </span>
+                            {adjPnlPct != null && (
+                              <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${adjPnlPct >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(adjPnlPct)}</span>
+                            )}
+                            {!hidden && isBond && pnlContrib !== 0 && (
+                              <span className="text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
+                            )}
+                          </span>
                         </td>
-                        <td className={`${tdClass} font-bold tabular ${colorClass(adjPnlPct)} ${pnlBg}`}>{adjPnlPct != null ? pctSigned(adjPnlPct) : '—'}</td>
-                        <td className={`${tdClass} tabular`}>
-                          {dvUsd ? (
-                            <div className="leading-tight">
-                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}USD {usd(Math.abs(dvUsd.amount))}</div>
-                              <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
-                            </div>
-                          ) : (
-                            <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
-                          )}
-                        </td>
+                        {showDetail && (
+                          <td className={`${tdClass} tabular`}>
+                            {dvUsd ? (
+                              <div className="leading-tight">
+                                <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}USD {usd(Math.abs(dvUsd.amount))}</div>
+                                <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
+                              </div>
+                            ) : (
+                              <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
+                            )}
+                          </td>
+                        )}
                         <td className={tdClassStickyRight}>
                           <div className="flex items-center gap-1 justify-end">
                             {!p.is_cash && (
@@ -1921,7 +1943,7 @@ function PositionsDesktop() {
                       {expanded && (
                         <BondDetailRow
                           p={p}
-                          colSpan={11}
+                          colSpan={showDetail ? 10 : 8}
                           summary={bondSummary}
                           isARS={false}
                           currentPrice={c.price}
@@ -1938,19 +1960,25 @@ function PositionsDesktop() {
                 </tbody>
                 <tfoot>
                   <tr className="border-t-2 border-line-2 bg-bg-2/30">
-                    {/* Activo + Cantidad + Precio prom + Precio actual collapsed (colSpan=4) */}
+                    {/* Activo + 30D + Cantidad + Precio prom + Actual collapsed (colSpan=5) */}
                     <td colSpan={5} className="px-3 py-2.5 text-xs font-bold text-ink-2">TOTAL</td>
-                    <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>
+                    {showDetail && <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.invested)}</td>}
                     <td className="px-3 py-2.5 text-xs font-bold text-ink-0 tabular">{hidden ? '••••••' : fmtUsd(r.value)}</td>
-                    <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</td>
-                    <td className={`px-3 py-2.5 text-xs font-bold tabular ${colorClass(r.pnlUsd)}`}>
-                      {r.invested > 0 ? pctSigned(r.pnlUsd / r.invested) : '—'}
+                    <td className="px-3 py-2.5 text-xs tabular">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className={`font-bold ${colorClass(r.pnlUsd)}`}>{hidden ? '••••••' : `${r.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(r.pnlUsd))}`}</span>
+                        {r.invested > 0 && (
+                          <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${r.pnlUsd >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(r.pnlUsd / r.invested)}</span>
+                        )}
+                      </span>
                     </td>
-                    <td className="px-3 py-2.5 text-xs font-bold tabular">
-                      {brokerHasDay
-                        ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`}</span>
-                        : <span className="text-ink-3">—</span>}
-                    </td>
+                    {showDetail && (
+                      <td className="px-3 py-2.5 text-xs font-bold tabular">
+                        {brokerHasDay
+                          ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`}</span>
+                          : <span className="text-ink-3">—</span>}
+                      </td>
+                    )}
                     <td />
                   </tr>
                 </tfoot>

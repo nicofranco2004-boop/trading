@@ -1,18 +1,21 @@
-// BrokerManager — chips de brokers conectados + botón "+" para agregar.
+// BrokerManager — cards de brokers conectados + botón "+" para agregar.
 // ═══════════════════════════════════════════════════════════════════════════
 // Reemplazó la tabla de brokers en Config. Ahora vive en Positions porque
 // es donde el user manipula sus brokers (y los ve activos).
 //
 // UX:
-//   • Cada broker es un chip con nombre + currency pill + acciones hover
-//     (editar, eliminar)
-//   • Chip "+" al final abre modal de agregar
+//   • Cada broker es una card con nombre + currency pill + valor y P&L
+//     nativos (si Positions pasa `totals`) + acciones hover (editar, eliminar)
+//   • Card "+" al final abre modal de agregar
 //   • Free user que intenta agregar broker n°2 → backend 403 → UpgradeModal
 //   • Eliminar pide confirmación
 //
 // Props:
 //   brokers     — array de {id, name, currency, parent_broker_id}
 //   onChange()  — callback para recargar la lista (post add/edit/delete)
+//   totals      — opcional: map nombre → resultado de computeBrokerValue
+//                 ({value, valueArs, invested, invArs, pnlUsd, pnlArs})
+//   hidden      — modo privacidad (enmascara montos, no el %)
 
 import { useState } from 'react'
 import { Plus, Pencil, Trash2, X } from 'lucide-react'
@@ -22,6 +25,7 @@ import Modal from './Modal'
 import Pill from './Pill'
 import UpgradeModal from './plan/UpgradeModal'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
+import { usd, ars, fmtUsd, fmtArs, pctSigned } from '../utils/format'
 
 function currencyTone(c) {
   switch (c) {
@@ -32,7 +36,7 @@ function currencyTone(c) {
   }
 }
 
-export default function BrokerManager({ brokers, onChange }) {
+export default function BrokerManager({ brokers, onChange, totals, hidden }) {
   const [showAdd, setShowAdd] = useState(false)
   const [editing, setEditing] = useState(null)
   const [brokerUpgrade, setBrokerUpgrade] = useState(null)
@@ -119,11 +123,13 @@ export default function BrokerManager({ brokers, onChange }) {
         </div>
       </header>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2.5">
         {brokers.map(b => (
-          <BrokerChip
+          <BrokerCard
             key={b.id}
             broker={b}
+            totals={totals?.[b.name]}
+            hidden={hidden}
             onEdit={() => setEditing({ ...b })}
             onDelete={() => deleteBroker(b)}
           />
@@ -131,7 +137,7 @@ export default function BrokerManager({ brokers, onChange }) {
         <button
           type="button"
           onClick={() => setShowAdd(true)}
-          className="inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-dashed border-data-violet/40 hover:border-data-violet/60 rounded-sm px-3 py-2 transition-colors"
+          className="inline-flex items-center justify-center gap-1.5 text-xs font-medium text-data-violet hover:bg-data-violet/10 border border-dashed border-data-violet/40 hover:border-data-violet/60 rounded-xl px-4 py-3 min-w-[120px] transition-colors"
         >
           <Plus size={13} strokeWidth={2} /> Agregar broker
         </button>
@@ -244,31 +250,59 @@ export default function BrokerManager({ brokers, onChange }) {
   )
 }
 
-// ─── BrokerChip ─────────────────────────────────────────────────────────────
+// ─── BrokerCard ─────────────────────────────────────────────────────────────
+// Card con métricas nativas del broker: ARS muestra pesos, USD/USDT dólares —
+// espejo del header de cada grupo en la grilla de abajo. Sin `totals` (o
+// broker vacío) la card degrada a nombre + moneda.
 
-function BrokerChip({ broker, onEdit, onDelete }) {
+function BrokerCard({ broker, totals, hidden, onEdit, onDelete }) {
+  const isARS = broker.currency === 'ARS'
+  const value = totals ? (isARS ? totals.valueArs : totals.value) : null
+  const inv = totals ? (isARS ? totals.invArs : totals.invested) : 0
+  const pnl = totals ? (isARS ? totals.pnlArs : totals.pnlUsd) : null
+  const hasData = value != null && (value !== 0 || inv !== 0)
+  const pct = inv > 0 && pnl != null ? pnl / inv : null
   return (
-    <div className="group inline-flex items-center gap-2 bg-bg-1 border border-line/60 hover:border-line rounded-sm px-3 py-2 transition-colors">
-      <span className="text-sm font-medium text-ink-0">{broker.name}</span>
-      <Pill tone={currencyTone(broker.currency)}>{broker.currency}</Pill>
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          onClick={onEdit}
-          className="p-1 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
-          title={`Editar ${broker.name}`}
-          aria-label={`Editar ${broker.name}`}
-        >
-          <Pencil size={11} strokeWidth={1.75} />
-        </button>
-        <button
-          onClick={onDelete}
-          className="p-1 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-2 transition-colors"
-          title={`Eliminar ${broker.name}`}
-          aria-label={`Eliminar ${broker.name}`}
-        >
-          <Trash2 size={11} strokeWidth={1.75} />
-        </button>
+    <div className="group bg-bg-1 border border-line/60 hover:border-line rounded-xl px-4 py-3 min-w-[180px] transition-colors">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-semibold text-ink-0 truncate">{broker.name}</span>
+          <Pill tone={currencyTone(broker.currency)}>{broker.currency}</Pill>
+        </div>
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+          <button
+            onClick={onEdit}
+            className="p-1 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+            title={`Editar ${broker.name}`}
+            aria-label={`Editar ${broker.name}`}
+          >
+            <Pencil size={11} strokeWidth={1.75} />
+          </button>
+          <button
+            onClick={onDelete}
+            className="p-1 rounded-sm text-ink-3 hover:text-rendi-neg hover:bg-bg-2 transition-colors"
+            title={`Eliminar ${broker.name}`}
+            aria-label={`Eliminar ${broker.name}`}
+          >
+            <Trash2 size={11} strokeWidth={1.75} />
+          </button>
+        </div>
       </div>
+      {hasData ? (
+        <>
+          <div className="mt-2 text-[15px] font-semibold text-ink-0 tabular leading-none">
+            {hidden ? '••••••' : (isARS ? fmtArs(value) : fmtUsd(value))}
+          </div>
+          {pnl != null && (
+            <div className={`mt-1.5 text-[11.5px] font-medium tabular ${pnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+              {hidden ? '••••••' : `${pnl >= 0 ? '+' : '−'}${isARS ? `ARS ${ars(Math.abs(pnl))}` : `USD ${usd(Math.abs(pnl))}`}`}
+              {pct != null && <span className="opacity-80"> · {pctSigned(pct)}</span>}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="mt-2 text-[11.5px] text-ink-3">Sin posiciones</div>
+      )}
     </div>
   )
 }
