@@ -2386,7 +2386,7 @@ function InsightsDesktop({ _embeddedTab }) {
           ══════════════════════════════════════════════════════════════════════ */}
       {showPerfil && (
       <Section
-        title={_embeddedTab === 'perfil' ? 'Diagnóstico vs. perfil declarado' : 'Perfil del inversor'}
+        title={_embeddedTab === 'perfil' ? 'Diagnóstico vs. perfil declarado' : 'Perfil de inversor'}
         subtitle="Cómo se alinea tu cartera real con lo que declaraste en el test."
       >
         {/* Lectura IA holística — solo si hay test hecho (si no, la CTA a

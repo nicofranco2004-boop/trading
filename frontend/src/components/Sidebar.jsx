@@ -19,7 +19,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import {
   Briefcase, List, Wallet, LineChart, Activity, Newspaper, Compass, TrendingUp,
   Gauge, Bell, Upload, BookOpen, Settings, MessageCircle, Sparkles, Shield,
-  Sun, Moon, LogOut, Menu, ChevronRight,
+  Sun, Moon, LogOut, Menu, ChevronRight, LayoutDashboard, UserRound,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
@@ -44,6 +44,7 @@ const GROUPS = [
   {
     id: 'cartera', label: 'Tu Cartera', icon: Wallet,
     items: [
+      { to: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard },
       { to: '/posiciones',  label: 'Cartera',      icon: Briefcase },
       { to: '/operaciones', label: 'Movimientos',  icon: List },
     ],
@@ -58,8 +59,9 @@ const GROUPS = [
   {
     id: 'analisis', label: 'Análisis', icon: Compass,
     items: [
-      { to: '/analisis',     label: 'Rendimiento',        icon: TrendingUp },
-      { to: '/fundamentals', label: 'Calidad de cartera', icon: Gauge },
+      { to: '/analisis',        label: 'Métricas',           icon: TrendingUp },
+      { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge },
+      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
     ],
   },
 ]
